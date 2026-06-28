@@ -140,13 +140,6 @@ final class IflowAdapter: SessionAdapter, Sendable {
         JSONLAdapterSupport.fileExists(locator)
     }
 
-    static func decodeCwd(_ encoded: String) -> String {
-        encoded
-            .replacingOccurrences(of: "--", with: "\u{0}")
-            .replacingOccurrences(of: "-", with: "/")
-            .replacingOccurrences(of: "\u{0}", with: "-")
-    }
-
     private static func message(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
         guard let type = JSONLAdapterSupport.string(object["type"]),
               type == "user" || type == "assistant"

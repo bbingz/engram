@@ -184,7 +184,21 @@ public enum GeminiProjectsJSON {
             atPath: directory, withIntermediateDirectories: true
         )
         let tmp = "\(filePath).engram-tmp-\(getpid())-\(Int(Date().timeIntervalSince1970 * 1000))"
-        try content.write(toFile: tmp, atomically: false, encoding: .utf8)
+        let permissions = (
+            (try? FileManager.default.attributesOfItem(atPath: filePath)[.posixPermissions]) as? NSNumber
+        )?.intValue ?? 0o600
+        let created = FileManager.default.createFile(
+            atPath: tmp,
+            contents: Data(content.utf8),
+            attributes: [.posixPermissions: permissions]
+        )
+        guard created else {
+            throw GeminiProjectsJSONError.writeFailed(
+                path: tmp,
+                errno: EIO,
+                message: "create temp file failed"
+            )
+        }
         if Darwin.rename(tmp, filePath) != 0 {
             let code = errno
             _ = try? FileManager.default.removeItem(atPath: tmp)

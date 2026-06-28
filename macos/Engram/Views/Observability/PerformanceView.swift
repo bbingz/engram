@@ -1,5 +1,6 @@
 // macos/Engram/Views/Observability/PerformanceView.swift
 import SwiftUI
+import Combine
 
 struct PerformanceView: View {
     // OBS / observability-1: render real, bounded in-process telemetry from

@@ -324,7 +324,7 @@ final class EngramServiceLauncher {
 
     private func drain(pipe: Pipe, level: String) {
         let lineBuffer = ServiceOutputLineBuffer()
-        pipe.fileHandleForReading.readabilityHandler = { handle in
+        pipe.fileHandleForReading.readabilityHandler = { [self] handle in
             let data = handle.availableData
             guard !data.isEmpty else {
                 handle.readabilityHandler = nil

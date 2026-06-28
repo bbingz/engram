@@ -1,21 +1,8 @@
 // macos/Engram/Components/ExpandableSessionCard.swift
 import SwiftUI
 
-// MARK: - Relative time helper (shared with SessionCard)
-
-private let isoFormatter: ISO8601DateFormatter = {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return f
-}()
-
 private func relativeTime(_ iso: String) -> String {
-    guard let date = isoFormatter.date(from: iso) else { return "" }
-    let seconds = Int(-date.timeIntervalSinceNow)
-    if seconds < 60 { return "now" }
-    if seconds < 3600 { return "\(seconds / 60)m" }
-    if seconds < 86400 { return "\(seconds / 3600)h" }
-    return "\(seconds / 86400)d"
+    RelativeTimeText.format(iso, style: .compact)
 }
 
 // MARK: - ExpandableSessionCard
@@ -90,6 +77,14 @@ struct ExpandableSessionCard: View {
 
                         if let project = session.project {
                             ProjectBadge(project: project, source: session.source)
+                        }
+
+                        // Human-driven cue: number of distinct asks (≥2).
+                        if let asks = session.instructionCount, asks >= 2 {
+                            Text("\(asks) asks")
+                                .font(.caption2)
+                                .foregroundStyle(Theme.secondaryText)
+                                .accessibilityIdentifier("expandableCard_askCount")
                         }
 
                         // Child count badge

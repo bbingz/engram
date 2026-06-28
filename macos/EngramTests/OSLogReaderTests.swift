@@ -27,6 +27,15 @@ final class OSLogReaderTests: XCTestCase {
         XCTAssertFalse(source.contains("case .error: return \"warn\""))
     }
 
+    func testOSLogReaderKeepsRecentLogMemoryBounded() throws {
+        let source = try source("macos/Engram/Core/OSLogReader.swift")
+
+        XCTAssertTrue(source.contains("maxRecentLogEntries"))
+        XCTAssertTrue(source.contains("let safeLimit = min(max(limit, 0), maxRecentLogEntries)"))
+        XCTAssertFalse(source.contains("limit: Int.max"))
+        XCTAssertFalse(source.contains("Array(result.suffix(limit))"))
+    }
+
     func testRecentLogsCapturesEmittedEngramErrorMessageText() throws {
         let token = "OSLOGREADERTEST-\(UUID().uuidString)"
         EngramLogger.error(token, module: .ui)

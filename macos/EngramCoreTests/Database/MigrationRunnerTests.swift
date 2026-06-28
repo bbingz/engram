@@ -47,6 +47,10 @@ final class MigrationRunnerTests: XCTestCase {
         }
         XCTAssertTrue(sessionColumns.contains("last_accessed_at"))
         XCTAssertTrue(sessionColumns.contains("access_count"))
+        // Human-driven signal columns (additive, nullable).
+        XCTAssertTrue(sessionColumns.contains("instruction_count"))
+        XCTAssertTrue(sessionColumns.contains("human_turn_count"))
+        XCTAssertTrue(sessionColumns.contains("instruction_summary"))
 
         let metricsSql = try writer.read { db in
             try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'metrics'")
@@ -77,6 +81,26 @@ final class MigrationRunnerTests: XCTestCase {
             try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('session_tools') ORDER BY cid")
         }
         XCTAssertEqual(sessionToolColumns, ["session_id", "tool_name", "call_count"])
+
+        let workBeatColumns = try writer.read { db in
+            try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('session_work_beats') ORDER BY cid")
+        }
+        XCTAssertEqual(workBeatColumns, [
+            "session_id",
+            "beat_index",
+            "action_date",
+            "action_timestamp",
+            "work_key",
+            "work_title",
+            "human_intent",
+            "assistant_outcome",
+            "kind",
+            "status",
+            "operation_events",
+            "confidence",
+        ])
+        XCTAssertTrue(sessionIndexes.contains("idx_session_work_beats_date"))
+        XCTAssertTrue(sessionIndexes.contains("idx_session_work_beats_work"))
 
         let observabilityColumns = try writer.read { db in
             try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('logs') ORDER BY cid")
@@ -202,6 +226,73 @@ final class MigrationRunnerTests: XCTestCase {
             try String.fetchOne(db, sql: "SELECT offload_state FROM sessions WHERE id = 'legacy-off'")
         }
         XCTAssertEqual(state, "local", "ALTER ADD COLUMN ... DEFAULT 'local' must backfill existing rows")
+    }
+
+    func testInsightsLifecycleColumnsAddedOnMigration() throws {
+        let path = databasePath("legacy-insights.sqlite")
+        let queue = try DatabaseQueue(path: path)
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE insights (
+                  id TEXT PRIMARY KEY,
+                  content TEXT NOT NULL,
+                  wing TEXT,
+                  room TEXT,
+                  source_session_id TEXT,
+                  importance INTEGER DEFAULT 5,
+                  has_embedding INTEGER DEFAULT 0,
+                  created_at TEXT DEFAULT (datetime('now'))
+                );
+                INSERT INTO insights(id, content, importance) VALUES ('legacy-ins', 'remember this', 7);
+            """)
+        }
+
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+
+        try writer.read { db in
+            let columns = Set(try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('insights')"))
+            XCTAssertTrue(
+                columns.isSuperset(of: ["insight_type", "superseded_by", "last_accessed_at", "access_count"]),
+                "\(columns)"
+            )
+            // Existing rows backfill with safe defaults.
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT insight_type FROM insights WHERE id = 'legacy-ins'"), "semantic")
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT access_count FROM insights WHERE id = 'legacy-ins'"), 0)
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT superseded_by FROM insights WHERE id = 'legacy-ins'"))
+        }
+    }
+
+    func testSemanticMemoryTablesCreated() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("semantic-tables.sqlite"))
+        try writer.migrate()
+        try writer.read { db in
+            for table in ["insight_embeddings", "semantic_chunks", "embedding_meta"] {
+                XCTAssertNotNil(
+                    try Int.fetchOne(db, sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", arguments: [table]),
+                    "missing table \(table)"
+                )
+            }
+            XCTAssertNotNil(
+                try Int.fetchOne(db, sql: "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_semantic_chunks_session'")
+            )
+        }
+    }
+
+    func testMinedRulesTablesCreated() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("mined-rules.sqlite"))
+        try writer.migrate()
+        try writer.read { db in
+            XCTAssertNotNil(
+                try Int.fetchOne(db, sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mined_rules'")
+            )
+            XCTAssertNotNil(
+                try Int.fetchOne(db, sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mined_rules_fts'")
+            )
+            XCTAssertNotNil(
+                try Int.fetchOne(db, sql: "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_mined_rules_project'")
+            )
+        }
     }
 
     func testAuxMigrationSkippedWhenStoredVersionMatches() throws {
@@ -362,8 +453,10 @@ final class MigrationRunnerTests: XCTestCase {
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT content FROM insights_fts WHERE insight_id = 'deleted'"))
             XCTAssertEqual(
                 try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'swift_aux_schema_version'"),
-                "3"
+                "4"
             )
+            // Lifecycle columns are added even when the v2 rebuild path runs first.
+            XCTAssertNotNil(try Int.fetchOne(db, sql: "SELECT 1 FROM pragma_table_info('insights') WHERE name = 'superseded_by'"))
         }
     }
 

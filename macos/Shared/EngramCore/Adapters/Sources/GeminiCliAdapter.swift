@@ -127,7 +127,7 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
                 resolveProject(projectName: projectName) ??
                 projectName
             let firstUserText = userMessages.first.map { Self.extractText($0["content"]) } ?? ""
-            let sidecar = Self.readSidecar(locator: locator, sessionId: sessionId)
+            let sidecar = Self.readSidecar(locator: locator, sessionId: sessionId, limits: limits)
             let originator = JSONLAdapterSupport.string(sidecar?["originator"])
 
             return .success(
@@ -212,12 +212,15 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
         return components[chatsIndex - 1]
     }
 
-    private static func readSidecar(locator: String, sessionId: String) -> Phase4AdapterSupport.JSONObject? {
+    private static func readSidecar(
+        locator: String,
+        sessionId: String,
+        limits: ParserLimits
+    ) -> Phase4AdapterSupport.JSONObject? {
         let sidecarURL = URL(fileURLWithPath: locator)
             .deletingLastPathComponent()
             .appendingPathComponent("\(sessionId).engram.json")
-        guard let data = try? Data(contentsOf: sidecarURL) else { return nil }
-        return try? JSONSerialization.jsonObject(with: data) as? Phase4AdapterSupport.JSONObject
+        return try? Phase4AdapterSupport.readJSONObject(locator: sidecarURL.path, limits: limits)
     }
 
     private static func readSession(locator: String, limits: ParserLimits) throws -> Phase4AdapterSupport.JSONObject {

@@ -67,6 +67,9 @@ public final class SessionSnapshotWriter {
             if !snapshot.toolCallCounts.isEmpty {
                 try replaceSessionToolsIfDifferent(snapshot)
             }
+            if shouldReplaceSessionWorkBeats(snapshot) {
+                try replaceSessionWorkBeatsIfDifferent(snapshot)
+            }
             try clearRecoveredOrphanStatus(sessionId: snapshot.id)
             return SessionWriteResult(action: .noop, changeSet: merge.changeSet)
         }
@@ -84,6 +87,9 @@ public final class SessionSnapshotWriter {
             try clearRecoveredOrphanStatus(sessionId: snapshot.id)
             try upsertCostRow(merge.snapshot)
             try replaceSessionTools(merge.snapshot)
+            if shouldReplaceSessionWorkBeats(snapshot) {
+                try replaceSessionWorkBeats(snapshot)
+            }
 
             if shouldDeleteIndexArtifacts(current: current, merged: merge.snapshot) {
                 try deleteIndexArtifacts(sessionId: snapshot.id)
@@ -134,7 +140,8 @@ public final class SessionSnapshotWriter {
             let (preservedRole, preservedTier) = preservedClassification(current: current, incoming: incoming)
             let currentTier = current.tier ?? .normal
             let incomingTier = preservedTier ?? .normal
-            guard currentTier != incomingTier || current.agentRole != preservedRole else {
+            let instructionSignalsChanged = shouldApplyInstructionSignals(current: current, incoming: incoming)
+            guard currentTier != incomingTier || current.agentRole != preservedRole || instructionSignalsChanged else {
                 return (.noop, current, SessionChangeSet(flags: []))
             }
 
@@ -143,6 +150,11 @@ public final class SessionSnapshotWriter {
             merged.agentRole = preservedRole
             merged.indexedAt = incoming.indexedAt
             merged.tokenUsage = incoming.tokenUsage
+            if instructionSignalsChanged {
+                merged.instructionCount = incoming.instructionCount
+                merged.humanTurnCount = incoming.humanTurnCount
+                merged.instructionSummary = incoming.instructionSummary
+            }
 
             var flags: Set<ChangeFlag> = [.localStateChanged]
             if currentTier == .skip, incomingTier != .skip {
@@ -224,6 +236,18 @@ public final class SessionSnapshotWriter {
         return (role, tier)
     }
 
+    private func shouldApplyInstructionSignals(
+        current: AuthoritativeSessionSnapshot,
+        incoming: AuthoritativeSessionSnapshot
+    ) -> Bool {
+        if incoming.summaryMessageCount == 0, (current.summaryMessageCount ?? 0) > 0 {
+            return false
+        }
+        return current.instructionCount != incoming.instructionCount
+            || current.humanTurnCount != incoming.humanTurnCount
+            || current.instructionSummary != incoming.instructionSummary
+    }
+
     private func preserveCountsIfIncomingEmpty(
         current: AuthoritativeSessionSnapshot,
         merged: inout AuthoritativeSessionSnapshot
@@ -261,6 +285,9 @@ public final class SessionSnapshotWriter {
             systemMessageCount: row["system_message_count"],
             summary: row["summary"],
             summaryMessageCount: row["summary_message_count"],
+            instructionCount: row["instruction_count"],
+            humanTurnCount: row["human_turn_count"],
+            instructionSummary: row["instruction_summary"],
             origin: row["origin"],
             tier: (row["tier"] as String?).flatMap(SessionTier.init(rawValue:)),
             agentRole: row["agent_role"]
@@ -274,14 +301,16 @@ public final class SessionSnapshotWriter {
             INSERT INTO sessions (
               id, source, start_time, end_time, cwd, project, model,
               message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count,
-              summary, summary_message_count, file_path, size_bytes, indexed_at, origin,
+              summary, summary_message_count, instruction_count, human_turn_count, instruction_summary,
+              file_path, size_bytes, indexed_at, origin,
               authoritative_node, source_locator, sync_version, snapshot_hash,
               tier, agent_role, quality_score, generated_title,
               parent_session_id, link_source
             ) VALUES (
               ?, ?, ?, ?, ?, ?, ?,
               ?, ?, ?, ?, ?,
-              ?, ?, ?, ?, ?, ?,
+              ?, ?, ?, ?, ?,
+              ?, ?, ?, ?,
               ?, ?, ?, ?,
               ?, ?, ?, ?,
               ?, CASE WHEN ? IS NOT NULL THEN 'path' ELSE NULL END
@@ -333,6 +362,26 @@ public final class SessionSnapshotWriter {
                      AND TRIM(sessions.summary) != ''
                   THEN sessions.summary_message_count
                 ELSE COALESCE(excluded.summary_message_count, sessions.summary_message_count)
+              END,
+              -- Instruction signals derive from the streamStats pass, whose
+              -- co-varying sentinel is summary_message_count (= indexedMessageCount).
+              -- An empty/failed re-stream (summary_message_count = 0 while the prior
+              -- row was healthy) preserves all three together; a healthy re-stream
+              -- overwrites them fresh.
+              instruction_count = CASE
+                WHEN excluded.summary_message_count = 0 AND sessions.summary_message_count > 0
+                  THEN sessions.instruction_count
+                ELSE excluded.instruction_count
+              END,
+              human_turn_count = CASE
+                WHEN excluded.summary_message_count = 0 AND sessions.summary_message_count > 0
+                  THEN sessions.human_turn_count
+                ELSE excluded.human_turn_count
+              END,
+              instruction_summary = CASE
+                WHEN excluded.summary_message_count = 0 AND sessions.summary_message_count > 0
+                  THEN sessions.instruction_summary
+                ELSE excluded.instruction_summary
               END,
               size_bytes = excluded.size_bytes,
               indexed_at = excluded.indexed_at,
@@ -388,6 +437,9 @@ public final class SessionSnapshotWriter {
                 snapshot.systemMessageCount,
                 snapshot.summary,
                 snapshot.summaryMessageCount,
+                snapshot.instructionCount,
+                snapshot.humanTurnCount,
+                snapshot.instructionSummary,
                 filePath,
                 snapshot.sizeBytes ?? 0,
                 snapshot.indexedAt,
@@ -547,6 +599,103 @@ public final class SessionSnapshotWriter {
                 arguments: [snapshot.id, name, count]
             )
         }
+    }
+
+    private func shouldReplaceSessionWorkBeats(_ snapshot: AuthoritativeSessionSnapshot) -> Bool {
+        if !snapshot.implementationBeats.isEmpty { return true }
+        return (snapshot.summaryMessageCount ?? 0) > 0
+    }
+
+    private func replaceSessionWorkBeatsIfDifferent(_ snapshot: AuthoritativeSessionSnapshot) throws {
+        let current = try currentSessionWorkBeats(sessionId: snapshot.id)
+        guard current != snapshot.implementationBeats else { return }
+        try replaceSessionWorkBeats(snapshot)
+    }
+
+    private func currentSessionWorkBeats(sessionId: String) throws -> [SessionImplementationBeat] {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT session_id, beat_index, action_date, action_timestamp, work_key, work_title,
+                   human_intent, assistant_outcome, kind, status, operation_events, confidence
+              FROM session_work_beats
+             WHERE session_id = ?
+             ORDER BY beat_index ASC
+            """,
+            arguments: [sessionId]
+        )
+        return rows.map { row in
+            let eventsJSON: String = row["operation_events"] ?? "[]"
+            let events = decodeOperationEvents(eventsJSON)
+            return SessionImplementationBeat(
+                sessionId: row["session_id"],
+                beatIndex: row["beat_index"],
+                actionDate: row["action_date"],
+                actionTimestamp: row["action_timestamp"],
+                workKey: row["work_key"],
+                workTitle: row["work_title"],
+                humanIntent: row["human_intent"],
+                assistantOutcome: row["assistant_outcome"],
+                kind: SessionImplementationKind(rawValue: row["kind"]) ?? .implementation,
+                status: SessionImplementationStatus(rawValue: row["status"]) ?? .partial,
+                operationEvents: events,
+                confidence: row["confidence"]
+            )
+        }
+    }
+
+    private func replaceSessionWorkBeats(_ snapshot: AuthoritativeSessionSnapshot) throws {
+        try db.execute(sql: "DELETE FROM session_work_beats WHERE session_id = ?", arguments: [snapshot.id])
+        guard !snapshot.implementationBeats.isEmpty else { return }
+        for beat in snapshot.implementationBeats {
+            try db.execute(
+                sql: """
+                INSERT INTO session_work_beats(
+                  session_id, beat_index, action_date, action_timestamp, work_key, work_title,
+                  human_intent, assistant_outcome, kind, status, operation_events, confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, beat_index) DO UPDATE SET
+                  action_date = excluded.action_date,
+                  action_timestamp = excluded.action_timestamp,
+                  work_key = excluded.work_key,
+                  work_title = excluded.work_title,
+                  human_intent = excluded.human_intent,
+                  assistant_outcome = excluded.assistant_outcome,
+                  kind = excluded.kind,
+                  status = excluded.status,
+                  operation_events = excluded.operation_events,
+                  confidence = excluded.confidence
+                """,
+                arguments: [
+                    snapshot.id,
+                    beat.beatIndex,
+                    beat.actionDate,
+                    beat.actionTimestamp,
+                    beat.workKey,
+                    beat.workTitle,
+                    beat.humanIntent,
+                    beat.assistantOutcome,
+                    beat.kind.rawValue,
+                    beat.status.rawValue,
+                    operationEventsJSON(beat.operationEvents),
+                    beat.confidence,
+                ]
+            )
+        }
+    }
+
+    private func operationEventsJSON(_ events: [SessionOperationEvent]) -> String {
+        guard let data = try? JSONEncoder().encode(events),
+              let json = String(data: data, encoding: .utf8)
+        else { return "[]" }
+        return json
+    }
+
+    private func decodeOperationEvents(_ json: String) -> [SessionOperationEvent] {
+        guard let data = json.data(using: .utf8),
+              let events = try? JSONDecoder().decode([SessionOperationEvent].self, from: data)
+        else { return [] }
+        return events
     }
 
     private func insertIndexJobs(

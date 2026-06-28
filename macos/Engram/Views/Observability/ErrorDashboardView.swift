@@ -1,6 +1,7 @@
 // macos/Engram/Views/Observability/ErrorDashboardView.swift
 import SwiftUI
 import GRDB
+import Combine
 
 struct ErrorDashboardView: View {
     @Environment(DatabaseManager.self) var db

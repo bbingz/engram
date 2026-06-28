@@ -448,6 +448,16 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
+            case "recordInsightAccess":
+                let payload = try decodePayload(EngramServiceInsightAccessRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.recordInsightAccess(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
             case "hideEmptySessions":
                 let result = try await writerGate.performWriteCommand(name: request.command) { writer in
                     try Self.hideEmptySessions(writer: writer)
@@ -1007,6 +1017,30 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         return EmptyEncodableResult()
     }
 
+    private static func recordInsightAccess(
+        _ request: EngramServiceInsightAccessRequest,
+        writer: EngramDatabaseWriter
+    ) throws -> EmptyEncodableResult {
+        let ids = Array(Set(request.ids.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }))
+            .filter { !$0.isEmpty }
+        guard !ids.isEmpty else { return EmptyEncodableResult() }
+
+        try writer.write { db in
+            try ensureInsightTables(db)
+            let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+            try db.execute(
+                sql: """
+                    UPDATE insights
+                    SET last_accessed_at = datetime('now'),
+                        access_count = COALESCE(access_count, 0) + 1
+                    WHERE id IN (\(placeholders))
+                """,
+                arguments: StatementArguments(ids)
+            )
+        }
+        return EmptyEncodableResult()
+    }
+
     private static func hideEmptySessions(writer: EngramDatabaseWriter) throws -> EngramServiceHideEmptySessionsResponse {
         try writer.write { db in
             let before = db.totalChangesCount
@@ -1077,6 +1111,21 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
               content
             );
         """)
+        let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(insights)")
+        let columns = Set(rows.compactMap { $0["name"] as String? })
+        if !columns.contains("insight_type") {
+            try db.execute(sql: "ALTER TABLE insights ADD COLUMN insight_type TEXT DEFAULT 'semantic'")
+        }
+        if !columns.contains("superseded_by") {
+            try db.execute(sql: "ALTER TABLE insights ADD COLUMN superseded_by TEXT")
+        }
+        if !columns.contains("last_accessed_at") {
+            try db.execute(sql: "ALTER TABLE insights ADD COLUMN last_accessed_at TEXT")
+        }
+        if !columns.contains("access_count") {
+            try db.execute(sql: "ALTER TABLE insights ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0")
+        }
+        try db.execute(sql: "CREATE INDEX IF NOT EXISTS idx_insights_superseded ON insights(superseded_by)")
     }
 
     private static func ensureProjectAliasTable(_ db: GRDB.Database) throws {
@@ -1316,16 +1365,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             let wing = normalizedOptionalText(request.wing, maxLength: 200)
             let room = normalizedOptionalText(request.room, maxLength: 200)
             let importance = try normalizedImportance(request.importance)
-            if let duplicate = try findDuplicateInsight(content: content, wing: wing, db: db) {
-                return insightJSON(
-                    id: duplicate.id,
-                    content: duplicate.content,
-                    wing: duplicate.wing,
-                    room: duplicate.room,
-                    importance: duplicate.importance,
-                    warning: "Similar insight already exists; returning existing insight"
-                )
-            }
+            let insightType = try normalizedInsightType(request.type)
+            let superseded = try findDuplicateInsight(content: content, wing: wing, room: room, db: db)
 
             let id = UUID().uuidString
             let sourceSessionId = normalizedOptionalText(request.sourceSessionId, maxLength: 500)
@@ -1335,21 +1376,33 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 wing,
                 room,
                 importance,
-                sourceSessionId
+                sourceSessionId,
+                insightType
             ]
             try db.execute(
                 sql: """
-                    INSERT INTO insights (id, content, wing, room, importance, source_session_id)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO insights (id, content, wing, room, importance, source_session_id, insight_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                       content = excluded.content,
                       wing = excluded.wing,
                       room = excluded.room,
                       importance = excluded.importance,
-                      source_session_id = excluded.source_session_id
+                      source_session_id = excluded.source_session_id,
+                      insight_type = excluded.insight_type
                 """,
                 arguments: StatementArguments(arguments)
             )
+            if let superseded {
+                try db.execute(
+                    sql: """
+                    UPDATE insights
+                    SET superseded_by = ?
+                    WHERE id = ? AND superseded_by IS NULL
+                    """,
+                    arguments: [id, superseded.id]
+                )
+            }
             try db.execute(sql: "DELETE FROM insights_fts WHERE insight_id = ?", arguments: [id])
             try db.execute(
                 sql: "INSERT INTO insights_fts (insight_id, content) VALUES (?, ?)",
@@ -1362,7 +1415,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 wing: wing,
                 room: room,
                 importance: importance,
-                warning: "Saved without embedding; keyword search is available immediately"
+                type: insightType,
+                supersededId: superseded?.id,
+                warning: superseded == nil
+                    ? "Saved without embedding; keyword search is available immediately"
+                    : "Saved and superseded a matching active insight; keyword search is available immediately"
             )
         }
     }
@@ -1437,33 +1494,22 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     private static func findDuplicateInsight(
         content: String,
         wing: String?,
+        room: String?,
         db: GRDB.Database
     ) throws -> ExistingInsight? {
-        let rows: [Row]
-        if let wing {
-            rows = try Row.fetchAll(
-                db,
-                sql: """
-                    SELECT id, content, wing, room, importance
-                    FROM insights
-                    WHERE wing = ?
-                    ORDER BY created_at DESC
-                    LIMIT 200
-                """,
-                arguments: [wing]
-            )
-        } else {
-            rows = try Row.fetchAll(
-                db,
-                sql: """
-                    SELECT id, content, wing, room, importance
-                    FROM insights
-                    WHERE wing IS NULL
-                    ORDER BY created_at DESC
-                    LIMIT 200
-                """
-            )
-        }
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT id, content, wing, room, importance
+                FROM insights
+                WHERE ((? IS NULL AND wing IS NULL) OR wing = ?)
+                  AND ((? IS NULL AND room IS NULL) OR room = ?)
+                  AND superseded_by IS NULL
+                ORDER BY created_at DESC
+                LIMIT 200
+            """,
+            arguments: [wing, wing, room, room]
+        )
 
         let normalized = normalizeForDedup(content)
         for row in rows where normalizeForDedup(row["content"] as String? ?? "") == normalized {
@@ -2039,6 +2085,16 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         return importance
     }
 
+    private static func normalizedInsightType(_ value: String?) throws -> String {
+        let type = normalizedOptionalText(value, maxLength: 32) ?? "semantic"
+        guard ["episodic", "semantic", "procedural"].contains(type) else {
+            throw EngramServiceError.invalidRequest(
+                message: "type must be one of episodic, semantic, or procedural"
+            )
+        }
+        return type
+    }
+
     private static func normalizeForDedup(_ value: String) -> String {
         value
             .lowercased()
@@ -2053,15 +2109,19 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         wing: String?,
         room: String?,
         importance: Int,
+        type: String = "semantic",
+        supersededId: String? = nil,
         warning: String?
     ) -> EngramServiceJSONValue {
         var object: [String: EngramServiceJSONValue] = [
             "id": .string(id),
             "content": .string(content),
-            "importance": .number(Double(importance))
+            "importance": .number(Double(importance)),
+            "type": .string(type)
         ]
         if let wing { object["wing"] = .string(wing) }
         if let room { object["room"] = .string(room) }
+        if let supersededId { object["superseded_id"] = .string(supersededId) }
         if let warning { object["warning"] = .string(warning) }
         return .object(object)
     }

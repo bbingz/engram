@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 
 enum EngramMigrations {
-    private static let auxSchemaVersion = "3"
+    private static let auxSchemaVersion = "4"
 
     static func createOrUpdateBaseSchema(_ db: GRDB.Database) throws {
         try db.execute(sql: """
@@ -21,6 +21,9 @@ enum EngramMigrations {
               system_message_count INTEGER NOT NULL DEFAULT 0,
               summary TEXT,
               summary_message_count INTEGER,
+              instruction_count INTEGER,
+              human_turn_count INTEGER,
+              instruction_summary TEXT,
               file_path TEXT NOT NULL,
               size_bytes INTEGER NOT NULL DEFAULT 0,
               indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -227,6 +230,26 @@ enum EngramMigrations {
             );
             CREATE INDEX IF NOT EXISTS idx_session_tools_name ON session_tools(tool_name);
 
+            CREATE TABLE IF NOT EXISTS session_work_beats (
+              session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+              beat_index INTEGER NOT NULL,
+              action_date TEXT NOT NULL,
+              action_timestamp TEXT,
+              work_key TEXT NOT NULL,
+              work_title TEXT NOT NULL,
+              human_intent TEXT NOT NULL,
+              assistant_outcome TEXT NOT NULL,
+              kind TEXT NOT NULL,
+              status TEXT NOT NULL,
+              operation_events TEXT NOT NULL DEFAULT '[]',
+              confidence REAL NOT NULL DEFAULT 0,
+              PRIMARY KEY (session_id, beat_index)
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_work_beats_date
+              ON session_work_beats(action_date DESC, work_key);
+            CREATE INDEX IF NOT EXISTS idx_session_work_beats_work
+              ON session_work_beats(work_key, action_date);
+
             CREATE TABLE IF NOT EXISTS session_files (
               session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
               file_path TEXT NOT NULL,
@@ -355,7 +378,11 @@ enum EngramMigrations {
               source_session_id TEXT,
               importance INTEGER DEFAULT 5,
               has_embedding INTEGER DEFAULT 0,
-              created_at TEXT DEFAULT (datetime('now'))
+              created_at TEXT DEFAULT (datetime('now')),
+              insight_type TEXT DEFAULT 'semantic',
+              superseded_by TEXT,
+              last_accessed_at TEXT,
+              access_count INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_insights_wing ON insights(wing);
             CREATE VIRTUAL TABLE IF NOT EXISTS insights_fts USING fts5(
@@ -374,6 +401,36 @@ enum EngramMigrations {
               model TEXT NOT NULL DEFAULT 'unknown',
               created_at TEXT DEFAULT (datetime('now')),
               deleted_at TEXT
+            );
+
+            -- Local semantic memory (brute-force cosine KNN; embeddings stored as
+            -- little-endian Float32 BLOBs). Opt-in: populated only when an online
+            -- embedding provider is configured. embedding_meta drives a wipe +
+            -- re-embed when the model/dimension changes.
+            CREATE TABLE IF NOT EXISTS insight_embeddings (
+              insight_id TEXT PRIMARY KEY REFERENCES insights(id) ON DELETE CASCADE,
+              embedding BLOB NOT NULL,
+              model TEXT NOT NULL,
+              dim INTEGER NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS semantic_chunks (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+              chunk_index INTEGER NOT NULL,
+              text TEXT NOT NULL,
+              embedding BLOB,
+              model TEXT,
+              dim INTEGER,
+              created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_semantic_chunks_session ON semantic_chunks(session_id);
+            CREATE TABLE IF NOT EXISTS embedding_meta (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              provider TEXT,
+              model TEXT,
+              dimension INTEGER,
+              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             -- Remote session offload: cold/archived sessions are pushed to a
@@ -423,6 +480,7 @@ enum EngramMigrations {
             );
             CREATE INDEX IF NOT EXISTS idx_sync_ledger_session ON sync_ledger(session_id, synced_at DESC);
         """)
+        try ensureMinedRulesTables(db)
         try migrateAuxTablesToV2(db)
     }
 
@@ -437,6 +495,7 @@ enum EngramMigrations {
 
     private static func migrateAuxTablesToV2(_ db: GRDB.Database) throws {
         try ensureMigrationLogIndexes(db)
+        try ensureMinedRulesTables(db)
         // Skip the per-table rebuilds once the stored version already matches the
         // current aux schema. The per-table guards are idempotent, but they run
         // PRAGMA table_info on ~10 tables every startup; gating on the version
@@ -458,6 +517,7 @@ enum EngramMigrations {
         try migrateSessionCostsToV2(db)
         try migrateUsageSnapshotsToV3(db)
         try migrateInsightsToV2(db)
+        try migrateInsightsLifecycle(db)
         try db.execute(
             sql: """
             INSERT INTO metadata(key, value) VALUES ('swift_aux_schema_version', ?)
@@ -465,6 +525,30 @@ enum EngramMigrations {
             """,
             arguments: [auxSchemaVersion]
         )
+    }
+
+    private static func ensureMinedRulesTables(_ db: GRDB.Database) throws {
+        try db.execute(sql: """
+            CREATE TABLE IF NOT EXISTS mined_rules (
+              id TEXT PRIMARY KEY,
+              rule_type TEXT NOT NULL,
+              title TEXT NOT NULL,
+              body TEXT NOT NULL,
+              evidence_session_ids TEXT NOT NULL DEFAULT '[]',
+              confidence REAL NOT NULL DEFAULT 0,
+              source_project TEXT,
+              model TEXT,
+              created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_mined_rules_project ON mined_rules(source_project, confidence DESC);
+            CREATE INDEX IF NOT EXISTS idx_mined_rules_created ON mined_rules(created_at DESC);
+            CREATE VIRTUAL TABLE IF NOT EXISTS mined_rules_fts USING fts5(
+              rule_id UNINDEXED,
+              title,
+              body,
+              tokenize='trigram case_sensitive 0'
+            );
+        """)
     }
 
     private static func ensureMigrationLogIndexes(_ db: GRDB.Database) throws {
@@ -488,6 +572,9 @@ enum EngramMigrations {
             ("system_message_count", "INTEGER NOT NULL DEFAULT 0"),
             ("summary", "TEXT"),
             ("summary_message_count", "INTEGER"),
+            ("instruction_count", "INTEGER"),
+            ("human_turn_count", "INTEGER"),
+            ("instruction_summary", "TEXT"),
             ("size_bytes", "INTEGER NOT NULL DEFAULT 0"),
             ("indexed_at", "TEXT NOT NULL DEFAULT ''"),
             ("agent_role", "TEXT"),
@@ -988,6 +1075,28 @@ enum EngramMigrations {
         """)
         try replaceTable(db, old: "insights", replacement: "__engram_insights_v2")
         try db.execute(sql: "CREATE INDEX IF NOT EXISTS idx_insights_wing ON insights(wing)")
+    }
+
+    /// Memory-lifecycle columns on `insights`: typing (episodic/semantic/
+    /// procedural), supersession chain, and access tracking. Idempotent;
+    /// `get_memory` ranks by importance + recency decay and excludes superseded
+    /// rows when these columns are present.
+    private static func migrateInsightsLifecycle(_ db: GRDB.Database) throws {
+        guard try tableExists(db, "insights") else { return }
+        let columns = try tableColumns(db, "insights")
+        if columns["insight_type"] == nil {
+            try db.execute(sql: "ALTER TABLE insights ADD COLUMN insight_type TEXT DEFAULT 'semantic'")
+        }
+        if columns["superseded_by"] == nil {
+            try db.execute(sql: "ALTER TABLE insights ADD COLUMN superseded_by TEXT")
+        }
+        if columns["last_accessed_at"] == nil {
+            try db.execute(sql: "ALTER TABLE insights ADD COLUMN last_accessed_at TEXT")
+        }
+        if columns["access_count"] == nil {
+            try db.execute(sql: "ALTER TABLE insights ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0")
+        }
+        try db.execute(sql: "CREATE INDEX IF NOT EXISTS idx_insights_superseded ON insights(superseded_by)")
     }
 
     private static func migrateUsageSnapshotsToV3(_ db: GRDB.Database) throws {

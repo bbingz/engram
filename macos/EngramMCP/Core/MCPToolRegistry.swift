@@ -16,8 +16,10 @@ struct MCPToolDefinition {
     var orderedJSONValue: OrderedJSONValue {
         .object([
             ("name", .string(name)),
+            ("title", .string(MCPToolRegistry.humanTitle(for: name))),
             ("description", .string(description)),
             ("inputSchema", OrderedJSONValue(inputSchema)),
+            ("annotations", MCPToolRegistry.toolAnnotations(for: name)),
         ])
     }
 }
@@ -49,11 +51,14 @@ enum MCPToolRegistry {
     }
 
     private static let sourceSchemaEnum: JSONValue = .array(SourceName.allCases.map { .string($0.rawValue) })
+    private static let minContextTokens = 1
+    private static let maxContextTokens = 32_000
+    private static let maxSessionPage = 100_000
 
     private static let allToolDefinitions: [MCPToolDefinition] = [
         MCPToolDefinition(
             name: "list_sessions",
-            description: "列出 AI 编程助手的历史会话。支持按工具来源、项目、时间范围过滤。",
+            description: "列出 AI 编程助手的历史会话。默认只返回有明确人类指令的会话；支持按工具来源、项目、时间范围过滤。",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -81,6 +86,10 @@ enum MCPToolRegistry {
                     "offset": .object([
                         "type": .string("number"),
                         "description": .string("分页偏移量"),
+                    ]),
+                    "include_all": .object([
+                        "type": .string("boolean"),
+                        "description": .string("包含单发/自动化会话，而不仅是人类驱动的会话（默认 false）"),
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
@@ -245,6 +254,28 @@ enum MCPToolRegistry {
             ])
         ),
         MCPToolDefinition(
+            name: "get_rules",
+            description: "Retrieve reusable rules and runbooks mined from high-value cross-tool sessions.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "project": .object([
+                        "type": .string("string"),
+                        "description": .string("Project name to filter mined rules"),
+                    ]),
+                    "query": .object([
+                        "type": .string("string"),
+                        "description": .string("Optional keyword query for rule title/body"),
+                    ]),
+                    "limit": .object([
+                        "type": .string("number"),
+                        "description": .string("Default 10, max 50"),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        ),
+        MCPToolDefinition(
             name: "search",
             description: "Full-text keyword search across all session content. Supports Chinese and English.",
             inputSchema: .object([
@@ -293,6 +324,8 @@ enum MCPToolRegistry {
                     ]),
                     "max_tokens": .object([
                         "type": .string("number"),
+                        "minimum": .int(minContextTokens),
+                        "maximum": .int(maxContextTokens),
                         "description": .string("token 预算，默认 4000（约 16000 字符）"),
                     ]),
                     "detail": .object([
@@ -401,6 +434,8 @@ enum MCPToolRegistry {
                     ]),
                     "page": .object([
                         "type": .string("number"),
+                        "minimum": .int(1),
+                        "maximum": .int(maxSessionPage),
                         "description": .string("页码，从 1 开始，默认 1"),
                     ]),
                     "roles": .object([
@@ -507,6 +542,11 @@ enum MCPToolRegistry {
                         "description": .string("Importance level 0-5 (default: 5)"),
                         "minimum": .int(0),
                         "maximum": .int(5),
+                    ]),
+                    "type": .object([
+                        "type": .string("string"),
+                        "description": .string("Memory type: semantic, episodic, or procedural (default: semantic)"),
+                        "enum": .array([.string("semantic"), .string("episodic"), .string("procedural")]),
                     ]),
                     "source_session_id": .object([
                         "type": .string("string"),
@@ -763,7 +803,8 @@ enum MCPToolRegistry {
                 since: arguments["since"]?.stringValue,
                 until: arguments["until"]?.stringValue,
                 limit: min(arguments["limit"]?.intValue ?? 20, 100),
-                offset: arguments["offset"]?.intValue ?? 0
+                offset: arguments["offset"]?.intValue ?? 0,
+                includeAll: arguments["include_all"]?.boolValue ?? false
             )
             return .toolSuccess(structured)
         case "stats":
@@ -825,7 +866,16 @@ enum MCPToolRegistry {
             ]))
         case "get_memory":
             let database = try MCPDatabase(path: config.dbPath)
-            let structured = try database.getMemory(query: try requiredString("query", in: arguments))
+            let structured = try await database.getMemory(query: try requiredString("query", in: arguments))
+            await recordInsightAccessBestEffort(in: structured, config: config)
+            return .toolSuccess(structured)
+        case "get_rules":
+            let database = try MCPDatabase(path: config.dbPath)
+            let structured = try database.getRules(
+                project: arguments["project"]?.stringValue,
+                query: arguments["query"]?.stringValue,
+                limit: min(arguments["limit"]?.intValue ?? 10, 50)
+            )
             return .toolSuccess(structured)
         case "search":
             let database = try MCPDatabase(path: config.dbPath)
@@ -843,7 +893,7 @@ enum MCPToolRegistry {
             let text = try database.getContext(
                 cwd: try requiredString("cwd", in: arguments),
                 task: arguments["task"]?.stringValue,
-                maxTokens: arguments["max_tokens"]?.intValue ?? 4000,
+                maxTokens: clampedInt(arguments["max_tokens"], default: 4000, min: minContextTokens, max: maxContextTokens),
                 detail: arguments["detail"]?.stringValue ?? "full",
                 sortBy: arguments["sort_by"]?.stringValue ?? "recency",
                 includeEnvironment: arguments["include_environment"]?.boolValue ?? true
@@ -881,7 +931,7 @@ enum MCPToolRegistry {
             let structured = try await MCPTranscriptTools.getSession(
                 database: database,
                 id: try requiredString("id", in: arguments),
-                page: arguments["page"]?.intValue ?? 1,
+                page: clampedInt(arguments["page"], default: 1, min: 1, max: maxSessionPage),
                 roles: arguments["roles"]?.arrayValue?.compactMap(\.stringValue)
             )
             return .toolSuccess(structured)
@@ -935,7 +985,8 @@ enum MCPToolRegistry {
                     room: arguments["room"]?.stringValue,
                     importance: arguments["importance"]?.doubleValue,
                     sourceSessionId: arguments["source_session_id"]?.stringValue,
-                    actor: "mcp"
+                    actor: "mcp",
+                    type: arguments["type"]?.stringValue
                 )
             )
             let structured = orderedSaveInsight(from: jsonValue(raw))
@@ -1080,6 +1131,7 @@ enum MCPToolRegistry {
              "project_list_migrations",
              "live_sessions",
              "get_memory",
+             "get_rules",
              "search",
              "get_context",
              "get_insights",
@@ -1109,6 +1161,222 @@ enum MCPToolRegistry {
         }
     }
 
+    static func humanTitle(for name: String) -> String {
+        name.split(separator: "_")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+
+    private static func recordInsightAccessBestEffort(
+        in structured: OrderedJSONValue,
+        config: MCPConfig
+    ) async {
+        let ids = memoryIds(in: structured)
+        guard !ids.isEmpty, await config.canReachEngramService() else { return }
+        let serviceClient = makeServiceClient(config: config)
+        defer { serviceClient.close() }
+        try? await serviceClient.recordInsightAccess(ids: ids)
+    }
+
+    private static func memoryIds(in structured: OrderedJSONValue) -> [String] {
+        guard case .object(let entries) = structured,
+              let memories = entries.first(where: { $0.0 == "memories" })?.1,
+              case .array(let items) = memories else { return [] }
+
+        var seen: Set<String> = []
+        var ids: [String] = []
+        for item in items {
+            guard case .object(let fields) = item,
+                  let idValue = fields.first(where: { $0.0 == "id" })?.1,
+                  case .string(let rawId) = idValue else { continue }
+            let id = rawId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty, seen.insert(id).inserted else { continue }
+            ids.append(id)
+        }
+        return ids
+    }
+
+    /// Tools whose default (non-dry-run) invocation can irreversibly remove or
+    /// overwrite user-visible state. Surfaced as `destructiveHint` so MCP clients
+    /// can gate them behind confirmation.
+    private static let destructiveTools: Set<String> = [
+        "delete_insight", "hide_session", "project_move",
+        "project_archive", "project_move_batch",
+    ]
+
+    /// Tools that are safe to retry with the same arguments.
+    private static let idempotentTools: Set<String> = [
+        "link_sessions", "manage_project_alias",
+        "project_undo", "project_recover",
+    ]
+
+    /// MCP tool annotations derived from the existing `ToolCategory` so clients
+    /// can auto-approve read-only calls and gate mutating/destructive ones. Uses
+    /// the default (no-argument) category — the conservative read for tools whose
+    /// category depends on arguments (e.g. `dry_run`, alias `action`).
+    static func toolAnnotations(for name: String) -> OrderedJSONValue {
+        let category = toolCategory(name: name)
+        var entries: [(String, OrderedJSONValue)] = [
+            ("title", .string(humanTitle(for: name))),
+        ]
+        switch category {
+        case .readOnly, .longRunningRead:
+            entries.append(("readOnlyHint", .bool(true)))
+        case .mutating, .operational:
+            entries.append(("readOnlyHint", .bool(false)))
+            entries.append(("destructiveHint", .bool(destructiveTools.contains(name))))
+            entries.append(("idempotentHint", .bool(idempotentTools.contains(name))))
+        }
+        entries.append(("openWorldHint", .bool(false)))
+        return .object(entries)
+    }
+
+    // MARK: - MCP resources & prompts (deepen the agent-facing surface)
+
+    static func resourcesList(config: MCPConfig) async throws -> OrderedJSONValue {
+        let database = try MCPDatabase(path: config.dbPath)
+        let catalog = (try? database.recentResourceCatalog(sessionLimit: 15, insightLimit: 15, ruleLimit: 15)) ?? []
+        let items = catalog.map { entry -> OrderedJSONValue in
+            .object([
+                ("uri", .string(entry.uri)),
+                ("name", .string(entry.name)),
+                ("description", .string(entry.description)),
+                ("mimeType", .string(entry.mimeType)),
+            ])
+        }
+        return .object([("resources", .array(items))])
+    }
+
+    static func resourceRead(uri: String, config: MCPConfig) async throws -> OrderedJSONValue {
+        guard let parsed = parseEngramResourceURI(uri) else {
+            throw MCPToolError.invalidArguments("Unsupported resource uri: \(uri)")
+        }
+        let text: String
+        let mimeType: String
+        switch parsed.kind {
+        case "session":
+            let result = try await handle(
+                tool: "get_session",
+                arguments: ["id": .string(parsed.id)],
+                config: config
+            )
+            text = result.firstToolText ?? ""
+            mimeType = "text/markdown"
+        case "insight":
+            let database = try MCPDatabase(path: config.dbPath)
+            guard let content = try database.insightContent(id: parsed.id) else {
+                throw MCPToolError.invalidArguments("Insight not found: \(parsed.id)")
+            }
+            text = content
+            mimeType = "text/plain"
+        case "rule":
+            let database = try MCPDatabase(path: config.dbPath)
+            guard let content = try database.ruleContent(id: parsed.id) else {
+                throw MCPToolError.invalidArguments("Rule not found: \(parsed.id)")
+            }
+            text = content
+            mimeType = "text/markdown"
+        default:
+            throw MCPToolError.invalidArguments("Unsupported resource uri: \(uri)")
+        }
+        return .object([
+            ("contents", .array([
+                .object([
+                    ("uri", .string(uri)),
+                    ("mimeType", .string(mimeType)),
+                    ("text", .string(text)),
+                ]),
+            ])),
+        ])
+    }
+
+    private static func parseEngramResourceURI(_ uri: String) -> (kind: String, id: String)? {
+        let prefix = "engram://"
+        guard uri.hasPrefix(prefix) else { return nil }
+        let rest = String(uri.dropFirst(prefix.count))
+        guard let slash = rest.firstIndex(of: "/") else { return nil }
+        let kind = String(rest[rest.startIndex..<slash])
+        let id = String(rest[rest.index(after: slash)...])
+        guard !kind.isEmpty, !id.isEmpty else { return nil }
+        return (kind, id)
+    }
+
+    /// (name, description, [(argName, argDescription, required)])
+    static let promptDefinitions: [(name: String, description: String, arguments: [(String, String, Bool)])] = [
+        (
+            "engram:catch-up",
+            "Inject Engram's cross-tool history for the current working directory before starting a task.",
+            [
+                ("cwd", "Absolute path of the project directory", true),
+                ("task", "Optional task description for relevance ranking", false),
+            ]
+        ),
+        (
+            "engram:handoff",
+            "Generate a handoff brief summarizing recent work in a project.",
+            [("cwd", "Absolute path of the project directory", true)]
+        ),
+    ]
+
+    static func promptsList() -> OrderedJSONValue {
+        let items = promptDefinitions.map { prompt -> OrderedJSONValue in
+            let args = prompt.arguments.map { arg -> OrderedJSONValue in
+                .object([
+                    ("name", .string(arg.0)),
+                    ("description", .string(arg.1)),
+                    ("required", .bool(arg.2)),
+                ])
+            }
+            return .object([
+                ("name", .string(prompt.name)),
+                ("description", .string(prompt.description)),
+                ("arguments", .array(args)),
+            ])
+        }
+        return .object([("prompts", .array(items))])
+    }
+
+    static func promptGet(
+        name: String,
+        arguments: [String: JSONValue],
+        config: MCPConfig
+    ) async throws -> OrderedJSONValue {
+        let tool: String
+        let description: String
+        switch name {
+        case "engram:catch-up":
+            tool = "get_context"
+            description = "Engram project history for the current task"
+        case "engram:handoff":
+            tool = "handoff"
+            description = "Engram handoff brief"
+        default:
+            throw MCPToolError.invalidArguments("Unknown prompt: \(name)")
+        }
+        guard let cwd = arguments["cwd"]?.stringValue, !cwd.isEmpty else {
+            throw MCPToolError.invalidArguments("cwd is required")
+        }
+        var toolArgs: [String: JSONValue] = ["cwd": .string(cwd)]
+        if name == "engram:catch-up",
+           let task = arguments["task"]?.stringValue, !task.isEmpty {
+            toolArgs["task"] = .string(task)
+        }
+        let result = try await handle(tool: tool, arguments: toolArgs, config: config)
+        let text = result.firstToolText ?? "No Engram context available for \(cwd)."
+        return .object([
+            ("description", .string(description)),
+            ("messages", .array([
+                .object([
+                    ("role", .string("user")),
+                    ("content", .object([
+                        ("type", .string("text")),
+                        ("text", .string(text)),
+                    ])),
+                ]),
+            ])),
+        ])
+    }
+
     private static func requiredString(
         _ key: String,
         in arguments: [String: JSONValue]
@@ -1117,6 +1385,16 @@ enum MCPToolRegistry {
             throw MCPToolError.invalidArguments("\(key) is required")
         }
         return value
+    }
+
+    private static func clampedInt(
+        _ value: JSONValue?,
+        default defaultValue: Int,
+        min minValue: Int,
+        max maxValue: Int
+    ) -> Int {
+        let raw = value?.intValue ?? defaultValue
+        return Swift.max(minValue, Swift.min(maxValue, raw))
     }
 
     private static func validateArguments(

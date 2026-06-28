@@ -544,6 +544,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     private let databaseReader: any ServiceDatabaseReading
     private let fileSystemProvider: FileSystemEngramServiceReadProvider
     private let commandLocator: @Sendable (String) -> String?
+    private let embeddingEnvironment: [String: String]
+    private let embeddingProviderFactory: @Sendable (EmbeddingConfig) -> any EmbeddingProvider
 
     init(
         databasePath: String,
@@ -553,37 +555,66 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         },
         commandLocator: @escaping @Sendable (String) -> String? = { name in
             SQLiteEngramServiceReadProvider.defaultCommandLocator(name)
+        },
+        embeddingEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        embeddingProviderFactory: @escaping @Sendable (EmbeddingConfig) -> any EmbeddingProvider = {
+            OpenAICompatibleEmbeddingClient(config: $0)
         }
     ) throws {
         self.databaseReader = try makeDatabaseReader(databasePath)
         self.fileSystemProvider = fileSystemProvider
         self.commandLocator = commandLocator
+        self.embeddingEnvironment = embeddingEnvironment
+        self.embeddingProviderFactory = embeddingProviderFactory
     }
 
     func search(_ request: EngramServiceSearchRequest) async throws -> EngramServiceSearchResponse {
         let query = request.query.trimmingCharacters(in: .whitespacesAndNewlines)
-        // The Swift service search path is keyword/FTS-only: it has no vector
-        // store or embedding provider wired in. Honor the requested `mode` by
-        // either accepting it (keyword) or transparently degrading to keyword
-        // and surfacing a warning, instead of silently ignoring it. A blank
-        // mode is treated as keyword for backwards compatibility.
         let requestedMode = request.mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let semanticRequested = ["semantic", "hybrid", "both"].contains(requestedMode)
-        let warning: String? = semanticRequested
-            ? "Semantic search is unavailable in the local service; returning keyword results only."
-            : nil
-        if semanticRequested {
-            ServiceLogger.info(
-                "search mode '\(requestedMode)' requested but unsupported in service path; falling back to keyword",
-                category: .reader
-            )
-        }
         guard query.count >= 2 else {
+            let warning: String? = semanticRequested
+                ? "Semantic search is unavailable in the local service; returning keyword results only."
+                : nil
             return EngramServiceSearchResponse(items: [], searchModes: ["keyword"], warning: warning)
         }
 
         let limit = max(1, min(request.limit, 100))
-        return try await read { db in
+        if semanticRequested {
+            do {
+                if let semantic = try await semanticSearch(
+                    query: query,
+                    request: request,
+                    limit: limit,
+                    requestedMode: requestedMode
+                ) {
+                    return semantic
+                }
+            } catch {
+                ServiceLogger.warn(
+                    "semantic search failed; falling back to keyword: \(error.localizedDescription)",
+                    category: .reader
+                )
+            }
+            ServiceLogger.info(
+                "search mode '\(requestedMode)' requested but unavailable; falling back to keyword",
+                category: .reader
+            )
+        }
+
+        let warning: String? = semanticRequested
+            ? "Semantic search is unavailable in the local service; returning keyword results only."
+            : nil
+        return try await keywordSearch(query: query, request: request, limit: limit, warning: warning)
+    }
+
+    private func keywordSearch(
+        query: String,
+        request: EngramServiceSearchRequest,
+        limit: Int,
+        warning: String?
+    ) async throws -> EngramServiceSearchResponse {
+        try await read { db in
             if CJKText.containsCJK(query) || query.count < 3 {
                 // CJK uses LIKE because FTS5 trigram MATCH is unreliable for
                 // CJK. Two-character Latin abbreviations ("AI", "PR", "UI")
@@ -682,6 +713,155 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 searchModes: ["keyword"],
                 warning: warning
             )
+        }
+    }
+
+    private struct SemanticChunkCandidate: Sendable {
+        let chunkId: String
+        let sessionId: String
+        let text: String
+        let vector: [Float]
+    }
+
+    private func semanticSearch(
+        query: String,
+        request: EngramServiceSearchRequest,
+        limit: Int,
+        requestedMode: String
+    ) async throws -> EngramServiceSearchResponse? {
+        guard let config = EmbeddingSettings.load(environment: embeddingEnvironment) else {
+            return nil
+        }
+        let provider = embeddingProviderFactory(config)
+        let vectors = try await provider.embed([query])
+        guard let queryVector = vectors.first, !queryVector.isEmpty else { return nil }
+
+        let candidates = try await semanticChunkCandidates(for: request, dim: queryVector.count)
+        guard !candidates.isEmpty else { return nil }
+
+        let byChunkId = Dictionary(uniqueKeysWithValues: candidates.map { ($0.chunkId, $0) })
+        let hits = VectorSearch.knn(
+            query: queryVector,
+            candidates: candidates.map { VectorSearch.Candidate(id: $0.chunkId, vector: $0.vector) },
+            topK: max(limit * 4, limit)
+        )
+        var sessionIds: [String] = []
+        var snippetBySession: [String: String] = [:]
+        var scoreBySession: [String: Double] = [:]
+        for hit in hits {
+            guard let candidate = byChunkId[hit.id], !sessionIds.contains(candidate.sessionId) else {
+                continue
+            }
+            sessionIds.append(candidate.sessionId)
+            snippetBySession[candidate.sessionId] = candidate.text
+            scoreBySession[candidate.sessionId] = Double(hit.score)
+            if sessionIds.count >= limit { break }
+        }
+        guard !sessionIds.isEmpty else { return nil }
+
+        let semanticItems = try await searchItems(
+            sessionIds: sessionIds,
+            query: nil,
+            snippetBySession: snippetBySession,
+            matchType: "semantic",
+            scoreBySession: scoreBySession
+        )
+
+        if requestedMode == "hybrid" || requestedMode == "both" {
+            let keyword = try await keywordSearch(query: query, request: request, limit: limit, warning: nil)
+            let fusedIds = RankFusion.rrf([keyword.items.map(\.id), semanticItems.map(\.id)])
+                .prefix(limit)
+                .map(\.id)
+            let keywordById = Dictionary(uniqueKeysWithValues: keyword.items.map { ($0.id, $0) })
+            let semanticById = Dictionary(uniqueKeysWithValues: semanticItems.map { ($0.id, $0) })
+            let fusedItems = fusedIds.compactMap { id in
+                semanticById[id] ?? keywordById[id]
+            }
+            return EngramServiceSearchResponse(
+                items: fusedItems,
+                searchModes: ["keyword", "semantic"],
+                warning: nil
+            )
+        }
+
+        return EngramServiceSearchResponse(
+            items: semanticItems,
+            searchModes: ["semantic"],
+            warning: nil
+        )
+    }
+
+    private func semanticChunkCandidates(
+        for request: EngramServiceSearchRequest,
+        dim: Int
+    ) async throws -> [SemanticChunkCandidate] {
+        try await read { db in
+            guard try tableExists("semantic_chunks", db: db) else { return [] }
+            var parts = ["""
+                SELECT sc.id AS chunk_id,
+                       sc.session_id AS session_id,
+                       sc.text AS text,
+                       sc.embedding AS embedding
+                FROM semantic_chunks sc
+                JOIN sessions s ON s.id = sc.session_id
+                WHERE sc.embedding IS NOT NULL
+                  AND sc.dim = ?
+                  AND s.hidden_at IS NULL
+                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+            """]
+            var args: [DatabaseValueConvertible] = [dim]
+            appendSearchFilters(for: request, to: &parts, args: &args)
+            parts.append("ORDER BY s.start_time DESC LIMIT ?")
+            args.append(max(200, min(request.limit * 20, 2_000)))
+            let rows = try Row.fetchAll(
+                db,
+                sql: parts.joined(separator: " "),
+                arguments: StatementArguments(args)
+            )
+            return rows.compactMap { row in
+                guard let chunkId = row["chunk_id"] as String?,
+                      let sessionId = row["session_id"] as String?,
+                      let text = row["text"] as String?,
+                      let data = row["embedding"] as Data? else {
+                    return nil
+                }
+                guard let vector = VectorMath.decode(data, expectedCount: dim) else { return nil }
+                return SemanticChunkCandidate(
+                    chunkId: chunkId,
+                    sessionId: sessionId,
+                    text: text,
+                    vector: vector
+                )
+            }
+        }
+    }
+
+    private func searchItems(
+        sessionIds: [String],
+        query: String?,
+        snippetBySession: [String: String],
+        matchType: String,
+        scoreBySession: [String: Double]
+    ) async throws -> [EngramServiceSearchResponse.Item] {
+        guard !sessionIds.isEmpty else { return [] }
+        return try await read { db in
+            let placeholders = Array(repeating: "?", count: sessionIds.count).joined(separator: ",")
+            let rows = try Row.fetchAll(
+                db,
+                sql: "SELECT s.* FROM sessions s WHERE s.id IN (\(placeholders))",
+                arguments: StatementArguments(sessionIds)
+            )
+            let rowsById = Dictionary(uniqueKeysWithValues: rows.map { (($0["id"] as String), $0) })
+            return sessionIds.compactMap { id in
+                guard let row = rowsById[id] else { return nil }
+                return item(
+                    from: row,
+                    query: query,
+                    snippetOverride: snippetBySession[id],
+                    matchType: matchType,
+                    score: scoreBySession[id]
+                )
+            }
         }
     }
 
@@ -1575,10 +1755,16 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     /// waste bandwidth. Bound it server-side to a preview-sized window.
     static let maxSnippetLength = 600
 
-    private func item(from row: Row, query: String? = nil) -> EngramServiceSearchResponse.Item {
+    private func item(
+        from row: Row,
+        query: String? = nil,
+        snippetOverride: String? = nil,
+        matchType: String = "keyword",
+        score: Double? = nil
+    ) -> EngramServiceSearchResponse.Item {
         // MATCH/LIKE paths return matched content; when a query is supplied,
         // build the match-centered highlight here in Swift.
-        let rawSnippet = row["snippet"] as String?
+        let rawSnippet = snippetOverride ?? (row["snippet"] as String?)
         let snippetText: String?
         if let query, let content = rawSnippet,
            let windowed = Self.highlightedSnippet(content: content, query: query) {
@@ -1590,8 +1776,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             id: row["id"],
             title: (row["generated_title"] as String?) ?? (row["summary"] as String?),
             snippet: Self.truncateSnippet(snippetText),
-            matchType: "keyword",
-            score: nil,
+            matchType: matchType,
+            score: score,
             source: row["source"] as String?,
             startTime: row["start_time"] as String?,
             endTime: row["end_time"] as String?,

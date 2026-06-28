@@ -159,14 +159,6 @@ export class IflowAdapter implements SessionAdapter {
     );
   }
 
-  // 解码 iflow 目录名：-Users-bing--Code--project → /Users/bing/-Code-/project
-  static decodeCwd(encoded: string): string {
-    return encoded
-      .replace(/--/g, '\x00')
-      .replace(/-/g, '/')
-      .replace(/\x00/g, '-');
-  }
-
   private async *readLines(filePath: string): AsyncGenerator<string> {
     const stream = createReadStream(filePath, { encoding: 'utf8' });
     const rl = createInterface({ input: stream, crlfDelay: Infinity });

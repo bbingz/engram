@@ -14,6 +14,7 @@
 // (IPC ring) is a backend change tracked separately.
 import SwiftUI
 import GRDB
+import Combine
 
 struct SystemHealthView: View {
     @Environment(DatabaseManager.self) var db

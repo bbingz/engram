@@ -4,6 +4,7 @@ import SwiftUI
 
 /// First-run onboarding: 4-step flow (Welcome -> Sources -> Full Disk Access -> Ready).
 struct OnboardingView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var step = 0
     @State private var detectedSources: [SourceCheck] = []
     var onComplete: () -> Void
@@ -16,7 +17,7 @@ struct OnboardingView: View {
                     Capsule()
                         .fill(i <= step ? Theme.accent : Theme.surfaceHighlight)
                         .frame(width: i == step ? 20 : 8, height: 4)
-                        .animation(.easeInOut(duration: 0.25), value: step)
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: step)
                 }
             }
             .padding(.top, 20)
@@ -57,7 +58,7 @@ struct OnboardingView: View {
 
             Button(action: {
                 detectedSources = scanSources()
-                withAnimation { step = 1 }
+                advance(to: 1)
             }) {
                 Text("Get Started")
                     .font(.system(size: 13, weight: .medium))
@@ -113,7 +114,7 @@ struct OnboardingView: View {
             .frame(maxHeight: 180)
             .padding(.horizontal, 40)
 
-            Button(action: { withAnimation { step = 2 } }) {
+            Button(action: { advance(to: 2) }) {
                 Text("Continue")
                     .font(.system(size: 13, weight: .medium))
                     .frame(width: 140, height: 32)
@@ -150,7 +151,10 @@ struct OnboardingView: View {
             .buttonStyle(.bordered)
             .padding(.top, 4)
 
-            Button(action: { withAnimation { step = 3 } }) {
+            Button(action: {
+                detectedSources = scanSources()
+                advance(to: 3)
+            }) {
                 Text("Continue")
                     .font(.system(size: 13, weight: .medium))
                     .frame(width: 140, height: 32)
@@ -163,6 +167,14 @@ struct OnboardingView: View {
     private func openFullDiskAccessSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFilesAccess") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func advance(to nextStep: Int) {
+        if reduceMotion {
+            step = nextStep
+        } else {
+            withAnimation { step = nextStep }
         }
     }
 

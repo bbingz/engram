@@ -2,7 +2,16 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-06-21): 74 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-06-28): 78 dated entries; regenerate after adding sections -->
+- [2026-06-28 - Full-project audit remediation pass (Codex)](#2026-06-28---full-project-audit-remediation-pass-codex)
+- [2026-06-27 - Session implementation digest and work timeline first pass (Codex)](#2026-06-27---session-implementation-digest-and-work-timeline-first-pass-codex)
+- [2026-06-27 - Human-driven sessions direct startup backfill live proof (Codex)](#2026-06-27---human-driven-sessions-direct-startup-backfill-live-proof-codex)
+- [2026-06-27 - Human-driven sessions backfill + deployed local app (Codex)](#2026-06-27---human-driven-sessions-backfill--deployed-local-app-codex)
+- [2026-06-26 - P1 c/d/f service wiring, semantic search, lifecycle writes, and get_rules completed (Codex)](#2026-06-26---p1-cdf-service-wiring-semantic-search-lifecycle-writes-and-get_rules-completed-codex)
+- [2026-06-26 - P1 c.3: semantic memory hybrid read (get_memory) + embedding backfill verified; runtime wiring pending (Claude)](#2026-06-26---p1-c3-semantic-memory-hybrid-read-get_memory--embedding-backfill-verified-runtime-wiring-pending-claude)
+- [2026-06-26 - P1 c.1+c.2: semantic memory foundation (embedding client, KNN, RRF, schema) shipped & verified (Claude)](#2026-06-26---p1-c1c2-semantic-memory-foundation-embedding-client-knn-rrf-schema-shipped--verified-claude)
+- [2026-06-26 - P1 relaunch: MCP surface (e) + memory lifecycle (d) shipped & verified (Claude)](#2026-06-26---p1-relaunch-mcp-surface-e--memory-lifecycle-d-shipped--verified-claude)
+- [2026-06-26 - Competitive relaunch analysis: verified positioning + roadmap (Claude)](#2026-06-26---competitive-relaunch-analysis-verified-positioning--roadmap-claude)
 - [2026-06-21 - Session parser drift remediation from 17-source audit (Codex)](#2026-06-21---session-parser-drift-remediation-from-17-source-audit-codex)
 - [2026-06-21 - Session-format docs source confirmation completed (Codex)](#2026-06-21---session-format-docs-source-confirmation-completed-codex)
 - [2026-06-21 - Multi-Mac sync L2: PR #88 non-security review remediation](#2026-06-21---multi-mac-sync-l2-pr-88-non-security-review-remediation)
@@ -81,6 +90,260 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-06-28 - Full-project audit remediation pass (Codex)
+
+- Remediated the 2026-06-28 audit's actionable P0/P1 items and several bounded P2/P3 follow-ups. Key fixes: VS Code mutation replay bounds, local remote-storage key validation, RepoDetailView AppleScript escaping, MCP numeric clamps/schema bounds, Gemini/Copilot aux-file size caps, ReplayState lower bucket clamp, LIKE escaping, CancellationError rethrowing, capability/protected command sync, GitDirty fail-closed semantics, guarded `commitRehydrated`, log sanitizer ordering, temp/token file 0600-at-create writes, OSLog/sessionTimeline bounds, SwiftIndexer file-state write isolation, strict VectorMath decode, HumanDrivenFilter parenthesized/qualified SQL, FTS rebuild resume coverage, ProjectsView lazy detail rows, onboarding reduce-motion/re-scan, TS FTS rebuild parity, and orphan Iflow decode helper removal.
+- TS FTS rebuild policy now mirrors Swift authority: fresh shadow rebuild tables start empty, `sessions.size_bytes` is not reset, completed FTS jobs are reopened only when a fresh rebuild starts, and apply does not finalize the table swap before jobs drain.
+- Verification run in this pass:
+  - `git diff --check` passed.
+  - App targeted `xcodebuild test -scheme Engram ... -skip-testing:EngramUITests` passed for LIKE/timeline/OSLog/relative-time/Replay/AppleScript tests.
+  - `EngramCoreTests` targeted suite passed for adapter bounds, remote/offload, FTS resume, VectorMath, StartupBackfills cancellation, HumanDrivenFilter, GitDirty, and project-move temp-file tests.
+  - `EngramServiceCore` targeted suite passed for protected commands, capability/web token permissions, sanitizer, and semantic search compile path.
+  - `EngramMCPTests` targeted suite passed for MCP schema/numeric bounds and keyword-search LIKE escaping.
+  - `npm test -- tests/core/db-migration.test.ts tests/core/db.test.ts tests/core/index-job-runner.test.ts tests/adapters/iflow.test.ts tests/adapters/qwen.test.ts tests/adapters/commandcode.test.ts tests/adapters/qoder.test.ts` passed (7 files, 101 tests).
+  - `npm run typecheck:test` passed.
+  - `npm run lint` passed with one pre-existing warning in `tests/scripts/screenshot-compare.test.ts` about the literal GitHub Actions `${{ runner.temp }}` string.
+- Not run: full Swift schemes, full npm test/coverage, UI tests, release packaging, and CI. The worktree already contained many unrelated dirty/generated/documentation changes before this pass; do not treat the full dirty set as this remediation's scope without re-diffing.
+
+## 2026-06-27 - Session implementation digest and work timeline first pass (Codex)
+
+- Implemented the first deterministic "what work happened" layer for sessions.
+  The indexer now extracts `SessionImplementationBeat` values from real user
+  turns plus the strongest completion-style assistant report, ignoring machine
+  instructions, AGENTS/bootstrap text, tool results, local-command wrappers, and
+  progress chatter unless they are operation evidence.
+- New schema table: `session_work_beats` keyed by `(session_id, beat_index)`,
+  with action date/timestamp, work key/title, human intent, assistant outcome,
+  kind, status, operation events, and confidence. Snapshot writes replace beats
+  on healthy re-streams and preserve existing beats on empty failed re-streams.
+- Existing reliable historical sessions can be backfilled by
+  `EngramDatabaseIndexer.indexImplementationBeatBackfillSessions`; startup runs
+  that backfill after instruction backfill and before normal initial indexing.
+- Timeline read surface: `DatabaseManager.implementationTimeline(...)` reads
+  stored beats, applies normal visibility/project/date filters, drops
+  operation-only beats, and uses `ImplementationTimelineBuilder` to merge
+  adjacent same-work dates while splitting later non-contiguous returns into
+  later batches.
+- App UI: Timeline now has a Work/Sessions segmented mode. Work mode shows
+  grouped work rows with date ranges, batch labels, source session count,
+  status/kind, and extracted human intent / assistant outcome.
+- Planning artifact: `docs/superpowers/plans/2026-06-27-session-implementation-timeline.md`.
+- Verification passed:
+  - Targeted `EngramCoreTests` for extractor, migration, writer persistence,
+    empty re-stream preservation, and backfill: 9 tests, 0 failures.
+  - Targeted `EngramServiceCore` `EngramServiceIPCTests`: 131 tests, 0 failures.
+  - `xcodebuild -project Engram.xcodeproj -scheme Engram -configuration Debug build
+    CODE_SIGNING_ALLOWED=NO` passed.
+- Not run: full `EngramCoreTests`, full `EngramServiceCore`, full `EngramMCPTests`,
+  `EngramUITests`, full TS suite, release packaging, and remote CI.
+
+## 2026-06-27 - Human-driven sessions direct startup backfill live proof (Codex)
+
+- Follow-up to the earlier same-day human-driven session backfill. The first
+  backfill design could refresh parse/index state while leaving existing
+  `sessions.instruction_count` NULL in the live DB. Final fix: startup now runs
+  `initialInstructionBackfill` before heavy initial scan, and
+  `EngramDatabaseWriter.indexInstructionBackfillSessions` directly streams
+  reliable-source user messages and updates only `instruction_count`,
+  `human_turn_count`, and `instruction_summary`.
+- Direct backfill uses reliable sources `claude-code` and `codex`, batches 100
+  direct `UPDATE sessions` writes, and matches legacy rows via
+  `COALESCE(NULLIF(source_locator,''), NULLIF(file_path,''))`.
+- Terminal parser failures are marked with `instruction_count = 0`; default
+  visibility still rescues long historical human sessions through
+  `user_message_count >= 12` and `tier = premium`.
+- Live deploy: `/Applications/Engram.app` version `0.1.0 (20260627085424)`.
+  Info.plist version matched, `codesign --verify --deep --strict
+  /Applications/Engram.app` passed, and the app launched
+  `/Applications/Engram.app/Contents/Helpers/EngramService --service-socket
+  ~/.engram/run/engram-service.sock --database-path ~/.engram/index.sqlite`.
+- Real DB proof after startup backfill:
+  - Reliable-source rows with `instruction_count IS NULL` and existing local
+    files: `codex=0`, `claude-code=0`.
+  - Remaining NULL rows: `claude-code=7131`, all missing source files, so "What
+    you asked" cannot be reconstructed locally for them.
+  - Populated instruction rows: `codex=2614`, `claude-code=472`.
+  - Human-driven gate pass count among reliable sources: `codex=820`,
+    `claude-code=747`.
+- Verification passed: targeted backfill tests 5/5, full `EngramCoreTests`
+  516/516, service startup-order tests 3/3, release build + Developer ID verifier,
+  local deploy, installed version/codesign smoke, launch/process smoke, and real
+  DB backfill smoke.
+- Not run in this final follow-up: `EngramUITests`, full `EngramServiceCore`,
+  full `EngramMCPTests`, full TS suite, notarization/stapling/DMG, remote CI.
+
+## 2026-06-27 - Human-driven sessions backfill + deployed local app (Codex)
+
+- Picked up Claude's human-driven session implementation and fixed the remaining live-data gap.
+  The first implementation extracted `instruction_count` / `human_turn_count` / `instruction_summary`,
+  but reliable historical `claude-code` and `codex` rows with NULL instruction signals still passed the
+  default browse predicate because NULL was globally tolerated.
+- Added a reliable-source instruction backfill path: `EngramDatabaseIndexer.knownIndexedFileStates`
+  now reads whether a stored row still needs instruction backfill, and `SwiftIndexer` reparses parseable
+  known `claude-code` / `codex` files with missing instruction signals instead of taking the same-file
+  fast skip. Terminal/error file states are not retried by this path.
+- Fixed `SessionSnapshotWriter` same-content handling so newly-derived instruction signals are merged
+  into an otherwise identical snapshot. The merge updates only instruction fields, returns local-state
+  work, preserves healthy current signals on empty restreams, and does not enqueue FTS or embedding jobs.
+- Tightened `HumanDrivenFilter.sqlPredicate`: NULL instruction signals are default-visible only for
+  non-extracted sources. Reliable sources now need `instruction_count >= 2`, `human_turn_count >= 12`,
+  legacy `user_message_count >= 12`, or `tier = premium`.
+- Deployed local app `/Applications/Engram.app` from release build `0.1.0 (20260627072621)`.
+  Runtime smoke passed: Info.plist version matched, `codesign --verify --deep --strict` passed,
+  Engram + EngramService launched with socket `~/.engram/run/engram-service.sock`, and installed
+  `EngramMCP` initialized with serverInfo `engram 0.1.0`.
+- Real DB proof after deploy/backfill/filter: default SQL predicate selected 3,365 agentless sessions;
+  the old global-NULL predicate would have selected 4,602. Reliable `claude-code` / `codex` sources had
+  1,948 populated instruction rows and 8,269 remaining NULL rows, which no longer auto-pass by default.
+  Installed MCP `list_sessions` reported `total=2511` by default and `total=5744` with `include_all=true`.
+- Verification passed: full `EngramCoreTests` 513/513, full `EngramServiceCore` 254 tests with 1 expected
+  skip, full `EngramMCPTests` 101/101, release build + Developer ID release verifier, local deploy,
+  runtime smoke, installed MCP smoke, real DB predicate smoke, and `git diff --check`.
+- Not run: `EngramUITests`, notarization/stapling/DMG, full TS suite, remote CI.
+
+## 2026-06-26 - P1 c/d/f service wiring, semantic search, lifecycle writes, and get_rules completed (Codex)
+
+- Reviewed Claude's e/d/c.3 implementation and kept it. The remaining live gaps were exactly the
+  handoff items: runner backfill hooks, session semantic search, service-side lifecycle writes, and
+  f corpus mining/read surface.
+- c runtime completed: `EngramServiceRunner` now schedules session and insight embedding backfills
+  after initial and periodic FTS drains. Each job reads and writes through short `ServiceWriterGate`
+  phases; embedding calls happen outside the gate. `IndexJobRunner` excludes service-owned
+  `embedding` jobs from the generic FTS drain, leaving them pending until the service embedding
+  backfill runs with a configured provider.
+- c read path completed: `SQLiteEngramServiceReadProvider.search` supports configured
+  `semantic`/`hybrid` retrieval from `semantic_chunks`, using pure-Swift vector KNN and RRF; missing
+  or failing embedding config keeps keyword fallback/warning behavior.
+- d write side completed: `save_insight` accepts optional `type`, normalizes duplicate same-scope
+  content into supersession (`superseded_by`), and `get_memory` records returned insight access
+  metadata through a best-effort service command rather than direct MCP database writes.
+- f completed: schema adds `mined_rules` + `mined_rules_fts`; MCP adds `get_rules`,
+  `engram://rule/{id}` resources, and `get_context` rule folding. `EngramServiceRunner` has an
+  opt-in corpus miner that selects high-quality edit sessions, calls the configured completion model
+  outside the writer gate, merges evidence on same-title rule updates, and skips already-mined
+  sessions.
+- Verification passed:
+  - Full `EngramMCPTests`: 101 tests, 0 failures, xcresult
+    `~/Library/Developer/Xcode/DerivedData/Engram-apkspuobooepqkdrdnbizljrophn/Logs/Test/Test-EngramMCPTests-2026.06.27_00-00-40-+0800.xcresult`.
+  - Full `EngramCoreTests`: 496 tests, 0 failures, xcresult
+    `~/Library/Developer/Xcode/DerivedData/Engram-apkspuobooepqkdrdnbizljrophn/Logs/Test/Test-EngramCoreTests-2026.06.27_00-03-38-+0800.xcresult`.
+  - Full `EngramServiceCore`: 254 tests, 1 expected live-offload skip, 0 failures, xcresult
+    `~/Library/Developer/Xcode/DerivedData/Engram-apkspuobooepqkdrdnbizljrophn/Logs/Test/Test-EngramServiceCore-2026.06.27_00-04-20-+0800.xcresult`.
+  - `xcodebuild -project Engram.xcodeproj -scheme Engram -configuration Debug build
+    CODE_SIGNING_ALLOWED=NO` passed.
+  - `npm run check:fixtures` and `git diff --check` passed.
+- Not run: full app UI tests, full TS coverage/lint/typecheck, and remote CI.
+
+## 2026-06-26 - P1 c.3: semantic memory hybrid read (get_memory) + embedding backfill verified; runtime wiring pending (Claude)
+
+- Builds on [[2026-06-26 - P1 c.1+c.2]]. Whole semantic retrieval chain now verified end-to-end.
+- `EmbeddingSettings.load()` (Shared/AI): env overrides (`ENGRAM_EMBEDDING_BASE_URL/_API_KEY/_MODEL/
+  _DIM`) → `~/.engram/settings.json` (`embeddingBaseURL`/`embeddingApiKey`/… → fallback `aiBaseURL`/
+  `aiApiKey`). nil → semantic OFF (keyword). Opt-in.
+- c.3b: `MCPDatabase.getMemory` is now **async**; when provider configured + `insight_embeddings`
+  non-empty → embed query → `VectorSearch.knn` → `RankFusion.rrf` with FTS → drop superseded → top 10,
+  result has `retrieval:"hybrid"`. Any failure degrades to keyword. Verified through the spawned MCP
+  process via a localhost mock embeddings server (BSD-socket `MockHTTPServer` in EngramMCPTests).
+  Call site `MCPToolRegistry` get_memory now `try await`.
+- c.3a: `InsightEmbeddingBackfill.run(writer:provider:limit:)` (EngramCoreWrite/Indexing) embeds
+  pending insights OUTSIDE the write lock, writes `insight_embeddings` BLOBs + `embedding_meta`;
+  provider injected (unit-tested with fake provider, no network).
+- REMAINING for c (final wiring, deliberately NOT done — runtime/concurrency, unit-untestable):
+  schedule `InsightEmbeddingBackfill` in `EngramServiceRunner` as a GATED background job — read+embed
+  off the `ServiceWriterGate`, then a SHORT gated write per batch (do NOT hold the gate during the
+  network embed). Runner backfill phases are around EngramServiceRunner.swift:455-508
+  (`gate.performWriteCommand { writer in ... }`). Also: session-chunk embedding for `search` semantic
+  mode + re-enable `semantic`/`hybrid` in search schema + d's deferred supersession/access writes.
+- Verified: EngramMCPTests 99/99, EngramCoreTests 495/495.
+- NEXT after c wiring: f (corpus mining → mined_rules + get_rules, reuse OpenAI-compatible completion).
+
+## 2026-06-26 - P1 c.1+c.2: semantic memory foundation (embedding client, KNN, RRF, schema) shipped & verified (Claude)
+
+- KEY ARCHITECTURE DECISION: semantic memory uses **pure-Swift brute-force cosine KNN over Float32
+  BLOBs, NOT sqlite-vec** — no native dependency, no build-system risk, fully unit-testable; fast
+  enough for a local personal corpus (optionally FTS/project pre-filtered). Provider is
+  OpenAI-compatible (configurable baseURL — SiliconFlow/DashScope/DeepSeek/OpenAI), default embedding
+  `text-embedding-3-small`, all opt-in (empty key → keyword fallback).
+- c.1 (`macos/Shared/EngramCore/AI/`, public in EngramCoreRead, also compiled into EngramMCP via
+  `path: Shared`): `OpenAICompatibleEmbeddingClient` (URLSession-injectable, L2-normalized,
+  order-preserving), `SessionChunker` (port of chunker.ts), `VectorMath` (normalize/cosine/dot +
+  LE-Float32 BLOB encode/decode).
+- c.2: `VectorSearch.knn` (brute-force cosine top-K) + `RankFusion.rrf` (Reciprocal Rank Fusion,
+  deterministic tie-break) — pure, tested. Schema adds `insight_embeddings`, `semantic_chunks`,
+  `embedding_meta` (CREATE TABLE IF NOT EXISTS in baseline, no version bump). Renamed from
+  `session_chunks` to `semantic_chunks` to avoid colliding with the legacy TS-reference vector tables
+  (`session_chunks`/`session_embeddings`) that `VectorRebuildPolicy` clears.
+- Module placement note: `Shared/EngramCore` is compiled by EngramCoreRead (framework, public types →
+  EngramCoreWrite/Service import it) AND directly by EngramMCP (tool, `path: Shared`). New files need
+  `xcodegen generate`.
+- Verified: EngramCoreTests 494/494 (SemanticMemoryUnitTests 10 + testSemanticMemoryTablesCreated).
+- REMAINING for c (c.3): config reader (settings/keychain → EmbeddingConfig); service embedding write
+  job (embed insights/sessions → BLOB tables) + d's deferred supersession/access writes;
+  `get_memory`/`search` hybrid wiring (embed query → KNN → RRF + lifecycle); re-enable
+  `semantic`/`hybrid` modes when provider+embeddings present; localhost-mock-server e2e. Then f
+  (corpus mining). MCPDatabase lives in the EngramMCP executable (tested only via spawned stdio), so
+  the e2e semantic path needs a localhost mock embeddings server.
+
+## 2026-06-26 - P1 relaunch: MCP surface (e) + memory lifecycle (d) shipped & verified (Claude)
+
+- Implements roadmap items e and d from `docs/p1-semantic-memory-design-2026-06.md`. Provider
+  decision: **OpenAI-compatible** online models (configurable baseURL — SiliconFlow/DashScope/
+  DeepSeek/OpenAI all work; default embedding `text-embedding-3-small`, mining reuses `aiModel`);
+  all opt-in / degrade to keyword without a key.
+- e (deepened MCP surface, no external deps): tool `annotations` derived from existing `ToolCategory`
+  (`MCPToolRegistry.toolAnnotations`) + `title` in `tools/list`; `resources` capability
+  (`resources/list`+`read`, `engram://session|insight/{id}`); `prompts` capability
+  (`engram:catch-up` pre-fills get_context, `engram:handoff`). Server capabilities now
+  `{tools,resources,prompts}`. `outputSchema` deferred into c/d (must match existing
+  `structuredContent`).
+- d (memory lifecycle, read side + schema): idempotent migration adds insights `insight_type`/
+  `superseded_by`/`last_accessed_at`/`access_count` (`migrateInsightsLifecycle`, auxSchemaVersion
+  3→4); `get_memory` ranks by `relevance·importanceBoost·recencyDecay·accessBoost` (per-type
+  half-life 14/30/90d) and excludes superseded — ONLY when columns exist, else legacy keyword/recency
+  (so the read-only MCP never assumes the writer schema; existing golden unchanged). Caught+fixed a
+  legacy-DB `CREATE INDEX idx_insights_superseded` ordering bug (index now built inside the migration
+  after the column is added).
+- Service-side d writes (supersession-on-save, access-count bump) deferred to land with c/f
+  service-writer changes.
+- Verified: EngramMCPTests 97/97, EngramCoreTests 483/483, EngramMCP BUILD SUCCEEDED. `npm run lint`
+  not run (Swift + one JSON golden only).
+- NEXT: c (sqlite-vec C-amalgamation + OpenAI-compatible embeddings + chunker + vector store + RRF +
+  deferred d service writes) and f (corpus mining → `mined_rules` + `get_rules`). c is XL; the
+  sqlite-vec native vendoring (compile `sqlite-vec.c` as a C target + `sqlite3_auto_extension`) is the
+  crux.
+
+## 2026-06-26 - Competitive relaunch analysis: verified positioning + roadmap (Claude)
+
+- Full memo: `docs/competitive-relaunch-2026-06.md`; CHANGELOG entry same date.
+  Decided via an 11-agent workflow (4 competitive intel + 5 self-inventory +
+  synthesis + adversarial verify). Run `wf_f5e15474-c3d`.
+- Positioning/moat: Engram is the ONLY MCP-first cross-tool memory/context layer
+  (AI agents are the consumer). Agent Sessions = human session browser + Agent
+  Cockpit HUD + resume (not MCP); ReadOut = AI-native chat dashboard with
+  data-card embeds + one-click actions (not MCP). Defensible: 17-source breadth
+  (Swift parity-tested), project-migration path repair (no competitor has it),
+  cross-tool parent-child grouping, encrypted opt-in remote offload,
+  vendor-neutral zero-telemetry.
+- Roadmap P0: (1) Engram Claude Code PLUGIN = EngramMCP + SessionStart hook
+  (auto-inject get_context) + Stop hook (auto save_insight) + slash prompts —
+  converts flagship PULL→PUSH and fixes distribution in one artifact; no hooks
+  exist today. (2) Homebrew cask + Sparkle EdDSA auto-update (absent; stuck at
+  0.1.0 manual notarytool). P1: Swift semantic memory (finish sqlite-vec + port
+  TS embeddings/chunker + RRF), memory lifecycle (decay/supersession + actually
+  rank by importance — get_memory ignores stored importance), deepen MCP surface
+  (resources/prompts/annotations/outputSchema), mine 17-source corpus into
+  reusable skills/rules.
+- Non-goals: do NOT build in-session resume/checkpoint/`/rewind`, chat-first
+  dashboard, or dual licensing — vendor-owned, improving fast; hold the wedge.
+- ALREADY SHIPPED — do NOT re-propose (verify pass killed these re-proposals):
+  quality_score + auto-title ARE computed in Swift
+  (`SessionSnapshotWriter.generatedTitle` L415, `StartupBackfills`,
+  `Session.valueBand`); cache-hit-rate already in `get_insights`
+  (`MCPDatabase.swift:995`); real usage probes ship (`StartupUsageCollector`);
+  `live_sessions` MCP "unavailable" is a deliberate contract not a stub; MCP
+  2025-11-25 negotiation already handled (`MCPStdioServer.swift`).
+- No code changed — strategy artifact only.
 
 ## 2026-06-21 - Session parser drift remediation from 17-source audit (Codex)
 

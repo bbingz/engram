@@ -61,7 +61,9 @@ final class EngramWebUIServer: @unchecked Sendable {
         let router = Router()
         router.get("/") { [self] request, _ in
             if let denied = guardRequest(request) { return denied }
-            return try htmlResponse(indexPage())
+            // Default to human-driven sessions only; ?all=1 is the escape hatch.
+            let showAll = request.uri.queryParameters["all"].map(String.init) == "1"
+            return try htmlResponse(indexPage(humanDriven: !showAll))
         }
         router.get("/session/:id") { [self] request, context in
             if let denied = guardRequest(request) { return denied }
@@ -224,8 +226,8 @@ final class EngramWebUIServer: @unchecked Sendable {
         return Response(status: .forbidden, headers: headers, body: ResponseBody(byteBuffer: ByteBuffer(data: data)))
     }
 
-    private func indexPage() throws -> String {
-        let sessions = try readSessions(limit: 200)
+    private func indexPage(humanDriven: Bool = true) throws -> String {
+        let sessions = try readSessions(limit: 200, humanDriven: humanDriven)
         let rows: String = sessions.map { session -> String in
             """
             <a class="session" href="/session/\(urlPath(session.id))">
@@ -322,8 +324,11 @@ final class EngramWebUIServer: @unchecked Sendable {
         ), status)
     }
 
-    private func readSessions(limit: Int) throws -> [WebSession] {
-        try requireQueue().read { db in
+    private func readSessions(limit: Int, humanDriven: Bool = true) throws -> [WebSession] {
+        // The instruction-signal columns live only on `sessions`, so the shared
+        // bare-column predicate resolves unambiguously through this JOIN.
+        let humanClause = humanDriven ? "AND (\(HumanDrivenFilter.sqlPredicate))" : ""
+        return try requireQueue().read { db in
             try Row.fetchAll(db, sql: """
                 SELECT
                   s.id, s.source, s.start_time, s.project, s.summary, s.generated_title,
@@ -336,6 +341,7 @@ final class EngramWebUIServer: @unchecked Sendable {
                   AND s.parent_session_id IS NULL
                   AND s.suggested_parent_id IS NULL
                   AND s.orphan_status IS NULL
+                  \(humanClause)
                 ORDER BY COALESCE(s.end_time, s.start_time) DESC
                 LIMIT ?
             """, arguments: [limit]).map(WebSession.init(row:))

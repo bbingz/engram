@@ -182,7 +182,7 @@ private struct AdvancedSettingsSection: View {
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
 
     // Embedding settings state removed — see Embeddings note in body.
-    @State private var noiseFilter = "hide-skip"
+    @State private var noiseFilter = "human-driven"
     @State private var hideUsageSessions = true
     @State private var hideEmptySessions = true
     @State private var hideAutoSummary = true
@@ -232,9 +232,10 @@ private struct AdvancedSettingsSection: View {
             GroupBox("Session Filter") {
                 VStack(alignment: .leading, spacing: 6) {
                     Picker("Session Filter", selection: $noiseFilter) {
-                        Text("Show All").tag("all")
+                        Text("Human-Driven").tag("human-driven")
                         Text("Hide Agents & Noise").tag("hide-skip")
                         Text("Clean View").tag("hide-noise")
+                        Text("Show All").tag("all")
                     }
                     .pickerStyle(.segmented)
                     .onChange(of: noiseFilter) { saveAdvancedSettings() }
@@ -394,7 +395,8 @@ private struct AdvancedSettingsSection: View {
         switch noiseFilter {
         case "all": return "Show all sessions including agents and noise"
         case "hide-noise": return "Hide agents, empty sessions, and low-signal sessions"
-        default: return "Hide sub-agents and trivial sessions (default)"
+        case "hide-skip": return "Hide sub-agents and trivial sessions"
+        default: return "Show only sessions you actively drove with multiple instructions (default)"
         }
     }
 

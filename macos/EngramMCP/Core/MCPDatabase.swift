@@ -131,9 +131,18 @@ final class MCPDatabase {
         since: String?,
         until: String?,
         limit: Int,
-        offset: Int
+        offset: Int,
+        includeAll: Bool = false
     ) throws -> OrderedJSONValue {
         var conditions = ["hidden_at IS NULL", "orphan_status IS NULL"]
+        // Default to human-driven sessions only (matches the app default); set
+        // include_all to browse every session. Guard on column presence so a
+        // read-only MCP over an un-migrated DB never assumes the writer's schema
+        // (mirrors insightsHasLifecycleColumns). Inner subquery is over bare
+        // `sessions`, so the shared bare-column predicate resolves directly.
+        if !includeAll, (try? sessionsHaveHumanDrivenColumns()) == true {
+            conditions.append("(\(HumanDrivenFilter.sqlPredicate))")
+        }
         var values: [DatabaseValueConvertible?] = []
         if let source {
             conditions.append("source = ?")
@@ -438,7 +447,44 @@ final class MCPDatabase {
         return .array(rows.map(migrationObject(from:)))
     }
 
-    func getMemory(query: String) throws -> OrderedJSONValue {
+    func getMemory(query: String) async throws -> OrderedJSONValue {
+        let lifecycleAware = (try? insightsHasLifecycleColumns()) == true
+
+        // Hybrid keyword + semantic when an embedding provider is configured and
+        // embeddings exist. The query-embedding network call is strictly opt-in;
+        // any failure (no key, unreachable, malformed) degrades to keyword below.
+        if let config = EmbeddingSettings.load(), (try? hasInsightEmbeddings()) == true {
+            if let hybrid = try? await semanticMemory(query: query, config: config, lifecycleAware: lifecycleAware),
+               !hybrid.isEmpty {
+                return .object([
+                    ("memories", .array(hybrid.map { memoryObject(from: $0.row, distance: Double($0.distance)) })),
+                    ("retrieval", .string("hybrid")),
+                ])
+            }
+        }
+
+        // When the writer has applied the memory-lifecycle migration, rank by
+        // importance + recency decay + access and exclude superseded rows. On an
+        // un-migrated DB (those columns absent) fall back to the legacy keyword/
+        // recency behavior so a read-only MCP never assumes the writer's schema.
+        if lifecycleAware {
+            if let ranked = try? rankedActiveInsights(query: query, fromRecent: false),
+               !ranked.isEmpty {
+                return .object([
+                    ("memories", .array(ranked.map { memoryObject(from: $0, distance: 0) })),
+                    ("warning", .string("No embedding provider — keyword-matched insights ranked by importance and recency.")),
+                ])
+            }
+            if let ranked = try? rankedActiveInsights(query: query, fromRecent: true),
+               !ranked.isEmpty {
+                return .object([
+                    ("memories", .array(ranked.map { memoryObject(from: $0, distance: 0) })),
+                    ("warning", .string("No embedding provider — recent insights ranked by importance and recency.")),
+                ])
+            }
+            return Self.emptyMemoryResult
+        }
+
         if let matches = try? searchInsightsFTS(query: query, limit: 10), !matches.isEmpty {
             return .object([
                 ("memories", .array(matches.map { memoryObject(from: $0, distance: 0) })),
@@ -454,10 +500,158 @@ final class MCPDatabase {
             ])
         }
 
-        return .object([
-            ("memories", .array([])),
-            ("message", .string("No memories found. Use save_insight to add knowledge that persists across sessions.")),
-        ])
+        return Self.emptyMemoryResult
+    }
+
+    private static let emptyMemoryResult: OrderedJSONValue = .object([
+        ("memories", .array([])),
+        ("message", .string("No memories found. Use save_insight to add knowledge that persists across sessions.")),
+    ])
+
+    /// True when the `sessions` table carries the human-driven signal columns.
+    /// A read-only MCP over an un-migrated DB then skips the human-driven filter.
+    private func sessionsHaveHumanDrivenColumns() throws -> Bool {
+        try queue.read { db in
+            let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(sessions)")
+            let names = Set(rows.compactMap { $0["name"] as String? })
+            return names.contains("instruction_count") && names.contains("human_turn_count")
+        }
+    }
+
+    /// True when the `insights` table carries the memory-lifecycle columns
+    /// (`superseded_by` / `insight_type` / `access_count`).
+    private func insightsHasLifecycleColumns() throws -> Bool {
+        try queue.read { db in
+            let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(insights)")
+            let names = Set(rows.compactMap { $0["name"] as String? })
+            return names.contains("superseded_by")
+                && names.contains("insight_type")
+                && names.contains("access_count")
+        }
+    }
+
+    /// Active (non-superseded) insights for `query`, lifecycle-ranked, top 10.
+    private func rankedActiveInsights(query: String, fromRecent: Bool) throws -> [Row] {
+        let candidates = fromRecent
+            ? try listInsightsByWing(wing: nil, limit: 40)
+            : try searchInsightsFTS(query: query, limit: 40)
+        let active = candidates.filter { stringValue($0["superseded_by"]) == nil }
+        guard !active.isEmpty else { return [] }
+        return Array(rankInsightsByLifecycle(active, relevanceOrdered: !fromRecent).prefix(10))
+    }
+
+    /// `score = relevance · importanceBoost · recencyDecay · accessBoost`.
+    /// `relevanceOrdered` rows arrive best-first (FTS rank); recency-fallback
+    /// rows get uniform relevance so importance/decay decide.
+    private func rankInsightsByLifecycle(_ rows: [Row], relevanceOrdered: Bool) -> [Row] {
+        let now = contextNow()
+        let scored = rows.enumerated().map { index, row -> (offset: Int, row: Row, score: Double) in
+            let relevance = relevanceOrdered ? 1.0 / Double(index + 1) : 1.0
+            let importance = Double(max(0, min(10, intValue(row["importance"]))))
+            let importanceBoost = 0.6 + 0.4 * (importance / 5.0)
+            let ageDays = insightAgeInDays(stringValue(row["created_at"]), now: now)
+            let halfLife = insightHalfLifeDays(forType: stringValue(row["insight_type"]))
+            let recencyDecay = pow(2.0, -ageDays / halfLife)
+            let access = Double(max(0, intValue(row["access_count"])))
+            let accessBoost = 1.0 + 0.1 * log(1.0 + access)
+            return (index, row, relevance * importanceBoost * recencyDecay * accessBoost)
+        }
+        return scored
+            .sorted { lhs, rhs in
+                lhs.score != rhs.score ? lhs.score > rhs.score : lhs.offset < rhs.offset
+            }
+            .map(\.row)
+    }
+
+    private func insightHalfLifeDays(forType type: String?) -> Double {
+        switch type {
+        case "episodic": return 14
+        case "procedural": return 90
+        default: return 30
+        }
+    }
+
+    private func insightAgeInDays(_ createdAt: String?, now: Date) -> Double {
+        guard let createdAt, let date = parseInsightTimestamp(createdAt) else { return 0 }
+        return max(0, now.timeIntervalSince(date) / 86_400)
+    }
+
+    private func parseInsightTimestamp(_ raw: String) -> Date? {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = iso.date(from: raw) { return date }
+        let isoPlain = ISO8601DateFormatter()
+        if let date = isoPlain.date(from: raw) { return date }
+        let sqlite = DateFormatter()
+        sqlite.locale = Locale(identifier: "en_US_POSIX")
+        sqlite.timeZone = TimeZone(secondsFromGMT: 0)
+        sqlite.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return sqlite.date(from: raw)
+    }
+
+    // MARK: - Semantic memory (hybrid keyword + vector)
+
+    private func hasInsightEmbeddings() throws -> Bool {
+        try queue.read { db in
+            let exists = try Int.fetchOne(
+                db,
+                sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name='insight_embeddings'"
+            ) != nil
+            guard exists else { return false }
+            return try Int.fetchOne(db, sql: "SELECT 1 FROM insight_embeddings LIMIT 1") != nil
+        }
+    }
+
+    private func insightEmbeddingCandidates(dim: Int) throws -> [VectorSearch.Candidate] {
+        let rows = try queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT insight_id, embedding FROM insight_embeddings")
+        }
+        var candidates: [VectorSearch.Candidate] = []
+        for row in rows {
+            guard let id = stringValue(row["insight_id"]) else { continue }
+            let blob: Data? = row["embedding"]
+            guard let data = blob else { continue }
+            guard let vector = VectorMath.decode(data, expectedCount: dim) else { continue }
+            candidates.append(VectorSearch.Candidate(id: id, vector: vector))
+        }
+        return candidates
+    }
+
+    private func insightRowById(_ id: String) throws -> Row? {
+        try queue.read { db in
+            try Row.fetchOne(db, sql: "SELECT * FROM insights WHERE id = ? LIMIT 1", arguments: [id])
+        }
+    }
+
+    /// Embed the query, KNN over stored insight embeddings, fuse with the FTS
+    /// keyword ranking via RRF, then drop superseded rows. Top 10.
+    private func semanticMemory(
+        query: String,
+        config: EmbeddingConfig,
+        lifecycleAware: Bool
+    ) async throws -> [(row: Row, distance: Float)] {
+        let client = OpenAICompatibleEmbeddingClient(config: config)
+        let vectors = try await client.embed([query])
+        guard let queryVector = vectors.first, !queryVector.isEmpty else { return [] }
+
+        let candidates = try insightEmbeddingCandidates(dim: queryVector.count)
+        guard !candidates.isEmpty else { return [] }
+
+        let knn = VectorSearch.knn(query: queryVector, candidates: candidates, topK: 40)
+        let semanticIds = knn.map(\.id)
+        let keywordIds = ((try? searchInsightsFTS(query: query, limit: 40)) ?? [])
+            .compactMap { stringValue($0["id"]) }
+        let fused = RankFusion.rrf([semanticIds, keywordIds])
+        let scoreById = Dictionary(knn.map { ($0.id, $0.score) }, uniquingKeysWith: { first, _ in first })
+
+        var results: [(row: Row, distance: Float)] = []
+        for entry in fused {
+            guard let row = try insightRowById(entry.id) else { continue }
+            if lifecycleAware, stringValue(row["superseded_by"]) != nil { continue }
+            results.append((row, 1 - (scoreById[entry.id] ?? 0)))
+            if results.count >= 10 { break }
+        }
+        return results
     }
 
     func projectRecover(since: String?, includeCommitted: Bool) throws -> OrderedJSONValue {
@@ -628,7 +822,8 @@ final class MCPDatabase {
         sortBy: String,
         includeEnvironment: Bool
     ) throws -> String {
-        let maxChars = maxTokens * 4
+        let effectiveMaxTokens = max(1, min(maxTokens, 32_000))
+        let maxChars = effectiveMaxTokens * 4
         let projectName = URL(fileURLWithPath: cwd).lastPathComponent
         var sessions = try listContextSessions(projectName: projectName, cwd: cwd)
 
@@ -642,6 +837,7 @@ final class MCPDatabase {
         var totalChars = 0
         var selectedCount = 0
         var memoryCount = 0
+        var ruleCount = 0
 
         if let task, !task.isEmpty {
             let line = "当前任务：\(task)\n"
@@ -661,6 +857,21 @@ final class MCPDatabase {
             }
         }
 
+        let ruleRows = try minedRuleRows(
+            project: projectName,
+            query: task,
+            limit: 3
+        )
+        for row in ruleRows {
+            guard let title = stringValue(row["title"]), !title.isEmpty,
+                  let body = stringValue(row["body"]), !body.isEmpty else { continue }
+            let line = "[rule] \(title) — \(body)\n"
+            if totalChars + line.count > maxChars { break }
+            parts.append(line)
+            totalChars += line.count
+            ruleCount += 1
+        }
+
         for row in sessions {
             guard let summary = stringValue(row["summary"]), !summary.isEmpty else { continue }
             let source = stringValue(row["source"]) ?? "unknown"
@@ -673,14 +884,23 @@ final class MCPDatabase {
         }
 
         let memoryNote = memoryCount > 0 ? " + \(memoryCount) memories" : ""
-        let footer = "\n— \(selectedCount) sessions\(memoryNote), ~\(Int(ceil(Double(totalChars) / 4.0))) tokens"
+        let ruleNote = ruleCount > 0 ? " + \(ruleCount) rules" : ""
+        let footer = "\n— \(selectedCount) sessions\(memoryNote)\(ruleNote), ~\(Int(ceil(Double(totalChars) / 4.0))) tokens"
         parts.append(footer)
 
         if includeEnvironment {
-            parts.append(try contextEnvironmentSection(detail: detail, maxTokens: maxTokens))
+            parts.append(try contextEnvironmentSection(detail: detail, maxTokens: effectiveMaxTokens))
         }
 
         return parts.joined()
+    }
+
+    func getRules(project: String?, query: String?, limit: Int) throws -> OrderedJSONValue {
+        let rows = try minedRuleRows(project: project, query: query, limit: max(1, min(limit, 50)))
+        return .object([
+            ("rules", .array(rows.map(ruleObject(from:)))),
+            ("count", .int(rows.count)),
+        ])
     }
 
     func listProjectAliases() throws -> OrderedJSONValue {
@@ -752,6 +972,7 @@ final class MCPDatabase {
     }
 
     private func contextEnvironmentSection(detail: String, maxTokens: Int) throws -> String {
+        let effectiveMaxTokens = max(1, min(maxTokens, 32_000))
         let normalizedDetail: String
         switch detail {
         case "abstract", "overview", "full":
@@ -832,7 +1053,7 @@ final class MCPDatabase {
             }
         }
 
-        let maxEnvChars = Double(maxTokens * 4) * 0.3
+        let maxEnvChars = Double(effectiveMaxTokens * 4) * 0.3
         let shouldPruneEnvironment = normalizedDetail != "abstract"
         if shouldPruneEnvironment, sections.joined(separator: "\n").count > Int(maxEnvChars) {
             sections.removeAll { $0.hasPrefix("File hotspots (7d):") }
@@ -1152,6 +1373,117 @@ final class MCPDatabase {
         }
     }
 
+    // MARK: - MCP resources (`@`-mention surface)
+
+    struct ResourceEntry {
+        let uri: String
+        let name: String
+        let description: String
+        let mimeType: String
+    }
+
+    /// Recent sessions + saved insights + mined rules exposed as MCP resources so clients
+    /// (e.g. Claude Code) can surface them in `@`-mention autocomplete.
+    func recentResourceCatalog(sessionLimit: Int, insightLimit: Int, ruleLimit: Int = 15) throws -> [ResourceEntry] {
+        var entries: [ResourceEntry] = []
+        let sessions = try queue.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT s.*
+                FROM sessions s
+                WHERE s.hidden_at IS NULL
+                ORDER BY s.start_time DESC
+                LIMIT :limit
+                """,
+                arguments: ["limit": sessionLimit]
+            )
+        }
+        for row in sessions {
+            guard let id = stringValue(row["id"]), !id.isEmpty else { continue }
+            let title = stringValue(row["generated_title"])
+                ?? stringValue(row["summary"])
+                ?? id
+            let descriptionParts = [stringValue(row["source"]), stringValue(row["project"])]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+            entries.append(ResourceEntry(
+                uri: "engram://session/\(id)",
+                name: String(title.prefix(120)),
+                description: descriptionParts.joined(separator: " · "),
+                mimeType: "text/markdown"
+            ))
+        }
+        let insights = try listInsightsByWing(wing: nil, limit: insightLimit)
+        for row in insights {
+            guard let id = stringValue(row["id"]), !id.isEmpty else { continue }
+            let content = stringValue(row["content"]) ?? ""
+            entries.append(ResourceEntry(
+                uri: "engram://insight/\(id)",
+                name: String(content.prefix(80)),
+                description: "Saved insight",
+                mimeType: "text/plain"
+            ))
+        }
+        let rules = try minedRuleRows(project: nil, query: nil, limit: ruleLimit)
+        for row in rules {
+            guard let id = stringValue(row["id"]), !id.isEmpty else { continue }
+            let title = stringValue(row["title"]) ?? id
+            let descriptionParts = [stringValue(row["rule_type"]), stringValue(row["source_project"])]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+            entries.append(ResourceEntry(
+                uri: "engram://rule/\(id)",
+                name: String(title.prefix(100)),
+                description: descriptionParts.joined(separator: " · "),
+                mimeType: "text/markdown"
+            ))
+        }
+        return entries
+    }
+
+    /// Plain-text content of a single saved insight, by id.
+    func insightContent(id: String) throws -> String? {
+        try queue.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT content FROM insights WHERE id = ? LIMIT 1",
+                arguments: [id]
+            )
+        }
+    }
+
+    /// Markdown content of a mined rule, by id.
+    func ruleContent(id: String) throws -> String? {
+        guard try tableExists("mined_rules") else { return nil }
+        return try queue.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM mined_rules WHERE id = ? LIMIT 1",
+                arguments: [id]
+            ) else { return nil }
+            let title = stringValue(row["title"]) ?? id
+            let body = stringValue(row["body"]) ?? ""
+            let ruleType = stringValue(row["rule_type"]) ?? "rule"
+            let project = stringValue(row["source_project"])
+            let evidence = stringArrayFromJSON(stringValue(row["evidence_session_ids"]))
+            var lines = [
+                "# \(title)",
+                "",
+                "- Type: \(ruleType)",
+            ]
+            if let project, !project.isEmpty {
+                lines.append("- Project: \(project)")
+            }
+            if !evidence.isEmpty {
+                lines.append("- Evidence sessions: \(evidence.joined(separator: ", "))")
+            }
+            lines.append("")
+            lines.append(body)
+            return lines.joined(separator: "\n")
+        }
+    }
+
     private func listContextSessions(projectName: String, cwd: String) throws -> [Row] {
         let projects = try resolveProjectAliases([projectName])
         return try queue.read { db in
@@ -1212,12 +1544,12 @@ final class MCPDatabase {
             }
             if !expandedProjects.isEmpty {
                 if expandedProjects.count == 1, let only = expandedProjects.first {
-                    conditions.append("s.project LIKE ?")
-                    values.append("%\(only)%")
+                    conditions.append("s.project LIKE ? ESCAPE '\\'")
+                    values.append("%\(escapeLike(only))%")
                 } else {
-                    let clauses = expandedProjects.map { _ in "s.project LIKE ?" }.joined(separator: " OR ")
+                    let clauses = expandedProjects.map { _ in "s.project LIKE ? ESCAPE '\\'" }.joined(separator: " OR ")
                     conditions.append("(\(clauses))")
-                    values.append(contentsOf: expandedProjects.map { "%\($0)%" })
+                    values.append(contentsOf: expandedProjects.map { "%\(escapeLike($0))%" })
                 }
             }
             if let since {
@@ -1251,6 +1583,73 @@ final class MCPDatabase {
         }
     }
 
+    private func minedRuleRows(project: String?, query: String?, limit: Int) throws -> [Row] {
+        guard try tableExists("mined_rules") else { return [] }
+        let expandedProjects = try project.map { try resolveProjectAliases([$0]) } ?? []
+        let normalizedQuery = query?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if normalizedQuery.count >= 3, try tableExists("mined_rules_fts") {
+            return try readRetryingTransientMissingFTS { db in
+                var conditions = ["mined_rules_fts MATCH ?"]
+                var values: [DatabaseValueConvertible?] = [normalizedQuery]
+                if !expandedProjects.isEmpty {
+                    let placeholders = Array(repeating: "?", count: expandedProjects.count).joined(separator: ",")
+                    conditions.append("r.source_project IN (\(placeholders))")
+                    values.append(contentsOf: expandedProjects)
+                }
+                values.append(limit)
+
+                let sql = """
+                SELECT r.*, f.rank
+                FROM mined_rules_fts f
+                JOIN mined_rules r ON r.id = f.rule_id
+                WHERE \(conditions.joined(separator: " AND "))
+                ORDER BY f.rank, r.confidence DESC, r.created_at DESC
+                LIMIT ?
+                """
+                do {
+                    return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
+                } catch {
+                    values[0] = "\"\(normalizedQuery.replacingOccurrences(of: "\"", with: "\"\""))\""
+                    return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
+                }
+            }
+        }
+
+        return try queue.read { db in
+            var conditions: [String] = []
+            var values: [DatabaseValueConvertible?] = []
+            if !expandedProjects.isEmpty {
+                let placeholders = Array(repeating: "?", count: expandedProjects.count).joined(separator: ",")
+                conditions.append("source_project IN (\(placeholders))")
+                values.append(contentsOf: expandedProjects)
+            }
+            values.append(limit)
+            let whereClause = conditions.isEmpty ? "" : "WHERE \(conditions.joined(separator: " AND "))"
+            return try Row.fetchAll(
+                db,
+                sql: """
+                SELECT *
+                FROM mined_rules
+                \(whereClause)
+                ORDER BY confidence DESC, created_at DESC
+                LIMIT ?
+                """,
+                arguments: StatementArguments(values)
+            )
+        }
+    }
+
+    private func tableExists(_ table: String) throws -> Bool {
+        try queue.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
+                arguments: [table]
+            ) != nil
+        }
+    }
+
     private func readRetryingTransientMissingFTS<T>(
         _ block: (Database) throws -> T
     ) throws -> T {
@@ -1267,6 +1666,7 @@ final class MCPDatabase {
         let message = String(describing: error)
         return message.contains("no such table: sessions_fts")
             || message.contains("no such table: insights_fts")
+            || message.contains("no such table: mined_rules_fts")
     }
 
     private func resolveProjectAliases(_ projects: [String]) throws -> [String] {
@@ -1381,6 +1781,27 @@ private func memoryObject(from row: Row, distance: Double) -> OrderedJSONValue {
         ("importance", .int(intValue(row["importance"]))),
         ("distance", .double(distance)),
     ])
+}
+
+private func ruleObject(from row: Row) -> OrderedJSONValue {
+    .object([
+        ("id", .string(stringValue(row["id"]) ?? "")),
+        ("ruleType", .string(stringValue(row["rule_type"]) ?? "rule")),
+        ("title", .string(stringValue(row["title"]) ?? "")),
+        ("body", .string(stringValue(row["body"]) ?? "")),
+        ("evidenceSessionIds", .array(stringArrayFromJSON(stringValue(row["evidence_session_ids"])).map { .string($0) })),
+        ("confidence", .double(doubleValue(row["confidence"]))),
+        ("sourceProject", valueOrNull(stringValue(row["source_project"]))),
+        ("model", valueOrNull(stringValue(row["model"]))),
+        ("createdAt", .string(stringValue(row["created_at"]) ?? "")),
+    ])
+}
+
+private func stringArrayFromJSON(_ raw: String?) -> [String] {
+    guard let raw,
+          let data = raw.data(using: .utf8),
+          let values = try? JSONSerialization.jsonObject(with: data) as? [String] else { return [] }
+    return values.filter { !$0.isEmpty }
 }
 
 private func detailJSONValue(from raw: DatabaseValueConvertible?) -> OrderedJSONValue {

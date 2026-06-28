@@ -55,7 +55,8 @@ public enum SessionTier: String, Codable, Equatable, Sendable {
         "/status/exit",
     ]
 
-    private static let probeFirstLines: Set<String> = [
+    // Shared with InstructionExtractor (same module) — keep internal, not private.
+    static let probeFirstLines: Set<String> = [
         "ping", "hi", "hello", "test", "echo", "ok", "hey", "say hello", "reply: t4",
     ]
 

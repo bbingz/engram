@@ -198,14 +198,14 @@ describe('Database migration', () => {
         )
         .pluck()
         .all('legacy-fts'),
-    ).toEqual(['existing searchable text']);
+    ).toEqual([]);
     expect(db.getMetadata('fts_rebuild_version')).toBe(FTS_VERSION);
     expect(db.getMetadata('fts_version')).toBe('2');
     expect(
       db.raw
         .prepare('SELECT size_bytes FROM sessions WHERE id = ?')
         .get('legacy-fts'),
-    ).toEqual({ size_bytes: 0 });
+    ).toEqual({ size_bytes: 123 });
     expect(
       db.raw.prepare('SELECT COUNT(*) AS count FROM session_embeddings').get(),
     ).toEqual({ count: 0 });
@@ -228,7 +228,7 @@ describe('Database migration', () => {
           'SELECT COUNT(*) AS count FROM sessions_fts_rebuild WHERE session_id = ?',
         )
         .get('legacy-fts'),
-    ).toEqual({ count: 1 });
+    ).toEqual({ count: 0 });
     reopened.close();
   });
 
@@ -322,8 +322,82 @@ describe('Database migration', () => {
         )
         .pluck()
         .all('legacy-fts'),
-    ).toEqual(['active searchable text']);
+    ).toEqual([]);
     expect(db.getMetadata('fts_version')).toBe('2');
+    expect(db.getMetadata('fts_rebuild_version')).toBe(FTS_VERSION);
+    db.close();
+  });
+
+  it('resumes an existing FTS rebuild without reopening completed jobs', () => {
+    const dbPath = makeTmpDb();
+    const rawDb = new BetterSqlite3(dbPath);
+    rawDb.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        cwd TEXT NOT NULL DEFAULT '',
+        file_path TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL DEFAULT 123,
+        indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE session_index_jobs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        job_kind TEXT NOT NULL,
+        target_sync_version INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE VIRTUAL TABLE sessions_fts USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      );
+      CREATE VIRTUAL TABLE sessions_fts_rebuild USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      );
+      INSERT INTO metadata(key, value) VALUES ('fts_version', '2');
+      INSERT INTO metadata(key, value) VALUES ('fts_rebuild_version', '3');
+      INSERT INTO sessions (id, source, start_time, cwd, file_path, size_bytes)
+      VALUES
+        ('done', 'codex', '2026-01-01T00:00:00Z', '/repo', '/tmp/done.jsonl', 123),
+        ('todo', 'codex', '2026-01-01T00:00:00Z', '/repo', '/tmp/todo.jsonl', 456);
+      INSERT INTO sessions_fts_rebuild(session_id, content)
+      VALUES ('done', 'rebuilt done');
+      INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status)
+      VALUES
+        ('done:1:fts', 'done', 'fts', 1, 'completed'),
+        ('todo:1:fts', 'todo', 'fts', 1, 'pending');
+    `);
+    rawDb.close();
+
+    const db = new Database(dbPath);
+
+    expect(
+      db.raw
+        .prepare(
+          'SELECT session_id, status FROM session_index_jobs ORDER BY session_id',
+        )
+        .all(),
+    ).toEqual([
+      { session_id: 'done', status: 'completed' },
+      { session_id: 'todo', status: 'pending' },
+    ]);
+    expect(
+      db.raw
+        .prepare(
+          'SELECT content FROM sessions_fts_rebuild WHERE session_id = ?',
+        )
+        .pluck()
+        .all('done'),
+    ).toEqual(['rebuilt done']);
     expect(db.getMetadata('fts_rebuild_version')).toBe(FTS_VERSION);
     db.close();
   });
@@ -482,8 +556,9 @@ describe('Database migration', () => {
       .get('legacy-fts') as { size_bytes: number };
 
     expect(ftsRows).toEqual(['existing searchable text']);
-    expect(row.size_bytes).toBe(0);
-    expect(db.getMetadata('fts_version')).toBe(FTS_VERSION);
+    expect(row.size_bytes).toBe(123);
+    expect(db.getMetadata('fts_version')).toBe('2');
+    expect(db.getMetadata('fts_rebuild_version')).toBe(FTS_VERSION);
 
     db.close();
   });

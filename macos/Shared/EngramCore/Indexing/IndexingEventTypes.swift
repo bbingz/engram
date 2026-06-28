@@ -21,12 +21,16 @@ public struct AuthoritativeSessionSnapshot: Equatable, Sendable {
     public var systemMessageCount: Int
     public var summary: String?
     public var summaryMessageCount: Int?
+    public var instructionCount: Int?
+    public var humanTurnCount: Int?
+    public var instructionSummary: String?
     public var origin: String?
     public var tier: SessionTier?
     public var agentRole: String?
     public var parentSessionId: String?
     public var toolCallCounts: [String: Int]
     public var tokenUsage: TokenUsage?
+    public var implementationBeats: [SessionImplementationBeat]
 
     public init(
         id: String,
@@ -49,12 +53,16 @@ public struct AuthoritativeSessionSnapshot: Equatable, Sendable {
         systemMessageCount: Int,
         summary: String? = nil,
         summaryMessageCount: Int? = nil,
+        instructionCount: Int? = nil,
+        humanTurnCount: Int? = nil,
+        instructionSummary: String? = nil,
         origin: String? = nil,
         tier: SessionTier? = nil,
         agentRole: String? = nil,
         parentSessionId: String? = nil,
         toolCallCounts: [String: Int] = [:],
-        tokenUsage: TokenUsage? = nil
+        tokenUsage: TokenUsage? = nil,
+        implementationBeats: [SessionImplementationBeat] = []
     ) {
         self.id = id
         self.source = source
@@ -76,12 +84,16 @@ public struct AuthoritativeSessionSnapshot: Equatable, Sendable {
         self.systemMessageCount = systemMessageCount
         self.summary = summary
         self.summaryMessageCount = summaryMessageCount
+        self.instructionCount = instructionCount
+        self.humanTurnCount = humanTurnCount
+        self.instructionSummary = instructionSummary
         self.origin = origin
         self.tier = tier
         self.agentRole = agentRole
         self.parentSessionId = parentSessionId
         self.toolCallCounts = toolCallCounts
         self.tokenUsage = tokenUsage
+        self.implementationBeats = implementationBeats
     }
 }
 

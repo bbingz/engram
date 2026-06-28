@@ -120,6 +120,8 @@ final class MCPStdioServer {
                     ("protocolVersion", .string(negotiatedVersion)),
                     ("capabilities", .object([
                         ("tools", .object([])),
+                        ("resources", .object([])),
+                        ("prompts", .object([])),
                     ])),
                     ("serverInfo", .object([
                         ("name", .string("engram")),
@@ -142,8 +144,47 @@ final class MCPStdioServer {
             )
         case "tools/call":
             await handleToolCall(request)
+        case "resources/list":
+            await emitRegistryResult(id: request.id) {
+                try await MCPToolRegistry.resourcesList(config: config)
+            }
+        case "resources/read":
+            guard let uri = request.params?["uri"]?.stringValue, !uri.isEmpty else {
+                emitError(id: request.id, code: -32602, message: "Missing uri")
+                return
+            }
+            await emitRegistryResult(id: request.id) {
+                try await MCPToolRegistry.resourceRead(uri: uri, config: config)
+            }
+        case "prompts/list":
+            emit(jsonrpc: "2.0", id: request.id, result: MCPToolRegistry.promptsList())
+        case "prompts/get":
+            guard let name = request.params?["name"]?.stringValue, !name.isEmpty else {
+                emitError(id: request.id, code: -32602, message: "Missing prompt name")
+                return
+            }
+            let arguments = request.params?["arguments"]?.objectValue ?? [:]
+            await emitRegistryResult(id: request.id) {
+                try await MCPToolRegistry.promptGet(name: name, arguments: arguments, config: config)
+            }
         default:
             emitError(id: request.id, code: -32601, message: "Method not found")
+        }
+    }
+
+    /// Run a `resources/*` or `prompts/*` registry operation and emit either a
+    /// JSON-RPC result or a JSON-RPC error (invalid params for `MCPToolError`).
+    private func emitRegistryResult(
+        id: JSONRPCId?,
+        _ operation: () async throws -> OrderedJSONValue
+    ) async {
+        do {
+            let result = try await operation()
+            emit(jsonrpc: "2.0", id: id, result: result)
+        } catch let error as MCPToolError {
+            emitError(id: id, code: -32602, message: error.localizedDescription)
+        } catch {
+            emitError(id: id, code: -32603, message: error.localizedDescription)
         }
     }
 

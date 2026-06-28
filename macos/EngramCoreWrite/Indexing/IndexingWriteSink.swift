@@ -4,10 +4,32 @@ import EngramCoreRead
 public struct KnownIndexedFileState: Equatable, Sendable {
     public let sizeBytes: Int64
     public let indexedAt: String?
+    public let needsInstructionBackfill: Bool
 
-    public init(sizeBytes: Int64, indexedAt: String?) {
+    public init(sizeBytes: Int64, indexedAt: String?, needsInstructionBackfill: Bool = false) {
         self.sizeBytes = sizeBytes
         self.indexedAt = indexedAt
+        self.needsInstructionBackfill = needsInstructionBackfill
+    }
+
+    static func fromIndexedSessionRow(
+        sizeBytes: Int64?,
+        indexedAt: String?,
+        needsInstructionBackfill: Bool
+    ) -> KnownIndexedFileState? {
+        if let sizeBytes {
+            return KnownIndexedFileState(
+                sizeBytes: sizeBytes,
+                indexedAt: indexedAt,
+                needsInstructionBackfill: needsInstructionBackfill
+            )
+        }
+        guard needsInstructionBackfill else { return nil }
+        return KnownIndexedFileState(
+            sizeBytes: 0,
+            indexedAt: indexedAt,
+            needsInstructionBackfill: true
+        )
     }
 }
 

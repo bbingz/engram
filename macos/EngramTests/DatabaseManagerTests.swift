@@ -304,6 +304,37 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testSessionTimelineAppliesDefaultLimit() throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            for index in 0..<2_005 {
+                let timestamp = String(
+                    format: "2026-05-09T%02d:%02d:%02dZ",
+                    index / 3_600,
+                    (index / 60) % 60,
+                    index % 60
+                )
+                try db.execute(sql: """
+                    INSERT INTO sessions (
+                        id, source, start_time, end_time, cwd, project, model,
+                        message_count, user_message_count, assistant_message_count,
+                        tool_message_count, system_message_count, summary, file_path,
+                        size_bytes, indexed_at, tier
+                    ) VALUES (?, 'claude-code', ?, NULL, '/tmp', 'engram', 'sonnet',
+                        1, 1, 0, 0, 0, NULL, ?, 1, datetime('now'), 'normal')
+                """, arguments: ["limit-\(index)", timestamp, "/tmp/limit-\(index).jsonl"])
+            }
+        }
+
+        let byCreated = try db.sessionTimeline(days: 10_000, sort: .createdDesc)
+        let sessions = byCreated.flatMap(\.sessions)
+
+        XCTAssertEqual(sessions.count, 2_000)
+        XCTAssertEqual(sessions.first?.id, "limit-2004")
+        XCTAssertEqual(sessions.last?.id, "limit-5")
+    }
+
+    @MainActor
     func testListSessionsCanIncludeHiddenSessions() throws {
         try insertTestSession(at: dbPath, id: "visible")
         try insertTestSession(at: dbPath, id: "hidden")
@@ -707,6 +738,43 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testProjectTimelineEscapesLikeWildcards() throws {
+        try insertTestSession(at: dbPath, id: "literal-project", project: "my_repo")
+        try insertTestSession(at: dbPath, id: "wildcard-project", project: "myXrepo")
+
+        let projects = try db.projectTimeline(project: "my_repo").compactMap(\.project)
+
+        XCTAssertEqual(projects, ["my_repo"])
+    }
+
+    @MainActor
+    func testGetContextEscapesLikeWildcards() throws {
+        try insertTestSession(at: dbPath, id: "literal-context-project", project: "my_repo")
+        try insertTestSession(at: dbPath, id: "wildcard-context-project", project: "myXrepo")
+
+        let projectMatches = try db.getContext(cwd: "/Users/test/my_repo", limit: 10).map(\.id)
+
+        XCTAssertEqual(projectMatches, ["literal-context-project"])
+
+        try insertSessionWithCwd(
+            at: dbPath,
+            id: "literal-context-cwd",
+            cwd: "/Users/test/repo_1/sub",
+            startTime: "2026-03-22T10:00:00Z"
+        )
+        try insertSessionWithCwd(
+            at: dbPath,
+            id: "wildcard-context-cwd",
+            cwd: "/Users/test/repoX1/sub",
+            startTime: "2026-03-22T10:00:00Z"
+        )
+
+        let cwdMatches = try db.getContext(cwd: "/Users/test/repo_1", limit: 10).map(\.id)
+
+        XCTAssertEqual(cwdMatches, ["literal-context-cwd"])
+    }
+
+    @MainActor
     func testSearchShortQueryReturnsEmpty() throws {
         try insertTestSession(at: dbPath, id: "s1")
         try insertFTSContent(at: dbPath, sessionId: "s1", content: "some content")
@@ -968,6 +1036,19 @@ final class DatabaseManagerTests: XCTestCase {
         try insertSessionWithCwd(at: dbPath, id: "other-repo", cwd: "/Users/test/elsewhere", startTime: today)
 
         let counts = try db.sparklineData(for: "/Users/test/repo")
+        XCTAssertEqual(counts.reduce(0, +), 1)
+    }
+
+    @MainActor
+    func testSparklineDataEscapesLikeWildcards() throws {
+        let utc = ISO8601DateFormatter()
+        utc.timeZone = TimeZone(identifier: "UTC")
+        let today = utc.string(from: Date())
+        try insertSessionWithCwd(at: dbPath, id: "literal-repo", cwd: "/Users/test/my_repo/sub", startTime: today)
+        try insertSessionWithCwd(at: dbPath, id: "wildcard-repo", cwd: "/Users/test/myXrepo/sub", startTime: today)
+
+        let counts = try db.sparklineData(for: "/Users/test/my_repo")
+
         XCTAssertEqual(counts.reduce(0, +), 1)
     }
 

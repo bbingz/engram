@@ -124,6 +124,13 @@ final class GeminiProjectsJSONTests: XCTestCase {
         XCTAssertEqual(projects["/b/other"], "other")
     }
 
+    func testAtomicWriterCreatesTempWithPermissionsAtCreation() throws {
+        let source = try projectSource("EngramCoreWrite/ProjectMove/GeminiProjectsJSON.swift")
+
+        XCTAssertFalse(source.contains("try content.write(toFile: tmp"))
+        XCTAssertTrue(source.contains("attributes: [.posixPermissions:"))
+    }
+
     func testApplyPreservesLegacyFlatLayout() throws {
         try writeJson(["/a/proj": "proj"])
         let plan = try GeminiProjectsJSON.plan(
@@ -242,5 +249,16 @@ final class GeminiProjectsJSONTests: XCTestCase {
     private func readMap() throws -> [String: Any] {
         let data = try Data(contentsOf: file)
         return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    private func projectSource(_ relativePath: String) throws -> String {
+        try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent(relativePath),
+            encoding: .utf8
+        )
     }
 }

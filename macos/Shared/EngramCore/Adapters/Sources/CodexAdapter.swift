@@ -55,6 +55,20 @@ enum JSONLAdapterSupport {
         return (url, identity)
     }
 
+    static func readString(
+        locator: String,
+        limits: ParserLimits,
+        encoding: String.Encoding = .utf8
+    ) throws -> String {
+        let (url, before) = try prepareFile(locator: locator, limits: limits)
+        let content = try String(contentsOf: url, encoding: encoding)
+        let after = try limits.fileIdentity(for: url)
+        guard limits.isSameFileIdentity(before, after) else {
+            throw ParserFailure.fileModifiedDuringParse
+        }
+        return content
+    }
+
     static func readObjects(
         locator: String,
         limits: ParserLimits,

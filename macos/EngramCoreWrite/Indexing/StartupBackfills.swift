@@ -215,6 +215,8 @@ public enum StartupBackfills {
             } else if indexer.usesInlineCountAndCostBackfills {
                 emit(StartupBackfillEvent(event: "backfill_inline", payload: ["type": .string("counts")]))
             }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             log.warn("backfill counts failed", error: error)
         }
@@ -226,6 +228,8 @@ public enum StartupBackfills {
             } else if indexer.usesInlineCountAndCostBackfills {
                 emit(StartupBackfillEvent(event: "backfill_inline", payload: ["type": .string("costs")]))
             }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             log.warn("backfill costs failed", error: error)
         }
@@ -403,6 +407,8 @@ public enum StartupBackfills {
                     )
                 )
             }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             log.warn("orphan scan failed", error: error)
         }
@@ -441,6 +447,8 @@ public enum StartupBackfills {
             if promoted > 0 {
                 emit(StartupBackfillEvent(event: "insights_promoted", payload: ["count": .int(promoted)]))
             }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             log.warn("index job recovery failed", error: error)
         }

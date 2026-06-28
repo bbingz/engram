@@ -33,7 +33,7 @@ final class CopilotAdapter: SessionAdapter, Sendable {
             let checkpointIndexURL = sessionURL
                 .appendingPathComponent("checkpoints", isDirectory: true)
                 .appendingPathComponent("index.md")
-            if Self.hasCheckpointEntries(checkpointIndexURL) {
+            if Self.hasCheckpointEntries(checkpointIndexURL, limits: limits) {
                 locators.append(checkpointIndexURL.path)
             }
         }
@@ -50,7 +50,7 @@ final class CopilotAdapter: SessionAdapter, Sendable {
             if let failure { return .failure(failure) }
 
             let sessionDirectory = URL(fileURLWithPath: locator).deletingLastPathComponent()
-            let workspace = Self.readWorkspace(sessionDirectory.appendingPathComponent("workspace.yaml"))
+            let workspace = Self.readWorkspace(sessionDirectory.appendingPathComponent("workspace.yaml"), limits: limits)
             let sessionId = workspace["id"] ?? sessionDirectory.lastPathComponent
             var startTime = workspace["created_at"] ?? ""
             var endTime = workspace["updated_at"] ?? ""
@@ -134,10 +134,10 @@ final class CopilotAdapter: SessionAdapter, Sendable {
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
         if Self.isCheckpointIndex(locator) {
             let checkpointIndexURL = URL(fileURLWithPath: locator)
-            let messages = Self.checkpointEntries(checkpointIndexURL).map { entry in
+            let messages = Self.checkpointEntries(checkpointIndexURL, limits: limits).map { entry in
                 NormalizedMessage(
                     role: .system,
-                    content: Self.checkpointMessageContent(entry, checkpointIndexURL: checkpointIndexURL),
+                    content: Self.checkpointMessageContent(entry, checkpointIndexURL: checkpointIndexURL, limits: limits),
                     timestamp: nil
                 )
             }
@@ -170,8 +170,8 @@ final class CopilotAdapter: SessionAdapter, Sendable {
         let sessionDirectory = checkpointIndexURL
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let workspace = Self.readWorkspace(sessionDirectory.appendingPathComponent("workspace.yaml"))
-        let entries = Self.checkpointEntries(checkpointIndexURL)
+        let workspace = Self.readWorkspace(sessionDirectory.appendingPathComponent("workspace.yaml"), limits: limits)
+        let entries = Self.checkpointEntries(checkpointIndexURL, limits: limits)
         guard !entries.isEmpty else {
             return .failure(.malformedJSON)
         }
@@ -295,12 +295,12 @@ final class CopilotAdapter: SessionAdapter, Sendable {
             && url.deletingLastPathComponent().lastPathComponent == "checkpoints"
     }
 
-    private static func hasCheckpointEntries(_ url: URL) -> Bool {
-        !checkpointEntries(url).isEmpty
+    private static func hasCheckpointEntries(_ url: URL, limits: ParserLimits) -> Bool {
+        !checkpointEntries(url, limits: limits).isEmpty
     }
 
-    private static func checkpointEntries(_ url: URL) -> [CheckpointEntry] {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+    private static func checkpointEntries(_ url: URL, limits: ParserLimits) -> [CheckpointEntry] {
+        guard let content = try? JSONLAdapterSupport.readString(locator: url.path, limits: limits) else {
             return []
         }
 
@@ -326,10 +326,11 @@ final class CopilotAdapter: SessionAdapter, Sendable {
 
     private static func checkpointMessageContent(
         _ entry: CheckpointEntry,
-        checkpointIndexURL: URL
+        checkpointIndexURL: URL,
+        limits: ParserLimits
     ) -> String {
         let title = "Checkpoint \(entry.number): \(entry.title)"
-        guard let body = checkpointBody(entry, checkpointIndexURL: checkpointIndexURL) else {
+        guard let body = checkpointBody(entry, checkpointIndexURL: checkpointIndexURL, limits: limits) else {
             return title
         }
         return "\(title)\n\n\(body)"
@@ -337,7 +338,8 @@ final class CopilotAdapter: SessionAdapter, Sendable {
 
     private static func checkpointBody(
         _ entry: CheckpointEntry,
-        checkpointIndexURL: URL
+        checkpointIndexURL: URL,
+        limits: ParserLimits
     ) -> String? {
         guard let fileName = entry.fileName,
               fileName == URL(fileURLWithPath: fileName).lastPathComponent,
@@ -348,7 +350,7 @@ final class CopilotAdapter: SessionAdapter, Sendable {
         let bodyURL = checkpointIndexURL
             .deletingLastPathComponent()
             .appendingPathComponent(fileName)
-        guard let content = try? String(contentsOf: bodyURL, encoding: .utf8) else {
+        guard let content = try? JSONLAdapterSupport.readString(locator: bodyURL.path, limits: limits) else {
             return nil
         }
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -358,8 +360,8 @@ final class CopilotAdapter: SessionAdapter, Sendable {
         return String(trimmed.prefix(maxCheckpointBodyLength))
     }
 
-    private static func readWorkspace(_ url: URL) -> [String: String] {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+    private static func readWorkspace(_ url: URL, limits: ParserLimits) -> [String: String] {
+        guard let content = try? JSONLAdapterSupport.readString(locator: url.path, limits: limits) else {
             return [:]
         }
 

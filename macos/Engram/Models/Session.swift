@@ -36,6 +36,13 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     /// Optional + defaulted so a missing column decodes to nil and the memberwise
     /// init stays source-compatible.
     var qualityScore: Int? = nil
+    /// Number of distinct, substantive human instructions extracted at index time
+    /// (allowlisted sources only; nil = not assessed). Drives the "human-driven"
+    /// default filter and the instruction-first display.
+    var instructionCount: Int? = nil
+    /// Newline-joined distinct human instruction set, in order. nil for
+    /// non-allowlisted sources. Rendered as the "What you asked" section.
+    var instructionSummary: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, source, cwd, project, model, summary
@@ -61,6 +68,8 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         case lastAccessedAt   = "last_accessed_at"
         case accessCount      = "access_count"
         case qualityScore     = "quality_score"
+        case instructionCount   = "instruction_count"
+        case instructionSummary = "instruction_summary"
     }
 
     /// Prefer filePath; fall back to sourceLocator when filePath is empty.
@@ -93,6 +102,14 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         var parts = ["\(userMessageCount) user", "\(assistantMessageCount) asst"]
         if systemMessageCount > 0 { parts.append("\(systemMessageCount) sys") }
         return parts.joined(separator: " · ")
+    }
+    /// Distinct human instructions split back into lines for ordered rendering.
+    /// nil/empty → no instruction-first display (non-allowlisted source).
+    var instructionLines: [String]? {
+        guard let s = instructionSummary?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !s.isEmpty else { return nil }
+        let lines = s.split(separator: "\n").map(String.init)
+        return lines.isEmpty ? nil : lines
     }
     var displayDate: String        { String(startTime.prefix(10)) }
     var displayUpdatedDate: String { String((endTime ?? startTime).prefix(10)) }
@@ -151,6 +168,8 @@ extension Session {
         lastAccessedAt = try c.decodeIfPresent(String.self, forKey: .lastAccessedAt)
         accessCount = try c.decodeIfPresent(Int.self, forKey: .accessCount) ?? 0
         qualityScore = try c.decodeIfPresent(Int.self, forKey: .qualityScore)
+        instructionCount = try c.decodeIfPresent(Int.self, forKey: .instructionCount)
+        instructionSummary = try c.decodeIfPresent(String.self, forKey: .instructionSummary)
     }
 }
 

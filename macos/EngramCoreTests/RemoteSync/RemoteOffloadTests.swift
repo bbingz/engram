@@ -57,6 +57,20 @@ final class RemoteOffloadTests: XCTestCase {
         }
     }
 
+    func testLocalDirectoryBackendRejectsTraversalKeys() async throws {
+        let store = tempDir.appendingPathComponent("store", isDirectory: true)
+        let secret = tempDir.appendingPathComponent("secret.bundle")
+        try Data("secret".utf8).write(to: secret)
+        let backend = try LocalDirectoryBackend(root: store)
+
+        do {
+            _ = try await backend.get(key: "../secret.bundle")
+            XCTFail("LocalDirectoryBackend must not read keys outside the configured root")
+        } catch {
+            // expected: invalid keys should be rejected before filesystem access.
+        }
+    }
+
     // MARK: - OffloadPolicy
 
     func testPolicyEligibility() {
@@ -178,6 +192,121 @@ final class RemoteOffloadTests: XCTestCase {
 
     // MARK: - Review fixes
 
+    func testOffloadRunnerRethrowsCancellationWithoutChargingFailure() async throws {
+        let writer = try EngramDatabaseWriter(path: tempDir.appendingPathComponent("offload-cancel.sqlite").path)
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, file_path, size_bytes, hidden_at)
+                VALUES ('s', 'codex', '2024-01-01T00:00:00Z', '/tmp/s.jsonl', 4096, '2024-02-01T00:00:00Z')
+            """)
+            try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('s', 'cancel me')")
+        }
+
+        let runner = OffloadRunner(
+            writer: writer,
+            backend: CancellingRemoteStorageBackend(cancelOn: .put),
+            policy: OffloadPolicy(coldAgeDays: 90)
+        )
+
+        do {
+            _ = try await runner.runOffloadOnce(now: Date())
+            XCTFail("expected CancellationError")
+        } catch is CancellationError {
+            // expected
+        }
+
+        try writer.read { db in
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT status FROM offload_queue WHERE session_id = 's'"), "inflight")
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT attempts FROM offload_queue WHERE session_id = 's'"), 0)
+        }
+    }
+
+    func testRehydrateRunnerRethrowsCancellationWithoutChargingFailure() async throws {
+        let writer = try EngramDatabaseWriter(path: tempDir.appendingPathComponent("rehydrate-cancel.sqlite").path)
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, file_path, offload_state)
+                VALUES ('s', 'codex', '2024-01-01T00:00:00Z', '/tmp/s.jsonl', 'offloaded')
+            """)
+            try db.execute(sql: """
+                INSERT INTO sync_ledger(session_id, remote_key, direction, content_hash)
+                VALUES ('s', 'remote-key', 'out', 'hash')
+            """)
+            _ = try OffloadRepo.enqueueRehydrate(db, sessionId: "s")
+        }
+
+        let runner = OffloadRunner(
+            writer: writer,
+            backend: CancellingRemoteStorageBackend(cancelOn: .get),
+            policy: OffloadPolicy(coldAgeDays: 90)
+        )
+
+        do {
+            _ = try await runner.runRehydrateOnce()
+            XCTFail("expected CancellationError")
+        } catch is CancellationError {
+            // expected
+        }
+
+        try writer.read { db in
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT status FROM rehydrate_queue WHERE session_id = 's'"), "inflight")
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT attempts FROM rehydrate_queue WHERE session_id = 's'"), 0)
+        }
+    }
+
+    func testRehydrateCommitAbortsWhenSyncVersionChanged() async throws {
+        let writer = try EngramDatabaseWriter(path: tempDir.appendingPathComponent("rehydrate-stale.sqlite").path)
+        try writer.migrate()
+        let bundle = BundleCodec.makeBundle(
+            sessionId: "s",
+            ftsContents: ["full one", "full two"],
+            summary: "full summary",
+            summaryMessageCount: 2,
+            messageCount: 2,
+            userMessageCount: 1,
+            assistantMessageCount: 1,
+            toolMessageCount: 0,
+            systemMessageCount: 0
+        )
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, file_path, offload_state, sync_version, summary, summary_message_count)
+                VALUES ('s', 'codex', '2024-01-01T00:00:00Z', '/tmp/s.jsonl', 'offloaded', 1, 'shadow summary', 1)
+            """)
+            try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('s', 'shadow')")
+            try db.execute(
+                sql: """
+                INSERT INTO sync_ledger(session_id, remote_key, direction, content_hash)
+                VALUES ('s', 'remote-key', 'out', ?)
+                """,
+                arguments: [bundle.contentHash]
+            )
+            _ = try OffloadRepo.enqueueRehydrate(db, sessionId: "s")
+        }
+
+        let runner = OffloadRunner(
+            writer: writer,
+            backend: ConcurrentRehydrateMutationBackend(writer: writer, bundle: bundle),
+            policy: OffloadPolicy(coldAgeDays: 90)
+        )
+
+        let outcome = try await runner.runRehydrateOnce()
+
+        XCTAssertEqual(outcome, OffloadRunner.SyncOutcome(succeeded: 0, failed: 0))
+        try writer.read { db in
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT offload_state FROM sessions WHERE id = 's'"), "offloaded")
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT sync_version FROM sessions WHERE id = 's'"), 2)
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT content FROM sessions_fts WHERE session_id = 's'"),
+                ["shadow"]
+            )
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT status FROM rehydrate_queue WHERE session_id = 's'"), "pending")
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT attempts FROM rehydrate_queue WHERE session_id = 's'"), 0)
+        }
+    }
+
     /// A re-index between bundle capture and commit must abort the offload (no FTS
     /// purge) rather than collapse content that no longer matches the bundle.
     func testCommitOffloadedAbortsWhenSyncVersionChanged() throws {
@@ -273,5 +402,62 @@ final class RemoteOffloadTests: XCTestCase {
         try writer.write { db in try OffloadRepo.failOffload(db, queueId: qid, error: "net") }
         let final = try writer.read { db in try String.fetchOne(db, sql: "SELECT status FROM offload_queue WHERE id = ?", arguments: [qid]) }
         XCTAssertEqual(final, "failed", "after maxAttempts the job is terminally failed")
+    }
+}
+
+private struct CancellingRemoteStorageBackend: RemoteStorageBackend {
+    enum Operation {
+        case put
+        case get
+    }
+
+    let cancelOn: Operation
+
+    func head(key: String) async throws -> Bool {
+        false
+    }
+
+    func put(key: String, data: Data) async throws {
+        if cancelOn == .put { throw CancellationError() }
+    }
+
+    func get(key: String) async throws -> Data {
+        if cancelOn == .get { throw CancellationError() }
+        return Data()
+    }
+
+    func delete(key: String) async throws {}
+
+    func catalog() async throws -> Data {
+        Data()
+    }
+}
+
+private final class ConcurrentRehydrateMutationBackend: RemoteStorageBackend, @unchecked Sendable {
+    private let writer: EngramDatabaseWriter
+    private let bundle: RemoteSessionBundle
+
+    init(writer: EngramDatabaseWriter, bundle: RemoteSessionBundle) {
+        self.writer = writer
+        self.bundle = bundle
+    }
+
+    func head(key: String) async throws -> Bool {
+        true
+    }
+
+    func put(key: String, data: Data) async throws {}
+
+    func get(key: String) async throws -> Data {
+        try writer.write { db in
+            try db.execute(sql: "UPDATE sessions SET sync_version = 2 WHERE id = 's'")
+        }
+        return try BundleCodec.encode(bundle)
+    }
+
+    func delete(key: String) async throws {}
+
+    func catalog() async throws -> Data {
+        Data()
     }
 }

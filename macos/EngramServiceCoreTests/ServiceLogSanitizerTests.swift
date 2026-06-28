@@ -26,12 +26,28 @@ final class ServiceLogSanitizerTests: XCTestCase {
         XCTAssertTrue(out.contains("settings loaded from"))
     }
 
+    func testHomePathTailIsNotLeftBehind() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let raw = "index opened \(home)/.engram/index.sqlite"
+        let out = ServiceLogSanitizer.redact(raw)
+        XCTAssertFalse(out.contains(home))
+        XCTAssertFalse(out.contains(".engram/index.sqlite"))
+        XCTAssertEqual(out, "index opened <path>")
+    }
+
     func testRuntimeSocketPathIsRedacted() {
         let raw = "ipc listener bound to /var/folders/xx/engram-run/service.sock"
         let out = ServiceLogSanitizer.redact(raw)
         XCTAssertFalse(out.contains("/var/folders/xx/engram-run/service.sock"))
         XCTAssertTrue(out.contains("<path>"))
         XCTAssertTrue(out.contains("ipc listener bound to"))
+    }
+
+    func testExternalVolumePathIsRedacted() {
+        let raw = "indexed /Volumes/ExternalDrive/work/project/index.sqlite"
+        let out = ServiceLogSanitizer.redact(raw)
+        XCTAssertFalse(out.contains("/Volumes/ExternalDrive/work/project/index.sqlite"))
+        XCTAssertTrue(out.contains("<path>"))
     }
 
     func testEmailIsRedacted() {

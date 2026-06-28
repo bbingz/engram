@@ -285,6 +285,8 @@ struct SessionDetailView: View {
                 )
             }
 
+            instructionSection
+
             summarySection
 
             // Confirmed parent breadcrumb
@@ -646,6 +648,32 @@ struct SessionDetailView: View {
             }
             .padding(.vertical, 8)
             .accessibilityIdentifier("detail_agentSessionsSection")
+        }
+    }
+
+    // MARK: - Instructions (what the human asked)
+
+    /// Read-only, index-derived list of the human's distinct instructions. Renders
+    /// only for allowlisted sources where extraction produced a set; absent
+    /// otherwise, leaving the existing Summary section unchanged.
+    @ViewBuilder
+    private var instructionSection: some View {
+        if let lines = session.instructionLines, !lines.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("What you asked", systemImage: "person.bubble")
+                    .font(.caption.bold())
+                    .foregroundStyle(Theme.secondaryText)
+                ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                    Text("\(index + 1). \(line)")
+                        .font(.caption)
+                        .foregroundStyle(Theme.secondaryText)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+            .accessibilityIdentifier("detail_instructionSection")
         }
     }
 

@@ -243,6 +243,13 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         )
     }
 
+    func recordInsightAccess(ids: [String]) async throws {
+        let _: EmptyServiceResult = try await command(
+            "recordInsightAccess",
+            payload: EngramServiceInsightAccessRequest(ids: ids)
+        )
+    }
+
     func hideEmptySessions() async throws -> EngramServiceHideEmptySessionsResponse {
         try await command("hideEmptySessions")
     }

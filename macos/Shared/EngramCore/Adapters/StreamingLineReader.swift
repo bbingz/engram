@@ -47,7 +47,7 @@ final class StreamingLineReader {
         let maxLineBytes = self.maxLineBytes
         let chunkSize = self.chunkSize
 
-        return AnySequence {
+        return AnySequence { [self] in
             AnyIterator { [weak self, holder] in
                 _ = holder // keep handle alive until iterator is released
                 while true {

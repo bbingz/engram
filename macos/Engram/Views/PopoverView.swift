@@ -322,8 +322,11 @@ struct PopoverView: View {
                 break  // no tier filter
             case "hide-noise":
                 noiseConditions.append("(tier IS NULL OR tier NOT IN ('skip', 'lite'))")
-            default:  // "hide-skip"
+            case "hide-skip":
                 noiseConditions.append("(tier IS NULL OR tier != 'skip')")
+            default:  // "human-driven" (default): hide skip + only human-driven sessions
+                noiseConditions.append("(tier IS NULL OR tier != 'skip')")
+                noiseConditions.append("(\(HumanDrivenFilter.sqlPredicate))")
             }
             let whereClause = noiseConditions.joined(separator: " AND ")
 
@@ -434,18 +437,13 @@ struct PopoverView: View {
         let path = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".engram/settings.json")
         guard let data = try? Data(contentsOf: path),
               let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return "hide-skip" // default
+            return "human-driven" // default
         }
-        return (settings["noiseFilter"] as? String) ?? "hide-skip"
+        return (settings["noiseFilter"] as? String) ?? "human-driven"
     }
 
     private func relativeTime(_ ts: String) -> String {
-        guard let d = EngramTimestampParser.date(from: ts) else { return "" }
-        let secs = -d.timeIntervalSinceNow
-        if secs < 60 { return "now" }
-        if secs < 3600 { return "\(Int(secs / 60))m" }
-        if secs < 86400 { return "\(Int(secs / 3600))h" }
-        return "\(Int(secs / 86400))d"
+        RelativeTimeText.format(ts, style: .compact)
     }
 
     private func formattedSize(_ bytes: Int64) -> String {

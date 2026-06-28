@@ -69,9 +69,11 @@ struct ProjectsView: View {
                         embeddedInParentScroll: true,
                         contentPadding: 0
                     )
-                    ForEach(selected.sessions) { session in
-                        SessionCard(session: session) {
-                            NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
+                    LazyVStack(spacing: 4) {
+                        ForEach(selected.sessions) { session in
+                            SessionCard(session: session) {
+                                NotificationCenter.default.post(name: .openSession, object: SessionBox(session))
+                            }
                         }
                     }
                 } else {

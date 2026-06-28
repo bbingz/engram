@@ -733,6 +733,25 @@ struct EngramServiceSaveInsightRequest: Codable, Equatable, Sendable {
     let importance: Double?
     let sourceSessionId: String?
     let actor: String?
+    let type: String?
+
+    init(
+        content: String,
+        wing: String? = nil,
+        room: String? = nil,
+        importance: Double? = nil,
+        sourceSessionId: String? = nil,
+        actor: String? = nil,
+        type: String? = nil
+    ) {
+        self.content = content
+        self.wing = wing
+        self.room = room
+        self.importance = importance
+        self.sourceSessionId = sourceSessionId
+        self.actor = actor
+        self.type = type
+    }
 
     enum CodingKeys: String, CodingKey {
         case content
@@ -741,6 +760,7 @@ struct EngramServiceSaveInsightRequest: Codable, Equatable, Sendable {
         case importance
         case sourceSessionId = "source_session_id"
         case actor
+        case type
     }
 }
 
@@ -793,6 +813,10 @@ struct EngramServiceRenameSessionRequest: Codable, Equatable, Sendable {
 
 struct EngramServiceSessionAccessRequest: Codable, Equatable, Sendable {
     let sessionId: String
+}
+
+struct EngramServiceInsightAccessRequest: Codable, Equatable, Sendable {
+    let ids: [String]
 }
 
 struct EngramServiceHideEmptySessionsResponse: Codable, Equatable, Sendable {

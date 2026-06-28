@@ -110,6 +110,51 @@ final class FTSRebuildPolicyTests: XCTestCase {
         XCTAssertEqual(try writer.read { db in try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions_fts_rebuild") }, 0)
     }
 
+    func testInterruptedRebuildApplyResumesExistingShadowTable() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("resume-fts.sqlite"))
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, cwd, file_path, size_bytes)
+                VALUES
+                  ('s1', 'codex', '2026-01-01T00:00:00.000Z', '/tmp/p', '/tmp/s1.jsonl', 42),
+                  ('s2', 'codex', '2026-01-01T00:00:00.000Z', '/tmp/p', '/tmp/s2.jsonl', 43);
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES ('s1', 'legacy one'), ('s2', 'legacy two');
+                INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status)
+                VALUES
+                  ('s1:0::fts', 's1', 'fts', 0, 'completed'),
+                  ('s2:0::fts', 's2', 'fts', 0, 'completed');
+                INSERT INTO metadata(key, value) VALUES ('fts_version', '2')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """)
+            try FTSRebuildPolicy.apply(db)
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = 's1'")
+            try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('s1', 'rebuilt one')")
+            try db.execute(sql: "INSERT INTO sessions_fts_rebuild(session_id, content) VALUES ('s1', 'rebuilt one')")
+            try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE session_id = 's1'")
+        }
+
+        try writer.write { db in try FTSRebuildPolicy.apply(db) }
+
+        let state = try writer.read { db in
+            (
+                rebuildRows: try String.fetchAll(db, sql: "SELECT content FROM sessions_fts_rebuild ORDER BY content"),
+                pendingJobs: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_index_jobs WHERE status = 'pending'") ?? -1,
+                completedJobs: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_index_jobs WHERE status = 'completed'") ?? -1,
+                pendingVersion: try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'fts_rebuild_version'"),
+                activeRows: try String.fetchAll(db, sql: "SELECT content FROM sessions_fts ORDER BY content")
+            )
+        }
+
+        XCTAssertEqual(state.rebuildRows, ["rebuilt one"])
+        XCTAssertEqual(state.pendingJobs, 1)
+        XCTAssertEqual(state.completedJobs, 1)
+        XCTAssertEqual(state.pendingVersion, FTSRebuildPolicy.expectedVersion)
+        XCTAssertTrue(state.activeRows.contains("rebuilt one"))
+        XCTAssertTrue(state.activeRows.contains("legacy two"))
+    }
+
     private func seedRebuildState(_ writer: EngramDatabaseWriter, ftsVersion: String) throws {
         try writer.write { db in
             try db.execute(sql: """

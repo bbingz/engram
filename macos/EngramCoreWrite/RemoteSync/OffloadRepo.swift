@@ -10,6 +10,13 @@ public enum OffloadRepo {
     public struct ClaimedJob: Sendable, Equatable {
         public let queueId: String
         public let sessionId: String
+        public let syncVersion: Int?
+
+        public init(queueId: String, sessionId: String, syncVersion: Int? = nil) {
+            self.queueId = queueId
+            self.sessionId = sessionId
+            self.syncVersion = syncVersion
+        }
     }
 
     public struct BundleInputs: Sendable, Equatable {
@@ -276,14 +283,18 @@ public enum OffloadRepo {
         let rows = try Row.fetchAll(
             db,
             sql: """
-            SELECT id, session_id FROM rehydrate_queue
-            WHERE status = 'pending'
-            ORDER BY created_at, id
+            SELECT q.id, q.session_id, s.sync_version
+            FROM rehydrate_queue q
+            JOIN sessions s ON s.id = q.session_id
+            WHERE q.status = 'pending'
+            ORDER BY q.created_at, q.id
             LIMIT ?
             """,
             arguments: [limit]
         )
-        let claimed = rows.map { ClaimedJob(queueId: $0["id"], sessionId: $0["session_id"]) }
+        let claimed = rows.map {
+            ClaimedJob(queueId: $0["id"], sessionId: $0["session_id"], syncVersion: $0["sync_version"] ?? 0)
+        }
         for job in claimed {
             try db.execute(
                 sql: "UPDATE rehydrate_queue SET status = 'inflight', updated_at = datetime('now') WHERE id = ?",
@@ -313,17 +324,21 @@ public enum OffloadRepo {
         _ db: Database,
         queueId: String,
         bundle: RemoteSessionBundle,
+        expectedSyncVersion: Int,
         peer: String?
     ) throws {
-        try FTSRebuildPolicy.replaceFtsContent(db, sessionId: bundle.sessionId, contents: bundle.ftsContents)
         try db.execute(
             sql: """
             UPDATE sessions
             SET summary = ?, summary_message_count = ?, offload_state = 'local'
-            WHERE id = ?
+            WHERE id = ? AND sync_version = ? AND offload_state = 'offloaded'
             """,
-            arguments: [bundle.summary, bundle.summaryMessageCount, bundle.sessionId]
+            arguments: [bundle.summary, bundle.summaryMessageCount, bundle.sessionId, expectedSyncVersion]
         )
+        guard db.changesCount == 1 else {
+            throw RemoteSyncError.offloadStale(sessionId: bundle.sessionId)
+        }
+        try FTSRebuildPolicy.replaceFtsContent(db, sessionId: bundle.sessionId, contents: bundle.ftsContents)
         try db.execute(
             sql: """
             INSERT INTO sync_ledger(session_id, remote_peer, remote_key, direction, content_hash)
@@ -337,6 +352,15 @@ public enum OffloadRepo {
             SET status = 'done', last_error = NULL, updated_at = datetime('now')
             WHERE id = ?
             """,
+            arguments: [queueId]
+        )
+    }
+
+    /// Reset a claimed rehydrate back to pending (e.g. stale-version abort), so
+    /// the next cycle re-checks the session's current offload state/version.
+    public static func requeueRehydrate(_ db: Database, queueId: String) throws {
+        try db.execute(
+            sql: "UPDATE rehydrate_queue SET status = 'pending', updated_at = datetime('now') WHERE id = ?",
             arguments: [queueId]
         )
     }

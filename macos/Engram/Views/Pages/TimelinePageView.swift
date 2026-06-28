@@ -55,6 +55,20 @@ private enum TimelineRange: Int, CaseIterable, Identifiable {
     }
 }
 
+private enum TimelineMode: String, CaseIterable, Identifiable {
+    case work
+    case sessions
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .work: "Work"
+        case .sessions: "Sessions"
+        }
+    }
+}
+
 private let timelineAllProjects = "All Projects"
 
 struct TimelinePageView: View {
@@ -73,9 +87,13 @@ struct TimelinePageView: View {
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceClient.self) var serviceClient
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
+    // Shared global escape hatch (see SessionsPageView).
+    @AppStorage("sessions.showAll") private var showAllSessions = false
     @State private var timeline: [(date: String, sessions: [Session])] = []
+    @State private var workTimeline: [ImplementationTimelineItem] = []
     @State private var confirmedCounts: [String: Int] = [:]
     @State private var suggestedCounts: [String: Int] = [:]
+    @State private var timelineMode: TimelineMode = .work
     @State private var sortMode: TimelineSortMode = .activity
     @State private var range: TimelineRange = .month
     @State private var selectedProject: String = timelineAllProjects
@@ -124,12 +142,35 @@ struct TimelinePageView: View {
         filteredTimeline.reversed().map { (date: $0.date, count: $0.sessions.count) }
     }
 
+    private var workChartData: [(date: String, count: Int)] {
+        let grouped = Dictionary(grouping: workTimeline, by: \.startDate)
+        return grouped
+            .map { (date: $0.key, count: $0.value.count) }
+            .sorted { $0.date < $1.date }
+    }
+
+    private var visibleChartData: [(date: String, count: Int)] {
+        timelineMode == .work ? workChartData : chartData
+    }
+
+    private var hasVisibleContent: Bool {
+        timelineMode == .work ? !workTimeline.isEmpty : !filteredTimeline.isEmpty
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .center, spacing: 12) {
                     SectionHeader(icon: "chart.bar.xaxis", title: "Timeline", badge: range.badge)
                     Spacer(minLength: 12)
+                    Picker("Mode", selection: $timelineMode) {
+                        ForEach(TimelineMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 176)
+                    .accessibilityIdentifier("timeline_modePicker")
                     Picker("Range", selection: $range) {
                         ForEach(TimelineRange.allCases) { r in
                             Text(r.title).tag(r)
@@ -145,6 +186,7 @@ struct TimelinePageView: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 144)
+                    .disabled(timelineMode == .work)
                     .accessibilityIdentifier("timeline_sortPicker")
                 }
                 if projectOptions.count > 1 {
@@ -165,19 +207,29 @@ struct TimelinePageView: View {
                     AlertBanner(message: actionStatus)
                         .accessibilityIdentifier("timeline_actionStatus")
                 }
-                if !chartData.isEmpty {
-                    ActivityChart(data: chartData)
+                if !visibleChartData.isEmpty {
+                    ActivityChart(data: visibleChartData)
                         .frame(height: 120)
                         .accessibilityIdentifier("timeline_chart")
                 }
-                if isLoading && timeline.isEmpty {
+                if isLoading && !hasVisibleContent {
                     ProgressView()
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 40)
                         .accessibilityIdentifier("timeline_loading")
-                } else if filteredTimeline.isEmpty && loadError == nil && !isLoading {
-                    EmptyState(icon: "calendar", title: "No activity", message: "No sessions in this range")
+                } else if !hasVisibleContent && loadError == nil && !isLoading {
+                    EmptyState(icon: "calendar", title: "No activity", message: emptyMessage)
                         .accessibilityIdentifier("timeline_emptyState")
+                } else if timelineMode == .work {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(workTimeline, id: \.id) { item in
+                            WorkTimelineCard(
+                                item: item,
+                                dateLabel: formatWorkDateRange(item),
+                                kindLabel: kindLabel(item.kind)
+                            )
+                        }
+                    }
                 } else {
                     LazyVStack(alignment: .leading, spacing: 16) {
                         ForEach(filteredTimeline, id: \.date) { group in
@@ -243,7 +295,14 @@ struct TimelinePageView: View {
         }
         // .task(id:) cancels the in-flight load when the sort changes, so a
         // slower older load can't land last and show the previous sort's data.
-        .task(id: [AnyHashable(sortMode), AnyHashable(range), AnyHashable(serviceStatusStore.totalSessions)]) {
+        .task(id: [
+            AnyHashable(timelineMode),
+            AnyHashable(sortMode),
+            AnyHashable(range),
+            AnyHashable(selectedProject),
+            AnyHashable(showAllSessions),
+            AnyHashable(serviceStatusStore.totalSessions)
+        ]) {
             await loadData()
         }
     }
@@ -255,17 +314,21 @@ struct TimelinePageView: View {
             let database = db
             let sort = sortMode.databaseSort
             let days = range.days
-            let data = try await Task.detached { [database, sort, days] in
-                let tl = try database.sessionTimeline(days: days, sort: sort)
+            let humanDriven = !showAllSessions
+            let selectedProjectFilter = selectedProject == timelineAllProjects ? nil : selectedProject
+            let data = try await Task.detached { [database, sort, days, humanDriven, selectedProjectFilter] in
+                let tl = try database.sessionTimeline(days: days, sort: sort, humanDriven: humanDriven)
                 let allSessions = tl.flatMap(\.sessions)
                 let parentIds = allSessions.map(\.id)
                 let confirmed = try database.childCount(parentIds: parentIds)
                 let suggested = try database.suggestedChildCount(parentIds: parentIds)
-                return (tl, confirmed, suggested)
+                let work = try database.implementationTimeline(days: days, project: selectedProjectFilter, humanDriven: humanDriven)
+                return (tl, confirmed, suggested, work)
             }.value
             timeline = data.0
             confirmedCounts = data.1
             suggestedCounts = data.2
+            workTimeline = data.3
             loadError = nil
         } catch {
             EngramLogger.error("TimelinePage load failed", module: .ui, error: error)
@@ -318,7 +381,91 @@ struct TimelinePageView: View {
         return Self.outputDateFormatter.string(from: date)
     }
 
+    private func formatWorkDateRange(_ item: ImplementationTimelineItem) -> String {
+        let start = formatDateLabel(item.startDate)
+        let end = formatDateLabel(item.endDate)
+        return item.startDate == item.endDate ? start : "\(start) - \(end)"
+    }
+
+    private func kindLabel(_ kind: SessionImplementationKind) -> String {
+        switch kind {
+        case .implementation: String(localized: "Feature")
+        case .fix: String(localized: "Fix")
+        case .optimization: String(localized: "Optimize")
+        case .security: String(localized: "Security")
+        case .research: String(localized: "Research")
+        case .maintenance: String(localized: "Maintenance")
+        case .deployment: String(localized: "Deploy")
+        case .verification: String(localized: "Verify")
+        }
+    }
+
+    private var emptyMessage: String {
+        switch timelineMode {
+        case .work:
+            String(localized: "No summarized work in this range")
+        case .sessions:
+            String(localized: "No sessions in this range")
+        }
+    }
+
     private func sessionCountLabel(_ count: Int) -> String {
         String.localizedStringWithFormat(String(localized: "%lld sessions"), count)
+    }
+}
+
+private struct WorkTimelineCard: View {
+    let item: ImplementationTimelineItem
+    let dateLabel: String
+    let kindLabel: String
+
+    private var outcome: String {
+        item.beats.last?.assistantOutcome.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(dateLabel)
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiaryText)
+                Text(kindLabel)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Theme.accent)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Theme.surfaceHighlight)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                if item.batchIndex > 1 {
+                    Text(String.localizedStringWithFormat(String(localized: "Batch %lld"), item.batchIndex))
+                        .font(.caption2)
+                        .foregroundStyle(Theme.tertiaryText)
+                }
+                Spacer(minLength: 8)
+                Text(String.localizedStringWithFormat(String(localized: "%lld sessions"), item.beats.count))
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiaryText)
+            }
+
+            Text(item.title)
+                .font(.headline)
+                .foregroundStyle(Theme.primaryText)
+                .lineLimit(2)
+
+            if !outcome.isEmpty {
+                Text(outcome)
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.secondaryText)
+                    .lineLimit(4)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
+                .stroke(Theme.border, lineWidth: 1)
+        )
     }
 }

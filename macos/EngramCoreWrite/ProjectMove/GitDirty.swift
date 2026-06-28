@@ -2,7 +2,8 @@
 // Mirrors src/core/project-move/git-dirty.ts (Node parity baseline).
 //
 // Mechanism-only: returns structured info, never throws. Orchestrator owns
-// the policy (warn / require --force / future stash path).
+// the policy (warn / require --force / future stash path). A path with a `.git`
+// marker fails closed as dirty if `git status` cannot complete.
 import Foundation
 
 public struct GitDirtyStatus: Equatable, Sendable {
@@ -33,8 +34,8 @@ public struct GitDirtyStatus: Equatable, Sendable {
 
 public enum GitDirty {
     /// Inspect `src` for uncommitted git state. Returns `.nonRepo` if `.git`
-    /// is missing or git itself is unavailable; never throws so callers
-    /// don't have to model "tool missing" as an error.
+    /// is missing; never throws so callers don't have to model "tool missing"
+    /// as an error.
     public static func check(_ src: String) async -> GitDirtyStatus {
         let gitMarker = (src as NSString).appendingPathComponent(".git")
         guard FileManager.default.fileExists(atPath: gitMarker) else {
@@ -59,21 +60,23 @@ public enum GitDirty {
             } catch {
                 return GitDirtyStatus(
                     isGitRepo: isGitRepo,
-                    dirty: false,
+                    dirty: true,
                     untrackedOnly: false,
-                    porcelain: ""
+                    porcelain: "git status failed: \(error.localizedDescription)"
                 )
             }
             let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            _ = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
 
             guard process.terminationStatus == 0 else {
+                let message = (String(data: stderrData, encoding: .utf8) ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 return GitDirtyStatus(
                     isGitRepo: isGitRepo,
-                    dirty: false,
+                    dirty: true,
                     untrackedOnly: false,
-                    porcelain: ""
+                    porcelain: message.isEmpty ? "git status failed with exit \(process.terminationStatus)" : message
                 )
             }
 

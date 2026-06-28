@@ -48,7 +48,7 @@ final class EngramWebUIServerTests: XCTestCase {
 
     func testWebUISessionListFiltersNoiseRowsLikeAppTopLevelLists() throws {
         let source = try serviceCoreSource("EngramWebUIServer.swift")
-        let start = try XCTUnwrap(source.range(of: "private func readSessions(limit: Int)"))
+        let start = try XCTUnwrap(source.range(of: "private func readSessions(limit: Int"))
         let end = try XCTUnwrap(source.range(of: "private func readSession(id: String)", options: [], range: start.lowerBound..<source.endIndex))
         let query = String(source[start.lowerBound..<end.lowerBound])
 
@@ -56,6 +56,8 @@ final class EngramWebUIServerTests: XCTestCase {
         XCTAssertTrue(query.contains("s.parent_session_id IS NULL"))
         XCTAssertTrue(query.contains("s.suggested_parent_id IS NULL"))
         XCTAssertTrue(query.contains("s.orphan_status IS NULL"))
+        // Default browse list also applies the human-driven predicate (?all=1 opts out).
+        XCTAssertTrue(query.contains("HumanDrivenFilter.sqlPredicate"))
     }
 
     private func makeMinimalDatabase() throws -> String {

@@ -56,6 +56,7 @@ public enum RemoteSyncError: Error, Equatable {
     case schemaVersionUnsupported(Int)
     case contentHashMismatch(expected: String, actual: String)
     case sessionIdMismatch(expected: String, actual: String)
+    case invalidStorageKey(String)
     case bundleNotFound(key: String)
     /// The session was re-indexed (or removed) between capturing its bundle and
     /// committing the offload, so purging now would collapse content that no

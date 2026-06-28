@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import Security
 import EngramCoreRead
 import EngramCoreWrite
@@ -142,6 +143,7 @@ public enum EngramServiceRunner {
                 gate: gate,
                 statusMonitor: statusMonitor,
                 telemetry: telemetry,
+                environment: environment,
                 tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) }
             )
             // First product caller of observability retention. Restart-cadence
@@ -162,6 +164,7 @@ public enum EngramServiceRunner {
                 gate: gate,
                 statusMonitor: statusMonitor,
                 telemetry: telemetry,
+                environment: environment,
                 tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) },
                 remoteSync: remoteSync
             )
@@ -303,6 +306,7 @@ public enum EngramServiceRunner {
         gate: ServiceWriterGate,
         statusMonitor: ServiceStatusMonitor,
         telemetry: ServiceTelemetryCollector? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
         tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits],
         remoteSync: RemoteSyncCoordinator? = nil
     ) async {
@@ -340,6 +344,21 @@ public enum EngramServiceRunner {
                     jobs.notApplicable += drain.result.notApplicable
                     if drain.drained { break }
                 }
+                await runSessionEmbeddingBackfillBestEffort(
+                    name: "periodicSessionEmbeddingBackfill",
+                    gate: gate,
+                    environment: environment
+                )
+                await runInsightEmbeddingBackfillBestEffort(
+                    name: "periodicInsightEmbeddingBackfill",
+                    gate: gate,
+                    environment: environment
+                )
+                await runCorpusMiningBestEffort(
+                    name: "periodicCorpusMining",
+                    gate: gate,
+                    environment: environment
+                )
                 // Remote offload: drain offload/rehydrate queues + reclaim disk.
                 // Each DB step is its own gated write; network I/O runs between
                 // them (outside the gate). No-op when offload is disabled.
@@ -421,6 +440,7 @@ public enum EngramServiceRunner {
         gate: ServiceWriterGate,
         statusMonitor: ServiceStatusMonitor,
         telemetry: ServiceTelemetryCollector? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
         tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits]
     ) async {
         let scanClock = ContinuousClock()
@@ -429,7 +449,7 @@ public enum EngramServiceRunner {
         // from the indexing adapter list so the service stops ingesting them.
         // Read once at scan time, so toggling a source resumes/stops ingest on
         // the next scan. Their existing sessions are hidden by setSourceEnabled.
-        let disabled = readDisabledSources(environment: ProcessInfo.processInfo.environment)
+        let disabled = readDisabledSources(environment: environment)
         let enabledAdapters = SessionAdapterFactory.defaultAdapters()
             .filter { !disabled.contains($0.source.rawValue) }
         let emitBackfill: (StartupBackfillEvent) -> Void = { event in
@@ -459,6 +479,30 @@ public enum EngramServiceRunner {
         // heavy re-index and the per-row orphan scan previously held the gate
         // for the entire run, so any user write queued in that window timed
         // out with WriterBusy.
+        let instructionBackfillPhase = await runInitialScanPhase(
+            name: "initialInstructionBackfill",
+            statusMonitor: statusMonitor
+        ) {
+            try await gate.performWriteCommand(name: "initialInstructionBackfill") { writer in
+                try await writer.indexInstructionBackfillSessions(adapters: startupAdapters).indexed
+            }.value
+        }
+        if instructionBackfillPhase.cancelled { return }
+        if instructionBackfillPhase.failed { failedPhaseCount += 1 }
+        let instructionBackfilled = instructionBackfillPhase.value ?? 0
+
+        let implementationBackfillPhase = await runInitialScanPhase(
+            name: "initialImplementationBeatBackfill",
+            statusMonitor: statusMonitor
+        ) {
+            try await gate.performWriteCommand(name: "initialImplementationBeatBackfill") { writer in
+                try await writer.indexImplementationBeatBackfillSessions(adapters: startupAdapters).indexed
+            }.value
+        }
+        if implementationBackfillPhase.cancelled { return }
+        if implementationBackfillPhase.failed { failedPhaseCount += 1 }
+        let implementationBackfilled = implementationBackfillPhase.value ?? 0
+
         let indexedPhase = await runInitialScanPhase(
             name: "initialScanIndex",
             statusMonitor: statusMonitor
@@ -471,7 +515,7 @@ public enum EngramServiceRunner {
         }
         if indexedPhase.cancelled { return }
         if indexedPhase.failed { failedPhaseCount += 1 }
-        let indexed = indexedPhase.value ?? 0
+        let indexed = instructionBackfilled + implementationBackfilled + (indexedPhase.value ?? 0)
 
         let backfillsPhase = await runInitialScanPhase(
             name: "initialScanBackfills",
@@ -529,6 +573,24 @@ public enum EngramServiceRunner {
             }
             if drainPhase.value ?? true { break }
         }
+
+        await runSessionEmbeddingBackfillBestEffort(
+            name: "initialSessionEmbeddingBackfill",
+            gate: gate,
+            environment: environment
+        )
+
+        await runInsightEmbeddingBackfillBestEffort(
+            name: "initialInsightEmbeddingBackfill",
+            gate: gate,
+            environment: environment
+        )
+
+        await runCorpusMiningBestEffort(
+            name: "initialCorpusMining",
+            gate: gate,
+            environment: environment
+        )
 
         // Phase 3 — usage collection is cheap, but still gets its own gated
         // command so startup maintenance does not hold the writer gate longer.
@@ -627,6 +689,427 @@ public enum EngramServiceRunner {
             return true
         }
         return false
+    }
+
+    @discardableResult
+    static func backfillSessionEmbeddingsOnce(
+        gate: ServiceWriterGate,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        providerFactory: @escaping @Sendable (EmbeddingConfig) -> any EmbeddingProvider = {
+            OpenAICompatibleEmbeddingClient(config: $0)
+        },
+        limit: Int = 32,
+        phaseName: String = "sessionEmbeddingBackfill"
+    ) async throws -> Int {
+        guard let config = EmbeddingSettings.load(environment: environment) else { return 0 }
+        let pending = try await gate.performWriteCommand(name: "\(phaseName)Read") { writer in
+            try SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: limit)
+        }.value
+        guard !pending.isEmpty else { return 0 }
+
+        let provider = providerFactory(config)
+        let embedded = try await SessionEmbeddingBackfill.embedPendingSessions(pending, provider: provider)
+        let result = try await gate.performWriteCommand(name: "\(phaseName)Write") { writer in
+            try SessionEmbeddingBackfill.writeEmbeddings(
+                writer: writer,
+                sessions: embedded,
+                model: provider.model,
+                dimension: provider.dimension
+            )
+        }.value
+        return result.completed
+    }
+
+    private static func runSessionEmbeddingBackfillBestEffort(
+        name: String,
+        gate: ServiceWriterGate,
+        environment: [String: String]
+    ) async {
+        do {
+            let completed = try await backfillSessionEmbeddingsOnce(
+                gate: gate,
+                environment: environment,
+                phaseName: name
+            )
+            if completed > 0 {
+                ServiceLogger.notice("\(name) complete: completed=\(completed)", category: .runner)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            ServiceLogger.warn("\(name) failed: \(error.localizedDescription)", category: .runner)
+        }
+    }
+
+    @discardableResult
+    static func backfillInsightEmbeddingsOnce(
+        gate: ServiceWriterGate,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        providerFactory: @escaping @Sendable (EmbeddingConfig) -> any EmbeddingProvider = {
+            OpenAICompatibleEmbeddingClient(config: $0)
+        },
+        limit: Int = 64,
+        phaseName: String = "insightEmbeddingBackfill"
+    ) async throws -> Int {
+        guard let config = EmbeddingSettings.load(environment: environment) else { return 0 }
+        let pending = try await gate.performWriteCommand(name: "\(phaseName)Read") { writer in
+            try InsightEmbeddingBackfill.pendingInsights(writer: writer, limit: limit)
+        }.value
+        guard !pending.isEmpty else { return 0 }
+
+        let provider = providerFactory(config)
+        let vectors = try await provider.embed(pending.map(\.content))
+        guard vectors.count == pending.count else { return 0 }
+        let embedded = zip(pending, vectors).map { item, vector in
+            InsightEmbeddingBackfill.EmbeddedInsight(id: item.id, vector: vector)
+        }
+
+        let result = try await gate.performWriteCommand(name: "\(phaseName)Write") { writer in
+            try InsightEmbeddingBackfill.writeEmbeddings(
+                writer: writer,
+                embeddings: embedded,
+                model: provider.model,
+                dimension: provider.dimension
+            )
+        }.value
+        return result.embedded
+    }
+
+    private static func runInsightEmbeddingBackfillBestEffort(
+        name: String,
+        gate: ServiceWriterGate,
+        environment: [String: String]
+    ) async {
+        do {
+            let embedded = try await backfillInsightEmbeddingsOnce(
+                gate: gate,
+                environment: environment,
+                phaseName: name
+            )
+            if embedded > 0 {
+                ServiceLogger.notice("\(name) complete: embedded=\(embedded)", category: .runner)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            ServiceLogger.warn("\(name) failed: \(error.localizedDescription)", category: .runner)
+        }
+    }
+
+    struct CorpusMiningCandidate: Sendable {
+        let id: String
+        let project: String
+        let source: String
+        let qualityScore: Int
+        let digest: String
+    }
+
+    private struct MinedRuleDraft: Sendable {
+        let ruleType: String
+        let title: String
+        let body: String
+        let evidenceSessionIds: [String]
+        let confidence: Double
+    }
+
+    @discardableResult
+    static func mineCorpusRulesOnce(
+        gate: ServiceWriterGate,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        limit: Int = 3,
+        completionProvider: (@Sendable (CorpusMiningCandidate, EngramServiceCommandHandler.ServiceAISettings.ChatConfig?) async throws -> String)? = nil,
+        phaseName: String = "corpusMining"
+    ) async throws -> Int {
+        let settings = EngramServiceCommandHandler.ServiceAISettings.read(environment: environment)
+        let config = settings.summaryConfig
+        guard config != nil || completionProvider != nil else { return 0 }
+
+        let candidates = try await gate.performWriteCommand(name: "\(phaseName)Read") { writer in
+            try corpusMiningCandidates(writer: writer, limit: limit)
+        }.value
+        guard !candidates.isEmpty else { return 0 }
+
+        var extracted: [(candidate: CorpusMiningCandidate, rules: [MinedRuleDraft])] = []
+        for candidate in candidates {
+            let raw: String
+            if let completionProvider {
+                raw = try await completionProvider(candidate, config)
+            } else if let config {
+                raw = try await mineRulesWithLLM(candidate: candidate, config: config)
+            } else {
+                continue
+            }
+            let rules = parseMinedRules(raw, fallbackSessionID: candidate.id)
+            if !rules.isEmpty {
+                extracted.append((candidate, rules))
+            }
+        }
+        guard !extracted.isEmpty else { return 0 }
+
+        let extractedRules = extracted
+        let model = config?.model ?? "test"
+        return try await gate.performWriteCommand(name: "\(phaseName)Write") { writer in
+            try writeMinedRules(writer: writer, extracted: extractedRules, model: model)
+        }.value
+    }
+
+    private static func runCorpusMiningBestEffort(
+        name: String,
+        gate: ServiceWriterGate,
+        environment: [String: String]
+    ) async {
+        do {
+            let inserted = try await mineCorpusRulesOnce(
+                gate: gate,
+                environment: environment,
+                phaseName: name
+            )
+            if inserted > 0 {
+                ServiceLogger.notice("\(name) complete: rules=\(inserted)", category: .runner)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            ServiceLogger.warn("\(name) failed: \(error.localizedDescription)", category: .runner)
+        }
+    }
+
+    private static func corpusMiningCandidates(
+        writer: EngramDatabaseWriter,
+        limit: Int
+    ) throws -> [CorpusMiningCandidate] {
+        try writer.read { db in
+            guard try tableExists(db, "mined_rules") else { return [] }
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT s.id, s.source, s.project, s.cwd, s.generated_title, s.custom_name,
+                       s.summary, s.quality_score, s.start_time
+                FROM sessions s
+                WHERE s.hidden_at IS NULL
+                  AND s.orphan_status IS NULL
+                  AND COALESCE(s.tier, 'normal') NOT IN ('skip', 'lite')
+                  AND COALESCE(s.quality_score, 0) >= 60
+                  AND EXISTS (
+                    SELECT 1
+                    FROM session_tools st
+                    WHERE st.session_id = s.id
+                      AND st.tool_name IN ('Edit', 'Write', 'MultiEdit', 'apply_patch', 'functions.apply_patch')
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM mined_rules mr
+                    WHERE mr.evidence_session_ids LIKE '%' || s.id || '%'
+                  )
+                ORDER BY s.quality_score DESC, s.start_time DESC
+                LIMIT ?
+                """,
+                arguments: [max(1, limit)]
+            )
+            return rows.compactMap { row in
+                guard let id = row["id"] as String?, !id.isEmpty else { return nil }
+                let transcript = ((try? String.fetchAll(
+                    db,
+                    sql: "SELECT content FROM sessions_fts WHERE session_id = ? ORDER BY rowid LIMIT 60",
+                    arguments: [id]
+                )) ?? []).joined(separator: "\n")
+                let project = row["project"] as String?
+                    ?? URL(fileURLWithPath: row["cwd"] as String? ?? "").lastPathComponent
+                let title = normalizedText(row["custom_name"] as String?)
+                    ?? normalizedText(row["generated_title"] as String?)
+                    ?? normalizedText(row["summary"] as String?)
+                    ?? id
+                let digest = """
+                Session: \(id)
+                Project: \(project)
+                Source: \(row["source"] as String? ?? "unknown")
+                Quality: \(row["quality_score"] as Int? ?? 0)
+                Started: \(row["start_time"] as String? ?? "unknown")
+                Title: \(title)
+                Summary: \(row["summary"] as String? ?? "")
+
+                Transcript:
+                \(String(transcript.prefix(6_000)))
+                """
+                return CorpusMiningCandidate(
+                    id: id,
+                    project: project,
+                    source: row["source"] as String? ?? "unknown",
+                    qualityScore: row["quality_score"] as Int? ?? 0,
+                    digest: digest
+                )
+            }
+        }
+    }
+
+    private static func mineRulesWithLLM(
+        candidate: CorpusMiningCandidate,
+        config: EngramServiceCommandHandler.ServiceAISettings.ChatConfig
+    ) async throws -> String {
+        let system = """
+        Extract durable software-engineering rules, skills, or runbooks from a successful AI coding session.
+        Return only JSON: an array of objects with rule_type, title, body, evidence_session_ids, confidence.
+        Keep body concrete and actionable. Return [] if there is no reusable lesson.
+        """
+        let user = """
+        Find reusable practices from this session. Evidence session id is \(candidate.id).
+
+        \(candidate.digest)
+        """
+        return try await EngramServiceCommandHandler.ServiceAIClient.chat(
+            purpose: "corpus_mining",
+            sessionID: candidate.id,
+            config: config,
+            messages: [
+                ["role": "system", "content": system],
+                ["role": "user", "content": user],
+            ]
+        )
+    }
+
+    private static func writeMinedRules(
+        writer: EngramDatabaseWriter,
+        extracted: [(candidate: CorpusMiningCandidate, rules: [MinedRuleDraft])],
+        model: String
+    ) throws -> Int {
+        try writer.write { db in
+            var written = 0
+            for item in extracted {
+                for rule in item.rules {
+                    let normalizedTitle = rule.title.lowercased()
+                        .components(separatedBy: .whitespacesAndNewlines)
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " ")
+                    guard !normalizedTitle.isEmpty else { continue }
+                    let existing = try Row.fetchOne(
+                        db,
+                        sql: """
+                        SELECT id, evidence_session_ids
+                        FROM mined_rules
+                        WHERE lower(title) = ?
+                          AND COALESCE(source_project, '') = COALESCE(?, '')
+                        LIMIT 1
+                        """,
+                        arguments: [normalizedTitle, item.candidate.project]
+                    )
+                    let id = (existing?["id"] as String?) ?? "rule-\(UUID().uuidString.lowercased())"
+                    var evidence = Set(rule.evidenceSessionIds + [item.candidate.id])
+                    if let existingEvidence = existing?["evidence_session_ids"] as String?,
+                       let data = existingEvidence.data(using: .utf8),
+                       let values = try? JSONSerialization.jsonObject(with: data) as? [String] {
+                        evidence.formUnion(values)
+                    }
+                    let evidenceValues = evidence.filter { !$0.isEmpty }.sorted()
+                    let evidenceJSON = String(
+                        data: (try? JSONSerialization.data(withJSONObject: evidenceValues, options: [.sortedKeys]))
+                            ?? Data("[]".utf8),
+                        encoding: .utf8
+                    ) ?? "[]"
+
+                    try db.execute(
+                        sql: """
+                        INSERT INTO mined_rules (
+                          id, rule_type, title, body, evidence_session_ids,
+                          confidence, source_project, model, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                        ON CONFLICT(id) DO UPDATE SET
+                          rule_type = excluded.rule_type,
+                          title = excluded.title,
+                          body = excluded.body,
+                          evidence_session_ids = excluded.evidence_session_ids,
+                          confidence = excluded.confidence,
+                          source_project = excluded.source_project,
+                          model = excluded.model,
+                          created_at = excluded.created_at
+                        """,
+                        arguments: [
+                            id,
+                            rule.ruleType,
+                            rule.title,
+                            rule.body,
+                            evidenceJSON,
+                            max(0, min(1, rule.confidence)),
+                            item.candidate.project,
+                            model,
+                        ]
+                    )
+                    try db.execute(sql: "DELETE FROM mined_rules_fts WHERE rule_id = ?", arguments: [id])
+                    try db.execute(
+                        sql: "INSERT INTO mined_rules_fts (rule_id, title, body) VALUES (?, ?, ?)",
+                        arguments: [id, rule.title, rule.body]
+                    )
+                    written += 1
+                }
+            }
+            return written
+        }
+    }
+
+    private static func parseMinedRules(_ raw: String, fallbackSessionID: String) -> [MinedRuleDraft] {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let jsonText = stripJSONFence(trimmed)
+        guard let data = jsonText.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) else { return [] }
+        let array: [[String: Any]]
+        if let direct = json as? [[String: Any]] {
+            array = direct
+        } else if let object = json as? [String: Any],
+                  let rules = object["rules"] as? [[String: Any]] {
+            array = rules
+        } else {
+            return []
+        }
+
+        return array.compactMap { object in
+            let title = string(object["title"])
+            let body = string(object["body"])
+            guard let title, let body else { return nil }
+            let evidence = (object["evidence_session_ids"] as? [String])
+                ?? (object["evidenceSessionIds"] as? [String])
+                ?? [fallbackSessionID]
+            return MinedRuleDraft(
+                ruleType: string(object["rule_type"]) ?? string(object["ruleType"]) ?? "rule",
+                title: String(title.prefix(160)),
+                body: String(body.prefix(1_200)),
+                evidenceSessionIds: evidence.filter { !$0.isEmpty },
+                confidence: double(object["confidence"]) ?? 0.5
+            )
+        }
+    }
+
+    private static func stripJSONFence(_ text: String) -> String {
+        var value = text
+        if value.hasPrefix("```") {
+            value = value.replacingOccurrences(of: #"^```(?:json)?\s*"#, with: "", options: .regularExpression)
+            value = value.replacingOccurrences(of: #"\s*```$"#, with: "", options: .regularExpression)
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func tableExists(_ db: Database, _ table: String) throws -> Bool {
+        try Int.fetchOne(
+            db,
+            sql: "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
+            arguments: [table]
+        ) != nil
+    }
+
+    private static func normalizedText(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func string(_ value: Any?) -> String? {
+        guard let value = value as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func double(_ value: Any?) -> Double? {
+        if let value = value as? Double { return value }
+        if let value = value as? Int { return Double(value) }
+        return nil
     }
 
     @discardableResult
@@ -882,7 +1365,16 @@ public enum EngramServiceRunner {
             .replacingOccurrences(of: "=", with: "")
         let tokenURL = runtimeDirectory.appendingPathComponent("webui.token")
         do {
-            try token.data(using: .utf8)?.write(to: tokenURL, options: [.atomic])
+            let data = Data(token.utf8)
+            try? FileManager.default.removeItem(at: tokenURL)
+            let created = FileManager.default.createFile(
+                atPath: tokenURL.path,
+                contents: data,
+                attributes: [.posixPermissions: 0o600]
+            )
+            guard created else {
+                throw EngramServiceError.serviceUnavailable(message: "Cannot write web UI token")
+            }
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenURL.path)
             return token
         } catch {

@@ -42,7 +42,7 @@ public struct OffloadRunner: Sendable {
         batchLimit: Int = 50
     ) async throws -> SyncOutcome {
         // Reclaim inflight jobs orphaned by a crashed/cancelled prior cycle.
-        try writer.write { db in try OffloadRepo.requeueStaleInflight(db) }
+        _ = try writer.write { db in try OffloadRepo.requeueStaleInflight(db) }
         try writer.write { db in
             let eligible = try OffloadRepo.candidateRows(db, limit: candidateLimit)
                 .filter { policy.isEligible($0, now: now) }
@@ -106,6 +106,8 @@ public struct OffloadRunner: Sendable {
                     )
                 }
                 succeeded += 1
+            } catch let error as CancellationError {
+                throw error
             } catch RemoteSyncError.offloadStale {
                 // Re-indexed/removed mid-flight: re-queue and re-capture next cycle
                 // (NOT a failure — no attempts charged, no purge happened).
@@ -123,7 +125,7 @@ public struct OffloadRunner: Sendable {
     /// Drain one batch of pending rehydrates: fetch the bundle, verify, restore.
     @discardableResult
     public func runRehydrateOnce(batchLimit: Int = 50) async throws -> SyncOutcome {
-        try writer.write { db in try OffloadRepo.requeueStaleInflight(db) }
+        _ = try writer.write { db in try OffloadRepo.requeueStaleInflight(db) }
         let claimed = try writer.write { db in try OffloadRepo.claimPendingRehydrate(db, limit: batchLimit) }
         var succeeded = 0
         var failed = 0
@@ -141,9 +143,19 @@ public struct OffloadRunner: Sendable {
                 let data = try await backend.get(key: key)
                 let bundle = try BundleCodec.decode(data, expectedSessionId: job.sessionId)
                 try writer.write { db in
-                    try OffloadRepo.commitRehydrated(db, queueId: job.queueId, bundle: bundle, peer: peer)
+                    try OffloadRepo.commitRehydrated(
+                        db,
+                        queueId: job.queueId,
+                        bundle: bundle,
+                        expectedSyncVersion: job.syncVersion ?? 0,
+                        peer: peer
+                    )
                 }
                 succeeded += 1
+            } catch RemoteSyncError.offloadStale {
+                try writer.write { db in try OffloadRepo.requeueRehydrate(db, queueId: job.queueId) }
+            } catch let error as CancellationError {
+                throw error
             } catch {
                 try writer.write { db in
                     try OffloadRepo.failRehydrate(db, queueId: job.queueId, error: "\(error)")

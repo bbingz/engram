@@ -67,7 +67,8 @@ public struct EngramRemoteBackend: RemoteStorageBackend {
         }
     }
 
-    private func request(_ method: String, key: String) -> URLRequest {
+    private func request(_ method: String, key: String) throws -> URLRequest {
+        try RemoteStorageKey.validate(key)
         let url = baseURL
             .appendingPathComponent("v1", isDirectory: true)
             .appendingPathComponent("bundles", isDirectory: true)
@@ -84,7 +85,7 @@ public struct EngramRemoteBackend: RemoteStorageBackend {
     }
 
     public func head(key: String) async throws -> Bool {
-        let (_, response) = try await URLSession.shared.data(for: request("HEAD", key: key))
+        let (_, response) = try await URLSession.shared.data(for: try request("HEAD", key: key))
         switch try Self.status(response) {
         case 200: return true
         case 404: return false
@@ -93,7 +94,7 @@ public struct EngramRemoteBackend: RemoteStorageBackend {
     }
 
     public func put(key: String, data: Data) async throws {
-        var req = request("PUT", key: key)
+        var req = try request("PUT", key: key)
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         let (_, response) = try await URLSession.shared.upload(for: req, from: data)
         switch try Self.status(response) {
@@ -103,7 +104,7 @@ public struct EngramRemoteBackend: RemoteStorageBackend {
     }
 
     public func get(key: String) async throws -> Data {
-        let (data, response) = try await URLSession.shared.data(for: request("GET", key: key))
+        let (data, response) = try await URLSession.shared.data(for: try request("GET", key: key))
         switch try Self.status(response) {
         case 200: return data
         case 404: throw RemoteSyncError.bundleNotFound(key: key)
@@ -112,7 +113,7 @@ public struct EngramRemoteBackend: RemoteStorageBackend {
     }
 
     public func delete(key: String) async throws {
-        let (_, response) = try await URLSession.shared.data(for: request("DELETE", key: key))
+        let (_, response) = try await URLSession.shared.data(for: try request("DELETE", key: key))
         switch try Self.status(response) {
         case 200, 204, 404: return
         case let code: throw EngramRemoteBackendError.unexpectedStatus(code)

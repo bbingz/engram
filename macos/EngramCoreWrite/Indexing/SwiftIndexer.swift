@@ -81,7 +81,7 @@ public final class SwiftIndexer {
                 continue
             }
             if let state = statesBySessionId[item.sessionId] {
-                try sink.upsertFileIndexState(state)
+                try upsertFileIndexStateIsolated(state, source: state.source, locator: state.locator)
             }
         }
         return batch.count - failures
@@ -172,30 +172,39 @@ public final class SwiftIndexer {
             for locator in locators {
                 try Task.checkCancellation()
                 let currentStat = FileIndexStat.directFileStat(locator: locator)
+                let knownIndexedState = knownFileStates?[locator]
+                let knownParseState = fileIndexStates?[locator]
+                // Historical rows can be known/unchanged but predate instruction extraction.
+                let needsInstructionBackfill =
+                    knownIndexedState?.needsInstructionBackfill == true
+                    && Self.reliableInstructionSources.contains(adapter.source)
+                    && (knownParseState?.parseStatus ?? .ok) == .ok
                 if let currentStat,
+                   !needsInstructionBackfill,
                    FileIndexDecision.decide(
                     stat: currentStat,
-                    state: fileIndexStates?[locator],
+                    state: knownParseState,
                     now: Date()
                    ) == .skip {
                     continue
                 }
-                if let knownFileStates,
-                   let currentFile = currentStat?.legacyState,
-                   let indexed = knownFileStates[locator] {
-                    if skipKnownFileLocators {
-                        try recordFileIndexSuccess(source: adapter.source, locator: locator, stat: currentStat)
-                        continue
-                    }
-                    if currentFile.modifiedAt > activeFileCutoff {
-                        try recordFileIndexSuccess(source: adapter.source, locator: locator, stat: currentStat)
-                        continue
-                    }
-                    if indexed.sizeBytes == currentFile.sizeBytes,
-                       let indexedAt = Self.iso8601.date(from: indexed.indexedAt ?? ""),
-                       currentFile.modifiedAt <= indexedAt {
-                        try recordFileIndexSuccess(source: adapter.source, locator: locator, stat: currentStat)
-                        continue
+                if let currentFile = currentStat?.legacyState,
+                   let indexed = knownIndexedState {
+                    if !needsInstructionBackfill {
+                        if skipKnownFileLocators {
+                            try recordFileIndexSuccess(source: adapter.source, locator: locator, stat: currentStat)
+                            continue
+                        }
+                        if currentFile.modifiedAt > activeFileCutoff {
+                            try recordFileIndexSuccess(source: adapter.source, locator: locator, stat: currentStat)
+                            continue
+                        }
+                        if indexed.sizeBytes == currentFile.sizeBytes,
+                           let indexedAt = Self.iso8601.date(from: indexed.indexedAt ?? ""),
+                           currentFile.modifiedAt <= indexedAt {
+                            try recordFileIndexSuccess(source: adapter.source, locator: locator, stat: currentStat)
+                            continue
+                        }
                     }
                 }
                 do {
@@ -254,7 +263,7 @@ public final class SwiftIndexer {
         previous: FileIndexState?
     ) throws {
         guard let stat else { return }
-        try sink.upsertFileIndexState(
+        try upsertFileIndexStateIsolated(
             FileIndexState.failure(
                 source: source,
                 locator: locator,
@@ -262,7 +271,9 @@ public final class SwiftIndexer {
                 failure: failure,
                 previous: previous,
                 now: Date()
-            )
+            ),
+            source: source,
+            locator: locator
         )
     }
 
@@ -272,9 +283,27 @@ public final class SwiftIndexer {
         stat: FileIndexStat?
     ) throws {
         guard let stat else { return }
-        try sink.upsertFileIndexState(
-            FileIndexState.success(source: source, locator: locator, stat: stat, now: Date())
+        try upsertFileIndexStateIsolated(
+            FileIndexState.success(source: source, locator: locator, stat: stat, now: Date()),
+            source: source,
+            locator: locator
         )
+    }
+
+    private func upsertFileIndexStateIsolated(
+        _ state: FileIndexState,
+        source: SourceName,
+        locator: String
+    ) throws {
+        do {
+            try sink.upsertFileIndexState(state)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            Self.log.error(
+                "file index state write failed: source=\(source.rawValue, privacy: .private) locator=\(locator, privacy: .private) error=\(String(describing: error), privacy: .private)"
+            )
+        }
     }
 
     private struct SessionStreamStats {
@@ -284,6 +313,11 @@ public final class SwiftIndexer {
         var firstUserMessages: [String] = []
         var toolCallCounts: [String: Int] = [:]
         var tokenUsage: TokenUsage?
+        // Human-driven signals, computed in the same pass and gated identically.
+        var humanTurnCount = 0
+        var instructions: [String] = []
+        var seenInstructionKeys: Set<String> = []
+        var implementationMessages: [NormalizedMessage] = []
 
         mutating func addUsage(_ usage: TokenUsage) {
             let current = tokenUsage ?? TokenUsage(inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0)
@@ -317,6 +351,11 @@ public final class SwiftIndexer {
             }
             guard message.role == .user || message.role == .assistant else { continue }
             if message.role == .user, Self.isSystemInjection(content) { continue }
+            if !content.isEmpty {
+                stats.implementationMessages.append(
+                    NormalizedMessage(role: message.role, content: content, timestamp: message.timestamp)
+                )
+            }
 
             let hasToolCalls = !(message.toolCalls ?? []).isEmpty
             if message.role == .assistant, !content.isEmpty || hasToolCalls {
@@ -327,8 +366,21 @@ public final class SwiftIndexer {
             }
             guard !content.isEmpty else { continue }
             stats.indexedMessageCount += 1
-            if message.role == .user, stats.firstUserMessages.count < 3 {
-                stats.firstUserMessages.append(message.content)
+            if message.role == .user {
+                // Substantive human turn (passed role/system-injection/non-empty
+                // gates above). Counts toward the "dozen-plus messages" signal and
+                // feeds distinct-instruction extraction from the SAME gate.
+                stats.humanTurnCount += 1
+                if stats.firstUserMessages.count < 3 {
+                    stats.firstUserMessages.append(message.content)
+                }
+                if stats.instructions.count < InstructionExtractor.maxInstructions,
+                   let instruction = InstructionExtractor.distinctInstruction(
+                       from: message.content,
+                       seen: &stats.seenInstructionKeys
+                   ) {
+                    stats.instructions.append(instruction)
+                }
             }
         }
         return stats
@@ -355,6 +407,20 @@ public final class SwiftIndexer {
             )
         )
         let summaryMessageCount = stats.indexedMessageCount
+        // Instruction signals are only stored for sources whose adapter emits
+        // reliable .user roles; others store nil → NULL-tolerant predicate keeps
+        // them default-visible (≈ today's behavior).
+        let extracted = Self.reliableInstructionSources.contains(info.source)
+        let instructionCount = extracted ? stats.instructions.count : nil
+        let humanTurnCount = extracted ? stats.humanTurnCount : nil
+        let instructionSummary = extracted && !stats.instructions.isEmpty
+            ? stats.instructions.joined(separator: "\n")
+            : nil
+        let implementationBeats = ImplementationDigestExtractor.extract(
+            messages: stats.implementationMessages,
+            sessionId: info.id,
+            sessionTitle: info.summary
+        )
         return AuthoritativeSessionSnapshot(
             id: info.id,
             source: info.source,
@@ -376,12 +442,16 @@ public final class SwiftIndexer {
             systemMessageCount: info.systemMessageCount,
             summary: info.summary,
             summaryMessageCount: summaryMessageCount,
+            instructionCount: instructionCount,
+            humanTurnCount: humanTurnCount,
+            instructionSummary: instructionSummary,
             origin: authoritativeNode,
             tier: tier,
             agentRole: info.agentRole,
             parentSessionId: info.parentSessionId,
             toolCallCounts: stats.toolCallCounts,
-            tokenUsage: stats.tokenUsage
+            tokenUsage: stats.tokenUsage,
+            implementationBeats: implementationBeats
         )
     }
 
@@ -466,4 +536,10 @@ public final class SwiftIndexer {
     private static let healthProbePrompts: Set<String> = [
         "ping"
     ]
+
+    // Sources whose adapter emits reliable .user roles in streamMessages, so
+    // instruction extraction can be trusted. Others store NULL instruction signals
+    // (default-visible). Graduate a source by adding it here + an adapter-uniformity
+    // parity test proving its stream emits non-empty .user content.
+    private static let reliableInstructionSources: Set<SourceName> = [.claudeCode, .codex]
 }

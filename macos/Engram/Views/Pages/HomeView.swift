@@ -10,6 +10,9 @@ struct HomeView: View {
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceClient.self) var serviceClient
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
+    // Shared global escape hatch (see SessionsPageView). When off (default), the
+    // Continue list shows only human-driven sessions.
+    @AppStorage("sessions.showAll") private var showAllSessions = false
 
     @State private var kpi: DatabaseManager.KPIStats?
     @State private var recentSessions: [Session] = []
@@ -38,7 +41,7 @@ struct HomeView: View {
         }
         .modernScrollIndicators()
         .accessibilityIdentifier("home_container")
-        .task(id: serviceStatusStore.totalSessions) { await loadData() }
+        .task(id: [AnyHashable(serviceStatusStore.totalSessions), AnyHashable(showAllSessions)]) { await loadData() }
         .sheet(item: $resumeSession) { session in
             ResumeDialog(session: session)
         }
@@ -288,10 +291,11 @@ struct HomeView: View {
         let db = self.db
         let serviceClient = self.serviceClient
         let handledIds = handledFollowUps.handledIds
+        let humanDriven = !showAllSessions
         do {
             let data = try await Task.detached {
                 let kpi = try db.kpiStats()
-                let rawRecent = try db.recentSessions(limit: 12)
+                let rawRecent = try db.recentSessions(limit: 12, humanDriven: humanDriven)
                 let followUps = try loadTodayFollowUps(from: db, limit: 8, excluding: handledIds)
                 let projects = try db.listSessionsByProject(limit: 5)
                 let repos = try db.listGitRepos()
@@ -486,14 +490,39 @@ private struct TodaySessionRow: View {
 /// fractional-only formatter.
 enum TodayRelativeTime {
     static func format(_ iso: String, now: Date = Date()) -> String {
+        RelativeTimeText.format(iso, style: .ago, now: now)
+    }
+}
+
+enum RelativeTimeText {
+    enum Style {
+        case compact
+        case ago
+        case agoWithSeconds
+    }
+
+    static func format(_ iso: String, style: Style = .compact, now: Date = Date()) -> String {
         guard let date = EngramTimestampParser.date(from: iso) else {
             return ""
         }
-        let seconds = Int(now.timeIntervalSince(date))
-        if seconds < 60 { return "now" }
-        if seconds < 3600 { return "\(seconds / 60)m ago" }
-        if seconds < 86400 { return "\(seconds / 3600)h ago" }
-        return "\(seconds / 86400)d ago"
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
+        switch style {
+        case .compact:
+            if seconds < 60 { return "now" }
+            if seconds < 3600 { return "\(seconds / 60)m" }
+            if seconds < 86400 { return "\(seconds / 3600)h" }
+            return "\(seconds / 86400)d"
+        case .ago:
+            if seconds < 60 { return "now" }
+            if seconds < 3600 { return "\(seconds / 60)m ago" }
+            if seconds < 86400 { return "\(seconds / 3600)h ago" }
+            return "\(seconds / 86400)d ago"
+        case .agoWithSeconds:
+            if seconds < 1 { return "now" }
+            if seconds < 60 { return "\(seconds)s ago" }
+            if seconds < 3600 { return "\(seconds / 60)m ago" }
+            return "\(seconds / 3600)h ago"
+        }
     }
 }
 

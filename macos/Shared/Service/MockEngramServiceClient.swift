@@ -47,6 +47,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let disabledSourcesResult: Result<[String], Error>
     let renameSessionResult: Result<Void, Error>
     let recordSessionAccessResult: Result<Void, Error>
+    let recordInsightAccessResult: Result<Void, Error>
     let hideEmptySessionsResult: Result<EngramServiceHideEmptySessionsResponse, Error>
     let exportSessionResult: Result<EngramServiceExportSessionResponse, Error>
     private let eventStream: AsyncThrowingStream<EngramServiceEvent, Error>
@@ -150,6 +151,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.disabledSourcesResult = .success(disabledSources)
         self.renameSessionResult = .success(())
         self.recordSessionAccessResult = .success(())
+        self.recordInsightAccessResult = .success(())
         self.hideEmptySessionsResult = .success(hideEmptySessions)
         self.exportSessionResult = .success(exportSession)
         self.eventStream = events
@@ -301,6 +303,10 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func recordSessionAccess(sessionId: String) async throws {
         _ = try recordSessionAccessResult.get()
+    }
+
+    func recordInsightAccess(ids: [String]) async throws {
+        _ = try recordInsightAccessResult.get()
     }
 
     func hideEmptySessions() async throws -> EngramServiceHideEmptySessionsResponse {

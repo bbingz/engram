@@ -25,6 +25,7 @@ enum OSLogReaderError: Error {
 /// called off the main thread — callers wrap them in `Task.detached`.
 enum OSLogReader {
     static let engramSubsystems: Set<String> = ["com.engram.app", "com.engram.service"]
+    private static let maxRecentLogEntries = 5_000
 
     /// Map an `OSLogEntryLog.Level` to the textual level the UI filters on.
     private static func levelString(_ level: OSLogEntryLog.Level) -> String {
@@ -51,6 +52,20 @@ enum OSLogReader {
         }
     }
 
+    private static func forEachEngramLog(hours: Double, _ body: (OSLogEntryLog) throws -> Void) throws {
+        let store = try makeStore()
+        let since = store.position(date: Date().addingTimeInterval(-hours * 3600))
+        let predicate = NSPredicate(format: "subsystem IN %@", Array(engramSubsystems))
+        let entries = try store.getEntries(at: since, matching: predicate)
+
+        for entry in entries {
+            guard let log = entry as? OSLogEntryLog,
+                  engramSubsystems.contains(log.subsystem)
+            else { continue }
+            try body(log)
+        }
+    }
+
     /// Fetch recent Engram log entries (most recent last), optionally filtered by
     /// level ("All"/debug/info/error) and module/category ("All" or category).
     ///
@@ -65,53 +80,58 @@ enum OSLogReader {
         hours: Double = 24,
         limit: Int = 200
     ) throws -> LogQueryResult {
-        let store = try makeStore()
-        let since = store.position(date: Date().addingTimeInterval(-hours * 3600))
-        let predicate = NSPredicate(format: "subsystem IN %@", Array(engramSubsystems))
-        let entries = try store.getEntries(at: since, matching: predicate)
-
+        let safeLimit = min(max(limit, 0), maxRecentLogEntries)
         var result: [LogEntry] = []
+        result.reserveCapacity(safeLimit)
         var modules = Set<String>()
         var nextId: Int64 = 0
-        for entry in entries {
-            guard let log = entry as? OSLogEntryLog,
-                  engramSubsystems.contains(log.subsystem) else { continue }
+        let timestampFormatter = ISO8601DateFormatter()
+        try forEachEngramLog(hours: hours) { log in
             let lvl = levelString(log.level)
             let cat = log.category.isEmpty ? log.subsystem : log.category
             modules.insert(cat)
-            if level != "All" && lvl != level { continue }
-            if module != "All" && cat != module { continue }
+            guard level == "All" || lvl == level else { return }
+            guard module == "All" || cat == module else { return }
             nextId += 1
-            result.append(
-                LogEntry(
-                    id: nextId,
-                    ts: ISO8601DateFormatter().string(from: log.date),
-                    level: lvl,
-                    module: cat,
-                    message: log.composedMessage,
-                    traceId: nil,
-                    source: log.subsystem,
-                    errorName: nil,
-                    errorMessage: nil
-                )
+            let entry = LogEntry(
+                id: nextId,
+                ts: timestampFormatter.string(from: log.date),
+                level: lvl,
+                module: cat,
+                message: log.composedMessage,
+                traceId: nil,
+                source: log.subsystem,
+                errorName: nil,
+                errorMessage: nil
             )
-        }
-        // Keep most recent `limit` (entries arrive oldest→newest).
-        if result.count > limit {
-            result = Array(result.suffix(limit))
+            guard safeLimit > 0 else { return }
+            if result.count == safeLimit {
+                result.removeFirst()
+            }
+            result.append(entry)
         }
         return LogQueryResult(entries: result, modules: modules.sorted())
     }
 
     /// Count error-level entries in the trailing window.
     static func countErrors(hours: Double = 24) throws -> Int {
-        try recentLogs(level: "error", hours: hours, limit: Int.max).entries.count
+        var count = 0
+        try forEachEngramLog(hours: hours) { log in
+            if levelString(log.level) == "error" {
+                count += 1
+            }
+        }
+        return count
     }
 
     /// Error counts grouped by module/category over the trailing window.
     static func errorsByModule(hours: Double = 24) throws -> [(module: String, count: Int)] {
-        let errors = try recentLogs(level: "error", hours: hours, limit: Int.max).entries
-        let grouped = Dictionary(grouping: errors, by: \.module).mapValues(\.count)
+        var grouped: [String: Int] = [:]
+        try forEachEngramLog(hours: hours) { log in
+            guard levelString(log.level) == "error" else { return }
+            let module = log.category.isEmpty ? log.subsystem : log.category
+            grouped[module, default: 0] += 1
+        }
         return grouped.sorted { $0.value > $1.value }.map { (module: $0.key, count: $0.value) }
     }
 }

@@ -64,6 +64,9 @@ private struct MCPTranscriptPageBuilder {
 }
 
 enum MCPTranscriptReader {
+    private static let maxPage = 100_000
+    private static let maxPageSize = 500
+
     static func readMessagePage(
         filePath: String,
         source: String,
@@ -71,8 +74,8 @@ enum MCPTranscriptReader {
         pageSize: Int,
         roles: [String]?
     ) async throws -> MCPTranscriptPage {
-        let currentPage = max(page, 1)
-        let effectivePageSize = max(pageSize, 1)
+        let currentPage = max(1, min(page, maxPage))
+        let effectivePageSize = max(1, min(pageSize, maxPageSize))
         let roleFilter = normalizeRoles(roles)
         var builder = MCPTranscriptPageBuilder(
             currentPage: currentPage,

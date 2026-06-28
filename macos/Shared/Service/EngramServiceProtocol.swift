@@ -44,6 +44,7 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func disabledSources() async throws -> [String]
     func renameSession(sessionId: String, name: String?) async throws
     func recordSessionAccess(sessionId: String) async throws
+    func recordInsightAccess(ids: [String]) async throws
     func hideEmptySessions() async throws -> EngramServiceHideEmptySessionsResponse
     func exportSession(_ request: EngramServiceExportSessionRequest) async throws -> EngramServiceExportSessionResponse
     // remoteProjectSyncPreview / remotePushProject / remotePullProject are intentionally

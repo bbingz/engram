@@ -11,8 +11,9 @@ import os
 /// user/assistant message + summary, mirroring `src/core/db/fts-repo.ts`
 /// `indexSessionContent`), and rewrites `sessions_fts` (delete-then-insert).
 ///
-/// `embedding` jobs are marked `not_applicable` — there is no Swift embedding
-/// provider, so silently completing or looping forever would both be wrong.
+/// `embedding` jobs are excluded from this drain. The service runner drains them
+/// through `SessionEmbeddingBackfill`, which keeps provider network I/O outside
+/// the single writer gate.
 public final class IndexJobRunner: StartupIndexJobRunning {
     /// Batch size for draining the backlog (137k+ rows). Each call to
     /// `runRecoverableJobs` drains up to this many; the periodic loop re-invokes.
@@ -102,7 +103,8 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         return (StartupIndexJobRecoveryResult(completed: completed, notApplicable: notApplicable), drained)
     }
 
-    /// No Swift embedding provider exists; insight embedding promotion is a no-op.
+    /// Insight embedding promotion is owned by the service runner so provider
+    /// network I/O does not happen inside the writer-gated FTS drain.
     public func backfillInsightEmbeddings() async throws -> Int {
         0
     }
@@ -127,7 +129,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
 
     private func process(_ job: PendingJob) async throws -> JobOutcome {
         if job.jobKind != IndexJobKind.fts.rawValue {
-            // embedding (or any non-FTS kind): no Swift provider → not_applicable.
+            // Unknown non-FTS kinds cannot be recovered by the Swift runner.
             try writer.write { db in
                 try Self.markNotApplicable(db, id: job.id)
             }
@@ -270,6 +272,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             SELECT id, session_id, job_kind
             FROM session_index_jobs
             WHERE status IN ('pending', 'failed_retryable')
+              AND job_kind != ?
             ORDER BY
               CASE status WHEN 'pending' THEN 0 ELSE 1 END,
               CASE job_kind WHEN 'fts' THEN 0 ELSE 1 END,
@@ -278,7 +281,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
               id
             LIMIT ?
             """,
-            arguments: [limit]
+            arguments: [IndexJobKind.embedding.rawValue, limit]
         )
         return rows.map { row in
             PendingJob(id: row["id"], sessionId: row["session_id"], jobKind: row["job_kind"])

@@ -85,6 +85,14 @@ final class EngramCLIResumeCommandTests: XCTestCase {
         )
     }
 
+    func testRepoDetailClaudeActionUsesShellEscapedAppleScriptHelper() throws {
+        let source = try source("macos/Engram/Views/Workspace/RepoDetailView.swift")
+
+        XCTAssertTrue(source.contains("TerminalLauncher.appleScriptCommandLine(command: \"claude\", args: [], cwd: repo.path)"))
+        XCTAssertFalse(source.contains("let safePath = TerminalLauncher.escapeForAppleScript(repo.path)"))
+        XCTAssertFalse(source.contains("&& claude"), "RepoDetailView must not hand-build a shell cd command inside AppleScript")
+    }
+
     func testTerminalLauncherAvailableTerminalTypesFiltersUnavailableThirdPartyApps() {
         let terminals = TerminalLauncher.availableTerminalTypes(
             bundleIdentifierIsInstalled: { $0 == "com.apple.Terminal" },

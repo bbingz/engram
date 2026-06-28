@@ -100,6 +100,27 @@ private final class HalfFailUpsertSink: IndexingWriteSink {
     }
 }
 
+private final class FileStateFailingSink: IndexingWriteSink {
+    var fileStateAttempts = 0
+
+    func upsertBatch(
+        _ snapshots: [AuthoritativeSessionSnapshot],
+        reason: IndexingWriteReason
+    ) throws -> SessionBatchUpsertResult {
+        SessionBatchUpsertResult(
+            reason: reason,
+            results: snapshots.map {
+                SessionBatchItemResult(sessionId: $0.id, action: .merge, enqueuedJobs: [], error: nil)
+            }
+        )
+    }
+
+    func upsertFileIndexState(_ state: FileIndexState) throws {
+        fileStateAttempts += 1
+        throw NSError(domain: "FileStateFailingSink", code: 1)
+    }
+}
+
 final class IndexJobAndMaintenanceTests: XCTestCase {
     private var tempDB: URL!
     private var writer: EngramDatabaseWriter!
@@ -207,14 +228,20 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         XCTAssertFalse(rows.contains { $0.contains("tool output") })
         XCTAssertTrue(rows.contains("session summary"))
 
-        // Job is marked completed (no longer pending/retryable).
-        let remaining = try writer.read { db in
+        // The FTS job is marked completed; embedding jobs remain service-owned
+        // until a provider-backed backfill runs.
+        let remainingFts = try writer.read { db in
             try Int.fetchOne(
                 db,
-                sql: "SELECT COUNT(*) FROM session_index_jobs WHERE status IN ('pending','failed_retryable')"
+                sql: """
+                SELECT COUNT(*)
+                FROM session_index_jobs
+                WHERE job_kind = 'fts'
+                  AND status IN ('pending','failed_retryable')
+                """
             ) ?? -1
         }
-        XCTAssertEqual(remaining, 0)
+        XCTAssertEqual(remainingFts, 0)
     }
 
     func testFtsVersionRebuildSwapsOnlyAfterShadowTableIsComplete() async throws {
@@ -291,7 +318,7 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         }
     }
 
-    func testEmbeddingJobsAreMarkedNotApplicable() async throws {
+    func testEmbeddingJobsRemainPendingWithoutProvider() async throws {
         try writer.write { db in
             try db.execute(
                 sql: """
@@ -309,12 +336,13 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
 
         let runner = IndexJobRunner(writer: writer, adapters: [])
         let summary = try await runner.runRecoverableJobs()
-        XCTAssertEqual(summary.notApplicable, 1)
+        XCTAssertEqual(summary.notApplicable, 0)
+        XCTAssertEqual(summary.completed, 0)
 
         let status = try writer.read { db in
             try String.fetchOne(db, sql: "SELECT status FROM session_index_jobs WHERE id = 'emb-1:1:h:embedding'")
         }
-        XCTAssertEqual(status, "not_applicable")
+        XCTAssertEqual(status, "pending")
     }
 
     // runRecoverableJobsOnce processes a single batch and reports whether the
@@ -332,7 +360,7 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
                 try db.execute(
                     sql: """
                     INSERT INTO session_index_jobs (id, session_id, job_kind, target_sync_version, status)
-                    VALUES ('s:\(i):h:embedding', 's', 'embedding', \(i), 'pending')
+                    VALUES ('s:\(i):h:legacy-vector', 's', 'legacy-vector', \(i), 'pending')
                     """
                 )
             }
@@ -465,6 +493,26 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
             snapshots.first?.tokenUsage,
             TokenUsage(inputTokens: 30, outputTokens: 10, cacheReadTokens: 7, cacheCreationTokens: 5)
         )
+    }
+
+    func testSwiftIndexerIsolatesFileIndexStateWriteFailures() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-index-file-state-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let locators = try (0..<3).map { index in
+            let url = dir.appendingPathComponent("session-\(index).jsonl")
+            try Data("{}".utf8).write(to: url)
+            return url.path
+        }
+        let sink = FileStateFailingSink()
+        let indexer = SwiftIndexer(sink: sink, adapters: [StubInfoAdapter(count: locators.count, locators: locators)])
+
+        let count = try await indexer.indexAll()
+
+        XCTAssertEqual(count, locators.count)
+        XCTAssertEqual(sink.fileStateAttempts, locators.count)
     }
 
     func testIndexStatusThrowsOnMissingSchema() throws {
@@ -640,14 +688,16 @@ private final class StubInfoAdapter: SessionAdapter {
     let source: SourceName = .codex
     let count: Int
     let usageMessages: [TokenUsage]
+    let locators: [String]?
 
-    init(count: Int, usageMessages: [TokenUsage] = []) {
+    init(count: Int, usageMessages: [TokenUsage] = [], locators: [String]? = nil) {
         self.count = count
         self.usageMessages = usageMessages
+        self.locators = locators
     }
 
     func detect() async -> Bool { true }
-    func listSessionLocators() async throws -> [String] { (0..<count).map { "/tmp/loc-\($0).jsonl" } }
+    func listSessionLocators() async throws -> [String] { locators ?? (0..<count).map { "/tmp/loc-\($0).jsonl" } }
     func isAccessible(locator: String) async -> Bool { true }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {

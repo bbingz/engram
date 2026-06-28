@@ -131,6 +131,48 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(streamed.map(\.content), ["request from mutation log", "answer from mutation log"])
     }
 
+    func testVsCodeRejectsDeepMutationPaths() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatDir = root.appendingPathComponent("ws-1/chatSessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatDir, withIntermediateDirectories: true)
+
+        let initial: [String: Any] = [
+            "kind": 0,
+            "v": [
+                "sessionId": "vs-deep-path",
+                "creationDate": 1_700_000_000_000,
+                "requests": [
+                    [
+                        "timestamp": 1_700_000_000_000,
+                        "message": ["text": "kept valid"],
+                        "response": [
+                            ["value": ["kind": "markdownContent", "content": ["value": "valid answer"]]]
+                        ],
+                    ],
+                ],
+            ],
+        ]
+        let deepMutation: [String: Any] = [
+            "kind": 1,
+            "k": Array(repeating: "nested", count: 65),
+            "v": "too deep",
+        ]
+        let file = chatDir.appendingPathComponent("sess.jsonl")
+        try ([try jsonLine(initial), try jsonLine(deepMutation)].joined(separator: "\n") + "\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = VsCodeAdapter(workspaceStorageDir: root.path)
+        switch try await adapter.parseSessionInfo(locator: file.path) {
+        case .failure(.malformedJSON):
+            break
+        case .failure(let failure):
+            XCTFail("expected malformedJSON for over-deep mutation path, got \(failure)")
+        case .success:
+            XCTFail("over-deep VS Code mutation paths must be rejected before recursive replay")
+        }
+    }
+
     // MARK: - Gemini CLI
 
     func testGeminiCountsOnlyNonEmptyTurns() async throws {
@@ -279,6 +321,41 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.userMessageCount, 1)
         XCTAssertEqual(info.assistantMessageCount, 1)
         XCTAssertEqual(streamed.map(\.content), ["jsonl prompt", "jsonl answer"])
+    }
+
+    func testGeminiIgnoresOversizedSidecar() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("tmp/proj/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        let session: [String: Any] = [
+            "sessionId": "gemini-sidecar-cap",
+            "startTime": "2026-01-01T00:00:00.000Z",
+            "lastUpdated": "2026-01-01T00:00:01.000Z",
+            "messages": [
+                ["type": "user", "timestamp": "2026-01-01T00:00:00.000Z", "content": "hello"],
+            ],
+        ]
+        let file = chatsDir.appendingPathComponent("gemini-sidecar-cap.json")
+        try jsonLine(session).write(to: file, atomically: true, encoding: .utf8)
+        try """
+        {"originator":"claude-code","parentSessionId":"\(String(repeating: "x", count: 600))"}
+        """.write(
+            to: chatsDir.appendingPathComponent("gemini-sidecar-cap.engram.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let adapter = GeminiCliAdapter(
+            tmpRoot: root.appendingPathComponent("tmp").path,
+            projectsFile: root.appendingPathComponent("projects.json").path,
+            limits: ParserLimits(maxFileBytes: 512)
+        )
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+
+        XCTAssertNil(info.agentRole)
+        XCTAssertNil(info.parentSessionId)
     }
 
     // MARK: - Iflow
@@ -1009,6 +1086,70 @@ final class AdapterMessageCountTests: XCTestCase {
             </work_done>
             """
         ])
+    }
+
+    func testCopilotIgnoresOversizedWorkspaceYaml() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-oversized-workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        try """
+        id: injected-id
+        cwd: /tmp/\(String(repeating: "x", count: 1_000))
+        created_at: 2026-01-01T00:00:00Z
+        updated_at: 2026-01-01T00:05:00Z
+        """.write(to: sessionDir.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        try [
+            jsonLine(["type": "user.message", "timestamp": "2026-01-01T00:01:00Z", "data": ["content": "hi"]]),
+            jsonLine(["type": "assistant.message", "timestamp": "2026-01-01T00:02:00Z", "data": ["content": "ok"]]),
+        ].joined(separator: "\n").appending("\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(
+            sessionRoot: root.path,
+            limits: ParserLimits(maxFileBytes: 512)
+        )
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: events.path))
+
+        XCTAssertEqual(info.id, "session-oversized-workspace")
+        XCTAssertEqual(info.cwd, "")
+    }
+
+    func testCopilotSkipsOversizedCheckpointBody() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-oversized-checkpoint", isDirectory: true)
+        let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpointsDir, withIntermediateDirectories: true)
+        try """
+        id: session-oversized-checkpoint
+        cwd: /tmp/copilot-project
+        created_at: 2026-06-01T10:00:00.000Z
+        updated_at: 2026-06-01T10:05:00.000Z
+        """.write(to: sessionDir.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        let checkpointIndex = checkpointsDir.appendingPathComponent("index.md")
+        try """
+        # Checkpoint History
+
+        | # | Title | File |
+        |---|-------|------|
+        | 1 | Large checkpoint | 001-large.md |
+        """.write(to: checkpointIndex, atomically: true, encoding: .utf8)
+        try "<overview>\(String(repeating: "x", count: 200))</overview>"
+            .write(
+                to: checkpointsDir.appendingPathComponent("001-large.md"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+        let adapter = CopilotAdapter(
+            sessionRoot: root.path,
+            limits: ParserLimits(maxFileBytes: 128)
+        )
+        let streamed = try await drain(adapter, locator: checkpointIndex.path)
+
+        XCTAssertEqual(streamed.map(\.content), ["Checkpoint 1: Large checkpoint"])
     }
 
     func testCopilotStripsMatchedYamlQuotePairs() async throws {

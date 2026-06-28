@@ -75,6 +75,20 @@ final class GitDirtyTests: XCTestCase {
         XCTAssertFalse(mixed.untrackedOnly, "porcelain=\(mixed.porcelain)")
     }
 
+    func testGitStatusFailureFailsClosedAsDirty() async throws {
+        try Self.skipIfGitMissing()
+        let proj = tmpRoot.appendingPathComponent("broken-\(UUID().uuidString.prefix(6))")
+        try FileManager.default.createDirectory(at: proj, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: proj.appendingPathComponent(".git"), withIntermediateDirectories: true)
+
+        let result = await GitDirty.check(proj.path)
+
+        XCTAssertTrue(result.isGitRepo)
+        XCTAssertTrue(result.dirty, "git status failure must not bypass the destructive-move dirty guard")
+        XCTAssertFalse(result.untrackedOnly)
+        XCTAssertFalse(result.porcelain.isEmpty)
+    }
+
     // MARK: - helpers
 
     private func makeRepo() throws -> URL {

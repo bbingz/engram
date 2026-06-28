@@ -1,6 +1,7 @@
 // macos/Engram/Views/Observability/LogStreamView.swift
 import SwiftUI
 import GRDB
+import Combine
 
 struct LogStreamView: View {
     @Environment(DatabaseManager.self) var db

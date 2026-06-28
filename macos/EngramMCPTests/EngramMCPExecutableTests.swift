@@ -66,7 +66,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             XCTFail("Expected tools/list result.tools array")
             return
         }
-        XCTAssertEqual(tools.count, 28)
+        XCTAssertEqual(tools.count, 29)
     }
 
     func testPingReturnsEmptyResult() throws {
@@ -235,6 +235,232 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertFalse(search["description"]?.stringValue?.localizedCaseInsensitiveContains("semantic") ?? true)
     }
 
+    func testContextAndSessionSchemasBoundNumericInputs() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+            """
+        )
+
+        guard case .array(let tools)? = capture.ordered["result"]?["tools"],
+              let getContext = tools.first(where: { $0["name"]?.stringValue == "get_context" }),
+              let getSession = tools.first(where: { $0["name"]?.stringValue == "get_session" }) else {
+            return XCTFail("Expected get_context and get_session in tools/list")
+        }
+        let maxTokens = getContext["inputSchema"]?["properties"]?["max_tokens"]
+        XCTAssertEqual(maxTokens?["minimum"]?.intValue, 1)
+        XCTAssertEqual(maxTokens?["maximum"]?.intValue, 32_000)
+
+        let page = getSession["inputSchema"]?["properties"]?["page"]
+        XCTAssertEqual(page?["minimum"]?.intValue, 1)
+        XCTAssertEqual(page?["maximum"]?.intValue, 100_000)
+    }
+
+    // MARK: - Deepened MCP surface (annotations / resources / prompts)
+
+    func testToolsListIncludesCategoryDerivedAnnotations() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+            """
+        )
+        guard case .array(let tools)? = capture.ordered["result"]?["tools"] else {
+            return XCTFail("Expected tools/list result.tools array")
+        }
+        func tool(_ name: String) -> OrderedTestJSONValue? {
+            tools.first { $0["name"]?.stringValue == name }
+        }
+        // Read-only tools advertise readOnlyHint so clients can auto-approve.
+        XCTAssertEqual(tool("search")?["annotations"]?["readOnlyHint"]?.boolValue, true)
+        XCTAssertEqual(tool("get_context")?["annotations"]?["readOnlyHint"]?.boolValue, true)
+        XCTAssertEqual(tool("search")?["title"]?.stringValue, "Search")
+        // Destructive project ops are gated.
+        XCTAssertEqual(tool("project_move")?["annotations"]?["readOnlyHint"]?.boolValue, false)
+        XCTAssertEqual(tool("project_move")?["annotations"]?["destructiveHint"]?.boolValue, true)
+        // Additive writes are not destructive; supersession creates a new version,
+        // so save_insight is no longer idempotent.
+        XCTAssertEqual(tool("save_insight")?["annotations"]?["destructiveHint"]?.boolValue, false)
+        XCTAssertEqual(tool("save_insight")?["annotations"]?["idempotentHint"]?.boolValue, false)
+    }
+
+    func testInitializeAdvertisesResourcesAndPromptsCapabilities() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}
+            """
+        )
+        XCTAssertNotNil(capture.ordered["result"]?["capabilities"]?["resources"])
+        XCTAssertNotNil(capture.ordered["result"]?["capabilities"]?["prompts"])
+    }
+
+    func testResourcesListExposesSessions() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"resources/list"}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        )
+        XCTAssertNil(capture.response.error)
+        let resources = try XCTUnwrap(capture.ordered["result"]?["resources"]?.arrayValue)
+        let uris = resources.compactMap { $0["uri"]?.stringValue }
+        XCTAssertTrue(uris.contains { $0.hasPrefix("engram://session/") }, "\(uris)")
+    }
+
+    func testResourceReadInsightReturnsContent() throws {
+        let listed = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"resources/list"}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        )
+        let resources = try XCTUnwrap(listed.ordered["result"]?["resources"]?.arrayValue)
+        let insightURI = resources.compactMap { $0["uri"]?.stringValue }
+            .first { $0.hasPrefix("engram://insight/") }
+        let uri = try XCTUnwrap(insightURI, "fixture should contain at least one saved insight")
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"\(uri)"}}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        )
+        XCTAssertNil(capture.response.error)
+        let contents = try XCTUnwrap(capture.ordered["result"]?["contents"]?.arrayValue)
+        XCTAssertEqual(contents.first?["uri"]?.stringValue, uri)
+        XCTAssertFalse((contents.first?["text"]?.stringValue ?? "").isEmpty)
+    }
+
+    func testGetRulesAndRuleResourceReturnMinedRules() throws {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-rules")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedMinedRuleFixture(at: dbPath)
+
+        let rules = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_rules","arguments":{"project":"engram","query":"writer gate","limit":5}}}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": dbPath]
+        )
+        XCTAssertNil(rules.response.error)
+        let firstRule = try XCTUnwrap(
+            rules.ordered["result"]?["structuredContent"]?["rules"]?.arrayValue?.first
+        )
+        XCTAssertEqual(firstRule["id"]?.stringValue, "rule-writer-gate")
+        XCTAssertEqual(firstRule["evidenceSessionIds"]?.arrayValue?.first?.stringValue, "mcp-fixture-01")
+
+        let listed = try rpc(
+            """
+            {"jsonrpc":"2.0","id":2,"method":"resources/list"}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": dbPath]
+        )
+        let uri = try XCTUnwrap(
+            listed.ordered["result"]?["resources"]?.arrayValue?
+                .compactMap { $0["uri"]?.stringValue }
+                .first { $0 == "engram://rule/rule-writer-gate" }
+        )
+
+        let read = try rpc(
+            """
+            {"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"\(uri)"}}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": dbPath]
+        )
+        XCTAssertNil(read.response.error)
+        let text = read.ordered["result"]?["contents"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+        XCTAssertTrue(text.contains("# Preserve the service writer gate"), text)
+        XCTAssertTrue(text.contains("mcp-fixture-01"), text)
+    }
+
+    func testGetContextIncludesMinedRulesForProject() throws {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-context-rules")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedMinedRuleFixture(at: dbPath)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/Users/test/work/engram","task":"writer gate","include_environment":false,"max_tokens":1200}}}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": dbPath]
+        )
+        XCTAssertNil(capture.response.error)
+        let text = capture.ordered["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+        XCTAssertTrue(text.contains("[rule] Preserve the service writer gate"), text)
+    }
+
+    func testGetContextRejectsHugeMaxTokensInsteadOfOverflowing() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/Users/test/work/engram","include_environment":false,"max_tokens":9223372036854775807}}}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        )
+
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["isError"]?.boolValue, true)
+        let message = result["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+        XCTAssertTrue(message.contains("max_tokens must be <="), message)
+    }
+
+    func testGetSessionRejectsHugePageInsteadOfOverflowing() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-fixture-01","page":9223372036854775807}}}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        )
+
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["isError"]?.boolValue, true)
+        let message = result["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+        XCTAssertTrue(message.contains("page must be <="), message)
+    }
+
+    func testResourceReadRejectsUnknownURIScheme() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"https://example.com"}}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        )
+        XCTAssertEqual(capture.response.error?.code, -32602)
+    }
+
+    func testPromptsListAdvertisesEngramPrompts() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"prompts/list"}
+            """
+        )
+        let prompts = try XCTUnwrap(capture.ordered["result"]?["prompts"]?.arrayValue)
+        let names = prompts.compactMap { $0["name"]?.stringValue }
+        XCTAssertTrue(names.contains("engram:catch-up"), "\(names)")
+        XCTAssertTrue(names.contains("engram:handoff"), "\(names)")
+    }
+
+    func testPromptGetCatchUpReturnsUserMessage() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"engram:catch-up","arguments":{"cwd":"/Users/test/work/engram"}}}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        )
+        XCTAssertNil(capture.response.error)
+        let messages = try XCTUnwrap(capture.ordered["result"]?["messages"]?.arrayValue)
+        XCTAssertEqual(messages.first?["role"]?.stringValue, "user")
+        XCTAssertEqual(messages.first?["content"]?["type"]?.stringValue, "text")
+        XCTAssertFalse((messages.first?["content"]?["text"]?.stringValue ?? "").isEmpty)
+    }
+
+    func testPromptGetRequiresCwd() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"engram:catch-up","arguments":{}}}
+            """
+        )
+        XCTAssertEqual(capture.response.error?.code, -32602)
+    }
+
     func testExportDescriptionAdvertisesEngramExportsDirectory() throws {
         let capture = try rpc(
             """
@@ -287,6 +513,27 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
         let results = try XCTUnwrap(capture.ordered["result"]?["structuredContent"]?["results"]?.arrayValue)
         XCTAssertEqual(results.first?["session"]?["id"]?.stringValue, "mcp-fixture-01")
+    }
+
+    func testKeywordSearchEscapesProjectLikeWildcards() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-like-escape-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedProjectLikeWildcardFixture(at: dbPath)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"wildcardneedle","mode":"keyword","project":"my_repo","limit":10}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]
+        )
+
+        let results = try XCTUnwrap(capture.ordered["result"]?["structuredContent"]?["results"]?.arrayValue)
+        XCTAssertEqual(results.compactMap { $0["session"]?["id"]?.stringValue }, ["mcp-like-literal"])
     }
 
     func testMCPTranscriptFallbackDoesNotBypassAdapterSizeFailures() throws {
@@ -611,6 +858,230 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             goldenFixture: "mcp-golden/search.keyword.json"
         )
+    }
+
+    private func encodeVector(_ values: [Float]) -> Data {
+        var data = Data()
+        for value in values {
+            var littleEndian = value.bitPattern.littleEndian
+            withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
+        }
+        return data
+    }
+
+    private func seedMinedRuleFixture(at dbPath: String) throws {
+        try DatabaseQueue(path: dbPath).write { db in
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS mined_rules (
+                  id TEXT PRIMARY KEY,
+                  rule_type TEXT NOT NULL,
+                  title TEXT NOT NULL,
+                  body TEXT NOT NULL,
+                  evidence_session_ids TEXT NOT NULL DEFAULT '[]',
+                  confidence REAL NOT NULL DEFAULT 0,
+                  source_project TEXT,
+                  model TEXT,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE VIRTUAL TABLE IF NOT EXISTS mined_rules_fts USING fts5(
+                  rule_id UNINDEXED,
+                  title,
+                  body,
+                  tokenize='trigram case_sensitive 0'
+                );
+            """)
+            try db.execute(sql: "DELETE FROM mined_rules")
+            try db.execute(sql: "DELETE FROM mined_rules_fts")
+            try db.execute(
+                sql: """
+                INSERT INTO mined_rules (
+                  id, rule_type, title, body, evidence_session_ids,
+                  confidence, source_project, model, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                arguments: [
+                    "rule-writer-gate",
+                    "runbook",
+                    "Preserve the service writer gate",
+                    "Route app and MCP writes through EngramServiceClient and ServiceWriterGate.",
+                    #"["mcp-fixture-01"]"#,
+                    0.91,
+                    "engram",
+                    "test-model",
+                    "2026-06-26T00:00:00.000Z",
+                ]
+            )
+            try db.execute(
+                sql: "INSERT INTO mined_rules_fts (rule_id, title, body) VALUES (?, ?, ?)",
+                arguments: [
+                    "rule-writer-gate",
+                    "Preserve the service writer gate",
+                    "Route app and MCP writes through EngramServiceClient and ServiceWriterGate.",
+                ]
+            )
+        }
+    }
+
+    func testGetMemoryHybridUsesSemanticRankingViaMockProvider() throws {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-semantic")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try DatabaseQueue(path: dbPath).write { db in
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS insight_embeddings (
+                  insight_id TEXT PRIMARY KEY, embedding BLOB NOT NULL,
+                  model TEXT NOT NULL, dim INTEGER NOT NULL, created_at TEXT
+                );
+            """)
+            try db.execute(sql: "DELETE FROM insights")
+            try db.execute(sql: "DELETE FROM insights_fts")
+            let seeds: [(id: String, content: String, vector: [Float])] = [
+                ("sem-near", "vector about cats", [1, 0, 0, 0]),
+                ("sem-far", "vector about cars", [0, 1, 0, 0]),
+            ]
+            for seed in seeds {
+                try db.execute(
+                    sql: "INSERT INTO insights (id, content, importance) VALUES (?, ?, 5)",
+                    arguments: [seed.id, seed.content]
+                )
+                try db.execute(
+                    sql: "INSERT INTO insights_fts (insight_id, content) VALUES (?, ?)",
+                    arguments: [seed.id, seed.content]
+                )
+                try db.execute(
+                    sql: "INSERT INTO insight_embeddings (insight_id, embedding, model, dim) VALUES (?, ?, 'test', 4)",
+                    arguments: [seed.id, encodeVector(seed.vector)]
+                )
+            }
+        }
+
+        // The mock provider returns a query embedding close to "sem-near".
+        let server = try MockHTTPServer(jsonBody: #"{"data":[{"index":0,"embedding":[0.92,0.1,0,0]}]}"#)
+        server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"feline"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_EMBEDDING_BASE_URL": "http://127.0.0.1:\(server.port)/v1",
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "test",
+                "ENGRAM_EMBEDDING_DIM": "4",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertEqual(structured["retrieval"]?.stringValue, "hybrid")
+        let ids = try XCTUnwrap(structured["memories"]?.arrayValue).compactMap { $0["id"]?.stringValue }
+        XCTAssertEqual(ids.first, "sem-near", "\(ids)")
+    }
+
+    func testGetMemoryDegradesToKeywordWhenEmbeddingProviderFails() throws {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-semantic-degrade")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try DatabaseQueue(path: dbPath).write { db in
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS insight_embeddings (
+                  insight_id TEXT PRIMARY KEY, embedding BLOB NOT NULL,
+                  model TEXT NOT NULL, dim INTEGER NOT NULL, created_at TEXT
+                );
+            """)
+            try db.execute(
+                sql: "INSERT INTO insight_embeddings (insight_id, embedding, model, dim) VALUES ('insight-01', ?, 'test', 4)",
+                arguments: [encodeVector([1, 0, 0, 0])]
+            )
+        }
+
+        // Provider returns 500 → semantic throws → get_memory falls back to keyword.
+        let server = try MockHTTPServer(status: 500, jsonBody: "{}")
+        server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"single writer daemon HTTP"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_EMBEDDING_BASE_URL": "http://127.0.0.1:\(server.port)/v1",
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_DIM": "4",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertNil(structured["retrieval"], "semantic failure must not be marked hybrid")
+        XCTAssertNotNil(structured["memories"]?.arrayValue, "must still return keyword memories")
+    }
+
+    func testGetMemoryRanksByImportanceAndRecencyWhenLifecyclePresent() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-memory-lifecycle"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try DatabaseQueue(path: dbPath).write { db in
+            // Simulate the writer-side memory-lifecycle migration on an old DB.
+            for ddl in [
+                "ALTER TABLE insights ADD COLUMN insight_type TEXT DEFAULT 'semantic'",
+                "ALTER TABLE insights ADD COLUMN superseded_by TEXT",
+                "ALTER TABLE insights ADD COLUMN last_accessed_at TEXT",
+                "ALTER TABLE insights ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0",
+            ] {
+                try? db.execute(sql: ddl)
+            }
+            try db.execute(sql: "DELETE FROM insights")
+            try db.execute(sql: "DELETE FROM insights_fts")
+            // All three match "decay"; they differ only by importance, recency,
+            // and supersession so the lifecycle ranking is what orders them.
+            let rows: [(id: String, content: String, importance: Int, createdAt: String, superseded: String?)] = [
+                ("old-high", "memory decay policy details", 9, "2026-01-01 00:00:00", nil),
+                ("new-low", "memory decay quick note", 2, "2026-06-25 00:00:00", nil),
+                ("superseded", "memory decay obsolete fact", 10, "2026-06-25 00:00:00", "new-low"),
+            ]
+            for row in rows {
+                try db.execute(
+                    sql: """
+                    INSERT INTO insights
+                      (id, content, importance, created_at, insight_type, superseded_by, access_count)
+                    VALUES (?, ?, ?, ?, 'semantic', ?, 0)
+                    """,
+                    arguments: [row.id, row.content, row.importance, row.createdAt, row.superseded]
+                )
+                try db.execute(
+                    sql: "INSERT INTO insights_fts (insight_id, content) VALUES (?, ?)",
+                    arguments: [row.id, row.content]
+                )
+            }
+        }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"decay"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_NOW": "2026-06-26T00:00:00.000Z",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let memories = try XCTUnwrap(
+            capture.ordered["result"]?["structuredContent"]?["memories"]?.arrayValue
+        )
+        let ids = memories.compactMap { $0["id"]?.stringValue }
+        // Superseded row is excluded entirely.
+        XCTAssertFalse(ids.contains("superseded"), "\(ids)")
+        XCTAssertEqual(ids.count, 2, "\(ids)")
+        // A recent memory outranks a 6-month-old one even at much higher
+        // importance (30-day half-life decays the old row to near zero).
+        XCTAssertEqual(ids.first, "new-low", "\(ids)")
+        let warning = capture.ordered["result"]?["structuredContent"]?["warning"]?.stringValue
+        XCTAssertEqual(warning?.contains("ranked by importance and recency"), true, "\(warning ?? "nil")")
     }
 
     func testSearchHybridNoEmbeddingMatchesGolden() throws {
@@ -1979,6 +2450,34 @@ final class EngramMCPExecutableTests: XCTestCase {
         }
     }
 
+    private func seedProjectLikeWildcardFixture(at dbPath: String) throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, file_path, message_count, tier, summary
+                )
+                VALUES
+                  ('mcp-like-literal', 'codex', '2026-01-10T10:00:00.000Z',
+                   '/Users/test/work/my_repo', 'my_repo', '/tmp/mcp-like-literal.jsonl', 1, 'normal',
+                   'literal project'),
+                  ('mcp-like-wildcard', 'codex', '2026-01-10T10:01:00.000Z',
+                   '/Users/test/work/myXrepo', 'myXrepo', '/tmp/mcp-like-wildcard.jsonl', 1, 'normal',
+                   'wildcard project')
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES
+                  ('mcp-like-literal', 'wildcardneedle literal'),
+                  ('mcp-like-wildcard', 'wildcardneedle wildcard')
+                """
+            )
+        }
+    }
+
     private func dropGetContextOptionalEnvironmentTables(_ dbURL: URL) throws {
         let queue = try DatabaseQueue(path: dbURL.path)
         try queue.write { db in
@@ -2642,6 +3141,68 @@ private enum TestJSONRPCID: Decodable {
 private struct TestJSONRPCError: Decodable {
     let code: Int
     let message: String
+}
+
+private struct MockServerError: Error { let message: String }
+
+/// Minimal localhost HTTP responder for embedding-provider e2e tests. Accepts a
+/// connection, ignores the request, and writes a fixed status + JSON body. The
+/// spawned MCP process reaches it via `ENGRAM_EMBEDDING_BASE_URL`.
+private final class MockHTTPServer {
+    private let listenFD: Int32
+    let port: UInt16
+    private let status: Int
+    private let responseBody: Data
+
+    init(status: Int = 200, jsonBody: String) throws {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw MockServerError(message: "socket() failed") }
+        var yes: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        addr.sin_port = 0
+        let bindResult = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else { close(fd); throw MockServerError(message: "bind() failed") }
+        guard listen(fd, 8) == 0 else { close(fd); throw MockServerError(message: "listen() failed") }
+        var assigned = sockaddr_in()
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &assigned) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(fd, $0, &len)
+            }
+        }
+        listenFD = fd
+        port = UInt16(bigEndian: assigned.sin_port)
+        self.status = status
+        responseBody = Data(jsonBody.utf8)
+    }
+
+    func start() {
+        let fd = listenFD
+        let status = self.status
+        let body = responseBody
+        Thread.detachNewThread {
+            while true {
+                let client = accept(fd, nil, nil)
+                if client < 0 { break }
+                var buffer = [UInt8](repeating: 0, count: 8192)
+                _ = recv(client, &buffer, buffer.count, 0)
+                let header = "HTTP/1.1 \(status) X\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+                var out = Data(header.utf8)
+                out.append(body)
+                _ = out.withUnsafeBytes { send(client, $0.baseAddress, out.count, 0) }
+                close(client)
+            }
+        }
+    }
+
+    func stop() { close(listenFD) }
 }
 
 private struct RPCCapture {

@@ -18,6 +18,8 @@ enum ServiceCapabilityToken {
     static let protectedCommands: Set<String> = [
         "generateSummary",
         "saveInsight",
+        "refreshUsage",
+        "test.write_intent",
         "projectMove",
         "projectArchive",
         "projectUndo",
@@ -36,6 +38,7 @@ enum ServiceCapabilityToken {
         "setSourceEnabled",
         "renameSession",
         "recordSessionAccess",
+        "recordInsightAccess",
         "hideEmptySessions",
         "linkSessions",
         "exportSession",

@@ -30,22 +30,51 @@ final class SessionSnapshotClassificationTests: XCTestCase {
         source: SourceName = .codex,
         hash: String = "h",
         cwd: String = "/work/engram",
+        sizeBytes: Int64? = 0,
         messageCount: Int = 4,
         userMessageCount: Int = 2,
         assistantMessageCount: Int = 2,
         toolMessageCount: Int = 0,
         systemMessageCount: Int = 0,
+        summaryMessageCount: Int? = nil,
         tier: SessionTier? = .normal,
         agentRole: String? = nil,
-        parentSessionId: String? = nil
+        parentSessionId: String? = nil,
+        implementationBeats: [SessionImplementationBeat] = []
     ) -> AuthoritativeSessionSnapshot {
         AuthoritativeSessionSnapshot(
             id: id, source: source, authoritativeNode: "node", syncVersion: 1,
             snapshotHash: "\(hash)-\(id)", indexedAt: "2026-05-23T10:00:00Z",
-            sourceLocator: "/tmp/\(id).jsonl", startTime: "2026-05-23T10:00:00.000Z",
+            sourceLocator: "/tmp/\(id).jsonl", sizeBytes: sizeBytes, startTime: "2026-05-23T10:00:00.000Z",
             cwd: cwd, messageCount: messageCount, userMessageCount: userMessageCount,
             assistantMessageCount: assistantMessageCount, toolMessageCount: toolMessageCount, systemMessageCount: systemMessageCount,
-            tier: tier, agentRole: agentRole, parentSessionId: parentSessionId
+            summaryMessageCount: summaryMessageCount,
+            tier: tier, agentRole: agentRole, parentSessionId: parentSessionId,
+            implementationBeats: implementationBeats
+        )
+    }
+
+    private func beat(
+        sessionId: String,
+        index: Int = 0,
+        date: String = "2026-05-23",
+        title: String = "Add implementation timeline",
+        status: SessionImplementationStatus = .completed,
+        events: [SessionOperationEvent] = [.verified]
+    ) -> SessionImplementationBeat {
+        SessionImplementationBeat(
+            sessionId: sessionId,
+            beatIndex: index,
+            actionDate: date,
+            actionTimestamp: "\(date)T10:30:00.000Z",
+            workKey: title.lowercased().replacingOccurrences(of: " ", with: "-"),
+            workTitle: title,
+            humanIntent: title,
+            assistantOutcome: "Completed \(title)",
+            kind: .implementation,
+            status: status,
+            operationEvents: events,
+            confidence: 0.91
         )
     }
 
@@ -98,6 +127,44 @@ final class SessionSnapshotClassificationTests: XCTestCase {
         }
     }
 
+    func testReindexPreservesInstructionSignalsOnEmptyRestream() throws {
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            // Healthy first index: 3 distinct asks, streamStats sentinel = 10.
+            var s1 = snapshot(id: "ses", hash: "h1")
+            s1.summaryMessageCount = 10
+            s1.instructionCount = 3
+            s1.humanTurnCount = 6
+            s1.instructionSummary = "Add login\nFix parser\nWrite tests"
+            _ = try w.writeAuthoritativeSnapshot(s1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT instruction_count FROM sessions WHERE id = 'ses'"), 3)
+
+            // Empty/failed re-stream (sentinel = 0) must preserve all three together.
+            var s2 = snapshot(id: "ses", hash: "h2")
+            s2.summaryMessageCount = 0
+            s2.instructionCount = 0
+            s2.humanTurnCount = 0
+            s2.instructionSummary = nil
+            _ = try w.writeAuthoritativeSnapshot(s2)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT instruction_count FROM sessions WHERE id = 'ses'"), 3)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT human_turn_count FROM sessions WHERE id = 'ses'"), 6)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT instruction_summary FROM sessions WHERE id = 'ses'"),
+                "Add login\nFix parser\nWrite tests"
+            )
+
+            // Healthy re-stream overwrites the set fresh.
+            var s3 = snapshot(id: "ses", hash: "h3")
+            s3.summaryMessageCount = 12
+            s3.instructionCount = 4
+            s3.humanTurnCount = 8
+            s3.instructionSummary = "A\nB\nC\nD"
+            _ = try w.writeAuthoritativeSnapshot(s3)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT instruction_count FROM sessions WHERE id = 'ses'"), 4)
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT instruction_summary FROM sessions WHERE id = 'ses'"), "A\nB\nC\nD")
+        }
+    }
+
     func testReindexPreservesCwdAndMessageCountsWhenIncomingParseIsEmpty() throws {
         try writer.write { db in
             let w = SessionSnapshotWriter(db: db)
@@ -139,6 +206,106 @@ final class SessionSnapshotClassificationTests: XCTestCase {
             XCTAssertEqual(row?["assistant_message_count"], 2)
             XCTAssertEqual(row?["tool_message_count"], 1)
             XCTAssertEqual(row?["system_message_count"], 0)
+        }
+    }
+
+    func testWriterPersistsImplementationBeats() throws {
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "work",
+                    hash: "h1",
+                    summaryMessageCount: 6,
+                    implementationBeats: [beat(sessionId: "work")]
+                )
+            )
+
+            let row = try Row.fetchOne(db, sql: """
+                SELECT action_date, work_title, status, operation_events, confidence
+                  FROM session_work_beats
+                 WHERE session_id = 'work' AND beat_index = 0
+                """)
+            XCTAssertEqual(row?["action_date"], "2026-05-23")
+            XCTAssertEqual(row?["work_title"], "Add implementation timeline")
+            XCTAssertEqual(row?["status"], "completed")
+            XCTAssertEqual(row?["operation_events"], "[\"verified\"]")
+            let confidence: Double? = row?["confidence"]
+            XCTAssertEqual(confidence ?? 0, 0.91, accuracy: 0.001)
+        }
+    }
+
+    func testNoopReindexReplacesChangedImplementationBeats() throws {
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "work",
+                    hash: "stable",
+                    summaryMessageCount: 6,
+                    implementationBeats: [beat(sessionId: "work", title: "Add old timeline")]
+                )
+            )
+
+            let result = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "work",
+                    hash: "stable",
+                    summaryMessageCount: 6,
+                    implementationBeats: [
+                        beat(sessionId: "work", title: "Add implementation timeline"),
+                        beat(sessionId: "work", index: 1, date: "2026-05-24", title: "Polish implementation timeline"),
+                    ]
+                )
+            )
+
+            XCTAssertEqual(result.action, .noop)
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_work_beats WHERE session_id = 'work'"),
+                2
+            )
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT work_title FROM session_work_beats WHERE session_id = 'work' AND beat_index = 0"
+                ),
+                "Add implementation timeline"
+            )
+        }
+    }
+
+    func testEmptyRestreamPreservesImplementationBeats() throws {
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "work",
+                    hash: "h1",
+                    summaryMessageCount: 6,
+                    implementationBeats: [beat(sessionId: "work")]
+                )
+            )
+
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "work",
+                    hash: "h2",
+                    messageCount: 0,
+                    userMessageCount: 0,
+                    assistantMessageCount: 0,
+                    summaryMessageCount: 0,
+                    implementationBeats: []
+                )
+            )
+
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_work_beats WHERE session_id = 'work'"),
+                1
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT work_title FROM session_work_beats WHERE session_id = 'work'"),
+                "Add implementation timeline"
+            )
         }
     }
 

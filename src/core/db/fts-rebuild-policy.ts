@@ -32,15 +32,15 @@ export function applyFtsRebuildPolicy(
       pending !== FTS_VERSION ||
       !tableMatchesSessionsFtsSchema(db, REBUILD_TABLE);
     if (needsFreshRebuild) {
-      recreateRebuildTableFromActive(db);
+      recreateRebuildTable(db);
     }
 
-    db.exec('UPDATE sessions SET size_bytes = 0');
     deleteIfExists(db, 'session_embeddings');
     deleteIfExists(db, 'vec_sessions');
     metadata.setMetadata(REBUILD_VERSION_KEY, FTS_VERSION);
-    reopenCompletedFtsJobs(db);
-    finalizeFtsRebuildIfReady(db, metadata);
+    if (needsFreshRebuild) {
+      reopenCompletedFtsJobs(db);
+    }
   });
   tx();
 }
@@ -66,7 +66,7 @@ export function finalizeFtsRebuildIfReady(
 ): boolean {
   if (metadata.getMetadata(REBUILD_VERSION_KEY) !== FTS_VERSION) return false;
   if (!tableMatchesSessionsFtsSchema(db, REBUILD_TABLE)) {
-    recreateRebuildTableFromActive(db);
+    recreateRebuildTable(db);
   }
   if (recoverableFtsJobCount(db) > 0) return false;
 
@@ -158,15 +158,9 @@ function rebuildIsPending(db: BetterSqlite3.Database): boolean {
   );
 }
 
-function recreateRebuildTableFromActive(db: BetterSqlite3.Database): void {
+function recreateRebuildTable(db: BetterSqlite3.Database): void {
   db.exec(`DROP TABLE IF EXISTS ${REBUILD_TABLE}`);
   createSessionsFtsTable(db, REBUILD_TABLE);
-  if (tableExists(db, ACTIVE_TABLE)) {
-    db.exec(`
-      INSERT INTO ${REBUILD_TABLE}(session_id, content)
-      SELECT session_id, content FROM ${ACTIVE_TABLE}
-    `);
-  }
 }
 
 function reopenCompletedFtsJobs(db: BetterSqlite3.Database): void {

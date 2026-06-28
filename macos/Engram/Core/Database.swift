@@ -74,6 +74,15 @@ final class DatabaseManager: @unchecked Sendable {
     @ObservationIgnored private let dbPath: String
     @ObservationIgnored private var pool: DatabasePool?
     @ObservationIgnored private let poolLock = NSLock()
+    @ObservationIgnored private static let sessionTimelineMaxLimit = 10_000
+    @ObservationIgnored private static let timelineDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 
     /// File path to the SQLite database (for background FileManager access)
     var path: String { dbPath }
@@ -132,13 +141,17 @@ final class DatabaseManager: @unchecked Sendable {
         since: String?,
         includeHidden: Bool,
         subAgent: Bool?,
-        topLevelOnly: Bool
+        topLevelOnly: Bool,
+        humanDriven: Bool
     ) {
         if !includeHidden {
             parts.append("AND hidden_at IS NULL")
         }
         if topLevelOnly {
             parts.append("AND parent_session_id IS NULL AND suggested_parent_id IS NULL")
+        }
+        if humanDriven {
+            parts.append("AND (\(HumanDrivenFilter.sqlPredicate))")
         }
         if !sources.isEmpty {
             let ph = sources.map { _ in "?" }.joined(separator: ", ")
@@ -175,6 +188,7 @@ final class DatabaseManager: @unchecked Sendable {
         includeHidden: Bool = false,
         subAgent: Bool? = nil,       // nil=all, true=only sub-agents, false=hide sub-agents
         topLevelOnly: Bool = false,
+        humanDriven: Bool = false,
         sort: SessionSort = .accessedDesc,
         limit: Int = 200,
         offset: Int = 0
@@ -190,7 +204,8 @@ final class DatabaseManager: @unchecked Sendable {
                 since: since,
                 includeHidden: includeHidden,
                 subAgent: subAgent,
-                topLevelOnly: topLevelOnly
+                topLevelOnly: topLevelOnly,
+                humanDriven: humanDriven
             )
             let orderSQL = sort.orderSQL(hasAccessMetadata: try Self.hasSessionAccessMetadata(in: db))
             parts.append("ORDER BY \(orderSQL) LIMIT ? OFFSET ?")
@@ -206,7 +221,8 @@ final class DatabaseManager: @unchecked Sendable {
         since: String? = nil,
         includeHidden: Bool = false,
         subAgent: Bool? = nil,
-        topLevelOnly: Bool = false
+        topLevelOnly: Bool = false,
+        humanDriven: Bool = false
     ) throws -> SessionListStats {
         try readInBackground { db in
             var parts = ["FROM sessions WHERE 1=1"]
@@ -219,7 +235,8 @@ final class DatabaseManager: @unchecked Sendable {
                 since: since,
                 includeHidden: includeHidden,
                 subAgent: subAgent,
-                topLevelOnly: topLevelOnly
+                topLevelOnly: topLevelOnly,
+                humanDriven: humanDriven
             )
             let fromWhere = parts.joined(separator: " ")
             let row = try Row.fetchOne(db, sql: """
@@ -564,12 +581,76 @@ final class DatabaseManager: @unchecked Sendable {
                 """
             var args: [DatabaseValueConvertible] = []
             if let project {
-                sql += " AND project LIKE ?"
-                args.append("%\(project)%")
+                sql += " AND project LIKE ? ESCAPE '\\'"
+                args.append("%\(CJKText.escapeLikePattern(project))%")
             }
             sql += " GROUP BY project ORDER BY last_updated DESC"
             return try TimelineEntry.fetchAll(db, sql: sql, arguments: StatementArguments(args))
         }
+    }
+
+    func implementationTimeline(
+        days: Int = 30,
+        project: String? = nil,
+        humanDriven: Bool = false
+    ) throws -> [ImplementationTimelineItem] {
+        try readInBackground { db in
+            guard try Self.tableExists("session_work_beats", db: db) else { return [] }
+            var parts = ["""
+                SELECT b.session_id, b.beat_index, b.action_date, b.action_timestamp,
+                       b.work_key, b.work_title, b.human_intent, b.assistant_outcome,
+                       b.kind, b.status, b.operation_events, b.confidence
+                FROM session_work_beats b
+                JOIN sessions s ON s.id = b.session_id
+                WHERE s.hidden_at IS NULL
+                  AND s.parent_session_id IS NULL
+                  AND s.suggested_parent_id IS NULL
+                  AND (s.tier IS NULL OR s.tier != 'skip')
+            """]
+            var args: [DatabaseValueConvertible] = []
+            if days < 100_000,
+               let cutoff = Calendar(identifier: .gregorian).date(byAdding: .day, value: -days, to: Date()) {
+                parts.append("AND b.action_date >= ?")
+                args.append(Self.timelineDateFormatter.string(from: cutoff))
+            }
+            if let project, !project.isEmpty {
+                parts.append("AND s.project = ?")
+                args.append(project)
+            }
+            if humanDriven {
+                parts.append("AND \(HumanDrivenFilter.sqlPredicate(alias: "s"))")
+            }
+            parts.append("ORDER BY b.action_date ASC, b.action_timestamp ASC, b.session_id ASC, b.beat_index ASC")
+
+            let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "), arguments: StatementArguments(args))
+            let beats = rows.map(Self.sessionImplementationBeat(row:))
+            return ImplementationTimelineBuilder.build(beats: beats)
+        }
+    }
+
+    private static func sessionImplementationBeat(row: Row) -> SessionImplementationBeat {
+        let eventsJSON: String = row["operation_events"] ?? "[]"
+        return SessionImplementationBeat(
+            sessionId: row["session_id"],
+            beatIndex: row["beat_index"],
+            actionDate: row["action_date"],
+            actionTimestamp: row["action_timestamp"],
+            workKey: row["work_key"],
+            workTitle: row["work_title"],
+            humanIntent: row["human_intent"],
+            assistantOutcome: row["assistant_outcome"],
+            kind: SessionImplementationKind(rawValue: row["kind"]) ?? .implementation,
+            status: SessionImplementationStatus(rawValue: row["status"]) ?? .partial,
+            operationEvents: decodeOperationEvents(eventsJSON),
+            confidence: row["confidence"]
+        )
+    }
+
+    private static func decodeOperationEvents(_ json: String) -> [SessionOperationEvent] {
+        guard let data = json.data(using: .utf8),
+              let events = try? JSONDecoder().decode([SessionOperationEvent].self, from: data)
+        else { return [] }
+        return events
     }
 
     // MARK: - stats
@@ -612,12 +693,12 @@ final class DatabaseManager: @unchecked Sendable {
         try readInBackground { db in
             let project = URL(fileURLWithPath: cwd).lastPathComponent
             var results = try Session.fetchAll(db,
-                sql: "SELECT * FROM sessions WHERE hidden_at IS NULL AND project LIKE ? AND message_count > 0 ORDER BY start_time DESC LIMIT ?",
-                arguments: ["%\(project)%", limit])
+                sql: "SELECT * FROM sessions WHERE hidden_at IS NULL AND project LIKE ? ESCAPE '\\' AND message_count > 0 ORDER BY start_time DESC LIMIT ?",
+                arguments: ["%\(CJKText.escapeLikePattern(project))%", limit])
             if results.isEmpty && !cwd.isEmpty {
                 results = try Session.fetchAll(db,
-                    sql: "SELECT * FROM sessions WHERE hidden_at IS NULL AND cwd LIKE ? ORDER BY start_time DESC LIMIT ?",
-                    arguments: ["%\(cwd)%", limit])
+                    sql: "SELECT * FROM sessions WHERE hidden_at IS NULL AND cwd LIKE ? ESCAPE '\\' ORDER BY start_time DESC LIMIT ?",
+                    arguments: ["%\(CJKText.escapeLikePattern(cwd))%", limit])
             }
             return results
         }
@@ -1025,21 +1106,30 @@ final class DatabaseManager: @unchecked Sendable {
         }
     }
 
-    func recentSessions(limit: Int = 8) throws -> [Session] {
-        try readInBackground { db in
+    func recentSessions(limit: Int = 8, humanDriven: Bool = false) throws -> [Session] {
+        let humanClause = humanDriven ? "AND (\(HumanDrivenFilter.sqlPredicate))" : ""
+        return try readInBackground { db in
             try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
                 WHERE hidden_at IS NULL
                   AND parent_session_id IS NULL
                   AND suggested_parent_id IS NULL
                   AND (tier IS NULL OR tier != 'skip')
+                  \(humanClause)
                 ORDER BY start_time DESC LIMIT ?
             """, arguments: [limit])
         }
     }
 
-    func sessionTimeline(days: Int = 30, sort: SessionSort = .updatedDesc) throws -> [(date: String, sessions: [Session])] {
-        try readInBackground { db in
+    func sessionTimeline(
+        days: Int = 30,
+        sort: SessionSort = .updatedDesc,
+        humanDriven: Bool = false,
+        limit: Int = 2_000
+    ) throws -> [(date: String, sessions: [Session])] {
+        let humanClause = humanDriven ? "AND (\(HumanDrivenFilter.sqlPredicate))" : ""
+        let boundedLimit = min(max(limit, 1), Self.sessionTimelineMaxLimit)
+        return try readInBackground { db in
             let timestampSQL = sort.timelineTimestampSQL
             let sessions = try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
@@ -1048,8 +1138,10 @@ final class DatabaseManager: @unchecked Sendable {
                   AND suggested_parent_id IS NULL
                   AND \(timestampSQL) >= DATE('now', '-\(days) days')
                   AND (tier IS NULL OR tier != 'skip')
+                  \(humanClause)
                 ORDER BY \(sort.rawValue)
-            """)
+                LIMIT ?
+            """, arguments: [boundedLimit])
             func timelineTimestamp(_ session: Session) -> String {
                 switch sort {
                 case .accessedDesc, .accessedAsc:
@@ -1104,10 +1196,10 @@ final class DatabaseManager: @unchecked Sendable {
                 FROM sessions
                 WHERE hidden_at IS NULL
                   AND (tier IS NULL OR tier != 'skip')
-                  AND cwd LIKE ?
+                  AND cwd LIKE ? ESCAPE '\\'
                   AND date(start_time, 'localtime') >= date('now', 'localtime', '-6 days')
                 GROUP BY day
-            """, arguments: ["\(repoPath)%"])
+            """, arguments: ["\(CJKText.escapeLikePattern(repoPath))%"])
             var counts = [Int](repeating: 0, count: 7)
             let today = Calendar.current.startOfDay(for: Date())
             let fmt = DateFormatter()

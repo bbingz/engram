@@ -347,6 +347,50 @@ final class Round5RemediationTests: XCTestCase {
         XCTAssertTrue(sink.batchSizes.isEmpty)
     }
 
+    func testKnownReliableSourceFileWithMissingInstructionSignalsIsReindexed() async throws {
+        let temp = try makeTempDir("instruction-backfill")
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let locator = temp.appendingPathComponent("session.jsonl")
+        try #"{"role":"user","content":"placeholder"}"#.write(to: locator, atomically: true, encoding: .utf8)
+        let size = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: locator.path)[.size] as? NSNumber
+        ).int64Value
+        let sink = Round5KnownFileStateSink(states: [
+            locator.path: KnownIndexedFileState(
+                sizeBytes: size,
+                indexedAt: "2999-01-01T00:00:00Z",
+                needsInstructionBackfill: true
+            )
+        ])
+        let adapter = Round5CountingFileSessionAdapter(
+            locator: locator.path,
+            sizeBytes: size,
+            userMessages: [
+                "Fix login session filtering",
+                "Add regression coverage for instruction backfill"
+            ]
+        )
+        let indexer = SwiftIndexer(
+            sink: sink,
+            adapters: [adapter],
+            skipUnchangedFileLocators: true,
+            skipKnownFileLocators: true
+        )
+
+        let indexed = try await indexer.indexAll()
+
+        XCTAssertEqual(indexed, 1)
+        XCTAssertEqual(adapter.parseCount, 1)
+        XCTAssertEqual(sink.batchSizes, [1])
+        let snapshot = try XCTUnwrap(sink.snapshots.first)
+        XCTAssertEqual(snapshot.instructionCount, 2)
+        XCTAssertEqual(snapshot.humanTurnCount, 2)
+        XCTAssertEqual(
+            snapshot.instructionSummary,
+            "Fix login session filtering\nAdd regression coverage for instruction backfill"
+        )
+    }
+
     func testRecentIndexParsesSameSizeFileModifiedAfterIndexedAt() async throws {
         let temp = try makeTempDir("index-same-size")
         defer { try? FileManager.default.removeItem(at: temp) }
@@ -646,6 +690,7 @@ final class Round5RemediationTests: XCTestCase {
 private final class Round5KnownFileStateSink: IndexingWriteSink {
     let states: [String: KnownIndexedFileState]
     var batchSizes: [Int] = []
+    var snapshots: [AuthoritativeSessionSnapshot] = []
 
     init(states: [String: KnownIndexedFileState]) {
         self.states = states
@@ -656,6 +701,7 @@ private final class Round5KnownFileStateSink: IndexingWriteSink {
         reason: IndexingWriteReason
     ) throws -> SessionBatchUpsertResult {
         batchSizes.append(snapshots.count)
+        self.snapshots.append(contentsOf: snapshots)
         return SessionBatchUpsertResult(
             reason: reason,
             results: snapshots.map {
@@ -670,14 +716,22 @@ private final class Round5KnownFileStateSink: IndexingWriteSink {
 }
 
 private final class Round5CountingFileSessionAdapter: SessionAdapter {
-    let source: SourceName = .claudeCode
+    let source: SourceName
     let locator: String
     let sizeBytes: Int64
+    let userMessages: [String]
     var parseCount = 0
 
-    init(locator: String, sizeBytes: Int64) {
+    init(
+        source: SourceName = .claudeCode,
+        locator: String,
+        sizeBytes: Int64,
+        userMessages: [String] = ["hello"]
+    ) {
+        self.source = source
         self.locator = locator
         self.sizeBytes = sizeBytes
+        self.userMessages = userMessages
     }
 
     func detect() async -> Bool {
@@ -714,7 +768,9 @@ private final class Round5CountingFileSessionAdapter: SessionAdapter {
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
         AsyncThrowingStream { continuation in
-            continuation.yield(NormalizedMessage(role: .user, content: "hello"))
+            for message in userMessages {
+                continuation.yield(NormalizedMessage(role: .user, content: message))
+            }
             continuation.finish()
         }
     }

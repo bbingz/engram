@@ -515,7 +515,7 @@ final class IndexerParityTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let locator = root.appendingPathComponent("session.jsonl")
-        try "hello\n".write(to: locator, atomically: true, encoding: .utf8)
+        try "synthetic\n".write(to: locator, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
             [.modificationDate: Date(timeIntervalSince1970: 1_000)],
             ofItemAtPath: locator.path
@@ -539,7 +539,7 @@ final class IndexerParityTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let locator = root.appendingPathComponent("session.jsonl")
-        try "hello\n".write(to: locator, atomically: true, encoding: .utf8)
+        try "synthetic\n".write(to: locator, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
             [.modificationDate: Date(timeIntervalSince1970: 1_000)],
             ofItemAtPath: locator.path
@@ -695,7 +695,7 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(adapter.parseCount, 0, "retryable parse failures should honor retry_after before reparsing")
     }
 
-    func testStartupIndexBackfillsFileIndexStateWhenSkippingKnownSessionLocator() async throws {
+    func testStartupIndexBackfillsFileIndexStateWhenSkippingKnownSessionLocatorWithInstructionSignals() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("startup-index-manifest-backfill-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -711,7 +711,14 @@ final class IndexerParityTests: XCTestCase {
         try writer.write { db in
             let snapshotWriter = SessionSnapshotWriter(db: db)
             _ = try snapshotWriter.writeAuthoritativeSnapshot(
-                makeSnapshot(id: "legacy-known", sourceLocator: locator.path, sizeBytes: size)
+                makeSnapshot(
+                    id: "legacy-known",
+                    sourceLocator: locator.path,
+                    sizeBytes: size,
+                    instructionCount: 1,
+                    humanTurnCount: 1,
+                    instructionSummary: "hello"
+                )
             )
         }
         let adapter = CountingSyntheticFileSessionAdapter(locator: locator.path)
@@ -720,8 +727,185 @@ final class IndexerParityTests: XCTestCase {
         let states = try writer.knownFileIndexStates(source: .codex, locators: [locator.path])
 
         XCTAssertEqual(result.indexed, 0)
-        XCTAssertEqual(adapter.streamCount, 0, "legacy known locators should not be reparsed during startup backfill")
+        XCTAssertEqual(adapter.streamCount, 0, "known locators with instruction signals should not be reparsed during startup backfill")
         XCTAssertEqual(states[locator.path]?.parseStatus, .ok)
+    }
+
+    func testInstructionBackfillIndexesExistingReliableRowsMissedByAdapterListing() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("instruction-backfill-explicit-locator-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("rollout-2026-04-24T00-00-00-startup-skip.jsonl")
+        try "hello\n".write(to: locator, atomically: true, encoding: .utf8)
+        let size = try XCTUnwrap(FileIndexStat.directFileStat(locator: locator.path)).sizeBytes
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(
+                    id: "startup-skip",
+                    sourceLocator: locator.path,
+                    sizeBytes: size,
+                    authoritativeNode: "local"
+                )
+            )
+            try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE session_id = 'startup-skip'")
+        }
+        let adapter = CountingSyntheticFileSessionAdapter(
+            locator: locator.path,
+            listedLocators: [],
+            userContent: "Fix login bug"
+        )
+
+        let result = try await writer.indexInstructionBackfillSessions(adapters: [adapter])
+        let row = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT instruction_count, human_turn_count, instruction_summary
+                FROM sessions
+                WHERE id = 'startup-skip'
+                """
+            )
+        }
+
+        XCTAssertEqual(result.indexed, 1)
+        XCTAssertEqual(adapter.streamCount, 1)
+        XCTAssertEqual(row?["instruction_count"] as Int?, 1)
+        XCTAssertEqual(row?["human_turn_count"] as Int?, 1)
+        XCTAssertEqual(row?["instruction_summary"] as String?, "Fix login bug")
+    }
+
+    func testImplementationBeatBackfillIndexesExistingReliableRowsMissedByAdapterListing() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("implementation-backfill-explicit-locator-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("rollout-2026-06-23T10-00-00-work.jsonl")
+        try "hello\n".write(to: locator, atomically: true, encoding: .utf8)
+        let size = try XCTUnwrap(FileIndexStat.directFileStat(locator: locator.path)).sizeBytes
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(
+                    id: "work-backfill",
+                    sourceLocator: locator.path,
+                    sizeBytes: size,
+                    authoritativeNode: "local",
+                    startTime: "2026-06-23T10:00:00Z",
+                    instructionCount: 1,
+                    humanTurnCount: 1,
+                    instructionSummary: "实现项目变更时间线第一版"
+                )
+            )
+            try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE session_id = 'work-backfill'")
+        }
+        let adapter = CountingSyntheticFileSessionAdapter(
+            locator: locator.path,
+            listedLocators: [],
+            userContent: "实现项目变更时间线第一版",
+            assistantContent: """
+            结果
+            已完成第一版项目变更时间线。
+
+            验证结果
+            checks run: targeted tests
+            """
+        )
+
+        let result = try await writer.indexImplementationBeatBackfillSessions(adapters: [adapter])
+        let row = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT action_date, work_title, status, assistant_outcome
+                FROM session_work_beats
+                WHERE session_id = 'work-backfill' AND beat_index = 0
+                """
+            )
+        }
+
+        XCTAssertEqual(result.indexed, 1)
+        XCTAssertEqual(adapter.streamCount, 1)
+        XCTAssertEqual(row?["action_date"] as String?, "2026-06-23")
+        XCTAssertEqual(row?["work_title"] as String?, "实现项目变更时间线第一版")
+        XCTAssertEqual(row?["status"] as String?, "completed")
+        XCTAssertTrue((row?["assistant_outcome"] as String?)?.contains("已完成第一版项目变更时间线") == true)
+    }
+
+    func testKnownIndexedFileStateStillBackfillsInstructionSignalsWhenSizeMissing() {
+        XCTAssertEqual(
+            KnownIndexedFileState.fromIndexedSessionRow(
+                sizeBytes: nil,
+                indexedAt: "2026-03-18T12:00:00Z",
+                needsInstructionBackfill: true
+            ),
+            KnownIndexedFileState(
+                sizeBytes: 0,
+                indexedAt: "2026-03-18T12:00:00Z",
+                needsInstructionBackfill: true
+            )
+        )
+        XCTAssertNil(
+            KnownIndexedFileState.fromIndexedSessionRow(
+                sizeBytes: nil,
+                indexedAt: "2026-03-18T12:00:00Z",
+                needsInstructionBackfill: false
+            )
+        )
+    }
+
+    func testInstructionBackfillUsesFilePathWhenSourceLocatorIsEmpty() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("instruction-backfill-empty-source-locator-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("rollout-2026-04-24T00-00-00-empty-source-locator.jsonl")
+        try "hello\n".write(to: locator, atomically: true, encoding: .utf8)
+        let stat = try XCTUnwrap(FileIndexStat.directFileStat(locator: locator.path))
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(
+                    id: "empty-source-locator",
+                    sourceLocator: locator.path,
+                    sizeBytes: stat.sizeBytes,
+                    authoritativeNode: "local"
+                )
+            )
+            try db.execute(sql: "UPDATE sessions SET source_locator = '', instruction_count = NULL, human_turn_count = NULL, instruction_summary = NULL WHERE id = 'empty-source-locator'")
+            try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE session_id = 'empty-source-locator'")
+        }
+        try writer.upsertFileIndexState(
+            FileIndexState.success(source: .codex, locator: locator.path, stat: stat, now: Date())
+        )
+        let adapter = CountingSyntheticFileSessionAdapter(
+            locator: locator.path,
+            listedLocators: [],
+            userContent: "Fix login bug"
+        )
+
+        let result = try await writer.indexInstructionBackfillSessions(adapters: [adapter])
+        let row = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT source_locator, instruction_count, human_turn_count, instruction_summary
+                FROM sessions
+                WHERE id = 'empty-source-locator'
+                """
+            )
+        }
+
+        XCTAssertEqual(result.indexed, 1)
+        XCTAssertEqual(adapter.streamCount, 1)
+        XCTAssertEqual(row?["source_locator"] as String?, "")
+        XCTAssertEqual(row?["instruction_count"] as Int?, 1)
+        XCTAssertEqual(row?["human_turn_count"] as Int?, 1)
+        XCTAssertEqual(row?["instruction_summary"] as String?, "Fix login bug")
     }
 
     func testRecentModifiedAdapterOnlyIndexesRecentlyTouchedLocators() async throws {
@@ -1178,29 +1362,69 @@ final class IndexerParityTests: XCTestCase {
         }
     }
 
+    func testSameContentReindexBackfillsInstructionSignals() throws {
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "instruction-backfill", snapshotHash: "h1"))
+            try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE session_id = 'instruction-backfill'")
+
+            let result = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(
+                    id: "instruction-backfill",
+                    snapshotHash: "h1",
+                    instructionCount: 2,
+                    humanTurnCount: 2,
+                    instructionSummary: "Fix login\nAdd tests"
+                )
+            )
+
+            XCTAssertEqual(result.action, .merge)
+            XCTAssertEqual(result.changeSet.flags, [.localStateChanged])
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT instruction_count, human_turn_count, instruction_summary FROM sessions WHERE id = 'instruction-backfill'"
+            )
+            XCTAssertEqual(row?["instruction_count"] as Int?, 2)
+            XCTAssertEqual(row?["human_turn_count"] as Int?, 2)
+            XCTAssertEqual(row?["instruction_summary"] as String?, "Fix login\nAdd tests")
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM session_index_jobs WHERE session_id = 'instruction-backfill' AND status = 'pending'"
+                ),
+                0
+            )
+        }
+    }
+
     private func makeSnapshot(
         id: String,
         syncVersion: Int = 1,
         snapshotHash: String = "h1",
         sourceLocator: String = "/tmp/rollout.jsonl",
         sizeBytes: Int64 = 128,
+        authoritativeNode: String = "node-a",
+        startTime: String = "2026-03-18T11:00:00Z",
         summary: String = "hello",
         tier: SessionTier = .normal,
         toolCallCounts: [String: Int] = [:],
         model: String? = "openai",
         parentSessionId: String? = nil,
-        tokenUsage: TokenUsage? = nil
+        tokenUsage: TokenUsage? = nil,
+        instructionCount: Int? = nil,
+        humanTurnCount: Int? = nil,
+        instructionSummary: String? = nil
     ) -> AuthoritativeSessionSnapshot {
         AuthoritativeSessionSnapshot(
             id: id,
             source: .codex,
-            authoritativeNode: "node-a",
+            authoritativeNode: authoritativeNode,
             syncVersion: syncVersion,
             snapshotHash: snapshotHash,
             indexedAt: "2026-03-18T12:00:00Z",
             sourceLocator: sourceLocator,
             sizeBytes: sizeBytes,
-            startTime: "2026-03-18T11:00:00Z",
+            startTime: startTime,
             endTime: nil,
             cwd: "/repo",
             project: nil,
@@ -1212,6 +1436,9 @@ final class IndexerParityTests: XCTestCase {
             systemMessageCount: 0,
             summary: summary,
             summaryMessageCount: nil,
+            instructionCount: instructionCount,
+            humanTurnCount: humanTurnCount,
+            instructionSummary: instructionSummary,
             origin: nil,
             tier: tier,
             agentRole: nil,
@@ -1609,10 +1836,21 @@ private final class SyntheticFileSessionAdapter: SessionAdapter {
 private final class CountingSyntheticFileSessionAdapter: SessionAdapter {
     let source: SourceName = .codex
     let locator: String
+    let listedLocators: [String]
+    let userContent: String
+    let assistantContent: String
     var streamCount = 0
 
-    init(locator: String) {
+    init(
+        locator: String,
+        listedLocators: [String]? = nil,
+        userContent: String = "hello",
+        assistantContent: String = "done"
+    ) {
         self.locator = locator
+        self.listedLocators = listedLocators ?? [locator]
+        self.userContent = userContent
+        self.assistantContent = assistantContent
     }
 
     func detect() async -> Bool {
@@ -1620,7 +1858,7 @@ private final class CountingSyntheticFileSessionAdapter: SessionAdapter {
     }
 
     func listSessionLocators() async throws -> [String] {
-        [locator]
+        listedLocators
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
@@ -1649,8 +1887,8 @@ private final class CountingSyntheticFileSessionAdapter: SessionAdapter {
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
         streamCount += 1
         return AsyncThrowingStream { continuation in
-            continuation.yield(NormalizedMessage(role: .user, content: "hello"))
-            continuation.yield(NormalizedMessage(role: .assistant, content: "done"))
+            continuation.yield(NormalizedMessage(role: .user, content: userContent))
+            continuation.yield(NormalizedMessage(role: .assistant, content: assistantContent))
             continuation.finish()
         }
     }

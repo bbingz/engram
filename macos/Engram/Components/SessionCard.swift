@@ -28,6 +28,15 @@ struct SessionCard: View {
                     ProjectBadge(project: project, source: session.source)
                 }
 
+                // Human-driven cue: number of distinct asks (≥2). New info vs the
+                // title, signals a multi-step session the human actively drove.
+                if let asks = session.instructionCount, asks >= 2 {
+                    Text("\(asks) asks")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.secondaryText)
+                        .accessibilityIdentifier("sessionCard_askCount")
+                }
+
                 Text("\(session.messageCount) msgs")
                     .font(.caption)
                     .foregroundStyle(Theme.tertiaryText)

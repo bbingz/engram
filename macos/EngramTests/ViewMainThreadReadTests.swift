@@ -216,6 +216,10 @@ final class ViewMainThreadReadTests: XCTestCase {
             densitySource.contains("ISO8601DateFormatter()"),
             "ReplayState.densityBuckets runs repeatedly while rendering replay density and must reuse its parser"
         )
+        XCTAssertTrue(
+            densitySource.contains("max(0, min(99,"),
+            "ReplayState.densityBuckets must clamp both lower and upper bucket bounds for out-of-order timestamps"
+        )
     }
 
     func testLogStreamReloadsCancelSupersededWork() throws {

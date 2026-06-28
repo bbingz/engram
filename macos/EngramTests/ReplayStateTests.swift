@@ -60,4 +60,19 @@ final class ReplayStateTests: XCTestCase {
         state.entries = [entry(0, "garbage"), entry(1, "also-garbage")]
         XCTAssertEqual(state.densityBuckets, Array(repeating: 0, count: 100))
     }
+
+    func testDensityBucketsClampOutOfOrderTimestamps() {
+        let state = ReplayState()
+        state.entries = [
+            entry(0, "2026-06-14T10:00:00Z"),
+            entry(1, "2026-06-14T09:59:00Z"),
+            entry(2, "2026-06-14T10:10:00Z"),
+        ]
+
+        let buckets = state.densityBuckets
+
+        XCTAssertEqual(buckets.reduce(0, +), 3)
+        XCTAssertEqual(buckets[0], 2)
+        XCTAssertEqual(buckets[99], 1)
+    }
 }

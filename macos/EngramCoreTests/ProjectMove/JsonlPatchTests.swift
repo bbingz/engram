@@ -333,6 +333,14 @@ final class JsonlPatchTests: XCTestCase {
         XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: link.path))
     }
 
+    func testPatchFileTempFilesSetPermissionsAtCreation() throws {
+        let source = try projectSource("EngramCoreWrite/ProjectMove/JsonlPatch.swift")
+
+        XCTAssertFalse(source.contains("chmod(tmpPath"))
+        XCTAssertFalse(source.contains("createFile(atPath: tmpPath, contents: nil)"))
+        XCTAssertTrue(source.contains("attributes: [.posixPermissions:"))
+    }
+
     func testConcurrentModificationErrorContractFields() {
         // The CAS race path inside `patchFile` is hard to drive
         // deterministically through the synchronous Foundation file APIs
@@ -366,5 +374,16 @@ final class JsonlPatchTests: XCTestCase {
             Data(data.utf8), oldPath: oldPath, newPath: newPath
         )
         return (String(data: res.data, encoding: .utf8) ?? "", res.count)
+    }
+
+    private func projectSource(_ relativePath: String) throws -> String {
+        try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent(relativePath),
+            encoding: .utf8
+        )
     }
 }

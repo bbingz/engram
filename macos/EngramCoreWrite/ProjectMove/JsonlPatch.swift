@@ -174,9 +174,14 @@ public enum JsonlPatch {
 
         let tmpPath = "\(filePath).engram-tmp-\(getpid())-\(randomToken())"
         do {
-            try res.data.write(to: URL(fileURLWithPath: tmpPath))
-            if let permissions = attrsBefore[.posixPermissions] as? NSNumber {
-                chmod(tmpPath, mode_t(permissions.intValue))
+            let permissions = tempPermissions(from: attrsBefore)
+            let created = FileManager.default.createFile(
+                atPath: tmpPath,
+                contents: res.data,
+                attributes: [.posixPermissions: permissions]
+            )
+            guard created else {
+                throw JsonlPatchError.ioError(path: tmpPath, errno: EIO, message: "create temp file failed")
             }
             try fsyncFile(at: tmpPath)
         } catch {
@@ -262,9 +267,13 @@ public enum JsonlPatch {
     ) throws -> Int {
         let before = try snapshot(path: filePath)
         let tmpPath = "\(filePath).engram-tmp-\(getpid())-\(randomToken())"
-        FileManager.default.createFile(atPath: tmpPath, contents: nil)
-        if let permissions = attrsBefore[.posixPermissions] as? NSNumber {
-            chmod(tmpPath, mode_t(permissions.intValue))
+        let created = FileManager.default.createFile(
+            atPath: tmpPath,
+            contents: Data(),
+            attributes: [.posixPermissions: tempPermissions(from: attrsBefore)]
+        )
+        guard created else {
+            throw JsonlPatchError.ioError(path: tmpPath, errno: EIO, message: "create temp file failed")
         }
 
         let input = try FileHandle(forReadingFrom: URL(fileURLWithPath: filePath))
@@ -354,6 +363,10 @@ public enum JsonlPatch {
             _ = try? FileManager.default.removeItem(atPath: tmpPath)
             throw error
         }
+    }
+
+    private static func tempPermissions(from attrs: [FileAttributeKey: Any]) -> Int {
+        (attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0o600
     }
 
     private static func fsyncDirectory(for filePath: String) {

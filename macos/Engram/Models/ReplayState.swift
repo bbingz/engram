@@ -93,7 +93,7 @@ class ReplayState {
             guard let ts = entry.timestamp,
                   let date = Self.parseISO(ts) else { continue }
             let fraction = date.timeIntervalSince(startDate) / totalDuration
-            let bucket = min(99, Int(fraction * 100))
+            let bucket = max(0, min(99, Int(fraction * 100)))
             buckets[bucket] += 1
         }
         return buckets

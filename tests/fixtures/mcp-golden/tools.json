@@ -10,6 +10,7 @@
   "manage_project_alias",
   "link_sessions",
   "get_memory",
+  "get_rules",
   "save_insight",
   "delete_insight",
   "hide_session",

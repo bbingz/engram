@@ -101,6 +101,24 @@ indirect enum OrderedJSONValue {
 }
 
 extension OrderedJSONValue {
+    /// First `content[].text` string in an MCP tool result, if any. Used to
+    /// reuse tool handlers when serving `resources/read` and `prompts/get`.
+    var firstToolText: String? {
+        guard case .object(let entries) = self,
+              let content = entries.first(where: { $0.0 == "content" })?.1,
+              case .array(let items) = content else { return nil }
+        for item in items {
+            if case .object(let fields) = item,
+               let textValue = fields.first(where: { $0.0 == "text" })?.1,
+               case .string(let text) = textValue {
+                return text
+            }
+        }
+        return nil
+    }
+}
+
+extension OrderedJSONValue {
     init(_ value: JSONValue) {
         switch value {
         case .null:

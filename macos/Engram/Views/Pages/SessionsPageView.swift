@@ -6,6 +6,9 @@ struct SessionsPageView: View {
     @Environment(EngramServiceClient.self) var serviceClient
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
     @AppStorage("sessions.showHidden") private var showHiddenSessions = false
+    // Global escape hatch from the human-driven default view. Shared key across
+    // SessionsPage / Home / Timeline so one toggle reveals everything everywhere.
+    @AppStorage("sessions.showAll") private var showAllSessions = false
 
     @State private var sessions: [Session] = []
     @State private var confirmedCounts: [String: Int] = [:]
@@ -69,6 +72,10 @@ struct SessionsPageView: View {
                     FilterPills(options: timeOptions, selected: $timeFilter)
                         .accessibilityIdentifier("sessions_filterPills")
                     Spacer()
+                    Toggle("Show all sessions", isOn: $showAllSessions)
+                        .toggleStyle(.checkbox)
+                        .accessibilityIdentifier("sessions_showAllToggle")
+                        .help("Include single-shot and automated sessions, not just ones you actively drove")
                     Toggle("Show hidden sessions", isOn: $showHiddenSessions)
                         .toggleStyle(.checkbox)
                         .accessibilityIdentifier("sessions_showHiddenToggle")
@@ -175,6 +182,7 @@ struct SessionsPageView: View {
             AnyHashable(timeFilter),
             AnyHashable(sourceFilter),
             AnyHashable(showHiddenSessions),
+            AnyHashable(showAllSessions),
             AnyHashable(serviceStatusStore.totalSessions),
         ]) {
             await loadData()
@@ -189,6 +197,8 @@ struct SessionsPageView: View {
             let sources: Set<String> = sourceFilter.map { [$0] } ?? []
             let since = sinceDate(for: timeFilter)
             let includeHidden = showHiddenSessions
+            let humanDriven = !showAllSessions
+            let pageSize = Self.pageSize
             let data = try await Task.detached {
                 let loaded = try db.listSessions(
                     sources: sources,
@@ -196,15 +206,17 @@ struct SessionsPageView: View {
                     includeHidden: includeHidden,
                     subAgent: false,
                     topLevelOnly: true,
+                    humanDriven: humanDriven,
                     sort: .updatedDesc,
-                    limit: Self.pageSize
+                    limit: pageSize
                 )
                 let stats = try db.sessionListStats(
                     sources: sources,
                     since: since,
                     includeHidden: includeHidden,
                     subAgent: false,
-                    topLevelOnly: true
+                    topLevelOnly: true,
+                    humanDriven: humanDriven
                 )
                 let sourceOptions = try db.sessionListStats(
                     since: since,
@@ -280,7 +292,9 @@ struct SessionsPageView: View {
                 let sources: Set<String> = sourceFilter.map { [$0] } ?? []
                 let since = sinceDate(for: timeFilter)
                 let includeHidden = showHiddenSessions
+                let humanDriven = !showAllSessions
                 let offset = sessions.count
+                let pageSize = Self.pageSize
                 let more = try await Task.detached {
                     let loaded = try db.listSessions(
                         sources: sources,
@@ -288,8 +302,9 @@ struct SessionsPageView: View {
                         includeHidden: includeHidden,
                         subAgent: false,
                         topLevelOnly: true,
+                        humanDriven: humanDriven,
                         sort: .updatedDesc,
-                        limit: Self.pageSize,
+                        limit: pageSize,
                         offset: offset
                     )
                     let parentIds = loaded.map(\.id)

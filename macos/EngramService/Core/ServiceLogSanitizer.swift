@@ -19,7 +19,7 @@ enum ServiceLogSanitizer {
     // Greedy over path characters so a trailing component (e.g. index.sqlite) is
     // consumed too. Whitespace/quotes terminate the run.
     private static let pathRegex = try! NSRegularExpression(
-        pattern: #"(?:/Users|/private|/var|/home|/tmp)/[^\s"'\)\]]*"#
+        pattern: #"(?:/Users|/private|/var|/home|/tmp|/Volumes)/[^\s"'\)\]]*"#
     )
 
     // Email addresses.
@@ -66,19 +66,19 @@ enum ServiceLogSanitizer {
     static func redact(_ message: String) -> String {
         var output = message
 
-        // 1. Literal home-dir prefix first (covers "/Users/bing/..." even when
-        //    the trailing run is short).
-        if !homeDirectory.isEmpty {
-            output = output.replacingOccurrences(of: homeDirectory, with: "<path>")
-        }
-
-        // 2. Structured shapes, most specific first, so a path/id embedded in an
+        // 1. Structured shapes, most specific first, so a path/id embedded in an
         //    error tail is caught as <path>/<id> before the generic tail pass.
         output = replace(emailRegex, in: output, with: "<email>")
         output = replace(pathRegex, in: output, with: "<path>")
         output = replace(uuidRegex, in: output, with: "<id>")
         output = replace(hexTokenRegex, in: output, with: "<id>")
         output = replace(quotedRegex, in: output, with: "<redacted>")
+
+        // 2. Literal home-dir prefix fallback for a bare "/Users/name" reference
+        //    that was not part of a longer path-shaped run.
+        if !homeDirectory.isEmpty {
+            output = output.replacingOccurrences(of: homeDirectory, with: "<path>")
+        }
 
         // 3. Generic deny-by-default tail: anything long after the first ": ".
         output = replace(errorTailRegex, in: output, with: ": <redacted>")

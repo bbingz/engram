@@ -165,6 +165,53 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse((row?["last_accessed_at"] as String? ?? "").isEmpty)
     }
 
+    func testRecordInsightAccessUpdatesAccessColumnsThroughWriteGate() async throws {
+        let paths = try makeServiceIPCPaths()
+        try await DatabaseQueue(path: paths.database.path).write { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE insights (
+                  id TEXT PRIMARY KEY,
+                  content TEXT NOT NULL,
+                  wing TEXT,
+                  room TEXT,
+                  importance INTEGER DEFAULT 5,
+                  source_session_id TEXT,
+                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                  insight_type TEXT DEFAULT 'semantic',
+                  superseded_by TEXT,
+                  last_accessed_at TEXT,
+                  access_count INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO insights(id, content, importance, insight_type, access_count)
+                VALUES ('insight-1', 'memory access counter policy', 5, 'semantic', 0)
+                """
+            )
+        }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        try await client.recordInsightAccess(ids: ["insight-1", "insight-1", "missing", " "])
+        try await client.recordInsightAccess(ids: ["insight-1"])
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        let row = try await queue.read { db in
+            try Row.fetchOne(db, sql: "SELECT access_count, last_accessed_at FROM insights WHERE id = 'insight-1'")
+        }
+        XCTAssertEqual(row?["access_count"] as Int?, 2)
+        XCTAssertFalse((row?["last_accessed_at"] as String? ?? "").isEmpty)
+    }
+
     func testSessionRelationRoundTripIsSymmetricIdempotentAndRemovable() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -742,6 +789,7 @@ final class EngramServiceIPCTests: XCTestCase {
             "the whole structural scan must not run as one gated write command"
         )
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "initialScanIndex")"#))
+        XCTAssertTrue(source.contains(#"performWriteCommand(name: "initialInstructionBackfill")"#))
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "initialScanBackfills")"#))
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "initialScanOrphans")"#))
     }
@@ -765,6 +813,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
         for phase in [
             "usageParserBackfillCheck",
+            "initialInstructionBackfill",
             "initialScanIndex",
             "initialScanBackfills",
             "initialScanOrphans",
@@ -781,6 +830,21 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(source.contains("startup phase failed"))
     }
 
+    func testRunnerBackfillsInstructionSignalsBeforeHeavyStartupIndex() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let start = try XCTUnwrap(source.range(of: "private static func runInitialScan("))
+        let end = try XCTUnwrap(source.range(of: "private static func elapsedMs", options: [], range: start.lowerBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        let instruction = try XCTUnwrap(body.range(of: #"name: "initialInstructionBackfill""#))
+        let index = try XCTUnwrap(body.range(of: #"name: "initialScanIndex""#))
+        XCTAssertLessThan(
+            instruction.lowerBound,
+            index.lowerBound,
+            "instruction signal backfill must run before the heavy startup index so default visibility tightens quickly on existing local history"
+        )
+    }
+
     func testRunnerInitialScanFullBackfillsWhenUsageParserVersionChanges() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "usageParserBackfillCheck")"#))
@@ -788,6 +852,30 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(source.contains("let startupAdapters = enabledAdapters"))
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "usageParserBackfillMark")"#))
         XCTAssertTrue(source.contains("UsageParserBackfillPolicy.markComplete"))
+    }
+
+    func testRunnerInitialScanSchedulesInsightEmbeddingBackfillOutsideMainWritePhases() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let start = try XCTUnwrap(source.range(of: "private static func runInitialScan("))
+        let end = try XCTUnwrap(source.range(of: "private static func elapsedMs", options: [], range: start.lowerBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains("initialInsightEmbeddingBackfill"))
+        XCTAssertTrue(body.contains("runInsightEmbeddingBackfillBestEffort("))
+        XCTAssertFalse(
+            body.contains(#"performWriteCommand(name: "initialInsightEmbeddingBackfill") { writer in"#),
+            "embedding provider I/O must not run inside one long write-gate closure"
+        )
+    }
+
+    func testRunnerPeriodicScanSchedulesInsightEmbeddingBackfill() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let start = try XCTUnwrap(source.range(of: "private static func runIndexingLoop("))
+        let end = try XCTUnwrap(source.range(of: "/// V2 composition root", options: [], range: start.lowerBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains("periodicInsightEmbeddingBackfill"))
+        XCTAssertTrue(body.contains("runInsightEmbeddingBackfillBestEffort("))
     }
 
     func testRunnerObservabilityRetentionLogsZeroRowCompletion() throws {
@@ -1482,6 +1570,54 @@ final class EngramServiceIPCTests: XCTestCase {
             EngramServiceSearchRequest(query: "hello", mode: "keyword", limit: 10)
         )
         XCTAssertNil(keyword.warning)
+    }
+
+    func testSearchSemanticModeUsesSemanticChunksWhenProviderConfigured() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE semantic_chunks (
+                  id TEXT PRIMARY KEY,
+                  session_id TEXT NOT NULL,
+                  chunk_index INTEGER NOT NULL,
+                  text TEXT NOT NULL,
+                  embedding BLOB,
+                  model TEXT,
+                  dim INTEGER,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                """)
+            try db.execute(
+                sql: """
+                INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
+                VALUES ('s2:c0', 's2', 0, 'semantic recall chunk', ?, 'probe', 3)
+                """,
+                arguments: [VectorMath.encode(VectorMath.l2Normalize([1, 0, 0]))]
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            embeddingEnvironment: [
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            embeddingProviderFactory: { _ in
+                StaticEmbeddingProvider { _ in [1, 0, 0] }
+            }
+        )
+
+        let semantic = try await provider.search(
+            EngramServiceSearchRequest(query: "memory recall", mode: "semantic", limit: 10)
+        )
+
+        XCTAssertEqual(semantic.items.map(\.id), ["s2"])
+        XCTAssertEqual(semantic.searchModes, ["semantic"])
+        XCTAssertNil(semantic.warning)
+        XCTAssertEqual(semantic.items.first?.matchType, "semantic")
+        XCTAssertEqual(semantic.items.first?.snippet, "semantic recall chunk")
     }
 
     func testFtsMetacharacterQueryIsEscapedNotASyntaxError() async throws {
@@ -3347,6 +3483,64 @@ final class EngramServiceIPCTests: XCTestCase {
         }
     }
 
+    func testSaveInsightSupersedesSameScopeNormalizedMatch() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let first = try await client.saveInsight(
+            EngramServiceSaveInsightRequest(
+                content: "Remember the semantic memory backfill gate rule",
+                wing: "engram",
+                room: "memory",
+                importance: 4,
+                sourceSessionId: "s1",
+                actor: "test",
+                type: "procedural"
+            )
+        )
+        let firstId = try XCTUnwrap(first.objectValue?["id"]?.stringValue)
+        let second = try await client.saveInsight(
+            EngramServiceSaveInsightRequest(
+                content: "  remember   the semantic memory backfill gate rule  ",
+                wing: "engram",
+                room: "memory",
+                importance: 5,
+                sourceSessionId: "s2",
+                actor: "test",
+                type: "procedural"
+            )
+        )
+        let secondId = try XCTUnwrap(second.objectValue?["id"]?.stringValue)
+
+        XCTAssertNotEqual(firstId, secondId)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT id, insight_type, superseded_by
+                FROM insights
+                WHERE id IN (?, ?)
+                ORDER BY id
+                """,
+                arguments: [firstId, secondId]
+            )
+            let byId = Dictionary(uniqueKeysWithValues: rows.map { (($0["id"] as String), $0) })
+            XCTAssertEqual(byId[firstId]?["superseded_by"] as String?, secondId)
+            XCTAssertNil(byId[secondId]?["superseded_by"] as String?)
+            XCTAssertEqual(byId[firstId]?["insight_type"] as String?, "procedural")
+            XCTAssertEqual(byId[secondId]?["insight_type"] as String?, "procedural")
+        }
+    }
+
     func testDeleteInsightRemovesInsightAndFtsRowsThroughServiceWriterGate() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -3615,6 +3809,290 @@ final class EngramServiceIPCTests: XCTestCase {
                 )
             ]
         )
+    }
+
+    func testRunnerInsightEmbeddingBackfillEmbedsOutsideWriteGate() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 20_000_000
+        )
+        _ = try await gate.performWriteCommand(name: "seedInsight") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(
+                    sql: "INSERT INTO insights (id, content, importance) VALUES ('probe-insight', 'gate probe insight', 5)"
+                )
+            }
+        }
+        let probe = EmbeddingGateProbe()
+
+        let embedded = try await EngramServiceRunner.backfillInsightEmbeddingsOnce(
+            gate: gate,
+            environment: [
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            providerFactory: { _ in GateProbingEmbeddingProvider(gate: gate, probe: probe) },
+            limit: 8
+        )
+
+        XCTAssertEqual(embedded, 1)
+        let providerWriteSucceeded = await probe.writeSucceeded()
+        XCTAssertTrue(providerWriteSucceeded)
+        let counts = try await gate.performWriteCommand(name: "assertInsightEmbedding") { writer in
+            try writer.read { db -> (Int, Int) in
+                let embeddings = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insight_embeddings") ?? 0
+                let probes = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM embedding_gate_probe") ?? 0
+                return (embeddings, probes)
+            }
+        }.value
+        XCTAssertEqual(counts.0, 1)
+        XCTAssertEqual(counts.1, 1)
+    }
+
+    func testRunnerSessionEmbeddingBackfillEmbedsOutsideWriteGate() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 20_000_000
+        )
+        _ = try await gate.performWriteCommand(name: "seedSessionEmbeddingJob") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions (id, source, start_time, file_path, tier)
+                    VALUES ('semantic-session', 'codex', '2026-06-26T10:00:00Z', '/tmp/semantic.jsonl', 'normal')
+                    """)
+                try db.execute(
+                    sql: """
+                    INSERT INTO sessions_fts(session_id, content)
+                    VALUES ('semantic-session', 'memory search chunk')
+                    """
+                )
+                try db.execute(
+                    sql: """
+                    INSERT INTO session_index_jobs (id, session_id, job_kind, target_sync_version, status)
+                    VALUES ('semantic-session:1:h:embedding', 'semantic-session', 'embedding', 1, 'pending')
+                    """
+                )
+            }
+        }
+        let probe = EmbeddingGateProbe()
+
+        let completed = try await EngramServiceRunner.backfillSessionEmbeddingsOnce(
+            gate: gate,
+            environment: [
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            providerFactory: { _ in GateProbingEmbeddingProvider(gate: gate, probe: probe) },
+            limit: 8
+        )
+
+        XCTAssertEqual(completed, 1)
+        let providerWriteSucceeded = await probe.writeSucceeded()
+        XCTAssertTrue(providerWriteSucceeded)
+        let result = try await gate.performWriteCommand(name: "assertSessionEmbedding") { writer in
+            try writer.read { db -> (Int, String?) in
+                let chunks = try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = 'semantic-session'"
+                ) ?? 0
+                let status = try String.fetchOne(
+                    db,
+                    sql: "SELECT status FROM session_index_jobs WHERE id = 'semantic-session:1:h:embedding'"
+                )
+                return (chunks, status)
+            }
+        }.value
+        XCTAssertEqual(result.0, 1)
+        XCTAssertEqual(result.1, "completed")
+    }
+
+    func testRunnerCorpusMiningWritesMinedRulesFromInjectedCompletion() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 20_000_000
+        )
+        _ = try await gate.performWriteCommand(name: "seedCorpusMining") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions (
+                      id, source, start_time, cwd, project, model, message_count,
+                      user_message_count, assistant_message_count, tool_message_count,
+                      summary, file_path, size_bytes, indexed_at, generated_title,
+                      tier, quality_score
+                    ) VALUES (
+                      'mine-session', 'codex', '2026-06-26T10:00:00Z', '/tmp/engram',
+                      'engram', 'gpt-5', 8, 3, 3, 2,
+                      'Fixed writer gate boundaries for backfill work.',
+                      '/tmp/mine-session.jsonl', 128, '2026-06-26T10:10:00Z',
+                      'Writer gate repair', 'normal', 90
+                    );
+                    INSERT INTO sessions_fts(session_id, content)
+                    VALUES (
+                      'mine-session',
+                      'Use ServiceWriterGate for writes, but keep long AI calls outside gated write phases.'
+                    );
+                    INSERT INTO session_tools(session_id, tool_name, call_count)
+                    VALUES ('mine-session', 'Edit', 1);
+                    INSERT INTO mined_rules (
+                      id, rule_type, title, body, evidence_session_ids,
+                      confidence, source_project, model, created_at
+                    ) VALUES (
+                      'rule-existing', 'runbook', 'Keep writer gate boundaries',
+                      'Old body', '["prior-session"]', 0.5, 'engram', 'old', datetime('now')
+                    );
+                    INSERT INTO mined_rules_fts(rule_id, title, body)
+                    VALUES ('rule-existing', 'Keep writer gate boundaries', 'Old body');
+                    """)
+            }
+        }
+        let probe = CorpusMiningProbe()
+
+        let written = try await EngramServiceRunner.mineCorpusRulesOnce(
+            gate: gate,
+            limit: 1,
+            completionProvider: { candidate, _ in
+                XCTAssertEqual(candidate.id, "mine-session")
+                await probe.recordCompletion()
+                _ = try await gate.performWriteCommand(name: "corpusMiningCompletionGateProbe") { writer in
+                    try writer.write { db in
+                        try db.execute(sql: "CREATE TABLE IF NOT EXISTS corpus_mining_gate_probe(id INTEGER PRIMARY KEY)")
+                        try db.execute(sql: "INSERT INTO corpus_mining_gate_probe DEFAULT VALUES")
+                    }
+                }
+                await probe.markGateWriteSucceeded()
+                return """
+                [{
+                  "rule_type": "runbook",
+                  "title": "Keep writer gate boundaries",
+                  "body": "Read compact evidence in short gated phases, run AI work outside the gate, then write mined rules through ServiceWriterGate.",
+                  "evidence_session_ids": ["mine-session"],
+                  "confidence": 0.93
+                }]
+                """
+            },
+            phaseName: "testCorpusMining"
+        )
+
+        XCTAssertEqual(written, 1)
+        let firstSnapshot = await probe.snapshot()
+        XCTAssertEqual(firstSnapshot.completions, 1)
+        XCTAssertTrue(firstSnapshot.gateWriteSucceeded)
+        let row = try await gate.performWriteCommand(name: "assertCorpusMining") { writer in
+            try writer.read { db -> (String?, String?, String?, Double?, Int, Int) in
+                let rule = try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT id, title, evidence_session_ids, confidence
+                    FROM mined_rules
+                    WHERE source_project = 'engram'
+                    """
+                )
+                let ruleID = rule?["id"] as String?
+                let ftsRows = try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM mined_rules_fts WHERE rule_id = ? AND body MATCH 'ServiceWriterGate'",
+                    arguments: [ruleID]
+                ) ?? 0
+                let probeRows = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM corpus_mining_gate_probe") ?? 0
+                return (
+                    ruleID,
+                    rule?["title"] as String?,
+                    rule?["evidence_session_ids"] as String?,
+                    rule?["confidence"] as Double?,
+                    ftsRows,
+                    probeRows
+                )
+            }
+        }.value
+        XCTAssertEqual(row.0, "rule-existing")
+        XCTAssertEqual(row.1, "Keep writer gate boundaries")
+        XCTAssertEqual(row.2, #"["mine-session","prior-session"]"#)
+        XCTAssertEqual(try XCTUnwrap(row.3), 0.93, accuracy: 0.001)
+        XCTAssertEqual(row.4, 1)
+        XCTAssertEqual(row.5, 1)
+
+        let skipped = try await EngramServiceRunner.mineCorpusRulesOnce(
+            gate: gate,
+            limit: 1,
+            completionProvider: { _, _ in
+                XCTFail("already-mined sessions should be filtered before completion")
+                return "[]"
+            },
+            phaseName: "testCorpusMiningSkip"
+        )
+        XCTAssertEqual(skipped, 0)
+        let secondSnapshot = await probe.snapshot()
+        XCTAssertEqual(secondSnapshot.completions, 1)
+    }
+}
+
+private actor EmbeddingGateProbe {
+    private var succeeded = false
+
+    func writeSucceeded() -> Bool { succeeded }
+
+    func markSucceeded() {
+        succeeded = true
+    }
+}
+
+private actor CorpusMiningProbe {
+    private var completions = 0
+    private var gateWriteSucceeded = false
+
+    func recordCompletion() {
+        completions += 1
+    }
+
+    func markGateWriteSucceeded() {
+        gateWriteSucceeded = true
+    }
+
+    func snapshot() -> (completions: Int, gateWriteSucceeded: Bool) {
+        (completions, gateWriteSucceeded)
+    }
+}
+
+private struct GateProbingEmbeddingProvider: EmbeddingProvider {
+    let model = "probe"
+    let dimension = 3
+    let gate: ServiceWriterGate
+    let probe: EmbeddingGateProbe
+
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        _ = try await gate.performWriteCommand(name: "embeddingProviderGateProbe") { writer in
+            try writer.write { db in
+                try db.execute(sql: "CREATE TABLE IF NOT EXISTS embedding_gate_probe(id INTEGER PRIMARY KEY)")
+                try db.execute(sql: "INSERT INTO embedding_gate_probe DEFAULT VALUES")
+            }
+        }
+        await probe.markSucceeded()
+        return texts.map { text in VectorMath.l2Normalize([Float(text.count), 1, 0]) }
+    }
+}
+
+private struct StaticEmbeddingProvider: EmbeddingProvider {
+    let model = "probe"
+    let dimension = 3
+    let vector: @Sendable (String) -> [Float]
+
+    init(_ vector: @escaping @Sendable (String) -> [Float]) {
+        self.vector = vector
+    }
+
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        texts.map { VectorMath.l2Normalize(vector($0)) }
     }
 }
 

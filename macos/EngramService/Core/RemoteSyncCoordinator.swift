@@ -282,11 +282,23 @@ public struct RemoteSyncCoordinator: Sendable {
                 let data = try await backend.get(key: key)
                 let bundle = try BundleCodec.decode(data, expectedSessionId: job.sessionId)
                 _ = try await gate.performWriteCommand(name: "remoteRehydrateCommit") { writer in
-                    try writer.write { db in try OffloadRepo.commitRehydrated(db, queueId: job.queueId, bundle: bundle, peer: peer) }
+                    try writer.write { db in
+                        try OffloadRepo.commitRehydrated(
+                            db,
+                            queueId: job.queueId,
+                            bundle: bundle,
+                            expectedSyncVersion: job.syncVersion ?? 0,
+                            peer: peer
+                        )
+                    }
                 }
                 done += 1
             } catch is CancellationError {
                 throw CancellationError()
+            } catch RemoteSyncError.offloadStale {
+                _ = try? await gate.performWriteCommand(name: "remoteRehydrateRequeue") { writer in
+                    try writer.write { db in try OffloadRepo.requeueRehydrate(db, queueId: job.queueId) }
+                }
             } catch {
                 _ = try? await gate.performWriteCommand(name: "remoteRehydrateFail") { writer in
                     try writer.write { db in try OffloadRepo.failRehydrate(db, queueId: job.queueId, error: "\(error)") }

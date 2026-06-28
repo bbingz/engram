@@ -54,8 +54,8 @@ struct RepoDetailView: View {
                 // Quick actions
                 HStack(spacing: 8) {
                     quickActionButton("Claude", icon: "terminal") {
-                        let safePath = TerminalLauncher.escapeForAppleScript(repo.path)
-                        let script = "tell application \"Terminal\" to do script \"cd \\\"\(safePath)\\\" && claude\""
+                        let command = TerminalLauncher.appleScriptCommandLine(command: "claude", args: [], cwd: repo.path)
+                        let script = "tell application \"Terminal\" to do script \"\(command)\""
                         NSAppleScript(source: script)?.executeAndReturnError(nil)
                     }
                     quickActionButton("VS Code", icon: "curlybraces") {

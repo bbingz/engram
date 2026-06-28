@@ -1,6 +1,7 @@
 // macos/Engram/Views/Observability/TraceExplorerView.swift
 import SwiftUI
 import GRDB
+import Combine
 
 struct TraceExplorerView: View {
     // OBS / observability-1: render the in-memory per-command span ring buffer
@@ -91,19 +92,8 @@ struct TraceExplorerView: View {
     }
 
     private func relativeTime(_ iso: String) -> String {
-        guard let date = Self.isoFormatter.date(from: iso) else { return "" }
-        let elapsed = Date().timeIntervalSince(date)
-        if elapsed < 1 { return "now" }
-        if elapsed < 60 { return "\(Int(elapsed))s ago" }
-        if elapsed < 3600 { return "\(Int(elapsed / 60))m ago" }
-        return "\(Int(elapsed / 3600))h ago"
+        RelativeTimeText.format(iso, style: .agoWithSeconds)
     }
-
-    private static let isoFormatter: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
 
     private func loadData() async {
         do {

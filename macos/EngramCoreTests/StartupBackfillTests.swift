@@ -638,6 +638,59 @@ final class StartupBackfillTests: XCTestCase {
         XCTAssertTrue(events.contains(StartupBackfillEvent(event: "backfill_inline", payload: ["type": .string("costs")])))
     }
 
+    func testStartupMaintenanceRethrowsCancellationFromAsyncBackfills() async throws {
+        let indexer = RecordingStartupIndexer(indexed: 1)
+        indexer.countBackfillError = CancellationError()
+
+        do {
+            try await StartupBackfills.runStartupMaintenanceAndParents(
+                indexed: 1,
+                emit: { _ in },
+                log: RecordingStartupLogger(),
+                indexer: indexer,
+                database: RecordingStartupDatabase()
+            )
+            XCTFail("Expected CancellationError")
+        } catch is CancellationError {
+            // expected
+        }
+    }
+
+    func testStartupOrphanScanRethrowsCancellation() async throws {
+        let scanner = RecordingStartupOrphanScanner()
+        scanner.error = CancellationError()
+
+        do {
+            try await StartupBackfills.runStartupOrphanScan(
+                emit: { _ in },
+                log: RecordingStartupLogger(),
+                orphanScanner: scanner,
+                database: RecordingStartupDatabase(),
+                adapters: []
+            )
+            XCTFail("Expected CancellationError")
+        } catch is CancellationError {
+            // expected
+        }
+    }
+
+    func testStartupIndexJobDrainRethrowsCancellation() async throws {
+        let runner = RecordingStartupIndexJobRunner()
+        runner.recoverError = CancellationError()
+
+        do {
+            try await StartupBackfills.drainStartupIndexJobs(
+                emit: { _ in },
+                log: RecordingStartupLogger(),
+                usageCollector: RecordingStartupUsageCollector(),
+                indexJobRunner: runner
+            )
+            XCTFail("Expected CancellationError")
+        } catch is CancellationError {
+            // expected
+        }
+    }
+
     func testBackfillCostsComputesKnownModelZeroCostRows() throws {
         try writer.write { db in
             try insertSession(db, id: "cost-backfill", source: "claude-code", tier: "normal")
@@ -1057,6 +1110,8 @@ private final class RecordingStartupIndexer: StartupIndexing {
     var indexed: Int
     var countBackfilled: Int
     var costBackfilled: Int
+    var countBackfillError: Error?
+    var costBackfillError: Error?
 
     init(indexed: Int, countBackfilled: Int = 0, costBackfilled: Int = 0) {
         self.indexed = indexed
@@ -1065,15 +1120,17 @@ private final class RecordingStartupIndexer: StartupIndexing {
     }
 
     func indexAll() async throws -> Int {
-        indexed
+        return indexed
     }
 
     func backfillCounts() async throws -> Int {
-        countBackfilled
+        if let countBackfillError { throw countBackfillError }
+        return countBackfilled
     }
 
     func backfillCosts() async throws -> Int {
-        costBackfilled
+        if let costBackfillError { throw costBackfillError }
+        return costBackfilled
     }
 }
 
@@ -1081,6 +1138,8 @@ private final class RecordingStartupIndexJobRunner: StartupIndexJobRunning {
     var completed: Int
     var notApplicable: Int
     var promoted: Int
+    var recoverError: Error?
+    var promoteError: Error?
 
     init(completed: Int = 23, notApplicable: Int = 24, promoted: Int = 25) {
         self.completed = completed
@@ -1089,11 +1148,13 @@ private final class RecordingStartupIndexJobRunner: StartupIndexJobRunning {
     }
 
     func runRecoverableJobs() async throws -> StartupIndexJobRecoveryResult {
-        StartupIndexJobRecoveryResult(completed: completed, notApplicable: notApplicable)
+        if let recoverError { throw recoverError }
+        return StartupIndexJobRecoveryResult(completed: completed, notApplicable: notApplicable)
     }
 
     func backfillInsightEmbeddings() async throws -> Int {
-        promoted
+        if let promoteError { throw promoteError }
+        return promoted
     }
 }
 
@@ -1103,6 +1164,7 @@ private final class RecordingStartupOrphanScanner: StartupOrphanScanning {
     var confirmed: Int
     var recovered: Int
     var skipped: Int
+    var error: Error?
 
     init(scanned: Int = 18, newlyFlagged: Int = 19, confirmed: Int = 20, recovered: Int = 21, skipped: Int = 22) {
         self.scanned = scanned
@@ -1113,7 +1175,8 @@ private final class RecordingStartupOrphanScanner: StartupOrphanScanning {
     }
 
     func detectOrphans(adapters: [any SessionAdapter]) async throws -> StartupOrphanScanResult {
-        StartupOrphanScanResult(
+        if let error { throw error }
+        return StartupOrphanScanResult(
             scanned: scanned,
             newlyFlagged: newlyFlagged,
             confirmed: confirmed,

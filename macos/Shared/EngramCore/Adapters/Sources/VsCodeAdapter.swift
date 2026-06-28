@@ -2,6 +2,8 @@ import Foundation
 
 final class VsCodeAdapter: SessionAdapter, Sendable {
     let source: SourceName = .vscode
+    private static let maxMutationPathDepth = 64
+    private static let maxMutationArrayIndex = 1_000_000
     private let workspaceStorageDir: URL
     private let limits: ParserLimits
 
@@ -141,10 +143,10 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
     ) throws -> Phase4AdapterSupport.JSONObject? {
         let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
         if let failure { throw failure }
-        return replayMutationLog(objects)
+        return try replayMutationLog(objects)
     }
 
-    private static func replayMutationLog(_ objects: [Phase4AdapterSupport.JSONObject]) -> Phase4AdapterSupport.JSONObject? {
+    private static func replayMutationLog(_ objects: [Phase4AdapterSupport.JSONObject]) throws -> Phase4AdapterSupport.JSONObject? {
         var state: Any?
         var sawInitial = false
         for entry in objects {
@@ -155,10 +157,12 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
                 sawInitial = true
             case 1 where sawInitial:
                 guard let path = JSONLAdapterSupport.array(entry["k"]) else { continue }
-                state = setting(state, path: path, value: entry["v"])
+                try validateMutationPath(path)
+                state = try setting(state, path: path, value: entry["v"])
             case 2 where sawInitial:
                 guard let path = JSONLAdapterSupport.array(entry["k"]) else { continue }
-                state = pushing(
+                try validateMutationPath(path)
+                state = try pushing(
                     state,
                     path: path,
                     values: JSONLAdapterSupport.array(entry["v"]),
@@ -166,7 +170,8 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
                 )
             case 3 where sawInitial:
                 guard let path = JSONLAdapterSupport.array(entry["k"]) else { continue }
-                state = setting(state, path: path, value: nil)
+                try validateMutationPath(path)
+                state = try setting(state, path: path, value: nil)
             default:
                 continue
             }
@@ -174,7 +179,16 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
         return JSONLAdapterSupport.object(state)
     }
 
-    private static func setting(_ container: Any?, path: [Any], value: Any?) -> Any? {
+    private static func validateMutationPath(_ path: [Any]) throws {
+        guard path.count <= maxMutationPathDepth else { throw ParserFailure.malformedJSON }
+        for component in path {
+            if let index = pathIndex(component), index > maxMutationArrayIndex {
+                throw ParserFailure.malformedJSON
+            }
+        }
+    }
+
+    private static func setting(_ container: Any?, path: [Any], value: Any?) throws -> Any? {
         guard let head = path.first else { return container }
         let rest = Array(path.dropFirst())
         if let key = pathKey(head) {
@@ -182,17 +196,18 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
             if rest.isEmpty {
                 object[key] = value
             } else {
-                object[key] = setting(object[key], path: rest, value: value)
+                object[key] = try setting(object[key], path: rest, value: value)
             }
             return object
         }
         guard let index = pathIndex(head), index >= 0 else { return container }
+        guard index <= maxMutationArrayIndex else { throw ParserFailure.malformedJSON }
         var array = JSONLAdapterSupport.array(container) ?? []
         while array.count <= index { array.append([String: Any]()) }
         if rest.isEmpty {
             array[index] = value as Any
         } else {
-            array[index] = setting(array[index], path: rest, value: value) as Any
+            array[index] = try setting(array[index], path: rest, value: value) as Any
         }
         return array
     }
@@ -202,7 +217,7 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
         path: [Any],
         values: [Any]?,
         startIndex: Int?
-    ) -> Any? {
+    ) throws -> Any? {
         guard let head = path.first else { return container }
         let rest = Array(path.dropFirst())
         if let key = pathKey(head) {
@@ -213,11 +228,12 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
                 if let values { array.append(contentsOf: values) }
                 object[key] = array
             } else {
-                object[key] = pushing(object[key], path: rest, values: values, startIndex: startIndex)
+                object[key] = try pushing(object[key], path: rest, values: values, startIndex: startIndex)
             }
             return object
         }
         guard let index = pathIndex(head), index >= 0 else { return container }
+        guard index <= maxMutationArrayIndex else { throw ParserFailure.malformedJSON }
         var array = JSONLAdapterSupport.array(container) ?? []
         while array.count <= index { array.append([String: Any]()) }
         if rest.isEmpty {
@@ -226,7 +242,7 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
             if let values { target.append(contentsOf: values) }
             array[index] = target
         } else {
-            array[index] = pushing(array[index], path: rest, values: values, startIndex: startIndex) as Any
+            array[index] = try pushing(array[index], path: rest, values: values, startIndex: startIndex) as Any
         }
         return array
     }
