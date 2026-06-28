@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-06-28): 78 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-06-28): 79 dated entries; regenerate after adding sections -->
+- [2026-06-28 - Project-detail vertical-rail timeline with AI semantic titles (Claude)](#2026-06-28---project-detail-vertical-rail-timeline-with-ai-semantic-titles-claude)
 - [2026-06-28 - Full-project audit remediation pass (Codex)](#2026-06-28---full-project-audit-remediation-pass-codex)
 - [2026-06-27 - Session implementation digest and work timeline first pass (Codex)](#2026-06-27---session-implementation-digest-and-work-timeline-first-pass-codex)
 - [2026-06-27 - Human-driven sessions direct startup backfill live proof (Codex)](#2026-06-27---human-driven-sessions-direct-startup-backfill-live-proof-codex)
@@ -90,6 +91,51 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-06-28 - Project-detail vertical-rail timeline with AI semantic titles (Claude)
+
+- Shipped a per-project work timeline in the Projects detail view (Workspace ->
+  Projects -> select a project), under the project header via
+  `ProjectWorkTimeline` (`macos/Engram/Components/ProjectWorkTimeline.swift`): a
+  vertical rail (`TimelineRail`/`TimelineNode`) with color-coded
+  `SessionImplementationKind` node dots; tapping a node opens the latest beat's
+  session via the existing `.openSession`/`SessionBox` path. The global Timeline
+  page keeps `WorkTimelineCard` (reverted to `private`).
+- AI per-work-item semantic titles. New service-owned table `work_item_titles`
+  (`project, work_key, title, intent_hash, model, updated_at`, PK(project,
+  work_key)) added idempotently in `EngramMigrations.createOrUpdateBaseSchema`.
+  IMPORTANT: deliberately NOT added to `SchemaManifest.baseTables` (would break
+  the legacy UI-fixture SchemaCompatibilityTests, same precedent as
+  `session_work_beats`).
+- New IPC command `generateProjectWorkTitles` (full 6-layer wiring: protocol,
+  client w/ `bulkAICommandTimeout`, mock, DTOs in EngramServiceModels, dispatch
+  case, + `ServiceCapabilityToken.protectedCommands` allowlist — mutating
+  commands MUST be listed there or they are rejected unauthorized). Handler:
+  `readProjectWorkItems` (human-driven-filtered, mirrors
+  `DatabaseManager.implementationTimeline`) -> per-item `intent_hash` = SHA256 of
+  concatenated beats' humanIntent+assistantOutcome -> generate only missing/stale
+  titles via `ServiceAISettings.titleConfig` (user's mimo) -> upsert. AI/network
+  runs OUTSIDE `ServiceWriterGate`; only the upsert is inside it (generateSummary
+  pattern). titleConfig nil => no-op, persists nothing (app keeps heuristic).
+- App read: `ImplementationTimelineItem.semanticTitle` populated by a
+  `tableExists("work_item_titles")`-guarded LEFT JOIN in
+  `DatabaseManager.implementationTimeline` (project-scoped only; project=nil/
+  global timeline must NOT pick up titles). UI prefers `semanticTitle ?? title`.
+  On project open: heuristic shows instantly -> one on-demand generation pass
+  (guarded by `requestedTitleGen` to prevent loops) -> in-place reload
+  (`load(showSpinner:)` so the rail is not blanked/spinner-flashed).
+- Testability seam: `generateProjectWorkTitles` takes injectable `titleConfig` +
+  `generateTitle` params (production defaults read real settings / call the real
+  model) so cache/no-op paths are deterministically testable without network.
+- Robustness bug found by the new IPC test: a post-write re-SELECT of
+  `work_item_titles` threw "no such table" on a non-migrated DB. Fixed by
+  returning the generated titles directly (app ignores the response and reloads
+  from DB anyway).
+- Built via 2 ultracode workflows (parallel code-map/design -> 4 disjoint-file
+  parallel implementers + build-fix loop + 3 adversarial reviewers). Committed in
+  `e4164164`; full detail in CHANGELOG.md [Unreleased]. Verification: full Debug
+  build + targeted Swift tests green (read-join x3, migration x14, service IPC/
+  seam x3). Full suites/lint/packaging NOT run.
 
 ## 2026-06-28 - Full-project audit remediation pass (Codex)
 
