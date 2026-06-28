@@ -51,6 +51,11 @@ implementers + build-fix loop + 3 adversarial reviewers.
 - **Note (unrelated)**: `~/.claude/projects/-Users-bing--Code--engram/memory`
   symlinks to `.memory`, a regular file not a directory — auto-memory writes are
   currently broken. Left as-is (out of scope).
+- **Codex review follow-up**: no behavior blocker found. Cleaned the newly added
+  Swift comments/prompt text to match the repo's English/ASCII source-comment
+  convention. Re-verified `xcodegen generate` stability, focused app read-join
+  tests, service `generateProjectWorkTitles` tests, migration schema creation,
+  and `git diff --check`.
 
 ### Full-project audit remediation pass (2026-06-28, Codex)
 

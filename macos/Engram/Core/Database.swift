@@ -596,8 +596,8 @@ final class DatabaseManager: @unchecked Sendable {
     ) throws -> [ImplementationTimelineItem] {
         try readInBackground { db in
             guard try Self.tableExists("session_work_beats", db: db) else { return [] }
-            // work_item_titles 是 service/writer 创建的表，只读 app 池不会创建它，
-            // 因此引用前必须用 tableExists 守卫，缺表时回退到启发式标题。
+            // work_item_titles is service/writer-owned, so the read-only app pool
+            // must guard it and fall back to heuristic titles when the table is absent.
             let hasTitles = try Self.tableExists("work_item_titles", db: db)
             let titleColumn = hasTitles ? ", wt.title AS semantic_title" : ""
             let titleJoin = hasTitles
@@ -633,8 +633,8 @@ final class DatabaseManager: @unchecked Sendable {
             let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "), arguments: StatementArguments(args))
             let beats = rows.map(Self.sessionImplementationBeat(row:))
             let items = ImplementationTimelineBuilder.build(beats: beats)
-            // 语义标题按 (project, work_key) 唯一，跨项目的全局 timeline (project=nil)
-            // 不应套用，保持启发式标题。
+            // Semantic titles are scoped by (project, work_key); the cross-project
+            // global timeline keeps heuristic titles.
             guard hasTitles, project != nil else { return items }
             var titleByWorkKey: [String: String] = [:]
             for row in rows {

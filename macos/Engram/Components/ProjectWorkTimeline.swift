@@ -15,7 +15,7 @@ struct ProjectWorkTimeline: View {
     @Environment(EngramServiceClient.self) private var serviceClient
     @State private var items: [ImplementationTimelineItem] = []
     @State private var isLoading = true
-    /// 已请求过语义标题生成的项目集合，避免 load -> 生成 -> reload 形成无限循环。
+    /// Projects that already requested semantic title generation, preventing a load -> generate -> reload loop.
     @State private var requestedTitleGen: Set<String> = []
 
     private static let inputDateFormatter: DateFormatter = {
@@ -79,8 +79,8 @@ struct ProjectWorkTimeline: View {
         .task(id: project) { await load() }
     }
 
-    /// - Parameter showSpinner: 仅首次/切换项目时显示加载态。语义标题生成后的
-    ///   二次 reload 传 false，原地替换标题而不清空已渲染的轨道、不闪 ProgressView。
+    /// - Parameter showSpinner: Shows loading only on first load or project switch.
+    ///   The post-generation reload passes false so the rendered rail updates in place.
     private func load(showSpinner: Bool = true) async {
         if showSpinner { isLoading = true }
         let db = self.db
@@ -96,9 +96,9 @@ struct ProjectWorkTimeline: View {
         }
         isLoading = false
 
-        // 若有工作项缺少 AI 语义标题，且该项目尚未请求过生成，则触发一次 service 端
-        // 生成（写入 work_item_titles），完成后再 load 一次读取持久化标题。
-        // requestedTitleGen 守卫确保每个项目最多请求一次，避免无限循环。
+        // If any work item lacks a semantic title, request one service-side
+        // generation pass (persisted to work_item_titles), then reload the
+        // saved titles. requestedTitleGen keeps this to one request per project.
         guard items.contains(where: { $0.semanticTitle == nil }),
               !requestedTitleGen.contains(project) else { return }
         requestedTitleGen.insert(project)
@@ -108,8 +108,7 @@ struct ProjectWorkTimeline: View {
         await load(showSpinner: false)
     }
 
-    /// 点击节点：解析工作项最新 beat 的 sessionId -> Session，复用 .openSession 通道
-    /// （由 MainWindowView 观察并切换到会话详情）。
+    /// Opens the latest beat's session through the existing .openSession path.
     private func open(_ item: ImplementationTimelineItem) {
         guard let sessionId = item.beats.last?.sessionId else { return }
         let db = self.db
@@ -161,15 +160,15 @@ struct ProjectWorkTimeline: View {
     }
 }
 
-/// 竖直时间轴轨道：每行一段连接线 + 一个彩色节点圆点。
-/// GeometryReader 自适应行高（由 TimelineNode 内容决定）以画出连续连接线。
+/// Vertical timeline rail: one connector segment plus a colored node dot per row.
+/// GeometryReader tracks row height from TimelineNode content for a continuous line.
 private struct TimelineRail: View {
     let isFirst: Bool
     let isLast: Bool
     let color: Color
     private let dotSize: CGFloat = 9
     private let lineWidth: CGFloat = 1.5
-    private let dotTopInset: CGFloat = 7 // 让圆点与日期/标题首行对齐
+    private let dotTopInset: CGFloat = 7 // Aligns the dot with the first date/title line.
 
     var body: some View {
         GeometryReader { geo in
@@ -193,7 +192,7 @@ private struct TimelineRail: View {
     }
 }
 
-/// 单个工作项节点内容（从 WorkTimelineCard 抽出，去掉盒子背景，由轨道承担分隔）。
+/// Single work-item node content without the global Timeline card background.
 private struct TimelineNode: View {
     let item: ImplementationTimelineItem
     let dateLabel: String

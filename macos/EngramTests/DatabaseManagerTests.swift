@@ -1090,7 +1090,7 @@ final class DatabaseManagerTests: XCTestCase {
 
     /// ProjectWorkTimeline (project-detail embedded timeline) relies on
     /// `implementationTimeline(project:)` returning only the requested project's
-    /// work. Lock that contract — it previously had no coverage.
+    /// work. Lock that contract; it previously had no coverage.
     func testImplementationTimelineScopesToProject() throws {
         try seedWorkBeats(at: dbPath)
 

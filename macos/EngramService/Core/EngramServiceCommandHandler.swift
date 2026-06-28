@@ -1354,7 +1354,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     }
 
     /// Lowercase hex SHA256 of (intent + U+0001 + outcome). Stable cache key for
-    /// a work item's semantic title — regenerate only when the underlying
+    /// a work item's semantic title; regenerate only when the underlying
     /// intent/outcome text changes. NEVER use Swift `hashValue` for this.
     private static func intentHash(intent: String, outcome: String) -> String {
         let digest = SHA256.hash(data: Data((intent + "\u{1}" + outcome).utf8))
@@ -1366,7 +1366,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     /// runs inside it. With no title AI config the command is a no-op (it does
     /// NOT persist heuristic titles) so the app keeps its heuristic fallback.
     /// - Parameters injected for testing (production defaults read the real
-    ///   settings + call the real model): `titleConfig` nil ⟺ no AI config
+    ///   settings + call the real model): `titleConfig` nil means no AI config
     ///   (no-op, no persistence); `generateTitle` produces a title from an
     ///   item's intent+outcome.
     static func generateProjectWorkTitles(
@@ -1380,7 +1380,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         let items = try readProjectWorkItems(project: project, databasePath: writerGate.databasePath)
         let persisted = try readPersistedWorkItemTitles(project: project, databasePath: writerGate.databasePath)
 
-        // Aggregate beats by work_key — a work_key can span multiple batch items,
+        // Aggregate beats by work_key; a work_key can span multiple batch items,
         // but the title table is keyed by (project, work_key), so one title per key.
         var beatsByWorkKey: [String: [SessionImplementationBeat]] = [:]
         var orderedWorkKeys: [String] = []
@@ -2211,7 +2211,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         }
     }
 
-    /// Service-local copy of `DatabaseManager.sessionImplementationBeat` — the
+    /// Service-local copy of `DatabaseManager.sessionImplementationBeat`; the
     /// app decoder is private, so the service decodes the same columns
     /// (including the operation_events JSON array) itself.
     private static func decodeWorkBeat(row: Row) -> SessionImplementationBeat {
@@ -2704,11 +2704,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         ) async throws -> String {
             let boundedIntent = String(intent.prefix(600))
             let boundedOutcome = String(outcome.prefix(1200))
-            // 生成不超过 30 字、概括"做了什么/修了什么"的标题，语言跟随输入。
+            // Generate a concise title for what was built or fixed, matching input language.
             let prompt = """
             Generate a concise title (30 characters or fewer) describing what was
             built or fixed in this unit of engineering work. Match the input
-            language (中文输入就用中文回答). Return only the title, no quotes, no prefix.
+            language, including Chinese for Chinese input. Return only the title, no quotes, no prefix.
 
             Intent: \(boundedIntent)
             Outcome: \(boundedOutcome)

@@ -136,6 +136,12 @@
   `e4164164`; full detail in CHANGELOG.md [Unreleased]. Verification: full Debug
   build + targeted Swift tests green (read-join x3, migration x14, service IPC/
   seam x3). Full suites/lint/packaging NOT run.
+- Codex review follow-up on 2026-06-28 found no behavior blocker in the Claude
+  implementation. It cleaned the newly added Swift comments/prompt text to match
+  the repo's English/ASCII source-comment convention and verified `xcodegen
+  generate` is stable plus the focused app read-join tests (3), service
+  generateProjectWorkTitles tests (3), migration schema test (1), and
+  `git diff --check`.
 
 ## 2026-06-28 - Full-project audit remediation pass (Codex)
 
