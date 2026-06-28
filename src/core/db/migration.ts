@@ -56,6 +56,12 @@ export function runMigrations(
       db.exec('ALTER TABLE sessions ADD COLUMN summary TEXT');
     if (!colNames.has('summary_message_count'))
       db.exec('ALTER TABLE sessions ADD COLUMN summary_message_count INTEGER');
+    if (!colNames.has('instruction_count'))
+      db.exec('ALTER TABLE sessions ADD COLUMN instruction_count INTEGER');
+    if (!colNames.has('human_turn_count'))
+      db.exec('ALTER TABLE sessions ADD COLUMN human_turn_count INTEGER');
+    if (!colNames.has('instruction_summary'))
+      db.exec('ALTER TABLE sessions ADD COLUMN instruction_summary TEXT');
     if (!colNames.has('size_bytes'))
       db.exec(
         'ALTER TABLE sessions ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0',
@@ -88,6 +94,12 @@ export function runMigrations(
         'ALTER TABLE sessions ADD COLUMN quality_score INTEGER DEFAULT 0',
       );
     }
+    if (!colNames.has('last_accessed_at'))
+      db.exec('ALTER TABLE sessions ADD COLUMN last_accessed_at TEXT');
+    if (!colNames.has('access_count'))
+      db.exec(
+        'ALTER TABLE sessions ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0',
+      );
     if (!colNames.has('parent_session_id'))
       db.exec('ALTER TABLE sessions ADD COLUMN parent_session_id TEXT');
     if (!colNames.has('suggested_parent_id'))
@@ -102,6 +114,10 @@ export function runMigrations(
       db.exec('ALTER TABLE sessions ADD COLUMN orphan_since TEXT');
     if (!colNames.has('orphan_reason'))
       db.exec('ALTER TABLE sessions ADD COLUMN orphan_reason TEXT');
+    if (!colNames.has('offload_state'))
+      db.exec(
+        "ALTER TABLE sessions ADD COLUMN offload_state TEXT NOT NULL DEFAULT 'local'",
+      );
     // Drop external semantic search columns if they exist (removed in local-semantic-search migration)
     // SQLite doesn't support DROP COLUMN before 3.35.0; columns are left harmless
   }
@@ -122,6 +138,9 @@ export function runMigrations(
       system_message_count INTEGER NOT NULL DEFAULT 0,
       summary TEXT,
       summary_message_count INTEGER,
+      instruction_count INTEGER,
+      human_turn_count INTEGER,
+      instruction_summary TEXT,
       file_path TEXT NOT NULL,
       size_bytes INTEGER NOT NULL DEFAULT 0,
       indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -136,13 +155,16 @@ export function runMigrations(
       tier TEXT,
       generated_title TEXT,
       quality_score INTEGER DEFAULT 0,
+      last_accessed_at TEXT,
+      access_count INTEGER NOT NULL DEFAULT 0,
       parent_session_id TEXT,
       suggested_parent_id TEXT,
       link_source TEXT,
       link_checked_at TEXT,
       orphan_status TEXT,
       orphan_since TEXT,
-      orphan_reason TEXT
+      orphan_reason TEXT,
+      offload_state TEXT NOT NULL DEFAULT 'local'
     );
 
     CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -152,9 +174,12 @@ export function runMigrations(
     CREATE INDEX IF NOT EXISTS idx_sessions_file_path ON sessions(file_path);
     CREATE INDEX IF NOT EXISTS idx_sessions_agent_role ON sessions(agent_role);
     CREATE INDEX IF NOT EXISTS idx_sessions_tier ON sessions(tier);
+    CREATE INDEX IF NOT EXISTS idx_sessions_last_accessed ON sessions(last_accessed_at, access_count);
     CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id, start_time DESC);
     CREATE INDEX IF NOT EXISTS idx_sessions_suggested_parent ON sessions(suggested_parent_id, start_time DESC);
     CREATE INDEX IF NOT EXISTS idx_sessions_orphan_status ON sessions(orphan_status);
+    CREATE INDEX IF NOT EXISTS idx_sessions_visible ON sessions(hidden_at) WHERE hidden_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_sessions_offload_state ON sessions(offload_state);
 
     DROP TRIGGER IF EXISTS trg_sessions_parent_cascade;
     CREATE TRIGGER trg_sessions_parent_cascade
