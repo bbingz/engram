@@ -376,8 +376,8 @@ final class SessionSyncTests: XCTestCase {
 
     /// LocalDirectoryBackend.catalog() selects ONLY `catalog.<peer>.manifest` blobs
     /// (via ManifestCodec.isManifestKey), matching the server route's predicate: a
-    /// `catalog.*` blob without the `.manifest` suffix and a `catalog..manifest` key
-    /// (rejected by the server's BlobStore.validate) are both excluded here too.
+    /// `catalog.*` blob without the `.manifest` suffix and a malformed manifest
+    /// key are both excluded here too.
     func testLocalCatalogSelectsOnlyManifestKeys() async throws {
         let dir = tempDir.appendingPathComponent("catalog-store", isDirectory: true)
         let backend = try LocalDirectoryBackend(root: dir)
@@ -385,10 +385,10 @@ final class SessionSyncTests: XCTestCase {
         let manifest = SyncManifest(peer: "macB", updatedAt: "2024-02-02T00:00:00Z", entries: [entry])
         try await backend.put(key: ManifestCodec.manifestKey(peer: "macB"), data: ManifestCodec.encode(manifest))
         try await backend.put(key: "catalog.stray", data: Data("{}".utf8))         // no .manifest suffix
-        try await backend.put(key: "catalog..manifest", data: Data("{}".utf8))     // contains ".."
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("catalog..manifest"))
         let catalogData = try await backend.catalog()
         let manifests = ManifestCodec.decodeCatalog(catalogData)
         XCTAssertEqual(manifests, [manifest],
-                       "only catalog.<peer>.manifest blobs are aggregated; stray and '..' keys excluded")
+                       "only catalog.<peer>.manifest blobs are aggregated; stray and malformed keys excluded")
     }
 }

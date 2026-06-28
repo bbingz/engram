@@ -616,13 +616,7 @@ final class OrchestratorTests: XCTestCase {
             .appendingPathComponent("p", isDirectory: true)
             .path
         try FileManager.default.createDirectory(at: srcURL, withIntermediateDirectories: true)
-        let gitDir = srcURL.appendingPathComponent(".git", isDirectory: true)
-        try FileManager.default.createDirectory(at: gitDir, withIntermediateDirectories: true)
-        try "ref: refs/heads/main".write(
-            to: gitDir.appendingPathComponent("HEAD"),
-            atomically: true,
-            encoding: .utf8
-        )
+        try makeRealGitRepo(atPath: srcURL.path)
 
         let encoded = SessionSources.encodeIflow(dst)
         XCTAssertEqual(encoded, SessionSources.encodeIflow(srcURL.path))
@@ -919,14 +913,7 @@ final class OrchestratorTests: XCTestCase {
         let codeDir = tempRoot.appendingPathComponent("Code", isDirectory: true)
         let projectDir = codeDir.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
-        // .git/HEAD so GitDirty.check sees a repo but porcelain output is empty.
-        let gitDir = projectDir.appendingPathComponent(".git", isDirectory: true)
-        try FileManager.default.createDirectory(at: gitDir, withIntermediateDirectories: true)
-        try "ref: refs/heads/main".write(
-            to: gitDir.appendingPathComponent("HEAD"),
-            atomically: true,
-            encoding: .utf8
-        )
+        try makeRealGitRepo(atPath: projectDir.path)
 
         let encodedCcName = ClaudeCodeProjectDir.encode(projectDir.path)
         let ccDir = tempRoot

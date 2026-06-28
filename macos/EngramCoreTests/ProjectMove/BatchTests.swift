@@ -230,11 +230,7 @@ final class BatchTests: XCTestCase {
     private func makeProjectFixture(name: String) throws -> (src: String, ccDir: URL) {
         let projectDir = tempRoot.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
-        let gitDir = projectDir.appendingPathComponent(".git", isDirectory: true)
-        try FileManager.default.createDirectory(at: gitDir, withIntermediateDirectories: true)
-        try "ref: refs/heads/main".write(
-            to: gitDir.appendingPathComponent("HEAD"), atomically: true, encoding: .utf8
-        )
+        try makeRealGitRepo(at: projectDir)
 
         let encoded = ClaudeCodeProjectDir.encode(projectDir.path)
         let ccDir = tempRoot.appendingPathComponent(".claude/projects/\(encoded)", isDirectory: true)
@@ -260,5 +256,36 @@ final class BatchTests: XCTestCase {
             lockPath: tempRoot.appendingPathComponent("project-move.lock").path,
             force: false
         )
+    }
+
+    private func makeRealGitRepo(at directory: URL) throws {
+        try "base".write(
+            to: directory.appendingPathComponent("tracked.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try Self.runGit(at: directory, ["init", "-q"])
+        try Self.runGit(at: directory, ["config", "user.email", "t@t"])
+        try Self.runGit(at: directory, ["config", "user.name", "t"])
+        try Self.runGit(at: directory, ["add", "."])
+        try Self.runGit(at: directory, ["commit", "-qm", "init"])
+    }
+
+    private static func runGit(at directory: URL, _ args: [String]) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["git"] + args
+        process.currentDirectoryURL = directory
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw NSError(
+                domain: "BatchTests",
+                code: Int(process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "git \(args.joined(separator: " ")) failed"]
+            )
+        }
     }
 }
