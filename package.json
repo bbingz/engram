@@ -32,7 +32,7 @@
   "dependencies": {
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.0",
-    "@hono/node-server": "^2.0.4",
+    "@hono/node-server": "^2.0.5",
     "@modelcontextprotocol/sdk": "^1.10.2",
     "better-sqlite3": "^12.10.0",
     "chokidar": "^5.0.0",
