@@ -117,14 +117,6 @@ export function getAdapter(
   return adapterMap.get(name as SourceName);
 }
 
-/** Locator-aware adapter lookup against the module's default adapter set. */
-export function resolveAdapter(
-  source: string,
-  filePath: string,
-): SessionAdapter | undefined {
-  return resolveAdapterForLocator(adapters, source, filePath);
-}
-
 interface VectorDeps {
   vectorStore: SqliteVecStore;
   embeddingClient: EmbeddingClient;

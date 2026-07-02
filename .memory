@@ -3,6 +3,7 @@
 ## Index
 
 <!-- AUTO-INDEX (rebuilt 2026-06-28): 126 dated entries; regenerate after adding sections -->
+- [2026-07-02 - Codex takeover review and CI cleanup for PR #94 (Codex)](#2026-07-02---codex-takeover-review-and-ci-cleanup-for-pr-94-codex)
 - [2026-07-02 - Provider session-format audit closeout and Native Claude frontier refresh (Codex)](#2026-07-02---provider-session-format-audit-closeout-and-native-claude-frontier-refresh-codex)
 - [2026-07-01 - MiniMax provider root stale-count audit (Codex)](#2026-07-01---minimax-provider-root-stale-count-audit-codex)
 - [2026-07-01 - Mimo provider roots stale-count audit (Codex)](#2026-07-01---mimo-provider-roots-stale-count-audit-codex)
@@ -130,6 +131,39 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-02 - Codex takeover review and CI cleanup for PR #94 (Codex)
+
+- Objective: take over Claude's PR #94 closeout, verify the claimed ready state
+  against live PR checks and local repo state, fix any small confirmed blockers,
+  and leave the worktree clean for review.
+- Current branch/worktree: `/Users/bing/-Code-/engram` on
+  `codex-provider-audit-remediation`, PR #94
+  (`codex-provider-audit-remediation -> main`). At takeover the local worktree
+  had no tracked or untracked git changes.
+- Review finding: Claude's "can directly review/merge" claim was not current.
+  Live GitHub checks showed `dead-code` failed because Knip reported unused
+  export `resolveAdapter` at `src/core/bootstrap.ts:121`, and `CodeQL Swift`
+  failed during package dependency resolution because the macOS runner could not
+  resolve `github.com` while cloning the GRDB `SQLiteCustom/src` submodule. The
+  same PR's `swift-unit` job was green, so the CodeQL failure is treated as
+  external CI/network dependency resolution until rerun.
+- Fix: removed the unused exported default-adapter wrapper from
+  `src/core/bootstrap.ts`. Also made the split web session routes in
+  `src/web/routes/sessions.ts` locator-aware: injected adapters now resolve via
+  `resolveAdapterForLocator(deps.adapters, session.source, session.filePath)`,
+  and default adapters resolve via `getAdapter(session.source, session.filePath)`.
+  This keeps provider-root ClaudeCode clones from shadowing native same-source
+  transcripts in the route-module path.
+- Fresh local checks: `npm run build`, `npm run knip`, `npm run lint` (exit 0
+  with the existing `tests/scripts/screenshot-compare.test.ts` template-curly
+  warning), `npm run test -- tests/web/route-modules.test.ts tests/web/api.test.ts
+  tests/web/server.test.ts` (105/105), `npm run typecheck:test`, full
+  `npm run test` (1627/1627), and `git diff --check`.
+- Remaining risk: GitHub checks still need the post-fix branch push/rerun. If
+  `CodeQL Swift` fails again with the same `Could not resolve host: github.com`
+  GRDB submodule log, rerun or harden the workflow dependency cache; it was not
+  a source compile failure in the captured log.
 
 ## 2026-07-02 - Provider session-format audit closeout and Native Claude frontier refresh (Codex)
 

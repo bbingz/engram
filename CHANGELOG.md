@@ -7,6 +7,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Codex takeover review and CI cleanup for PR #94 (2026-07-02, Codex)
+
+Reviewed Claude's PR #94 closeout claim against live GitHub checks and the
+current branch. The PR was open/mergeable, but not ready to merge at takeover:
+`dead-code` failed on an unused `src/core/bootstrap.ts` export, and `CodeQL
+Swift` failed while resolving Swift package dependencies because the runner
+could not resolve `github.com` for the GRDB `SQLiteCustom/src` submodule. The
+Swift unit job on the same PR was green, so the CodeQL failure is tracked as a
+CI/network dependency-resolution failure until the next rerun proves otherwise.
+
+- Removed the unused exported `resolveAdapter()` wrapper from
+  `src/core/bootstrap.ts`; callers should use `getAdapter(source, locator)` or
+  `resolveAdapterForLocator(...)`.
+- Tightened `src/web/routes/sessions.ts` so split web session routes resolve
+  transcript adapters with the session locator (`resolveAdapterForLocator` for
+  injected adapters, `getAdapter(source, filePath)` for defaults). This preserves
+  Claude/provider-root vs native adapter ownership in the route-module path and
+  fixes the dead-code CI failure.
+- Verified locally: `npm run build`, `npm run knip`, `npm run lint` (exit 0 with
+  the pre-existing screenshot workflow template-curly warning),
+  `npm run test -- tests/web/route-modules.test.ts tests/web/api.test.ts
+  tests/web/server.test.ts`, `npm run typecheck:test`, full `npm run test`
+  (1627/1627), and `git diff --check`.
+
 ### Review + remediation of Codex provider audit change set (2026-07-02, Claude)
 
 Adversarial multi-agent review of Codex's uncommitted provider-audit working

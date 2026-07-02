@@ -5,6 +5,7 @@ import type {
   SessionInfo,
   SourceName,
 } from '../../adapters/types.js';
+import { resolveAdapterForLocator } from '../../adapters/types.js';
 import { getAdapter } from '../../core/bootstrap.js';
 import type { Database } from '../../core/db.js';
 import { buildResumeCommand } from '../../core/resume-coordinator.js';
@@ -29,14 +30,16 @@ async function readTranscriptPage(
   session: SessionInfo,
   offset: number,
   limit: number,
-  resolveAdapter: (source: string) => SessionAdapter | undefined,
+  resolveAdapter: (
+    session: Pick<SessionInfo, 'source' | 'filePath'>,
+  ) => SessionAdapter | undefined,
 ): Promise<{
   messages: Pick<Message, 'role' | 'content'>[];
   hasMore: boolean;
   nextOffset: number;
   error?: string;
 }> {
-  const adapter = resolveAdapter(session.source);
+  const adapter = resolveAdapter(session);
   if (!adapter) {
     return {
       messages: [],
@@ -103,8 +106,17 @@ export function registerSessionRoutes(
     ) => IntegerParamResult;
   },
 ) {
-  function resolveAdapter(source: string): SessionAdapter | undefined {
-    return deps.adapters?.find((a) => a.name === source) ?? getAdapter(source);
+  function resolveAdapter(
+    session: Pick<SessionInfo, 'source' | 'filePath'>,
+  ): SessionAdapter | undefined {
+    if (deps.adapters?.length) {
+      return resolveAdapterForLocator(
+        deps.adapters,
+        session.source,
+        session.filePath,
+      );
+    }
+    return getAdapter(session.source, session.filePath);
   }
 
   app.get('/api/sessions', (c) => {
@@ -232,7 +244,7 @@ export function registerSessionRoutes(
     const session = deps.db.getSession(c.req.param('id'));
     if (!session) return c.json({ error: 'Session not found' }, 404);
 
-    const adapter = resolveAdapter(session.source);
+    const adapter = resolveAdapter(session);
     if (!adapter)
       return c.json({ error: `No adapter for source: ${session.source}` }, 500);
 
