@@ -149,6 +149,7 @@ final class AdapterParityTests: XCTestCase {
                 tmpRoot: fixtureRoot.appendingPathComponent("gemini-cli/input/tmp").path,
                 projectsFile: fixtureRoot.appendingPathComponent("gemini-cli/input/projects.json").path
             ),
+            GrokAdapter(sessionsRoot: fixtureRoot.appendingPathComponent("grok/input").path),
             IflowAdapter(projectsRoot: fixtureRoot.appendingPathComponent("iflow/input").path),
             KimiAdapter(
                 sessionsRoot: fixtureRoot.appendingPathComponent("kimi/input/sessions").path,
@@ -173,6 +174,7 @@ final class AdapterParityTests: XCTestCase {
             .copilot,
             .cursor,
             .geminiCli,
+            .grok,
             .iflow,
             .kimi,
             .opencode,

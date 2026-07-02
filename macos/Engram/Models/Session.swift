@@ -117,7 +117,6 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     var displayUpdatedDate: String { String((endTime ?? startTime).prefix(10)) }
     var accessSortTime: String     { lastAccessedAt ?? startTime }
     var isSubAgent: Bool           { agentRole != nil }
-    var isViaClaudeCode: Bool      { OriginatorClassifier.isClaudeCode(originator) }
     var hasParent: Bool { parentSessionId != nil }
     var hasSuggestedParent: Bool { suggestedParentId != nil && parentSessionId == nil }
     var formattedSize: String {

@@ -580,10 +580,29 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         }
 
         let limit = max(1, min(request.limit, 100))
-        if let exactID = try await exactSessionIDSearch(query: query, request: request) {
-            return exactID
-        }
 
+        // Exact session-id lookup runs as an ADDITIONAL match, not a hijacking
+        // short-circuit. Pasting a session id surfaces that session first, but a
+        // keyword query that merely coincides with an id (or an id whose session
+        // is filtered out) still returns its keyword results below the id hit.
+        let exactIDItem = try await exactSessionIDItem(query: query, request: request)
+        let base = try await keywordOrSemanticSearch(
+            query: query,
+            request: request,
+            limit: limit,
+            requestedMode: requestedMode,
+            semanticRequested: semanticRequested
+        )
+        return Self.mergingExactID(exactIDItem, into: base, limit: limit)
+    }
+
+    private func keywordOrSemanticSearch(
+        query: String,
+        request: EngramServiceSearchRequest,
+        limit: Int,
+        requestedMode: String,
+        semanticRequested: Bool
+    ) async throws -> EngramServiceSearchResponse {
         if semanticRequested {
             do {
                 if let semantic = try await semanticSearch(
@@ -612,17 +631,44 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         return try await keywordSearch(query: query, request: request, limit: limit, warning: warning)
     }
 
-    private func exactSessionIDSearch(
+    /// Merge the optional exact session-id hit on top of the keyword/semantic
+    /// results. The id hit ranks first (dedup by id); `"id"` is prepended to the
+    /// search modes only when the id hit exists. When the id hit is the only
+    /// surviving result the response mirrors the previous id-only fast path
+    /// (`searchModes == ["id"]`).
+    private static func mergingExactID(
+        _ exactIDItem: EngramServiceSearchResponse.Item?,
+        into base: EngramServiceSearchResponse,
+        limit: Int
+    ) -> EngramServiceSearchResponse {
+        guard let exactIDItem else { return base }
+        let deduped = base.items.filter { $0.id != exactIDItem.id }
+        let merged = Array(([exactIDItem] + deduped).prefix(limit))
+        var modes = ["id"]
+        for mode in base.searchModes ?? [] where !modes.contains(mode) { modes.append(mode) }
+        return EngramServiceSearchResponse(
+            items: merged,
+            searchModes: deduped.isEmpty ? ["id"] : modes,
+            warning: base.warning
+        )
+    }
+
+    private func exactSessionIDItem(
         query: String,
         request: EngramServiceSearchRequest
-    ) async throws -> EngramServiceSearchResponse? {
+    ) async throws -> EngramServiceSearchResponse.Item? {
         try await read { db in
+            // Exact-id lookup finds any VISIBLE session by its own id, regardless
+            // of tier. `skip` (hidden noise) stays excluded, but `lite` — visible
+            // in list surfaces though excluded from keyword search — must be
+            // findable by pasting its id (matches the product visibility rule
+            // `tier != 'skip'`).
             var parts = ["""
                 SELECT s.*, '' AS snippet
                 FROM sessions s
                 WHERE s.id = ?
                   AND s.hidden_at IS NULL
-                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+                  AND (s.tier IS NULL OR s.tier != 'skip')
             """]
             var args: [DatabaseValueConvertible] = [query]
             appendSearchFilters(for: request, to: &parts, args: &args)
@@ -635,11 +681,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             ) else {
                 return nil
             }
-            return EngramServiceSearchResponse(
-                items: [item(from: row, snippetOverride: "", matchType: "id", score: 1)],
-                searchModes: ["id"],
-                warning: nil
-            )
+            return item(from: row, snippetOverride: "", matchType: "id", score: 1)
         }
     }
 

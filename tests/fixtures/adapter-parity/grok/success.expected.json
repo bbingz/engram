@@ -1,0 +1,84 @@
+{
+  "failure": null,
+  "fileToolCounts": {},
+  "generatedAtCommit": "5013bab7",
+  "inputPath": "grok/input/%2FUsers%2Ftest%2Fmy-project/019f179d-0888-76b1-9325-5a91ace595df/chat_history.jsonl",
+  "insightFields": {
+    "firstUserSummary": "帮我还原技术路线",
+    "messageCount": 3,
+    "toolCallCount": 1
+  },
+  "locator": "grok/input/%2FUsers%2Ftest%2Fmy-project/019f179d-0888-76b1-9325-5a91ace595df/chat_history.jsonl",
+  "messages": [
+    {
+      "content": "帮我还原技术路线",
+      "role": "user"
+    },
+    {
+      "content": "好的，我来还原技术路线。",
+      "role": "assistant",
+      "toolCalls": [
+        {
+          "input": "{\"url\":\"https://example.com/readme\"}",
+          "name": "web_fetch"
+        }
+      ]
+    },
+    {
+      "content": "Example README",
+      "role": "tool"
+    }
+  ],
+  "nodeVersion": "v26.4.0",
+  "projectFields": {
+    "cwd": "/Users/test/my-project",
+    "project": null,
+    "source": "grok"
+  },
+  "schemaVersion": 1,
+  "searchIndexFields": {
+    "contentPreview": "帮我还原技术路线\n好的，我来还原技术路线。\nExample README",
+    "contentSha256InputBytes": 76,
+    "roles": [
+      "user",
+      "assistant",
+      "tool"
+    ]
+  },
+  "sessionInfo": {
+    "assistantMessageCount": 1,
+    "cwd": "/Users/test/my-project",
+    "endTime": "2026-06-30T11:12:27.482957Z",
+    "filePath": "<fixtureRoot>/grok/input/%2FUsers%2Ftest%2Fmy-project/019f179d-0888-76b1-9325-5a91ace595df/chat_history.jsonl",
+    "id": "019f179d-0888-76b1-9325-5a91ace595df",
+    "messageCount": 3,
+    "model": "grok-build",
+    "sizeBytes": 606,
+    "source": "grok",
+    "startTime": "2026-06-30T08:19:55.275395Z",
+    "summary": "帮我还原技术路线",
+    "systemMessageCount": 1,
+    "toolMessageCount": 1,
+    "userMessageCount": 1
+  },
+  "source": "grok",
+  "statsFields": {
+    "assistantMessageCount": 1,
+    "messageCount": 3,
+    "systemMessageCount": 1,
+    "toolMessageCount": 1,
+    "userMessageCount": 1
+  },
+  "toolCalls": [
+    {
+      "input": "{\"url\":\"https://example.com/readme\"}",
+      "name": "web_fetch"
+    }
+  ],
+  "usageTotals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 0,
+    "inputTokens": 0,
+    "outputTokens": 0
+  }
+}

@@ -1206,8 +1206,8 @@ PK `(thread_id, position)`(FK → `threads` CASCADE)、`name`、`description`、
    ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
 5. **文本键陷阱:** 值始终在 `text` 下,绝非 `input_text`/`output_text`。适配器在这些键上的
    回退对现代数据是死分支。
-6. **TS 多块少捕获:** TS `extractText` 只返回第一个块;Swift 用 `\n\n` 连接所有块。多块用户
-   消息确实存在。
+6. **多块文本(2026-07-01 已修复 parity):** 多块用户消息确实存在;现在 TS `extractText` 与
+   Swift 都用 `\n\n` 连接所有文本块。此前 TS 只返回第一个块。
 7. **现代文件不携带 `response_item.payload.model` / `.usage`:** model 现在来自
    `turn_context.payload.model`(2026-07-01 已在 TS + Swift 修复);用量仅来自
    `event_msg.token_count`。潜伏点:如果 Codex 重新加入内联用量,适配器会悄然优先使用它。

@@ -28,6 +28,12 @@ enum JSONLAdapterSupport {
     static func recursiveFiles(under root: URL, matching predicate: (URL) -> Bool) -> [String] {
         guard isDirectory(root) else { return [] }
         let resolvedRoot = root.resolvingSymlinksInPath()
+        // Deliberately skip hidden files and directories. Real session trees
+        // (Codex `rollout-*.jsonl`, Gemini `chats/`, Claude `subagents/`) never
+        // store sessions in dotfiles or dotdirs, whereas hidden entries (.git,
+        // .DS_Store, editor/VCS caches) are pure noise. NOTE: the TS reference
+        // recursion does NOT skip hidden — that is the divergent side and should
+        // be brought in line with this behavior, not the reverse.
         guard let enumerator = FileManager.default.enumerator(
             at: resolvedRoot,
             includingPropertiesForKeys: [.isRegularFileKey],

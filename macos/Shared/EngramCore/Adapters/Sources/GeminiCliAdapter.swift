@@ -213,6 +213,15 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
         return components[chatsIndex - 1]
     }
 
+    // Native subagent detection is positional by design: the documented Gemini
+    // layout nests a subagent session at exactly `chats/<parentSessionId>/<file>`,
+    // and that is the only reason a session file is ever nested under `chats/`
+    // (top-level sessions live directly in `chats/`). So the intermediate dir IS
+    // the parent session id. This intentionally has no extra `kind`/naming gate —
+    // Gemini's `kind` field is not parsed and native subagents carry no sidecar,
+    // so any such gate would risk dropping real subagents. Kept in parity with the
+    // TS reference. Known limitation: undocumented deeper nesting
+    // (`chats/<a>/<b>/<file>`) would mis-attribute the parent to `<a>`.
     private static func nativeParentSessionId(from locator: String) -> String? {
         let components = URL(fileURLWithPath: locator).pathComponents
         guard let chatsIndex = components.firstIndex(of: "chats"),

@@ -22,7 +22,11 @@ import { OpenCodeAdapter } from '../adapters/opencode.js';
 import { PiAdapter } from '../adapters/pi.js';
 import { QoderAdapter } from '../adapters/qoder.js';
 import { QwenAdapter } from '../adapters/qwen.js';
-import type { SessionAdapter, SourceName } from '../adapters/types.js';
+import {
+  resolveAdapterForLocator,
+  type SessionAdapter,
+  type SourceName,
+} from '../adapters/types.js';
 import { VsCodeAdapter } from '../adapters/vscode.js';
 import { WindsurfAdapter } from '../adapters/windsurf.js';
 import { AiAuditQuery, AiAuditWriter } from './ai-audit.js';
@@ -99,8 +103,26 @@ function createAdapters(): SessionAdapter[] {
 const adapters = createAdapters();
 const adapterMap = new Map(adapters.map((a) => [a.name, a]));
 
-export function getAdapter(name: string): SessionAdapter | undefined {
+export function getAdapter(
+  name: string,
+  locator?: string,
+): SessionAdapter | undefined {
+  // When a locator is supplied, resolve among same-source adapters by ownership
+  // so provider-root clones and native adapters don't shadow each other. Without
+  // a locator, fall back to the single registered adapter for the name.
+  if (locator !== undefined) {
+    const resolved = resolveAdapterForLocator(adapters, name, locator);
+    if (resolved) return resolved;
+  }
   return adapterMap.get(name as SourceName);
+}
+
+/** Locator-aware adapter lookup against the module's default adapter set. */
+export function resolveAdapter(
+  source: string,
+  filePath: string,
+): SessionAdapter | undefined {
+  return resolveAdapterForLocator(adapters, source, filePath);
 }
 
 interface VectorDeps {

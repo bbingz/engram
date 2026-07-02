@@ -258,7 +258,7 @@ Engram 对它透明处理 —— 它只是另一个 `projects/*` 目录;`project
 
 Swift `listSessionLocators()`(`ClaudeCodeAdapter.swift:33-51`)返回 **已排序** 的
 列表;TS `listSessionFiles()`(`claude-code.ts:67-96`)是一个未排序的异步生成器,
-并通过 `jsonlFilesUnder`(`claude-code.ts:233-243`)执行递归遍历。两个适配器都不读取
+并通过 `jsonlFilesUnder`(`claude-code.ts:246-256`)执行递归遍历。两个适配器都不读取
 顶层 `workflows/`、`tool-results/`、`session-memory/`、`memory/` 或 `*.meta.json`。
 
 ---

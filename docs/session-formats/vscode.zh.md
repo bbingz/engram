@@ -517,7 +517,7 @@ Live 分布：**16** 个 workspace 使用 `folder`，**1** 个使用 legacy
 `extractUserText` `:311-326` / `:229-237`；`extractAssistantText` `:328-341` /
 `:239-246`；`decodeFileURI` `:302-309` / `decodeFileUri` `:313-326`。
 
-**注册：** Swift `macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift:24,69`
+**注册：** Swift `macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift:31,108`
 （`VsCodeAdapter()`）——注意该 factory 直接位于 `Adapters/` 下，**而非**
 位于 `VsCodeAdapter.swift` 自身所在的 `Adapters/Sources/` 下；source 枚举
 `SourceName = .vscode`（`VsCodeAdapter.swift:4`）。TS 通过

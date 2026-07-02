@@ -277,7 +277,7 @@ Both adapters walk `projects/*` (one level), then for each entry:
 Swift `listSessionLocators()` (`ClaudeCodeAdapter.swift:33-51`) returns a
 **sorted** list; TS `listSessionFiles()` (`claude-code.ts:67-96`) is an unsorted
 async generator and delegates recursive traversal to `jsonlFilesUnder`
-(`claude-code.ts:233-243`). Neither adapter reads top-level `workflows/`,
+(`claude-code.ts:246-256`). Neither adapter reads top-level `workflows/`,
 `tool-results/`, `session-memory/`, `memory/`, or `*.meta.json`.
 
 ---

@@ -589,31 +589,31 @@ Engram leaves `model = nil` for Kimi despite this being available (see §15).
 
 | Engram field | Source of truth | Swift `KimiAdapter.swift` | TS `kimi.ts` | Notes / gotcha |
 |---|---|---|---|---|
-| `id` | session-dir UUID = `basename(dirname(context.jsonl))`; for subagents, the subagent directory id | `:78,194-210` | `:86-91,307-325` | Workspace hash discarded. TS guards against `''`/`.`/`..`; Swift has no guard. |
-| `source` | constant `.kimi` | `:73` | `:146` | |
-| `startTime` | first `TurnBegin` ts in `wire.jsonl` | `:74,200-208,223` | `:88,138-141,316-317` | Fallback: Swift = wireStart → `mtime-60s`; TS = wireStart → first line ts → `mtime-60s`. Live has no line ts. |
-| `endTime` | last turn `TurnEnd` (else its begin); emitted nil if == start | `:75,207,225` | `:89-92,142,318-321` | "first TurnEnd wins" — may reflect an early sub-turn. |
-| `cwd` | `kimi.json` `work_dirs[].path` keyed by `last_session_id == id`; subagents resolve through the parent session id | `:82,168-180` | `:93,356-378` | `""` if no match → only most-recent parent session per workspace resolves. |
-| `project` | always `nil` | `:77` | n/a | Derived downstream from cwd. |
-| `model` | always `nil` | `:78` | n/a | Available in `config.toml` (Kimi-k2.6) but never parsed. |
-| `messageCount` | `userCount + assistantCount` | `:79` | `:150` | **Excludes `tool`** → undercount. |
-| `userMessageCount` | count `role=="user"` | `:59,80` | `:122-126,151` | |
-| `assistantMessageCount` | count `role=="assistant"` | `:60,81` | `:127-129,152` | |
-| `toolMessageCount` | hardcoded `0` | `:82` | `:153` | Despite many live `tool` records. |
-| `systemMessageCount` | hardcoded `0` | `:83` | `:154` | `_system_prompt` exists but never counted. |
-| `summary` | first user message text, `prefix(200)` | `:67,84` | `:124,155` | **`state.json.custom_title` IGNORED.** |
-| `sizeBytes` | sum of `context.jsonl` + all `context_<N>.jsonl` / `context_sub_<N>.jsonl` for that locator | `:54-62,92,212-238` | `:106-114,163,253-273,328-331` | `wire.jsonl`/`state.json` excluded. |
-| `filePath` | absolute path to `context.jsonl` | `:85` | `:156` | The locator. |
-| per-msg `role` | `user→.user`, `assistant→.assistant` | `:257` | `:225` | Only 2 roles ever produced. |
-| per-msg `content` | `obj.content` as string | `:258` | `:226` | **Array content (think/text) → empty string.** |
-| per-msg `timestamp` | wire turn ts via state machine; else line ts (absent live) | `:137-149,300-308` | `:203-228,237-243` | See §15 #1. |
-| per-msg `usage` | wire `StatusUpdate.token_usage` (assistant only) | `:145,261,265-281` | **not implemented** | **Swift-only.** |
-| per-msg `toolCalls` | always `nil` | `:260` | omitted | Tool calls never surfaced. |
-| `agentRole` / `parentSessionId` | path-derived for `subagents/<id>/context.jsonl` | `:94,100,194-210` | `:164-165,307-325` | Main sessions keep both nil; subagents use `agentRole="subagent"` and parent session id. |
+| `id` | session-dir UUID = `basename(dirname(context.jsonl))`; for subagents, the subagent directory id | `:78,200-216` | `:152,308-332` | Workspace hash discarded. TS guards against `''`/`.`/`..`; Swift has no guard. |
+| `source` | constant `.kimi` | `:79` | `:153` | |
+| `startTime` | first `TurnBegin` ts in `wire.jsonl` | `:80,245-253,268` | `:145-148,154,376` | Fallback: Swift = wireStart → `mtime-60s`; TS = wireStart → first line ts → `mtime-60s`. Live has no line ts. |
+| `endTime` | last turn `TurnEnd` (else its begin); emitted nil if == start | `:81,252,270` | `:149,155` | "first TurnEnd wins" — may reflect an early sub-turn. |
+| `cwd` | `kimi.json` `work_dirs[].path` keyed by `last_session_id == id`; subagents resolve through the parent session id | `:82,174-187` | `:94,156,349-374` | `""` if no match → only most-recent parent session per workspace resolves. |
+| `project` | always `nil` | `:83` | n/a | Derived downstream from cwd. |
+| `model` | always `nil` | `:84` | n/a | Available in `config.toml` (Kimi-k2.6) but never parsed. |
+| `messageCount` | `userCount + assistantCount` | `:85` | `:157` | **Excludes `tool`** → undercount. |
+| `userMessageCount` | count `role=="user"` | `:66,86` | `:130,158` | |
+| `assistantMessageCount` | count `role=="assistant"` | `:67,87` | `:130,159` | |
+| `toolMessageCount` | hardcoded `0` | `:88` | `:160` | Despite many live `tool` records. |
+| `systemMessageCount` | hardcoded `0` | `:89` | `:161` | `_system_prompt` exists but never counted. |
+| `summary` | first user message text, `prefix(200)` | `:74,90` | `:132-133,162` | **`state.json.custom_title` IGNORED.** |
+| `sizeBytes` | sum of `context.jsonl` + all `context_<N>.jsonl` / `context_sub_<N>.jsonl` for that locator | `:57-62,92,218-231` | `:110,164,258-275` | `wire.jsonl`/`state.json` excluded. |
+| `filePath` | absolute path to `context.jsonl` | `:91` | `:163` | The locator. |
+| per-msg `role` | `user→.user`, `assistant→.assistant` | `:302` | `:234` | Only 2 roles ever produced. |
+| per-msg `content` | `obj.content` as string | `:303` | `:235` | **Array content (think/text) → empty string.** |
+| per-msg `timestamp` | wire turn ts via state machine; else line ts (absent live) | `:144,304` | `:223,236` | See §15 #1. |
+| per-msg `usage` | wire `StatusUpdate.token_usage` (assistant only) | `:151,272-281,306` | **not implemented** | **Swift-only.** |
+| per-msg `toolCalls` | always `nil` | `:305` | omitted | Tool calls never surfaced. |
+| `agentRole` / `parentSessionId` | path-derived for `subagents/<id>/context.jsonl` | `:94,100,200-216` | `:165-166,308-332` | Main sessions keep both nil; subagents use `agentRole="subagent"` and parent session id. |
 | `originator`/`origin`/`suggestedParentId`/`tier`/`qualityScore` | all `nil` | `:95-101` | n/a | No originator/tier scoring special-case for Kimi. |
 
 **Discovery walk** (both adapters):
-1. `detect()` — true iff `~/.kimi/sessions/` is a directory (`KimiAdapter.swift:25-27`, `kimi.ts:42-49`).
+1. `detect()` — true iff `~/.kimi/sessions/` is a directory (`KimiAdapter.swift:30-32`, `kimi.ts:42-49`).
 2. Enumerate `sessions/<workspace>/<session>/context.jsonl` and direct
    `sessions/<workspace>/<session>/subagents/<id>/context.jsonl`; locator =
    absolute path to `context.jsonl`; session id = parent dir name

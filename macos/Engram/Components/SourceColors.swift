@@ -7,7 +7,10 @@ enum SourceColors {
     static func color(for source: String) -> Color {
         switch source {
         case "claude-code":   return Color(hex: 0xD97757)
-        case "grok":          return Color(hex: 0x111827)
+        // Grok/xAI is a monochrome brand; a fixed near-black (0x111827) is
+        // invisible on a dark background. Color.primary adapts (black in light,
+        // white in dark) and stays legible in both, matching Cursor/OpenCode.
+        case "grok":          return Color.primary
         case "cursor":        return Color.primary
         case "codex":         return Color(hex: 0x3941FF)
         case "pi":            return Color(hex: 0xF59E0B)
@@ -100,6 +103,23 @@ enum SourceDisplay {
 
     static func color(for source: String) -> Color {
         SourceColors.color(for: source)
+    }
+
+    /// Sources whose sessions genuinely run *inside* the real Claude Code app
+    /// (a non-Claude model detected by model name within `~/.claude/projects`),
+    /// where a "via Claude Code" cue is accurate. Provider-clone roots
+    /// (kimi/qwen/glm/deepseek/mimo/doubao and the minimax/codex clones under
+    /// `~/.claude-<name>/`) also carry originator="Claude Code" structurally, but
+    /// they are separate forked provider CLIs — badging them all would be
+    /// misleading, so they are intentionally excluded.
+    private static let claudeCodeNativeDerivedSources: Set<String> = ["minimax", "lobsterai"]
+
+    /// Whether a session warrants a "via Claude Code" originator badge. True only
+    /// for native-derived sources whose originator classifies as Claude Code, so
+    /// the badge never fires on every provider-clone-root session.
+    static func showsViaClaudeCodeBadge(source: String, originator: String?) -> Bool {
+        claudeCodeNativeDerivedSources.contains(source)
+            && OriginatorClassifier.isClaudeCode(originator)
     }
 }
 

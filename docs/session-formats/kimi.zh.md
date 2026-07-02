@@ -574,31 +574,31 @@ base_url = "https://api.kimi.com/coding/v1"
 
 | Engram 字段 | 真相来源 | Swift `KimiAdapter.swift` | TS `kimi.ts` | 注意 / 陷阱 |
 |---|---|---|---|---|
-| `id` | 会话目录 UUID = `basename(dirname(context.jsonl))`；subagent 使用 subagent 目录 id | `:78,194-210` | `:86-91,307-325` | workspace 哈希被丢弃。TS 防护 `''`/`.`/`..`；Swift 无防护。 |
-| `source` | 常量 `.kimi` | `:73` | `:146` | |
-| `startTime` | `wire.jsonl` 中首个 `TurnBegin` ts | `:74,200-208,223` | `:88,138-141,316-317` | 回退：Swift = wireStart → `mtime-60s`；TS = wireStart → 首行 ts → `mtime-60s`。实时没有行 ts。 |
-| `endTime` | 最后一回合的 `TurnEnd`（否则其 begin）；若 == start 则发出 nil | `:75,207,225` | `:89-92,142,318-321` | "首个 TurnEnd 胜出" —— 可能反映一个早期子回合。 |
-| `cwd` | `kimi.json` `work_dirs[].path`，以 `last_session_id == id` 为键；subagent 通过父 session id 解析 | `:82,168-180` | `:93,356-378` | 无匹配则为 `""` → 只有每个 workspace 最近的父会话能解析。 |
-| `project` | 始终 `nil` | `:77` | n/a | 下游从 cwd 派生。 |
-| `model` | 始终 `nil` | `:78` | n/a | 在 `config.toml` 中可用（Kimi-k2.6），但从不解析。 |
-| `messageCount` | `userCount + assistantCount` | `:79` | `:150` | **排除 `tool`** → 计数偏低。 |
-| `userMessageCount` | 计数 `role=="user"` | `:59,80` | `:122-126,151` | |
-| `assistantMessageCount` | 计数 `role=="assistant"` | `:60,81` | `:127-129,152` | |
-| `toolMessageCount` | 硬编码 `0` | `:82` | `:153` | 尽管有许多实时 `tool` 记录。 |
-| `systemMessageCount` | 硬编码 `0` | `:83` | `:154` | `_system_prompt` 存在但从不计数。 |
-| `summary` | 首条用户消息文本，`prefix(200)` | `:67,84` | `:124,155` | **`state.json.custom_title` 被忽略。** |
-| `sizeBytes` | 该 locator 的 `context.jsonl` + 所有 `context_<N>.jsonl` / `context_sub_<N>.jsonl` 之和 | `:54-62,92,212-238` | `:106-114,163,253-273,328-331` | `wire.jsonl`/`state.json` 被排除。 |
-| `filePath` | 到 `context.jsonl` 的绝对路径 | `:85` | `:156` | 定位符。 |
-| per-msg `role` | `user→.user`，`assistant→.assistant` | `:257` | `:225` | 只会产生 2 种角色。 |
-| per-msg `content` | `obj.content` 作为字符串 | `:258` | `:226` | **数组内容（think/text）→ 空字符串。** |
-| per-msg `timestamp` | 通过状态机的 wire 回合 ts；否则行 ts（实时缺失） | `:137-149,300-308` | `:203-228,237-243` | 见 §15 #1。 |
-| per-msg `usage` | wire `StatusUpdate.token_usage`（仅助手） | `:145,261,265-281` | **未实现** | **仅 Swift。** |
-| per-msg `toolCalls` | 始终 `nil` | `:260` | 省略 | tool 调用从不浮现。 |
-| `agentRole` / `parentSessionId` | 对 `subagents/<id>/context.jsonl` 从路径推导 | `:94,100,194-210` | `:164-165,307-325` | 主会话两者均为 nil；subagent 使用 `agentRole="subagent"` 和父会话 id。 |
+| `id` | 会话目录 UUID = `basename(dirname(context.jsonl))`；subagent 使用 subagent 目录 id | `:78,200-216` | `:152,308-332` | workspace 哈希被丢弃。TS 防护 `''`/`.`/`..`；Swift 无防护。 |
+| `source` | 常量 `.kimi` | `:79` | `:153` | |
+| `startTime` | `wire.jsonl` 中首个 `TurnBegin` ts | `:80,245-253,268` | `:145-148,154,376` | 回退：Swift = wireStart → `mtime-60s`；TS = wireStart → 首行 ts → `mtime-60s`。实时没有行 ts。 |
+| `endTime` | 最后一回合的 `TurnEnd`（否则其 begin）；若 == start 则发出 nil | `:81,252,270` | `:149,155` | "首个 TurnEnd 胜出" —— 可能反映一个早期子回合。 |
+| `cwd` | `kimi.json` `work_dirs[].path`，以 `last_session_id == id` 为键；subagent 通过父 session id 解析 | `:82,174-187` | `:94,156,349-374` | 无匹配则为 `""` → 只有每个 workspace 最近的父会话能解析。 |
+| `project` | 始终 `nil` | `:83` | n/a | 下游从 cwd 派生。 |
+| `model` | 始终 `nil` | `:84` | n/a | 在 `config.toml` 中可用（Kimi-k2.6），但从不解析。 |
+| `messageCount` | `userCount + assistantCount` | `:85` | `:157` | **排除 `tool`** → 计数偏低。 |
+| `userMessageCount` | 计数 `role=="user"` | `:66,86` | `:130,158` | |
+| `assistantMessageCount` | 计数 `role=="assistant"` | `:67,87` | `:130,159` | |
+| `toolMessageCount` | 硬编码 `0` | `:88` | `:160` | 尽管有许多实时 `tool` 记录。 |
+| `systemMessageCount` | 硬编码 `0` | `:89` | `:161` | `_system_prompt` 存在但从不计数。 |
+| `summary` | 首条用户消息文本，`prefix(200)` | `:74,90` | `:132-133,162` | **`state.json.custom_title` 被忽略。** |
+| `sizeBytes` | 该 locator 的 `context.jsonl` + 所有 `context_<N>.jsonl` / `context_sub_<N>.jsonl` 之和 | `:57-62,92,218-231` | `:110,164,258-275` | `wire.jsonl`/`state.json` 被排除。 |
+| `filePath` | 到 `context.jsonl` 的绝对路径 | `:91` | `:163` | 定位符。 |
+| per-msg `role` | `user→.user`，`assistant→.assistant` | `:302` | `:234` | 只会产生 2 种角色。 |
+| per-msg `content` | `obj.content` 作为字符串 | `:303` | `:235` | **数组内容（think/text）→ 空字符串。** |
+| per-msg `timestamp` | 通过状态机的 wire 回合 ts；否则行 ts（实时缺失） | `:144,304` | `:223,236` | 见 §15 #1。 |
+| per-msg `usage` | wire `StatusUpdate.token_usage`（仅助手） | `:151,272-281,306` | **未实现** | **仅 Swift。** |
+| per-msg `toolCalls` | 始终 `nil` | `:305` | 省略 | tool 调用从不浮现。 |
+| `agentRole` / `parentSessionId` | 对 `subagents/<id>/context.jsonl` 从路径推导 | `:94,100,200-216` | `:165-166,308-332` | 主会话两者均为 nil；subagent 使用 `agentRole="subagent"` 和父会话 id。 |
 | `originator`/`origin`/`suggestedParentId`/`tier`/`qualityScore` | 全为 `nil` | `:95-101` | n/a | Kimi 没有 originator/tier 特例。 |
 
 **发现遍历**（两个适配器）：
-1. `detect()` —— 当且仅当 `~/.kimi/sessions/` 是一个目录时为真（`KimiAdapter.swift:25-27`，`kimi.ts:42-49`）。
+1. `detect()` —— 当且仅当 `~/.kimi/sessions/` 是一个目录时为真（`KimiAdapter.swift:30-32`，`kimi.ts:42-49`）。
 2. 枚举 `sessions/<workspace>/<session>/context.jsonl` 以及直接子目录
    `sessions/<workspace>/<session>/subagents/<id>/context.jsonl`；定位符 =
    到 `context.jsonl` 的绝对路径；会话 id = 父目录名

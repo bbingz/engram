@@ -16,7 +16,7 @@ Pi writes JSONL records with a top-level `type`.
 | Type | Purpose | Engram handling |
 |---|---|---|
 | `session` | Session metadata: `id`, `timestamp`, `cwd`, `version` | Provides `id`, `startTime`, and `cwd`. |
-| `model_change` | Active model switch: `modelId` | First/last observed value becomes session `model`. |
+| `model_change` | Active model switch: `modelId` | Last observed `modelId` becomes session `model` (each `model_change` overrides the previous; message-level `model` is the fallback when none appear). |
 | `thinking_level_change` | Thinking-mode metadata | Ignored for message counts. |
 | `message` | User, assistant, tool, and system content under `message` | Parsed by `message.role`. |
 | `compaction` | Compaction summary metadata: `summary`, `tokensBefore`, `firstKeptEntryId`, file lists | Ignored for message counts and streaming. |

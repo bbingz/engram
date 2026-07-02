@@ -726,7 +726,7 @@ final class MCPDatabase {
         let cappedLimit = min(max(limit, 1), 50)
         let normalizedMode = mode.isEmpty ? "keyword" : mode
 
-        if let row = try fetchSessionRow(id: normalizedQuery) {
+        if let row = try fetchVisibleSessionRow(id: normalizedQuery) {
             return .object([
                 ("results", .array([
                     .object([
@@ -1366,6 +1366,30 @@ final class MCPDatabase {
                 FROM sessions s
                 LEFT JOIN session_local_state ls ON ls.session_id = s.id
                 WHERE s.id = ?
+                LIMIT 1
+                """,
+                arguments: [id]
+            )
+        }
+    }
+
+    /// Exact session-id lookup for keyword search's id fast-path. Applies the
+    /// same visibility rule as the service (`EngramServiceReadProvider`): hidden
+    /// sessions and the `skip` (noise) tier are excluded, but `lite` — visible in
+    /// list surfaces though excluded from keyword search — stays findable by
+    /// pasting its own id. Unlike `fetchSessionRow` (used by `get_session`, which
+    /// must still resolve hidden/skip sessions by id), this enforces visibility.
+    private func fetchVisibleSessionRow(id: String) throws -> Row? {
+        try queue.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT s.*, ls.local_readable_path
+                FROM sessions s
+                LEFT JOIN session_local_state ls ON ls.session_id = s.id
+                WHERE s.id = ?
+                  AND s.hidden_at IS NULL
+                  AND (s.tier IS NULL OR s.tier != 'skip')
                 LIMIT 1
                 """,
                 arguments: [id]

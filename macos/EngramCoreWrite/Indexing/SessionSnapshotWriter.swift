@@ -224,6 +224,39 @@ public final class SessionSnapshotWriter {
         else {
             return false
         }
+        // A single session uuid can survive at BOTH an old and a new path — e.g.
+        // Claude Code leaves ~/.claude/projects/<old-encoded-cwd>/<uuid>.jsonl
+        // behind after a project rename and recreates <new-cwd>/<uuid>.jsonl with
+        // the same uuid. Both are listed every scan, so a stale/emptier leftover
+        // must not clobber the richer current row just because it is visited last.
+        // Only accept the locator refresh when the incoming file is at least as
+        // fresh as the stored one (a genuinely moved/renamed file with equal-or-
+        // newer content still refreshes).
+        return incomingIsAtLeastAsFresh(current: current, incoming: incoming)
+    }
+
+    /// True when `incoming` is not strictly staler or emptier than `current`,
+    /// judged the way the writer judges freshness elsewhere: message count (see
+    /// `preserveCountsIfIncomingEmpty` and the `upsert` message_count CASE), then
+    /// last-activity time, then file size. Reject on ANY strictly-worse axis so a
+    /// leftover snapshot cannot replace the richer current record.
+    private func incomingIsAtLeastAsFresh(
+        current: AuthoritativeSessionSnapshot,
+        incoming: AuthoritativeSessionSnapshot
+    ) -> Bool {
+        if incoming.messageCount < current.messageCount {
+            return false
+        }
+        if let currentEnd = parseDate(current.endTime ?? current.startTime),
+           let incomingEnd = parseDate(incoming.endTime ?? incoming.startTime),
+           incomingEnd < currentEnd {
+            return false
+        }
+        if let currentSize = current.sizeBytes,
+           let incomingSize = incoming.sizeBytes,
+           incomingSize < currentSize {
+            return false
+        }
         return true
     }
 

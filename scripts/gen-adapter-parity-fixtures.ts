@@ -10,6 +10,7 @@ import { CommandCodeAdapter } from '../src/adapters/commandcode.js';
 import { CopilotAdapter } from '../src/adapters/copilot.js';
 import { CursorAdapter } from '../src/adapters/cursor.js';
 import { GeminiCliAdapter } from '../src/adapters/gemini-cli.js';
+import { GrokAdapter } from '../src/adapters/grok.js';
 import { IflowAdapter } from '../src/adapters/iflow.js';
 import { KimiAdapter } from '../src/adapters/kimi.js';
 import { OpenCodeAdapter } from '../src/adapters/opencode.js';
@@ -27,7 +28,7 @@ import { WindsurfAdapter } from '../src/adapters/windsurf.js';
 
 type SupportedFixtureSource = Exclude<
   SourceName,
-  'grok' | 'lobsterai' | 'minimax' | 'mimo' | 'doubao' | 'glm' | 'deepseek'
+  'lobsterai' | 'minimax' | 'mimo' | 'doubao' | 'glm' | 'deepseek'
 >;
 
 interface AdapterFixture {
@@ -65,6 +66,7 @@ const supportedSources = [
   'copilot',
   'cursor',
   'gemini-cli',
+  'grok',
   'iflow',
   'kimi',
   'opencode',
@@ -200,6 +202,79 @@ function makeOpenCodeDb(dbPath: string): void {
   }
 }
 
+function makeGrokFixture(sessionsRoot: string): void {
+  const sessionDir = join(
+    sessionsRoot,
+    '%2FUsers%2Ftest%2Fmy-project',
+    '019f179d-0888-76b1-9325-5a91ace595df',
+  );
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(
+    join(sessionDir, 'summary.json'),
+    `${JSON.stringify(
+      {
+        info: {
+          id: '019f179d-0888-76b1-9325-5a91ace595df',
+          cwd: '/Users/test/my-project',
+        },
+        session_summary: '还原技术路线并验证闭环',
+        generated_title: '还原技术路线并验证闭环',
+        created_at: '2026-06-30T08:19:55.275395Z',
+        updated_at: '2026-06-30T11:12:27.482957Z',
+        current_model_id: 'grok-build',
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  writeFileSync(
+    join(sessionDir, 'prompt_context.json'),
+    `${JSON.stringify(
+      {
+        working_directory: '/Users/test/my-project',
+        system_prompt_label: 'Grok',
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  const lines = [
+    { type: 'system', content: 'You are Grok released by xAI.' },
+    {
+      type: 'user',
+      content: [
+        { type: 'text', text: '<user_query>\n帮我还原技术路线\n</user_query>' },
+      ],
+    },
+    {
+      type: 'reasoning',
+      content: 'Inspecting clues before writing the route.',
+    },
+    {
+      type: 'backend_tool_call',
+      name: 'list_dir',
+      arguments: '{"target_directory":"."}',
+    },
+    {
+      type: 'assistant',
+      content: '好的，我来还原技术路线。',
+      tool_calls: [
+        {
+          id: 'call-1',
+          name: 'web_fetch',
+          arguments: '{"url":"https://example.com/readme"}',
+        },
+      ],
+      model_id: 'grok-build',
+    },
+    { type: 'tool_result', tool_call_id: 'call-1', content: 'Example README' },
+  ];
+  writeFileSync(
+    join(sessionDir, 'chat_history.jsonl'),
+    `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`,
+  );
+}
+
 function makeAdapter(source: SupportedFixtureSource, root: string) {
   const inputRoot = join(root, source, 'input');
   switch (source) {
@@ -233,6 +308,10 @@ function makeAdapter(source: SupportedFixtureSource, root: string) {
         ),
         inputRoot,
       };
+    }
+    case 'grok': {
+      makeGrokFixture(inputRoot);
+      return { adapter: new GrokAdapter(inputRoot), inputRoot };
     }
     case 'opencode': {
       const dbPath = join(inputRoot, 'sample.db');

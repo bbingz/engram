@@ -2,7 +2,7 @@
 import { createReadStream } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { isFileAccessible } from './_accessible.js';
 import { truncateJSON } from './_truncate.js';
@@ -547,6 +547,17 @@ export class ClaudeCodeAdapter implements SessionAdapter {
 
   async isAccessible(locator: string): Promise<boolean> {
     return isFileAccessible(locator);
+  }
+
+  // A provider-root clone (~/.claude-<name>/projects) and the native provider
+  // adapter share a `name`; locator-aware resolution asks each candidate which
+  // one owns the on-disk file so a native codex/kimi/qwen session isn't parsed
+  // by a Claude-format clone (and vice versa). True when the locator lives under
+  // this adapter's projectsRoot. Mirrors Swift ClaudeCodeAdapter.ownsLocator.
+  ownsLocator(locator: string): boolean {
+    const root = resolve(this.projectsRoot);
+    const locatorPath = resolve(locator);
+    return locatorPath === root || locatorPath.startsWith(root + sep);
   }
 }
 

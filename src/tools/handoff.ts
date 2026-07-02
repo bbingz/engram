@@ -1,5 +1,8 @@
 import { basename } from 'node:path';
-import type { SessionAdapter } from '../adapters/types.js';
+import {
+  resolveAdapterForLocator,
+  type SessionAdapter,
+} from '../adapters/types.js';
 import type { Database } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
 
@@ -184,7 +187,11 @@ async function getLastUserMessage(
   adapters?: SessionAdapter[],
 ): Promise<string | null> {
   if (!adapters?.length) return null;
-  const adapter = adapters.find((a) => a.name === session.source);
+  const adapter = resolveAdapterForLocator(
+    adapters,
+    session.source,
+    session.filePath,
+  );
   if (!adapter) return null;
   try {
     let lastUserContent: string | null = null;

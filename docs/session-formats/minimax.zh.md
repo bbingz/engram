@@ -12,7 +12,7 @@ MiniMax **并非**独立的会话存储。Engram 当前支持两条 MiniMax-flav
 
 两条路径中,磁盘上的字节仍然都是普通 Claude Code JSONL。不存在 MiniMax 专属的文件 schema 或存储技术。
 
-> **证据基础:** 适配器源码(TypeScript `src/adapters/claude-code.ts`、Swift `ClaudeCodeAdapter.swift`)+ 一致性/单元测试,并与**实时 native 存储** `~/.claude/projects/`(列出 12,111 个 `*.jsonl` 文件、11,219 个可解析 conversation、5 个 native MiniMax model-hint 会话)以及 **provider root** `~/.claude-minimax/projects`(232 个 JSONL 文件、228 个可解析 MiniMax conversation)交叉核对。字段表仍以适配器定义和测试夹具为准;当前实时 MiniMax 样本确认了 `MiniMax-M2.5`、`MiniMax-M3` 与 `MiniMax-M2.7-highspeed` 这些 model id。
+> **证据基础:** 适配器源码(TypeScript `src/adapters/claude-code.ts`、Swift `ClaudeCodeAdapter.swift`)+ 一致性/单元测试,并与**实时 native 存储** `~/.claude/projects/`(列出 12,168 个 `*.jsonl` 文件、11,275 个可解析 conversation、5 个 native MiniMax model-hint 会话)以及 **provider root** `~/.claude-minimax/projects`(232 个 JSONL 文件、228 个可解析 MiniMax conversation)交叉核对。字段表仍以适配器定义和测试夹具为准;当前实时 MiniMax 样本确认了 `MiniMax-M2.5`、`MiniMax-M3` 与 `MiniMax-M2.7-highspeed` 这些 model id。
 
 ---
 
@@ -79,7 +79,7 @@ Swift 产品已丢弃的非可见 Claude `tool_result` 行。Native `~/.claude/p
 权威源码(两个适配器之间逐字节一致):
 
 ```ts
-// src/adapters/claude-code.ts:207-217
+// src/adapters/claude-code.ts:220-231
 static detectSource(model: string, filePath?: string): SessionInfo['source'] {
   if (filePath && ClaudeCodeAdapter.hasLobsterAIPathComponent(filePath))
     return 'lobsterai';
@@ -164,7 +164,7 @@ assistant 记录示例(已匿名化;结构原样,这是纯 Claude Code JSONL):
 
 ## Gotchas
 
-- **检测对内容无感——它只读取 `model` 字段。** 在实时存储中,`minimax` 出现在很多会话里,但仅出现在*用户消息内容文本*中(例如某条提示词列出了像 `MiniMax M3 / M2.x` 这样的模型 SKU)。这些**不会**被检测为 MiniMax,因为 `detectSource` 依据的是 `message.model`,而绝不是消息正文文本。扫描当前 12,111 个实时 `~/.claude/projects/*.jsonl` locator 后,发现 **5** 个 native MiniMax model-hint 会话,全部为 `MiniMax-M2.5`; provider-root 扫描还在 `~/.claude-minimax/projects` 下发现 228 个路径拥有的 MiniMax conversation。
+- **检测对内容无感——它只读取 `model` 字段。** 在实时存储中,`minimax` 出现在很多会话里,但仅出现在*用户消息内容文本*中(例如某条提示词列出了像 `MiniMax M3 / M2.x` 这样的模型 SKU)。这些**不会**被检测为 MiniMax,因为 `detectSource` 依据的是 `message.model`,而绝不是消息正文文本。扫描当前 12,168 个实时 `~/.claude/projects/*.jsonl` locator 后,发现 **5** 个 native MiniMax model-hint 会话,全部为 `MiniMax-M2.5`; provider-root 扫描还在 `~/.claude-minimax/projects` 下发现 228 个路径拥有的 MiniMax conversation。
 - **子串匹配,而非相等。** 任何包含 `minimax`(大小写不敏感)的模型 id 都会被归类为 MiniMax。未来某个 Anthropic/第三方模型,如果其 id 偶然包含该子串,就会被错误标记。
 - **首模型胜出 / 模型混用。** 分类使用遇到的*第一个*非空 `message.model`。某个文件的第一个模型是 `claude-*`,但之后切换到 `minimax-*` 模型(或反之)的,仅由那个第一个模型来分类——会话中途的模型切换不会重新分类。反过来,靠前的一条 `minimax-*` 行会把整个文件标记为 `minimax`,而不管后面的 Claude 行。
 - **对于被截断的文件,hint 与 parse 可能不一致。** 枚举使用受限扫描(64 行 / 1 MB)。如果前 64 行没有携带 `model` 而靠后的某行有,hint 可能漏掉它;权威的 `source` 始终来自完整的 `parseSessionInfo` 过程。派生适配器解析后的 `info.source == .minimax` 过滤器是最终裁决者。

@@ -197,6 +197,11 @@ public enum ParserFailure: String, CaseIterable, Error, Codable, Equatable, Send
     case sqliteUnreadable
     case grpcUnavailable
     case unsupportedVirtualLocator
+    // Valid transcript that yields zero visible messages (e.g. only
+    // system-injected turns or an empty composer). Terminal: re-parsing the
+    // same bytes can never produce messages, so it must not churn on retry.
+    // Raw value kept in sync with the TS `noVisibleMessages` failure kind.
+    case noVisibleMessages
 }
 
 public enum AdapterParseResult<Value: Sendable>: Sendable {

@@ -58,7 +58,7 @@ final class CursorAdapter: SessionAdapter, Sendable {
                 composerId: locatorParts.composerId
             )
             let visibleBubbles = bubbleResult.bubbles.compactMap(Self.visibleBubble)
-            guard !visibleBubbles.isEmpty else { return .failure(.malformedJSON) }
+            guard !visibleBubbles.isEmpty else { return .failure(.noVisibleMessages) }
             let userCount = visibleBubbles.filter { $0.role == .user }.count
             let assistantCount = visibleBubbles.filter { $0.role == .assistant }.count
             let firstBubbleTimestamp = Self.firstVisibleBubbleTimestamp(bubbleResult.bubbles)

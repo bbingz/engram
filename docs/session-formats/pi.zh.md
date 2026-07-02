@@ -15,7 +15,7 @@ Pi 使用顶层 `type` 字段区分 JSONL 记录。
 | Type | 用途 | Engram 处理 |
 |---|---|---|
 | `session` | 会话元数据：`id`、`timestamp`、`cwd`、`version` | 提供 `id`、`startTime`、`cwd`。 |
-| `model_change` | 当前模型切换：`modelId` | 作为会话 `model`。 |
+| `model_change` | 当前模型切换：`modelId` | 最后观测到的 `modelId` 成为会话 `model`（后出现的 `model_change` 覆盖先前的；若不存在则回退到消息级 `model`）。 |
 | `thinking_level_change` | 思考模式元数据 | 不计入消息数。 |
 | `message` | `message` 下的用户、助手、工具和系统内容 | 按 `message.role` 解析。 |
 | `compaction` | compaction 摘要元数据：`summary`、`tokensBefore`、`firstKeptEntryId`、文件列表 | 不计入消息数，不 stream。 |

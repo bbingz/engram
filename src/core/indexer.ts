@@ -1,11 +1,12 @@
 // src/core/indexer.ts
 import { createHash, randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
-import type {
-  Message,
-  SessionAdapter,
-  SessionInfo,
-  SourceName,
+import {
+  type Message,
+  resolveAdapterForLocator,
+  type SessionAdapter,
+  type SessionInfo,
+  type SourceName,
 } from '../adapters/types.js';
 import type { Database } from './db.js';
 import type { Logger } from './logger.js';
@@ -90,6 +91,15 @@ function collapseWhitespace(value: string): string {
   return value.trim().split(/\s+/u).join(' ');
 }
 
+// Code-point-aware prefix. `String.slice` cuts UTF-16 code units, which can
+// split a surrogate pair mid-character; Swift's `String.prefix(200)` counts
+// whole characters. Array.from iterates by code point, so astral characters
+// (emoji, rare CJK) stay intact — matching the Swift InstructionExtractor.
+function prefixCodePoints(value: string, max: number): string {
+  const points = Array.from(value);
+  return points.length <= max ? value : points.slice(0, max).join('');
+}
+
 function containsNonLatin(value: string): boolean {
   return Array.from(value).some((char) => (char.codePointAt(0) ?? 0) > 0x2e80);
 }
@@ -144,10 +154,10 @@ function distinctInstruction(
     return null;
   }
 
-  const key = collapseWhitespace(trimmed.toLowerCase()).slice(0, 200);
+  const key = prefixCodePoints(collapseWhitespace(trimmed.toLowerCase()), 200);
   if (seen.has(key)) return null;
   seen.add(key);
-  return trimmed.slice(0, 200);
+  return prefixCodePoints(trimmed, 200);
 }
 
 function instructionSignals(
@@ -588,7 +598,11 @@ export class Indexer {
     for (const id of ids) {
       const session = this.db.getSession(id);
       if (!session) continue;
-      const adapter = this.adapters.find((a) => a.name === session.source);
+      const adapter = resolveAdapterForLocator(
+        this.adapters,
+        session.source,
+        session.filePath,
+      );
       // Build candidate list: exact match first, then all others as fallback
       // (derived sources like lobsterai/qwen/kimi share format with claude-code)
       const candidates = adapter ? [adapter] : this.adapters;
@@ -625,7 +639,11 @@ export class Indexer {
             total++;
             continue;
           }
-          const adapter = this.adapters.find((a) => a.name === session.source);
+          const adapter = resolveAdapterForLocator(
+            this.adapters,
+            session.source,
+            session.filePath,
+          );
           if (!adapter) {
             this.writeExtractedData(
               id,

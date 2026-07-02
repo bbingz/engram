@@ -2856,7 +2856,9 @@ final class AdapterMessageCountTests: XCTestCase {
         case .success(let info):
             XCTFail("metadata-only Cursor composer should not parse as session, got messageCount=\(info.messageCount)")
         case .failure(let failure):
-            XCTAssertEqual(failure, .malformedJSON)
+            // A composer with zero visible messages is valid-but-empty, not
+            // malformed → terminal .noVisibleMessages (no perpetual re-parse).
+            XCTAssertEqual(failure, .noVisibleMessages)
         }
     }
 

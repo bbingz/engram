@@ -1699,6 +1699,110 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(search.searchModes, ["id"])
     }
 
+    func testSQLiteReadProviderExactIdFindsLiteButExcludesSkip() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes,
+                  indexed_at, tier
+                ) VALUES
+                  ('lite-id', 'codex', '2026-04-23T05:00:00Z', '/tmp/engram', 'engram', 'gpt-5.4', 2, 1, 1, '/tmp/lite.jsonl', 46, '2026-04-23T05:00:00Z', 'lite'),
+                  ('skip-id', 'codex', '2026-04-23T06:00:00Z', '/tmp/engram', 'engram', 'gpt-5.4', 2, 1, 1, '/tmp/skip.jsonl', 47, '2026-04-23T06:00:00Z', 'skip');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('lite-id', 'lite body text');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('skip-id', 'skip body text');
+                """
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        // A visible `lite` session is findable by pasting its own id, even though
+        // keyword search intentionally excludes the `lite` tier.
+        let lite = try await provider.search(EngramServiceSearchRequest(query: "lite-id", mode: "keyword", limit: 10))
+        XCTAssertEqual(lite.items.map(\.id), ["lite-id"])
+        XCTAssertEqual(lite.items.first?.matchType, "id")
+        XCTAssertEqual(lite.searchModes, ["id"])
+
+        // `skip` (hidden noise) stays excluded from exact-id lookup and has no
+        // keyword match, so pasting a skip session's id returns nothing.
+        let skip = try await provider.search(EngramServiceSearchRequest(query: "skip-id", mode: "keyword", limit: 10))
+        XCTAssertTrue(skip.items.isEmpty)
+    }
+
+    func testSQLiteReadProviderExactIdDoesNotHijackKeywordResults() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes,
+                  indexed_at
+                ) VALUES
+                  ('needle', 'codex', '2026-04-23T07:00:00Z', '/tmp/engram', 'engram', 'gpt-5.4', 2, 1, 1, '/tmp/needle.jsonl', 48, '2026-04-23T07:00:00Z'),
+                  ('mentions', 'codex', '2026-04-23T08:00:00Z', '/tmp/engram', 'engram', 'gpt-5.4', 2, 1, 1, '/tmp/mentions.jsonl', 49, '2026-04-23T08:00:00Z');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('needle', 'alpha bravo charlie delta');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('mentions', 'there is a needle hidden in this text');
+                """
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        // The query equals session id "needle" but ALSO matches another session's
+        // content. The exact-id hit ranks first, yet the keyword match must still
+        // be returned below it (no hijacking short-circuit).
+        let search = try await provider.search(EngramServiceSearchRequest(query: "needle", mode: "keyword", limit: 10))
+        XCTAssertEqual(search.items.map(\.id), ["needle", "mentions"])
+        XCTAssertEqual(search.items.first?.matchType, "id")
+        XCTAssertEqual(search.searchModes, ["id", "keyword"])
+    }
+
+    func testSQLiteReadProviderExactIdRespectsRequestFiltersAndFallsThrough() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes,
+                  indexed_at
+                ) VALUES
+                  ('tokenid', 'codex', '2026-04-23T09:00:00Z', '/tmp/engram', 'engram', 'gpt-5.4', 2, 1, 1, '/tmp/tokenid.jsonl', 50, '2026-04-23T09:00:00Z'),
+                  ('km', 'gemini-cli', '2026-04-23T10:00:00Z', '/tmp/engram', 'engram', 'gemini', 2, 1, 1, '/tmp/km.jsonl', 51, '2026-04-23T10:00:00Z');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('tokenid', 'no relevant content here');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('km', 'tokenid appears inside this text');
+                """
+            )
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        // With a source filter that excludes the codex `tokenid` session, the
+        // exact-id fast path must NOT return it; the query falls through to
+        // keyword, which surfaces the gemini-cli session that mentions the id.
+        let filtered = try await provider.search(
+            EngramServiceSearchRequest(query: "tokenid", mode: "keyword", limit: 10, source: "gemini-cli")
+        )
+        XCTAssertEqual(filtered.items.map(\.id), ["km"])
+        XCTAssertEqual(filtered.items.first?.matchType, "keyword")
+        XCTAssertEqual(filtered.searchModes, ["keyword"])
+
+        // Without the filter, the same query resolves the exact id first and still
+        // returns the keyword match below it.
+        let unfiltered = try await provider.search(
+            EngramServiceSearchRequest(query: "tokenid", mode: "keyword", limit: 10)
+        )
+        XCTAssertEqual(unfiltered.items.map(\.id), ["tokenid", "km"])
+        XCTAssertEqual(unfiltered.items.first?.matchType, "id")
+    }
+
     // Latin/MATCH search must return a match-centered, highlighted snippet
     // (FTS5 snippet()) rather than the transcript from char 0, so humans get the
     // same windowed result the MCP/AI path already produces. Regression guard:
@@ -3397,7 +3501,20 @@ final class EngramServiceIPCTests: XCTestCase {
         let all = SessionAdapterFactory.defaultAdapters()
         let removedCount = all.filter { disabled.contains($0.source.rawValue) }.count
         let enabled = all.filter { !disabled.contains($0.source.rawValue) }
-        XCTAssertEqual(enabled.count, all.count - removedCount)
+        // Assert the real invariants, not a brittle absolute count: each disabled
+        // source must map to at least one registered adapter and none may survive
+        // the filter. codex is registered by BOTH the native CodexAdapter AND the
+        // ~/.claude-openai provider-root clone (both source .codex), so disabling
+        // "codex" removes more than one adapter — hardcoding "exactly 2 removed"
+        // is wrong. (The original `enabled.count == all.count - removedCount` was a
+        // tautology — filter partitions the array — so it could never fail even if
+        // the disable list matched no real adapter.)
+        XCTAssertGreaterThanOrEqual(
+            removedCount, disabled.count,
+            "each disabled source must match at least one registered adapter"
+        )
+        XCTAssertTrue(all.contains { $0.source == .codex }, "codex must be a registered adapter")
+        XCTAssertTrue(all.contains { $0.source == .windsurf }, "windsurf must be a registered adapter")
         let enabledIDs = Set(enabled.map { $0.source.rawValue })
         XCTAssertFalse(enabledIDs.contains("codex"))
         XCTAssertFalse(enabledIDs.contains("windsurf"))

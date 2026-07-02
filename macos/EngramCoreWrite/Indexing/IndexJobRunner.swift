@@ -253,7 +253,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
 
     private static func isTerminalFtsFailure(_ failure: ParserFailure) -> Bool {
         switch failure {
-        case .fileMissing, .fileTooLarge, .unsupportedVirtualLocator:
+        case .fileMissing, .fileTooLarge, .unsupportedVirtualLocator, .noVisibleMessages:
             return true
         case .invalidUtf8,
              .malformedJSON,

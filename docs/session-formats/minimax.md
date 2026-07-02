@@ -18,8 +18,8 @@ no MiniMax-specific file schema or storage technology.
 
 > **Evidence basis:** adapter source (TypeScript `src/adapters/claude-code.ts`,
 > Swift `ClaudeCodeAdapter.swift`) + parity/unit tests, cross-checked against the
-> **live native store** `~/.claude/projects/` (12,111 `*.jsonl` files listed,
-> 11,219 parseable conversations, 5 native MiniMax model-hint sessions) and the
+> **live native store** `~/.claude/projects/` (12,168 `*.jsonl` files listed,
+> 11,275 parseable conversations, 5 native MiniMax model-hint sessions) and the
 > **provider root** `~/.claude-minimax/projects` (232 JSONL files, 228 parseable
 > MiniMax conversations). The field tables below are adapter-defined and
 > test-fixture-confirmed; current live MiniMax samples confirm the model ids
@@ -117,7 +117,7 @@ Precedence (top-down, first match wins):
 Authoritative source (byte-for-byte parity between the two adapters):
 
 ```ts
-// src/adapters/claude-code.ts:207-217
+// src/adapters/claude-code.ts:220-231
 static detectSource(model: string, filePath?: string): SessionInfo['source'] {
   if (filePath && ClaudeCodeAdapter.hasLobsterAIPathComponent(filePath))
     return 'lobsterai';
@@ -228,7 +228,7 @@ Code JSONL):
   store, `minimax` appears in many sessions, but only inside *user-message
   content text* (e.g. a prompt listing model SKUs like `MiniMax M3 / M2.x`).
   Those are **not** detected as MiniMax, because `detectSource` keys on
-  `message.model`, never on message body text. Scanning the current 12,111 live
+  `message.model`, never on message body text. Scanning the current 12,168 live
   `~/.claude/projects/*.jsonl` locators found **5** native MiniMax model-hint
   sessions, all with `MiniMax-M2.5`; the provider-root scan found another 228
   path-owned MiniMax conversations under `~/.claude-minimax/projects`.

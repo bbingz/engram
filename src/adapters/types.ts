@@ -96,4 +96,42 @@ export interface SessionAdapter {
    * store virtual locators (opencode, cursor) must override with source-specific checks.
    */
   isAccessible(locator: string): Promise<boolean>;
+  /**
+   * Optional: whether this adapter owns the given locator. Implemented by
+   * adapters that can share a `name`/source with a sibling (e.g. the
+   * `~/.claude-<provider>` provider-root ClaudeCodeAdapters share a source with
+   * the native provider adapters). Used by locator-aware resolution so a session
+   * is parsed by the adapter that actually produced its on-disk file rather than
+   * whichever same-source adapter was registered first/last. Mirrors Swift's
+   * `LocatorOwningSessionAdapter`.
+   */
+  ownsLocator?(locator: string): boolean;
+}
+
+/**
+ * Pick the adapter that should handle `locator` among all adapters sharing
+ * `source`. Mirrors Swift `SessionAdapterFactory.adapter(for:locator:)`:
+ *   1. If a single adapter has the source, use it.
+ *   2. Prefer an adapter that positively owns the locator.
+ *   3. Otherwise fall back to the first adapter that does NOT explicitly disown
+ *      it (an adapter without `ownsLocator`, or one whose `ownsLocator` is true).
+ *      This keeps resolution order-independent, so a provider-root clone can
+ *      never capture a native locator merely by registration order.
+ *   4. Otherwise fall back to the first same-source adapter.
+ */
+export function resolveAdapterForLocator(
+  adapters: SessionAdapter[],
+  source: string,
+  locator: string,
+): SessionAdapter | undefined {
+  const candidates = adapters.filter((a) => a.name === source);
+  if (candidates.length <= 1) return candidates[0];
+
+  const owner = candidates.find((a) => a.ownsLocator?.(locator) === true);
+  if (owner) return owner;
+
+  const fallback = candidates.find(
+    (a) => typeof a.ownsLocator !== 'function' || a.ownsLocator(locator),
+  );
+  return fallback ?? candidates[0];
 }

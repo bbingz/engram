@@ -7,6 +7,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { resolveAdapterForLocator } from './adapters/types.js';
 import { createMCPDeps } from './core/bootstrap.js';
 import {
   createDaemonClientFromSettings,
@@ -82,7 +83,6 @@ const log = createLogger('mcp', { stderrJson: true });
 const {
   db,
   adapters,
-  adapterMap,
   settings: fileSettings,
   audit,
   tracer,
@@ -282,7 +282,11 @@ toolRegistry.set('get_session', async (a) => {
       content: [{ type: 'text', text: `Session not found: ${a.id}` }],
       isError: true,
     };
-  const adapter = adapterMap[session.source];
+  const adapter = resolveAdapterForLocator(
+    adapters,
+    session.source,
+    session.filePath,
+  );
   if (!adapter)
     return {
       _early: true,
@@ -366,7 +370,11 @@ toolRegistry.set('export', async (a) => {
       content: [{ type: 'text', text: `Session not found: ${a.id}` }],
       isError: true,
     };
-  const adapter = adapterMap[session.source];
+  const adapter = resolveAdapterForLocator(
+    adapters,
+    session.source,
+    session.filePath,
+  );
   if (!adapter)
     return {
       _early: true,

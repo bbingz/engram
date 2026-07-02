@@ -1,0 +1,6 @@
+{"type":"system","content":"You are Grok released by xAI."}
+{"type":"user","content":[{"type":"text","text":"<user_query>\n帮我还原技术路线\n</user_query>"}]}
+{"type":"reasoning","content":"Inspecting clues before writing the route."}
+{"type":"backend_tool_call","name":"list_dir","arguments":"{\"target_directory\":\".\"}"}
+{"type":"assistant","content":"好的，我来还原技术路线。","tool_calls":[{"id":"call-1","name":"web_fetch","arguments":"{\"url\":\"https://example.com/readme\"}"}],"model_id":"grok-build"}
+{"type":"tool_result","tool_call_id":"call-1","content":"Example README"}

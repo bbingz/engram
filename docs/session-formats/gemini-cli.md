@@ -444,9 +444,9 @@ Auxiliary files present live and their current adapter use:
 | `model` | **`nil`** (never read) | `:141` | (omitted) | per-message `model` ignored |
 | `filePath` | locator | `:148` | `:180` | |
 | `sizeBytes` | file size | `:149` | `:118,181` | Swift `Phase4AdapterSupport.fileSize`; TS `stat.size` |
-| `parentSessionId` | sidecar `parentSessionId` | `:130,157,215-224` | `:147-158,182` | Layer 1c deterministic link |
-| `originator` | sidecar `originator` | `:131,151-152,215-224` | `:149-161,183` | |
-| `agentRole` | `isClaudeCode(originator) ? "dispatched" : nil` | `:151` | `:184-186` | |
+| `parentSessionId` | sidecar `parentSessionId`, else native nested path `chats/<parentSessionId>/<file>.jsonl` (positional) | `:158,215-224` | `:147-158,182` | Layer 1c sidecar **or** Layer 1 native subagent path |
+| `originator` | sidecar `originator` | `:131,153,215-224` | `:149-161,183` | |
+| `agentRole` | native subagent → `"subagent"`; else `isClaudeCode(originator) ? "dispatched" : nil` | `:150-152` | `:184-186` | native nested-path → subagent |
 | `suggestedParentId` | `nil` | `:158` | (omitted) | Layer 2 set later by detection |
 | **per-message** `role` | `type=="user"`→`.user`, else `.assistant` | `:267-275` | `:212-217` | |
 | **per-message** `content` | `extractText(content)` (join `.text` w/ `\n`) | `:272-273,307-315` | `:212-218,54-62` | empty-content msgs skipped |

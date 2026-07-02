@@ -397,13 +397,12 @@ Per-turn usage lives in `message.usage` on **assistant** records (layer 3). **An
 | `cache_read_input_tokens` | int | (Anthropic-style) — **absent** in iFlow | — |
 | `cache_creation_input_tokens` | int | (Anthropic-style) — **absent** in iFlow | — |
 
-**Derivation** (Swift `usage()` `IflowAdapter.swift:192-201`):
+**Derivation** (Swift `usage()` `IflowAdapter.swift:192-201`; TS `usage()` `iflow.ts:197-207`):
 - `inputTokens = input_tokens`, `outputTokens = output_tokens` (no cache fields read — note iFlow does **not** use the shared `JSONLAdapterSupport.usage` that also parses cache tokens, so even if iFlow emitted cache fields they'd be ignored).
-- Returns `nil` if **both** are 0 (`:194-196`). Usage attached **only to assistant** turns (`:162`); user turns carry `usage:nil`.
+- Returns `nil` (Swift) / `undefined` (TS) if **both** are 0. Usage attached **only to assistant** turns (Swift `:166`; TS `:156-159`); user turns carry no usage.
 
 > **Discrepancy flags.**
-> 1. **TS reference adapter drops ALL token usage** — no `usage`/`tokens` handling anywhere in `iflow.ts` (`streamMessages` yields only `{role,content,timestamp}`, `:144-150`). Swift is the **only** path that produces iFlow cost/usage. (Same TS-vs-Swift split as Gemini and Qwen.)
-> 2. **Live usage is overwhelmingly zero.** All 25 assistant turns in the 238 KB GLM session report `{input_tokens:0, output_tokens:0}` → the `>0` guard makes Swift usage `nil` for those turns. The GLM proxy reports zero counts there. **Non-zero IS possible**: the small session's final assistant turn had `{input_tokens:16472, output_tokens:224}`. The parity fixture's `usage:{}` is empty, yielding all-zero `usageTotals` — it **masks** the divergence rather than testing extraction.
+> 1. **Live usage is overwhelmingly zero.** All 25 assistant turns in the 238 KB GLM session report `{input_tokens:0, output_tokens:0}` → the `>0` guard makes usage `nil`/`undefined` for those turns. The GLM proxy reports zero counts there. **Non-zero IS possible**: the small session's final assistant turn had `{input_tokens:16472, output_tokens:224}`. The retained-TS live smoke now sees 1 streamed assistant message with usage; the parity fixture's `usage:{}` is empty, yielding all-zero `usageTotals` — it **masks** the divergence rather than testing extraction. (Both Swift and TS produce iFlow cost/usage — the earlier "TS drops all token usage" claim was superseded by the 2026-07-01 worktree TS parity fix; see the worktree-fix notes above and §15 #7.)
 
 No price/cost stored; Engram computes cost downstream.
 

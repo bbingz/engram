@@ -155,7 +155,7 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
 
             guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
             let messageCount = userCount + assistantCount + toolCount
-            guard messageCount > 0 else { return .failure(.malformedJSON) }
+            guard messageCount > 0 else { return .failure(.noVisibleMessages) }
 
             let isPathSubagent = locator.contains("/subagents/")
             let isLegacyRootAgent = !isPathSubagent

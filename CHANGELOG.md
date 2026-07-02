@@ -45,12 +45,73 @@ plus every test-breaking regression; the rest are logged as follow-ups.
   non-Codex failures remain in `EngramServiceStatusStoreTests`/`TodayWorkbenchTests`
   (English-asserting tests vs `String(localized:)` resolving to zh-Hans on this
   host; strings landed in commit `6a472734`, untouched by this change set).
-- Open follow-ups (not yet fixed): `messageCount==0 → .failure(.malformedJSON)`
-  puts valid empty transcripts into backoff-capped perpetual re-parse (needs a
-  terminal `ParserFailure` case); the `FileIndexState` v2 bump does not re-parse
-  known-locator rows so the ~1.3k stale provider-root counts are not remediated;
-  `currentOkParseStateNeedsSessionRepair` never converges for size-mismatched
-  sources; assorted TS-vs-Swift reference divergences and doc line-number drift.
+### Second remediation pass — remaining audit findings fixed (2026-07-02, Claude)
+
+Cleared the follow-ups left by the first pass via an 8-worker parallel
+remediation (disjoint file scopes, per-task correctness review, central build).
+
+- Empty-transcript churn: added a terminal `ParserFailure.noVisibleMessages`
+  (Swift enum + all exhaustive switches + TS `resolveAdapterForLocator`/parity
+  surface); ClaudeCode/Cursor zero-visible-message guards now return it instead
+  of the retryable `.malformedJSON`, so valid empty transcripts are recorded once
+  as `.terminal` (no perpetual re-parse). New `EmptyTranscriptFailureTests`.
+- `FileIndexState` v2 remediation: `SwiftIndexer` now forces a real re-parse when
+  a stored parse state's `schemaVersion < currentSchemaVersion` (the known-locator
+  fast path previously re-stamped v2 without re-parsing); `currentOkParseStateNeedsSessionRepair`
+  no longer fires on the intentional size divergence of Antigravity/Kimi rows (no
+  perpetual re-parse); batch dedup is now run-scoped (fixes the batch-boundary
+  duplicate). New `SwiftIndexerRemediationTests`.
+- Snapshot overwrite: `shouldAcceptLowerSyncLocalLocatorRefresh` now requires the
+  incoming file to be at least as fresh (message count / last-activity / size)
+  before a different-path same-uuid snapshot may replace the current row. New
+  `SnapshotLocatorRefreshRecencyTests`.
+- Exact-id search: includes `lite` tier (a visible lite session is findable by its
+  id), runs as an additive match instead of a hijacking short-circuit, and the MCP
+  path applies the same tier/hidden rules as the service; restored a tautological
+  disabled-sources assertion and added id-search coverage.
+- UI/meta: the "via Claude Code" badge now renders in the real `SessionCard`/
+  `ExpandableSessionCard` rows and only for native-derived sources
+  (`SourceDisplay.showsViaClaudeCodeBadge`), never every provider clone; removed
+  the orphaned `Session.isViaClaudeCode`; adaptive Grok color for dark mode;
+  `SourceCatalog` records the secondary provider roots.
+- TS reference: ported locator-aware `resolveAdapterForLocator` (+ `ownsLocator`)
+  into `bootstrap`/`indexer`/`handoff`/`web`/`index` so native vs provider-root
+  sessions resolve to the right parser; grok truncation/usage, qwen usage, vscode
+  workingDirectory guard, codex turn_context guard, gemini hidden-file skip, and
+  UTF-8 instruction slicing aligned to Swift.
+- Coverage/docs: added Grok cross-runtime adapter-parity golden + Swift parity
+  wiring; corrected codex.md/iflow.md/pi.md and stale doc line citations; pinned
+  the human-driven reliable-source test to an explicit list; retracted the
+  ~6,289-row provider-root stale-count false positives in CHANGELOG + `.memory`.
+- Verified: TS 1627/1627; Swift `EngramCoreTests`/`EngramMCPTests`/`EngramServiceCore`
+  green; app build succeeds; lint/fixtures pass. Only the 4 pre-existing,
+  locale-driven `EngramServiceStatusStore`/`TodayWorkbench` failures remain
+  (English assertions vs zh-Hans `String(localized:)` on this host; green in an
+  en-locale CI), untouched by this work.
+
+### Correction: retract false-positive provider-root stale-count claims (2026-07-02, Claude)
+
+The eight newest per-provider "stale-count audit" entries below assert roughly
+6,289 stale live-DB session rows in total (MiniMax 225 + Mimo 261 + Kimi 809 +
+Qwen 483 + Codex/`.claude-openai` 2,433 + DeepSeek 482 + GLM 1,570 + Doubao 26 =
+6,289). Codex's own final audit report retracts these as audit-tooling false
+positives. History is preserved below for the record; treat the ~6,289-row
+stale-count claims as **superseded/incorrect** per this note.
+
+- Root cause: the retained TypeScript audit tooling was counting empty/non-visible
+  Claude `tool_result` records as transcript messages, which the Swift product
+  parser already drops. After the worktree aligned retained TS with Swift on
+  visible-only tool-result counting, the field-level comparison across existing
+  provider-root rows finds **0 field-stale current rows**, with the single
+  exception of **9** genuinely stale rows under the actively-growing
+  `.claude-glmc` frontier (still real, tracked in the GLM entry).
+- Evidence: `docs/reviews/provider-session-format-audit-2026-06-30.md` — the
+  `cc-*` matrix row ("The earlier 6,289 stale-count claim was an audit-tooling
+  false positive…") plus each per-provider row ("The old N stale-count claim was
+  a retained-TS audit-tooling false positive").
+- No live DB was mutated. Remaining runtime work is reindex/cleanup for active
+  frontier locators and the 9 real `.claude-glmc` rows, not missing adapter
+  registration and not a ~6,289-row product-DB defect.
 
 ### Provider session-format audit closeout and Native Claude frontier refresh (2026-07-02, Codex)
 

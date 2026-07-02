@@ -1267,8 +1267,9 @@ Concrete table: source record/field → Engram `Session`/`Message` field → ada
    ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
 5. **Text key trap:** value is always under `text`, never `input_text`/`output_text`. Adapter
    fallbacks on those keys are dead branches for modern data.
-6. **TS multi-block under-capture:** TS `extractText` returns only the first block; Swift joins
-   all with `\n\n`. Multi-block user messages exist.
+6. **Multi-block text (parity fixed 2026-07-01):** Multi-block user messages exist; both TS
+   `extractText` and Swift now join all text blocks with `\n\n`. Earlier TS returned only the
+   first block.
 7. **Modern files carry no `response_item.payload.model` / `.usage`:** model now comes from
    `turn_context.payload.model` (fixed in TS + Swift on 2026-07-01); usage comes only from
    `event_msg.token_count`. Latent: if Codex re-adds inline usage, adapters silently prefer

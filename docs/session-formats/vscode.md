@@ -524,7 +524,7 @@ enumerate `:24-38` / `:60-74`; replay session log via `readSession` +
 `extractUserText` `:311-326` / `:229-237`; `extractAssistantText` `:328-341` /
 `:239-246`; `decodeFileURI` `:302-309` / `decodeFileUri` `:313-326`.
 
-**Registration:** Swift `macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift:24,69`
+**Registration:** Swift `macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift:31,108`
 (`VsCodeAdapter()`) — note this factory lives directly under `Adapters/`, **not**
 under `Adapters/Sources/` where `VsCodeAdapter.swift` itself lives; source enum
 `SourceName = .vscode` (`VsCodeAdapter.swift:4`). TS registers via

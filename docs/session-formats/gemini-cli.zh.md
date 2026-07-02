@@ -441,9 +441,9 @@ Gemini CLI 在 `ConversationRecord` / JSONL `$set` 中有可选的原生顶层 `
 | `model` | **`nil`**（从不读取） | `:141` | (omitted) | 每消息 `model` 被忽略 |
 | `filePath` | locator | `:148` | `:180` | |
 | `sizeBytes` | file size | `:149` | `:118,181` | Swift `Phase4AdapterSupport.fileSize`；TS `stat.size` |
-| `parentSessionId` | sidecar `parentSessionId` | `:130,157,215-224` | `:147-158,182` | Layer 1c 确定性链接 |
-| `originator` | sidecar `originator` | `:131,151-152,215-224` | `:149-161,183` | |
-| `agentRole` | `isClaudeCode(originator) ? "dispatched" : nil` | `:151` | `:184-186` | |
+| `parentSessionId` | sidecar `parentSessionId`,否则原生嵌套路径 `chats/<parentSessionId>/<file>.jsonl`（位置推导） | `:158,215-224` | `:147-158,182` | Layer 1c sidecar **或** Layer 1 原生 subagent 路径 |
+| `originator` | sidecar `originator` | `:131,153,215-224` | `:149-161,183` | |
+| `agentRole` | 原生 subagent → `"subagent"`；否则 `isClaudeCode(originator) ? "dispatched" : nil` | `:150-152` | `:184-186` | 原生嵌套路径 → subagent |
 | `suggestedParentId` | `nil` | `:158` | (omitted) | Layer 2 稍后由检测设置 |
 | **per-message** `role` | `type=="user"`→`.user`，否则 `.assistant` | `:267-275` | `:212-217` | |
 | **per-message** `content` | `extractText(content)`（用 `\n` 连接 `.text`） | `:272-273,307-315` | `:212-218,54-62` | 空内容消息被跳过 |

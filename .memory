@@ -2,7 +2,7 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-06-28): 114 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-06-28): 126 dated entries; regenerate after adding sections -->
 - [2026-07-02 - Provider session-format audit closeout and Native Claude frontier refresh (Codex)](#2026-07-02---provider-session-format-audit-closeout-and-native-claude-frontier-refresh-codex)
 - [2026-07-01 - MiniMax provider root stale-count audit (Codex)](#2026-07-01---minimax-provider-root-stale-count-audit-codex)
 - [2026-07-01 - Mimo provider roots stale-count audit (Codex)](#2026-07-01---mimo-provider-roots-stale-count-audit-codex)
@@ -167,6 +167,17 @@
 - Residual risk: live DB was not mutated or reindexed. Remaining non-audit work
   is runtime cleanup/reindex for stale rows and active frontiers, plus product
   backlog decisions for raw Windsurf/Antigravity `.pb` history.
+- CORRECTION (2026-07-02, Claude): the eight per-provider "stale-count audit"
+  entries below (MiniMax 225, Mimo 261, Kimi 809, Qwen 483, Codex/`.claude-openai`
+  2,433, DeepSeek 482, GLM 1,570, Doubao 26 ≈ 6,289 rows total) are **superseded**.
+  Codex's own final audit report retracts them as retained-TS audit-tooling false
+  positives: the TS tooling counted empty/non-visible Claude `tool_result` records
+  that the Swift product already drops. After visible-only tool-result alignment,
+  field-level comparison finds 0 field-stale current provider-root rows except 9
+  real rows under the active `.claude-glmc` frontier (tracked in the GLM entry).
+  These "Drift found: N stale rows" lines below are kept for history but should be
+  read as false positives. No live DB was mutated. Evidence: `cc-*` matrix row in
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`.
 
 ## 2026-07-01 - MiniMax provider root stale-count audit (Codex)
 
