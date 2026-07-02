@@ -1,6 +1,8 @@
 # VS Code (Copilot Chat) — Session Storage Format
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-01 (official microsoft/vscode source recheck +
+Engram session-format workflow); adapter replay and cwd fallback behavior
+verified: 2026-07-01.
 
 > **Scope.** This document describes how the **VS Code Copilot Chat / Agent
 > extension** (the chat panel *inside* the stable VS Code editor) persists chat
@@ -15,9 +17,9 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 
 | Basis | Detail |
 |---|---|
-| **Live store** (primary for layout/lifecycle) | `~/Library/Application Support/Code/User/workspaceStorage/` — **19 workspace dirs** (machine-state, not load-bearing), **4** of which contain a `chatSessions/` folder, holding **5 `*.jsonl` chat-session files**. **All 5 live sessions are empty stubs** (`requests: []`, `isEmpty: true`). One file (`cea0313a…`) has **2 lines** (a `kind:0` snapshot + a `kind:1` patch); the other 4 are single-line. `state.vscdb` (SQLite) present per workspace. |
+| **Live store** (primary for layout/lifecycle) | `~/Library/Application Support/Code/User/workspaceStorage/` — **19 workspace dirs** (machine-state, not load-bearing), **4** of which contain a `chatSessions/` folder, holding **5 `*.jsonl` chat-session files**. **All 5 live sessions are empty stubs** (`requests: []`; current `.jsonl` snapshots do **not** carry top-level `isEmpty`). One file (`cea0313a…`) has **2 lines** (a `kind:0` snapshot + a `kind:1` patch); the other 4 are single-line. `state.vscdb` (SQLite) present per workspace. |
 | **Repo fixtures** (primary for populated `requests[]`) | `tests/fixtures/vscode/ws-abc123/` — 1 session `sess-001.jsonl` with **2 populated requests** + `workspace.json`. Identical copy under `tests/fixtures/adapter-parity/vscode/input/`, with golden output `success.expected.json`. This is the only populated-turn sample available on this machine. |
-| **Adapters** (codified knowledge) | Swift product parser `macos/Shared/EngramCore/Adapters/Sources/VsCodeAdapter.swift` (234 lines); TS reference `src/adapters/vscode.ts` (290 lines). Behaviourally identical. Test `tests/adapters/vscode.test.ts`. |
+| **Adapters** (codified knowledge) | Swift product parser `macos/Shared/EngramCore/Adapters/Sources/VsCodeAdapter.swift`; TS reference `src/adapters/vscode.ts`. Both replay valid ObjectMutationLog entries after the initial snapshot and use session `workingDirectory` as a cwd fallback when `workspace.json` yields no local path. Tests: `tests/adapters/vscode.test.ts`, `AdapterMessageCountTests.testVsCodeReplaysAppendMutationLog`, `AdapterMessageCountTests.testVsCodeUsesSessionWorkingDirectoryWhenWorkspaceJsonMissing`. |
 
 **Which basis wins, by layer:**
 - **Directory/naming/lifecycle/SQLite/patch-line layer → live data wins** (verified on disk).
@@ -38,38 +40,40 @@ JSON object (the whole session) on **line 0**, with the cosmetic `.jsonl`
 extension. Subsequent lines (when present) are incremental `kind:1` patches that
 VS Code replays to rebuild current state. A sibling **`state.vscdb` SQLite** file
 holds a derived session *index* (titles, timing, empty-flag) for the UI; a sibling
-**`workspace.json`** maps the workspace to a filesystem folder (Engram's only
-source of `cwd`). Edit history lives in a parallel `chatEditingSessions/` tree.
+**`workspace.json`** maps the workspace to a filesystem folder (Engram's primary
+source of `cwd`; session `workingDirectory` is the fallback). Edit history lives
+in a parallel `chatEditingSessions/` tree.
 
 **Mental model:** the `.jsonl` files are the **content of record**; `state.vscdb`
 is a **derived catalog**; `workspace.json` is the **identity sidecar**. Engram
-reads **only line 0 of each `.jsonl`** plus `workspace.json` — it never opens the
-SQLite DB, the patch lines, or the edit tree.
+reads and replays the valid ObjectMutationLog entries in each `.jsonl`, reads
+`workspace.json`, then falls back to `v.workingDirectory` if the sidecar cannot
+yield a local cwd; it never opens the SQLite DB or the edit tree.
 
 ```
 ~/Library/Application Support/Code/User/workspaceStorage/
 │
 ├── <workspace-id>/                      ┐ one dir per VS Code workspace
-│   ├── workspace.json                   │  identity → cwd   [READ by adapter]
+│   ├── workspace.json                   │  identity → cwd   [READ, primary]
 │   ├── state.vscdb        (SQLite)      │  session index    [IGNORED]
 │   ├── state.vscdb.backup (SQLite)      │  hot backup       [IGNORED]
 │   ├── chatSessions/                    │  ← ADAPTER TARGET
-│   │   └── <session-uuid>.jsonl         │    line0=kind:0 snapshot  [READ: line 0 only]
-│   │                                    │    line1+=kind:1 patches  [IGNORED]
+│   │   └── <session-uuid>.jsonl         │    line0=kind:0 snapshot  [REPLAYED]
+│   │                                    │    line1+=kind:1/2/3 mutations [REPLAYED]
 │   └── chatEditingSessions/             │  edit snapshots   [IGNORED]
 │       └── <session-uuid>/              │    (same UUID as the chat session)
 │           ├── state.json (version 2)   ┘
 │           └── contents/   (blob dir, often empty)
 │
-   Engram pipeline:  enumerate *.jsonl → read line 0 → require kind==0
-                     → require v.requests non-empty & v.creationDate present
-                     → climb 2 dirs up → read workspace.json → decode cwd
+   Engram pipeline:  enumerate *.jsonl → replay mutation log from kind:0 state
+                     → require requests non-empty & creationDate present
+                     → climb 2 dirs up → read workspace.json → fallback to v.workingDirectory
                      → emit {user, assistant} text pairs
 ```
 
 **TL;DR for Engram:** `id ← v.sessionId`, `startTime ← v.creationDate`,
-`endTime ← last request timestamp`, `cwd ← workspace.json`, messages = `{user
-text, first markdownContent block}` pairs. **No model, no tokens, no tool calls,
+`endTime ← last request timestamp`, `cwd ← workspace.json ∥ v.workingDirectory`,
+messages = `{user text, first markdownContent block}` pairs. **No model, no tokens, no tool calls,
 no system messages.** Empty sessions (the live norm here) are rejected. On this
 machine the adapter would index **0** VS Code sessions despite 5 files existing.
 
@@ -85,17 +89,17 @@ machine the adapter would index **0** VS Code sessions despite 5 files existing.
 
 `Code - Insiders/User/workspaceStorage/` uses the **identical** format but the
 default adapter root points only at stable `Code/` — Insiders is **not covered**
-([§15](#15-lineage-gotchas-version-drift--edge-cases)). Insiders is **physically
-present on this machine** (`~/Library/Application Support/Code - Insiders/User/workspaceStorage`
-→ 6 workspace dirs, 0 chat `*.jsonl` today), so this coverage gap is real-but-latent,
-not hypothetical.
+([§15](#15-lineage-gotchas-version-drift--edge-cases)). On the 2026-07-01
+recheck, `~/Library/Application Support/Code - Insiders/User/workspaceStorage`
+is not present on this machine, so the Insiders coverage gap is format-level and
+not currently backed by local chat files.
 
 **Directory structure:**
 
 ```
 workspaceStorage/
   <workspace-id>/
-    workspace.json              # workspace → folder mapping (cwd source)   [READ]
+    workspace.json              # workspace → folder mapping (primary cwd source) [READ]
     state.vscdb                 # SQLite UI/index state                     [NOT read]
     state.vscdb.backup          # SQLite hot backup                         [NOT read]
     chatSessions/               # ← adapter target
@@ -115,10 +119,11 @@ workspaceStorage/
 | `<session-uuid>` | RFC-4122 v4 UUID, lowercase, `.jsonl` extension | `5e2c51cc-3e7a-42b9-a239-2d3bb4e30694.jsonl`, `cea0313a-2e97-477f-83aa-850a5f9faad1.jsonl` |
 | `chatEditingSessions/<session-uuid>/` | dir named with the **same UUID** as its chat session (1:1 pairing) | `chatEditingSessions/5e2c51cc-3e7a-42b9-a239-2d3bb4e30694/` |
 
-The `.jsonl` extension is a **misnomer**: line 0 is the entire session object.
-Both adapters read **only line 0** (Swift `readSession` `:138-150`; TS
-`readFirstLine`/`readSession` `:220-275`). It is single-object-per-file with an
-optional patch tail, **not** streaming JSONL.
+The `.jsonl` extension is a **misnomer** in the chat-message sense: line 0 is
+the initial session object, and later lines are ObjectMutationLog entries, not
+independent chat-message records. Both adapters replay valid mutation entries
+after line 0 (Swift `readSession`/`replayMutationLog` `:140-180`; TS
+`readSession`/`replayMutationLog` `:220-277`).
 
 **Live tree (anonymized):**
 
@@ -151,13 +156,14 @@ workspaceStorage/
   conversation body. SQLite (`state.vscdb`) holds only a derived index.
 - **One file per session, rewritten in place (NOT append-only at the conceptual
   level).** Line 0 is a full snapshot of `v`; VS Code re-serializes it on save.
-  Lines 1..N are incremental `kind:1` patches it appends and later folds back into
-  the snapshot. The TS comment notes files "can be several MB" (`:224-225,:261`),
-  which is why both adapters stream/parse only line 0.
+  Lines 1..N are incremental ObjectMutationLog entries (`kind:1` set,
+  `kind:2` push/splice, `kind:3` delete) that VS Code can append and later fold
+  back into the snapshot. Both adapters now replay those valid mutation entries.
 - **File creation:** a new `chatSessions/<uuid>.jsonl` (+ matching
   `chatEditingSessions/<uuid>/`) appears when a chat panel is opened in a
-  workspace. Empty sessions (`requests: []`, `isEmpty: true`) persist even with no
-  turns — **all 5 live sessions are in this state**.
+  workspace. Empty sessions persist even with no turns; in current `.jsonl`
+  snapshots the decisive marker is `requests: []`, while `isEmpty` lives in the
+  derived `state.vscdb` index — **all 5 live sessions are empty by this marker**.
 - **DB vs file split:** `.jsonl` = content of record; `state.vscdb`
   (`chat.ChatSessionStore.index`) = derived index (titles, timing, empty flag);
   `state.vscdb.backup` = hot SQLite backup. The adapter intentionally bypasses the
@@ -181,10 +187,12 @@ workspaceStorage/
    `:60-74`): for each direct child dir, check `<child>/chatSessions/`; collect
    every file with `.jsonl` extension. TS uses glob `*/chatSessions/*.jsonl`; Swift
    iterates direct children and filters `pathExtension == "jsonl"`, then sorts.
-3. **Parse** (`parseSessionInfo`): read line 0 only, require `kind === 0`, take `v`;
-   reject if `v.requests` empty or `v.creationDate` missing (Swift `:40-44`; TS `:80`).
+3. **Parse** (`parseSessionInfo`): replay the ObjectMutationLog into current
+   state; reject if `requests` is empty or `creationDate` is missing
+   (Swift `:40-48`; TS `:76-115`).
 4. **cwd resolution:** climb two dirs up (`<uuid>.jsonl` → `chatSessions/` →
-   `<id>/`), read `workspace.json`, decode `folder`/`configuration` URIs.
+   `<id>/`), read `workspace.json`, decode `folder`/`configuration` URIs, then
+   fall back to `v.workingDirectory` if the sidecar yields no local path.
 5. **Message stream** (`streamMessages`): iterate `v.requests`; emit a `user`
    message from `message.text`/`parts`, then an `assistant` message from the first
    `response[].value.kind === "markdownContent"` block. `toolMessageCount` /
@@ -194,24 +202,24 @@ workspaceStorage/
 
 ## 4. Record / line taxonomy
 
-The `.jsonl` file is a snapshot + mutation-log. **Engram reads ONLY line 0**, so
-the patch lines below are reference-only for Engram but are part of the real schema.
+The `.jsonl` file is a snapshot + mutation-log. Engram replays valid mutation
+entries after the initial snapshot, so later lines can affect parsed messages.
 
 | Line `kind` | Record type | Top-level fields | Meaning | Engram use |
 |---|---|---|---|---|
-| `0` | **Snapshot** | `kind:0`, `v:{…}` (full session object — see [§5](#5-shared-envelope--metadata-fields)/[§6](#6-message--content-schema)) | Initial full-session serialization | **Parsed** (whole payload) |
-| `1` | **Set/patch** | `kind:1`, `k:[…keypath…]`, `v:<value>` | Sets the value at JSON keypath array `k` (e.g. replaces `inputState`) | **Ignored** |
+| `0` | **Initial snapshot** | `kind:0`, `v:{…}` (full session object — see [§5](#5-shared-envelope--metadata-fields)/[§6](#6-message--content-schema)) | Initial full-session serialization | **Parsed as starting state** |
+| `1` | **Set** | `kind:1`, `k:[…keypath…]`, `v:<value>` | Sets the value at JSON keypath array `k` (e.g. replaces `inputState`) | **Replayed** |
+| `2` | **Push/splice** | `kind:2`, `k:[…keypath…]`, `v:[…values…]`, optional `i:<startIndex>` | Appends values at a JSON keypath, truncating to `i` first when present | **Replayed** |
+| `3` | **Delete/unset** | `kind:3`, `k:[…keypath…]` | Removes/unsets the value at a JSON keypath | **Replayed** |
 
 > **Corrected vs DIM reports:** `k` is a **JSON array** of path segments
-> (`["inputState"]`), verified live — not a string. Exact patch semantics
-> (merge vs replace, nested index segments) are unverified because both adapters
-> ignore these lines entirely.
+> (`["inputState"]`), verified live — not a string.
 
-The adapter's tolerance for garbage on subsequent lines is explicitly tested:
-`tests/adapters/vscode.test.ts:70-104` writes
-`<line0>\nNOT VALID JSON ON LINE 1\n{"kind":99}\n` and asserts only line 0 is
-parsed. Swift `readSession` returns `nil` unless `objects.first["kind"] == 0`
-(`:144-149`); TS rejects unless `parsed.kind === 0 && parsed.v` (`:228-229`).
+The TS adapter's tolerance for invalid or unknown trailing entries is explicitly
+tested: `tests/adapters/vscode.test.ts:58-104` writes an invalid line plus an
+unknown `kind:99` entry and asserts the initial snapshot still parses. Swift is
+stricter at the JSONL reader layer and returns `.malformedJSON` for malformed
+JSON lines; both Swift and TS replay valid `kind:1/2/3` entries.
 
 ---
 
@@ -240,6 +248,8 @@ All fields verified across the 5 live stubs; types/optionality verbatim.
 | `hasPendingEdits` | bool | Unapplied agent edits exist | present | No | `false` |
 | `pendingRequests` | array | In-flight turns not yet completed | present | No | `[]` |
 | `inputState` | object | Persisted composer/input box draft state | optional (may be absent on line-0 when carried by a later `kind:1` patch — verified live on `cea0313a…`, whose line-0 `v` omits it while line-1 `{"kind":1,"k":["inputState"]}` carries it; the other 4 live stubs include it on line 0) | No | see below |
+| `workingDirectory` | string URI | Current official schema persists the model working directory as a URI string; not present in the 5 local empty stubs | optional | **Yes → `cwd` fallback** | `"file:///Users/<user>/<proj>"` |
+| `repoData` | object | Repository metadata persisted by current official schema; not present in the 5 local empty stubs | optional | No | `null` |
 | `customTitle` | string | User-renamed session title | optional | No (title from first user msg) | `null` |
 | `isImported` | bool | Imported from another tool | optional | No | `null` |
 
@@ -254,11 +264,17 @@ All fields verified across the 5 live stubs; types/optionality verbatim.
 | `selections` | array<object> | Editor selection ranges (1-based line/col); fields `startLineNumber`, `startColumn`, `endLineNumber`, `endColumn`, `selectionStartLineNumber`, `selectionStartColumn`, `positionLineNumber`, `positionColumn` | `[{"startLineNumber":1,…,"positionColumn":1}]` |
 | `contrib` | object | Contributed input-model state | `{"chatDynamicVariableModel":[]}` |
 
+The current official `inputState` schema also includes `selectedModel` and
+`permissionLevel`; they were not present in the 5 local empty stubs on the
+2026-07-01 recheck.
+
 > Engram reads `sessionId`, `creationDate`, `requests` from `v` (plus `version`
-> implicitly). It does **not** read `initialLocation`, `inputState`, `mode`,
-> `responderUsername`, `requesterUsername`, `hasPendingEdits`, `pendingRequests`,
-> `customTitle`, or `isImported`. Model and token/usage are **absent at the
-> session level**.
+> implicitly). It also reads `workingDirectory` only as a fallback for `cwd` when
+> `workspace.json` does not resolve to a local path. It does **not** read
+> `initialLocation`, `inputState`, `mode`, `selectedModel`, `permissionLevel`,
+> `responderUsername`, `requesterUsername`, `hasPendingEdits`, `repoData`,
+> `pendingRequests`, `customTitle`, or `isImported`. Model and token/usage are
+> **absent at the session level**.
 
 ---
 
@@ -448,13 +464,13 @@ CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);
 
 | File / dir | Tech | Purpose | Engram |
 |---|---|---|---|
-| `workspace.json` | JSON | Workspace identity → `cwd` (the only sidecar Engram reads) | **READ** |
+| `workspace.json` | JSON | Workspace identity → primary `cwd` source (the only sidecar Engram reads) | **READ** |
 | `state.vscdb` | SQLite | Session index, panel/draft state ([§12](#12-sqlite--db-internals--statevscdb)) | NOT read |
 | `state.vscdb.backup` | SQLite | Hot backup of `state.vscdb` | NOT read |
 | `chatEditingSessions/<uuid>/state.json` | JSON (`version: 2`; keys `version`, `initialFileContents`, `timeline`, `recentSnapshot`) | Agent file-edit timeline for the session | NOT read |
 | `chatEditingSessions/<uuid>/contents/` | opaque blobs | File-snapshot blobs for edit undo (often empty) | NOT read |
 
-**`workspace.json` cwd resolution** (Swift `readWorkspaceCwd` `:152-201`; TS `:125-165`):
+**cwd resolution** (Swift `readCwd` / `readWorkspaceCwd` `:55,260-289`; TS `:94-96,128-166`):
 
 | Key | Type | Meaning | Adapter handles? | Live example (anon) |
 |---|---|---|---|---|
@@ -466,7 +482,9 @@ Resolution rules: single-root `folder` → `decodeFileURI` (strip `file://`,
 optional `localhost/`, percent-decode); non-`file://` URIs (`vscode-remote://`,
 `vsls://`) → `""`. Multi-root: open the `.code-workspace`, take `folders[0].uri`
 (decoded) or `folders[0].path` (absolute as-is; relative resolved against the
-`.code-workspace` dir).
+`.code-workspace` dir). If this sidecar path yields `""`, Engram falls back to
+the session payload's `v.workingDirectory`, again accepting only local `file://`
+URIs.
 
 Live distribution: **16** workspaces use `folder`, **1** uses the legacy
 `workspace` key.
@@ -482,7 +500,7 @@ Source field/record → Engram `Session` field → adapter file:line (Swift + TS
 | `id` | `v.sessionId` ∥ filename stem | `VsCodeAdapter.swift:51-52` | `vscode.ts:96` | Fallback to `<uuid>.jsonl` basename if `sessionId` empty |
 | `source` | constant `"vscode"` | `VsCodeAdapter.swift:4,58` | `vscode.ts:35,97` | — |
 | `summary` / title | first non-empty user text, sliced to 200 chars | `VsCodeAdapter.swift:71` | `vscode.ts:109` | No dedicated title used; `customTitle` + DB `title` ignored |
-| `cwd` | `workspace.json` `folder`/`configuration` → decoded `file://` | `VsCodeAdapter.swift:53,152-201` | `vscode.ts:93,125-165` | `""` if missing/remote/malformed/legacy-`workspace` |
+| `cwd` | `workspace.json` `folder`/`configuration` → decoded `file://`; fallback to `v.workingDirectory` | `VsCodeAdapter.swift:55,260-289` | `vscode.ts:94-96,128-166` | `""` if both sources are missing/remote/malformed/legacy-`workspace` |
 | `project` | always `nil` | `VsCodeAdapter.swift:64` | (omitted) | Resolved later by Engram core from `cwd` |
 | `model` | always `nil` | `VsCodeAdapter.swift:65` | (omitted) | Not extracted even when present in store |
 | `startTime` | `v.creationDate` (ms) → ISO8601 | `VsCodeAdapter.swift:43,59` | `vscode.ts:98` | **Swift hard-fails if `creationDate` absent** (`:43-44`); TS guarded by try/catch null (`:80,113`) |
@@ -497,15 +515,16 @@ Source field/record → Engram `Session` field → adapter file:line (Swift + TS
 | per-message `timestamp` | request `timestamp` (ms) → ISO | `VsCodeAdapter.swift:104-105` | `vscode.ts:188-190,204-206` | Both msgs of a turn share the turn timestamp |
 | per-message `toolCalls` / `usage` | `nil` | `VsCodeAdapter.swift:113-114,124-125` | `vscode.ts` (omitted) | No tool/token data |
 | `filePath` | `.jsonl` locator | `VsCodeAdapter.swift:72` | `vscode.ts:110` | — |
-| `sizeBytes` | full file size on disk | `VsCodeAdapter.swift:73` | `vscode.ts:78,111` | Whole `.jsonl` (incl. `kind:1` patch lines), not just line-0 payload |
+| `sizeBytes` | full file size on disk | `VsCodeAdapter.swift:75` | `vscode.ts:78,111` | Whole `.jsonl` log bytes, not just final-state payload |
 | `agentRole`/`originator`/`origin`/`parentSessionId`/`suggestedParentId`/`tier`/`qualityScore`/`indexedAt`/`summaryMessageCount` | all `nil` | `VsCodeAdapter.swift:74-82` | (n/a) | Set downstream by Engram core |
 
-**Discovery / read internals:** detect `VsCodeAdapter.swift:18-20` / `vscode.ts:51-58`;
-enumerate `:22-36` / `:60-74`; read-line-0 `readSession` `:138-150` / `readSession`+`readFirstLine` `:220-234,260-275`;
-`extractUserText` `:203-218` / `:236-244`; `extractAssistantText` `:220-233` / `:246-253`;
-`decodeFileURI` `:194-201` / `decodeFileUri` `:280-290`.
+**Discovery / read internals:** detect `VsCodeAdapter.swift:20-22` / `vscode.ts:51-58`;
+enumerate `:24-38` / `:60-74`; replay session log via `readSession` +
+`replayMutationLog` (`VsCodeAdapter.swift:140-180`; `vscode.ts:220-277`);
+`extractUserText` `:311-326` / `:229-237`; `extractAssistantText` `:328-341` /
+`:239-246`; `decodeFileURI` `:302-309` / `decodeFileUri` `:313-326`.
 
-**Registration:** Swift `macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift:24,69`
+**Registration:** Swift `macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift:31,108`
 (`VsCodeAdapter()`) — note this factory lives directly under `Adapters/`, **not**
 under `Adapters/Sources/` where `VsCodeAdapter.swift` itself lives; source enum
 `SourceName = .vscode` (`VsCodeAdapter.swift:4`). TS registers via
@@ -532,7 +551,7 @@ VS Code is the root of a large family: all Code-derived editors fork the same
 | Tool | Root | Chat storage tech | Engram reads | Same as VS Code? |
 |---|---|---|---|---|
 | **VS Code (Copilot/Gemini chat)** | `…/Code/User/workspaceStorage` | per-session `chatSessions/*.jsonl` (`kind:0`+`kind:1`) | the `.jsonl` line 0 | **baseline** |
-| **VS Code Insiders** | `…/Code - Insiders/User/workspaceStorage` | same `.jsonl` format | NOT covered — only stable `Code` path scanned | identical format, **uncovered** — **present on this machine** (6 workspace dirs, 0 chat sessions today); default adapter root confirmed to skip it |
+| **VS Code Insiders** | `…/Code - Insiders/User/workspaceStorage` | same `.jsonl` format | NOT covered — only stable `Code` path scanned | identical format, **uncovered**; the 2026-07-01 recheck found no local Insiders `workspaceStorage` directory, so no current local chat files are missed |
 | **VSCodium** | `…/VSCodium/User/workspaceStorage` | would match VS Code `.jsonl` | NOT covered (no adapter, no path) | identical format, **uncovered** |
 | **Cursor** | `…/Cursor/User/globalStorage/state.vscdb` | **SQLite `cursorDiskKV`**, keys `composerData:<id>` + `bubbleId:<id>:%` | the SQLite, NOT jsonl | **diverged** — same ancestry, different persistence (`CursorAdapter.swift`; `cursor.ts`) |
 | **Windsurf** | `~/.codeium/windsurf/...` (+ `~/.engram/cache/windsurf`) | own cache (gRPC live-sync disabled) | cache, not vscdb | diverged |
@@ -546,10 +565,10 @@ is the Copilot extension *inside* the editor, persisted in VS Code's
 
 ### Gotchas & edge cases
 
-1. **Multi-line append log, single-line read.** Live `.jsonl` files are 1..N lines
-   (`kind:0` snapshot + `kind:1` patches). Both adapters read **only line 0**.
-   Risk: turns persisted only as later `kind:1` deltas would be invisible. Verified
-   live: `cea0313a…jsonl` has 2 lines.
+1. **Multi-line append log is replayed.** Live `.jsonl` files are 1..N lines
+   (`kind:0` snapshot + `kind:1/2/3` mutations). Both adapters replay valid
+   mutations after the initial snapshot. Verified live: `cea0313a…jsonl` has 2
+   lines (`kind:0`, `kind:1`).
 2. **Empty sessions are the live norm.** All 5 live sessions have `requests: []`.
    Swift returns `.failure(.malformedJSON)` and TS returns `null` when `requests`
    is empty or `creationDate` missing (`:41-44` / `:80`). Net effect on this
@@ -577,8 +596,8 @@ is the Copilot extension *inside* the editor, persisted in VS Code's
    — message counts undercount real interaction volume.
 10. **cwd can be empty.** Remote (`vscode-remote://`, `vsls://`) or malformed
     `file://` URIs decode to `""`; multi-root without `folders[0]` also `""`.
-11. **`sizeBytes` overcounts payload.** Reported size is the whole `.jsonl`
-    (including all `kind:1` patch lines), while only line-0 content is parsed.
+11. **`sizeBytes` counts log bytes, not final-state payload bytes.** Reported
+    size is the whole `.jsonl`, including mutation-log lines.
 12. **Two timestamps per turn collapse.** User and assistant messages of one
     `request` share the single turn `timestamp` (parity golden: both req-1
     messages = `…05.000Z`), so intra-turn ordering is not time-resolvable.
@@ -596,9 +615,11 @@ is the Copilot extension *inside* the editor, persisted in VS Code's
   verify real `toolInvocationSerialized` payload shape (`toolCallId`/`resultDetails`
   and any drift). `modelId` and several usage-like fields are no longer unknown:
   the current official schema includes them, but Engram ignores them.
-- **`kind:1` patch semantics.** Inferred from one live 2-line file; whether VS Code
-  ever leaves recent turns *only* as `kind:1` deltas (making them invisible to
-  Engram) is unverified, since both adapters ignore patch lines.
+- **Richer mutation payloads.** Current adapters replay `kind:1/2/3`, and focused
+  tests cover appended requests via `kind:2`. Local live data only has one
+  `kind:1` metadata patch and no populated request mutations, so complex
+  request/response mutations still need resampling on a machine with active VS
+  Code chat usage.
 - **`version:4`+ drift.** Only `version 3` observed locally, and the current
   official `storageSchema` still emits `version:3`; future schema drift remains a
   parser risk.
@@ -606,7 +627,7 @@ is the Copilot extension *inside* the editor, persisted in VS Code's
   Gemini-in-VS-Code (via `responderUsername`) into sub-sources is a design
   question, not resolvable from code.
 
-### Official source confirmation (2026-06-21)
+### Official source confirmation (2026-07-01)
 
 - **Confirmed (official):** `ChatSessionStore` stores the index under
   `chat.ChatSessionStore.index`, uses `workspaceStorageHome/<workspaceId>/chatSessions`
@@ -715,7 +736,7 @@ CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);
 
 ## References (official sources)
 
-Validated against `microsoft/vscode` `main` on 2026-06-21:
+Validated against `microsoft/vscode` `main` on 2026-07-01:
 
 - [chatSessionStore.ts](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/chat/common/model/chatSessionStore.ts) — storage roots, `chat.ChatSessionStore.index`, `.jsonl` vs `.json` storage, read/write flow.
 - [chatSessionOperationLog.ts](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/chat/common/model/chatSessionOperationLog.ts) — `storageSchema`, request schema, current `version:3`, model and usage-like fields.

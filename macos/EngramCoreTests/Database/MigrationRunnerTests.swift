@@ -51,6 +51,7 @@ final class MigrationRunnerTests: XCTestCase {
         XCTAssertTrue(sessionColumns.contains("instruction_count"))
         XCTAssertTrue(sessionColumns.contains("human_turn_count"))
         XCTAssertTrue(sessionColumns.contains("instruction_summary"))
+        XCTAssertTrue(sessionColumns.contains("originator"))
 
         let metricsSql = try writer.read { db in
             try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'metrics'")
@@ -245,6 +246,33 @@ final class MigrationRunnerTests: XCTestCase {
             try String.fetchOne(db, sql: "SELECT offload_state FROM sessions WHERE id = 'legacy-off'")
         }
         XCTAssertEqual(state, "local", "ALTER ADD COLUMN ... DEFAULT 'local' must backfill existing rows")
+    }
+
+    func testLegacySessionsGainNullableOriginatorColumn() throws {
+        let path = databasePath("legacy-originator.sqlite")
+        let queue = try DatabaseQueue(path: path)
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE sessions (
+                  id TEXT PRIMARY KEY,
+                  source TEXT NOT NULL,
+                  start_time TEXT NOT NULL,
+                  cwd TEXT NOT NULL DEFAULT '',
+                  file_path TEXT NOT NULL
+                );
+                INSERT INTO sessions(id, source, start_time, cwd, file_path)
+                VALUES ('legacy-originator', 'kimi', '2026-06-30T00:00:00.000Z', '/tmp/p', '/tmp/s.jsonl');
+            """)
+        }
+
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+
+        try writer.read { db in
+            let columns = try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('sessions')")
+            XCTAssertTrue(columns.contains("originator"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT originator FROM sessions WHERE id = 'legacy-originator'"))
+        }
     }
 
     func testInsightsLifecycleColumnsAddedOnMigration() throws {

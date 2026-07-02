@@ -149,12 +149,14 @@ final class AdapterParityTests: XCTestCase {
                 tmpRoot: fixtureRoot.appendingPathComponent("gemini-cli/input/tmp").path,
                 projectsFile: fixtureRoot.appendingPathComponent("gemini-cli/input/projects.json").path
             ),
+            GrokAdapter(sessionsRoot: fixtureRoot.appendingPathComponent("grok/input").path),
             IflowAdapter(projectsRoot: fixtureRoot.appendingPathComponent("iflow/input").path),
             KimiAdapter(
                 sessionsRoot: fixtureRoot.appendingPathComponent("kimi/input/sessions").path,
                 kimiJsonPath: fixtureRoot.appendingPathComponent("kimi/input/kimi.json").path
             ),
             OpenCodeAdapter(dbPath: fixtureRoot.appendingPathComponent("opencode/input/sample.db").path),
+            PiAdapter(sessionsRoot: fixtureRoot.appendingPathComponent("pi/input").path),
             QoderAdapter(projectsRoot: fixtureRoot.appendingPathComponent("qoder/input").path),
             QwenAdapter(projectsRoot: fixtureRoot.appendingPathComponent("qwen/input").path),
             VsCodeAdapter(workspaceStorageDir: fixtureRoot.appendingPathComponent("vscode/input").path),
@@ -172,9 +174,11 @@ final class AdapterParityTests: XCTestCase {
             .copilot,
             .cursor,
             .geminiCli,
+            .grok,
             .iflow,
             .kimi,
             .opencode,
+            .pi,
             .qoder,
             .qwen,
             .vscode,

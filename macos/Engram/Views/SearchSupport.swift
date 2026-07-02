@@ -66,6 +66,7 @@ extension EngramServiceSearchResponse.Item {
             sizeBytes: sizeBytes ?? 0,
             indexedAt: indexedAt ?? "",
             agentRole: agentRole,
+            originator: originator,
             hiddenAt: nil,
             customName: customName,
             tier: tier,

@@ -1,6 +1,6 @@
 # Cline — Session Format Reference
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-02 (Engram provider audit recheck)
 
 > **Sibling docs:** Cline is **NOT** in the VS Code / Cursor / Copilot `state.vscdb` storage family (see [§15](#15-lineage-gotchas-version-drift--edge-cases)). It is its own JSON-array-per-task format. Its true siblings are the downstream forks **Roo Code** and **Kilo Code**, which reuse the identical schema but have no Engram adapter. This doc is self-contained.
 
@@ -14,14 +14,15 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 
 **How saved:** Every task directory holds 4–5 files. The two large ones (`ui_messages.json` + `api_conversation_history.json`) are **rewritten in full** on every turn (read-modify-write of the whole array — not append). The session ID is simply the directory name, which equals the first record's `ts`.
 
-**Engram mental model:** Engram parses **only** `ui_messages.json` (the UI render log). It ignores the richer Anthropic-format `api_conversation_history.json` and all other sibling files. From `ui_messages.json` it keeps only 3 record subtypes as messages (`task`/`user_feedback` → user, non-partial `text` → assistant) out of the ~17 seen live (the full `ClineSay`/`ClineAsk` vocabulary is larger — ~35 + ~18 members; see [§4](#4-record--line-taxonomy)), reads `api_req_started` records solely for token usage, and regex-extracts `cwd` from the request prompt.
+**Engram mental model:** Engram prefers `ui_messages.json` (the UI render log) and falls back to legacy `claude_messages.json` only when `ui_messages.json` is absent. It ignores the richer Anthropic-format `api_conversation_history.json` and all other sibling files. From the selected UI-message array it keeps only 3 record subtypes as messages (`task`/`user_feedback` → user, non-partial `text` → assistant) out of the ~17 seen live (the full `ClineSay`/`ClineAsk` vocabulary is larger — ~35 + ~18 members; see [§4](#4-record--line-taxonomy)), reads `api_req_started` records solely for token usage, and regex-extracts `cwd` from the request prompt.
 
 ```
                   Cline CLI process
                          │ read-modify-write whole arrays every turn
                          ▼
 ~/.cline/data/tasks/<taskIdMs>/         ← task dir name == session id == first ts
-   ├── ui_messages.json            ── ARRAY of UI events  ◀── ENGRAM PARSES THIS (locator)
+   ├── ui_messages.json            ── ARRAY of UI events  ◀── ENGRAM PREFERS THIS (locator)
+   ├── claude_messages.json        ── legacy UI-event filename (fallback if ui_messages is absent)
    ├── api_conversation_history.json ─ ARRAY of Anthropic msgs (thinking/tool_use)  ✗ ignored
    ├── task_metadata.json          ── OBJECT: files/model/env ledgers              ✗ ignored
    ├── context_history.json        ── nested ARRAY: context-truncation log (optional) ✗ ignored
@@ -41,7 +42,9 @@ ENGRAM LAYERING (what it reads):
 - **Parity golden:** `tests/fixtures/adapter-parity/cline/success.expected.json` + matching `input/tasks/1770000000000/ui_messages.json` (schemaVersion 1, generated at commit `88f86631`).
 - **Adapters:** `macos/Shared/EngramCore/Adapters/Sources/ClineAdapter.swift` (product) and `src/adapters/cline.ts` (TS reference/parity).
 
-**Conflicts/discrepancies:** No conflict between live data and adapter assumptions. **One discrepancy vs. the task hint** (flagged in [§15](#15-lineage-gotchas-version-drift--edge-cases)): the hint guessed a VS Code extension layout (`globalStorage/<ext-id>/tasks/...`). Confirmed (official): both the hint (VS Code `globalStorage/saoudrizwan.claude-dev/tasks/`) and the doc (CLI `~/.cline/data/tasks/`) are the **same code path** — `getGlobalStorageDir("tasks", taskId) = path.resolve(HostProvider.globalStorageFsPath, "tasks", taskId)` — only the host base dir (`HostProvider.globalStorageFsPath`) differs ([disk.ts](https://github.com/cline/cline/blob/main/apps/vscode/src/core/storage/disk.ts), [issue #7929](https://github.com/cline/cline/issues/7929)). The root the live machine uses is `~/.cline/data/tasks/` (Cline CLI, `cline_version 3.66.0`, `host_name "Cline CLI - Node.js"`); no VS Code `globalStorage` Cline directory exists here. **The Engram adapter hardcodes `~/.cline/data/tasks/` as its only scan root** — that hardcoding is an Engram-side limitation, not a Cline property (Cline's path is host-derived and overridable via `CLINE_DIR` / `--data-dir` / `--config`).
+**Current Engram status:** The 2026-07-02 read-only smoke listed and parsed 3/3 Cline locators, streamed 80 messages (17 user + 63 assistant), attached usage to all 63 assistant messages, and found 0 parser/stream count mismatches. The live Engram DB has exactly 3 `cline` rows plus 3 `file_index_state` rows (`ok`, schema v1) with 0 missing current locators, 0 DB-only rows, 0 stale parser-owned fields, and 0 index-only locators.
+
+**Conflicts/discrepancies:** Current live data and DB locator coverage still match adapter assumptions. 2026-07-01 recheck found and fixed one retained TypeScript-only drift: consecutive `api_req_started` token ledgers were overwritten instead of accumulated before the next assistant message, while Swift already accumulated them; the 2026-07-02 smoke confirms the current TS stream now exposes usage on all 63 assistant messages. **One discrepancy vs. the task hint** (flagged in [§15](#15-lineage-gotchas-version-drift--edge-cases)): the hint guessed a VS Code extension layout (`globalStorage/<ext-id>/tasks/...`). Confirmed (official): both the hint (VS Code `globalStorage/saoudrizwan.claude-dev/tasks/`) and the doc (CLI `~/.cline/data/tasks/`) are the **same code path** — `getGlobalStorageDir("tasks", taskId) = path.resolve(HostProvider.globalStorageFsPath, "tasks", taskId)` — only the host base dir (`HostProvider.globalStorageFsPath`) differs ([disk.ts](https://github.com/cline/cline/blob/main/apps/vscode/src/core/storage/disk.ts), [issue #7929](https://github.com/cline/cline/issues/7929)). The root the live machine uses is `~/.cline/data/tasks/` (Cline CLI, `cline_version 3.66.0`, `host_name "Cline CLI - Node.js"`); no VS Code `globalStorage` Cline directory exists here. **The Engram adapter hardcodes `~/.cline/data/tasks/` as its only scan root** — that hardcoding is an Engram-side limitation, not a Cline property (Cline's path is host-derived and overridable via `CLINE_DIR` / `--data-dir` / `--config`).
 
 ---
 
@@ -51,8 +54,8 @@ ENGRAM LAYERING (what it reads):
 |---|---|---|
 | Root (default) | `~/.cline/data/tasks/` (Engram-hardcoded). Cline itself derives `<HostProvider.globalStorageFsPath>/tasks/`: VS Code → `globalStorage/saoudrizwan.claude-dev/tasks/`, CLI → `~/.cline/data/tasks/` (overridable `CLINE_DIR`/`--data-dir`/`--config`) | `ClineAdapter.swift:9-11`; `cline.ts:29`; [disk.ts](https://github.com/cline/cline/blob/main/apps/vscode/src/core/storage/disk.ts) |
 | Storage tech | Per-task directory of plain JSON files (whole-array JSON; **not** JSONL/SQLite/leveldb/gRPC) | live store; `Phase4AdapterSupport.readJSONArray` |
-| Locator / index anchor | `ui_messages.json` inside each task dir | `ClineAdapter.swift:27-30`; `cline.ts:45` |
-| Session ID | the task directory name (millisecond epoch string) | `ClineAdapter.swift:44`; `cline.ts:61` |
+| Locator / index anchor | `ui_messages.json` inside each task dir, falling back to legacy `claude_messages.json` if the modern file is absent | `ClineAdapter.swift:27-35`; `cline.ts:45-57` |
+| Session ID | the task directory name (millisecond epoch string) | `ClineAdapter.swift:49`; `cline.ts:69` |
 | Detection | `~/.cline/data/tasks` exists and is a directory | `ClineAdapter.swift:18-20`; `cline.ts:32-39` |
 
 **Naming grammar.** Each task dir is `<taskId>` where `taskId` = task-creation time in **milliseconds since epoch** (e.g. `1771763997801` ≈ 2026-02-22). It is also the first record's `ts` (`messages.first.ts === taskId`, verified live: first record `ts: 1771763997805` vs dir `1771763997801` — within ~4 ms). The focus-chain file embeds the id: `focus_chain_taskid_<taskId>.md`. **No per-session rollover:** one task = one directory for life; resuming reopens the same dir.
@@ -61,7 +64,8 @@ ENGRAM LAYERING (what it reads):
 
 | File | Naming | Top type | Optionality |
 |---|---|---|---|
-| `ui_messages.json` | fixed | JSON **array** of UI events | always present (locator) |
+| `ui_messages.json` | fixed | JSON **array** of UI events | modern locator; present in all current live tasks |
+| `claude_messages.json` | fixed legacy name | JSON **array** of UI events | legacy fallback only; 0 current live tasks |
 | `api_conversation_history.json` | fixed | JSON **array** of LLM messages | always present |
 | `task_metadata.json` | fixed | JSON **object** (3 arrays) | always present |
 | `context_history.json` | fixed | nested JSON **array** | **optional** — written only after context truncation (present on 1 of 3 live tasks) |
@@ -270,7 +274,7 @@ say="error_retry"       → { "attempt": number, "maxAttempts": number,
 
 ### 6.5 cwd extraction algorithm
 
-`ClineAdapter.swift:171-194` / `cline.ts:152-170`: scan every `api_req_started`, `JSON.parse` `.text`, then match `request` with regex `Current Working Directory \((.+?)\) Files` (lazy, anchored on `) Files` so paths containing `)` survive), falling back to `Current Working Directory \(([^)]+)\)`. Returns `""` if none found. Both adapters use dot-matches-newline (Swift `.dotMatchesLineSeparators`, TS `/s`).
+`ClineAdapter.swift:176-198` / `cline.ts:173-193`: scan every `api_req_started`, `JSON.parse` `.text`, then match `request` with regex `Current Working Directory \((.+?)\) Files` (lazy, anchored on `) Files` so paths containing `)` survive), falling back to `Current Working Directory \(([^)]+)\)`. Returns `""` if none found. Both adapters use dot-matches-newline (Swift `.dotMatchesLineSeparators`, TS `/s`).
 
 > Confirmed (official) + multi-root failure mode: `getEnvironmentDetails` emits the literal scaffold `\n\n# Current Working Directory (${this.cwd.toPosix()}) Files\n` for single-root workspaces ([task/index.ts](https://github.com/cline/cline/blob/main/apps/vscode/src/core/task/index.ts)), which the regex matches. **For MULTI-ROOT workspaces the source emits `# Current Working Directory (Primary: ${primaryName}) Files` instead** — so the capture group yields the string `Primary: <name>` rather than an absolute path, and Engram's `cwd` becomes a non-path string, breaking project attribution. See gotcha #4.
 
@@ -332,7 +336,7 @@ Token usage lives in `say:"api_req_started"` records (per-request) and, redundan
 | `api_req_started.text.cacheWrites` | number | `usage.cacheCreationTokens` = **0** | **dropped** (Swift `:167`, TS `:183`) |
 | `api_req_started.text.cost` | number | — | **dropped** entirely |
 
-**Aggregation mechanism (subtle):** `api_req_started` is NOT itself a message. The adapter accumulates `pendingUsage` across consecutive `api_req_started` records, then attaches the accumulated total to the first following `assistant` message and resets (`ClineAdapter.swift:114-131`; `cline.ts:111-140`). A record with both `tokensIn==0` and `tokensOut==0` is ignored (`ClineAdapter.swift:161`, `cline.ts:185`). Verified by parity golden: the single assistant message gets `{inputTokens:100, outputTokens:0, cacheReadTokens:0, cacheCreationTokens:0}`.
+**Aggregation mechanism (subtle):** `api_req_started` is NOT itself a message. The adapter accumulates `pendingUsage` across consecutive `api_req_started` records, then attaches the accumulated total to the first following `assistant` message and resets (`ClineAdapter.swift:114-131`; `cline.ts:119-147`). A record with both `tokensIn==0` and `tokensOut==0` is ignored (`ClineAdapter.swift:166`, `cline.ts:209`). Verified by parity golden: the single assistant message gets `{inputTokens:100, outputTokens:0, cacheReadTokens:0, cacheCreationTokens:0}`. 2026-07-01 retained TS regression coverage also verifies two consecutive ledgers aggregate as `10+7` input and `5+3` output.
 
 **Impact:** cache and cost are structurally under-reported. Live task `1771763997801` `taskHistory` aggregate `cacheReads` reached ~1.68M tokens — all dropped by Engram. (Cost was `0` across all sampled tasks due to free/local model tier, so cost loss had no $ impact *here* but would on paid tiers.)
 
@@ -459,27 +463,27 @@ Other top-level Cline state (not per-task, not parsed): `~/.cline/data/globalSta
 
 | Source field / record | Engram `Session` field | Swift `file:line` | TS `file:line` | Notes / example |
 |---|---|---|---|---|
-| task **directory name** (`epochMillis`) | `id` | `ClineAdapter.swift:44,63` | `cline.ts:61,78` | `"1771763997801"` |
-| constant `cline` | `source` | `ClineAdapter.swift:4,64` | `cline.ts:25,79` | `"cline"` |
-| first `say:"task"` `text`, first 200 chars | `summary` (title surrogate) | `ClineAdapter.swift:53-55,75` | `cline.ts:67-68,92` | no separate title field |
-| regex on first `api_req_started.request`: `Current Working Directory \((.+?)\) Files` then `\(([^)]+)\)` | `cwd` | `ClineAdapter.swift:67,171-194` | `cline.ts:69,152-170` | `/Users/<user>/<project>`; `""` if no match |
-| (none) | `project` | `ClineAdapter.swift:68` (`nil`) | `cline.ts` (omitted) | parity golden confirms `"project": null`; derived downstream from `cwd` by the indexer |
-| **first** record `ts` (ms → ISO) | `startTime` | `ClineAdapter.swift:39,65` | `cline.ts:65,80` | `2026-02-02T02:40:00.000Z` |
-| **last** record `ts`; `nil` if == first | `endTime` | `ClineAdapter.swift:45,66` | `cline.ts:66,81-84` | last `ts` is over ALL records incl. ask/tool/partial |
-| `userMessageCount + assistantMessageCount` | `messageCount` | `ClineAdapter.swift:70` | `cline.ts:87` | NOT the raw record count |
-| `say == "task"` OR `"user_feedback"` count | `userMessageCount` | `ClineAdapter.swift:46-49,71` | `cline.ts:72-74,88` | — |
-| `say == "text"` AND `partial != true` count | `assistantMessageCount` | `ClineAdapter.swift:50-52,72` | `cline.ts:75,89` | partial chunks excluded |
-| hardcoded `0` | `toolMessageCount` | `ClineAdapter.swift:73` | `cline.ts:90` | `say:"tool"` records NOT counted |
-| hardcoded `0` | `systemMessageCount` | `ClineAdapter.swift:74` | `cline.ts:91` | — |
-| first record with `modelInfo.modelId` | `model` | `ClineAdapter.swift:56-59,69` | `cline.ts:70` | `"z-ai/glm-5"` (provider prefix kept verbatim) |
-| the `ui_messages.json` path | `filePath` / locator | `ClineAdapter.swift:76` | `cline.ts:93` | — |
-| `stat().size` of `ui_messages.json` only | `sizeBytes` | `ClineAdapter.swift:77` | `cline.ts:60,94` | excludes 4 sibling files (under-counts footprint) |
-| `task`/`user_feedback` → `user`; non-partial `text` → `assistant` | message `role` | `ClineAdapter.swift:143` | `cline.ts:123-124` | only 2 roles emitted |
-| record `text` (plain) | message `content` | `ClineAdapter.swift:144` | `cline.ts:133-134` | tool/command/progress text never becomes a message |
-| running sum of `api_req_started.tokensIn/tokensOut`, flushed onto next assistant message | message `usage` | `ClineAdapter.swift:109-169` | `cline.ts:108-140,172-190` | `cacheReadTokens`/`cacheCreationTokens` hardcoded `0` |
-| (none) | `agentRole`/`originator`/`origin`/`parentSessionId`/`suggestedParentId`/`tier`/`qualityScore`/`summaryMessageCount` | `ClineAdapter.swift:79-86` (`nil`) | (not in TS) | Cline has no parent/agent-linking signal |
+| task **directory name** (`epochMillis`) | `id` | `ClineAdapter.swift:49,68` | `cline.ts:69,86` | `"1771763997801"` |
+| constant `cline` | `source` | `ClineAdapter.swift:4,69` | `cline.ts:25,87` | `"cline"` |
+| first `say:"task"` `text`, first 200 chars | `summary` (title surrogate) | `ClineAdapter.swift:58-60,80` | `cline.ts:75-76,100` | no separate title field |
+| regex on first `api_req_started.request`: `Current Working Directory \((.+?)\) Files` then `\(([^)]+)\)` | `cwd` | `ClineAdapter.swift:72,176-199` | `cline.ts:77,173-194` | `/Users/<user>/<project>`; `""` if no match |
+| (none) | `project` | `ClineAdapter.swift:73` (`nil`) | `cline.ts` (omitted) | parity golden confirms `"project": null`; derived downstream from `cwd` by the indexer |
+| **first** record `ts` (ms → ISO) | `startTime` | `ClineAdapter.swift:43-44,70` | `cline.ts:73,88` | `2026-02-02T02:40:00.000Z` |
+| **last** record `ts`; `nil` if == first | `endTime` | `ClineAdapter.swift:50,71` | `cline.ts:74,89-92` | last `ts` is over ALL records incl. ask/tool/partial |
+| `userMessageCount + assistantMessageCount` | `messageCount` | `ClineAdapter.swift:75` | `cline.ts:95` | NOT the raw record count |
+| `say == "task"` OR `"user_feedback"` count | `userMessageCount` | `ClineAdapter.swift:51-54,76` | `cline.ts:80-82,96` | — |
+| `say == "text"` AND `partial != true` count | `assistantMessageCount` | `ClineAdapter.swift:55-57,77` | `cline.ts:83,97` | partial chunks excluded |
+| hardcoded `0` | `toolMessageCount` | `ClineAdapter.swift:78` | `cline.ts:98` | `say:"tool"` records NOT counted |
+| hardcoded `0` | `systemMessageCount` | `ClineAdapter.swift:79` | `cline.ts:99` | — |
+| first record with `modelInfo.modelId` | `model` | `ClineAdapter.swift:61-64,74` | `cline.ts:78,94` | `"z-ai/glm-5"` (provider prefix kept verbatim) |
+| selected locator path (`ui_messages.json` or legacy `claude_messages.json`) | `filePath` / locator | `ClineAdapter.swift:81` | `cline.ts:101` | live corpus uses `ui_messages.json` |
+| `stat().size` of selected locator only | `sizeBytes` | `ClineAdapter.swift:82` | `cline.ts:68,102` | excludes sibling files (under-counts footprint) |
+| `task`/`user_feedback` → `user`; non-partial `text` → `assistant` | message `role` | `ClineAdapter.swift:141-149` | `cline.ts:138-155` | only 2 roles emitted |
+| record `text` (plain) | message `content` | `ClineAdapter.swift:149` | `cline.ts:155` | tool/command/progress text never becomes a message |
+| running sum of `api_req_started.tokensIn/tokensOut`, flushed onto next assistant message | message `usage` | `ClineAdapter.swift:114-174` | `cline.ts:116-147,196-214` | `cacheReadTokens`/`cacheCreationTokens` hardcoded `0` |
+| (none) | `agentRole`/`originator`/`origin`/`parentSessionId`/`suggestedParentId`/`tier`/`qualityScore`/`summaryMessageCount` | `ClineAdapter.swift:84-91` (`nil`) | (not in TS) | Cline has no parent/agent-linking signal |
 
-**Registration:** `SessionAdapterFactory.swift` registers `ClineAdapter()` with `SourceName.cline` — one of the 17 default adapters. Enumeration uses `JSONLAdapterSupport.directChildren` (non-recursive, hidden files skipped, symlinks excluded, sorted by path — helper at `CodexAdapter.swift:15`).
+**Registration:** `SessionAdapterFactory.swift` registers `ClineAdapter()` with `SourceName.cline`. Enumeration uses `JSONLAdapterSupport.directChildren` (non-recursive, hidden files skipped, symlinks excluded, sorted by path — helper at `CodexAdapter.swift:15`).
 
 ---
 
@@ -512,7 +516,7 @@ Other top-level Cline state (not per-task, not parsed): `~/.cline/data/globalSta
 - **VS Code `globalStorage/<ext-id>/tasks/` legacy layout.** Confirmed (official): the exact extension id is **`saoudrizwan.claude-dev`**, so the VS Code path is `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/tasks/` (macOS) / `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\tasks\` (Windows) ([disk.ts](https://github.com/cline/cline/blob/main/apps/vscode/src/core/storage/disk.ts), [issue #7929](https://github.com/cline/cline/issues/7929)). The per-task files come from the **same** `GlobalFileNames` constants regardless of host, so the per-task schema is identical — only `HostProvider.globalStorageFsPath` differs between the VS Code extension and the CLI (`~/.cline/data`). The earlier "inferred from the hint" hedge is upgraded to verified.
 - `context_history.json`'s nested-array schema is only partially decoded; full semantics of the leading integer indices were not reverse-engineered (Engram does not parse it). The filename is confirmed (`GlobalFileNames.contextHistory = "context_history.json"`, written by `context-management/ContextManager.ts` — [disk.ts](https://github.com/cline/cline/blob/main/apps/vscode/src/core/storage/disk.ts), [ContextManager.ts](https://github.com/cline/cline/blob/main/apps/vscode/src/core/context/context-management/ContextManager.ts)), but the meaning of the leading positional integers (web-checked 2026-06-21: no authoritative source found — would require tracing `ContextManager.ts` serialization, beyond the doc's needs).
 - `cacheReads`/`cacheWrites`/`cost`/`cline_version` capture is deliberately dropped; whether to populate them is an open product decision (Engram-internal design — not web-verifiable). The format side is confirmed available to populate: `ClineApiReqInfo.cacheReads/cacheWrites/cost`, `HistoryItem.cacheReads/cacheWrites/totalCost`, and `task_metadata` `environment_history.cline_version` (via `collectEnvironmentMetadata` → `ExtensionRegistryInfo.version`) all exist and are populated in source ([ExtensionMessage.ts](https://github.com/cline/cline/blob/main/apps/vscode/src/shared/ExtensionMessage.ts), [disk.ts](https://github.com/cline/cline/blob/main/apps/vscode/src/core/storage/disk.ts)).
-- **Legacy `claude_messages.json` filename (new finding, version drift).** Confirmed (official): `getSavedClineMessages` first reads `ui_messages.json`; if absent it falls back to a legacy `claude_messages.json`, migrates it, then deletes the old file ([disk.ts](https://github.com/cline/cline/blob/main/apps/vscode/src/core/storage/disk.ts)). Very old Cline tasks predate the `ui_messages.json` rename. Engram's adapter keys on `ui_messages.json` only, so a pre-rename legacy task never reopened in a modern Cline would be invisible to Engram.
+- **Legacy `claude_messages.json` filename (version drift now covered).** Confirmed (official): `getSavedClineMessages` first reads `ui_messages.json`; if absent it falls back to a legacy `claude_messages.json`, migrates it, then deletes the old file ([disk.ts](https://github.com/cline/cline/blob/main/apps/vscode/src/core/storage/disk.ts)). Very old Cline tasks predate the `ui_messages.json` rename. Engram now mirrors that fallback for locator discovery: `ui_messages.json` is preferred, `claude_messages.json` is used only when the modern file is absent. The current live store has 0 legacy files; TS and Swift focused tests cover the fallback.
 
 ---
 

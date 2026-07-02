@@ -1,8 +1,9 @@
 import Foundation
 
-final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
-    let source: SourceName = .claudeCode
+final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter, LocatorOwningSessionAdapter, Sendable {
+    let source: SourceName
     private let projectsRoot: URL
+    private let originator: String?
     private let limits: ParserLimits
     private let sourceHintCache = ClaudeCodeSourceHintCache()
     private static let sourceHintScanByteLimit = 1024 * 1024
@@ -11,12 +12,17 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
     private static let sourceHintChunkSize = 64 * 1024
 
     init(
+        source: SourceName? = nil,
         projectsRoot: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
             .path,
+        originator: String? = nil,
         limits: ParserLimits = .default
     ) {
         self.projectsRoot = URL(fileURLWithPath: projectsRoot)
+        let configuredSource = source ?? Self.providerSource(forProjectsRoot: projectsRoot) ?? .claudeCode
+        self.source = configuredSource
+        self.originator = originator ?? (configuredSource == .claudeCode ? nil : "Claude Code")
         self.limits = limits
     }
 
@@ -37,11 +43,9 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
 
                 let subagentsURL = entryURL.appendingPathComponent("subagents")
                 guard JSONLAdapterSupport.isDirectory(subagentsURL) else { continue }
-                for subagentURL in JSONLAdapterSupport.directChildren(of: subagentsURL)
-                    where subagentURL.pathExtension == "jsonl"
-                {
-                    locators.append(subagentURL.path)
-                }
+                locators.append(contentsOf: JSONLAdapterSupport.recursiveFiles(under: subagentsURL) {
+                    $0.pathExtension == "jsonl" && !Self.isWorkflowJournal($0)
+                })
             }
         }
         return locators.sorted()
@@ -95,8 +99,13 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
             var systemCount = 0
             var firstUserText = ""
             var detectedModel = ""
+            var isSidechain = false
 
             for object in objects {
+                if object["isSidechain"] as? Bool == true {
+                    isSidechain = true
+                }
+
                 guard let type = JSONLAdapterSupport.string(object["type"]),
                       type == "user" || type == "assistant"
                 else {
@@ -145,11 +154,23 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
             }
 
             guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
+            let messageCount = userCount + assistantCount + toolCount
+            guard messageCount > 0 else { return .failure(.noVisibleMessages) }
 
-            let isSubagent = locator.contains("/subagents/")
+            let isPathSubagent = locator.contains("/subagents/")
+            let isLegacyRootAgent = !isPathSubagent
+                && isSidechain
+                && !agentId.isEmpty
+                && URL(fileURLWithPath: locator).lastPathComponent.hasPrefix("agent-")
+            let isSubagent = isPathSubagent || isLegacyRootAgent
             let id = isSubagent && !agentId.isEmpty ? agentId : sessionId
-            let source = Self.detectSource(model: detectedModel, filePath: locator)
-            let parentSessionId = isSubagent ? Self.parentSessionId(from: locator) : nil
+            let source = self.source == .claudeCode
+                ? Self.detectSource(model: detectedModel, filePath: locator)
+                : self.source
+            let originator = self.originator ?? (source == .claudeCode ? nil : "Claude Code")
+            let parentSessionId = isPathSubagent
+                ? Self.parentSessionId(from: locator)
+                : (isLegacyRootAgent ? sessionId : nil)
 
             return .success(
                 NormalizedSessionInfo(
@@ -160,7 +181,7 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
                     cwd: cwd,
                     project: Self.projectName(fromCwd: cwd),
                     model: detectedModel.isEmpty ? nil : detectedModel,
-                    messageCount: userCount + assistantCount + toolCount,
+                    messageCount: messageCount,
                     userMessageCount: userCount,
                     assistantMessageCount: assistantCount,
                     toolMessageCount: toolCount,
@@ -170,7 +191,7 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
                     sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
                     indexedAt: nil,
                     agentRole: isSubagent ? "subagent" : nil,
-                    originator: nil,
+                    originator: originator,
                     origin: nil,
                     summaryMessageCount: nil,
                     tier: nil,
@@ -201,6 +222,51 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
 
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
+    }
+
+    func ownsLocator(_ locator: String) -> Bool {
+        let rootPath = projectsRoot.standardizedFileURL.path
+        let locatorPath = URL(fileURLWithPath: locator).standardizedFileURL.path
+        return locatorPath == rootPath || locatorPath.hasPrefix(rootPath + "/")
+    }
+
+    private static func isWorkflowJournal(_ url: URL) -> Bool {
+        guard url.lastPathComponent == "journal.jsonl" else { return false }
+        let components = url.standardizedFileURL.pathComponents
+        guard let workflowsIndex = components.lastIndex(of: "workflows"),
+              workflowsIndex > 0,
+              workflowsIndex + 2 == components.count - 1
+        else {
+            return false
+        }
+        return components[workflowsIndex - 1] == "subagents"
+    }
+
+    private static let providerRootSources: [String: SourceName] = [
+        ".claude-kimi": .kimi,
+        ".claude-minimax": .minimax,
+        ".claude-mimo": .mimo,
+        ".claude-mimosg": .mimo,
+        ".claude-qwen": .qwen,
+        ".claude-doubao": .doubao,
+        ".claude-glm": .glm,
+        ".claude-glmc": .glm,
+        ".claude-ds": .deepseek,
+        ".claude-dsc": .deepseek,
+        ".claude-openai": .codex,
+    ]
+
+    private static func providerSource(forProjectsRoot projectsRoot: String) -> SourceName? {
+        let components = URL(fileURLWithPath: projectsRoot)
+            .standardizedFileURL
+            .pathComponents
+            .map { $0.lowercased() }
+        for component in components.reversed() {
+            if let source = providerRootSources[component] {
+                return source
+            }
+        }
+        return nil
     }
 
     private static func projectName(fromCwd cwd: String) -> String? {
@@ -359,6 +425,9 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
         // a user turn. Drop it when it surfaces no content so the streamed
         // transcript matches parseSessionInfo's counts.
         let isToolResultRecord = type == "user" && isToolResult(rawContent)
+        if type == "user", !isToolResultRecord, isSystemInjection(content) {
+            return nil
+        }
         if isToolResultRecord, content.isEmpty {
             return nil
         }

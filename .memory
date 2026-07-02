@@ -2,7 +2,47 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-06-28): 79 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-06-28): 126 dated entries; regenerate after adding sections -->
+- [2026-07-02 - Codex takeover review and CI cleanup for PR #94 (Codex)](#2026-07-02---codex-takeover-review-and-ci-cleanup-for-pr-94-codex)
+- [2026-07-02 - Provider session-format audit closeout and Native Claude frontier refresh (Codex)](#2026-07-02---provider-session-format-audit-closeout-and-native-claude-frontier-refresh-codex)
+- [2026-07-01 - MiniMax provider root stale-count audit (Codex)](#2026-07-01---minimax-provider-root-stale-count-audit-codex)
+- [2026-07-01 - Mimo provider roots stale-count audit (Codex)](#2026-07-01---mimo-provider-roots-stale-count-audit-codex)
+- [2026-07-01 - Kimi provider root stale-count audit (Codex)](#2026-07-01---kimi-provider-root-stale-count-audit-codex)
+- [2026-07-01 - Qwen provider root stale-count audit (Codex)](#2026-07-01---qwen-provider-root-stale-count-audit-codex)
+- [2026-07-01 - Codex provider root active-frontier and stale-count audit (Codex)](#2026-07-01---codex-provider-root-active-frontier-and-stale-count-audit-codex)
+- [2026-07-01 - DeepSeek provider roots stale-count audit (Codex)](#2026-07-01---deepseek-provider-roots-stale-count-audit-codex)
+- [2026-07-01 - GLM provider roots active-frontier and stale-count audit (Codex)](#2026-07-01---glm-provider-roots-active-frontier-and-stale-count-audit-codex)
+- [2026-07-01 - Doubao provider root stale-count audit and file-index schema bump (Codex)](#2026-07-01---doubao-provider-root-stale-count-audit-and-file-index-schema-bump-codex)
+- [2026-07-01 - VS Code provider current-source and empty-stub audit (Codex)](#2026-07-01---vs-code-provider-current-source-and-empty-stub-audit-codex)
+- [2026-07-01 - Copilot provider DB count stale audit (Codex)](#2026-07-01---copilot-provider-db-count-stale-audit-codex)
+- [2026-07-01 - Cline retained TS usage aggregation fix (Codex)](#2026-07-01---cline-retained-ts-usage-aggregation-fix-codex)
+- [2026-07-01 - TS Grok/bootstrap provider-surface parity (Codex)](#2026-07-01---ts-grokbootstrap-provider-surface-parity-codex)
+- [2026-07-01 - CommandCode provider audit stale-session repair (Codex)](#2026-07-01---commandcode-provider-audit-stale-session-repair-codex)
+- [2026-07-01 - Session-format runtime-status doc refresh (Codex)](#2026-07-01---session-format-runtime-status-doc-refresh-codex)
+- [2026-07-01 - Qwen/Kimi MCP transcript native adapter ownership fix (Codex)](#2026-07-01---qwenkimi-mcp-transcript-native-adapter-ownership-fix-codex)
+- [2026-07-01 - Cursor empty-composer rejection and stale-row audit (Codex)](#2026-07-01---cursor-empty-composer-rejection-and-stale-row-audit-codex)
+- [2026-07-01 - LobsterAI stale false-positive refresh and ClaudeCode stream guard (Codex)](#2026-07-01---lobsterai-stale-false-positive-refresh-and-claudecode-stream-guard-codex)
+- [2026-07-01 - Gemini CLI current-rows and stale-locator audit refresh (Codex)](#2026-07-01---gemini-cli-current-rows-and-stale-locator-audit-refresh-codex)
+- [2026-07-01 - Windsurf/Antigravity raw-cache and source-locator audit refresh (Codex)](#2026-07-01---windsurfantigravity-raw-cache-and-source-locator-audit-refresh-codex)
+- [2026-07-01 - OpenCode provider audit refresh and TS stream/count fix (Codex)](#2026-07-01---opencode-provider-audit-refresh-and-ts-streamcount-fix-codex)
+- [2026-07-01 - Provider runtime closure and Kimi canonical locator repair (Codex)](#2026-07-01---provider-runtime-closure-and-kimi-canonical-locator-repair-codex)
+- [2026-07-01 - cc-provider installed runtime ingest and Codex parity repair (Codex)](#2026-07-01---cc-provider-installed-runtime-ingest-and-codex-parity-repair-codex)
+- [2026-07-01 - Claude Code cc-provider root audit and stream/count fix (Codex)](#2026-07-01---claude-code-cc-provider-root-audit-and-streamcount-fix-codex)
+- [2026-07-01 - Qwen provider audit refresh and stream/count fix (Codex)](#2026-07-01---qwen-provider-audit-refresh-and-streamcount-fix-codex)
+- [2026-07-01 - iFlow provider audit refresh, stream/count fix, and TS usage parity (Codex)](#2026-07-01---iflow-provider-audit-refresh-streamcount-fix-and-ts-usage-parity-codex)
+- [2026-07-01 - Qoder provider audit refresh (Codex)](#2026-07-01---qoder-provider-audit-refresh-codex)
+- [2026-07-01 - Gemini CLI provider audit refresh (Codex)](#2026-07-01---gemini-cli-provider-audit-refresh-codex)
+- [2026-07-01 - Pi provider audit refresh (Codex)](#2026-07-01---pi-provider-audit-refresh-codex)
+- [2026-07-01 - Kimi native provider audit refresh (Codex)](#2026-07-01---kimi-native-provider-audit-refresh-codex)
+- [2026-07-01 - Grok provider audit refresh (Codex)](#2026-07-01---grok-provider-audit-refresh-codex)
+- [2026-07-01 - Codex CLI provider audit refresh (Codex)](#2026-07-01---codex-cli-provider-audit-refresh-codex)
+- [2026-07-01 - MiniMax/LobsterAI derived Claude-source audit (Codex)](#2026-07-01---minimaxlobsterai-derived-claude-source-audit-codex)
+- [2026-07-01 - Native Claude Code root provider audit (Codex)](#2026-07-01---native-claude-code-root-provider-audit-codex)
+- [2026-07-01 - Windsurf/Antigravity Cascade provider audit (Codex)](#2026-07-01---windsurfantigravity-cascade-provider-audit-codex)
+- [2026-07-01 - cc-provider root runtime audit and empty-session guard (Codex)](#2026-07-01---cc-provider-root-runtime-audit-and-empty-session-guard-codex)
+- [2026-06-30 - Claude Code provider-root source routing (Codex)](#2026-06-30---claude-code-provider-root-source-routing-codex)
+- [2026-06-30 - Grok Build session adapter and indexing root-cause check (Codex)](#2026-06-30---grok-build-session-adapter-and-indexing-root-cause-check-codex)
+- [2026-06-29 - Local origin-main rebuild and /Applications deploy (Codex)](#2026-06-29---local-origin-main-rebuild-and-applications-deploy-codex)
 - [2026-06-28 - Project-detail vertical-rail timeline with AI semantic titles (Claude)](#2026-06-28---project-detail-vertical-rail-timeline-with-ai-semantic-titles-claude)
 - [2026-06-28 - Full-project audit remediation pass (Codex)](#2026-06-28---full-project-audit-remediation-pass-codex)
 - [2026-06-27 - Session implementation digest and work timeline first pass (Codex)](#2026-06-27---session-implementation-digest-and-work-timeline-first-pass-codex)
@@ -91,6 +131,1763 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-02 - Codex takeover review and CI cleanup for PR #94 (Codex)
+
+- Objective: take over Claude's PR #94 closeout, verify the claimed ready state
+  against live PR checks and local repo state, fix any small confirmed blockers,
+  and leave the worktree clean for review.
+- Current branch/worktree: `/Users/bing/-Code-/engram` on
+  `codex-provider-audit-remediation`, PR #94
+  (`codex-provider-audit-remediation -> main`). At takeover the local worktree
+  had no tracked or untracked git changes.
+- Review finding: Claude's "can directly review/merge" claim was not current.
+  Live GitHub checks showed `dead-code` failed because Knip reported unused
+  export `resolveAdapter` at `src/core/bootstrap.ts:121`, and `CodeQL Swift`
+  failed during package dependency resolution because the macOS runner could not
+  resolve `github.com` while cloning the GRDB `SQLiteCustom/src` submodule. The
+  same PR's `swift-unit` job was green, so the CodeQL failure is treated as
+  external CI/network dependency resolution until rerun.
+- Fix: removed the unused exported default-adapter wrapper from
+  `src/core/bootstrap.ts`. Also made the split web session routes in
+  `src/web/routes/sessions.ts` locator-aware: injected adapters now resolve via
+  `resolveAdapterForLocator(deps.adapters, session.source, session.filePath)`,
+  and default adapters resolve via `getAdapter(session.source, session.filePath)`.
+  This keeps provider-root ClaudeCode clones from shadowing native same-source
+  transcripts in the route-module path.
+- Fresh local checks: `npm run build`, `npm run knip`, `npm run lint` (exit 0
+  with the existing `tests/scripts/screenshot-compare.test.ts` template-curly
+  warning), `npm run test -- tests/web/route-modules.test.ts tests/web/api.test.ts
+  tests/web/server.test.ts` (105/105), `npm run typecheck:test`, full
+  `npm run test` (1627/1627), and `git diff --check`.
+- Remaining risk: GitHub checks still need the post-fix branch push/rerun. If
+  `CodeQL Swift` fails again with the same `Could not resolve host: github.com`
+  GRDB submodule log, rerun or harden the workflow dependency cache; it was not
+  a source compile failure in the captured log.
+
+## 2026-07-02 - Provider session-format audit closeout and Native Claude frontier refresh (Codex)
+
+- Objective: close the provider-by-provider session-format audit by checking the
+  current `SourceName` surface, bilingual docs, audit table coverage, retained
+  TS adapters, Swift product adapters, and live DB/source-state summaries for
+  stale facts.
+- Current coverage: `src/adapters/types.ts` has 23 real `SOURCE_NAMES`;
+  `docs/session-formats/` has 23 English docs and 23 zh docs with no missing or
+  extra provider pages. The audit report
+  `docs/reviews/provider-session-format-audit-2026-06-30.md` now covers all 23
+  sources plus Claude Code provider-root wrapper rows.
+- Fresh drift found and corrected: Native Claude Code root identity-only recheck
+  over `/Users/bing/.claude/projects` now lists 12,288 locators, parses 11,395
+  conversations, sees 893 parse failures, 11,259 unique current `claude-code`
+  ids, 131 duplicate current ids, and 215 current ids/locators missing from both
+  `sessions` and `file_index_state`, all under
+  `-Users-bing--Code--mediahub`. Updated the audit row from
+  `ACTIVE_IDENTITY_DRIFT_99` to `ACTIVE_IDENTITY_DRIFT_215` and removed the old
+  39/99/142 backlog figures.
+- Fresh checks: adapter tests (`tests/adapters`) passed 20 files / 224 tests;
+  `npm run typecheck:test`, `npm run build`,
+  `npm run check:adapter-parity-fixtures`, and `npm run check:fixtures` passed.
+  `npm run lint` exited 0 with the pre-existing
+  `tests/scripts/screenshot-compare.test.ts` template-curly warning. Swift
+  checks passed for `EngramCoreTests/AdapterMessageCountTests`,
+  `EngramCoreTests/AdapterParityTests/testSwiftAdaptersMatchNodeParityGoldensForAllProviders`,
+  app `AdapterParityTests/testAdapterParityHarnessComparesStage2Phase3Phase4AndPhase5Sources`,
+  and `SourceCatalogTests` / `SourceColorsTests` / `SourcesSyncTests`.
+- Live DB was queried read-only only. Current `~/.engram/index.sqlite` source
+  distribution still matches the audit shape: Windsurf has 0 rows/index-state,
+  VS Code has 5 `file_index_state retry/malformedJSON` rows and 0 sessions,
+  and active/stale-row cleanup remains a reindex/backlog topic rather than a
+  provider registration gap.
+- Residual risk: live DB was not mutated or reindexed. Remaining non-audit work
+  is runtime cleanup/reindex for stale rows and active frontiers, plus product
+  backlog decisions for raw Windsurf/Antigravity `.pb` history.
+- CORRECTION (2026-07-02, Claude): the eight per-provider "stale-count audit"
+  entries below (MiniMax 225, Mimo 261, Kimi 809, Qwen 483, Codex/`.claude-openai`
+  2,433, DeepSeek 482, GLM 1,570, Doubao 26 ≈ 6,289 rows total) are **superseded**.
+  Codex's own final audit report retracts them as retained-TS audit-tooling false
+  positives: the TS tooling counted empty/non-visible Claude `tool_result` records
+  that the Swift product already drops. After visible-only tool-result alignment,
+  field-level comparison finds 0 field-stale current provider-root rows except 9
+  real rows under the active `.claude-glmc` frontier (tracked in the GLM entry).
+  These "Drift found: N stale rows" lines below are kept for history but should be
+  read as false positives. No live DB was mutated. Evidence: `cc-*` matrix row in
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`.
+
+## 2026-07-01 - MiniMax provider root stale-count audit (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  rechecking the `cc-minimax` / `.claude-minimax` provider root from raw JSONL
+  through the retained TS adapter, Swift provider-root mapping, live DB rows,
+  and stale-count behavior. This is separate from native MiniMax model-hint rows
+  under `/Users/bing/.claude/projects`.
+- Current local corpus: `/Users/bing/.claude-minimax/projects` has 232 JSONL
+  files, 20,884 records, 0 malformed lines, 228 parseable conversations, and
+  218 subagent parent links. Latest raw mtime in the smoke was
+  `2026-06-26T10:44:24.358Z`.
+- Parser evidence: retained TS `ClaudeCodeAdapter` for source `minimax` listed
+  232 locators, parsed 228 conversations, skipped 4 workflow `journal.jsonl`
+  side-channel files, reported 228 `originator='Claude Code'` rows, had model
+  distribution 215 `MiniMax-M3` and 13 `MiniMax-M2.7-highspeed`, and had 0
+  parser/stream count mismatches. Swift factory coverage is through
+  `SessionAdapterFactory.claudeCodeProviderAdapters()` and
+  `ClaudeCodeAdapter.providerRootSources` mapping `.claude-minimax` to
+  `SourceName.minimax`.
+- Live DB evidence: `/Users/bing/.engram/index.sqlite` has 228 provider-root
+  `minimax` sessions under `/Users/bing/.claude-minimax/%` and 232
+  `.claude-minimax` `file_index_state` rows (228 `ok`, 4
+  `retry/malformedJSON`). Locator diff is clean: 0 missing parseable adapter
+  locators and 0 DB-only current locators. Native MiniMax rows under
+  `/Users/bing/.claude/projects/%` are separate and currently count 6 (5 current
+  ids plus 1 deleted historical stale row from the earlier native audit).
+- Drift found: field-level comparison found 225 stale live provider-root rows
+  where `tool_message_count=0` and `message_count` is lower than the current
+  parser. Existing `.claude-minimax` `file_index_state` rows are still schema
+  version 1.
+- Worktree repair coverage: the existing schema bump from the Doubao slice,
+  `FileIndexState.currentSchemaVersion=2`, covers this provider-root
+  stale-count class by invalidating v1 file-index states on the next
+  rebuild/reindex. No MiniMax-provider-root-specific parser code change was
+  needed, and this pass did not mutate `/Users/bing/.engram/index.sqlite`.
+- Durable sync: updated `docs/session-formats/minimax.md`,
+  `docs/session-formats/minimax.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry.
+
+## 2026-07-01 - Mimo provider roots stale-count audit (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  rechecking the `cc-mimo` / `.claude-mimo` and `cc-mimosg` /
+  `.claude-mimosg` provider roots from raw JSONL through the retained TS
+  adapter, Swift provider-root mapping, live DB rows, and stale-count behavior.
+- Current local corpus: `/Users/bing/.claude-mimo/projects` has 180 JSONL
+  files, 14,578 records, 0 malformed lines, 174 parseable conversations, and
+  168 subagent parent links. `/Users/bing/.claude-mimosg/projects` has 92 JSONL
+  files, 10,634 records, 0 malformed lines, 89 parseable conversations, and 80
+  subagent parent links. Combined parser/stream mismatch count is 0.
+- Parser evidence: retained TS `ClaudeCodeAdapter` for source `mimo` listed 272
+  locators, parsed 263 conversations, skipped 9 workflow `journal.jsonl`
+  side-channel files, reported 263 `originator='Claude Code'` rows, and had 0
+  parser/stream count mismatches. Swift factory coverage is through
+  `SessionAdapterFactory.claudeCodeProviderAdapters()` and
+  `ClaudeCodeAdapter.providerRootSources` mapping `.claude-mimo` and
+  `.claude-mimosg` to `SourceName.mimo`.
+- Live DB evidence: `/Users/bing/.engram/index.sqlite` has 263 provider-root
+  `mimo` sessions: 174 under `/Users/bing/.claude-mimo/%` and 89 under
+  `/Users/bing/.claude-mimosg/%`. It also has 272 `mimo` `file_index_state`
+  rows (263 `ok`, 9 `retry/malformedJSON`). Locator diff is clean: 0 missing
+  parseable adapter locators and 0 DB-only current locators.
+- Drift found: field-level comparison found 261 stale live provider-root rows
+  where `tool_message_count=0` and `message_count` is lower than the current
+  parser. Existing Mimo `file_index_state` rows are still schema version 1.
+- Worktree repair coverage: the existing schema bump from the Doubao slice,
+  `FileIndexState.currentSchemaVersion=2`, covers this provider-root
+  stale-count class by invalidating v1 file-index states on the next
+  rebuild/reindex. No Mimo-specific parser code change was needed, and this
+  pass did not mutate `/Users/bing/.engram/index.sqlite`.
+- Durable sync: updated `docs/session-formats/mimo.md`,
+  `docs/session-formats/mimo.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry.
+
+## 2026-07-01 - Kimi provider root stale-count audit (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  rechecking the `cc-kimi` / `.claude-kimi` provider root from raw JSONL through
+  the retained TS adapter, Swift provider-root mapping, live DB rows, and
+  stale-count behavior. This is separate from native Kimi `~/.kimi/sessions`
+  context JSONL.
+- Current local corpus: `/Users/bing/.claude-kimi/projects` has 2,090 JSONL
+  files, 95,845 records, 0 malformed lines, 2,076 parseable conversations, and
+  2,067 subagent parent links. Latest raw mtime in the smoke was
+  `2026-06-29T03:10:32.392Z`.
+- Parser evidence: retained TS `ClaudeCodeAdapter` for source `kimi` listed
+  2,090 locators, parsed 2,076 conversations, skipped 14 workflow
+  `journal.jsonl` side-channel files, reported 2,076 `originator='Claude Code'`
+  rows, and had 0 parser/stream count mismatches. Swift factory coverage is
+  through `SessionAdapterFactory.claudeCodeProviderAdapters()` and
+  `ClaudeCodeAdapter.providerRootSources` mapping `.claude-kimi` to
+  `SourceName.kimi`.
+- Live DB evidence: `/Users/bing/.engram/index.sqlite` has 2,076 provider-root
+  `kimi` sessions under `/Users/bing/.claude-kimi/%` and 2,090 `.claude-kimi`
+  `file_index_state` rows (2,076 `ok`, 14 `retry/malformedJSON`). Locator diff
+  is clean: 0 missing parseable adapter locators and 0 DB-only current locators.
+  Native Kimi rows under `/Users/bing/.kimi/%` are separate and currently count
+  689.
+- Drift found: field-level comparison found 809 stale live provider-root rows
+  where `tool_message_count=0` and `message_count` is lower than the current
+  parser. Existing `.claude-kimi` `file_index_state` rows are still schema
+  version 1.
+- Worktree repair coverage: the existing schema bump from the Doubao slice,
+  `FileIndexState.currentSchemaVersion=2`, covers this provider-root
+  stale-count class by invalidating v1 file-index states on the next
+  rebuild/reindex. No Kimi-provider-root-specific parser code change was
+  needed, and this pass did not mutate `/Users/bing/.engram/index.sqlite`.
+- Durable sync: updated `docs/session-formats/kimi.md`,
+  `docs/session-formats/kimi.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry.
+
+## 2026-07-01 - Qwen provider root stale-count audit (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  rechecking the `cc-qwen` / `.claude-qwen` provider root from raw JSONL through
+  the retained TS adapter, Swift provider-root mapping, live DB rows, and
+  stale-count behavior. This is separate from native Qwen `~/.qwen/projects`
+  chat JSONL.
+- Current local corpus: `/Users/bing/.claude-qwen/projects` has 654 JSONL
+  files, 23,234 records, 0 malformed lines, 646 parseable conversations, and
+  640 subagent parent links. Latest raw mtime in the smoke was
+  `2026-06-28T01:18:40.632Z`.
+- Parser evidence: retained TS `ClaudeCodeAdapter` for source `qwen` listed 654
+  locators, parsed 646 conversations, skipped 8 workflow `journal.jsonl`
+  side-channel files, reported 646 `originator='Claude Code'` rows, and had 0
+  parser/stream count mismatches. Swift factory coverage is through
+  `SessionAdapterFactory.claudeCodeProviderAdapters()` and
+  `ClaudeCodeAdapter.providerRootSources` mapping `.claude-qwen` to
+  `SourceName.qwen`.
+- Live DB evidence: `/Users/bing/.engram/index.sqlite` has 646 provider-root
+  `qwen` sessions under `/Users/bing/.claude-qwen/%` and 654 `.claude-qwen`
+  `file_index_state` rows (646 `ok`, 8 `retry/malformedJSON`). Locator diff is
+  clean: 0 missing parseable adapter locators and 0 DB-only current locators.
+  Native Qwen rows under `/Users/bing/.qwen/%` are separate and currently count
+  779.
+- Drift found: field-level comparison found 483 stale live provider-root rows
+  where `tool_message_count=0` and `message_count` is lower than the current
+  parser. Existing `.claude-qwen` `file_index_state` rows are still schema
+  version 1.
+- Worktree repair coverage: the existing schema bump from the Doubao slice,
+  `FileIndexState.currentSchemaVersion=2`, covers this provider-root
+  stale-count class by invalidating v1 file-index states on the next
+  rebuild/reindex. No Qwen-provider-root-specific parser code change was
+  needed, and this pass did not mutate `/Users/bing/.engram/index.sqlite`.
+- Durable sync: updated `docs/session-formats/qwen.md`,
+  `docs/session-formats/qwen.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry.
+
+## 2026-07-01 - Codex provider root active-frontier and stale-count audit (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  rechecking the `cc-codex` / `.claude-openai` provider root from raw JSONL
+  through the retained TS adapter, Swift provider-root mapping, live DB rows,
+  and stale-count behavior. This is separate from native Codex rollout JSONL
+  under `/Users/bing/.codex`.
+- Current local corpus: `/Users/bing/.claude-openai/projects` has 2,713 JSONL
+  files, 186,731 records, 0 malformed lines, 2,584 parseable conversations, and
+  2,551 subagent parent links. Latest raw mtime in the smoke was
+  `2026-07-01T10:06:07.889Z`.
+- Parser evidence: retained TS `ClaudeCodeAdapter` for source `codex` listed
+  2,713 locators, parsed 2,584 conversations, skipped 129 non-conversation
+  side-channel files, reported 2,584 `originator='Claude Code'` rows, and had 0
+  parser/stream count mismatches. Swift factory coverage is through
+  `SessionAdapterFactory.claudeCodeProviderAdapters()` and
+  `ClaudeCodeAdapter.providerRootSources` mapping `.claude-openai` to
+  `SourceName.codex`.
+- Live DB evidence: `/Users/bing/.engram/index.sqlite` has 2,526 provider-root
+  `codex` sessions under `/Users/bing/.claude-openai/%` and 2,654
+  `.claude-openai` `file_index_state` rows (2,526 `ok`, 128
+  `retry/malformedJSON`). Current parser sees 58 additional parseable locators
+  outside `sessions`, consistent with the active-write/retry frontier already
+  visible in the audit report; DB-only current locators are 0. Native Codex rows
+  under `/Users/bing/.codex/%` are separate.
+- Drift found: field-level comparison found 2,433 stale live provider-root rows
+  where `tool_message_count=0` and `message_count` is lower than the current
+  parser. Existing `.claude-openai` `file_index_state` rows are still schema
+  version 1.
+- Worktree repair coverage: the existing schema bump from the Doubao slice,
+  `FileIndexState.currentSchemaVersion=2`, covers this provider-root
+  stale-count class by invalidating v1 file-index states on the next
+  rebuild/reindex. No Codex-provider-root-specific parser code change was
+  needed, and this pass did not mutate `/Users/bing/.engram/index.sqlite`.
+- Durable sync: updated `docs/session-formats/codex.md`,
+  `docs/session-formats/codex.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry.
+
+## 2026-07-01 - DeepSeek provider roots stale-count audit (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  rechecking the DeepSeek `cc-ds` and `cc-dsc` provider roots from raw JSONL
+  through the retained TS adapter, Swift provider-root mapping, live DB rows,
+  and stale-count behavior.
+- Current local corpus: `/Users/bing/.claude-ds/projects` has 212 JSONL files,
+  12,896 records, 0 malformed lines, 206 parseable conversations, and 202
+  subagent parent links. `/Users/bing/.claude-dsc/projects` has 357 JSONL files,
+  32,380 records, 0 malformed lines, 347 parseable conversations, and 330
+  subagent parent links. Combined parser/stream mismatch count is 0.
+- Parser evidence: retained TS `ClaudeCodeAdapter` for source `deepseek` listed
+  569 locators, parsed 553 conversations, skipped 16 workflow `journal.jsonl`
+  side-channel files, reported 553 `originator='Claude Code'` rows, and had 0
+  parser/stream count mismatches. Swift factory coverage is through
+  `SessionAdapterFactory.claudeCodeProviderAdapters()` and
+  `ClaudeCodeAdapter.providerRootSources` mapping `.claude-ds` and
+  `.claude-dsc` to `SourceName.deepseek`.
+- Live DB evidence: `/Users/bing/.engram/index.sqlite` has 553 `deepseek`
+  sessions under the provider roots: 206 under `.claude-ds` and 347 under
+  `.claude-dsc`. Locator diff is clean: 0 DB-only current locators and 0 missing
+  parseable adapter locators.
+- Drift found: field-level comparison found 482 stale live DB rows where
+  `tool_message_count=0` and `message_count` is lower than the current parser.
+  Existing DeepSeek `file_index_state` rows are still schema version 1: 553 `ok`
+  and 16 `retry/malformedJSON`.
+- Worktree repair coverage: the existing schema bump from the Doubao slice,
+  `FileIndexState.currentSchemaVersion=2`, covers this DeepSeek stale-count
+  class by invalidating v1 file-index states on the next rebuild/reindex. No
+  additional DeepSeek-specific parser code change was needed, and this pass did
+  not mutate `/Users/bing/.engram/index.sqlite`.
+- Durable sync: updated `docs/session-formats/deepseek.md`,
+  `docs/session-formats/deepseek.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry.
+
+## 2026-07-01 - GLM provider roots active-frontier and stale-count audit (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  rechecking the GLM `cc-glm` and `cc-glmc` provider roots from raw JSONL through
+  the retained TS adapter, Swift provider-root mapping, live DB rows, and
+  stale-count behavior.
+- Current local corpus: `/Users/bing/.claude-glm/projects` has 1,177 JSONL
+  files, 62,406 records, 0 malformed lines, 1,154 parseable conversations, and
+  1,136 subagent parent links. `/Users/bing/.claude-glmc/projects` has 776 JSONL
+  files, 59,738 records, 0 malformed lines, 768 parseable conversations, and
+  765 subagent parent links. Combined parser/stream mismatch count is 0.
+- Parser evidence: retained TS `ClaudeCodeAdapter` for source `glm` listed
+  1,953 locators, parsed 1,922 conversations, skipped 31 non-conversation
+  side-channel files, reported 1,922 `originator='Claude Code'` rows, and had 0
+  parser/stream count mismatches. Swift factory coverage is through
+  `SessionAdapterFactory.claudeCodeProviderAdapters()` and
+  `ClaudeCodeAdapter.providerRootSources` mapping `.claude-glm` and
+  `.claude-glmc` to `SourceName.glm`.
+- Live DB evidence: `/Users/bing/.engram/index.sqlite` has 1,695 `glm` sessions
+  under the GLM provider roots: 1,154 under `.claude-glm` and 541 under
+  `.claude-glmc`. `.claude-glm` locator diff is clean; `.claude-glmc` has 227
+  additional parseable adapter locators absent from `sessions` and
+  `file_index_state`, consistent with the active-write frontier already visible
+  in the audit report.
+- Drift found: field-level comparison found 1,570 stale live DB rows where
+  `tool_message_count=0` and `message_count` is lower than the current parser.
+  Existing GLM `file_index_state` rows are still schema version 1: 1,695 `ok`
+  and 29 `retry/malformedJSON`.
+- Worktree repair coverage: the existing schema bump from the Doubao slice,
+  `FileIndexState.currentSchemaVersion=2`, covers this GLM stale-count class as
+  well by invalidating v1 file-index states on the next rebuild/reindex. No
+  additional GLM-specific parser code change was needed, and this pass did not
+  mutate `/Users/bing/.engram/index.sqlite`.
+- Durable sync: updated `docs/session-formats/glm.md`,
+  `docs/session-formats/glm.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry.
+
+## 2026-07-01 - Doubao provider root stale-count audit and file-index schema bump (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  rechecking the Doubao `cc-doubao` provider root from raw JSONL through the
+  retained TS adapter, Swift provider-root mapping, live DB rows, and stale-count
+  behavior.
+- Current local corpus: `/Users/bing/.claude-doubao/projects` has 3 project
+  dirs, 30 JSONL files, 2,550 records, 0 malformed lines, 4 top-level session
+  JSONL files, and 26 subagent JSONL files. The record census includes 620
+  `user`, 1,421 `assistant`, 141 `system`, 102 `queue-operation`, and 24
+  `result` rows; assistant model is `doubao-seed-2.0-code`.
+- Parser evidence: retained TS `ClaudeCodeAdapter` for source `doubao` listed
+  30 locators, parsed 28 conversations, skipped 2 workflow `journal.jsonl`
+  side-channel files, found 24 subagent parent links, reported 28
+  `originator='Claude Code'` rows, and had 0 parser/stream count mismatches.
+  Swift factory coverage is through
+  `SessionAdapterFactory.claudeCodeProviderAdapters()` and
+  `ClaudeCodeAdapter.providerRootSources` mapping `.claude-doubao` to
+  `SourceName.doubao`.
+- Live DB evidence: `/Users/bing/.engram/index.sqlite` has 28 `doubao` sessions
+  under `/Users/bing/.claude-doubao/%` and 30 `file_index_state` rows (28 `ok`,
+  2 `retry/malformedJSON`). Locator diff is clean: 0 DB-only current locators
+  and 0 missing parseable adapter locators.
+- Drift found: field-level comparison found 26 stale live DB rows where
+  `tool_message_count=0` and `message_count` is lower than the current parser.
+  All 30 Doubao `file_index_state` rows are still schema version 1, so matching
+  file size/mtime can make the installed DB skip unchanged files even though
+  current Claude-style parser semantics count non-empty `tool_result` rows.
+- Fix in worktree: `macos/EngramCoreWrite/Indexing/IndexingWriteSink.swift`
+  bumps `FileIndexState.currentSchemaVersion` from 1 to 2, and
+  `macos/EngramCoreTests/IndexerParityTests.swift` adds
+  `testFileIndexDecisionInvalidatesLegacyParserSchemaVersionOne`. A
+  rebuild/reindex with this worktree will invalidate v1 file-index states and
+  refresh the stale count fields.
+- Durable sync: updated `docs/session-formats/doubao.md`,
+  `docs/session-formats/doubao.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry. This pass did not mutate
+  `/Users/bing/.engram/index.sqlite`.
+
+## 2026-07-01 - VS Code provider current-source and empty-stub audit (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  rechecking VS Code Copilot Chat against current official source, local
+  workspaceStorage files, Swift/TS adapter behavior, and live DB state.
+- Official-source evidence: current `microsoft/vscode` main
+  `chatSessionOperationLog.ts` still defines `storageSchema` with `version: 3`,
+  `requests`, `modelId`, `promptTokens`, `outputBuffer`, `promptTokenDetails`,
+  `copilotCredits`, `repoData`, `workingDirectory`,
+  `inputState.selectedModel`, and `inputState.permissionLevel`. Current
+  `objectMutationLog.ts` still uses `kind:0` initial, `kind:1` set, `kind:2`
+  push, and `kind:3` delete entries.
+- Current local raw evidence: stable
+  `/Users/bing/Library/Application Support/Code/User/workspaceStorage` exists
+  with 19 workspace dirs, 4 `chatSessions` dirs, 5 chat JSONL files, 6 total log
+  lines, 0 malformed lines, kind distribution `{0:5,1:1,2:0,3:0}`, and 0
+  replayed sessions with non-empty `requests`. The Insiders
+  `/Users/bing/Library/Application Support/Code - Insiders/User/workspaceStorage`
+  root is absent.
+- Parser/DB evidence: retained TS `VsCodeAdapter` listed 5 files, parsed 0,
+  streamed 0, and found 0 parser/stream mismatches. Live
+  `/Users/bing/.engram/index.sqlite` has 0 `vscode` session rows and 5
+  `file_index_state retry/malformedJSON` rows, matching the current empty-stub
+  parse failure rather than missing populated sessions.
+- Parser fix: Swift and TS `VsCodeAdapter` now keep `workspace.json` as the
+  primary cwd source and fall back to session `workingDirectory` when the
+  sidecar yields no local path. Regression tests cover the fallback in
+  `tests/adapters/vscode.test.ts` and
+  `AdapterMessageCountTests.testVsCodeUsesSessionWorkingDirectoryWhenWorkspaceJsonMissing`.
+- Documentation drift fixed: current `.jsonl` snapshots do not carry a
+  top-level `isEmpty`; `requests: []` is the file-layer empty marker. `isEmpty`
+  remains a derived `state.vscdb` `chat.ChatSessionStore.index` field, not a
+  snapshot field. The docs now also surface official `workingDirectory`,
+  `repoData`, `selectedModel`, and `permissionLevel` schema fields consistently.
+- Durable sync: updated `docs/session-formats/vscode.md`,
+  `docs/session-formats/vscode.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`,
+  `macos/Shared/EngramCore/Adapters/Sources/VsCodeAdapter.swift`,
+  `src/adapters/vscode.ts`, `tests/adapters/vscode.test.ts`,
+  `macos/EngramCoreTests/AdapterMessageCountTests.swift`, `CHANGELOG.md`, and
+  this `.memory` entry.
+
+## 2026-07-01 - Copilot provider DB count stale audit (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  rechecking Copilot CLI raw session-state layout, Swift/TS parser semantics,
+  live DB coverage, and stale-count risk.
+- Current local Copilot raw evidence: 470 dirs under
+  `/Users/bing/.copilot/session-state`, 470 `workspace.yaml`, 470
+  `checkpoints/`, 227 `events.jsonl`, 155 per-session `session.db`, 15
+  `plan.md`, 32 `rewind-snapshots/`, 4 stale-looking `inuse.<pid>.lock`, 243
+  no-events checkpoint indexes with 0 entries, and 26 populated checkpoint
+  indexes shadowed by `events.jsonl`.
+- Raw event census: 125,845 event lines, 0 malformed lines, 946
+  `user.message`, 19,922 `assistant.message`, 233 `session.shutdown`, 221
+  shutdown records with positive usage, and max `events.jsonl` size 41,693,192
+  bytes.
+- Current structure drift fixed in docs: 111,216 events use the base envelope
+  keyset `data,id,parentId,timestamp,type`, while 14,629 events add top-level
+  `agentId` on subagent-scoped assistant/tool/hook/skill/error records; Engram
+  ignores `agentId`. Current `copilotVersion` distribution includes
+  `0.0.420`/`0.0.421`/`0.0.422` plus sparse `1.0.x` versions up to `1.0.65`,
+  so the old "live shows 1.0.63" wording was stale.
+- Parser evidence: retained TS `CopilotAdapter` listed and parsed 227/227
+  event locators, 0 checkpoint fallback locators on the live store, streamed
+  20,868 messages, and found 0 parser/stream count mismatches. Swift and TS
+  both prefer `events.jsonl`, only fallback to parseable checkpoint indexes when
+  events are missing, and strip matched YAML quote pairs.
+- DB evidence: locator coverage remains clean in
+  `/Users/bing/.engram/index.sqlite` with 227 `copilot` rows, 227
+  `file_index_state` rows, 0 missing locators, and 0 stale locators. Field-level
+  comparison found 2 stale session rows despite matching file size and
+  `file_index_state ok`: `51835c08-bea0-4594-83e7-9fe69b71808a` is stale for
+  `message_count` 1,952 vs 2,863, `user_message_count` 9 vs 36,
+  `assistant_message_count` 1,943 vs 2,827, and `end_time`
+  `2026-03-04T13:54:54.250Z` vs `2026-03-04T14:13:26.902Z`;
+  `ad05ab2d-ddcb-419f-8452-57ec21d4b96f` is stale for `message_count` 2,009 vs
+  2,103, `user_message_count` 114 vs 127, `assistant_message_count` 1,895 vs
+  1,976, and `end_time` `2026-03-12T03:25:00.209Z` vs
+  `2026-03-12T06:54:03.357Z`. `size_bytes` is aligned for both rows.
+- Interpretation: no current Copilot adapter code change was needed. The stale
+  rows are historical live DB count/end-time drift from older count semantics
+  around empty-content tool-request `assistant.message` events, not active file
+  append. Reindex/cleanup is still needed if exact live DB message fields matter.
+- Durable sync: updated `docs/session-formats/copilot.md`,
+  `docs/session-formats/copilot.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry.
+
+## 2026-07-01 - Cline retained TS usage aggregation fix (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  rechecking Cline raw task files, parser behavior, live DB coverage, and
+  retained TS/Swift parity.
+- Current local Cline evidence remains locator-clean: 3 task dirs under
+  `/Users/bing/.cline/data/tasks`, 3 `ui_messages.json`, 3
+  `api_conversation_history.json`, 0 `claude_messages.json`, 848 raw UI
+  records, 80 visible transcript messages (17 user + 63 assistant), and 141
+  `api_req_started` ledger records.
+- Live `/Users/bing/.engram/index.sqlite` remains aligned for Cline: 3
+  `cline` rows, 3 `file_index_state ok` rows, latest index
+  `2026-05-23T23:27:21Z`, and DB message counts 30 / 40 / 10 matching current
+  parser semantics.
+- Drift found and fixed: Swift already accumulated consecutive
+  `api_req_started` token usage before attaching it to the next assistant
+  message, but retained TS overwrote `pendingUsage` with the last ledger. TS now
+  accumulates input/output/cache counters to match Swift.
+- Documentation drift found and fixed: `docs/session-formats/cline.md` and
+  `docs/session-formats/cline.zh.md` still said Engram keyed only on
+  `ui_messages.json`, even though current Swift and TS both fallback to legacy
+  `claude_messages.json` when the modern file is absent. The docs now describe
+  preferred `ui_messages.json` plus legacy fallback, and their adapter line refs
+  match current source.
+- Verification: RED test
+  `npm run test -- tests/adapters/cline.test.ts -t "accumulates consecutive api request token usage"`
+  failed with `{inputTokens:7, outputTokens:3}` instead of `{17,8}`; after the
+  fix it passed. Full `npm run test -- tests/adapters/cline.test.ts` passed
+  9/9. Fresh continuation verification also passed a TS live smoke
+  (3/3 parsed, 80 streamed, 0 stream/count mismatches, 63 usage-bearing
+  assistant messages), read-only DB check (3 `cline` rows, 3 `file_index_state
+  ok` rows, message counts 30 / 40 / 10), and Swift targeted tests
+  `testClineListsLegacyClaudeMessagesWhenUiMessagesMissing` plus
+  `testClineRejectsPrimaryWorkspaceLabelAsCwd`.
+- Durable sync: updated `docs/session-formats/cline.md`,
+  `docs/session-formats/cline.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry.
+
+## 2026-07-01 - TS Grok/bootstrap provider-surface parity (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by checking
+  that retained TypeScript tooling exposes the same provider surface it declares
+  in `SOURCE_NAMES`.
+- Finding: Swift product registration and DB coverage for `grok` were already
+  proven, but TS retained tooling declared `grok`, `minimax`, `mimo`, `doubao`,
+  `glm`, `deepseek`, and `lobsterai` in `src/adapters/types.ts` while
+  `src/core/bootstrap.ts` did not register adapters for those source ids.
+  `docs/mcp-tools.md` also still omitted `pi` from the documented source enum.
+- Fix: added retained `src/adapters/grok.ts`, matching the Swift Grok contract
+  for `~/.grok/sessions/<encoded-cwd>/<session>/chat_history.jsonl`,
+  `summary.json`, `prompt_context.json`, `<user_query>` unwrap, assistant
+  `tool_calls`, and `tool_result` mapping. Added
+  `ClaudeCodeDerivedSourceAdapter` for TS minimax/lobsterai native Claude-derived
+  sources, and registered Claude provider-root adapters in TS bootstrap while
+  keeping native Codex/Qwen/Kimi adapters later in the array so their single
+  `adapterMap` entries remain native. Synced `docs/mcp-tools.md`,
+  `docs/session-formats/grok.md`, `docs/session-formats/grok.zh.md`, and
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`.
+- Tests: RED `npm run test -- tests/adapters/grok.test.ts
+  tests/core/bootstrap.test.ts` first failed on missing `src/adapters/grok.js`
+  and missing adapters for `grok`, `minimax`, `mimo`, `doubao`, `glm`,
+  `deepseek`, and `lobsterai`. GREEN verification passed
+  `npm run test -- tests/adapters/grok.test.ts tests/adapters/claude-code.test.ts
+  tests/core/bootstrap.test.ts tests/docs/mcp-tools.test.ts` (41 tests),
+  `npm run typecheck:test`, `npm run build`, `npm run lint`, and targeted
+  `git diff --check`.
+  Lint exits 0 with the pre-existing
+  `tests/scripts/screenshot-compare.test.ts:136` warning.
+- Remaining risk: this closes retained TS provider-surface drift; it does not
+  mutate or clean stale live DB rows from the broader provider audit.
+
+## 2026-07-01 - CommandCode provider audit stale-session repair (Codex)
+
+CommandCode provider audit refreshed the current local corpus and found a
+field-level stale-session bug that locator-level checks missed.
+
+- Live CommandCode corpus on 2026-07-01: 14 project dirs, 39 reachable session
+  `.jsonl` files, 27 `.checkpoints.jsonl`, 23 `.meta.json`, 1,541 transcript
+  records, 0 malformed lines. TS live smoke parsed 39/39, streamed 1,540
+  messages, and had 0 parser/stream count mismatches; the one-record delta is a
+  system-injection user row reclassified out of transcript messages.
+- Live DB locator/index-state evidence: 39 native `commandcode` session rows and
+  39 `file_index_state` rows, all `ok`, with 0 missing/stale locators. A
+  field-level comparison found 3 stale `sessions` rows whose
+  `message_count`/assistant/tool/end_time/size lagged current files:
+  `ed99639f-c168-469b-9ecf-bc8a38a36685`,
+  `fc63eb6c-65ef-4127-9371-07235209c69c`, and
+  `b231121c-c00c-45e4-a1cd-4170e419d6cc`.
+- Later same-day read-only recheck kept the same verdict: latest index is
+  `2026-07-01T04:54:19Z`, all 39 file-index rows are still `ok` at schema v1,
+  and the same 3 rows remain stale in `message_count`,
+  `assistant_message_count`, `tool_message_count`, `end_time`, and
+  `size_bytes`; `user_message_count` and `system_message_count` now align with
+  the current parser. `npm view command-code version dist-tags.latest --json`
+  still reports `0.40.17`.
+- Current block-shape recheck: `reasoning` 243, `text` 857, `tool-call` 705,
+  `tool-result` 705, and `image` 4. Tool-call input is 703 object + 2 string
+  with 0 observed `args`; tool-result output is 705 object. Current Swift and TS
+  both parse `input ?? args`.
+- Root cause: `SwiftIndexer.scanSnapshots` could skip when `file_index_state`
+  was current/ok before confirming the authoritative `sessions` row had the same
+  file size. A recent active scan can update `file_index_state` while deferring
+  session parsing; later scans then see ok/current file state and skip forever.
+- Fix in worktree: `macos/EngramCoreWrite/Indexing/SwiftIndexer.swift` now
+  bypasses the ok/current file-state skip when `sessions.size_bytes` does not
+  match the current file size, so a reparse repairs the authoritative row.
+  `macos/EngramCoreTests/IndexerParityTests.swift` has the regression
+  `testStartupIndexRepairsSessionRowWhenFileIndexStateIsNewerThanSession`.
+- Docs updated: `docs/session-formats/commandcode.md`,
+  `docs/session-formats/commandcode.zh.md`, and
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`. This pass also
+  removed two stale doc remnants: the layout table no longer calls current
+  session files append-only, and the old Swift-only `args` fallback divergence is
+  now marked resolved for current Swift+TS. Latest npm version checked by
+  `npm view command-code version dist-tags.latest dist.tarball --json`: `0.40.17`.
+- Verification passed:
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests -destination 'platform=macOS' -only-testing:EngramCoreTests/IndexerParityTests/testStartupIndexRepairsSessionRowWhenFileIndexStateIsNewerThanSession`;
+  focused neighboring `IndexerParityTests` skip/failure tests;
+  `npm run test -- tests/adapters/commandcode.test.ts`;
+  focused Swift `EngramTests` CommandCode parser tests.
+- Remaining risk: the installed/live DB rows above remain stale until a reindex
+  or cleanup refreshes them. This pass changed source/tests/docs only; it did not
+  mutate `/Users/bing/.engram/index.sqlite`.
+
+## 2026-07-01 - Session-format runtime-status doc refresh (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by removing
+  stale runtime-status statements from provider docs after installing
+  `/Applications/Engram.app` build `20260701074505`.
+- Refresh scope: updated the affected `docs/session-formats/*` English/Chinese
+  pages and `docs/reviews/provider-session-format-audit-2026-06-30.md` so they
+  distinguish older rescan evidence from the current installed build. The docs no
+  longer say Grok, `cc-*` provider roots, native Kimi, native Pi, or native Claude
+  workflow subagents still need a rebuild/rescan when current DB evidence proves
+  coverage. The VS Code page was also refreshed to note that the Insiders
+  `workspaceStorage` directory is not currently present locally; the remaining
+  `vscode` 0-row state is due to 5 stable empty `requests: []` stubs.
+- Current DB evidence from `/Users/bing/.engram/index.sqlite`: `cc-*`
+  provider-root rows are 8,015 with 8,015 `file_index_state ok` and 210
+  `retry`; same-day row counts at that point included Grok 345, `cc-codex` 2,526, `cc-qwen` 646,
+  `cc-doubao` 28, `cc-deepseek` 553, `cc-glm` 1,695, `cc-mimo` 263,
+  `cc-kimi` 2,076, native Kimi 689, native Pi 230, and native Claude
+  locator-under-`subagents` rows 10,718. A 2026-07-01 read-only parser/DB matrix over the 11
+  zshrc `cc-*` provider roots listed 8,513 JSONL files, parsed 8,300
+  conversations, found 8,181 subagents, and showed 285 active frontier
+  parseable locators outside DB sessions: 227 `.claude-glmc` and 58
+  `.claude-openai` files.
+- Verification: `defaults read /Applications/Engram.app/Contents/Info
+  CFBundleVersion` returned `20260701074505`; Pi raw JSONL count is 230, DB has
+  230 `pi` rows and 230 `pi` `file_index_state ok` rows. VS Code live smoke
+  listed 5 stable chat JSONL files, parsed 0, streamed 0, found kind counts
+  `{0:5,1:1}`, and confirmed the Insiders root is absent; DB has 0 `vscode`
+  sessions plus 5 `retry/malformedJSON` file-index rows. Windsurf recheck found
+  2 raw `.pb` blobs, no daemon dir, an empty `~/.engram/cache/windsurf/`, 0
+  `windsurf` DB rows, and 0 `windsurf` file-index rows; docs line references for
+  `SessionAdapterFactory.swift` and `SourceCatalog.swift` were corrected to the
+  current source. The stale-status `rg`
+  sweep over `docs/session-formats` and the audit report now leaves only
+  legitimate schema/table notes or explicit backlog items such as VS Code empty
+  stubs, Windsurf raw `.pb`, and Antigravity historical locator cleanup.
+- Checks: `git diff --check -- docs/session-formats
+  docs/reviews/provider-session-format-audit-2026-06-30.md .memory CHANGELOG.md`
+  passed after the durable-entry write.
+- Remaining risk: this was a documentation/runtime-status refresh, not stale-row
+  deletion. Remaining audit backlog is still native Claude historical
+  stale/orphan rows plus the active `mediahub` frontier, VS Code
+  empty/malformed stubs, Gemini historical tmp rows, native Codex
+  terminal/stale-model rows, MiniMax/LobsterAI stale native cleanup, native
+  Kimi DB-only/stale-field cleanup, and raw `.pb` cache-generation work.
+
+## 2026-07-01 - Qwen/Kimi MCP transcript native adapter ownership fix (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by checking
+  native Qwen and Kimi not only at parser/index rows, but also through the MCP
+  `get_session` transcript path.
+- Root cause: `SessionAdapterFactory.defaultAdapters()` registers Claude Code
+  provider-root adapters for `.claude-qwen` and `.claude-kimi` before the native
+  `QwenAdapter` and `KimiAdapter`. The factory resolves duplicate-source
+  adapters by `LocatorOwningSessionAdapter` ownership first, but native Qwen and
+  Kimi did not declare ownership. Native `.qwen/projects` and `.kimi/sessions`
+  transcript reads could therefore fall through to the provider-root
+  ClaudeCodeAdapter and return empty MCP messages even when DB session metadata
+  had nonzero message counts.
+- Fix: `macos/Shared/EngramCore/Adapters/Sources/QwenAdapter.swift` and
+  `macos/Shared/EngramCore/Adapters/Sources/KimiAdapter.swift` now conform to
+  `LocatorOwningSessionAdapter` and own their native roots. Qwen streaming still
+  skips user-form Qwen system injections; Kimi ownership covers both main and
+  `subagents/<id>/context.jsonl` native locators.
+- Regression coverage:
+  `EngramMCPExecutableTests.testGetSessionReadsQwenTranscriptThroughAdapterRegistry`
+  creates a temp native `.qwen/projects/.../chats/*.jsonl` fixture and verifies
+  MCP `get_session` returns only visible user/assistant messages without leaking
+  the Qwen system prompt. `testGetSessionReadsKimiTranscriptThroughNativeAdapter`
+  creates a temp native `.kimi/sessions/.../context.jsonl` fixture and verifies
+  MCP `get_session` returns the native Kimi transcript.
+- Verification: focused MCP tests passed 2/2. Focused EngramCore Qwen/Kimi
+  adapter tests passed 8/8. `npm run test -- tests/adapters/qwen.test.ts
+  tests/adapters/kimi.test.ts` passed 24/24. Before deployment, a real runtime
+  smoke against `/Users/bing/.engram/index.sqlite` proved installed
+  `/Applications/Engram.app` MCP returned 0 messages for native Qwen row
+  `c159a22a-9399-49f0-9c17-7bd92dbaf7ce` and native Kimi row
+  `ed48cf04-9543-45f0-8cbc-988406b1ca65`, while the current Debug MCP returned
+  49 Qwen and 50 Kimi page-1 messages. After `cd macos &&
+  ./scripts/build-release.sh --local-only` and `./scripts/deploy-local.sh
+  /Users/bing/-Code-/engram/macos/build/EngramExport/Engram.app`, installed
+  `/Applications/Engram.app` is build `20260701074505`; `codesign --verify
+  --deep --strict --verbose=2 /Applications/Engram.app` passed; installed
+  `EngramMCP get_session` now returns 49 Qwen page-1 messages with
+  `sessionMessageCount=175` and 50 Kimi page-1 messages with
+  `sessionMessageCount=201`.
+- Updated report:
+  `docs/reviews/provider-session-format-audit-2026-06-30.md` now classifies
+  Qwen as `FIXED / DB_LOCATORS_PASS / MCP_TRANSCRIPT_INSTALLED_PASS /
+  TS_USAGE_FIXED / DB_SIZE_STALE_2` and Kimi as
+  `FIXED / LIVE_CURRENT_LOCATORS_PASS / MCP_TRANSCRIPT_INSTALLED_PASS /
+  HISTORICAL_DB_ONLY_116 / DB_CURRENT_FIELDS_STALE_2`.
+- Remaining risk: the installed native Qwen/Kimi transcript-read gap is closed.
+  This is distinct from broader provider stale-row cleanup, which still includes
+  historical native Claude plus the active `mediahub` frontier, Gemini tmp,
+  VS Code empty/malformed stubs, native Codex stale attribution,
+  MiniMax/LobsterAI native cleanup, and native Kimi DB-only/stale-field cleanup.
+
+## 2026-07-01 - Cursor parser drift fixes and stale-row audit (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  resolving Cursor empty-composer, nested-summary, and Swift-vs-TS cwd parser
+  drift against current `state.vscdb`, Swift/TS adapter behavior, and
+  `/Users/bing/.engram/index.sqlite`.
+- Current live data: `/Users/bing/Library/Application Support/Cursor/User/globalStorage/state.vscdb`
+  has 64 `composerData:*` rows, 59 rows with usable `composerId`, and 524
+  `bubbleId:*` rows. Raw inspection showed 8 real conversations and 51
+  metadata-only composer shells. The 51 empty composers have 0 bubbles, 0
+  summary, and 0 text-like fields; 10 carry only empty `conversation: []`, and
+  the rest are metadata/`conversationMap` shells.
+- Root causes: both Swift and TS `CursorAdapter.parseSessionInfo()` previously
+  returned a `NormalizedSessionInfo` even when `visibleBubbles` was empty,
+  producing `messageCount=0` sessions. Both adapters also only handled
+  `latestConversationSummary.summary` when it was a string, while the live
+  modern store has 6 nested summary objects. Swift additionally hardcoded
+  Cursor `cwd` to `""` while the retained TS adapter inferred cwd from
+  `context.folderSelections` / `context.fileSelections`.
+- Fix: updated Swift `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`
+  to return `.failure(.malformedJSON)` when there are no visible bubbles,
+  recursively extract legacy string and modern nested summary text, and infer
+  cwd from Cursor context fields. Updated retained TS `src/adapters/cursor.ts`
+  to return `null` for empty composers and recursively extract nested summary
+  text. Streaming behavior was already correct because it yielded no messages
+  for empty composers.
+- Tests: `tests/adapters/cursor.test.ts` now covers metadata-only composers and
+  nested summary extraction. `AdapterMessageCountTests` covers Swift metadata-only
+  rejection, nested summary extraction, and cwd inference from a file selection.
+- Continuation drift found and fixed: retained TS `CursorAdapter.streamMessages()`
+  did not map assistant `bubble.tokenCount` to message `usage`, while Swift did.
+  Added a focused RED/GREEN TS test for non-zero assistant `tokenCount` and
+  updated TS to emit `{inputTokens, outputTokens, cacheReadTokens:0,
+  cacheCreationTokens:0}` with the same zero-usage guard as Swift.
+- Verification: original `npm run test -- tests/adapters/cursor.test.ts` passed 16/16,
+  `npm run typecheck:test` passed, `npx biome check src/adapters/cursor.ts tests/adapters/cursor.test.ts`
+  passed, and focused Swift `xcodebuild test` for the three Cursor
+  `AdapterMessageCountTests` passed 3/3. Post-fix live TS smoke listed 59
+  Cursor virtual locators, parsed 8, rejected 51, streamed 345 messages, found
+  0 stream/count mismatches, emitted 6 summaries, and emitted 2 cwd values.
+  Fresh continuation checks passed the new focused TS usage test, full
+  `npm run test -- tests/adapters/cursor.test.ts` (17/17),
+  `npm run typecheck:test`, `npx biome check src/adapters/cursor.ts
+  tests/adapters/cursor.test.ts`, and the focused Swift Cursor test set
+  (5/5). Live TS smoke now emits 46 usage-bearing assistant messages.
+- Live DB state: `/Users/bing/.engram/index.sqlite` still has 59 `cursor` rows
+  and 0 `cursor` `file_index_state` rows because Cursor uses virtual locators.
+  All 8 current adapter ids are present, but the 51 historical `message_count=0`
+  rows are now stale cleanup work. A 2026-07-01 field-level recheck also found
+  6 non-empty rows with stale `size_bytes=29581312` from the old whole-DB sizing
+  behavior; current parser sizes for those rows are per-composer payload bytes.
+  No live DB mutation was performed.
+- Fresh continuation recheck on 2026-07-01 still matches this state: 59 virtual
+  locators, 8 parsed conversations, 345 streamed messages, 46 usage-bearing
+  assistant messages, 51 stale zero-message DB rows, and 6 stale `size_bytes`
+  rows. It fixed two zh-only doc lag points in `docs/session-formats/cursor.zh.md`:
+  token usage is Swift+TS rather than Swift-only, and the gotcha list now records
+  the 6 stale whole-DB `size_bytes` rows.
+- Updated report: `docs/reviews/provider-session-format-audit-2026-06-30.md`
+  now classifies Cursor as
+  `FIXED in Swift+TS / CURRENT_MESSAGE_ROWS_PASS / TS_USAGE_FIXED /
+  STALE_EMPTY_DB_ROWS / DB_SIZE_STALE_6 / DOC_ZH_USAGE_FIXED` instead of leaving
+  empty composer handling, nested summary extraction, Swift cwd inference,
+  retained TS usage mapping, stale live DB size fields, or zh usage wording
+  ambiguous.
+
+## 2026-07-01 - LobsterAI stale false-positive refresh and ClaudeCode stream guard (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  rechecking LobsterAI's strict Claude-derived source detection, the
+  `lobsterai` substring project directory, and the adjacent native MiniMax rows
+  against current local files and `/Users/bing/.engram/index.sqlite`.
+- Root cause found during live smoke: retained TS `ClaudeCodeAdapter` crashed in
+  `streamMessages()` when a real Claude Code `AskUserQuestion` tool use encoded
+  `input.questions` as a JSON string instead of an array. Swift already guarded
+  this with an array check. Added
+  `tests/adapters/claude-code.test.ts` coverage and changed TS
+  `formatToolUse()` to call `formatAskUserQuestion()` only for array-valued
+  `questions`.
+- Verification for the fix: RED `npm run test -- tests/adapters/claude-code.test.ts`
+  failed with `TypeError: questions.map is not a function`; after the fix the
+  same command passed 24/24. A fresh full native ClaudeCode-family TS stream
+  smoke listed 12,110 native Claude JSONL files, parsed 11,218 conversations,
+  streamed 1,075,149 messages, and found 0 stream/count mismatches.
+- LobsterAI current state: TS `ClaudeCodeAdapter` classified 0 current locators
+  as `lobsterai`. The 27 files whose paths contain `lobsterai` are only under the
+  project-name substring directory
+  `/Users/bing/.claude/projects/-Users-bing-lobsterai-project`; current parser
+  classifies them as 23 `claude-code`, 2 `minimax`, and 2 null/skipped
+  side-channel files.
+- Live DB state: only 1 stale `source='lobsterai'` row remains
+  (`1f5f01c5-596f-4ea9-b190-3e207f43ec32`) and there are 0 `lobsterai`
+  `file_index_state` rows. Rows whose locator contains `lobsterai` are now 23
+  `claude-code`, 2 `minimax`, and 1 stale `lobsterai`; file index state for that
+  substring directory is 25 `claude-code ok`, 2 `minimax ok`, and 2
+  `claude-code retry/malformedJSON`.
+- MiniMax adjacent state: native Claude root has 5 current `MiniMax-M2.5`
+  sessions and all 5 ids are present in DB as `minimax`. Three current native
+  MiniMax rows still carry older `message_count` values and one deleted
+  historical native MiniMax row remains; this replaces the older claim that 2
+  current MiniMax rows were still stored as `lobsterai`.
+- Updated report: `docs/reviews/provider-session-format-audit-2026-06-30.md`
+  now records LobsterAI as a one-row stale false-positive cleanup, not a 26-row
+  current residue. Do not loosen LobsterAI detection back to substring matching;
+  strict path-component matching is still the correct source boundary.
+
+## 2026-07-01 - Gemini CLI current-rows and stale-locator audit refresh (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  rechecking Gemini CLI current live files, parser behavior, cwd resolution, and
+  live DB stale-row shape.
+- Current live data: `/Users/bing/.gemini/tmp` has 3 current chat files:
+  `/Users/bing/.gemini/tmp/safeline/chats/session-2026-06-29T05-57-fe81c4b4.jsonl`
+  plus two Surge JSON chats. `.project_root` markers exist for `network`,
+  `safeline`, `surge`, and `tailscale-config`; there are 0 live
+  `*.engram.json` sidecars. `/Users/bing/.gemini/projects.json` is present
+  (28,608 bytes) but the current parser resolves Safeline and Surge cwd from
+  `.project_root`.
+- Parser result: TS `GeminiCliAdapter` listed/parsed 3/3, streamed 4 messages,
+  and found 0 stream/count mismatches. Current parsed rows are Safeline
+  (`messageCount=1`, cwd `/Users/bing/-NetWork-/Safeline`), Surge
+  `session-2026-04-08T03-22-75cb965e.json` (`messageCount=3`, cwd
+  `/Users/bing/-NetWork-/Surge`), and Surge
+  `session-2026-04-13T07-47-bcf966c3.json` (`messageCount=0`, cwd
+  `/Users/bing/-NetWork-/Surge`).
+- Live DB state: `/Users/bing/.engram/index.sqlite` has 386 `gemini-cli`
+  session rows with latest index `2026-07-01T04:54:00Z`; all 3 current live
+  adapter locators are present and there are 0 current missing rows. The stale
+  side is 383 rows whose locator is absent from current disk: 350 with matching
+  missing `file_path/source_locator`, and 33 with missing historical
+  `source_locator != file_path`. There are 24 zero-message `gemini-cli` rows.
+- One current row is still field-stale:
+  `75cb965e-3678-4982-8cdb-e2ea8d31fd90` stores `message_count=4` and
+  `assistant_message_count=3`, while the current parser returns 3 and 2 after
+  dropping an empty assistant turn.
+- `file_index_state` has 7 `gemini-cli` rows, all `ok`: 3 current live files and
+  4 stale old locators (`ai-panel` x2 and `polycli-gemini-mcp-empty-bvalwx` x2).
+- Interpretation: Gemini current parser coverage is closed; the remaining issue
+  is stale session/file_index cleanup for old/deleted `~/.gemini/tmp` locators,
+  not missing `.jsonl` support, `.project_root` cwd resolution, or sidecar
+  exclusion. Top stale project buckets are `gemini-plugin-cc=71`, `engram=70`,
+  `kimi-plugin-cc=28`, and `polycli=25`.
+- Updated report: `docs/reviews/provider-session-format-audit-2026-06-30.md`
+  keeps Gemini as `SOURCE_READY / CURRENT_ROWS_PASS / HISTORICAL_STALE_ROWS` but
+  now records the exact stale-row buckets and current live parser proof.
+
+## 2026-07-01 - Windsurf/Antigravity raw-cache and source-locator audit refresh (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  rechecking the remaining Cascade raw-cache backlog for Windsurf and
+  Antigravity against current local files, TS/Swift locator policy, and live
+  `/Users/bing/.engram/index.sqlite` rows.
+- Windsurf current state: `/Users/bing/.codeium/windsurf/cascade` still has 2
+  raw `.pb` conversations and `/Users/bing/.engram/cache/windsurf` has 0 JSONL
+  cache files. The raw files are `data` by `file`, sized 43,357 bytes
+  (`3943ee14-bc8c-4529-adc4-07b7fb2c1f5c.pb`) and 2,228,085 bytes
+  (`7da9e8cd-17ea-4f40-99af-411f6386a59b.pb`). TS `WindsurfAdapter` listed and
+  parsed 0/0; live DB has 0 `windsurf` sessions and 0 `windsurf`
+  `file_index_state` rows. This remains a cache-only/raw `.pb` unsupported gap,
+  not a parser drift for cache JSONL.
+- Antigravity Cascade current state: `/Users/bing/.gemini/antigravity/conversations`
+  has 61 raw `.pb` files and `/Users/bing/.engram/cache/antigravity` has 58 cache
+  JSONL files. The 3 raw-only ids remain
+  `4e9c3057-3dc9-49b0-a56a-4fe838f646bd`,
+  `7802689e-f75d-4f66-88a5-2a2bf763d9e9`, and
+  `cac3d9a2-2fbb-4fcc-b2b7-1e544cab630d`. Live DB has 58 cache-backed
+  Antigravity rows and matching `file_index_state ok` rows.
+- Antigravity CLI brain current state: 305 `brain/**/*.jsonl` files are present:
+  160 canonical `.system_generated/logs/transcript.jsonl` and 145 auxiliary
+  `transcript_full.jsonl`. Swift and TS `AntigravityAdapter` list only canonical
+  `transcript.jsonl` plus cache JSONL. TS live smoke listed/parsed 218/218 total
+  Antigravity locators, streamed 8,237 messages, and found 0 stream/count
+  mismatches after the TS CLI parser was aligned to the Swift tool-result
+  allowlist.
+- Parser fix: `src/adapters/antigravity.ts` now keeps CLI tool messages only for
+  the Swift-matching allowlist (`VIEW_FILE`, `TOOL_OUTPUT`, `COMMAND_OUTPUT`,
+  `SHELL_OUTPUT`, `APPLY_PATCH`) instead of promoting every content-bearing
+  non-user/non-planner record to `tool`. Added TS regression coverage for
+  unknown content-bearing CLI events and `RUN_COMMAND` being dropped, matching
+  the existing Swift `testAntigravityCliIgnoresUnknownContentEvents` behavior.
+- Cwd parser fix: Swift product `AntigravityAdapter.swift` and retained TS
+  `src/adapters/antigravity.ts` now use the same conservative local-file-path
+  heuristic for fallback cwd inference. The old TS hard-coded
+  `/Users/<user>/-Code-/<project>` pattern is gone, and both implementations now
+  reject JSON escape/markup/URL/localhost/route/menu false positives such as
+  `/github.com/bbingz`, `/localhost:5173`, `/CI`, and `/components/ui`, plus
+  dependency/cache components like `node_modules`. Added TS and Swift
+  regressions for generic `/home/.../file.go` inference and for ignoring
+  markup/URL/route-like slash tokens.
+- Newly found stale DB detail: live DB has 160 canonical CLI-brain `file_path`
+  rows and 160 canonical `file_index_state` rows, all `ok`, but one session
+  (`70665dbd-ffdc-42f7-94f9-0b1e923cd81d`) still has
+  `source_locator=.../transcript_full.jsonl` while `file_path` and
+  `file_index_state.locator` are canonical `.../transcript.jsonl`. The canonical
+  and full transcript files are byte-identical with
+  `sha256=643e4717f701a34d255452208fbdd08c6f4c115001cec54b5d64b86af98595fa` and
+  each parses to 3 messages if read directly.
+- Fresh continuation diff also found stale CLI-brain fields despite canonical
+  `file_path` and `file_index_state ok`: current parser counts are
+  `01ac5741-287a-4776-bd89-9efb6fc7063c` 545 messages / 100 tools vs DB
+  874 / 429, `0ca3de12-75dc-47ec-ad7f-e53f181fbb8d` 2 / 0 vs DB 3 / 1, and
+  `70665dbd-ffdc-42f7-94f9-0b1e923cd81d` 2 / 0 vs DB 3 / 1. After the cwd
+  heuristic hardening, live smoke reports 130 stale Antigravity session rows in
+  total: 128 with old cwd snapshots, plus the known 3 message/tool-count stale
+  rows (the buckets can overlap). Current parser output has 0 suspicious cwd
+  values matching the checked URL/route/menu false-positive patterns.
+- Interpretation: the previous report claim of 0 `transcript_full.jsonl` rows was
+  too broad. It is true for `sessions.file_path` and `file_index_state.locator`,
+  but false for `sessions.source_locator`. Current worktree
+  `SessionSnapshotWriter` accepts local locator refreshes, so a current-worktree
+  reindex should repair this source-locator-only stale row without parser
+  changes; no live DB mutation was performed in this pass.
+- Updated report: `docs/reviews/provider-session-format-audit-2026-06-30.md`
+  now classifies Windsurf as `CACHE_ONLY_GAP / RAW_PB_UNSUPPORTED`,
+  Antigravity Cascade as `CACHE_ONLY_GAP`, and Antigravity CLI brain as
+  `PARSER_PASS / DB_FILE_PATH_PASS / SOURCE_LOCATOR_STALE_1 /
+  DB_COUNT_STALE_3 / DB_CWD_STALE_128`.
+
+## 2026-07-01 - OpenCode provider audit refresh and TS stream/count fix (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  rechecking OpenCode from the live SQLite store through retained TS parser
+  behavior and live Engram DB locator coverage.
+- Current live data: `/Users/bing/.local/share/opencode/opencode.db` has 391
+  active sessions, 0 archived sessions, 7,455 `message` rows, and 36,356 `part`
+  rows. Current part types are `tool=12147`, `step-start=6780`,
+  `step-finish=6743`, `reasoning=6095`, `text=3519`, `patch=1032`, `file=25`,
+  `compaction=14`, and `subtask=1`.
+- Root cause: Swift product `OpenCodeAdapter` already counted unique message ids
+  with non-empty text parts and merged multiple text parts for the same message
+  id before pagination. Retained TS `src/adapters/opencode.ts` was stale: it
+  counted every `message` row with `role=user/assistant` and streamed one row per
+  text part. The live smoke before the fix found 242 stream/count mismatches.
+- Fix: updated TS `parseSessionInfo` to count only unique user/assistant message
+  ids that have a non-empty text part, and updated `streamMessages` to merge
+  multiple text parts for the same message id before applying offset/limit.
+  Added `tests/adapters/opencode.test.ts` coverage for tool-only rows, empty
+  text rows, `value` text payloads, multi-text-part aggregation, and
+  post-aggregation pagination.
+- Verification: the new focused test failed RED with `expected 4 to be 2`; after
+  the fix, `npm run test -- tests/adapters/opencode.test.ts` passed 9/9. The
+  live OpenCode smoke then listed/parsed 391/391 sessions, counted 647 user +
+  2,506 assistant transcript messages, streamed 3,153 messages, and found 0
+  stream/count mismatches. Live `/Users/bing/.engram/index.sqlite` has 391
+  `opencode` rows, 0 `opencode` `file_index_state` rows because locators are
+  virtual SQLite locators, latest index `2026-06-28T13:26:21Z`, and 0
+  missing/stale adapter locators. A 2026-07-01 field-level recheck found 165
+  existing live DB rows still carry older count semantics: DB totals are 6,968
+  messages / 662 user / 6,306 assistant vs current parser totals 3,153 / 647 /
+  2,506. Stale fields are `message_count` (164 rows),
+  `assistant_message_count` (161), `user_message_count` (10), and `end_time`
+  (1); `size_bytes` is aligned.
+- Updated report: `docs/reviews/provider-session-format-audit-2026-06-30.md`
+  now classifies OpenCode as
+  `FIXED in TS reference / DB_LOCATOR_PASS / DB_COUNTS_STALE_165`.
+- Fresh continuation on 2026-07-01 fixed stale OpenCode session-format docs in
+  both `docs/session-formats/opencode.md` and `docs/session-formats/opencode.zh.md`:
+  the old TS raw-role count-divergence gotcha is now marked resolved, live
+  assistant row counts are exact at 6,793 total vs 2,506 text-contentful, and the
+  adapter line-count/line-ref evidence now matches current Swift/TS sources. The
+  zh copy also now carries the live DB stale-count gotcha present in the English
+  source. The audit matrix status is now
+  `FIXED in TS reference / DB_LOCATOR_PASS / DB_COUNTS_STALE_165 /
+  DOC_TS_DRIFT_FIXED`.
+
+## 2026-07-01 - Provider runtime closure and Kimi canonical locator repair (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by
+  re-checking stale runtime claims against the current live DB, current disk
+  stores, and adapter parser behavior.
+- Current runtime adjudication at that checkpoint: Grok, Pi, and CommandCode had
+  locator closure in `/Users/bing/.engram/index.sqlite`: Grok 345/345
+  `chat_history.jsonl`, Pi 230/230 JSONL, and CommandCode 39/39 JSONL. A later
+  same-day Grok recheck superseded this exact-closure wording after one Grok
+  directory disappeared from disk, leaving 344 current locators plus 1 DB-only
+  stale Grok row.
+- VS Code recheck remains unchanged: stable VS Code has 5
+  `chatSessions/*.jsonl` mutation-log files, all empty `requests: []` stubs;
+  Insiders has 0 chat JSONL; TS `VsCodeAdapter` listed 5, parsed 0, streamed 0;
+  live DB has 0 `vscode` sessions and 5 `file_index_state` rows, all
+  `retry/malformedJSON`.
+- Copilot recheck remains PASS: 470 `~/.copilot/session-state` dirs, 227
+  `events.jsonl`, 470 `checkpoints/index.md`, 26 checkpoint indexes with
+  entries all shadowed by `events.jsonl`, and 243 no-events checkpoint dirs with
+  no parseable entries. TS `CopilotAdapter` listed/parsed 227/227 event
+  locators, streamed 20,868 messages, found 0 stream/count mismatches, and live
+  DB has 227 `copilot` sessions plus 227 `file_index_state` rows, all `ok`, with
+  0 missing and 0 stale adapter locators. This is locator PASS only: field-level
+  DB comparison still has the 2 stale count/end-time rows recorded in the
+  dedicated Copilot audit entry. The Copilot docs now also reflect the current
+  6-key `agentId` envelope variant and `copilotVersion` values up to `1.0.65`.
+- Cline recheck remains `PASS / TS_USAGE_FIXED`: 3 task dirs, 3 `ui_messages.json`, 3
+  `api_conversation_history.json`, 0 `claude_messages.json`; TS `ClineAdapter`
+  listed/parsed 3/3, streamed 80 messages, found 0 stream/count mismatches, and
+  live DB has 3 `cline` sessions plus 3 `file_index_state` rows, all `ok`, with
+  0 missing and 0 stale adapter locators. Current parsed model distribution is
+  `z-ai/glm-5` (2) and `minimax/minimax-m2.5` (1). A later retained TS fix in
+  this same audit pass now accumulates consecutive `api_req_started` usage
+  ledgers before the next assistant message, matching Swift.
+- Cursor recheck is `DB_LOCATOR_PASS / EMPTY_COMPOSER_ROWS`: current
+  `state.vscdb` has 64 `composerData:*` rows, 59 usable `composerId` rows, and
+  524 `bubbleId:*` rows. TS `CursorAdapter` listed/parsed 59/59, streamed 345
+  messages, found 0 stream/count mismatches, and live DB has 59 `cursor`
+  session rows with 0 missing/stale adapter locators. However, 51/59 current
+  Cursor rows have `message_count=0`; treat this as an explicit parser/product
+  policy risk, not a locator coverage failure. Cursor has 0 `file_index_state`
+  rows because locators are virtual `state.vscdb?composer=<id>` entries.
+- Gemini update: the prior missing Safeline JSONL gap is closed. Current
+  adapter diff is 3 parseable current files, 386 DB rows, 0 current missing,
+  3 current `file_index_state ok` rows, and 383 stale historical
+  `~/.gemini/tmp` rows that no longer correspond to current live chat files.
+  One current legacy `.json` row (`75cb965e...`) is still field-stale:
+  stored `message_count=4` / `assistant_message_count=3`, while the current
+  parser returns 3 / 2 after dropping an empty assistant turn.
+- Codex update: native Codex has 2,663 parseable rollouts and 2,662 native DB
+  rows; the only missing session is a 41 MB rollout marked
+  `terminal/messageLimitExceeded`. Model attribution is still stale in DB
+  (`openai`/empty-heavy) while the current parser extracts concrete
+  `gpt-5.x` models for 2,609/2,663 rollouts.
+- Kimi root cause and fix: native Kimi had all 573 current canonical locators in
+  `file_index_state`, but live `sessions` rows were pinned to historical
+  sidecar locators. The first bug was same-version/same-hash locator-only
+  changes merging without carrying `incoming.sourceLocator`; the second was
+  lower-version local Swift reindex snapshots being blocked by legacy higher
+  `sync_version` rows. Fixed `SessionSnapshotWriter.mergeSessionSnapshot` to
+  persist incoming local canonical locators and preserve the higher syncVersion,
+  and mirrored the lower-version local locator-refresh rule in retained TS
+  `mergeSessionSnapshot`.
+- Live Kimi DB closure: restored
+  `/Users/bing/.engram/index.sqlite.before-kimi-rescan-20260701133916.bak` to
+  prove the fix from the original stale state (689 native Kimi rows, 573
+  `file_index_state ok`, 521 canonical rows, 168 non-canonical rows). The
+  env-gated live DB rescan then passed with
+  `LIVE_KIMI_DB_RESCAN current_locators=573 live_rows=689
+  remaining_noncanonical=112`. Post-run DB has 577 canonical `context.jsonl`
+  rows, 112 non-canonical historical rows, and all 573 `file_index_state` rows
+  still `ok`; all remaining non-canonical rows are absent from current
+  `file_index_state` (55 notification delivery rows, 56 task/event sidecars,
+  1 `wire.jsonl`).
+- Continuation recheck: a later read-only TS/DB diff on the current live corpus
+  still parsed 573/573 native Kimi locators with 573 unique ids, 114 subagents,
+  102 cwd-resolved sessions, 4,036 parsed/streamed messages, and 0
+  stream/count mismatches. Live DB still has 0 missing current locators and 573
+  native `file_index_state ok` rows at schema version 1, but the remaining stale
+  surface is 116 DB-only native rows (4 obsolete `context.jsonl`, 111
+  sidecar/artifact rows, 1 `wire.jsonl`) plus 2 current rows with stale
+  `message_count`, `user_message_count`, `assistant_message_count`, and
+  `size_bytes`: `b197adaa-dc61-408c-9a70-73f7d4c9017d` and
+  `23e6d744-002b-402c-9636-b710afcf7666`.
+- Verification: first focused xcodebuild reproduced the locator stale bug with
+  two failing assertions; after the fix,
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS'
+  -only-testing:EngramCoreTests/SessionSnapshotClassificationTests/testReindexRefreshesCanonicalLocatorWhenOnlyLocatorChanges`
+  passed. Added
+  `SessionSnapshotClassificationTests.testLocalReindexRefreshesCanonicalLocatorDespiteLegacyHigherSyncVersion`
+  and TS `tests/core/session-merge.test.ts` coverage; `npx vitest run
+  tests/core/session-merge.test.ts` passed 8/8 and focused Swift
+  `SessionSnapshotClassificationTests` passed 2/2. The broader
+  `SessionSnapshotClassificationTests` plus
+  `AdapterMessageCountTests/testKimiDiscoversAndLinksSubagentContexts` run
+  passed 13/13. `HumanDrivenFilterTests` was aligned to derive the expected
+  reliable-source SQL list from `HumanDrivenFilter.instructionSignalSources`
+  after provider-list expansion, and the full
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests
+  -destination 'platform=macOS'` run passed 565 tests with 3 skipped and 0
+  failures. Added and ran
+  `ENGRAM_LIVE_KIMI_CORPUS_SMOKE=1 xcrun xctest -XCTest
+  EngramCoreTests.AdapterMessageCountTests/testLiveKimiCorpusIndexesCanonicalContextLocators
+  ~/Library/Developer/Xcode/DerivedData/Engram-*/Build/Products/Debug/EngramCoreTests.xctest`;
+  it wrote the current local Kimi corpus to a temp SQLite DB with 573/573
+  canonical `context.jsonl` rows and 114 subagents. Added
+  `AdapterMessageCountTests.testLiveKimiDatabaseRescanRefreshesCanonicalSessionRows`
+  as an opt-in live DB verifier guarded by
+  `ENGRAM_LIVE_KIMI_DB_RESCAN=I_UNDERSTAND_THIS_MUTATES_LIVE_ENGRAM_DB`.
+- Updated report: `docs/reviews/provider-session-format-audit-2026-06-30.md`
+  now reflects current provider closure and remaining stale-row cleanup risks.
+  Native Kimi current locators are closed in live DB through the worktree test
+  bundle; native Kimi DB-only row cleanup and 2 stale current field snapshots
+  remain.
+
+## 2026-07-01 - cc-provider installed runtime ingest and Codex parity repair (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by closing
+  the runtime loop for `cc-*` Claude Code provider roots and fixing the Codex
+  indexer parity drift exposed by the current Swift product behavior.
+- Runtime result: rebuilt and locally installed `/Applications/Engram.app`
+  0.1.0 build `20260701044321`, then ran `EngramService` against
+  `/Users/bing/.engram/index.sqlite`. Provider-root rows advanced from 0 to
+  8,015 sessions across `.claude-kimi`, `.claude-minimax`, `.claude-mimo`,
+  `.claude-mimosg`, `.claude-qwen`, `.claude-doubao`, `.claude-glm`,
+  `.claude-glmc`, `.claude-ds`, `.claude-dsc`, and `.claude-openai`.
+- Final DB evidence: provider-root `file_index_state` has 8,225 rows split into
+  8,015 `ok` and 210 `retry/malformedJSON`. Per-source session rows are
+  `codex=2526`, `deepseek=553`, `doubao=28`, `glm=1695`, `kimi=2076`,
+  `mimo=263`, `minimax=228`, and `qwen=646`.
+- Moving-source caveat: a later 2026-07-01 read-only TS parser matrix listed
+  8,513 JSONL and parsed 8,300 conversations, with 285 parseable locators
+  outside DB sessions: 227 new `.claude-glmc` files and 58 `.claude-openai`
+  files. This is active-file growth after the service stop, not missing
+  installed provider-root support.
+- Bug fixed: `SwiftIndexer.writeBatchCountingSuccesses` now deduplicates
+  duplicate session ids inside a scan batch before building
+  `statesBySessionId`, preventing the previous `Dictionary(uniqueKeysWithValues:)`
+  fatal crash on overlapping session ids.
+- TS parity repair: retained TypeScript indexing now carries `originator`,
+  instruction counts, human-turn count, and instruction summary through
+  `AuthoritativeSessionSnapshot`, DB schema/read/write/merge/sync, and
+  `snapshot_hash` generation. `gen-indexer-parity-fixtures` excludes
+  `offload_state` to match Swift parity normalization, and the fixture DB was
+  regenerated with the new `originator` column.
+- Verification: focused RED failed first on missing TS `originator` schema;
+  after fixes, `npm test -- tests/core/indexer.test.ts`, `npm run build`,
+  `npm run typecheck:test`, `npm run check:fixtures`, targeted `biome check`,
+  `npm run generate:indexer-parity-fixtures`, focused Swift Codex parity, and
+  full `xcodebuild -quiet ... -only-testing:EngramCoreTests/IndexerParityTests`
+  passed. `/usr/bin/log show` found no `Fatal error`, `Duplicate values`, or
+  `Swift/NativeDictionary` crash during the final runtime validation.
+- Durable docs updated: `docs/reviews/provider-session-format-audit-2026-06-30.md`,
+  `CHANGELOG.md`, and this `.memory` section.
+
+## 2026-07-01 - Claude Code cc-provider root audit and stream/count fix (Codex)
+
+- Objective: continue provider-by-provider session-format audit by checking the
+  `cc-*` Claude Code wrappers declared in `~/.zshrc` from raw
+  `~/.claude-*` files through TS/Swift parser behavior, stream/message-count
+  parity, temp Swift indexing, and live DB visibility.
+- Result: worktree TS/Swift parser/source mapping is current for all 11
+  provider roots, and one ClaudeCode parser/stream drift was fixed. Installed
+  `/Applications/Engram.app` still lacks the `.claude-*` provider-root strings,
+  so live DB visibility still requires rebuild/install/rescan.
+- Current disk state: 8,214 JSONL files across `.claude-kimi`,
+  `.claude-minimax`, `.claude-mimo`, `.claude-mimosg`, `.claude-qwen`,
+  `.claude-doubao`, `.claude-glm`, `.claude-glmc`, `.claude-ds`,
+  `.claude-dsc`, and `.claude-openai`.
+- Parser smoke: TS `ClaudeCodeAdapter` parsed 8,006/8,214 files with 0 source
+  mismatches and 0 stream/count mismatches. Parsed `messageCount` and streamed
+  count both totaled 465,732; system-injection count totaled 671.
+- Swift live smoke: `ENGRAM_LIVE_CC_PROVIDER_ROOT_SMOKE=1 xcrun xctest ...`
+  wrote 8,006/8,006 expected rows into a temp SQLite DB and checked stream/count
+  parity for every parsed provider-root locator.
+- Bug fixed: user-form system injections (`<command-message>`,
+  `<command-name>`, AGENTS/INSTRUCTIONS wrappers, local-command wrappers, etc.)
+  were counted as `systemMessageCount` by `parseSessionInfo` but still emitted
+  by `streamMessages`, which caused 364 stream/count mismatches before the fix.
+  TS and Swift now skip these injections before offset/count pagination.
+- Live Engram DB state: `/Users/bing/.engram/index.sqlite` still has 0
+  `sessions` rows and 0 `file_index_state` rows under
+  `/Users/bing/.claude-%/projects/%`. Existing `kimi`/`qwen`/`codex` rows are
+  from native roots, not these `cc-*` roots.
+- Verification: `npm run test -- tests/adapters/claude-code.test.ts` passed
+  (22/22); focused Swift `AdapterMessageCountTests` ClaudeCode/provider-root
+  tests passed (5/5); env-gated Swift live smoke passed in 500.760s; `npx biome
+  check src/adapters/claude-code.ts tests/adapters/claude-code.test.ts` passed;
+  and `git diff --check` on changed ClaudeCode files passed.
+- Durable sync: updated `docs/session-formats/claude-code.md`,
+  `docs/session-formats/claude-code.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry.
+
+## 2026-07-01 - Qwen provider audit refresh and stream/count fix (Codex)
+
+- Objective: continue provider-by-provider session-format audit by rechecking
+  native Qwen Code from raw `~/.qwen/projects` files through TS/Swift parser
+  behavior, live DB coverage, and stream/message-count parity.
+- Result: native Qwen locator and message-count coverage is correct, but a
+  continuation recheck found 2 current native rows with stale `size_bytes`.
+  Earlier work fixed one parser/stream drift in both TS and Swift, and this
+  refresh fixed retained TS usage parity so streamed assistant messages now
+  attach `usageMetadata` or `system/ui_telemetry` usage like Swift.
+- Current disk state: 787 JSONL transcripts under
+  `/Users/bing/.qwen/projects/*/chats`, across 43 project dirs. Raw scan found
+  5,158 records and 0 malformed lines: 799 `user`, 1,143 `assistant`, 795
+  `tool_result`, and 2,421 `system`.
+- Parser smoke: TS `QwenAdapter` parsed 779/787 files. The 8 skipped files
+  contain only 28 `type:"system"` records and are intentionally
+  non-conversational.
+- Live Engram DB state: 779 `qwen` rows under `/Users/bing/.qwen/%`, 0 missing
+  current locators, and 0 DB-only native rows. `file_index_state` has 787 Qwen
+  locators with 779 `ok` and 8 non-`ok`, all at schema version 1. The broader
+  `source='qwen'` total is 1,425 rows because it also includes 646
+  `.claude-qwen` provider-root sessions; those are covered by the separate
+  Qwen provider-root audit row.
+- Continuation recheck: read-only live TS/DB diff still reports 787 listed,
+  779 parsed, 1,941 parsed/streamed messages, 1,140 usage-bearing streamed
+  assistant messages, and 0 stream/count mismatches. Two current native rows are
+  stale in `size_bytes` only: `94c5af76-6c49-498d-a1d4-ad77e470b43d`
+  (`2476->3697`) and `ce70ba00-8e80-45dc-bd75-3da766b0e865`
+  (`2372->3555`).
+- Bug fixed: one user-form system injection was counted as `systemMessageCount`
+  but still emitted by `streamMessages`, producing `streamed=1,942` vs
+  `messageCount=1,941`. TS and Swift now skip these injections from stream
+  output, and live worktree smoke reports `streamed=1,941`,
+  `messageCount=1,941`, and 0 per-file mismatches.
+- Additional retained-TS fix: `src/adapters/qwen.ts` now attaches assistant
+  usage from top-level `usageMetadata`, falling back to the preceding
+  `system/ui_telemetry` `qwen-code.api_response` row when assistant metadata is
+  absent. Fresh live smoke still reports 787/779 parsed, 1,941 streamed, 0
+  mismatches, and now 1,140 streamed assistant messages with usage.
+- Verification: RED `npm run test -- tests/adapters/qwen.test.ts` first failed
+  on missing usage for both new usage tests; after the fix the same command
+  passed 10/10. Focused official-source check on 2026-07-01 against
+  `QwenLM/qwen-code` `chatRecordingService.ts` still shows append-only JSONL
+  `ChatRecord` with `usageMetadata`, `model`, `user`/`assistant`/`tool_result`/
+  `system`, and `system/ui_telemetry`. Focused
+  `EngramCoreTests/AdapterMessageCountTests` Qwen tests passed, including
+  `testQwenSkipsSystemInjectionInStreamCount`.
+- Durable sync: updated `docs/session-formats/qwen.md`,
+  `docs/session-formats/qwen.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry.
+
+## 2026-07-01 - iFlow provider audit refresh, stream/count fix, and TS usage parity (Codex)
+
+- Objective: continue provider-by-provider session-format audit by rechecking
+  native iFlow sessions from raw `~/.iflow/projects` files through TS/Swift
+  parser behavior, live DB coverage, and stream/message-count parity.
+- Result: native iFlow locator coverage is correct, and three worktree issues
+  are fixed: TS/Swift iFlow parsing now skips text-empty/tool-only turns before
+  count and stream output, retained TS now attaches non-zero assistant
+  `message.usage.{input_tokens,output_tokens}` metadata, and Swift MCP session
+  hydration now falls back from a stale
+  `session_local_state.local_readable_path` to the existing `sessions.file_path`
+  / `source_locator`.
+- Current disk state: 2 `session-*.jsonl` files under
+  `/Users/bing/.iflow/projects`, with 45 raw records and 0 malformed lines:
+  18 `user`, 27 `assistant`. Current intended transcript semantics map these to
+  17 visible messages (5 user + 12 assistant) and skip 28 text-empty/tool-only
+  envelopes (13 user/tool-result + 15 assistant/tool-use).
+- Parser smoke: current TS/Swift worktree parsers stream 17 messages and match
+  parser `messageCount` at 17, with 0 per-file mismatches. Retained TS now
+  attaches usage to 1 streamed assistant message (small session line 4:
+  16472 input / 224 output tokens).
+- Format correction from fresh re-smoke: content blocks across both files are
+  `text` x12, `tool_use` x31, and `tool_result` x13. The 13 tool results are not
+  one uniform envelope: 12 use full object `{callId,responseParts,resultDisplay}`
+  wrappers, while the small session has 1 compact direct `{functionResponse}`
+  wrapper. All 13 tool-result ids still match their producing `tool_use_id`.
+- Live Engram DB state: 2 `iflow` rows, 2 native-path rows, and 2
+  `file_index_state` rows with `parse_status='ok'`; adapter locator diff is 0
+  missing and 0 stale. Both live DB rows have stale old-parser message counts:
+  `session-b5785972-6711-443a-9bb4-e361146f8e79` is 41 -> 14 total,
+  16 -> 4 user, and 25 -> 10 assistant; `session-041101e6-2a7f-4dfd-90b0-57888a353f6a`
+  is 4 -> 3 total and 2 -> 1 user, with assistant count already aligned at 2.
+- Runtime evidence: installed `/Applications/Engram.app` build
+  `20260701074505` can stream the valid-path
+  `session-b5785972-6711-443a-9bb4-e361146f8e79` file and returns 14 page
+  messages, but still returns 0 messages for
+  `session-041101e6-2a7f-4dfd-90b0-57888a353f6a` because its
+  `session_local_state.local_readable_path` points at nonexistent
+  `...-Code-coding-memory/...jsonl`. The repo-local Debug `EngramMCP` built
+  from this worktree falls back to the existing `...-Code-engram/...jsonl` and
+  returns 3 messages for the stale-path small session and 14 for the valid-path
+  large session.
+- Verification: focused RED/GREEN checks were run for TS `IflowAdapter`,
+  including assistant usage parity, TS `pickReadableSessionPath`, Swift
+  `IflowAdapter`, and Swift MCP `get_session` stale-path fallback. Green
+  commands include
+  `npm run test -- tests/adapters/iflow.test.ts tests/core/db.test.ts -t "IflowAdapter|falls back to file_path when local_readable_path is stale"`,
+  focused `EngramCoreTests/AdapterMessageCountTests/testIflowSkipsToolOnlyTurnsInStreamCount`,
+  focused `EngramMCPTests/EngramMCPExecutableTests/testGetSessionFallsBackWhenLocalReadablePathIsStale`,
+  and repo-local live MCP smoke against `/Users/bing/.engram/index.sqlite`.
+- Durable sync: updated `docs/session-formats/iflow.md`,
+  `docs/session-formats/iflow.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry.
+
+## 2026-07-01 - Qoder provider audit refresh (Codex)
+
+- Objective: continue provider-by-provider session-format audit by rechecking
+  Qoder from raw `~/.qoder/projects` files through TS/Swift parser behavior,
+  installed/export binary evidence, and live DB coverage.
+- Result: Qoder remains PASS for the current local layout. No parser logic change
+  was needed.
+- Current disk state: 57 JSONL files across 7 project dirs under
+  `/Users/bing/.qoder/projects`: 13 root sessions and 44 direct
+  `subagents/*.jsonl` child transcripts. There are 0 nested
+  `subagents/workflows/*` JSONL files.
+- Raw scan: 5,021 records, 0 malformed lines. Record type counts are 1,714
+  `user`, 2,923 `assistant`, 215 `token-stats`, 103 `system`, 37 `last-prompt`,
+  21 `file-history-snapshot`, and 8 `ai-title`. Sidecars remain 51
+  `*.meta.json` and 51 `task-*.json`.
+- Parser smoke: TS `QoderAdapter` listed and parsed 57/57 files, including 44
+  subagents and 44 path-derived parent links. Parsed totals were 128 user, 2,923
+  assistant, 1,586 tool, and 0 system messages; stream count matched
+  `messageCount` at 4,637.
+- Live Engram DB state: 57 `qoder` rows, 44 `agent_role=subagent`, 44 parent
+  links, 0 adapter locators missing from DB, 0 DB-only locators, 0 stale
+  count/end/size rows, and 57 `file_index_state` rows all `ok/none/v1`.
+- Runtime evidence: installed `/Applications/Engram.app` and local-export
+  Engram app/MCP binaries contain Qoder adapter strings such as
+  `QoderAdapter` and `qoder`. No `qoder` CLI or `/Applications/Qoder.app` was
+  present; ingestion depends on `~/.qoder/projects` files, not a provider
+  binary.
+- Verification: `npm run test -- tests/adapters/qoder.test.ts` passed; focused
+  `EngramTests/AdapterParityTests` Qoder tests passed; and
+  `EngramCoreTests/AdapterParityTests/testSwiftAdaptersMatchNodeParityGoldensForAllProviders`
+  passed.
+- Durable sync: updated `docs/session-formats/qoder.md`,
+  `docs/session-formats/qoder.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry.
+
+## 2026-07-01 - Gemini CLI provider audit refresh (Codex)
+
+- Objective: continue the provider-by-provider session-format audit by rechecking
+  Gemini CLI from raw `~/.gemini/tmp` files through TS/Swift parser behavior,
+  installed/export binary evidence, and live DB coverage.
+- Result: no parser logic change was needed. Current source discovers both
+  legacy `.json` and current `.jsonl`, replays JSONL `$set`/`$rewindTo`, filters
+  empty-content turns, and prefers `.project_root` for cwd. Focused TS and Swift
+  tests passed.
+- Current disk state: 3 chat files under `/Users/bing/.gemini/tmp`: 2 legacy
+  `.json` files under `surge` and 1 `.jsonl` under `safeline`.
+  `/Users/bing/.gemini/projects.json` still has 258 project entries, there are
+  4 per-project `.project_root` files, and `find ~/.gemini -name '*.engram.json'`
+  returns no sidecars.
+- Current parser smoke: TS `GeminiCliAdapter` listed and parsed 3/3 files. The
+  Safeline `.jsonl` session resolves cwd to `/Users/bing/-NetWork-/Safeline` and
+  streams 1 user message; the rich legacy Surge JSON currently parses as 3
+  messages after empty assistant turns are filtered.
+- Live Engram DB state: 385 historical `gemini-cli` rows and 4 historical
+  `.jsonl` rows, but only 2/3 current raw files are present. The current
+  2026-06-29 Safeline `.jsonl` is absent, and the older rich Surge JSON row still
+  has historical `message_count=4` and cwd `surge` instead of the current parser's
+  count 3 and `.project_root` cwd.
+- Runtime evidence: installed and local-export binaries contain Gemini adapter
+  strings such as `GeminiCliAdapter`, `gemini-cli`, and `.gemini/projects.json`;
+  the remaining issue is stale DB indexing/rescan, not missing current-source
+  parser support.
+- Durable sync: updated `docs/session-formats/gemini-cli.md`,
+  `docs/session-formats/gemini-cli.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry.
+
+## 2026-07-01 - Pi provider audit refresh (Codex)
+
+- Objective: continue provider-by-provider session-format audit by rechecking the
+  restored Pi adapter from raw store through parser behavior, registration, live
+  DB coverage, and runtime helper evidence.
+- Result: no parser logic change was needed. Current worktree source parses the
+  full local Pi corpus, and a later installed/live DB recheck closed the older
+  missing-row state.
+- Current disk state: 230 JSONL files under `/Users/bing/.pi/agent/sessions`;
+  raw scan found 0 malformed lines, 230 `session` records, and 230 files with
+  both session metadata and at least one `model_change`.
+- Current raw counts: 230 `session`, 239 `model_change`, 234
+  `thinking_level_change`, 9,235 `message`, 8 `compaction`, and 2 `custom`.
+  Message roles were 452 `user`, 3,758 `assistant`, 5,024 `toolResult`, and 1
+  `bashExecution`; content parts were 6,734 `text`, 5,028 `toolCall`,
+  3,133 `thinking`, and 2 `image`.
+- Current parser smoke: TS `PiAdapter` listed and parsed 230/230 files into 452
+  user, 3,758 assistant, 5,024 tool, and 0 system messages. Parsed final models
+  were 164 `gpt-5.4`, 21 `gpt-5.3-codex`, 17 `mimo-v2.5-pro`, 14
+  `claude-sonnet-4-6`, 9 `claude-opus-4-6-thinking`, and 5 `gpt-5.5`.
+- Live Engram DB state after the fresh continuation recheck: 230 `pi` rows, 230
+  `pi` `file_index_state` rows, all `ok`, with 0 missing locators, 0 DB-only
+  locators, and 0 field-stale current rows. Retained TS streaming emits 9,234
+  transcript messages with 0 parser/stream count mismatches.
+- Registration evidence: Pi is present in Swift `SourceName`,
+  `SessionAdapterFactory.defaultAdapters()` / `recentActiveAdapters()`,
+  `SourceCatalog`, `SourceColors`, onboarding source list, TS `SOURCE_NAMES`,
+  TS bootstrap, and adapter parity fixture scripts.
+- Durable sync: updated `docs/session-formats/pi.md`,
+  `docs/session-formats/pi.zh.md`, `CHANGELOG.md`, and this `.memory` entry to
+  record the current closed runtime coverage and remove older stale wording about
+  missing installed/live Pi coverage.
+
+## 2026-07-01 - Kimi native provider audit refresh (Codex)
+
+- Objective: continue provider-by-provider session-format audit by rechecking
+  native Kimi CLI sessions separately from `.claude-kimi` / `cc-kimi`
+  provider-root sessions.
+- Result: no parser logic change was needed. Current TS/Swift source parses the
+  native Kimi corpus, but the installed/live Engram DB is stale and still
+  includes historical non-canonical Kimi locators.
+- Current disk state: 573 canonical `context.jsonl` locators under
+  `/Users/bing/.kimi/sessions`, split into 459 main session contexts plus 114
+  `subagents/<id>/context.jsonl` child contexts. The same store has 566
+  `wire.jsonl` files and 44 auxiliary rotation shards (`2 context_N`,
+  `42 context_sub_N`).
+- Current parser smoke: TS `KimiAdapter` listed and parsed 573/573 locators,
+  with 114 subagents, 114 parent links, 102 cwd-resolved sessions, and aggregate
+  counts of 1,061 user and 2,975 assistant messages. It produced no tool or
+  system messages, matching current adapter policy.
+- Current cwd/hash evidence: `~/.kimi/kimi.json` has 49 `work_dirs`, and 49/49
+  local workdir paths hash to existing `sessions/<md5(cwd)>` directories. The
+  adapters still intentionally treat the path component as opaque because
+  non-local kaos roots use `<kaos>_<md5>`.
+- Live Engram DB state: 673 native `kimi` rows, 0 `.claude-kimi` provider-root
+  rows, 72 current canonical locators missing, and 172 stale/non-canonical rows
+  (`26 wire.jsonl`, `4 obsolete context.jsonl`, `142` other sidecars/artifacts).
+  Latest Kimi index timestamp is `2026-06-21T01:33:47.838Z`.
+- Installed/runtime gap: installed and current local-export helpers lack
+  `.kimi/sessions`, `KimiAdapter`, and `kimi` strings, so rebuild/install/rescan
+  remains required before the live DB can converge.
+- Durable sync: updated `src/adapters/kimi.ts`,
+  `docs/session-formats/kimi.md`, `docs/session-formats/kimi.zh.md`,
+  `CHANGELOG.md`, and this `.memory` entry to remove stale wording about the
+  workspace-id comment while preserving the current parser behavior.
+
+## 2026-07-01 - Grok provider audit refresh (Codex)
+
+- Objective: continue provider-by-provider session-format audit by rechecking
+  Grok Build sessions from raw directory structure through Swift parser behavior
+  and live Engram DB coverage.
+- Result: no parser fix was needed. Current worktree source parses the live Grok
+  corpus with 0 parser/stream mismatches, and the installed/live Engram runtime
+  now has Grok rows. The remaining drift is one deleted DB-only locator.
+- Current disk state: 344 session directories under
+  `/Users/bing/.grok/sessions/<encoded-cwd>/<session>/`; all 344 have
+  `chat_history.jsonl`, `updates.jsonl`, `summary.json`, and
+  `prompt_context.json`, so every current preferred locator is
+  `chat_history.jsonl`.
+- Current raw transcript scan: 344 `system`, 1,347 `user`, 6,923 `assistant`,
+  13,741 `tool_result`, 7,614 `reasoning`, and 489 `backend_tool_call` records.
+  The scan found 0 malformed raw JSON lines.
+- Current retained TS live smoke: parsed 344/344 sessions with 0 stream/count
+  mismatches. Env-gated Swift live smoke
+  `testLiveGrokCorpusIndexesExpectedLocalSessions` also parsed 344/344 and wrote
+  344 `grok` rows into a temp DB. Parser-mapped counts were 470 user, 6,923
+  assistant, 13,605 tool, and 1,221 system messages; observed models were
+  `grok-build` and `grok-composer-2.5-fast`.
+- Live Engram DB state: 345 `grok` session rows and 345 `grok`
+  `file_index_state` rows, all `ok/v1`. All 344 current parser locators are
+  present with 0 field-stale current rows, but the deleted
+  `/Users/bing/.grok/sessions/%2FUsers%2Fbing%2F-Code-%2F2026-Teaching-Plan/019e81cd-c8e3-79a3-a9a9-f49363691a29/chat_history.jsonl`
+  locator remains as both a DB-only session row and DB-only file-index row.
+- Durable sync: updated `docs/session-formats/grok.md`,
+  `docs/session-formats/grok.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry to replace the older 345-session `DB_ROWS_PASS`
+  wording with `CURRENT_LOCATOR_PASS / DB_ONLY_STALE_1`.
+
+## 2026-07-01 - Codex CLI provider audit refresh (Codex)
+
+- Objective: continue provider-by-provider session-format audit by rechecking
+  native Codex CLI rollout sessions separately from `.claude-openai` / `cc-codex`
+  provider-root sessions.
+- Result: no parser code change was needed. Current source parses the live Codex
+  CLI rollout corpus, but the installed/live Engram DB is stale and still carries
+  old model attribution.
+- Current disk/catalog state: 2,663 rollout JSONL files, split as 2,658 active
+  under `/Users/bing/.codex/sessions` plus 5 archived under
+  `/Users/bing/.codex/archived_sessions`. Codex native `state_5.sqlite` is at
+  SQLx migration 40 with 2,663 `threads`, matching disk exactly.
+- Current parser smoke: TS `CodexAdapter` listed and parsed 2,663/2,663 files.
+  The corpus has 48,660 `turn_context.payload.model` records, 0
+  `response_item.payload.model` records, 141 top-level `world_state` records,
+  and concrete model values for 2,609/2,663 sessions.
+- Current Codex catalog shape: `thread_spawn_edges` has 1,623 rows with 0 broken
+  endpoints; grouped `threads.source` counts are 1,623 spawned subagents, 481
+  `cli`, 470 `vscode`, 65 `exec`, 18 review subagents, and 6 `unknown`.
+- Live Engram DB state: 2,647 `codex` session rows, 16 parseable rollout files
+  absent, 0 stale session extras. `file_index_state` has 2,664 `codex` locators:
+  2,591 `ok`, 16 `retry`, and 57 `terminal`; 9 parseable current locators are
+  absent from file-index-state and 10 file-index-state locators are stale.
+- Stale model attribution remains in live sessions: 1,808 rows store `openai`,
+  838 rows are NULL/empty, and 1 row stores `custom`.
+- Durable sync: updated `docs/session-formats/codex.md`,
+  `docs/session-formats/codex.zh.md`,
+  `docs/reviews/provider-session-format-audit-2026-06-30.md`, `CHANGELOG.md`,
+  and this `.memory` entry to replace the older 2,662-thread baseline.
+
+## 2026-07-01 - MiniMax/LobsterAI derived Claude-source audit (Codex)
+
+- Objective: continue provider-by-provider session-format audit by rechecking
+  MiniMax and LobsterAI, which are derived from Claude Code transcripts by model
+  hint and strict path-component classification.
+- Result: no parser fix was needed. Current source correctly treats MiniMax as
+  model-hint/provider-root driven and does not classify ordinary
+  `-Users-bing-lobsterai-project` encoded project directories as LobsterAI.
+- MiniMax current expected rows: 233 total = 5 native `MiniMax-M2.5` sessions
+  under `/Users/bing/.claude/projects` plus 228 parseable
+  `/Users/bing/.claude-minimax/projects` provider-root sessions. Provider-root
+  rows split into 10 root sessions and 218 subagents (93 direct, 125 workflow);
+  models are 215 `MiniMax-M3` and 13 `MiniMax-M2.7-highspeed`.
+- MiniMax live DB state after the continuation recheck: 234 `minimax` rows total,
+  split as 228 provider-root rows under `/Users/bing/.claude-minimax/projects`
+  and 6 native Claude-root rows. The 5 current native MiniMax ids are present as
+  `minimax`; 1 native row points at a stale/deleted historical file. Remaining
+  count drift is 225 provider-root rows plus 3 current native rows where
+  `tool_message_count=0` and `message_count` is lower than the current parser.
+- Fresh continuation updated `docs/session-formats/minimax.md`,
+  `docs/session-formats/minimax.zh.md`, and the audit matrix to replace older
+  native Claude corpus totals with the current 12,110 listed locators / 11,218
+  parseable conversations / 5 native MiniMax model-hint sessions. Parser behavior
+  and DB status are unchanged.
+- LobsterAI current expected rows: 0. There are 27 native Claude paths containing
+  `lobsterai`, but current parser classifies them as 23 `claude-code`, 2
+  `minimax`, and 2 skipped queue-operation side-channel files. Live DB now has
+  1 stale `lobsterai` false-positive row and no `lobsterai` `file_index_state`.
+- Fresh continuation corrected `docs/session-formats/lobsterai.md`,
+  `docs/session-formats/lobsterai.zh.md`, and the audit matrix: the live
+  `-Users-bing-lobsterai-project` directory now has transcript JSONL files; it
+  currently has 27 JSONL files, 16 `tool-results/*.txt` sidecars, and
+  `sessions-index.json`, while strict path-component detection still yields 0
+  current `lobsterai` locators and 1 stale DB false-positive row.
+- Verification: TS `tests/adapters/claude-code.test.ts` passed; focused
+  `EngramTests` derived-source tests passed; live read-only TS smoke produced the
+  MiniMax/LobsterAI parse and DB diff above; continuation recheck confirmed the
+  same parser boundaries plus current provider-root locator closure.
+
+## 2026-07-01 - Native Claude Code root provider audit (Codex)
+
+- Objective: continue provider-by-provider session-format audit by rechecking
+  the native `/Users/bing/.claude/projects` root from raw layout through parser
+  behavior and live DB drift.
+- Result: no parser fix was needed. Current source discovers nested workflow
+  subagents and intentionally skips local-command/system side-channel files. The
+  old live-DB partial verdict was stale because workflow rows are present, but
+  the later current-identity-pass wording is also stale after active `mediahub`
+  Claude files moved ahead of the live DB. Remaining work is a native Claude
+  rescan/reindex for the current frontier plus historical stale-row/orphan
+  cleanup and duplicate-current-locator interpretation.
+- Current corpus: latest TS full native smoke listed 12,110 adapter locators,
+  parsed 11,218 conversations, streamed 1,075,149 messages, and found 0
+  stream/count mismatches. Latest env-gated Swift live smoke listed the same
+  12,110 locators, parsed 11,217 conversations (11,212 `claude-code` plus 5
+  native MiniMax model-hint sessions), found 893 parse failures, 11,081 unique
+  current `claude-code` ids, and 131 duplicate current ids, so
+  one-row-per-locator closure is not a valid DB invariant for native Claude
+  Code. A later read-only TS identity recheck (no full message stream) listed
+  the same 12,110 locators, parsed 11,218 conversations, found 892 parse
+  failures, 11,082 unique current `claude-code` ids, and still found the same 38
+  current unique ids missing from every DB source.
+- Live DB state: 12,719 native `claude-code` rows under
+  `/Users/bing/.claude/projects`; 12,073 native `claude-code`
+  `file_index_state` rows; 9,771 `agent_role=subagent` rows; 10,718
+  locator-under-`subagents` rows. Native file index state is 11,731 `ok`, 338
+  `retry/malformedJSON`, 2 `terminal/lineTooLarge`, and 2
+  `terminal/messageLimitExceeded`.
+- Current frontier: the latest Swift verifier and later read-only TS identity
+  recheck both show 38 current unique `claude-code` ids missing from DB. All 38
+  are under `-Users-bing--Code--mediahub`, split as 2 root sessions and 36
+  workflow subagents. Their mtimes run from
+  `2026-07-01T06:31:08.538Z` to `2026-07-01T13:27:24.673Z`; they are absent
+  from every source in `sessions` and have no `file_index_state` rows.
+- Residual risk: earlier TS classification found 1,675 DB ids not in the
+  current parseable id set, including missing-file rows and currently
+  non-conversational side-channel rows. Treat this as stale-row cleanup, not a
+  missing nested-workflow parser/runtime gap.
+- Verification: TS `tests/adapters/claude-code.test.ts` passed earlier in the
+  provider audit; focused `EngramCoreTests` passed for nested workflow
+  discovery, local-command-only skips, tool-result count parity, and symlinked
+  projects roots; the latest env-gated Swift live smoke
+  `ENGRAM_LIVE_CLAUDE_CODE_CORPUS_SMOKE=1 xcrun xctest -XCTest
+  EngramCoreTests.AdapterMessageCountTests/testLiveNativeClaudeCodeCorpusHasIdentityCoverageInDatabase
+  /Users/bing/Library/Developer/Xcode/DerivedData/Engram-apkspuobooepqkdrdnbizljrophn/Build/Products/Debug/EngramCoreTests.xctest`
+  failed with 38 missing current unique `claude-code` ids.
+
+## 2026-07-01 - Windsurf/Antigravity Cascade provider audit (Codex)
+
+- Objective: continue provider-by-provider session-format audit by rechecking
+  Windsurf and Antigravity from raw files through parser boundaries and live DB
+  coverage.
+- Result: the Cascade raw-cache gap itself did not need a cache parser fix; it
+  remains raw history with no generated cache. The later CLI-brain follow-up did
+  harden Antigravity cwd fallback parsing in Swift and TS, because the generic
+  slash-token heuristic could otherwise infer cwd from URL/route/menu text.
+- Windsurf: 2 raw `/Users/bing/.codeium/windsurf/cascade/*.pb` files, 0
+  `/Users/bing/.engram/cache/windsurf/*.jsonl` files, 0 live `sessions` rows,
+  and 0 `file_index_state` rows.
+- Antigravity Cascade: 61 raw
+  `/Users/bing/.gemini/antigravity/conversations/*.pb` files, 58
+  `/Users/bing/.engram/cache/antigravity/*.jsonl` files, 58 live cache-backed
+  rows, and 58 cache `file_index_state` rows with `parse_status='ok'`. The
+  remaining raw-only ids are `4e9c3057-3dc9-49b0-a56a-4fe838f646bd`,
+  `7802689e-f75d-4f66-88a5-2a2bf763d9e9`, and
+  `cac3d9a2-2fbb-4fcc-b2b7-1e544cab630d`.
+- Antigravity CLI brain: 160 canonical
+  `.system_generated/logs/transcript.jsonl` rows are indexed; 145
+  `transcript_full.jsonl` auxiliary files are intentionally ignored. Current
+  parser live smoke still parses all 218 Antigravity locators with 0
+  stream/count mismatches; live DB retains 1 stale `source_locator` pointing at
+  `transcript_full.jsonl`, 3 old broad-tool count snapshots, and 128 old cwd
+  snapshots from the previous broad cwd heuristic.
+- Product boundary: Swift default adapters use `enableLiveSync: false` for both
+  Windsurf and Antigravity. Default product scans only consume existing cache
+  JSONL plus Antigravity canonical CLI transcripts; raw `.pb` backfill requires
+  a daemon-backed cache export path or a separately verified protobuf decoder.
+- Verification: TS Windsurf/Antigravity adapter tests passed; focused
+  `EngramCoreTests` passed for Windsurf cwd metadata and Antigravity cwd
+  inference; focused `EngramTests` passed for Antigravity CLI transcript parsing
+  and the Cascade-docs disabled-live-sync assertion. The follow-up cwd fix also
+  passed `npm run test -- tests/adapters/antigravity.test.ts`, four focused
+  `EngramCoreTests/AdapterMessageCountTests` cwd cases, and three focused
+  `EngramTests/AdapterParityTests` Antigravity CLI cases.
+
+## 2026-07-01 - cc-provider root runtime audit and empty-session guard (Codex)
+
+- Objective: answer whether the `cc-*` wrappers in `~/.zshrc` are correctly
+  indexed by Engram, and preserve the provider-root runtime evidence.
+- Historical result before the installed-runtime rescan: the 11 wrapper roots under
+  `/Users/bing/.claude-{kimi,minimax,mimo,mimosg,qwen,doubao,glm,glmc,ds,dsc,openai}/projects`
+  had 8,201 JSONL files and 7,994 parseable conversations, but
+  `~/.engram/index.sqlite` had 0 `sessions` rows and 0 `file_index_state` rows
+  under `/Users/bing/.claude-%/projects/%`. This 0-row state is superseded by
+  the later 2026-07-01 installed-runtime rescan and current 8,015 provider-root
+  DB rows.
+- Runtime smoke: a non-destructive temp `EngramService` run using the pre-fix
+  local export reached 5,091 cc-provider-root rows before an 8-minute cap and a
+  write-lock timeout. It proved the exported writer path for Kimi, Qwen, Mimo,
+  MiniMax, Doubao, GLM, and part of DeepSeek, but did not complete
+  `.claude-openai` or `.claude-dsc`.
+- Drift found and fixed: the pre-fix Swift runtime wrote one extra `.claude-glmc`
+  row for a local-command/system-injection-only transcript with zero visible
+  conversation turns. `ClaudeCodeAdapter.parseSessionInfo` now rejects Claude
+  Code transcripts where `user + assistant + tool == 0`.
+- Current-source proof: an env-gated Swift live verifier parsed and wrote the
+  11 local cc-provider roots into a temp DB with 7,991/7,991 expected rows,
+  including 2,511 `.claude-openai` rows, and confirmed the `.claude-glmc`
+  empty-session false positive stayed absent.
+- Follow-up live parser recheck after `.claude-openai` corpus drift listed 8,201
+  JSONL files, parsed 7,994 conversations, found 7,877 subagents, and reported
+  0 source/originator mismatches. Current installed and local-export helpers
+  still lack provider-root strings.
+- Verification: focused Swift cc-provider tests passed for provider source
+  routing, nested workflow subagents, default adapter registration, and the new
+  local-command-only skip case. TS `tests/adapters/claude-code.test.ts`, the
+  env-gated Swift live verifier, `git diff --check`, live DB zero-row checks,
+  and residual temp-service process checks also passed.
+- Remaining: rebuild the local export after the empty-session guard, then install
+  and rescan before claiming the installed runtime fully indexes existing
+  cc-provider roots.
+
+## 2026-06-30 - Claude Code provider-root source routing (Codex)
+
+- Objective: stop routing `cc-*` Claude Code wrapper transcripts to the
+  `claude-code` source when the actual backend provider is Kimi, MiniMax, Mimo,
+  Qwen, Doubao, GLM, DeepSeek, or Codex/OpenAI.
+- Implementation:
+  - `ClaudeCodeAdapter` now accepts a configured source and `originator`, maps
+    known `.claude-<provider>/projects` roots to provider sources, and reports
+    `originator = "Claude Code"` for provider-routed sessions.
+  - `SessionAdapterFactory` registers locator-specific Claude Code provider
+    adapters for `.claude-kimi`, `.claude-minimax`, `.claude-mimo`,
+    `.claude-mimosg`, `.claude-qwen`, `.claude-doubao`, `.claude-glm`,
+    `.claude-glmc`, `.claude-ds`, `.claude-dsc`, and `.claude-openai`; duplicate
+    source ids such as `codex` are resolved by locator ownership.
+  - Added `SourceName`/catalog/schema/docs support for `mimo`, `doubao`, `glm`,
+    and `deepseek`, and preserved the existing Grok source schema work.
+  - Added nullable `sessions.originator` migration/schema support and propagated
+    it through `IndexingEventTypes`, `SwiftIndexer`, `SessionSnapshotWriter`,
+    service DTOs, app `Session`, search mapping, and row display (`via Claude Code`).
+  - App, Service, MCP, and export transcript readers now use locator-aware
+    adapter lookup so provider-routed Claude Code transcripts parse with the
+    Claude Code parser while keeping the provider source id.
+- Verification:
+  - Focused red/green Swift tests prove `.claude-mimo/projects` indexes as
+    `source = mimo` with `originator = Claude Code`, default adapters include
+    all wrapper roots, and fresh/legacy schemas contain nullable `originator`.
+  - `EngramCoreTests` focused cc-provider/migration tests passed.
+  - `EngramTests/SourceCatalogTests` passed after adding the missing Grok display
+    label exposed by the expanded catalog.
+  - Full `EngramMCPTests` passed after updating the source enum expectation.
+  - `EngramServiceCore` full run had one expected-count failure caused by duplicate
+    source adapters; the assertion was changed to count disabled adapters by
+    source, and the targeted regression passed. The same full run had all other
+    261 tests pass, with one skipped test.
+  - `npm run typecheck:test`, `npm run build`, `npm run lint`, and
+    `git diff --check` passed. Lint still emits the pre-existing
+    `tests/scripts/screenshot-compare.test.ts:136` warning.
+- Historical pre-runtime-rescan inventory:
+  - `~/.zshrc` defines `cc-kimi`, `cc-minimax`, `cc-mimo`, `cc-mimosg`,
+    `cc-qwen`, `cc-doubao`, `cc-glm`, `cc-glmc`, `cc-ds`, `cc-dsc`, and
+    `cc-codex`; that snapshot's local `.jsonl` file counts were 2090, 232, 180,
+    92, 654, 30, 1177, 537, 212, 357, and 2586 respectively.
+  - At that point `~/.engram/index.sqlite` still had no `originator` column and
+    had zero rows whose `file_path` or `source_locator` started with those cc
+    roots. This was superseded by the 2026-07-01 installed-runtime rescan, which
+    created the current 8,015 provider-root DB rows.
+
+## 2026-06-30 - Grok Build session adapter and indexing root-cause check (Codex)
+
+- Objective: explain why Engram missed the Predict-Trading-Bot Codex/Grok
+  sessions and close the Grok indexing gap in the Swift product runtime.
+- Root cause split:
+  - Grok session `019f179d-0888-76b1-9325-5a91ace595df` was not indexable
+    because Engram had no `grok` `SourceName`, no Swift adapter for
+    `~/.grok/sessions/<encoded-cwd>/<session-id>/`, and no registration in
+    `SessionAdapterFactory`.
+  - Codex session `019f17e7-07d6-7413-bd71-2710aeb01308` is a normal Codex
+    rollout at
+    `~/.codex/sessions/2026/06/30/rollout-2026-06-30T17-40-44-019f17e7-07d6-7413-bd71-2710aeb01308.jsonl`;
+    `CodexAdapter` parses it successfully. It was absent from
+    `~/.engram/index.sqlite` because the DB had not refreshed 2026-06-30 Codex
+    rows (latest stored Codex row was 2026-06-29), not because the parser failed.
+- Implementation:
+  - Added `macos/Shared/EngramCore/Adapters/Sources/GrokAdapter.swift`.
+    It discovers `~/.grok/sessions`, prefers `chat_history.jsonl`, falls back to
+    `updates.jsonl`/`summary.json`, reads `summary.json`/`prompt_context.json`,
+    strips Grok injected `<user_info>`/`<system-reminder>`/`<codex_internal_context>`
+    user records, unwraps `<user_query>`, streams assistant/tool-result messages,
+    and preserves assistant `tool_calls`.
+  - Added `.grok` to `SourceName`, default/recent adapter registration, and
+    Xcode project membership via `xcodegen generate`.
+  - Added Swift regression coverage in `AdapterMessageCountTests` for discovery,
+    metadata/counts, clean streamed transcript/tool calls, adapter registration,
+    SwiftIndexer collectability, and ignored Grok `reasoning`/`backend_tool_call`
+    noise records.
+  - Synced TS source schema/docs without adding a TS Grok adapter: `grok` is in
+    `SOURCE_NAMES` for query/schema compatibility, and TS parity fixture generation
+    explicitly excludes it because Swift is the product authority.
+- Verification:
+  - Focused Grok Swift tests: `xcodebuild test -project macos/Engram.xcodeproj
+    -scheme EngramCoreTests -destination 'platform=macOS'
+    -only-testing:EngramCoreTests/AdapterMessageCountTests/testGrok...` passed.
+  - Full `AdapterMessageCountTests`: 39 tests passed.
+  - Full `EngramCoreTests`: 546 tests passed.
+  - `xcodebuild -project macos/Engram.xcodeproj -scheme Engram -configuration
+    Debug build` passed.
+  - `npm run typecheck:test`, `npm run build`, `npm run lint`, and
+    `npx vitest run tests/docs/mcp-tools.test.ts` passed. Lint still emits the
+    pre-existing `tests/scripts/screenshot-compare.test.ts:136`
+    `noTemplateCurlyInString` warning.
+  - Local Grok corpus schema scan covered 329 session directories / 329
+    `chat_history.jsonl` files. Observed record types were `system`, `user`,
+    `assistant`, `reasoning`, `backend_tool_call`, and `tool_result`; user
+    content was always array-shaped, assistant content string-shaped, assistant
+    `tool_calls` array-or-null, and `tool_result` content string-shaped.
+  - Real-data smoke with built `EngramCoreRead` found and parsed Grok
+    `019f179d...` as `source=grok`, `cwd=/Users/bing/-Automations-/Prefict-Trading-Bot`,
+    `messageCount=246`, summary from the X post query.
+  - Real-data smoke parsed Codex `019f17e7...` as `source=codex`,
+    `cwd=/Users/bing/-Automations-/Prefict-Trading-Bot`, `messageCount=127`,
+    `originator=codex-tui`.
+- Residual:
+  - Did not start the installed `/Applications/Engram.app` service or mutate the
+    live user index DB. A normal service initial/recent scan with this build is
+    still required to insert the new Grok row and the missed 2026-06-30 Codex row.
+
+## 2026-06-29 - Local origin-main rebuild and /Applications deploy (Codex)
+
+- Objective: after backlog/direction reconciliation, make the local checkout and
+  installed macOS app match the current green remote baseline before continuing
+  product work.
+- Git state: backed up divergent local `main` to
+  `backup/local-main-before-origin-sync-20260629-100128`
+  (`86bf840818d823144e4f63554ecf7f15b207fd92`), then reset `main` to
+  `origin/main`/`f9a236dc9e038d1afebf0f412ec30baf3a04d5bd`.
+- Build/install: ran
+  `cd macos && ENGRAM_BUILD_NUMBER=20260629020147 ./scripts/build-release.sh --local-only`.
+  Developer ID export succeeded at `macos/build/EngramExport/Engram.app`;
+  `release-verify` passed full Developer ID verification. Installed with
+  `macos/scripts/deploy-local.sh /Users/bing/-Code-/engram/macos/build/EngramExport/Engram.app`.
+- Runtime proof: `/Applications/Engram.app` reports version `0.1.0` build
+  `20260629020147`; `codesign --verify --deep --strict --verbose=2` passed;
+  app process and `EngramService` launched; service socket
+  `~/.engram/run/engram-service.sock` exists.
+- MCP smoke: packaged `/Applications/Engram.app/Contents/Helpers/EngramMCP`
+  accepted JSON-RPC `initialize` (`engram 0.1.0`) and `tools/list` returned
+  29 tools.
+- Not run: notarization/stapling, DMG creation, full Swift suites, UI tests,
+  npm coverage/lint/typecheck, and remote CI rerun.
+- Next direction remains distribution/plugin work: current canonical backlog
+  surfaces are empty; strategic docs point at Claude Code plugin/distribution
+  as the highest-leverage next product move.
 
 ## 2026-06-28 - Project-detail vertical-rail timeline with AI semantic titles (Claude)
 

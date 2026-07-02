@@ -1,11 +1,21 @@
 # OpenCode Session Format
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-02 (original research 2026-06-21; live census refresh 2026-07-02)
 
 > **Evidence basis.** Three sources cross-checked; on conflict REAL data wins (discrepancies flagged inline).
-> 1. **LIVE on-disk store (this machine)** — `~/.local/share/opencode/opencode.db` (224.1 MB, WAL mode; `-shm` 32 KB, `-wal` 0 B = checkpointed). 22 tables, OpenCode versions `1.2.6`–`1.17.8`. Counts: **21 projects, 386 sessions (all active, 0 archived; 165 root + 221 child), 7,445 `message` rows, 36,331 `part` rows, 190 `todo`, 26 `session_message`, 251 `event`**. 21 Drizzle migrations applied.
+> 1. **LIVE on-disk store (this machine)** — `~/.local/share/opencode/opencode.db` (224.2 MB, WAL mode; `-shm` 32 KB, `-wal` 0 B = checkpointed). 22 tables, OpenCode versions `1.2.6`–`1.17.11`. Counts: **22 projects, 391 sessions (all active, 0 archived; 170 root + 221 child), 7,455 `message` rows, 36,356 `part` rows, 190 `todo`, 6 `session_message`, 58 `event`**. 21 Drizzle migrations applied.
 > 2. **Repo parity fixture** — `tests/fixtures/adapter-parity/opencode/input/sample.db` (1 session / 2 messages / 2 parts, `schemaVersion: 1`) + `success.expected.json`. Reflects the **older, narrower 18-column schema** the adapter was authored against. `tests/fixtures/opencode/` exists but is **EMPTY** (0 files); `tests/adapters/opencode.test.ts` builds a synthetic `sample.db` at runtime and deletes it.
-> 3. **Engram adapters (codified)** — Swift product parser `macos/Shared/EngramCore/Adapters/Sources/OpenCodeAdapter.swift` (417 lines, authoritative); TS reference `src/adapters/opencode.ts` (314 lines, parity mirror).
+> 3. **Engram adapters (codified)** — Swift product parser `macos/Shared/EngramCore/Adapters/Sources/OpenCodeAdapter.swift` (authoritative); TS reference `src/adapters/opencode.ts` (parity mirror).
+>
+> 2026-07-02 read-only refresh: the TS adapter still lists/parses 391/391 active
+> virtual locators, streams 3,153 messages (647 user / 2,506 assistant), emits
+> 2,496 usage-bearing assistant messages, and has 0 parser/stream count
+> mismatches. The live Engram DB still has 391 `opencode` rows, 0
+> `opencode` `file_index_state` rows, 0 missing current ids, 0 DB-only ids, and
+> 165 stale count/end-time rows from older parser semantics; `size_bytes` is
+> aligned. A broader DB-vs-parser field diff sees 187 rows only if downstream
+> `parent_session_id` backfill values are compared against the adapter's `nil`
+> parent output; those parent values are not parser-owned stale fields.
 
 ---
 
@@ -16,24 +26,24 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 **Mental model.** Three nesting layers, all read by Engram only in part:
 
 ```
-┌─ project (21 rows) ──────────────────────────────────────────────┐
+┌─ project (22 rows) ──────────────────────────────────────────────┐
 │  worktree, vcs, name, icon, …            (Engram: NOT read)       │
 │                                                                   │
-│  ┌─ session (386 rows) ───────────────────────────────────────┐  │
+│  ┌─ session (391 rows) ───────────────────────────────────────┐  │
 │  │  id=ses_…, directory(cwd), title(summary), parent_id,       │  │
 │  │  time_created/updated/archived, model, cost, tokens_* …     │  │
 │  │  Engram reads: id, directory, title, time_*; filters archived│ │
 │  │                                                             │  │
-│  │  ┌─ message (7,445 rows) ── LAYER 2: envelope ───────────┐  │  │
+│  │  ┌─ message (7,455 rows) ── LAYER 2: envelope ───────────┐  │  │
 │  │  │  id=msg_…, session_id, time_created/updated,           │  │  │
 │  │  │  data = JSON {role, time, tokens, cost, finish, …}     │  │  │
 │  │  │  Engram reads: role + (assistant) tokens               │  │  │
 │  │  │                                                        │  │  │
-│  │  │  ┌─ part (36,331 rows) ── LAYER 3: content block ───┐  │  │  │
+│  │  │  ┌─ part (36,356 rows) ── LAYER 3: content block ───┐  │  │  │
 │  │  │  │  id=prt_…, message_id, session_id, time_created,  │  │  │  │
 │  │  │  │  data = JSON discriminated by `type`:             │  │  │  │
-│  │  │  │    text(3,509) reasoning(6,090) tool(12,147)      │  │  │  │
-│  │  │  │    step-start(6,775) step-finish(6,738)           │  │  │  │
+│  │  │  │    text(3,519) reasoning(6,095) tool(12,147)      │  │  │  │
+│  │  │  │    step-start(6,780) step-finish(6,743)           │  │  │  │
 │  │  │  │    patch(1,032) file(25) compaction(14) subtask(1)│  │  │  │
 │  │  │  │  Engram reads: ONLY type=="text"  ◄── scope limit │  │  │  │
 │  │  │  └──────────────────────────────────────────────────┘  │  │  │
@@ -108,8 +118,8 @@ It is split from the **right** (`lastIndexOf("::")` / Swift `.backwards`) so a `
 
 ## 3. File lifecycle & generation
 
-- **Storage tech: DB-not-file, but `message` rows are routinely re-touched.** Content is appended as new `message` + `part` rows during a turn, then the message row's `time_updated` advances as the turn/part stream finalizes. Live evidence: **7,439 / 7,445** messages have `time_updated > time_created`; only **6** have `time_updated == time_created` (and 0 have it earlier). So `time_updated` advances on essentially **every** message — it tracks turn/part-stream completion, NOT rare rewrites. The deltas are mostly small (6 equal, 31 <1s, 6,348 <1min, 1,060 ≥1min), consistent with finalization rather than later edits. There is no JSONL append; durability comes from SQLite WAL (`opencode.db-wal`).
-- **Resume.** Resuming a session appends more `message`/`part` rows under the **same `session.id`**; `session.time_updated` advances. No new file is created (contrast with JSONL tools that may start a fresh transcript). Sub-agent / continued sessions get a non-NULL `parent_id` (221 of 386 here) and a `slug`.
+- **Storage tech: DB-not-file, but `message` rows are routinely re-touched.** Content is appended as new `message` + `part` rows during a turn, then the message row's `time_updated` advances as the turn/part stream finalizes. Live evidence: **7,449 / 7,455** messages have `time_updated > time_created`; only **6** have `time_updated == time_created` (and 0 have it earlier). So `time_updated` advances on essentially **every** message — it tracks turn/part-stream completion, NOT rare rewrites. The deltas are mostly small (6 equal, 31 <1s, 6,358 from 1s to <1min, 1,060 ≥1min), consistent with finalization rather than later edits. There is no JSONL append; durability comes from SQLite WAL (`opencode.db-wal`).
+- **Resume.** Resuming a session appends more `message`/`part` rows under the **same `session.id`**; `session.time_updated` advances. No new file is created (contrast with JSONL tools that may start a fresh transcript). Sub-agent / continued sessions get a non-NULL `parent_id` (221 of 391 here) and a `slug`.
 - **No rollover.** Everything is one DB → no per-conversation file rotation. The only growth control is **context compaction** (`time_compacting`, `compaction` parts, `session_context_epoch` table), which summarizes old turns in-place.
 - **Archive = soft tombstone.** Sessions are archived by setting `session.time_archived` (NOT by moving/deleting files). Engram's `WHERE time_archived IS NULL` (enumeration + `parseSessionInfo` + accessibility) makes archival invisible to Engram. Live store: 0 archived. Hard deletes cascade via FK `ON DELETE CASCADE` (deleting a session removes its message/part/todo rows). **Confirmed (official):** `time_archived` is a nullable soft-delete column that retains the row, and the FK cascade chain (project←session←message←part, plus todo/session_message/session_context_epoch from session) is explicit ([sql.ts](https://github.com/sst/opencode/blob/dev/packages/core/src/session/sql.ts), [DeepWiki Session Management](https://deepwiki.com/sst/opencode/2.1-session-management)).
 - **WAL caveat.** Engram opens read-only (`SQLITE_OPEN_READONLY | SQLITE_OPEN_URI`, 30 s busy-timeout). Reading a live WAL DB read-only can miss the latest uncommitted writes until checkpoint, but won't corrupt; eventual indexing on the next scan is considered sufficient (no indexer-side `wal_checkpoint`/retry observed).
@@ -132,13 +142,13 @@ The DB has **22 tables**. Engram touches exactly **3** (`session`, `message`, `p
 
 | Table | Live rows | Read by Engram? | Purpose / key columns |
 |---|---:|---|---|
-| `session` | 386 | ✅ (5 cols) | one row per conversation; metadata, cwd, title, parent_id, time_*, model/cost/tokens rollups |
-| `message` | 7,445 | ✅ (envelope) | one row per turn; `data` JSON = role + meta; FK → session |
-| `part` | 36,331 | ✅ (text only) | one row per content block; `data` JSON keyed by `type`; FK → message AND session |
-| `project` | 21 | ❌ | PK `id`; `worktree, vcs, name, icon_url, icon_color, time_* {created, updated, initialized}, sandboxes, commands, icon_url_override` (`time_initialized` is a distinct nullable column) |
+| `session` | 391 | ✅ (5 cols) | one row per conversation; metadata, cwd, title, parent_id, time_*, model/cost/tokens rollups |
+| `message` | 7,455 | ✅ (envelope) | one row per turn; `data` JSON = role + meta; FK → session |
+| `part` | 36,356 | ✅ (text only) | one row per content block; `data` JSON keyed by `type`; FK → message AND session |
+| `project` | 22 | ❌ | PK `id`; `worktree, vcs, name, icon_url, icon_color, time_* {created, updated, initialized}, sandboxes, commands, icon_url_override` (`time_initialized` is a distinct nullable column) |
 | `todo` | 190 | ❌ | per-session todo list; PK `(session_id, position)`; `content, status, priority, time_*` |
-| `session_message` | 26 | ❌ | **newer** event-style table; `id, session_id, type, time_*, data, seq`; live types confirmed to be only 2: `agent-switched`(13) / `model-switched`(13) |
-| `event` | 251 | ❌ | generic event-sourcing log; `id, aggregate_id, seq, type, data`; live `type` enum is fully observable — 6 distinct types: `message.part.updated.1`, `message.updated.1`, `session.created.1`, `session.next.agent.switched.1`, `session.next.model.switched.1`, `session.updated.1` |
+| `session_message` | 6 | ❌ | **newer** event-style table; `id, session_id, type, time_*, data, seq`; live types confirmed to be only 2: `agent-switched` / `model-switched` |
+| `event` | 58 | ❌ | generic event-sourcing log; `id, aggregate_id, seq, type, data`; live `type` enum is fully observable — 6 distinct types: `message.part.updated.1`, `message.updated.1`, `session.created.1`, `session.next.agent.switched.1`, `session.next.model.switched.1`, `session.updated.1` |
 | `event_sequence` | — | ❌ | aggregate seq bookkeeping for `event` |
 | `session_input` | 0 | ❌ | prompt inbox; `prompt, delivery, admitted_seq, promoted_seq` |
 | `session_context_epoch` | 0 | ❌ | compaction baselines; `baseline, snapshot, baseline_seq, replacement_seq, revision, agent` |
@@ -149,7 +159,7 @@ The DB has **22 tables**. Engram touches exactly **3** (`session`, `message`, `p
 | `account` / `account_state` / `control_account` / `credential` | — | ❌ | auth/secrets (NOT session data) |
 | `migration` / `data_migration` / `__drizzle_migrations` / `sqlite_sequence` | — | ❌ | Drizzle bookkeeping |
 
-> **Schema-in-migration signal.** The coexistence of fully-populated `message`/`part` (7,445/36,331) with the sparse, newer `session_message` (26) indicates an in-progress event-sourcing migration in newer OpenCode builds. Engram correctly stays on the populated legacy `message`/`part` path. If a future OpenCode release moves transcript text into `session_message`, the adapter's `message ⋈ part` JOIN would need updating — not yet a problem.
+> **Schema-in-migration signal.** The coexistence of fully-populated `message`/`part` (7,455/36,356) with the sparse, newer `session_message` (6) indicates an in-progress event-sourcing migration in newer OpenCode builds. Engram correctly stays on the populated legacy `message`/`part` path. If a future OpenCode release moves transcript text into `session_message`, the adapter's `message ⋈ part` JOIN would need updating — not yet a problem.
 
 ---
 
@@ -184,11 +194,11 @@ CREATE TABLE `session` (
 |---|---|---|---|---|---|
 | `id` | text PK | `ses_`-prefixed id | no | **read** → `id` + locator | `ses_1182c0fb9ffegNnxixt6yu9qyO` |
 | `project_id` | text NN FK→project | owning project | no | ignored | `e8784f46a14602aaf5b98a02b9096ae8fc9ba30d` |
-| `parent_id` | text? FK | parent session (sub-agent linking; indexed `session_parent_idx`) | yes | **ignored** (NOT mapped — see §10) | `null` (root) / `ses_…` (221/386) |
+| `parent_id` | text? FK | parent session (sub-agent linking; indexed `session_parent_idx`) | yes | **ignored** (NOT mapped — see §10) | `null` (root) / `ses_…` (221/391) |
 | `slug` | text NN | human slug (NOT the title) | no | ignored | `nimble-nebula` |
 | `directory` | text NN | session cwd | no | **read** → `cwd` (`""` if NULL) | `/Users/<user>/-Code-/<proj>` |
 | `title` | text NN | summary line | no | **read** → `summary` (empty → nil) | `Ping` |
-| `version` | text NN | OpenCode version that wrote it | no | ignored | `1.17.8` (live spans `1.2.6`–`1.17.8`) |
+| `version` | text NN | OpenCode version that wrote it | no | ignored | `1.17.8` sample; live spans `1.2.6`–`1.17.11` |
 | `share_url` | text? | share URL | yes | ignored | `null` |
 | `summary_additions` / `_deletions` / `_files` | int? | session diff rollup | yes | ignored | `0/0/0` |
 | `summary_diffs` | text? | serialized diffs | yes | ignored | `null` |
@@ -200,9 +210,9 @@ CREATE TABLE `session` (
 | `time_archived` | int? | soft-delete tombstone | yes | **filter** (`WHERE … IS NULL`) | `null` |
 | `workspace_id` | text? FK | workspace | yes | ignored | `null` |
 | `path` | text? | (newer) path | yes | ignored | `null` |
-| `agent` | text? | active agent mode | yes | ignored | `build` (106/386 set) |
-| `model` | text? (JSON) | model id blob | yes | **ignored** (Engram model=nil) | `{"id":"deepseek-v4-pro","providerID":"opencode-go","variant":"default"}` (106/386) |
-| `cost` | real NN (def 0) | rolled-up session cost (USD) | no | **ignored** (re-derived per-message) | `0.03949974` (227/386 > 0) |
+| `agent` | text? | active agent mode | yes | ignored | `build` (111/391 set) |
+| `model` | text? (JSON) | model id blob | yes | **ignored** (Engram model=nil) | `{"id":"deepseek-v4-pro","providerID":"opencode-go","variant":"default"}` (111/391) |
+| `cost` | real NN (def 0) | rolled-up session cost (USD) | no | **ignored** (re-derived per-message) | `0.03949974` (232/391 > 0) |
 | `tokens_input` / `_output` / `_reasoning` / `_cache_read` / `_cache_write` | int NN (def 0) | rolled-up session usage | no | **ignored** (re-derived) | `22625 / 3 / 35 / 0 / 0` |
 | `metadata` | text? (JSON) | newest metadata blob | yes | ignored | `null` |
 
@@ -228,7 +238,7 @@ CREATE TABLE `message` (
 | `id` | text PK | `msg_` id | JOIN to `part.message_id`; merge key | `msg_ee7d3f378001HIAuJOPQd0Yd1F` |
 | `session_id` | text NN FK | parent session | **read** (WHERE) | `ses_1182…` |
 | `time_created` | int NN (ms) | message timestamp; first/last drive start/end | **read** → `timestamp` / `startTime` / `endTime` | `1782005887864` |
-| `time_updated` | int NN (ms) | finalization marker — advances as the turn/part stream completes (7,439/7,445 > created; only 6 == created) | ignored | usually > created |
+| `time_updated` | int NN (ms) | finalization marker — advances as the turn/part stream completes (7,449/7,455 > created; only 6 == created) | ignored | usually > created |
 | `data` | text NN (JSON) | the envelope (role + meta) | **read** → `role`, (assistant) `tokens` | see below |
 
 The `data` blob does **not** repeat `id`/`session_id` — those live only in columns.
@@ -342,15 +352,15 @@ CREATE TABLE `part` (
 | `time_updated` | int NN (ms) | rewrite marker | ignored | `1771483653006` |
 | `data` | text NN (JSON) | content block, **discriminated by `type`** | **read** (only `type=="text"`) | see below |
 
-**Part `type` distribution (live, 36,331 parts):**
+**Part `type` distribution (live, 36,356 parts):**
 
 | `type` | count | data keys (live) | Engram uses? |
 |---|---:|---|---|
 | `tool` | 12,147 | `type, callID, tool, state{status,input,output,title,metadata,time}` | ❌ |
-| `step-start` | 6,775 | `type` (+ `snapshot` on 5,530) | ❌ |
-| `step-finish` | 6,738 | `type, reason, cost, tokens` (+ `snapshot` on 5,499) | ❌ |
-| `reasoning` | 6,090 | `type, text, time` | ❌ |
-| **`text`** | **3,509** | **`type, text`** (+ optional `time`, `synthetic`) | ✅ **only this** |
+| `step-start` | 6,780 | `type` (+ `snapshot` on 5,530) | ❌ |
+| `step-finish` | 6,743 | `type, reason, cost, tokens` (+ `snapshot` on 5,499) | ❌ |
+| `reasoning` | 6,095 | `type, text, time` | ❌ |
+| **`text`** | **3,519** | **`type, text`** (+ optional `time`, `synthetic`) | ✅ **only this** |
 | `patch` | 1,032 | `type, hash, files` | ❌ |
 | `file` | 25 | `type, mime, filename, url, source` | ❌ |
 | `compaction` | 14 | `type, auto` (+ `overflow` on 12) | ❌ |
@@ -385,7 +395,7 @@ Engram accepts `text` OR `value` (`opencode.ts:239`; `swift:322-323,368-369`), d
 { "type": "reasoning", "text": "<str len=…>", "time": { "start": …, "end": … } }
 ```
 
-Same shape as `text` but `type=="reasoning"` → excluded. **Reasoning traces (6,090) are stored but never enter Engram's transcript or search index.**
+Same shape as `text` but `type=="reasoning"` → excluded. **Reasoning traces (6,095) are stored but never enter Engram's transcript or search index.**
 
 #### 6c. `type:"step-start"` / `"step-finish"` (LLM step boundaries — ignored)
 
@@ -485,7 +495,7 @@ Live state statuses: `completed` (11,674), `error` (472), `running` (1). Tools s
 
 ## 8. Reasoning / thinking
 
-**Stored but NOT indexed.** OpenCode persists model chain-of-thought as `type:"reasoning"` parts (6,090 in this store) — same `{type, text, time}` shape as `text`. Engram drops them (only `type=="text"` survives). Reasoning is also tracked numerically in `message.data.tokens.reasoning`, which Engram **does** read (folded into `outputTokens`). So Engram captures the *count* of reasoning tokens but never the *content* of the reasoning trace.
+**Stored but NOT indexed.** OpenCode persists model chain-of-thought as `type:"reasoning"` parts (6,095 in this store) — same `{type, text, time}` shape as `text`. Engram drops them (only `type=="text"` survives). Reasoning is also tracked numerically in `message.data.tokens.reasoning`, which Engram **does** read (folded into `outputTokens`). So Engram captures the *count* of reasoning tokens but never the *content* of the reasoning trace.
 
 ---
 
@@ -518,7 +528,7 @@ Rules: `tokens.total` is **ignored** (recomputed). Usage returns `nil` if all fo
 
 OpenCode records parent/child lineage **natively in three places** — but the adapter consumes **none** of them (`parentSessionId: nil`, `swift:209`):
 
-1. `session.parent_id` — confirmed parent link (FK, indexed `session_parent_idx`). **221 of 386 sessions are children** in this store.
+1. `session.parent_id` — confirmed parent link (FK, indexed `session_parent_idx`). **221 of 391 sessions are children** in this store.
 2. `message.data.parentID` — per-turn link (assistant `msg_` → user `msg_`).
 3. `subtask` part + `tool` part with `state.metadata.sessionId` (`task` tool) — carries the dispatched child session id at dispatch time.
 
@@ -581,21 +591,21 @@ There is **no** Engram-readable index, sidecar, or cache for OpenCode beyond the
 
 | Engram field | OpenCode source | Transform | Swift:line (TS) |
 |---|---|---|---|
-| `id` | `session.id` | passthrough; fallback to locator's sessionId | `:182` (`:172`) |
-| `source` | constant | `.opencode` | `:88,:183` (`:50,:173`) |
-| `summary` | `session.title` | empty → `nil` | `:196-199` (`:182`) |
-| `cwd` | `session.directory` | passthrough; `""` if NULL | `:188` (`:176`) |
+| `id` | `session.id` | passthrough; fallback to locator's sessionId | `:182` (`:189`) |
+| `source` | constant | `.opencode` | `:88,:183` (`:67,:190`) |
+| `summary` | `session.title` | empty → `nil` | `:196-199` (`:199`) |
+| `cwd` | `session.directory` | passthrough; `""` if NULL | `:188` (`:193`) |
 | `project` | — | **always `nil`** (not derived from `project.worktree`/`name`) | `:189` (TS omits field) |
 | `model` | — | **always `nil`** (despite `session.model` present) | `:190` (TS omits) |
-| `startTime` | first `message.time_created`, else `session.time_created` | epoch ms → ISO8601 (÷1000) | `:175-178` (`:130,:134`) |
-| `endTime` | last `message.time_created` | **only if `messages.count > 1`**, else `nil` | `:185-187` (`:131-138`) |
-| `messageCount` | derived | `userCount + assistantCount` (text-part-only — see §15) | `:191` (`:177`) |
-| `userMessageCount` | derived | distinct `msg.id` where role=user AND ≥1 non-empty text part | `:172,:192` (`:140-145,:177`) |
-| `assistantMessageCount` | derived | distinct `msg.id` where role=assistant AND ≥1 non-empty text part | `:173,:193` (`:146,:179`) |
-| `toolMessageCount` | — | hardcoded `0` | `:194` (`:180`) |
-| `systemMessageCount` | — | hardcoded `0` | `:195` (`:181`) |
-| `sizeBytes` | `Σ length(message.data) + Σ length(part.data)` for this session | per-session SQL byte sum | `:201,:269-298` (`:156-169`) |
-| `filePath` | virtual locator | `"{dbPath}::{id}"` | `:200` (`:183`) |
+| `startTime` | first `message.time_created`, else `session.time_created` | epoch ms → ISO8601 (÷1000) | `:175-178` (`:139-147`) |
+| `endTime` | last `message.time_created` | Swift: only if `messages.count > 1`; TS reference: if `messages.length > 0` (§15) | `:185-187` (`:140-147`) |
+| `messageCount` | derived | `userCount + assistantCount` (text-part-only — see §15) | `:191` (`:194`) |
+| `userMessageCount` | derived | distinct `msg.id` where role=user AND ≥1 non-empty text part | `:158-172,:192` (`:149-166,:195`) |
+| `assistantMessageCount` | derived | distinct `msg.id` where role=assistant AND ≥1 non-empty text part | `:158-173,:193` (`:149-167,:196`) |
+| `toolMessageCount` | — | hardcoded `0` | `:194` (`:197`) |
+| `systemMessageCount` | — | hardcoded `0` | `:195` (`:198`) |
+| `sizeBytes` | `Σ length(message.data) + Σ length(part.data)` for this session | per-session SQL byte sum | `:201,:269-298` (`:169-186,:201`) |
+| `filePath` | virtual locator | `"{dbPath}::{id}"` | `:200` (`:200`) |
 | `parentSessionId` | — | **always `nil`** — `session.parent_id` NOT read (§10) | `:209` (TS omits) |
 | `suggestedParentId` / `agentRole` / `originator` / `origin` / `summaryMessageCount` / `tier` / `qualityScore` / `indexedAt` | — | all `nil` (set later by indexer/backfills) | `:202-210` (n/a) |
 
@@ -603,24 +613,24 @@ There is **no** Engram-readable index, sidecar, or cache for OpenCode beyond the
 
 | Engram field | OpenCode source | Notes | Swift:line (TS) |
 |---|---|---|---|
-| `role` | `message.data.role` | only `user`/`assistant` survive → `.user`/`.assistant` | `:361-362,:378` (`:237,:249`) |
-| `content` | `part.data.text` (fallback `part.data.value`) | **only `type=="text"` parts**; empty dropped; multiple parts joined with `\n` | `:322-323,:337,:368-370` (`:238-240`) |
-| `timestamp` | `message.time_created` | epoch ms → ISO8601 | `:374-375` (`:251`) |
-| `toolCalls` | — | always `nil` (tool parts dropped) | `:345` (`:248` omits) |
-| `usage` | `message.data.tokens` (assistant only) | see §9 token mapping | `:381` (`:253`) |
+| `role` | `message.data.role` | only `user`/`assistant` survive → `.user`/`.assistant` | `:361-363,:378` (`:325-337,:246`) |
+| `content` | `part.data.text` (fallback `part.data.value`) | **only `type=="text"` parts**; empty dropped; multiple parts joined with `\n` | `:322-324,:336-337,:368-370` (`:327-333,:242,:247`) |
+| `timestamp` | `message.time_created` | epoch ms → ISO8601 | `:374-375` (`:339-342,:248`) |
+| `toolCalls` | — | always `nil` (tool parts dropped) | `:345` (TS omits) |
+| `usage` | `message.data.tokens` (assistant only) | see §9 token mapping | `:381,:385-402` (`:249,:282-303,:343`) |
 
 ### Locator helpers
 
 | Concern | Swift:line | TS:line |
 |---|---|---|
-| Default db path | `:93-95` | `:53-55` |
-| `detect()` = fileExists | `:100-102` | `:58-60` |
-| List query | `:108-114` | `:68-76` |
-| Virtual locator build `"{dbPath}::{id}"` | `:116` | `:75` |
-| Split from right (`lastIndexOf`/`.backwards`) | `:261-267` | `:84-96` |
-| Read-only open | `:8,14` | `:67` |
+| Default db path | `:93-95` | `:70-72` |
+| `detect()` = fileExists | `:100-102` | `:75-77` |
+| List query | `:108-114` | `:85-92` |
+| Virtual locator build `"{dbPath}::{id}"` | `:116` | `:91-92` |
+| Split from right (`lastIndexOf`/`.backwards`) | `:261-267` | `:101-112` |
+| Read-only open | `:8,14` | `:84,:123,:223,:270` |
 | `isAccessible` (cached actor / reopen) | `:61-85,:249-259` | `:264-280` |
-| Per-session byte sum | `:269-298` | `:156-169` |
+| Per-session byte sum | `:269-298` | `:169-186` |
 
 ---
 
@@ -636,9 +646,9 @@ OpenCode is **architecturally distinct** from every other Engram source and is t
 
 ### Gotchas & edge cases
 
-1. **Message counts massively understate reality (text-only predicate).** A message counts only if it has ≥1 non-empty `text` part (Swift `contentfulRole` `:311-328`, comment `:147-148`). Tool-only assistant turns vanish. REAL impact: assistant total ≈ 6,788 but assistant-with-text ≈ 2,501 → Engram reports ~37% of actual assistant turns. Intentional (counts must equal the streamed transcript), but Engram's OpenCode `messageCount` is a "visible text turns" count, not a turn count.
+1. **Message counts massively understate reality (text-only predicate).** A message counts only if it has ≥1 non-empty `text` part (Swift `contentfulRole` `:311-328`, comment `:147-148`; TS `messagePart` `:315-345`). Tool-only assistant turns vanish. REAL impact from the 2026-07-02 live DB: 6,793 assistant `message` rows but only 2,506 assistant messages with non-empty text parts → Engram reports ~37% of actual assistant rows. Intentional (counts must equal the streamed transcript), but Engram's OpenCode `messageCount` is a "visible text turns" count, not a turn count.
 
-2. **TS ↔ Swift count divergence.** Swift counts only text-contentful messages (`contentfulRole`); **TS `parseSessionInfo` counts by raw `message.role`** (`ts:142-146`) — so for tool-only turns the TS reference reports a higher `messageCount` than the Swift product. The Swift product path is authoritative.
+2. **Former TS ↔ Swift count divergence is fixed.** Current TS `parseSessionInfo` now mirrors Swift: it counts distinct user/assistant message ids only when `messagePart()` yields a non-empty text part (`ts:149-167`), and `streamMessages()` merges all text parts for a message before pagination (`ts:235-256`). The older broad role-count behavior is the source of the 165 stale live DB rows until reindex/cleanup refreshes them.
 
 3. **Single-message sessions get `endTime = nil`.** Guard `messages.count > 1` (Swift `:185`; TS sets `endTime` whenever `messages.length > 0`, a minor TS↔Swift divergence). Also `startTime`/`endTime` derive from the `message` table, NOT `session.time_created/updated` — a session whose only activity is non-message rows falls back to `session.time_created` for start and `nil` end.
 
@@ -648,21 +658,23 @@ OpenCode is **architecturally distinct** from every other Engram source and is t
 
 6. **Test fixture schema ≠ live schema (drift).** The parity fixture's `session` table has only the original 18 columns (`schemaVersion: 1`; no `workspace_id`, `agent`, `model`, `cost`, `tokens_*`, `metadata`). Parity tests never exercise the newer columns — but the adapter only `SELECT`s the original 5, so behavior is unaffected. The fixture is pinned to an old OpenCode schema. `tests/fixtures/opencode/` is empty (runtime-generated).
 
-7. **Per-session size, not whole-file size (the CLAUDE.md note).** All 386 sessions share ONE 224 MB file; `statSync(dbPath)` would attribute 224 MB to **every** session (386× over-count, ~86 GB phantom total). The fix sums `length(message.data) + length(part.data)` scoped to `session_id` (Swift `sessionPayloadSize:269-298`; TS `:156-169`, comment `:152-155`). Both implementations are byte-identical by construction. Verified by fixture: `sizeBytes: 276` = message + part byte sum.
+7. **Per-session size, not whole-file size (the CLAUDE.md note).** All 391 sessions share ONE 224 MB file; `statSync(dbPath)` would attribute 224 MB to **every** session (391× over-count, ~88 GB phantom total). The fix sums `length(message.data) + length(part.data)` scoped to `session_id` (Swift `sessionPayloadSize:269-298`; TS `:169-186`, comment `:169-172`). Both implementations are byte-identical by construction. Verified by fixture: `sizeBytes: 276` = message + part byte sum.
 
-8. **Wide version spread in one DB, stable message JSON.** Sessions span OpenCode **1.2.6 → 1.17.8** (top: `1.3.13`×70, `1.15.13`×61). The `message.data`/`part.data` JSON shape (role/time/tokens/parts) is **stable across this range** — a v1.2.6 assistant message has the same `tokens.{input,output,reasoning,cache.{read,write}}` nesting as v1.17.8. Migrations changed only `session`/`project` columns. The adapter is robust to version drift in practice.
+8. **Live Engram DB count freshness lags the parser fix.** A 2026-07-02 field-level recheck found locator coverage still closed, but 165 existing `opencode` rows in `/Users/bing/.engram/index.sqlite` retain older message-count semantics. Across those stale rows, DB totals are 6,032 messages / 424 user / 5,608 assistant vs the current parser's stale-row totals 2,217 / 409 / 1,808; aggregate current parser totals remain 3,153 / 647 / 2,506. `size_bytes` is aligned; the stale fields are count/end-time fields and need reindex/cleanup. A broad comparison also sees 145 `parent_session_id` differences because downstream parent backfill populated DB rows while the adapter intentionally returns `parentSessionId=nil`; do not count those as OpenCode parser staleness.
 
-9. **Read-only against a live WAL DB.** May miss uncommitted writes until checkpoint (won't corrupt). No indexer-side `wal_checkpoint`/retry observed; eventual indexing on next scan is the de-facto handling.
+9. **Wide version spread in one DB, stable message JSON.** Sessions span OpenCode **1.2.6 → 1.17.11** (top: `1.3.13`×70, `1.15.13`×61). The `message.data`/`part.data` JSON shape (role/time/tokens/parts) is **stable across this range** — a v1.2.6 assistant message has the same `tokens.{input,output,reasoning,cache.{read,write}}` nesting as v1.17.x. Migrations changed only `session`/`project` columns. The adapter is robust to version drift in practice.
 
-10. **Timestamps are epoch milliseconds (13 digits), ÷1000 before ISO** (Swift `isoFromMilliseconds`; TS `new Date(ms)`). `1782005887047` → `2026-06-21T01:38:07.047Z`. Both adapters handle ms correctly.
+10. **Read-only against a live WAL DB.** May miss uncommitted writes until checkpoint (won't corrupt). No indexer-side `wal_checkpoint`/retry observed; eventual indexing on next scan is the de-facto handling.
+
+11. **Timestamps are epoch milliseconds (13 digits), ÷1000 before ISO** (Swift `isoFromMilliseconds`; TS `new Date(ms)`). `1782005887047` → `2026-06-21T01:38:07.047Z`. Both adapters handle ms correctly.
 
 ### Data Engram does NOT consume (explicit data-loss inventory)
 
-1. **`session.parent_id`** (221/386 populated) → native subagent lineage invisible (§10).
+1. **`session.parent_id`** (221/391 populated) → native subagent lineage invisible (§10).
 2. **Session-level `cost` + `tokens_*` rollups** → ignored; usage re-derived per assistant message.
-3. **`session.model` / `message.data.modelID`** (106/386 + per-message) → `model` always `nil`; Engram records no OpenCode model.
+3. **`session.model` / `message.data.modelID`** (111/391 + per-message) → `model` always `nil`; Engram records no OpenCode model.
 4. **`session.agent`, `mode`, `slug`, `version`, `workspace_id`, `share_url`, summary/diff stats, `revert`, `permission`, `metadata`.**
-5. **All non-text parts** — tool (12,147), reasoning (6,090), patch (1,032), file (25), compaction (14), step-start/finish (13,513), subtask (1): ~33k of 36k parts dropped.
+5. **All non-text parts** — tool (12,147), reasoning (6,095), patch (1,032), file (25), compaction (14), step-start/finish (13,523), subtask (1): ~33k of 36k parts dropped.
 6. **`project`/`project_directory`/`workspace` tables** → `project` always `nil`; cwd comes only from `session.directory`.
 7. **`tokens.total`** (uses the input/output/reasoning/cache breakdown instead).
 8. **`todo`, `session_message`, `event`, `event_sequence`** tables entirely.
@@ -685,7 +697,7 @@ OpenCode is **architecturally distinct** from every other Engram source and is t
 ```
 id                : ses_1182c0fb9ffegNnxixt6yu9qyO
 project_id        : e8784f46a14602aaf5b98a02b9096ae8fc9ba30d
-parent_id         : (NULL)                                      [221/386 non-NULL]
+parent_id         : (NULL)                                      [221/391 non-NULL]
 slug              : nimble-nebula
 directory         : <cwd path>
 title             : <generated title>
@@ -696,11 +708,11 @@ summary_diffs     : (NULL)    revert : (NULL)    permission : (NULL)
 time_created      : 1782005887047
 time_updated      : 1782005893936
 time_compacting   : (NULL)
-time_archived     : (NULL)                                      [0/386 archived]
+time_archived     : (NULL)                                      [0/391 archived]
 workspace_id      : (NULL)    path : (NULL)
-agent             : build                                       [106/386 set]
+agent             : build                                       [111/391 set]
 model             : {"id":"deepseek-v4-pro","providerID":"opencode-go","variant":"default"}
-cost              : 0.03949974                                  [227/386 > 0]
+cost              : 0.03949974                                  [232/391 > 0]
 tokens_input      : 22625    tokens_output : 3    tokens_reasoning : 35
 tokens_cache_read : 0        tokens_cache_write : 0
 metadata          : (NULL)

@@ -52,6 +52,49 @@ describe('CodexAdapter', () => {
     expect(info?.model).toBeUndefined();
   });
 
+  it('uses turn_context.payload.model when response_item lacks model', async () => {
+    const tmpRoot = join(tmpdir(), `engram-codex-turn-context-${Date.now()}`);
+    const path = join(tmpRoot, 'rollout-turn-context.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    const lines = [
+      JSON.stringify({
+        timestamp: '2026-07-01T08:00:00.000Z',
+        type: 'session_meta',
+        payload: {
+          id: 'turn-context-model',
+          timestamp: '2026-07-01T08:00:00.000Z',
+          cwd: '/tmp/codex-turn-context',
+          model_provider: 'openai',
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-07-01T08:00:01.000Z',
+        type: 'turn_context',
+        payload: {
+          model: 'gpt-5-codex',
+          model_provider: 'openai',
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-07-01T08:00:02.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'remember model' }],
+        },
+      }),
+    ].join('\n');
+    writeFileSync(path, `${lines}\n`);
+
+    try {
+      const info = await adapter.parseSessionInfo(path);
+      expect(info?.model).toBe('gpt-5-codex');
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('prefers response_item.payload.model over session_meta.model_provider', async () => {
     const info = await adapter.parseSessionInfo(DRIFT_FIXTURE);
     expect(info?.model).toBe('gpt-4.1');
@@ -531,6 +574,40 @@ describe('CodexAdapter', () => {
             },
           }),
         ),
+        // A leading system block can be followed by visible user text; Swift
+        // strips the block and keeps the real prompt.
+        JSON.stringify({
+          timestamp: '2026-01-15T10:00:09.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: [
+                  '# AGENTS.md instructions for /x',
+                  '',
+                  '<INSTRUCTIONS>hidden system prompt</INSTRUCTIONS>',
+                  '',
+                  'visible follow-up',
+                ].join('\n'),
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-01-15T10:00:10.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'assistant',
+            content: [
+              { type: 'output_text', text: 'first' },
+              { type: 'output_text', text: 'second' },
+            ],
+          },
+        }),
       ];
       writeFileSync(path, `${lines.join('\n')}\n`);
     });
@@ -540,15 +617,24 @@ describe('CodexAdapter', () => {
     it('searches past non-text-bearing blocks to find the real text', async () => {
       const messages = [];
       for await (const m of adapter.streamMessages(path)) messages.push(m);
-      const user = messages.find((m) => m.role === 'user');
-      expect(user?.content).toBe('real user question');
+      expect(
+        messages.filter((m) => m.role === 'user').map((m) => m.content),
+      ).toEqual(['real user question', 'visible follow-up']);
+    });
+
+    it('combines multipart text content like the Swift adapter', async () => {
+      const messages = [];
+      for await (const m of adapter.streamMessages(path)) messages.push(m);
+      const assistant = messages.find((m) => m.role === 'assistant');
+      expect(assistant?.content).toBe('first\n\nsecond');
     });
 
     it('classifies all known Claude-style injection wrappers as system', async () => {
       const info = await adapter.parseSessionInfo(path);
-      // 1 real user message, 7 system-injection wrappers
-      expect(info?.userMessageCount).toBe(1);
-      expect(info?.systemMessageCount).toBe(7);
+      // 2 visible user messages; 7 system-only wrappers plus 1 stripped
+      // leading system block from the mixed prompt.
+      expect(info?.userMessageCount).toBe(2);
+      expect(info?.systemMessageCount).toBe(8);
     });
   });
 });

@@ -130,6 +130,62 @@ describe('Indexer', () => {
     ).toEqual(['embedding', 'fts']);
   });
 
+  it('stores originator and instruction signals in authoritative snapshots', async () => {
+    const filePath = '/fake/originator-instructions.jsonl';
+    const adapter: SessionAdapter = {
+      name: 'codex',
+      async detect() {
+        return true;
+      },
+      async *listSessionFiles() {
+        yield filePath;
+      },
+      async parseSessionInfo(fp: string) {
+        return makeBaseSessionInfo({
+          id: 'originator-instructions',
+          filePath: fp,
+          originator: 'codex_cli_rs',
+          messageCount: 3,
+          userMessageCount: 2,
+          assistantMessageCount: 1,
+          summary: 'Fix login bug',
+        });
+      },
+      async *streamMessages(): AsyncGenerator<Message> {
+        yield { role: 'user', content: 'Fix login bug' };
+        yield { role: 'assistant', content: 'I will inspect auth.' };
+        yield { role: 'user', content: 'ok, thanks' };
+      },
+      async isAccessible() {
+        return true;
+      },
+    };
+    const indexer = new Indexer(db, [adapter], {
+      authoritativeNode: 'fixture-node',
+    });
+
+    const count = await indexer.indexAll();
+
+    expect(count).toBe(1);
+    const row = db.raw
+      .prepare(
+        `
+        SELECT originator, instruction_count, human_turn_count,
+               instruction_summary, snapshot_hash
+        FROM sessions
+        WHERE id = ?
+        `,
+      )
+      .get('originator-instructions') as Record<string, unknown>;
+    expect(row.originator).toBe('codex_cli_rs');
+    expect(row.instruction_count).toBe(1);
+    expect(row.human_turn_count).toBe(2);
+    expect(row.instruction_summary).toBe('Fix login bug');
+    expect(row.snapshot_hash).toBe(
+      '22bd2a81537f6d19c84bdf41d3406e9aee67f96e8534fe0d7e2db9b103dd4468',
+    );
+  });
+
   it('skips already-indexed files with same size', async () => {
     makeSessionFile(sessionsDir, 'test-002', '/Users/test', 'hello');
     const codexAdapter = new CodexAdapter(join(tmpDir, 'sessions'));

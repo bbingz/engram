@@ -66,8 +66,8 @@ describe('VsCodeAdapter', () => {
 
     beforeAll(() => {
       mkdirSync(dirname(sessPath), { recursive: true });
-      // Line 0 is the session payload; subsequent lines are unrelated/garbage.
-      // The adapter must read only line 0, so the trailing lines never matter.
+      // Line 0 is the initial session payload. Valid mutation-log entries after
+      // it are replayed; invalid or unknown trailing entries are ignored here.
       const line0 = JSON.stringify({
         kind: 0,
         v: {
@@ -96,7 +96,7 @@ describe('VsCodeAdapter', () => {
 
     afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
 
-    it('parses using only the first line and ignores trailing content', async () => {
+    it('ignores invalid or unknown trailing mutation-log entries', async () => {
       const adapter = new VsCodeAdapter(join(tmpRoot, 'workspaceStorage'));
       const info = await adapter.parseSessionInfo(sessPath);
       expect(info?.id).toBe('fl-1');
@@ -218,6 +218,48 @@ describe('VsCodeAdapter', () => {
       const info = await a.parseSessionInfo(sessPath);
       expect(info?.cwd).toBe(projDir);
     });
+  });
+
+  it('falls back to session workingDirectory when workspace.json is missing', async () => {
+    const tmpRoot = join(tmpdir(), `engram-vscode-working-dir-${Date.now()}`);
+    const sessPath = join(
+      tmpRoot,
+      'workspaceStorage',
+      'hash-wd',
+      'chatSessions',
+      'sess.jsonl',
+    );
+    mkdirSync(dirname(sessPath), { recursive: true });
+    writeFileSync(
+      sessPath,
+      `${JSON.stringify({
+        kind: 0,
+        v: {
+          version: 3,
+          sessionId: 'wd-1',
+          creationDate: 1771392000000,
+          workingDirectory: 'file:///Users/test/from-session',
+          requests: [
+            {
+              requestId: 'r1',
+              message: { text: 'hi' },
+              response: [
+                {
+                  value: { kind: 'markdownContent', content: { value: 'hi' } },
+                },
+              ],
+            },
+          ],
+        },
+      })}\n`,
+    );
+    try {
+      const a = new VsCodeAdapter(join(tmpRoot, 'workspaceStorage'));
+      const info = await a.parseSessionInfo(sessPath);
+      expect(info?.cwd).toBe('/Users/test/from-session');
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   it('returns empty cwd when workspace.json is missing', async () => {

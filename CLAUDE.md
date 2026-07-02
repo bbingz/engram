@@ -230,11 +230,16 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 - SQLite DB: `~/.engram/index.sqlite` (WAL mode)
 - Settings: `~/.engram/settings.json`
 - Session sources: `~/.claude/projects/`, `~/.codex/sessions/`, `~/.gemini/`, etc.
-- `SessionAdapterFactory.defaultAdapters()` registers 17 source adapters. Windsurf
-  and Antigravity are constructed with `enableLiveSync: false`, so live gRPC sync is disabled for both. Windsurf is cache-only (`~/.engram/cache/windsurf`);
-  Antigravity still reads Antigravity CLI brain transcripts and any legacy cache
-  already present. "17 sources" is the adapter count, not a live-gRPC source
-  count.
+- `SessionAdapterFactory.defaultAdapters()` registers ~30 adapter instances
+  covering 23 `SourceName` sources. The extra instances are ClaudeCode
+  `~/.claude-*` provider-root clones (kimi/minimax/mimo/qwen/doubao/glm/deepseek/
+  openai→codex) and derived-source adapters that map additional roots onto
+  existing sources; each `SourceName` still resolves to one owning adapter per
+  locator. Windsurf and Antigravity are constructed with `enableLiveSync: false`,
+  so live gRPC sync is disabled for both. Windsurf is cache-only
+  (`~/.engram/cache/windsurf`); Antigravity still reads Antigravity CLI brain
+  transcripts and any legacy cache already present. "23 sources" is the
+  `SourceName` count, not a live-gRPC source count.
 
 ## What NOT To Do
 

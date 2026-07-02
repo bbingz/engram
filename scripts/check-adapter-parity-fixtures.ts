@@ -21,6 +21,7 @@ type SupportedFixtureSource =
   | 'iflow'
   | 'kimi'
   | 'opencode'
+  | 'pi'
   | 'qoder'
   | 'qwen'
   | 'vscode'
@@ -39,6 +40,7 @@ const supportedSources = [
   'iflow',
   'kimi',
   'opencode',
+  'pi',
   'qoder',
   'qwen',
   'vscode',

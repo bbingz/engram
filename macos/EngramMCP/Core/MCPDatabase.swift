@@ -726,22 +726,22 @@ final class MCPDatabase {
         let cappedLimit = min(max(limit, 1), 50)
         let normalizedMode = mode.isEmpty ? "keyword" : mode
 
-        if isUUID(normalizedQuery) {
-            if let row = try fetchSessionRow(id: normalizedQuery) {
-                return .object([
-                    ("results", .array([
-                        .object([
-                            ("session", fullSessionObject(from: row)),
-                            ("snippet", .string("")),
-                            ("matchType", .string("keyword")),
-                            ("score", .double(1)),
-                        ]),
-                    ])),
-                    ("query", .string(query)),
-                    ("searchModes", .array([.string("id")])),
-                ])
-            }
+        if let row = try fetchVisibleSessionRow(id: normalizedQuery) {
+            return .object([
+                ("results", .array([
+                    .object([
+                        ("session", fullSessionObject(from: row)),
+                        ("snippet", .string("")),
+                        ("matchType", .string("id")),
+                        ("score", .double(1)),
+                    ]),
+                ])),
+                ("query", .string(query)),
+                ("searchModes", .array([.string("id")])),
+            ])
+        }
 
+        if isUUID(normalizedQuery) {
             return .object([
                 ("results", .array([])),
                 ("query", .string(query)),
@@ -1373,6 +1373,30 @@ final class MCPDatabase {
         }
     }
 
+    /// Exact session-id lookup for keyword search's id fast-path. Applies the
+    /// same visibility rule as the service (`EngramServiceReadProvider`): hidden
+    /// sessions and the `skip` (noise) tier are excluded, but `lite` — visible in
+    /// list surfaces though excluded from keyword search — stays findable by
+    /// pasting its own id. Unlike `fetchSessionRow` (used by `get_session`, which
+    /// must still resolve hidden/skip sessions by id), this enforces visibility.
+    private func fetchVisibleSessionRow(id: String) throws -> Row? {
+        try queue.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT s.*, ls.local_readable_path
+                FROM sessions s
+                LEFT JOIN session_local_state ls ON ls.session_id = s.id
+                WHERE s.id = ?
+                  AND s.hidden_at IS NULL
+                  AND (s.tier IS NULL OR s.tier != 'skip')
+                LIMIT 1
+                """,
+                arguments: [id]
+            )
+        }
+    }
+
     // MARK: - MCP resources (`@`-mention surface)
 
     struct ResourceEntry {
@@ -1827,7 +1851,11 @@ private func makeSessionRecord(from row: Row) -> MCPSessionRecord {
         toolMessageCount: intValue(row["tool_message_count"]),
         systemMessageCount: intValue(row["system_message_count"]),
         summary: stringValue(row["summary"]),
-        filePath: stringValue(row["local_readable_path"]) ?? stringValue(row["file_path"]) ?? "",
+        filePath: pickReadableSessionPath(
+            stringValue(row["local_readable_path"]),
+            stringValue(row["file_path"]),
+            stringValue(row["source_locator"])
+        ),
         sizeBytes: intValue(row["size_bytes"]),
         indexedAt: stringValue(row["indexed_at"]),
         agentRole: stringValue(row["agent_role"]),
@@ -1842,6 +1870,17 @@ private func makeSessionRecord(from row: Row) -> MCPSessionRecord {
 
 private func containsCJK(_ text: String) -> Bool {
     text.range(of: #"[\u{2E80}-\u{9FFF}\u{F900}-\u{FAFF}\u{FE30}-\u{FE4F}]"#, options: .regularExpression) != nil
+}
+
+private func pickReadableSessionPath(_ values: String?...) -> String {
+    let readable = values.compactMap { value -> String? in
+        guard let value, !value.isEmpty, !value.hasPrefix("sync://") else { return nil }
+        return value
+    }
+    for value in readable where FileManager.default.fileExists(atPath: value) {
+        return value
+    }
+    return readable.first ?? ""
 }
 
 private func escapeLike(_ value: String) -> String {

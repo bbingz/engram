@@ -1,6 +1,10 @@
 # Claude Code — On-Disk Session Format (Definitive Reference)
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-06-21 (Engram session-format research workflow);
+native coverage updated: 2026-07-01; provider-root coverage updated:
+2026-07-02.
+Current-state verification: 2026-07-02 (live `~/.claude/projects` and
+`~/.claude-*` provider-root parser/DB diff).
 
 This is the canonical reference for **how Claude Code persists its interactive
 sessions on disk**, plus **how Engram's adapters consume that format**. It
@@ -15,6 +19,27 @@ against Engram's TypeScript and Swift adapters.
 > All quoted JSON is **anonymized**: message text, code, secrets, and personal
 > paths are replaced with placeholders, but **every key is preserved verbatim**.
 > This document is about FORMAT, not content.
+
+**Current native Engram status (2026-07-02):** `~/.claude/projects` is an active
+moving target. The full 2026-07-02 TS smoke at `2026-07-01T19:11:45Z` listed
+12,168 JSONL files and parsed 11,275 conversations from 1,527,155 non-empty
+JSONL lines, including 4 malformed lines: 11,270 native `claude-code` plus 5
+native MiniMax model-hint sessions. That two-phase scan initially observed 5
+stream/count mismatches because five active `mediahub` workflow subagent files
+grew between the parse pass and the stream pass; an immediate per-file
+parse+stream recheck over those five files matched all counts. A later
+identity-only recheck at `2026-07-01T19:13:36Z` already showed 11,279 parsed
+conversations and 11,148 unique ids. Live DB freshness is not clean: 99 current
+`mediahub` ids still have no `sessions` row or `file_index_state`; 142 current
+locators are not DB locator-current, but 43 of those are duplicate-id
+`coding-memory` locators whose ids already exist at a different locator. A
+strict current parser-vs-DB comparison still finds 3,224
+native Claude Code rows with 7,570 field diffs: mainly stale non-visible
+tool-result counts (`message_count` x2,924 and `tool_message_count` x2,921),
+plus `agent_role` x1,035, `parent_session_id` x417, `size_bytes` x137, `cwd`
+x131, 3 `assistant_message_count`, and 2 `user_message_count` values. Treat
+this as live DB reindex/cleanup debt, with the agent/parent enrichment fields
+requiring preservation-vs-reset review, not a current parser format mismatch.
 
 ---
 
@@ -102,6 +127,36 @@ Both adapters hardcode the root as `homedir()/.claude/projects`:
 
 Permissions observed: project dirs `0700`/`0755`; `.jsonl` files `0600`;
 `.meta.json` files `0644`.
+
+### 2.1.1 Provider-routed Claude Code roots
+
+Claude Code's on-disk **file format stays the same** when shell wrappers launch
+Claude Code with a different `CLAUDE_CONFIG_DIR`. The user's `cc-*` wrappers set
+`CLAUDE_CONFIG_DIR="$HOME/.claude-$name"`, so the same `projects/*` grammar also
+appears under:
+
+| Wrapper(s) | Root | Engram source |
+|---|---|---|
+| `cc-kimi` | `~/.claude-kimi/projects` | `kimi` |
+| `cc-minimax` | `~/.claude-minimax/projects` | `minimax` |
+| `cc-mimo`, `cc-mimosg` | `~/.claude-mimo/projects`, `~/.claude-mimosg/projects` | `mimo` |
+| `cc-qwen` | `~/.claude-qwen/projects` | `qwen` |
+| `cc-doubao` | `~/.claude-doubao/projects` | `doubao` |
+| `cc-glm`, `cc-glmc` | `~/.claude-glm/projects`, `~/.claude-glmc/projects` | `glm` |
+| `cc-ds`, `cc-dsc` | `~/.claude-ds/projects`, `~/.claude-dsc/projects` | `deepseek` |
+| `cc-codex` (`_cc_with openai`) | `~/.claude-openai/projects` | `codex` |
+
+Current source handles these by constructing `ClaudeCodeAdapter` with the
+provider root and a fixed provider `source`, while preserving the `originator`
+provenance as `"Claude Code"`. A 2026-07-02 live smoke over all 11 roots listed
+**8,623** JSONL files, parsed **8,409** conversation files, and found **8,289**
+subagent transcripts. Installed `/Applications/Engram.app` build
+`20260701074505` has **8,015** provider-root session rows; the remaining
+provider-root delta is an active-write/retry frontier (227 `.claude-glmc` files
+plus 167 `.claude-openai` files, one already marked `retry/malformedJSON`), not
+missing provider-root support. TS and Swift both skip user-form system
+injections and non-visible `tool_result` records from streamed messages before
+applying offset/count pagination.
 
 ### 2.2 The cwd → directory-encoding scheme (exact)
 
@@ -193,7 +248,7 @@ and no live `.jsonl` files. Engram handles it transparently — it's just anothe
 | `<uuid>.jsonl` | Session transcript (JSONL) | Claude Code | **Yes** (primary) |
 | `<uuid>/subagents/agent-<hex>.jsonl` | Subagent transcript | Claude Code | **Yes** |
 | `<uuid>/subagents/agent-<hex>.meta.json` | Subagent metadata sidecar | Claude Code | No |
-| `<uuid>/subagents/workflows/wf_*/agent-*.{jsonl,meta.json}` | Nested workflow subagents | Claude Code / polycli | **No** (coverage gap, see §15) |
+| `<uuid>/subagents/workflows/wf_*/agent-*.{jsonl,meta.json}` | Nested workflow subagents | Claude Code / polycli | JSONL **Yes** in current source; `.meta.json` No |
 | `<uuid>/subagents/workflows/wf_*/journal.jsonl` | Workflow memoization journal | Claude Code / polycli | No |
 | `<uuid>/workflows/wf_<id>.json` | Workflow run definition (script/phases) | Claude Code / polycli | No |
 | `<uuid>/workflows/wf_<id>/agent-*.{jsonl,meta.json}` | Workflow agent runs | Claude Code / polycli | No |
@@ -216,12 +271,14 @@ the transcript references it. `<id>` is a 9-char base36-ish token (e.g. `bcvrd4r
 
 Both adapters walk `projects/*` (one level), then for each entry:
 - ends in `.jsonl` → yield it as a session locator;
-- is a directory → look for a `subagents/` child and yield every `*.jsonl` inside.
+- is a directory → look for a `subagents/` child and recursively yield every
+  `*.jsonl` inside it, including `subagents/workflows/wf_*/agent-*.jsonl`.
 
-Swift `listSessionLocators()` (`ClaudeCodeAdapter.swift:27-48`) returns a
-**sorted** list; TS `listSessionFiles()` (`claude-code.ts:41-73`) is an unsorted
-async generator. **Neither descends into `subagents/workflows/`**, nor reads
-`workflows/`, `tool-results/`, `session-memory/`, `memory/`, or `*.meta.json`.
+Swift `listSessionLocators()` (`ClaudeCodeAdapter.swift:33-51`) returns a
+**sorted** list; TS `listSessionFiles()` (`claude-code.ts:67-96`) is an unsorted
+async generator and delegates recursive traversal to `jsonlFilesUnder`
+(`claude-code.ts:246-256`). Neither adapter reads top-level `workflows/`,
+`tool-results/`, `session-memory/`, `memory/`, or `*.meta.json`.
 
 ---
 
@@ -1035,27 +1092,26 @@ top-level session — but every line carries `isSidechain:true` and an `agentId`
 
 `isSidechain` is the **runtime** marker, but **Engram does not read it** — it
 infers "subagent" purely from the **file path** containing `/subagents/`
-(TS `claude-code.ts:143`; Swift `ClaudeCodeAdapter.swift:149`).
+(TS `claude-code.ts:166`; Swift `ClaudeCodeAdapter.swift:153`).
 
 ### 10.5 Parent linkage derivation (Engram "Layer 1")
 
 Both adapters extract the parent UUID from the path segment **immediately before**
 `subagents/` (the directory named after the parent's session). Deterministic, no
 heuristics:
-- **TS** (`claude-code.ts:151`): regex `/\/([^/]+)\/subagents\/[^/]+\.jsonl$/`.
-- **Swift** (`ClaudeCodeAdapter.swift:528-536`, `parentSessionId(from:)`): splits
+- **TS** (`claude-code.ts:245-248`): splits
+  on `/`, finds `subagents` index, returns `parts[subagentsIndex - 1]`.
+- **Swift** (`ClaudeCodeAdapter.swift:568-575`, `parentSessionId(from:)`): splits
   on `/`, finds `subagents` index, returns `parts[subagentsIndex - 1]`.
 
 Both set `agentRole:"subagent"` and `parentSessionId = <parent-uuid>`.
 
-> **⚠️ Verified discovery gap (on-disk reality wins).** Both adapters enumerate
-> only **direct** children of `subagents/` (TS regex requires
-> `subagents/<file>.jsonl`; Swift walks `directChildren(of: subagents)` at
-> `:40-43`). Real stores also contain **`subagents/workflows/wf_<id>/agent-*.jsonl`**.
-> In one sampled session: **1 direct** vs **14 workflow-nested** subagent files —
-> ~93% of that session's subagents **never indexed**. (Swift's
-> `parentSessionId(from:)` math *would* handle the nested path, but the file is
-> never discovered.) `workflows/<wf>/journal.jsonl` is likewise unindexed.
+> **Current source vs installed-runtime status (2026-07-01).** The historical
+> discovery gap for `subagents/workflows/wf_<id>/agent-*.jsonl` is fixed in the
+> current Swift and TS source by recursively scanning `subagents/`. Current live
+> DB state has 5,258 nested workflow subagent rows under `~/.claude/projects`,
+> so the nested workflow visibility gap is closed. `workflows/<wf>/journal.jsonl`
+> remains non-conversational and is skipped when it has no user/assistant turns.
 
 ### 10.6 Subagent tier (always skip)
 
@@ -1380,10 +1436,11 @@ fields `cache_creation{}`/`server_tool_use{}`/`service_tier`/`inference_geo`/
    **v2.1.63** — the Task tool was renamed to `Agent` then, and `Task(...)`
    references still work as aliases
    ([sub-agents docs](https://code.claude.com/docs/en/sub-agents)).
-4. **Workflow-nested subagents are unindexed.** `subagents/workflows/wf_*/agent-*.jsonl`
-   (and their `journal.jsonl`) are never discovered by either adapter — observed
-   ~93% of one session's subagents missed. Intentional scope vs latent bug
-   unresolved.
+4. **Workflow-nested subagents are source-covered and indexed.**
+   `subagents/workflows/wf_*/agent-*.jsonl` is now discovered recursively by both
+   adapters. Current live DB state has 5,258 nested workflow subagent rows under
+   `~/.claude/projects`. `journal.jsonl` files remain non-conversational and
+   are skipped.
 5. **Three current models price at $0.** Any model with no exact-or-longest-prefix
    key in `pricing.ts` resolves to `undefined` → cost `0`. On disk that is
    **`claude-opus-4-8` (21541 records), `claude-opus-4-7` (2070), AND

@@ -10,6 +10,7 @@ import type {
   SessionAdapter,
   SessionInfo,
   StreamMessagesOptions,
+  TokenUsage,
 } from './types.js';
 
 export class QwenAdapter implements SessionAdapter {
@@ -127,14 +128,25 @@ export class QwenAdapter implements SessionAdapter {
     const limit = opts.limit ?? Infinity;
     let count = 0;
     let yielded = 0;
+    let pendingTelemetryUsage: TokenUsage | undefined;
 
     for await (const line of this.readLines(filePath)) {
       if (yielded >= limit) break;
       const obj = this.parseLine(line);
       if (!obj) continue;
 
+      const telemetryUsage = this.telemetryUsage(obj);
+      if (telemetryUsage) {
+        pendingTelemetryUsage = telemetryUsage;
+        continue;
+      }
+
       const type = obj.type as string;
       if (type !== 'user' && type !== 'assistant') continue;
+
+      const msg = obj.message as Record<string, unknown>;
+      const content = this.extractContent(msg);
+      if (type === 'user' && this.isSystemInjection(content)) continue;
 
       if (count < offset) {
         count++;
@@ -142,13 +154,21 @@ export class QwenAdapter implements SessionAdapter {
       }
       count++;
 
-      const msg = obj.message as Record<string, unknown>;
       const role = type === 'assistant' ? 'assistant' : 'user';
+      const metadataUsage = this.usage(
+        obj.usageMetadata as Record<string, unknown> | undefined,
+      );
+      const usage =
+        type === 'assistant'
+          ? (metadataUsage ?? pendingTelemetryUsage)
+          : undefined;
+      if (type === 'assistant') pendingTelemetryUsage = undefined;
 
       yield {
         role: role as 'user' | 'assistant',
-        content: this.extractContent(msg),
+        content,
         timestamp: obj.timestamp as string | undefined,
+        usage,
       };
       yielded++;
     }
@@ -184,6 +204,47 @@ export class QwenAdapter implements SessionAdapter {
     } catch {
       return null;
     }
+  }
+
+  private telemetryUsage(obj: Record<string, unknown>): TokenUsage | undefined {
+    if (obj.type !== 'system' || obj.subtype !== 'ui_telemetry')
+      return undefined;
+    const payload = obj.systemPayload as Record<string, unknown> | undefined;
+    const uiEvent = payload?.uiEvent as Record<string, unknown> | undefined;
+    if (uiEvent?.['event.name'] !== 'qwen-code.api_response') return undefined;
+    return this.nonZeroUsage({
+      inputTokens: this.int(uiEvent.input_token_count),
+      outputTokens: this.int(uiEvent.output_token_count),
+      cacheReadTokens: this.int(uiEvent.cached_content_token_count),
+      cacheCreationTokens: 0,
+    });
+  }
+
+  private usage(metadata?: Record<string, unknown>): TokenUsage | undefined {
+    if (!metadata) return undefined;
+    return this.nonZeroUsage({
+      inputTokens: this.int(metadata.promptTokenCount),
+      outputTokens: this.int(metadata.candidatesTokenCount),
+      cacheReadTokens: this.int(metadata.cachedContentTokenCount),
+      cacheCreationTokens: 0,
+    });
+  }
+
+  private nonZeroUsage(usage: TokenUsage): TokenUsage | undefined {
+    if (
+      usage.inputTokens > 0 ||
+      usage.outputTokens > 0 ||
+      (usage.cacheReadTokens ?? 0) > 0
+    ) {
+      return usage;
+    }
+    return undefined;
+  }
+
+  private int(value: unknown): number {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') return Number.parseInt(value, 10) || 0;
+    return 0;
   }
 
   // Extract text content from Qwen message object

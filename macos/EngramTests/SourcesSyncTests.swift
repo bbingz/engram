@@ -71,9 +71,11 @@ final class SourcesSyncTests: XCTestCase {
         // The static catalog moved out of Settings into SourceCatalog; assert it
         // there now that Settings only points at Workspace > Sources.
         let text = try source("macos/Engram/Models/SourceCatalog.swift")
+        XCTAssertEqual(Set(SourceCatalog.all.map(\.id)), Set(SourceName.allCases.map(\.rawValue)))
         // Real Claude-Code-derived sources.
         XCTAssertTrue(text.contains("minimax"))
         XCTAssertTrue(text.contains("lobsterai"))
+        XCTAssertTrue(text.contains("pi"))
         // Never re-add unregistered sources.
         XCTAssertFalse(text.contains("OpenClaw"))
         XCTAssertFalse(text.contains("Hermes"))

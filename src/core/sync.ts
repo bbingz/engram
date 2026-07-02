@@ -79,6 +79,12 @@ export class SyncEngine {
       summary: raw.summary,
       summaryMessageCount:
         'summaryMessageCount' in raw ? raw.summaryMessageCount : undefined,
+      instructionCount:
+        'instructionCount' in raw ? raw.instructionCount : undefined,
+      humanTurnCount: 'humanTurnCount' in raw ? raw.humanTurnCount : undefined,
+      instructionSummary:
+        'instructionSummary' in raw ? raw.instructionSummary : undefined,
+      originator: 'originator' in raw ? (raw.originator ?? null) : null,
       origin: peerName,
       // biome-ignore lint/suspicious/noExplicitAny: agentRole may exist on peer response but not in local type
       agentRole: 'agentRole' in raw ? ((raw as any).agentRole ?? null) : null,

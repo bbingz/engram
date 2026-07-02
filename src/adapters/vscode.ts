@@ -21,6 +21,7 @@ interface VsSessionData {
   version: number;
   sessionId: string;
   creationDate: number;
+  workingDirectory?: string;
   requests: VsRequest[];
 }
 
@@ -90,7 +91,8 @@ export class VsCodeAdapter implements SessionAdapter {
       const lastReq = session.requests[session.requests.length - 1];
       const userMessageCount = userMessages.length;
       const assistantMessageCount = assistantTexts.length;
-      const cwd = await this.readWorkspaceCwd(filePath);
+      const workspaceCwd = await this.readWorkspaceCwd(filePath);
+      const cwd = workspaceCwd || decodeFileUri(session.workingDirectory ?? '');
 
       return {
         id: session.sessionId || basename(filePath, '.jsonl'),

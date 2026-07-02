@@ -27,12 +27,8 @@ interface MessageRow {
   data: string;
 }
 
-interface MessageCountRow {
-  count: number;
-}
-
 interface MessageData {
-  role: 'user' | 'assistant';
+  role?: string;
   time?: { created?: number; completed?: number };
   content?: Array<{ type: string; value?: string; text?: string }>;
   tokens?: {
@@ -44,6 +40,27 @@ interface MessageData {
       write?: number;
     };
   };
+}
+
+interface PartData {
+  type?: string;
+  text?: string;
+  value?: string;
+}
+
+interface JoinedPartRow {
+  mid: string;
+  mdata: string;
+  pdata: string;
+  time_created?: number;
+}
+
+interface MessagePart {
+  messageId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp?: string;
+  usage?: TokenUsage;
 }
 
 export class OpenCodeAdapter implements SessionAdapter {
@@ -113,14 +130,6 @@ export class OpenCodeAdapter implements SessionAdapter {
 
       if (!session) return null;
 
-      const countRow = db
-        .prepare<[string], MessageCountRow>(
-          'SELECT COUNT(*) as count FROM message WHERE session_id = ?',
-        )
-        .get(sessionId);
-
-      const _messageCount = countRow?.count ?? 0;
-
       const messages = db
         .prepare<[string], MessageRow>(
           'SELECT id, session_id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created ASC',
@@ -137,17 +146,25 @@ export class OpenCodeAdapter implements SessionAdapter {
         ).toISOString();
       }
 
-      let userMessageCount = 0;
-      let assistantMessageCount = 0;
-      for (const msgRow of messages) {
-        try {
-          const data = JSON.parse(msgRow.data) as MessageData;
-          if (data.role === 'user') userMessageCount++;
-          else if (data.role === 'assistant') assistantMessageCount++;
-        } catch {
-          // skip unparseable messages
-        }
+      const countRows = db
+        .prepare<[string], JoinedPartRow>(
+          `SELECT m.id AS mid, m.data AS mdata, p.data AS pdata
+           FROM message m
+           JOIN part p ON p.message_id = m.id
+           WHERE m.session_id = ?`,
+        )
+        .all(sessionId);
+
+      const userMessageIds = new Set<string>();
+      const assistantMessageIds = new Set<string>();
+      for (const row of countRows) {
+        const part = this.messagePart(row);
+        if (!part) continue;
+        if (part.role === 'user') userMessageIds.add(part.messageId);
+        else assistantMessageIds.add(part.messageId);
       }
+      const userMessageCount = userMessageIds.size;
+      const assistantMessageCount = assistantMessageIds.size;
 
       // Per-session size = message payload bytes + part payload bytes. The old
       // statSync(dbPath) measured the whole shared SQLite file and attributed
@@ -206,53 +223,36 @@ export class OpenCodeAdapter implements SessionAdapter {
       db = new Database(dbPath, { readonly: true });
 
       const rows = db
-        .prepare(
-          `SELECT m.data AS mdata, p.data AS pdata, m.time_created
-         FROM message m
-         JOIN part p ON p.message_id = m.id
-         WHERE m.session_id = ?
-         ORDER BY m.time_created ASC, p.time_created ASC`,
+        .prepare<[string], JoinedPartRow>(
+          `SELECT m.id AS mid, m.data AS mdata, p.data AS pdata, m.time_created
+           FROM message m
+           JOIN part p ON p.message_id = m.id
+           WHERE m.session_id = ?
+           ORDER BY m.time_created ASC, p.time_created ASC`,
         )
-        .all(sessionId) as {
-        mdata: string;
-        pdata: string;
-        time_created: number;
-      }[];
+        .all(sessionId);
 
-      let count = 0;
-      let yielded = 0;
-
+      const messages: Message[] = [];
+      const indexByMessageId = new Map<string, number>();
       for (const row of rows) {
-        if (yielded >= limit) break;
-
-        let mdata: MessageData;
-        let pdata: { type: string; text?: string; value?: string };
-        try {
-          mdata = JSON.parse(row.mdata);
-          pdata = JSON.parse(row.pdata);
-        } catch {
-          continue;
+        const part = this.messagePart(row);
+        if (!part) continue;
+        const index = indexByMessageId.get(part.messageId);
+        if (index !== undefined) {
+          messages[index].content += `\n${part.content}`;
+        } else {
+          indexByMessageId.set(part.messageId, messages.length);
+          messages.push({
+            role: part.role,
+            content: part.content,
+            timestamp: part.timestamp,
+            usage: part.usage,
+          });
         }
+      }
 
-        if (mdata.role !== 'user' && mdata.role !== 'assistant') continue;
-        if (this.normalizedPartType(pdata.type) !== 'text') continue;
-        const content = pdata.text || pdata.value || '';
-        if (!content.trim()) continue;
-
-        if (count < offset) {
-          count++;
-          continue;
-        }
-        count++;
-
-        yield {
-          role: mdata.role,
-          content,
-          timestamp: new Date(row.time_created).toISOString(),
-          usage:
-            mdata.role === 'assistant' ? this.usage(mdata.tokens) : undefined,
-        };
-        yielded++;
+      for (const message of messages.slice(offset, offset + limit)) {
+        yield message;
       }
     } catch {
       // DB open or query failed
@@ -310,5 +310,37 @@ export class OpenCodeAdapter implements SessionAdapter {
 
   private normalizedPartType(value: unknown): string {
     return typeof value === 'string' ? value.trim().toLowerCase() : '';
+  }
+
+  private messagePart(row: JoinedPartRow): MessagePart | null {
+    let mdata: MessageData;
+    let pdata: PartData;
+    try {
+      mdata = JSON.parse(row.mdata);
+      pdata = JSON.parse(row.pdata);
+    } catch {
+      return null;
+    }
+
+    if (mdata.role !== 'user' && mdata.role !== 'assistant') return null;
+    if (this.normalizedPartType(pdata.type) !== 'text') return null;
+    const content =
+      typeof pdata.text === 'string'
+        ? pdata.text
+        : typeof pdata.value === 'string'
+          ? pdata.value
+          : '';
+    if (!content.trim()) return null;
+
+    return {
+      messageId: row.mid,
+      role: mdata.role,
+      content,
+      timestamp:
+        typeof row.time_created === 'number'
+          ? new Date(row.time_created).toISOString()
+          : undefined,
+      usage: mdata.role === 'assistant' ? this.usage(mdata.tokens) : undefined,
+    };
   }
 }

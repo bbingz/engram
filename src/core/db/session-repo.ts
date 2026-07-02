@@ -77,6 +77,7 @@ function rowToSession(row: Record<string, unknown>): SessionInfo {
     sizeBytes: row.size_bytes as number,
     indexedAt: row.indexed_at as string | undefined,
     agentRole: row.agent_role as string | undefined,
+    originator: row.originator as string | undefined,
     origin: row.origin as string | undefined,
     summaryMessageCount: row.summary_message_count as number | undefined,
     tier: row.tier as string | undefined,
@@ -115,6 +116,10 @@ function rowToAuthoritativeSnapshot(
     summary: (row.summary as string | null) ?? undefined,
     summaryMessageCount:
       (row.summary_message_count as number | null) ?? undefined,
+    instructionCount: (row.instruction_count as number | null) ?? undefined,
+    humanTurnCount: (row.human_turn_count as number | null) ?? undefined,
+    instructionSummary: (row.instruction_summary as string | null) ?? undefined,
+    originator: (row.originator as string | null) ?? undefined,
     origin: (row.origin as string | null) ?? undefined,
     tier: row.tier as string | null as AuthoritativeSessionSnapshot['tier'],
     agentRole: (row.agent_role as string | null) ?? undefined,
@@ -195,10 +200,10 @@ export function upsertSession(
   db.prepare(`
     INSERT INTO sessions (id, source, start_time, end_time, cwd, project, model,
       message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count,
-      summary, file_path, size_bytes, indexed_at, agent_role, origin, authoritative_node, source_locator, sync_version, snapshot_hash)
+      summary, file_path, size_bytes, indexed_at, agent_role, originator, origin, authoritative_node, source_locator, sync_version, snapshot_hash)
     VALUES (@id, @source, @startTime, @endTime, @cwd, @project, @model,
       @messageCount, @userMessageCount, @assistantMessageCount, @toolMessageCount, @systemMessageCount,
-      @summary, @filePath, @sizeBytes, datetime('now'), @agentRole, @origin, @authoritativeNode, @sourceLocator, 0, '')
+      @summary, @filePath, @sizeBytes, datetime('now'), @agentRole, @originator, @origin, @authoritativeNode, @sourceLocator, 0, '')
     ON CONFLICT(id) DO UPDATE SET
       source = excluded.source,
       cwd = CASE
@@ -233,6 +238,7 @@ export function upsertSession(
       size_bytes = excluded.size_bytes,
       indexed_at = excluded.indexed_at,
       agent_role = excluded.agent_role,
+      originator = COALESCE(excluded.originator, sessions.originator),
       origin = excluded.origin,
       authoritative_node = COALESCE(sessions.authoritative_node, excluded.authoritative_node),
       source_locator = COALESCE(excluded.source_locator, sessions.source_locator)
@@ -253,6 +259,7 @@ export function upsertSession(
     filePath: session.filePath,
     sizeBytes: session.sizeBytes,
     agentRole: session.agentRole ?? null,
+    originator: session.originator ?? null,
     origin: session.origin ?? 'local',
     authoritativeNode: session.origin ?? 'local',
     sourceLocator: session.filePath,
@@ -589,13 +596,15 @@ export function upsertAuthoritativeSnapshot(
     INSERT INTO sessions (
       id, source, start_time, end_time, cwd, project, model,
       message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count,
-      summary, summary_message_count, file_path, size_bytes, indexed_at, origin,
+      summary, summary_message_count, instruction_count, human_turn_count, instruction_summary,
+      originator, file_path, size_bytes, indexed_at, origin,
       authoritative_node, source_locator, sync_version, snapshot_hash,
       tier, agent_role, quality_score
     ) VALUES (
       @id, @source, @startTime, @endTime, @cwd, @project, @model,
       @messageCount, @userMessageCount, @assistantMessageCount, @toolMessageCount, @systemMessageCount,
-      @summary, @summaryMessageCount, @legacyFilePath, @sizeBytes, @indexedAt, @origin,
+      @summary, @summaryMessageCount, @instructionCount, @humanTurnCount, @instructionSummary,
+      @originator, @legacyFilePath, @sizeBytes, @indexedAt, @origin,
       @authoritativeNode, @sourceLocator, @syncVersion, @snapshotHash,
       @tier, @agentRole, @qualityScore
     )
@@ -631,6 +640,22 @@ export function upsertAuthoritativeSnapshot(
       END,
       summary = COALESCE(excluded.summary, sessions.summary),
       summary_message_count = COALESCE(excluded.summary_message_count, sessions.summary_message_count),
+      instruction_count = CASE
+        WHEN excluded.summary_message_count = 0 AND sessions.summary_message_count > 0
+          THEN sessions.instruction_count
+        ELSE excluded.instruction_count
+      END,
+      human_turn_count = CASE
+        WHEN excluded.summary_message_count = 0 AND sessions.summary_message_count > 0
+          THEN sessions.human_turn_count
+        ELSE excluded.human_turn_count
+      END,
+      instruction_summary = CASE
+        WHEN excluded.summary_message_count = 0 AND sessions.summary_message_count > 0
+          THEN sessions.instruction_summary
+        ELSE excluded.instruction_summary
+      END,
+      originator = COALESCE(excluded.originator, sessions.originator),
       size_bytes = excluded.size_bytes,
       indexed_at = excluded.indexed_at,
       origin = excluded.origin,
@@ -665,6 +690,10 @@ export function upsertAuthoritativeSnapshot(
     systemMessageCount: snapshot.systemMessageCount,
     summary: snapshot.summary ?? null,
     summaryMessageCount: snapshot.summaryMessageCount ?? null,
+    instructionCount: snapshot.instructionCount ?? null,
+    humanTurnCount: snapshot.humanTurnCount ?? null,
+    instructionSummary: snapshot.instructionSummary ?? null,
+    originator: snapshot.originator ?? null,
     legacyFilePath: localReadablePath,
     sizeBytes: snapshot.sizeBytes ?? 0,
     indexedAt: snapshot.indexedAt,

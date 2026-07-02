@@ -21,6 +21,7 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     let sizeBytes: Int
     let indexedAt: String
     let agentRole: String?
+    var originator: String? = nil
     let hiddenAt: String?
     let customName: String?
     let tier: String?
@@ -57,6 +58,7 @@ struct Session: FetchableRecord, Decodable, Identifiable {
         case sizeBytes        = "size_bytes"
         case indexedAt        = "indexed_at"
         case agentRole        = "agent_role"
+        case originator
         case hiddenAt         = "hidden_at"
         case customName       = "custom_name"
         case tier
@@ -157,6 +159,7 @@ extension Session {
         sizeBytes = try c.decode(Int.self, forKey: .sizeBytes)
         indexedAt = try c.decode(String.self, forKey: .indexedAt)
         agentRole = try c.decodeIfPresent(String.self, forKey: .agentRole)
+        originator = try c.decodeIfPresent(String.self, forKey: .originator)
         hiddenAt = try c.decodeIfPresent(String.self, forKey: .hiddenAt)
         customName = try c.decodeIfPresent(String.self, forKey: .customName)
         tier = try c.decodeIfPresent(String.self, forKey: .tier)

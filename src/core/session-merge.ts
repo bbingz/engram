@@ -22,8 +22,12 @@ function coalesceSnapshot(
 ): AuthoritativeSessionSnapshot {
   const preserveMessageCounts =
     incoming.messageCount === 0 && current.messageCount > 0;
+  const preserveInstructionSignals =
+    incoming.summaryMessageCount === 0 &&
+    (current.summaryMessageCount ?? 0) > 0;
   return {
     ...incoming,
+    syncVersion: Math.max(current.syncVersion, incoming.syncVersion),
     endTime: incoming.endTime ?? current.endTime,
     cwd: incoming.cwd === '' ? current.cwd : incoming.cwd,
     project: incoming.project ?? current.project,
@@ -46,8 +50,34 @@ function coalesceSnapshot(
     summary: incoming.summary ?? current.summary,
     summaryMessageCount:
       incoming.summaryMessageCount ?? current.summaryMessageCount,
+    instructionCount: preserveInstructionSignals
+      ? current.instructionCount
+      : incoming.instructionCount,
+    humanTurnCount: preserveInstructionSignals
+      ? current.humanTurnCount
+      : incoming.humanTurnCount,
+    instructionSummary: preserveInstructionSignals
+      ? current.instructionSummary
+      : incoming.instructionSummary,
+    originator: incoming.originator ?? current.originator,
     origin: incoming.origin ?? current.origin,
   };
+}
+
+function isLocalLocator(locator: string): boolean {
+  return locator !== '' && !locator.startsWith('sync://');
+}
+
+function shouldAcceptLowerSyncLocalLocatorRefresh(
+  current: AuthoritativeSessionSnapshot,
+  incoming: AuthoritativeSessionSnapshot,
+): boolean {
+  return (
+    current.source === incoming.source &&
+    current.sourceLocator !== incoming.sourceLocator &&
+    isLocalLocator(current.sourceLocator) &&
+    isLocalLocator(incoming.sourceLocator)
+  );
 }
 
 export function mergeSessionSnapshot(
@@ -78,7 +108,10 @@ export function mergeSessionSnapshot(
     );
   }
 
-  if (incoming.syncVersion < current.syncVersion) {
+  if (
+    incoming.syncVersion < current.syncVersion &&
+    !shouldAcceptLowerSyncLocalLocatorRefresh(current, incoming)
+  ) {
     return { action: 'noop', merged: current, changeSet: { flags: new Set() } };
   }
 
@@ -89,10 +122,15 @@ export function mergeSessionSnapshot(
     const currentTier = current.tier ?? 'normal';
     const incomingTier = incoming.tier ?? 'normal';
     const incomingSizeBytes = incoming.sizeBytes ?? current.sizeBytes;
+    const instructionSignalsChanged =
+      current.instructionCount !== incoming.instructionCount ||
+      current.humanTurnCount !== incoming.humanTurnCount ||
+      current.instructionSummary !== incoming.instructionSummary;
     if (
       currentTier === incomingTier &&
       (current.agentRole ?? null) === (incoming.agentRole ?? null) &&
-      current.sizeBytes === incomingSizeBytes
+      current.sizeBytes === incomingSizeBytes &&
+      !instructionSignalsChanged
     ) {
       return {
         action: 'noop',

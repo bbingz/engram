@@ -191,7 +191,9 @@ final class EngramMCPExecutableTests: XCTestCase {
         let expected = [
             "codex",
             "claude-code",
+            "grok",
             "copilot",
+            "pi",
             "gemini-cli",
             "opencode",
             "iflow",
@@ -199,6 +201,10 @@ final class EngramMCPExecutableTests: XCTestCase {
             "qoder",
             "kimi",
             "minimax",
+            "mimo",
+            "doubao",
+            "glm",
+            "deepseek",
             "lobsterai",
             "commandcode",
             "cline",
@@ -534,6 +540,44 @@ final class EngramMCPExecutableTests: XCTestCase {
 
         let results = try XCTUnwrap(capture.ordered["result"]?["structuredContent"]?["results"]?.arrayValue)
         XCTAssertEqual(results.compactMap { $0["session"]?["id"]?.stringValue }, ["mcp-like-literal"])
+    }
+
+    func testSearchFindsExactNonUUIDSessionIdOutsideFTSContent() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-id-search-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try DatabaseQueue(path: dbPath).write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes,
+                  indexed_at, tier
+                ) VALUES (
+                  'session-short-id', 'codex', '2026-04-24T01:00:00Z',
+                  '/tmp/engram', 'engram', 'gpt-5.5', 2, 1, 1,
+                  '/tmp/session-short-id.jsonl', 50, '2026-04-24T01:01:00Z',
+                  'premium'
+                )
+                """
+            )
+        }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"session-short-id","mode":"keyword","limit":10}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]
+        )
+
+        let results = try XCTUnwrap(capture.ordered["result"]?["structuredContent"]?["results"]?.arrayValue)
+        XCTAssertEqual(results.compactMap { $0["session"]?["id"]?.stringValue }, ["session-short-id"])
+        XCTAssertEqual(results.first?["matchType"]?.stringValue, "id")
+        XCTAssertEqual(capture.ordered["result"]?["structuredContent"]?["searchModes"]?.arrayValue?.first?.stringValue, "id")
     }
 
     func testMCPTranscriptFallbackDoesNotBypassAdapterSizeFailures() throws {
@@ -1499,6 +1543,151 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(messages.count, 3, "empty roles must not filter out every message")
         let roles = messages.compactMap { $0["role"]?.stringValue }
         XCTAssertEqual(roles, ["user", "assistant", "user"])
+    }
+
+    func testGetSessionFallsBackWhenLocalReadablePathIsStale() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-stale-local-readable-path-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        let transcriptPath = fixturePath("mcp-runtime/transcripts/rollout-mcp-transcript-01.jsonl")
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: transcriptPath,
+            messageCount: 3,
+            userMessageCount: 2,
+            assistantMessageCount: 1,
+            toolMessageCount: 0
+        )
+        let stalePath = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("missing-\(UUID().uuidString).jsonl")
+            .path
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO session_local_state (session_id, local_readable_path)
+                VALUES ('mcp-transcript-01', ?)
+                ON CONFLICT(session_id) DO UPDATE
+                SET local_readable_path = excluded.local_readable_path
+                """,
+                arguments: [stalePath]
+            )
+        }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":1}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]
+        )
+
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertEqual(structured["session"]?["filePath"]?.stringValue, transcriptPath)
+        let messages = try XCTUnwrap(structured["messages"]?.arrayValue)
+        XCTAssertEqual(messages.count, 3)
+    }
+
+    func testGetSessionReadsQwenTranscriptThroughAdapterRegistry() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root
+            .appendingPathComponent(".qwen/projects/-tmp-qwen-project/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+        let transcript = chatsDir.appendingPathComponent("mcp-transcript-01.jsonl")
+        try #"""
+        {"uuid":"qwen-system","sessionId":"mcp-transcript-01","timestamp":"2026-04-23T01:00:00Z","type":"user","cwd":"/tmp/qwen-project","message":{"role":"user","parts":[{"text":"\nYou are Qwen Code, an interactive CLI agent. Analyze the current directory."}]}}
+        {"uuid":"qwen-user","sessionId":"mcp-transcript-01","timestamp":"2026-04-23T01:00:01Z","type":"user","cwd":"/tmp/qwen-project","message":{"role":"user","parts":[{"text":"Build the dashboard."}]}}
+        {"uuid":"qwen-assistant","sessionId":"mcp-transcript-01","timestamp":"2026-04-23T01:00:02Z","type":"assistant","cwd":"/tmp/qwen-project","model":"qwen3.5-plus","message":{"role":"model","parts":[{"text":"Dashboard ready."}]}}
+        """#.write(to: transcript, atomically: true, encoding: .utf8)
+
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-qwen-transcript-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "qwen",
+            filePath: transcript.path,
+            messageCount: 2,
+            userMessageCount: 1,
+            assistantMessageCount: 1,
+            toolMessageCount: 0
+        )
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":1}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "CFFIXED_USER_HOME": root.path,
+                "HOME": root.path,
+            ]
+        )
+
+        let result = try XCTUnwrap(capture.ordered["result"])
+        let structured = try XCTUnwrap(result["structuredContent"])
+        let messages = try XCTUnwrap(structured["messages"]?.arrayValue)
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(messages.compactMap { $0["role"]?.stringValue }, ["user", "assistant"])
+        XCTAssertEqual(messages.compactMap { $0["content"]?.stringValue }, ["Build the dashboard.", "Dashboard ready."])
+
+        guard case .array(let content)? = result["content"],
+              let text = content.first?["text"]?.stringValue else {
+            return XCTFail("Expected get_session text content")
+        }
+        XCTAssertFalse(text.contains("You are Qwen Code"), "Qwen system injection must not leak into MCP transcript output")
+    }
+
+    func testGetSessionReadsKimiTranscriptThroughNativeAdapter() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root
+            .appendingPathComponent(".kimi/sessions/ws-001/mcp-transcript-01", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let transcript = sessionDir.appendingPathComponent("context.jsonl")
+        try """
+        {"role":"user","content":"Plan the refactor.","timestamp":"2026-04-23T01:00:00Z"}
+        {"role":"assistant","content":[{"type":"text","text":"Refactor plan ready."}],"timestamp":"2026-04-23T01:00:01Z"}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-kimi-transcript-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "kimi",
+            filePath: transcript.path,
+            messageCount: 2,
+            userMessageCount: 1,
+            assistantMessageCount: 1,
+            toolMessageCount: 0
+        )
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":1}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "CFFIXED_USER_HOME": root.path,
+                "HOME": root.path,
+            ]
+        )
+
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        let messages = try XCTUnwrap(structured["messages"]?.arrayValue)
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(messages.compactMap { $0["role"]?.stringValue }, ["user", "assistant"])
+        XCTAssertEqual(messages.compactMap { $0["content"]?.stringValue }, ["Plan the refactor.", "Refactor plan ready."])
     }
 
     func testGetSessionPaginatesLargeCodexTranscript() throws {

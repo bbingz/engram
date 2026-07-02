@@ -73,10 +73,14 @@ final class IflowAdapter: SessionAdapter, Sendable {
                     detectedModel = value
                 }
 
+                let text = Self.extractContent(message?["content"])
+                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    continue
+                }
+
                 if type == "assistant" {
                     assistantCount += 1
                 } else {
-                    let text = Self.extractContent(message?["content"])
                     if Self.isSystemInjection(text) {
                         systemCount += 1
                     } else {
@@ -147,9 +151,16 @@ final class IflowAdapter: SessionAdapter, Sendable {
             return nil
         }
         let message = JSONLAdapterSupport.object(object["message"])
+        let content = extractContent(message?["content"])
+        if type == "user", isSystemInjection(content) {
+            return nil
+        }
+        if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return nil
+        }
         return NormalizedMessage(
             role: type == "user" ? .user : .assistant,
-            content: extractContent(message?["content"]),
+            content: content,
             timestamp: JSONLAdapterSupport.string(object["timestamp"]),
             toolCalls: nil,
             usage: type == "assistant" ? usage(from: JSONLAdapterSupport.object(message?["usage"])) : nil
@@ -175,7 +186,7 @@ final class IflowAdapter: SessionAdapter, Sendable {
             }
             if !text.isEmpty { parts.append(text) }
         }
-        return parts.joined(separator: "\n\n")
+        return parts.joined(separator: "\n")
     }
 
     private static func usage(from usage: JSONLAdapterSupport.JSONObject?) -> TokenUsage? {

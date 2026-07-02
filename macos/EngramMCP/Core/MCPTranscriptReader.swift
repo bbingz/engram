@@ -102,7 +102,7 @@ enum MCPTranscriptReader {
         }
 
         switch source {
-        case "claude-code", "qwen", "qoder", "iflow", "lobsterai", "minimax":
+        case "claude-code", "qwen", "qoder", "iflow", "lobsterai", "minimax", "mimo", "doubao", "glm", "deepseek":
             collectJSONLines(filePath: filePath) { obj in
                 appendIfVisible(parseTypeMessageObject(obj), to: &builder, source: source, roles: roleFilter)
             }
@@ -144,7 +144,7 @@ enum MCPTranscriptReader {
         }
 
         switch source {
-        case "claude-code", "qwen", "qoder", "iflow", "lobsterai", "minimax":
+        case "claude-code", "qwen", "qoder", "iflow", "lobsterai", "minimax", "mimo", "doubao", "glm", "deepseek":
             return visibleMessages(parseTypeMessageFormat(filePath: filePath), source: source)
         case "kimi", "antigravity", "windsurf":
             return visibleMessages(parseRoleDirectFormat(filePath: filePath), source: source)
@@ -193,7 +193,7 @@ enum MCPTranscriptReader {
     // several reads run concurrently.
     private static func readWithAdapterRegistry(filePath: String, source: String) async throws -> [MCPTranscriptMessage]? {
         guard let sourceName = adapterSourceName(for: source),
-              let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
+              let adapter = SessionAdapterFactory.adapter(for: sourceName, locator: filePath)
         else {
             return nil
         }
@@ -234,7 +234,7 @@ enum MCPTranscriptReader {
         roles: [String]?
     ) async throws -> MCPTranscriptPage? {
         guard let sourceName = adapterSourceName(for: source),
-              let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
+              let adapter = SessionAdapterFactory.adapter(for: sourceName, locator: filePath)
         else {
             return nil
         }

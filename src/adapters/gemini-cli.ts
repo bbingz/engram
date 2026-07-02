@@ -95,14 +95,8 @@ export class GeminiCliAdapter implements SessionAdapter {
       for (const dir of projectDirs) {
         const chatsDir = join(this.tmpRoot, dir, 'chats');
         try {
-          const files = await readdir(chatsDir);
-          for (const file of files) {
-            if (
-              !file.endsWith('.engram.json') &&
-              (file.endsWith('.json') || file.endsWith('.jsonl'))
-            ) {
-              yield join(chatsDir, file);
-            }
+          for await (const file of this.sessionFilesUnder(chatsDir)) {
+            yield file;
           }
         } catch {
           // chats 目录不存在
@@ -132,6 +126,10 @@ export class GeminiCliAdapter implements SessionAdapter {
       const parts = filePath.split('/');
       const chatsIdx = parts.indexOf('chats');
       const projectName = chatsIdx > 0 ? parts[chatsIdx - 1] : '';
+      const nativeParentSessionId =
+        chatsIdx >= 0 && parts.length > chatsIdx + 2
+          ? parts[chatsIdx + 1]
+          : undefined;
 
       // Prefer Gemini CLI's native project root marker; older plugin-created
       // stores may still need the projects.json reverse map fallback.
@@ -179,11 +177,13 @@ export class GeminiCliAdapter implements SessionAdapter {
         summary: firstUserText?.slice(0, 200) || undefined,
         filePath,
         sizeBytes: fileStat.size,
-        parentSessionId,
+        parentSessionId: parentSessionId ?? nativeParentSessionId,
         originator,
-        agentRole: isClaudeCodeOriginator(originator)
-          ? 'dispatched'
-          : undefined,
+        agentRole: nativeParentSessionId
+          ? 'subagent'
+          : isClaudeCodeOriginator(originator)
+            ? 'dispatched'
+            : undefined,
       };
     } catch {
       return null;
@@ -250,6 +250,24 @@ export class GeminiCliAdapter implements SessionAdapter {
     const raw = await readFile(filePath, 'utf8');
     if (filePath.endsWith('.jsonl')) return replayJsonlSession(raw);
     return JSON.parse(raw) as GeminiSession;
+  }
+
+  private async *sessionFilesUnder(root: string): AsyncGenerator<string> {
+    const entries = await readdir(root, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = join(root, entry.name);
+      if (entry.isDirectory()) {
+        yield* this.sessionFilesUnder(entryPath);
+        continue;
+      }
+      if (
+        entry.isFile() &&
+        !entry.name.endsWith('.engram.json') &&
+        (entry.name.endsWith('.json') || entry.name.endsWith('.jsonl'))
+      ) {
+        yield entryPath;
+      }
+    }
   }
 
   private async loadProjects(): Promise<Map<string, string>> {

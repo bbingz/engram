@@ -12,7 +12,18 @@ public enum HumanDrivenFilter {
     /// instruction signals. For these sources, NULL instruction columns mean
     /// "not populated yet" rather than "unknown provider"; default visibility
     /// should not treat them as automatically human-driven.
-    public static let instructionSignalSources = ["claude-code", "codex"]
+    public static let instructionSignalSources = [
+        "claude-code",
+        "codex",
+        "kimi",
+        "minimax",
+        "mimo",
+        "qwen",
+        "doubao",
+        "glm",
+        "deepseek",
+        "lobsterai",
+    ]
     /// Minimum distinct human instructions to qualify as human-driven.
     public static let minInstructions = 2
     /// Minimum substantive human turns — the literal "dozen-plus user messages"

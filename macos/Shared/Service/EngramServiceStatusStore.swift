@@ -206,6 +206,8 @@ final class EngramServiceStatusStore {
         case "opencode": return "OpenCode"
         case "commandcode": return "Command Code"
         case "lobsterai": return "Lobster AI"
+        case "glm": return "GLM"
+        case "deepseek": return "DeepSeek"
         case "vscode": return "VS Code"
         default:
             return normalizedSource

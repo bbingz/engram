@@ -134,6 +134,8 @@ export class CommandCodeAdapter implements SessionAdapter {
       if (!obj) continue;
       const role = obj.role as Message['role'];
       if (role !== 'user' && role !== 'assistant' && role !== 'tool') continue;
+      const content = this.extractContent(obj.content);
+      if (role === 'user' && this.isSystemInjection(content)) continue;
       if (count < offset) {
         count++;
         continue;
@@ -141,7 +143,7 @@ export class CommandCodeAdapter implements SessionAdapter {
       count++;
       yield {
         role,
-        content: this.extractContent(obj.content),
+        content,
         timestamp: this.timestamp(obj),
         toolCalls: this.toolCalls(obj.content),
       };

@@ -5,7 +5,12 @@ import { homedir } from 'node:os';
 import { join, resolve as pathResolve } from 'node:path';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import type { Message, SessionAdapter, SessionInfo } from './adapters/types.js';
+import {
+  type Message,
+  resolveAdapterForLocator,
+  type SessionAdapter,
+  type SessionInfo,
+} from './adapters/types.js';
 import type { AiAuditQuery, AiAuditWriter } from './core/ai-audit.js';
 import { summarizeConversation } from './core/ai-client.js';
 import { ensureDataDirs, getAdapter } from './core/bootstrap.js';
@@ -299,8 +304,14 @@ export function createApp(
   const settings = opts?.settings ?? readFileSettings();
   const detailPageSize = 50;
 
-  function resolveAdapter(source: string): SessionAdapter | undefined {
-    return opts?.adapters?.find((a) => a.name === source) ?? getAdapter(source);
+  function resolveAdapter(
+    session: Pick<SessionInfo, 'source' | 'filePath'>,
+  ): SessionAdapter | undefined {
+    const list = opts?.adapters;
+    if (list?.length) {
+      return resolveAdapterForLocator(list, session.source, session.filePath);
+    }
+    return getAdapter(session.source, session.filePath);
   }
 
   async function readTranscriptPage(
@@ -313,7 +324,7 @@ export function createApp(
     nextOffset: number;
     error?: string;
   }> {
-    const adapter = resolveAdapter(session.source);
+    const adapter = resolveAdapter(session);
     if (!adapter) {
       return {
         messages: [],
@@ -619,7 +630,11 @@ export function createApp(
       );
     }
 
-    const adapter = opts?.adapters?.find((a) => a.name === session.source);
+    const adapter = resolveAdapterForLocator(
+      opts?.adapters ?? [],
+      session.source,
+      session.filePath,
+    );
     if (!adapter) {
       return c.json({ error: `No adapter for source: ${session.source}` }, 500);
     }
@@ -792,7 +807,11 @@ export function createApp(
     const session = db.getSession(id);
     if (!session) return c.json({ error: 'Session not found' }, 404);
 
-    const adapter = opts?.adapters?.find((a) => a.name === session.source);
+    const adapter = resolveAdapterForLocator(
+      opts?.adapters ?? [],
+      session.source,
+      session.filePath,
+    );
     if (!adapter)
       return c.json({ error: `No adapter for source: ${session.source}` }, 500);
 
@@ -908,12 +927,18 @@ export function createApp(
   const SOURCE_PATHS: Record<string, string> = {
     'claude-code': join(HOME, '.claude/projects'),
     codex: join(HOME, '.codex/sessions'),
+    grok: join(HOME, '.grok/sessions'),
     'gemini-cli': join(HOME, '.gemini/tmp'),
     opencode: join(HOME, '.local/share/opencode/opencode.db'),
     iflow: join(HOME, '.iflow/projects'),
     qwen: join(HOME, '.qwen/projects'),
     qoder: join(HOME, '.qoder/projects'),
     kimi: join(HOME, '.kimi/sessions'),
+    minimax: join(HOME, '.claude-minimax/projects'),
+    mimo: join(HOME, '.claude-mimo/projects'),
+    doubao: join(HOME, '.claude-doubao/projects'),
+    glm: join(HOME, '.claude-glm/projects'),
+    deepseek: join(HOME, '.claude-ds/projects'),
     commandcode: join(HOME, '.commandcode/projects'),
     cline: join(HOME, '.cline/data/tasks'),
     cursor: join(
@@ -931,6 +956,10 @@ export function createApp(
   const DERIVED_SOURCES: Record<string, string> = {
     lobsterai: 'claude-code',
     minimax: 'claude-code',
+    mimo: 'claude-code',
+    doubao: 'claude-code',
+    glm: 'claude-code',
+    deepseek: 'claude-code',
   };
 
   async function getHealthData() {
@@ -938,7 +967,8 @@ export function createApp(
 
     const sources = sourceStats.map((s) => {
       const derivedFrom = DERIVED_SOURCES[s.source];
-      const path = SOURCE_PATHS[derivedFrom ?? s.source] ?? '';
+      const path =
+        SOURCE_PATHS[s.source] ?? SOURCE_PATHS[derivedFrom ?? s.source] ?? '';
       return {
         name: s.source,
         sessionCount: s.sessionCount,

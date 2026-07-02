@@ -5,19 +5,28 @@ import { mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { AntigravityAdapter } from '../adapters/antigravity.js';
-import { ClaudeCodeAdapter } from '../adapters/claude-code.js';
+import {
+  ClaudeCodeAdapter,
+  ClaudeCodeDerivedSourceAdapter,
+} from '../adapters/claude-code.js';
 import { ClineAdapter } from '../adapters/cline.js';
 import { CodexAdapter } from '../adapters/codex.js';
 import { CommandCodeAdapter } from '../adapters/commandcode.js';
 import { CopilotAdapter } from '../adapters/copilot.js';
 import { CursorAdapter } from '../adapters/cursor.js';
 import { GeminiCliAdapter } from '../adapters/gemini-cli.js';
+import { GrokAdapter } from '../adapters/grok.js';
 import { IflowAdapter } from '../adapters/iflow.js';
 import { KimiAdapter } from '../adapters/kimi.js';
 import { OpenCodeAdapter } from '../adapters/opencode.js';
+import { PiAdapter } from '../adapters/pi.js';
 import { QoderAdapter } from '../adapters/qoder.js';
 import { QwenAdapter } from '../adapters/qwen.js';
-import type { SessionAdapter, SourceName } from '../adapters/types.js';
+import {
+  resolveAdapterForLocator,
+  type SessionAdapter,
+  type SourceName,
+} from '../adapters/types.js';
 import { VsCodeAdapter } from '../adapters/vscode.js';
 import { WindsurfAdapter } from '../adapters/windsurf.js';
 import { AiAuditQuery, AiAuditWriter } from './ai-audit.js';
@@ -47,12 +56,37 @@ export function ensureDataDirs(): string {
 }
 
 function createAdapters(): SessionAdapter[] {
+  const claudeCode = new ClaudeCodeAdapter();
+  const claudeProviderRoots: Array<[string, SourceName]> = [
+    ['kimi', 'kimi'],
+    ['minimax', 'minimax'],
+    ['mimo', 'mimo'],
+    ['mimosg', 'mimo'],
+    ['qwen', 'qwen'],
+    ['doubao', 'doubao'],
+    ['glm', 'glm'],
+    ['glmc', 'glm'],
+    ['ds', 'deepseek'],
+    ['dsc', 'deepseek'],
+    ['openai', 'codex'],
+  ];
   return [
+    new GrokAdapter(),
+    claudeCode,
+    ...claudeProviderRoots.map(
+      ([name, source]) =>
+        new ClaudeCodeAdapter(join(homedir(), `.claude-${name}`, 'projects'), {
+          source,
+          originator: 'Claude Code',
+        }),
+    ),
+    new ClaudeCodeDerivedSourceAdapter('minimax', claudeCode),
+    new ClaudeCodeDerivedSourceAdapter('lobsterai', claudeCode),
     new CodexAdapter(),
-    new ClaudeCodeAdapter(),
     new GeminiCliAdapter(),
     new OpenCodeAdapter(),
     new IflowAdapter(),
+    new PiAdapter(),
     new QwenAdapter(),
     new QoderAdapter(),
     new KimiAdapter(),
@@ -69,7 +103,17 @@ function createAdapters(): SessionAdapter[] {
 const adapters = createAdapters();
 const adapterMap = new Map(adapters.map((a) => [a.name, a]));
 
-export function getAdapter(name: string): SessionAdapter | undefined {
+export function getAdapter(
+  name: string,
+  locator?: string,
+): SessionAdapter | undefined {
+  // When a locator is supplied, resolve among same-source adapters by ownership
+  // so provider-root clones and native adapters don't shadow each other. Without
+  // a locator, fall back to the single registered adapter for the name.
+  if (locator !== undefined) {
+    const resolved = resolveAdapterForLocator(adapters, name, locator);
+    if (resolved) return resolved;
+  }
   return adapterMap.get(name as SourceName);
 }
 

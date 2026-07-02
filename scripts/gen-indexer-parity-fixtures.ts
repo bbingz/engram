@@ -111,6 +111,7 @@ function normalizeRows(
   return rows
     .map((row) => {
       const copy = { ...row };
+      delete copy.offload_state;
       for (const key of [
         'indexed_at',
         'created_at',

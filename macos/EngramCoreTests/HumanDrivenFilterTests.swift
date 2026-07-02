@@ -42,6 +42,22 @@ final class HumanDrivenFilterTests: XCTestCase {
         }
     }
 
+    /// Pinned literal of the 10 reliable instruction-signal sources. Intentionally
+    /// NOT derived from `HumanDrivenFilter.instructionSignalSources` — this is the
+    /// canary that fails when that set is accidentally changed. Update it only via a
+    /// deliberate edit here, in lockstep with `testReliableSourceSetIsPinned`.
+    private static let pinnedReliableSources = [
+        "claude-code", "codex", "kimi", "minimax", "mimo",
+        "qwen", "doubao", "glm", "deepseek", "lobsterai",
+    ]
+
+    private func expectedReliableSources(prefix: String = "") -> String {
+        let quoted = Self.pinnedReliableSources
+            .map { "'\($0)'" }
+            .joined(separator: ", ")
+        return "\(prefix)source NOT IN (\(quoted))"
+    }
+
     func testPredicateSelectsHumanDrivenSet() throws {
         let writer = try EngramDatabaseWriter(path: tempDir.appendingPathComponent("f.sqlite").path)
         try writer.migrate()
@@ -69,7 +85,7 @@ final class HumanDrivenFilterTests: XCTestCase {
         XCTAssertTrue(predicate.hasPrefix("("))
         XCTAssertTrue(predicate.hasSuffix(")"))
         XCTAssertTrue(predicate.contains("agent_role IS NULL"))
-        XCTAssertTrue(predicate.contains("source NOT IN ('claude-code', 'codex')"))
+        XCTAssertTrue(predicate.contains(expectedReliableSources()))
         XCTAssertTrue(predicate.contains("instruction_count >= \(HumanDrivenFilter.minInstructions)"))
         XCTAssertTrue(predicate.contains("human_turn_count >= \(HumanDrivenFilter.minHumanTurns)"))
         XCTAssertTrue(predicate.contains("user_message_count >= \(HumanDrivenFilter.minHumanTurns)"))
@@ -81,11 +97,18 @@ final class HumanDrivenFilterTests: XCTestCase {
         XCTAssertTrue(predicate.hasPrefix("("))
         XCTAssertTrue(predicate.hasSuffix(")"))
         XCTAssertTrue(predicate.contains("s.agent_role IS NULL"))
-        XCTAssertTrue(predicate.contains("s.source NOT IN ('claude-code', 'codex')"))
+        XCTAssertTrue(predicate.contains(expectedReliableSources(prefix: "s.")))
         XCTAssertTrue(predicate.contains("s.instruction_count >= \(HumanDrivenFilter.minInstructions)"))
         XCTAssertTrue(predicate.contains("s.human_turn_count >= \(HumanDrivenFilter.minHumanTurns)"))
         XCTAssertTrue(predicate.contains("s.user_message_count >= \(HumanDrivenFilter.minHumanTurns)"))
         XCTAssertTrue(predicate.contains("s.tier = 'premium'"))
         XCTAssertFalse(predicate.contains("s.s."))
+    }
+
+    /// Pins the reliable-source set to an explicit literal so any accidental
+    /// change to `HumanDrivenFilter.instructionSignalSources` (add / remove /
+    /// reorder) fails here instead of silently altering default visibility.
+    func testReliableSourceSetIsPinned() {
+        XCTAssertEqual(HumanDrivenFilter.instructionSignalSources, Self.pinnedReliableSources)
     }
 }

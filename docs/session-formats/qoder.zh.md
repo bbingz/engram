@@ -3,6 +3,7 @@
 > 本文档为英文权威版 qoder.md 的中文阅读副本;若有出入以英文版为准。
 
 Last researched: 2026-06-21 (Engram session-format research workflow)
+Engram adapter status refreshed: 2026-07-02 (local source/live DB audit)
 
 > **证据基础:** 兼有 (1) **磁盘实时存储**,位于 `~/.qoder/projects/` —
 > **7** 个项目目录、**13** 个顶层会话 `.jsonl` 文件、**44** 个
@@ -26,6 +27,12 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 > 所有引用的样本均已脱敏:消息文本 / 思考 /
 > 代码 / 工具 I/O / 备份文件名 / 密钥 / 个人路径已被清洗,但
 > **每一个键、类型和结构都逐字保留** —— 保留格式,不保留内容。
+
+**当前 Engram 状态（2026-07-02）：** live store 和 DB 仍与 adapter 完全匹配：
+57 个 JSONL 文件被列出并解析，44 个 subagent 行带 44 个 parent link，0 个 nested
+workflow JSONL 文件，4,637 条 streamed message，0 个 parser/stream mismatch，57 个
+DB 行，57 个 `file_index_state ok` 行，并且当前 id 中 0 missing、0 DB-only、0
+field-stale。
 
 Qoder 是一个 **Claude-Code-JSONL-家族** 存储。如果你读过 Claude Code
 会话格式文档,这里的信封和内容块模型会很熟悉;

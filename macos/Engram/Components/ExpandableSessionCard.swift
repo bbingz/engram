@@ -79,6 +79,16 @@ struct ExpandableSessionCard: View {
                             ProjectBadge(project: project, source: session.source)
                         }
 
+                        // Originator cue: only for native-derived sources that
+                        // ran inside the real Claude Code app, never provider
+                        // clones (see SourceDisplay.showsViaClaudeCodeBadge).
+                        if SourceDisplay.showsViaClaudeCodeBadge(source: session.source, originator: session.originator) {
+                            Text("via Claude Code")
+                                .font(.caption2)
+                                .foregroundStyle(Theme.tertiaryText)
+                                .accessibilityIdentifier("expandableCard_viaClaudeCode")
+                        }
+
                         // Human-driven cue: number of distinct asks (≥2).
                         if let asks = session.instructionCount, asks >= 2 {
                             Text("\(asks) asks")

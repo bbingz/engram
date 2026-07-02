@@ -1,6 +1,6 @@
 # Engram Privacy Policy
 
-**Last updated**: 2026-04-24
+**Last updated**: 2026-07-02
 
 ## Overview
 
@@ -17,7 +17,9 @@ Engram reads session files created by AI coding tools on your local machine:
 | Source | Path | Indexing access |
 |--------|------|-----------------|
 | Claude Code | `~/.claude/projects/` | Read-only |
-| Codex CLI | `~/.codex/sessions/` | Read-only |
+| Codex CLI | `~/.codex/sessions/`, plus `~/.claude-openai/projects/` when launched via Claude Code | Read-only |
+| Grok Build | `~/.grok/sessions/` | Read-only |
+| Pi | `~/.pi/agent/sessions/` | Read-only |
 | Gemini CLI | `~/.gemini/tmp/` | Read-only |
 | Cursor | `~/Library/Application Support/Cursor/` | Read-only |
 | VS Code | `~/Library/Application Support/Code/` | Read-only |
@@ -25,12 +27,17 @@ Engram reads session files created by AI coding tools on your local machine:
 | Copilot | `~/.copilot/session-state/<uuid>/events.jsonl` | Read-only |
 | OpenCode | `~/.local/share/opencode/opencode.db` | Read-only |
 | Windsurf | Existing Engram cache under `~/.engram/cache/windsurf` (live gRPC sync disabled) | Read-only |
-| Kimi | `~/.kimi/sessions/` | Read-only |
-| Qwen | `~/.qwen/projects/` | Read-only |
+| Kimi | `~/.kimi/sessions/`, plus `~/.claude-kimi/projects/` when launched via Claude Code | Read-only |
+| Qwen | `~/.qwen/projects/`, plus `~/.claude-qwen/projects/` when launched via Claude Code | Read-only |
 | Qoder | `~/.qoder/projects/` | Read-only |
 | iflow | `~/.iflow/projects/` | Read-only |
 | Antigravity | `~/.gemini/antigravity-cli/brain/` and legacy `~/.gemini/antigravity/` cache data | Read-only |
 | Command Code | `~/.commandcode/projects/` | Read-only |
+| MiniMax | `~/.claude/projects/` and `~/.claude-minimax/projects/` Claude Code-compatible transcripts | Read-only |
+| Mimo | `~/.claude-mimo/projects/`, `~/.claude-mimosg/projects/` Claude Code-compatible transcripts | Read-only |
+| Doubao | `~/.claude-doubao/projects/` Claude Code-compatible transcripts | Read-only |
+| GLM | `~/.claude-glm/projects/`, `~/.claude-glmc/projects/` Claude Code-compatible transcripts | Read-only |
+| DeepSeek | `~/.claude-ds/projects/`, `~/.claude-dsc/projects/` Claude Code-compatible transcripts | Read-only |
 
 Indexing and normal browsing are read-only. Explicit project migration commands
 (`project_move`, `project_archive`, `project_undo`, and `project_move_batch`)

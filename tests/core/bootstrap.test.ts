@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import { SOURCE_NAMES } from '../../src/adapters/types.js';
 import {
   createDaemonDeps,
   createMCPDeps,
   createShutdownHandler,
+  getAdapter,
   type ShutdownResources,
 } from '../../src/core/bootstrap.js';
 
@@ -207,14 +209,14 @@ describe('createMCPDeps', () => {
     deps.db.close();
   });
 
-  it('adapters include known sources', () => {
+  it('registers adapters for every declared source', () => {
     const deps = createMCPDeps({ dbPath: ':memory:' });
     const names = deps.adapters.map((a) => a.name);
-    expect(names).toContain('claude-code');
-    expect(names).toContain('codex');
-    expect(names).toContain('gemini-cli');
-    expect(names).toContain('qoder');
-    expect(names).toContain('commandcode');
+    expect(new Set(names)).toEqual(new Set(SOURCE_NAMES));
+    for (const source of SOURCE_NAMES) {
+      expect(getAdapter(source)?.name).toBe(source);
+      expect(deps.adapterMap[source]?.name).toBe(source);
+    }
     deps.db.close();
   });
 });

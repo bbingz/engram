@@ -1,6 +1,6 @@
 // tests/core/db.test.ts
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -539,6 +539,22 @@ describe('Database', () => {
 
     expect(db.getSession('synced-empty-path')?.filePath).toBe(
       '/remote/sessions/synced-empty-path.jsonl',
+    );
+  });
+
+  it('falls back to file_path when local_readable_path is stale', () => {
+    const actualPath = join(tmpDir, 'actual.jsonl');
+    const stalePath = join(tmpDir, 'missing.jsonl');
+    writeFileSync(actualPath, '{}\n');
+    db.upsertSession({
+      ...mockSession,
+      id: 'stale-local-readable-path',
+      filePath: actualPath,
+    });
+    db.setLocalReadablePath('stale-local-readable-path', stalePath);
+
+    expect(db.getSession('stale-local-readable-path')?.filePath).toBe(
+      actualPath,
     );
   });
 

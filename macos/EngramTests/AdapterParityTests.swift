@@ -28,7 +28,8 @@ final class AdapterParityTests: XCTestCase {
                 "fileModifiedDuringParse",
                 "sqliteUnreadable",
                 "grpcUnavailable",
-                "unsupportedVirtualLocator"
+                "unsupportedVirtualLocator",
+                "noVisibleMessages"
             ]
         )
     }
@@ -755,6 +756,7 @@ final class AdapterParityTests: XCTestCase {
             .iflow,
             .kimi,
             .opencode,
+            .pi,
             .qoder,
             .qwen,
             .copilot,
@@ -784,6 +786,7 @@ final class AdapterParityTests: XCTestCase {
                     kimiJsonPath: testFixtureRoot.appendingPathComponent("kimi/input/kimi.json").path
                 ),
                 OpenCodeAdapter(dbPath: testFixtureRoot.appendingPathComponent("opencode/input/sample.db").path),
+                PiAdapter(sessionsRoot: testFixtureRoot.appendingPathComponent("pi/input").path),
                 QoderAdapter(projectsRoot: testFixtureRoot.appendingPathComponent("qoder/input").path),
                 QwenAdapter(projectsRoot: testFixtureRoot.appendingPathComponent("qwen/input").path),
                 CopilotAdapter(sessionRoot: testFixtureRoot.appendingPathComponent("copilot/input").path),
@@ -798,8 +801,11 @@ final class AdapterParityTests: XCTestCase {
         )
 
         let goldens = try harness.loadGoldens()
-        XCTAssertEqual(goldens.count, 15)
         let enabledGoldens = goldens.filter { enabledSources.contains($0.source) }
+        // Every enabled source has a golden. Robust to unrelated goldens this
+        // harness does not register (e.g. grok, exercised in the EngramCoreRead
+        // parity test), so adding a new standalone golden does not break here.
+        XCTAssertEqual(Set(enabledGoldens.map(\.source)), enabledSources)
         let results = try await harness.run()
         XCTAssertEqual(Set(results.map { $0.source }), enabledSources)
 

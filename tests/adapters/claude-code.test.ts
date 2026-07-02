@@ -81,6 +81,241 @@ describe('ClaudeCodeAdapter', () => {
     }
   });
 
+  it('does not throw when AskUserQuestion questions is encoded as a string', async () => {
+    const tmpRoot = join(tmpdir(), `engram-cc-ask-user-string-${Date.now()}`);
+    const filePath = join(tmpRoot, 'ask-user-string.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          type: 'assistant',
+          sessionId: 'ask-user-string-session',
+          timestamp: '2026-04-29T10:00:00.000Z',
+          message: {
+            role: 'assistant',
+            model: 'claude-sonnet-4-20250514',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_ask_user_string',
+                name: 'AskUserQuestion',
+                input: {
+                  questions: JSON.stringify([
+                    {
+                      header: 'Scope',
+                      question: 'Which option?',
+                      options: [{ label: 'A', description: 'First' }],
+                    },
+                  ]),
+                },
+              },
+            ],
+          },
+        }),
+      ].join('\n'),
+    );
+
+    try {
+      const messages: Message[] = [];
+      for await (const message of adapter.streamMessages(filePath)) {
+        messages.push(message);
+      }
+      expect(messages).toHaveLength(1);
+      expect(messages[0].content).toBe('`AskUserQuestion`');
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('maps Claude Code provider roots to provider source with originator', async () => {
+    const tmpRoot = join(tmpdir(), `engram-cc-provider-${Date.now()}`);
+    const projectsRoot = join(tmpRoot, '.claude-mimo', 'projects');
+    const projectDir = join(projectsRoot, '-Users-test-provider');
+    const filePath = join(projectDir, 'provider-session.jsonl');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          type: 'user',
+          cwd: '/Users/test/provider',
+          sessionId: 'provider-session',
+          timestamp: '2026-04-29T10:00:00.000Z',
+          message: { role: 'user', content: 'hello' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          sessionId: 'provider-session',
+          timestamp: '2026-04-29T10:00:01.000Z',
+          message: {
+            role: 'assistant',
+            model: 'mimo-v2.5-pro',
+            content: [{ type: 'text', text: 'hi' }],
+          },
+        }),
+      ].join('\n'),
+    );
+
+    try {
+      const providerAdapter = new ClaudeCodeAdapter(projectsRoot);
+      const info = await providerAdapter.parseSessionInfo(filePath);
+      expect(providerAdapter.name).toBe('mimo');
+      expect(info?.source).toBe('mimo');
+      expect(info?.originator).toBe('Claude Code');
+      expect(info?.model).toBe('mimo-v2.5-pro');
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('skips system injections from provider-root streamed messages', async () => {
+    const tmpRoot = join(
+      tmpdir(),
+      `engram-cc-provider-injection-${Date.now()}`,
+    );
+    const projectsRoot = join(tmpRoot, '.claude-qwen', 'projects');
+    const projectDir = join(projectsRoot, '-Users-test-provider');
+    const filePath = join(projectDir, 'provider-session.jsonl');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          type: 'user',
+          cwd: '/Users/test/provider',
+          sessionId: 'provider-session',
+          timestamp: '2026-04-29T10:00:00.000Z',
+          message: {
+            role: 'user',
+            content:
+              '<command-message>goal</command-message>\n<command-name>/goal</command-name>',
+          },
+        }),
+        JSON.stringify({
+          type: 'user',
+          cwd: '/Users/test/provider',
+          sessionId: 'provider-session',
+          timestamp: '2026-04-29T10:00:01.000Z',
+          message: { role: 'user', content: 'real question' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          sessionId: 'provider-session',
+          timestamp: '2026-04-29T10:00:02.000Z',
+          message: {
+            role: 'assistant',
+            model: 'qwen3.7-plus',
+            content: [{ type: 'text', text: 'real answer' }],
+          },
+        }),
+      ].join('\n'),
+    );
+
+    try {
+      const providerAdapter = new ClaudeCodeAdapter(projectsRoot);
+      const info = await providerAdapter.parseSessionInfo(filePath);
+      expect(info?.source).toBe('qwen');
+      expect(info?.systemMessageCount).toBe(1);
+      expect(info?.userMessageCount).toBe(1);
+      expect(info?.assistantMessageCount).toBe(1);
+      expect(info?.messageCount).toBe(2);
+
+      const messages = [];
+      for await (const msg of providerAdapter.streamMessages(filePath)) {
+        messages.push(msg);
+      }
+      expect(info?.messageCount).toBe(messages.length);
+      expect(messages.map((m) => m.content)).toEqual([
+        'real question',
+        'real answer',
+      ]);
+
+      const offsetMessages = [];
+      for await (const msg of providerAdapter.streamMessages(filePath, {
+        offset: 1,
+      })) {
+        offsetMessages.push(msg);
+      }
+      expect(offsetMessages.map((m) => m.content)).toEqual(['real answer']);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('discovers nested workflow subagents under provider roots', async () => {
+    const tmpRoot = join(tmpdir(), `engram-cc-workflow-${Date.now()}`);
+    const projectsRoot = join(tmpRoot, '.claude-glmc', 'projects');
+    const projectDir = join(projectsRoot, '-Users-test-workflow');
+    const parentId = 'workflow-parent';
+    const parentPath = join(projectDir, `${parentId}.jsonl`);
+    const directSubagentPath = join(
+      projectDir,
+      parentId,
+      'subagents',
+      'direct-agent.jsonl',
+    );
+    const workflowSubagentPath = join(
+      projectDir,
+      parentId,
+      'subagents',
+      'workflows',
+      'wf_123',
+      'workflow-agent.jsonl',
+    );
+
+    const transcript = (sessionId: string, agentId?: string) =>
+      [
+        JSON.stringify({
+          type: 'user',
+          cwd: '/Users/test/workflow',
+          sessionId,
+          agentId,
+          timestamp: '2026-04-29T10:00:00.000Z',
+          message: { role: 'user', content: 'hello' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          sessionId,
+          agentId,
+          timestamp: '2026-04-29T10:00:01.000Z',
+          message: {
+            role: 'assistant',
+            model: 'glm-5.2',
+            content: [{ type: 'text', text: 'hi' }],
+          },
+        }),
+      ].join('\n');
+
+    mkdirSync(dirname(parentPath), { recursive: true });
+    mkdirSync(dirname(directSubagentPath), { recursive: true });
+    mkdirSync(dirname(workflowSubagentPath), { recursive: true });
+    writeFileSync(parentPath, transcript(parentId));
+    writeFileSync(directSubagentPath, transcript(parentId, 'direct-agent'));
+    writeFileSync(workflowSubagentPath, transcript(parentId, 'workflow-agent'));
+
+    try {
+      const providerAdapter = new ClaudeCodeAdapter(projectsRoot);
+      const files: string[] = [];
+      for await (const file of providerAdapter.listSessionFiles()) {
+        files.push(file);
+      }
+      expect(new Set(files)).toEqual(
+        new Set([parentPath, directSubagentPath, workflowSubagentPath]),
+      );
+
+      const info = await providerAdapter.parseSessionInfo(workflowSubagentPath);
+      expect(providerAdapter.name).toBe('glm');
+      expect(info?.id).toBe('workflow-agent');
+      expect(info?.source).toBe('glm');
+      expect(info?.originator).toBe('Claude Code');
+      expect(info?.agentRole).toBe('subagent');
+      expect(info?.parentSessionId).toBe(parentId);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('classifies MiniMax and Lobster AI as derived Claude-compatible sources', async () => {
     const tmpRoot = join(tmpdir(), `engram-cc-derived-${Date.now()}`);
     const minimaxPath = join(tmpRoot, 'project', 'minimax.jsonl');
@@ -179,18 +414,73 @@ describe('ClaudeCodeAdapter', () => {
     expect(messages[0].content).toBe('请帮我添加用户注册功能');
   });
 
-  it('streamMessages yields role="tool" for tool_result records', async () => {
-    const messages = [];
-    for await (const msg of adapter.streamMessages(TOOL_FIXTURE)) {
-      messages.push(msg);
+  it('counts and streams only visible tool_result records', async () => {
+    const tmpRoot = join(tmpdir(), `engram-cc-visible-tool-${Date.now()}`);
+    const filePath = join(tmpRoot, 'visible-tool.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          type: 'user',
+          cwd: '/Users/test/proj',
+          sessionId: 'visible-tool-1',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          message: { role: 'user', content: 'do the thing' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          sessionId: 'visible-tool-1',
+          timestamp: '2026-01-01T00:00:01.000Z',
+          message: { role: 'assistant', content: 'on it' },
+        }),
+        JSON.stringify({
+          type: 'user',
+          sessionId: 'visible-tool-1',
+          timestamp: '2026-01-01T00:00:02.000Z',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', content: 'raw output' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'user',
+          sessionId: 'visible-tool-1',
+          timestamp: '2026-01-01T00:00:03.000Z',
+          message: {
+            role: 'user',
+            content: [
+              { type: 'tool_result', content: 'User has answered: yes' },
+            ],
+          },
+        }),
+      ].join('\n'),
+    );
+
+    try {
+      const info = await adapter.parseSessionInfo(filePath);
+      const messages = [];
+      for await (const msg of adapter.streamMessages(filePath)) {
+        messages.push(msg);
+      }
+
+      expect(info?.userMessageCount).toBe(1);
+      expect(info?.assistantMessageCount).toBe(1);
+      expect(info?.toolMessageCount).toBe(1);
+      expect(info?.messageCount).toBe(3);
+      expect(messages.map((m) => m.role)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+      ]);
+      expect(messages.map((m) => m.content)).toEqual([
+        'do the thing',
+        'on it',
+        'User has answered: yes',
+      ]);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
     }
-    // with-tools fixture line 3 is type=user wrapping tool_result content;
-    // it must surface as role='tool' so stream agrees with toolMessageCount.
-    const toolMsgs = messages.filter((m) => m.role === 'tool');
-    expect(toolMsgs).toHaveLength(1);
-    // Content for non-"User has answered" tool_results is filtered to '',
-    // matching formatToolResult behavior. The role itself is what we care about.
-    expect(messages[2].role).toBe('tool');
   });
 
   it('ignores non-message record types (attachment, permission-mode, etc.)', async () => {
@@ -251,13 +541,13 @@ describe('ClaudeCodeAdapter', () => {
     }
   });
 
-  it('counts tool_result messages separately from user messages', async () => {
+  it('does not count non-visible tool_result records as user turns', async () => {
     const info = await adapter.parseSessionInfo(TOOL_FIXTURE);
     expect(info).not.toBeNull();
     expect(info?.userMessageCount).toBe(2); // "帮我查看" + "好的，谢谢"
-    expect(info?.toolMessageCount).toBe(1); // tool_result
+    expect(info?.toolMessageCount).toBe(0); // raw tool output is hidden
     expect(info?.assistantMessageCount).toBe(2); // tool_use response + text response
-    expect(info?.messageCount).toBe(5); // 2 user + 2 asst + 1 tool
+    expect(info?.messageCount).toBe(4); // 2 user + 2 asst
   });
 
   describe('tool formatting in streamMessages', () => {
@@ -267,7 +557,7 @@ describe('ClaudeCodeAdapter', () => {
         messages.push(msg);
       }
       // msg-001: user text, msg-002: assistant with tools, msg-003: tool results, msg-004: assistant text
-      expect(messages.length).toBe(4);
+      expect(messages.length).toBe(3);
 
       // Assistant message with tool_use (msg-002) should format tools
       const assistantWithTools = messages[1];
@@ -288,11 +578,13 @@ describe('ClaudeCodeAdapter', () => {
       for await (const msg of adapter.streamMessages(FMT_FIXTURE)) {
         messages.push(msg);
       }
-      // msg-003 is tool_result — should produce empty content (no "User has answered" prefix)
-      const toolResultMsg = messages[2];
-      expect(toolResultMsg.role).toBe('tool');
-      // tool_result content without "User has answered" is filtered out
-      expect(toolResultMsg.content).toBe('');
+      // msg-003 is a tool_result without "User has answered"; it is not a
+      // visible transcript turn and must not be streamed.
+      expect(messages.map((m) => m.role)).toEqual([
+        'user',
+        'assistant',
+        'assistant',
+      ]);
     });
   });
 
@@ -401,6 +693,89 @@ describe('ClaudeCodeAdapter', () => {
 
     it('extracts parentSessionId for subagent files', async () => {
       const info = await adapter.parseSessionInfo(subagentFile);
+      expect(info).not.toBeNull();
+      expect(info?.id).toBe(agentId);
+      expect(info?.agentRole).toBe('subagent');
+      expect(info?.parentSessionId).toBe(parentId);
+    });
+
+    it('extracts parentSessionId for nested workflow subagent files', async () => {
+      const workflowFile = join(
+        tmpRoot,
+        'project-dir',
+        parentId,
+        'subagents',
+        'workflows',
+        'wf_456',
+        `${agentId}-workflow.jsonl`,
+      );
+      mkdirSync(dirname(workflowFile), { recursive: true });
+      writeFileSync(
+        workflowFile,
+        [
+          JSON.stringify({
+            type: 'user',
+            cwd: '/Users/test/project',
+            sessionId: parentId,
+            agentId,
+            message: { role: 'user', content: 'Do the workflow task' },
+            timestamp: '2026-04-13T10:00:00.000Z',
+          }),
+          JSON.stringify({
+            type: 'assistant',
+            cwd: '/Users/test/project',
+            sessionId: parentId,
+            agentId,
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'Done.' }],
+            },
+            timestamp: '2026-04-13T10:00:05.000Z',
+          }),
+        ].join('\n'),
+      );
+
+      const info = await adapter.parseSessionInfo(workflowFile);
+      expect(info).not.toBeNull();
+      expect(info?.id).toBe(agentId);
+      expect(info?.agentRole).toBe('subagent');
+      expect(info?.parentSessionId).toBe(parentId);
+    });
+
+    it('treats legacy root-level agent files as subagents', async () => {
+      const legacyAgentFile = join(
+        tmpRoot,
+        'project-dir',
+        `agent-${agentId}.jsonl`,
+      );
+      writeFileSync(
+        legacyAgentFile,
+        [
+          JSON.stringify({
+            type: 'user',
+            isSidechain: true,
+            cwd: '/Users/test/project',
+            sessionId: parentId,
+            agentId,
+            message: { role: 'user', content: 'Warmup' },
+            timestamp: '2026-04-13T10:00:00.000Z',
+          }),
+          JSON.stringify({
+            type: 'assistant',
+            isSidechain: true,
+            cwd: '/Users/test/project',
+            sessionId: parentId,
+            agentId,
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'Ready.' }],
+            },
+            timestamp: '2026-04-13T10:00:05.000Z',
+          }),
+        ].join('\n'),
+      );
+
+      const info = await adapter.parseSessionInfo(legacyAgentFile);
       expect(info).not.toBeNull();
       expect(info?.id).toBe(agentId);
       expect(info?.agentRole).toBe('subagent');

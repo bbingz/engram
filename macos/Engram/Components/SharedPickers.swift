@@ -161,6 +161,11 @@ struct SessionRow: View {
                 Text(verbatim: SourceDisplay.label(for: session.source))
                     .font(.caption)
                     .foregroundStyle(sourceColor)
+                if SourceDisplay.showsViaClaudeCodeBadge(source: session.source, originator: session.originator) {
+                    Text("via Claude Code")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Text(verbatim: session.displayDate)
                     .font(.subheadline)
                     .foregroundStyle(.tertiary)

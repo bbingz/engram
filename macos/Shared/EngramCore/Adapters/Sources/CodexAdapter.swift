@@ -28,6 +28,12 @@ enum JSONLAdapterSupport {
     static func recursiveFiles(under root: URL, matching predicate: (URL) -> Bool) -> [String] {
         guard isDirectory(root) else { return [] }
         let resolvedRoot = root.resolvingSymlinksInPath()
+        // Deliberately skip hidden files and directories. Real session trees
+        // (Codex `rollout-*.jsonl`, Gemini `chats/`, Claude `subagents/`) never
+        // store sessions in dotfiles or dotdirs, whereas hidden entries (.git,
+        // .DS_Store, editor/VCS caches) are pure noise. NOTE: the TS reference
+        // recursion does NOT skip hidden — that is the divergent side and should
+        // be brought in line with this behavior, not the reverse.
         guard let enumerator = FileManager.default.enumerator(
             at: resolvedRoot,
             includingPropertiesForKeys: [.isRegularFileKey],
@@ -284,6 +290,7 @@ final class CodexAdapter: SessionAdapter, Sendable {
             var firstUserText = ""
             var lastTimestamp = ""
             var detectedModel: String?
+            var turnContextModel: String?
 
             for object in objects {
                 if let timestamp = JSONLAdapterSupport.string(object["timestamp"]) {
@@ -292,6 +299,13 @@ final class CodexAdapter: SessionAdapter, Sendable {
 
                 if JSONLAdapterSupport.string(object["type"]) == "session_meta", meta == nil {
                     meta = JSONLAdapterSupport.object(object["payload"])
+                }
+
+                if JSONLAdapterSupport.string(object["type"]) == "turn_context",
+                   turnContextModel == nil,
+                   let payload = JSONLAdapterSupport.object(object["payload"]),
+                   let model = JSONLAdapterSupport.string(payload["model"]) {
+                    turnContextModel = model
                 }
 
                 guard JSONLAdapterSupport.string(object["type"]) == "response_item",
@@ -344,7 +358,7 @@ final class CodexAdapter: SessionAdapter, Sendable {
                     endTime: lastTimestamp.isEmpty ? nil : lastTimestamp,
                     cwd: JSONLAdapterSupport.string(meta["cwd"]) ?? "",
                     project: nil,
-                    model: detectedModel ?? JSONLAdapterSupport.string(meta["model"]),
+                    model: detectedModel ?? turnContextModel ?? JSONLAdapterSupport.string(meta["model"]),
                     messageCount: userCount + assistantCount + toolCount,
                     userMessageCount: userCount,
                     assistantMessageCount: assistantCount,

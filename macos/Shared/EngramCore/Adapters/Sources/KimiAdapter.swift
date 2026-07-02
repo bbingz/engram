@@ -1,7 +1,12 @@
 import Foundation
 
-final class KimiAdapter: SessionAdapter, Sendable {
+final class KimiAdapter: SessionAdapter, LocatorOwningSessionAdapter, Sendable {
     private typealias TurnMetadata = (startTime: String, endTime: String?, usage: TokenUsage?)
+    private struct LocatorIdentity {
+        let sessionId: String
+        let agentRole: String?
+        let parentSessionId: String?
+    }
 
     let source: SourceName = .kimi
     private let sessionsRoot: URL
@@ -38,6 +43,7 @@ final class KimiAdapter: SessionAdapter, Sendable {
                 if JSONLAdapterSupport.fileExists(contextURL.path) {
                     locators.append(contextURL.path)
                 }
+                locators.append(contentsOf: Self.subagentContextLocators(in: sessionURL))
             }
         }
         return locators.sorted()
@@ -55,6 +61,7 @@ final class KimiAdapter: SessionAdapter, Sendable {
                 totalSize += Phase4AdapterSupport.fileSize(file)
             }
 
+            let identity = Self.locatorIdentity(for: locator)
             let messages = allObjects.filter(Self.isConversation)
             let userMessages = messages.filter { JSONLAdapterSupport.string($0["role"]) == "user" }
             let assistantMessages = messages.filter { JSONLAdapterSupport.string($0["role"]) == "assistant" }
@@ -65,15 +72,14 @@ final class KimiAdapter: SessionAdapter, Sendable {
             let fileDate = (try? FileManager.default.attributesOfItem(atPath: locator)[.modificationDate] as? Date) ?? Date(timeIntervalSince1970: 0)
             let fallbackStart = ISO8601DateFormatter().string(from: fileDate.addingTimeInterval(-60))
             let firstUserText = Self.extractContent(userMessages.first?["content"])
-            let sessionId = URL(fileURLWithPath: locator).deletingLastPathComponent().lastPathComponent
 
             return .success(
                 NormalizedSessionInfo(
-                    id: sessionId,
+                    id: identity.sessionId,
                     source: .kimi,
                     startTime: timestamps.startTime.isEmpty ? fallbackStart : timestamps.startTime,
                     endTime: timestamps.endTime != timestamps.startTime ? timestamps.endTime : nil,
-                    cwd: resolveCwd(sessionId: sessionId),
+                    cwd: resolveCwd(sessionId: identity.parentSessionId ?? identity.sessionId),
                     project: nil,
                     model: nil,
                     messageCount: userMessages.count + assistantMessages.count,
@@ -85,13 +91,13 @@ final class KimiAdapter: SessionAdapter, Sendable {
                     filePath: locator,
                     sizeBytes: totalSize,
                     indexedAt: nil,
-                    agentRole: nil,
+                    agentRole: identity.agentRole,
                     originator: nil,
                     origin: nil,
                     summaryMessageCount: nil,
                     tier: nil,
                     qualityScore: nil,
-                    parentSessionId: nil,
+                    parentSessionId: identity.parentSessionId,
                     suggestedParentId: nil
                 )
             )
@@ -159,6 +165,12 @@ final class KimiAdapter: SessionAdapter, Sendable {
         JSONLAdapterSupport.fileExists(locator)
     }
 
+    func ownsLocator(_ locator: String) -> Bool {
+        let rootPath = sessionsRoot.standardizedFileURL.path
+        let locatorPath = URL(fileURLWithPath: locator).standardizedFileURL.path
+        return locatorPath == rootPath || locatorPath.hasPrefix(rootPath + "/")
+    }
+
     private func resolveCwd(sessionId: String) -> String {
         guard let data = try? Data(contentsOf: kimiJsonPath),
               let object = try? JSONSerialization.jsonObject(with: data) as? Phase4AdapterSupport.JSONObject,
@@ -172,6 +184,35 @@ final class KimiAdapter: SessionAdapter, Sendable {
             }
         }
         return ""
+    }
+
+    private static func subagentContextLocators(in sessionURL: URL) -> [String] {
+        let subagentsURL = sessionURL.appendingPathComponent("subagents", isDirectory: true)
+        return JSONLAdapterSupport.directChildren(of: subagentsURL)
+            .filter(JSONLAdapterSupport.isDirectory)
+            .compactMap { subagentURL -> String? in
+                let contextURL = subagentURL.appendingPathComponent("context.jsonl")
+                return JSONLAdapterSupport.fileExists(contextURL.path) ? contextURL.path : nil
+            }
+            .sorted()
+    }
+
+    private static func locatorIdentity(for locator: String) -> LocatorIdentity {
+        let contextURL = URL(fileURLWithPath: locator)
+        let sessionURL = contextURL.deletingLastPathComponent()
+        let sessionId = sessionURL.lastPathComponent
+        let maybeSubagentsURL = sessionURL.deletingLastPathComponent()
+        if maybeSubagentsURL.lastPathComponent == "subagents" {
+            let parentSessionId = maybeSubagentsURL.deletingLastPathComponent().lastPathComponent
+            if !parentSessionId.isEmpty {
+                return LocatorIdentity(
+                    sessionId: sessionId,
+                    agentRole: "subagent",
+                    parentSessionId: parentSessionId
+                )
+            }
+        }
+        return LocatorIdentity(sessionId: sessionId, agentRole: nil, parentSessionId: nil)
     }
 
     private static func contextFiles(for locator: String) -> [String] {

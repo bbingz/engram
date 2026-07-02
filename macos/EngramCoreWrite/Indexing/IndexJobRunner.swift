@@ -21,7 +21,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
     private static let maxFtsRetryCount = 3
 
     private let writer: EngramDatabaseWriter
-    private let adaptersBySource: [SourceName: any SessionAdapter]
+    private let adaptersBySource: [SourceName: [any SessionAdapter]]
     private let log = os.Logger(subsystem: "com.engram.service", category: "index-jobs")
 
     public init(
@@ -29,7 +29,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         adapters: [any SessionAdapter] = SessionAdapterFactory.defaultAdapters()
     ) {
         self.writer = writer
-        self.adaptersBySource = Dictionary(adapters.map { ($0.source, $0) }, uniquingKeysWith: { first, _ in first })
+        self.adaptersBySource = Dictionary(grouping: adapters, by: { $0.source })
     }
 
     private struct PendingJob {
@@ -180,9 +180,17 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         }
 
         guard let sourceName = SourceName(rawValue: contentSource.source),
-              let adapter = adaptersBySource[sourceName],
               !contentSource.locator.isEmpty,
-              !contentSource.locator.hasPrefix("sync://")
+              !contentSource.locator.hasPrefix("sync://"),
+              // Locator-aware: a source may register several adapters (native
+              // plus ClaudeCode `~/.claude-<name>` provider-root clone); resolve
+              // the one that owns this locator so native transcripts get FTS
+              // content from the correct parser, not the clone's.
+              let adapter = SessionAdapterFactory.adapter(
+                  for: sourceName,
+                  locator: contentSource.locator,
+                  adapters: adaptersBySource[sourceName] ?? []
+              )
         else {
             // No readable source on disk (e.g. synced-only or unknown source):
             // FTS content cannot be produced. Mark not_applicable to stop looping.
@@ -245,7 +253,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
 
     private static func isTerminalFtsFailure(_ failure: ParserFailure) -> Bool {
         switch failure {
-        case .fileMissing, .fileTooLarge, .unsupportedVirtualLocator:
+        case .fileMissing, .fileTooLarge, .unsupportedVirtualLocator, .noVisibleMessages:
             return true
         case .invalidUtf8,
              .malformedJSON,

@@ -22,6 +22,10 @@ export interface AuthoritativeSessionSnapshot {
   systemMessageCount: number;
   summary?: string;
   summaryMessageCount?: number;
+  instructionCount?: number | null;
+  humanTurnCount?: number | null;
+  instructionSummary?: string | null;
+  originator?: string | null;
   origin?: string;
   tier?: SessionTier;
   agentRole?: string | null;

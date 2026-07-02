@@ -28,6 +28,16 @@ struct SessionCard: View {
                     ProjectBadge(project: project, source: session.source)
                 }
 
+                // Originator cue: only for sessions that ran inside the real
+                // Claude Code app (native-derived minimax/lobsterai), never for
+                // provider-clone roots (see SourceDisplay.showsViaClaudeCodeBadge).
+                if SourceDisplay.showsViaClaudeCodeBadge(source: session.source, originator: session.originator) {
+                    Text("via Claude Code")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.tertiaryText)
+                        .accessibilityIdentifier("sessionCard_viaClaudeCode")
+                }
+
                 // Human-driven cue: number of distinct asks (≥2). New info vs the
                 // title, signals a multi-step session the human actively drove.
                 if let asks = session.instructionCount, asks >= 2 {

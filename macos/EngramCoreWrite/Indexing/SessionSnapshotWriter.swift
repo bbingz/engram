@@ -130,7 +130,8 @@ public final class SessionSnapshotWriter {
         guard current.authoritativeNode == incoming.authoritativeNode else {
             throw SessionSnapshotWriterError.conflictingAuthoritativeNode(incoming.id)
         }
-        if incoming.syncVersion < current.syncVersion {
+        if incoming.syncVersion < current.syncVersion,
+           !shouldAcceptLowerSyncLocalLocatorRefresh(current: current, incoming: incoming) {
             return (.noop, current, SessionChangeSet(flags: []))
         }
         if incoming.syncVersion == current.syncVersion,
@@ -169,10 +170,12 @@ public final class SessionSnapshotWriter {
             var merged = current
             merged.sizeBytes = incoming.sizeBytes
             merged.indexedAt = incoming.indexedAt
+            merged.sourceLocator = incoming.sourceLocator
             merged.tokenUsage = incoming.tokenUsage
             return (.merge, merged, SessionChangeSet(flags: [.syncPayloadChanged]))
         }
         var merged = incoming
+        merged.syncVersion = max(current.syncVersion, incoming.syncVersion)
         merged.endTime = incoming.endTime ?? current.endTime
         merged.cwd = incoming.cwd.isEmpty ? current.cwd : incoming.cwd
         merged.project = incoming.project ?? current.project
@@ -180,6 +183,7 @@ public final class SessionSnapshotWriter {
         preserveCountsIfIncomingEmpty(current: current, merged: &merged)
         merged.summary = incoming.summary ?? current.summary
         merged.summaryMessageCount = incoming.summaryMessageCount ?? current.summaryMessageCount
+        merged.originator = incoming.originator ?? current.originator
         merged.origin = incoming.origin ?? current.origin
         // Re-index must not revert a Layer-2 dispatched/skip classification (see
         // upsert's ON CONFLICT CASE). Keep merge.snapshot consistent with the
@@ -207,6 +211,57 @@ public final class SessionSnapshotWriter {
             flags.insert(.embeddingTextChanged)
         }
         return (.merge, merged, SessionChangeSet(flags: flags))
+    }
+
+    private func shouldAcceptLowerSyncLocalLocatorRefresh(
+        current: AuthoritativeSessionSnapshot,
+        incoming: AuthoritativeSessionSnapshot
+    ) -> Bool {
+        guard current.source == incoming.source,
+              current.sourceLocator != incoming.sourceLocator,
+              isLocalLocator(current.sourceLocator),
+              isLocalLocator(incoming.sourceLocator)
+        else {
+            return false
+        }
+        // A single session uuid can survive at BOTH an old and a new path — e.g.
+        // Claude Code leaves ~/.claude/projects/<old-encoded-cwd>/<uuid>.jsonl
+        // behind after a project rename and recreates <new-cwd>/<uuid>.jsonl with
+        // the same uuid. Both are listed every scan, so a stale/emptier leftover
+        // must not clobber the richer current row just because it is visited last.
+        // Only accept the locator refresh when the incoming file is at least as
+        // fresh as the stored one (a genuinely moved/renamed file with equal-or-
+        // newer content still refreshes).
+        return incomingIsAtLeastAsFresh(current: current, incoming: incoming)
+    }
+
+    /// True when `incoming` is not strictly staler or emptier than `current`,
+    /// judged the way the writer judges freshness elsewhere: message count (see
+    /// `preserveCountsIfIncomingEmpty` and the `upsert` message_count CASE), then
+    /// last-activity time, then file size. Reject on ANY strictly-worse axis so a
+    /// leftover snapshot cannot replace the richer current record.
+    private func incomingIsAtLeastAsFresh(
+        current: AuthoritativeSessionSnapshot,
+        incoming: AuthoritativeSessionSnapshot
+    ) -> Bool {
+        if incoming.messageCount < current.messageCount {
+            return false
+        }
+        if let currentEnd = parseDate(current.endTime ?? current.startTime),
+           let incomingEnd = parseDate(incoming.endTime ?? incoming.startTime),
+           incomingEnd < currentEnd {
+            return false
+        }
+        if let currentSize = current.sizeBytes,
+           let incomingSize = incoming.sizeBytes,
+           incomingSize < currentSize {
+            return false
+        }
+        return true
+    }
+
+    private func isLocalLocator(_ locator: String) -> Bool {
+        !locator.isEmpty && !locator.hasPrefix("sync://")
     }
 
     private func clearRecoveredOrphanStatus(sessionId: String) throws {
@@ -288,6 +343,7 @@ public final class SessionSnapshotWriter {
             instructionCount: row["instruction_count"],
             humanTurnCount: row["human_turn_count"],
             instructionSummary: row["instruction_summary"],
+            originator: row["originator"],
             origin: row["origin"],
             tier: (row["tier"] as String?).flatMap(SessionTier.init(rawValue:)),
             agentRole: row["agent_role"]
@@ -302,6 +358,7 @@ public final class SessionSnapshotWriter {
               id, source, start_time, end_time, cwd, project, model,
               message_count, user_message_count, assistant_message_count, tool_message_count, system_message_count,
               summary, summary_message_count, instruction_count, human_turn_count, instruction_summary,
+              originator,
               file_path, size_bytes, indexed_at, origin,
               authoritative_node, source_locator, sync_version, snapshot_hash,
               tier, agent_role, quality_score, generated_title,
@@ -310,6 +367,7 @@ public final class SessionSnapshotWriter {
               ?, ?, ?, ?, ?, ?, ?,
               ?, ?, ?, ?, ?,
               ?, ?, ?, ?, ?,
+              ?,
               ?, ?, ?, ?,
               ?, ?, ?, ?,
               ?, ?, ?, ?,
@@ -383,6 +441,7 @@ public final class SessionSnapshotWriter {
                   THEN sessions.instruction_summary
                 ELSE excluded.instruction_summary
               END,
+              originator = COALESCE(excluded.originator, sessions.originator),
               size_bytes = excluded.size_bytes,
               indexed_at = excluded.indexed_at,
               origin = excluded.origin,
@@ -440,6 +499,7 @@ public final class SessionSnapshotWriter {
                 snapshot.instructionCount,
                 snapshot.humanTurnCount,
                 snapshot.instructionSummary,
+                snapshot.originator,
                 filePath,
                 snapshot.sizeBytes ?? 0,
                 snapshot.indexedAt,

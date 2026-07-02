@@ -1,0 +1,6 @@
+{"type":"session","version":1,"id":"019dd6e3-91d1-7326-8299-314858773a0e","timestamp":"2026-04-29T01:00:00.000Z","cwd":"/Users/test/project"}
+{"type":"model_change","id":"model-1","parentId":"019dd6e3-91d1-7326-8299-314858773a0e","timestamp":"2026-04-29T01:00:01.000Z","modelId":"mimo-v2.5-pro"}
+{"type":"thinking_level_change","id":"thinking-1","parentId":"model-1","timestamp":"2026-04-29T01:00:01.500Z","thinkingLevel":"medium"}
+{"type":"message","id":"msg-user","parentId":"019dd6e3-91d1-7326-8299-314858773a0e","timestamp":"2026-04-29T01:00:02.000Z","message":{"role":"user","content":[{"type":"text","text":"Fix the Pi parser"}],"timestamp":"2026-04-29T01:00:02.000Z"}}
+{"type":"message","id":"msg-assistant","parentId":"msg-user","timestamp":"2026-04-29T01:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"I will inspect it."},{"type":"toolCall","name":"read","arguments":{"path":"/Users/test/project/package.json"}}],"model":"mimo-v2.5-pro","usage":{"input":10,"output":5,"cacheRead":2,"cacheWrite":1},"timestamp":"2026-04-29T01:00:03.000Z"}}
+{"type":"message","id":"msg-tool","parentId":"msg-assistant","timestamp":"2026-04-29T01:00:04.000Z","message":{"role":"toolResult","content":[{"type":"text","text":"{\"name\":\"fixture\"}"}],"timestamp":"2026-04-29T01:00:04.000Z"}}

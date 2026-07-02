@@ -93,12 +93,10 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
         {
             let chatsURL = projectURL.appendingPathComponent("chats")
             guard JSONLAdapterSupport.isDirectory(chatsURL) else { continue }
-            for fileURL in JSONLAdapterSupport.directChildren(of: chatsURL)
-                where !fileURL.lastPathComponent.hasSuffix(".engram.json") &&
-                (fileURL.pathExtension == "json" || fileURL.pathExtension == "jsonl")
-            {
-                locators.append(fileURL.path)
-            }
+            locators.append(contentsOf: JSONLAdapterSupport.recursiveFiles(under: chatsURL) { fileURL in
+                !fileURL.lastPathComponent.hasSuffix(".engram.json") &&
+                    (fileURL.pathExtension == "json" || fileURL.pathExtension == "jsonl")
+            })
         }
         return locators.sorted()
     }
@@ -129,6 +127,7 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
             let firstUserText = userMessages.first.map { Self.extractText($0["content"]) } ?? ""
             let sidecar = Self.readSidecar(locator: locator, sessionId: sessionId, limits: limits)
             let originator = JSONLAdapterSupport.string(sidecar?["originator"])
+            let nativeParentSessionId = Self.nativeParentSessionId(from: locator)
 
             return .success(
                 NormalizedSessionInfo(
@@ -148,13 +147,15 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
                     filePath: locator,
                     sizeBytes: Phase4AdapterSupport.fileSize(locator),
                     indexedAt: nil,
-                    agentRole: OriginatorClassifier.isClaudeCode(originator) ? "dispatched" : nil,
+                    agentRole: nativeParentSessionId != nil
+                        ? "subagent"
+                        : (OriginatorClassifier.isClaudeCode(originator) ? "dispatched" : nil),
                     originator: originator,
                     origin: nil,
                     summaryMessageCount: nil,
                     tier: nil,
                     qualityScore: nil,
-                    parentSessionId: JSONLAdapterSupport.string(sidecar?["parentSessionId"]),
+                    parentSessionId: JSONLAdapterSupport.string(sidecar?["parentSessionId"]) ?? nativeParentSessionId,
                     suggestedParentId: nil
                 )
             )
@@ -210,6 +211,25 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
             return ""
         }
         return components[chatsIndex - 1]
+    }
+
+    // Native subagent detection is positional by design: the documented Gemini
+    // layout nests a subagent session at exactly `chats/<parentSessionId>/<file>`,
+    // and that is the only reason a session file is ever nested under `chats/`
+    // (top-level sessions live directly in `chats/`). So the intermediate dir IS
+    // the parent session id. This intentionally has no extra `kind`/naming gate —
+    // Gemini's `kind` field is not parsed and native subagents carry no sidecar,
+    // so any such gate would risk dropping real subagents. Kept in parity with the
+    // TS reference. Known limitation: undocumented deeper nesting
+    // (`chats/<a>/<b>/<file>`) would mis-attribute the parent to `<a>`.
+    private static func nativeParentSessionId(from locator: String) -> String? {
+        let components = URL(fileURLWithPath: locator).pathComponents
+        guard let chatsIndex = components.firstIndex(of: "chats"),
+              components.count > chatsIndex + 2
+        else {
+            return nil
+        }
+        return components[chatsIndex + 1]
     }
 
     private static func readSidecar(

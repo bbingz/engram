@@ -103,7 +103,7 @@ public enum FileIndexDecision: Equatable, Sendable {
 }
 
 public struct FileIndexState: Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
     private static let retryBaseSeconds: Int64 = 300
     private static let retryMaxSeconds: Int64 = 3_600
     public let source: SourceName
@@ -225,7 +225,8 @@ public struct FileIndexState: Equatable, Sendable {
 
     private static func isTerminalFailure(_ failure: ParserFailure) -> Bool {
         switch failure {
-        case .fileTooLarge, .lineTooLarge, .messageLimitExceeded, .unsupportedVirtualLocator:
+        case .fileTooLarge, .lineTooLarge, .messageLimitExceeded, .unsupportedVirtualLocator,
+             .noVisibleMessages:
             return true
         default:
             return false

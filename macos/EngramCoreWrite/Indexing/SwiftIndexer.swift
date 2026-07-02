@@ -44,17 +44,22 @@ public final class SwiftIndexer {
     public func indexAll(sources: Set<SourceName>? = nil) async throws -> Int {
         var batch: [ScannedSnapshot] = []
         var indexed = 0
+        // Dedup by session id across the WHOLE run, not per 100-item batch.
+        // Two snapshots sharing an id but straddling a batch boundary would
+        // otherwise each be written (last-write-wins), so run-scoped tracking
+        // keeps first-wins deterministic regardless of where the boundary falls.
+        var seenSessionIds = Set<String>()
 
         for try await scanned in streamScannedSnapshots(sources: sources) {
             batch.append(scanned)
             if batch.count >= Self.writeBatchSize {
-                indexed += try writeBatchCountingSuccesses(batch)
+                indexed += try writeBatchCountingSuccesses(batch, seenSessionIds: &seenSessionIds)
                 batch.removeAll(keepingCapacity: true)
             }
         }
 
         if !batch.isEmpty {
-            indexed += try writeBatchCountingSuccesses(batch)
+            indexed += try writeBatchCountingSuccesses(batch, seenSessionIds: &seenSessionIds)
         }
 
         // Parent-link / suggested-parent backfills run in the writer's own
@@ -65,9 +70,13 @@ public final class SwiftIndexer {
 
     /// Writes one batch and returns the count of rows that did NOT fail.
     /// Logs each per-snapshot failure so a silent fake-success cannot happen.
-    private func writeBatchCountingSuccesses(_ batch: [ScannedSnapshot]) throws -> Int {
-        let snapshots = batch.map(\.snapshot)
-        let statesBySessionId = Dictionary(uniqueKeysWithValues: batch.compactMap { scanned in
+    private func writeBatchCountingSuccesses(
+        _ batch: [ScannedSnapshot],
+        seenSessionIds: inout Set<String>
+    ) throws -> Int {
+        let deduplicatedBatch = deduplicateBatchBySessionId(batch, seenSessionIds: &seenSessionIds)
+        let snapshots = deduplicatedBatch.map(\.snapshot)
+        let statesBySessionId = Dictionary(uniqueKeysWithValues: deduplicatedBatch.compactMap { scanned in
             scanned.fileState.map { (scanned.snapshot.id, $0) }
         })
         let result = try sink.upsertBatch(snapshots, reason: .initialScan)
@@ -84,7 +93,28 @@ public final class SwiftIndexer {
                 try upsertFileIndexStateIsolated(state, source: state.source, locator: state.locator)
             }
         }
-        return batch.count - failures
+        return deduplicatedBatch.count - failures
+    }
+
+    private func deduplicateBatchBySessionId(
+        _ batch: [ScannedSnapshot],
+        seenSessionIds: inout Set<String>
+    ) -> [ScannedSnapshot] {
+        var deduplicatedBatch: [ScannedSnapshot] = []
+        deduplicatedBatch.reserveCapacity(batch.count)
+
+        for scanned in batch {
+            if seenSessionIds.insert(scanned.snapshot.id).inserted {
+                deduplicatedBatch.append(scanned)
+                continue
+            }
+
+            Self.log.error(
+                "duplicate session id in index run; keeping first snapshot: session=\(scanned.snapshot.id, privacy: .private) locator=\(scanned.snapshot.sourceLocator, privacy: .private)"
+            )
+        }
+
+        return deduplicatedBatch
     }
 
     public func collectSnapshots(sources: Set<SourceName>? = nil) async throws -> [AuthoritativeSessionSnapshot] {
@@ -174,6 +204,32 @@ public final class SwiftIndexer {
                 let currentStat = FileIndexStat.directFileStat(locator: locator)
                 let knownIndexedState = knownFileStates?[locator]
                 let knownParseState = fileIndexStates?[locator]
+                let currentOkParseStateNeedsSessionRepair = currentStat.map { stat -> Bool in
+                    guard knownParseState?.parseStatus == .ok,
+                          knownParseState?.sameFileIdentity(as: stat) == true
+                    else { return false }
+                    // A completed OK parse at the current file identity but NO
+                    // surviving session row (deleted, or a prior upsert failed) →
+                    // re-parse to recreate it; converges once the row exists.
+                    guard let indexedSize = knownIndexedState?.sizeBytes else { return true }
+                    // Present session: a size mismatch is a stale-session signal
+                    // only for sources whose stored size_bytes tracks the raw file
+                    // size. Sources that intentionally diverge (Antigravity records
+                    // the protobuf message size; Kimi sums shard files) would
+                    // mismatch on every scan → a full re-parse that never
+                    // converges, so their divergence must NOT force repair.
+                    // Cursor/OpenCode also diverge but use virtual locators (nil
+                    // stat here), so they never reach this comparison.
+                    if Self.fileSizeDivergentSources.contains(adapter.source) { return false }
+                    return indexedSize != stat.sizeBytes
+                } ?? false
+                // A stored parse state older than the current schema must force a
+                // real re-parse. The known-locator fast path below records a fresh
+                // v2 state WITHOUT re-parsing, which would silently consume the
+                // version bump and leave the old parser's stale counts in place.
+                let parseStateSchemaStale = knownParseState.map {
+                    $0.schemaVersion < FileIndexState.currentSchemaVersion
+                } ?? false
                 // Historical rows can be known/unchanged but predate instruction extraction.
                 let needsInstructionBackfill =
                     knownIndexedState?.needsInstructionBackfill == true
@@ -182,16 +238,17 @@ public final class SwiftIndexer {
                 if let currentStat,
                    !needsInstructionBackfill,
                    FileIndexDecision.decide(
-                    stat: currentStat,
-                    state: knownParseState,
-                    now: Date()
-                   ) == .skip {
+                       stat: currentStat,
+                       state: knownParseState,
+                       now: Date()
+                   ) == .skip,
+                   !currentOkParseStateNeedsSessionRepair {
                     continue
                 }
                 if let currentFile = currentStat?.legacyState,
                    let indexed = knownIndexedState {
-                    if !needsInstructionBackfill {
-                        if skipKnownFileLocators {
+                    if !needsInstructionBackfill, !parseStateSchemaStale {
+                        if skipKnownFileLocators && !currentOkParseStateNeedsSessionRepair {
                             try recordFileIndexSuccess(source: adapter.source, locator: locator, stat: currentStat)
                             continue
                         }
@@ -445,6 +502,7 @@ public final class SwiftIndexer {
             instructionCount: instructionCount,
             humanTurnCount: humanTurnCount,
             instructionSummary: instructionSummary,
+            originator: info.originator,
             origin: authoritativeNode,
             tier: tier,
             agentRole: info.agentRole,
@@ -461,6 +519,7 @@ public final class SwiftIndexer {
         ]
         if let project = info.project { fields.append(("project", jsonString(project))) }
         if let model = info.model { fields.append(("model", jsonString(model))) }
+        if let originator = info.originator { fields.append(("originator", jsonString(originator))) }
         fields.append(("messageCount", "\(info.messageCount)"))
         fields.append(("userMessageCount", "\(info.userMessageCount)"))
         fields.append(("assistantMessageCount", "\(info.assistantMessageCount)"))
@@ -537,9 +596,32 @@ public final class SwiftIndexer {
         "ping"
     ]
 
+    // Sources whose session `size_bytes` intentionally diverges from the raw
+    // file size, so a permanent size mismatch is NOT a staleness signal: it must
+    // not fire `currentOkParseStateNeedsSessionRepair` (which would force a full
+    // re-parse on every scan without ever converging). Antigravity stores the
+    // protobuf message size; Kimi sums shard files. Other sources set
+    // `size_bytes` from the file size, so the size comparison stays a valid
+    // stale-session repair signal for them.
+    private static let fileSizeDivergentSources: Set<SourceName> = [
+        .antigravity,
+        .kimi,
+    ]
+
     // Sources whose adapter emits reliable .user roles in streamMessages, so
     // instruction extraction can be trusted. Others store NULL instruction signals
     // (default-visible). Graduate a source by adding it here + an adapter-uniformity
     // parity test proving its stream emits non-empty .user content.
-    private static let reliableInstructionSources: Set<SourceName> = [.claudeCode, .codex]
+    private static let reliableInstructionSources: Set<SourceName> = [
+        .claudeCode,
+        .codex,
+        .kimi,
+        .minimax,
+        .mimo,
+        .qwen,
+        .doubao,
+        .glm,
+        .deepseek,
+        .lobsterai,
+    ]
 }

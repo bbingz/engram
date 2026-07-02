@@ -32,6 +32,7 @@ const requiredSessionColumns = [
   'instruction_count',
   'human_turn_count',
   'instruction_summary',
+  'originator',
   'last_accessed_at',
   'access_count',
   'offload_state',

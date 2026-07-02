@@ -1,6 +1,7 @@
 # Kimi CLI — Session Format Reference
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-02 (Engram provider audit recheck).
+Adapter sync updated: 2026-06-30.
 
 > Definitive English reference for how **Kimi CLI** (Moonshot AI's "kimi-code"
 > coding CLI) persists sessions on disk, and how Engram's adapters consume them.
@@ -11,9 +12,9 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 - **LIVE on-disk store** at `~/.kimi/` on this machine — **49 workspace dirs**
   (`/bin/ls -1 ~/.kimi/sessions` = 49; `find -mindepth1 -maxdepth1 -type d` = 49;
   matches `kimi.json` `work_dirs` = 49),
-  **573 `context.jsonl`** *(= 459 at the Engram-parsed 2-level depth*
-  `sessions/<ws>/<sess>/` *+ 114 deeper `subagents/<id>/context.jsonl` that are
-  never enumerated)*, **566 `wire.jsonl`** *(= 452 session-level + 114
+  **573 `context.jsonl`** *(= 459 main session contexts under*
+  `sessions/<ws>/<sess>/` *+ 114 deeper `subagents/<id>/context.jsonl` child
+  contexts, both enumerated by the current adapters)*, **566 `wire.jsonl`** *(= 452 session-level + 114
   subagent)*, **393 `state.json`**, **42
   `context_sub_*.jsonl`**, **2 `context_1.jsonl`**, **6 `subagents/`** dirs, **1
   `tasks/`** dir, **1 `notifications/`** dir. Roles, key-sets, block types,
@@ -31,6 +32,49 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 On conflict, **REAL on-disk data wins** and the discrepancy is flagged inline.
 All quoted samples are **anonymized to structure (keys + value types)**; no
 message text, code, paths, tokens, or secrets are reproduced.
+
+## Current Local Audit
+
+2026-07-02 native `~/.kimi/sessions` smoke listed and parsed 573/573 canonical
+`context.jsonl` locators as `kimi`: 459 main session contexts and 114
+`subagents/<id>/context.jsonl` child contexts. All 114 subagent contexts carry
+`agentRole='subagent'` and `parentSessionId`; 102 sessions currently resolve a
+cwd through `~/.kimi/kimi.json`. The same raw store still has 566 `wire.jsonl`
+files and 44 rotation shards (`2 context_N`, `42 context_sub_N`), which are
+read as auxiliary data, not independent session locators.
+The TS live stream smoke emitted 4,036 transcript messages (1,061 user + 2,975
+assistant) and found 0 parser/stream count mismatches.
+
+Current `~/.engram/index.sqlite` has 689 native `kimi` rows under
+`/Users/bing/.kimi/%`. All 573 current canonical `context.jsonl` locators are
+represented both in `file_index_state` (`ok`/schema v1, latest native
+`indexed_at` `2026-07-01T05:46:43Z`) and in `sessions.source_locator`; 116
+source-locator DB-only native rows remain as stale cleanup work. Do not use
+`sessions.file_path` alone as the Kimi locator-closure invariant: only 251 rows
+currently have `file_path` equal to a current context locator, while 438 native
+rows preserve older readable/sidecar paths (`264 wire.jsonl`, `56 notification`,
+`26 state.json`, `89 other sidecar/artifact`, and `3 obsolete context.jsonl`).
+Two current rows still have stale parser-owned count/size fields. A broader
+parser-vs-DB metadata diff also finds preserved legacy `cwd`, `agent_role`,
+`parent_session_id`, and start/end/path values on current rows; those are largely
+explained by `SessionSnapshotWriter` preservation rules and should not be read
+as parser count drift.
+Installed `/Applications/Engram.app` build `20260701074505` MCP returns 50
+page-1 messages for real native Kimi row
+`ed48cf04-9543-45f0-8cbc-988406b1ca65` with `sessionMessageCount=201`.
+
+The separate Claude Code provider-root route `~/.claude-kimi/projects` is not a
+native Kimi store; it uses Claude Code JSONL and is parsed by
+`ClaudeCodeAdapter` with source `kimi`. A 2026-07-02 provider-root field smoke
+listed 2,090 JSONL files, 95,845 records, 0 malformed lines, parsed 2,076
+conversations as `kimi`, found 2,067 subagents with parent links, and found 0
+stream/count mismatches. Installed `/Applications/Engram.app` build
+`20260701074505` has 2,076 DB rows under `/Users/bing/.claude-kimi/%` and
+locator diff is closed. All 2,090 `.claude-kimi` `file_index_state` rows are
+still schema version 1, but the corrected visible-tool-result parser reports 0
+field-stale current provider-root rows. The earlier 809-row stale-count note was
+a retained-TS audit-tooling false positive: TS was counting non-visible Claude
+`tool_result` rows that the Swift product already drops.
 
 ---
 
@@ -63,12 +107,12 @@ ignores everything else.
      └─ <md5(cwd)>/               ← workspace hash dir (32 hex)                        [grouping key, not decoded]
          └─ <session-uuid>/       ← session dir; dir name = Engram session id
              ├─ context.jsonl     ← conversation records (role-discriminated)         [PARSED]
-             ├─ context_<N>.jsonl ← rotation shards in CURRENT kimi-cli source        [NOT in glob → dropped]
+             ├─ context_<N>.jsonl ← rotation shards in CURRENT kimi-cli source        [PARSED]
              ├─ context_sub_N.jsonl ← rotation shards in OLDER kimi-cli (on disk)     [PARSED]
-             ├─ context_1.jsonl   ← legitimate current rotation shard (2 dirs)        [NOT in glob → dropped]
+             ├─ context_1.jsonl   ← legitimate current rotation shard (2 dirs)        [PARSED]
              ├─ wire.jsonl        ← agent-protocol events (ts + token usage)          [PARSED: 3 of 16 types]
              ├─ state.json        ← lifecycle/title/todos/plan/archive               [NOT parsed]
-             ├─ subagents/<id>/   ← nested child agents (own context+wire+meta)        [NOT enumerated]
+             ├─ subagents/<id>/   ← nested child agents (own context+wire+meta)        [PARSED as child sessions]
              ├─ tasks/agent-<id>/ ← async shell/tool tasks (spec/runtime/output)       [NOT parsed]
              └─ notifications/n*/ ← per-session notifications (event+delivery)          [NOT parsed]
 ```
@@ -86,9 +130,10 @@ context.jsonl line            wire.jsonl line
 **TL;DR for Engram:** `id` = session-dir UUID; `cwd` from `kimi.json`;
 `summary` = first user message (≤200 chars); timestamps from `wire.jsonl`
 `TurnBegin`/`TurnEnd`; token usage from `wire.jsonl` `StatusUpdate` (**Swift
-only**); only `user`+`assistant` records counted; **`tool` records, array
-content blocks, tool calls, reasoning, and `state.json.custom_title` are all
-dropped.**
+only**); subagent `context.jsonl` files are indexed as child sessions with
+`agentRole=subagent` and `parentSessionId`; only `user`+`assistant` records
+counted; **`tool` records, array content blocks, tool calls, reasoning, and
+`state.json.custom_title` are all dropped.**
 
 ---
 
@@ -139,21 +184,19 @@ dropped.**
 
 | Token | Grammar | Derivation | Verified |
 |---|---|---|---|
-| `<workspace-hash>` | `^[0-9a-f]{32}$` (local kaos) / `<kaos>_<md5>` (non-local) | **`md5(absolute_cwd_path)`** when `kaos == local` (default); `f'{kaos}_{md5}'` otherwise | **YES** — 10/10 sampled `work_dirs[].path` had `md5(path)` equal to a real workspace dir. Source-confirmed: `metadata.py` `WorkDirMeta.sessions_dir` |
+| `<workspace-hash>` | `^[0-9a-f]{32}$` (local kaos) / `<kaos>_<md5>` (non-local) | **`md5(absolute_cwd_path)`** when `kaos == local` (default); `f'{kaos}_{md5}'` otherwise | **YES** — 49/49 local `work_dirs[].path` entries had `md5(path)` equal to a real workspace dir. Source-confirmed: `metadata.py` `WorkDirMeta.sessions_dir` |
 | `<session-uuid>` | RFC-4122 UUID v4 | random per session | live (`64892815-2590-475c-8112-9c82df9b16f2`) |
-| `context_<N>.jsonl` | `N` = base-10 int | rotation index in CURRENT kimi-cli source (`utils/path.next_available_rotation` → `f'{stem}_{N}{suffix}'`) | source-confirmed; NOT matched by adapter glob |
-| `context_sub_<N>.jsonl` | `N` = base-10 int | rotation index in OLDER kimi-cli (1..42 observed on disk) | live + `KimiAdapter.swift:183`, `kimi.ts:255`; string absent from current source |
+| `context_<N>.jsonl` | `N` = base-10 int | rotation index in CURRENT kimi-cli source (`utils/path.next_available_rotation` → `f'{stem}_{N}{suffix}'`) | source-confirmed; matched by current `contextShardIndex` |
+| `context_sub_<N>.jsonl` | `N` = base-10 int | rotation index in OLDER kimi-cli (1..42 observed on disk) | live; still matched by current `contextShardIndex` for backward compatibility |
 | subagent id | `^[0-9a-f]{9}$` | per subagent | live (`a616a2fc4`) |
 | task id | `agent-<8 lowercase alnum>` | per task | live (`agent-oiyhtezo`) |
 | notification id | `n<8 hex>` | per notification | live (`n0838353a`) |
 
-> **DISCREPANCY (adapter doc-comment vs reality):** both adapters comment the
-> layout as `sessionsRoot/<workspace-id>/<session-id>/context.jsonl` and treat
-> the first level as an opaque "workspace id". In reality that level is
-> **`md5(cwd)`** — verified 10/10. The adapters never decode the hash; they rely
-> solely on `kimi.json` to recover the cwd. Functionally correct, but the layout
-> comment understates that the workspace dir name is a *computable forward* hash
-> of cwd (an unexploited resolution path — see §15).
+> **Implementation note:** current adapters treat the first session path
+> component as opaque because `kimi.json` is the cwd source of truth. In the
+> common local case that component is **`md5(cwd)`** — verified 49/49 on this
+> machine — but adapters intentionally do not decode it, since non-local kaos
+> roots use `<kaos>_<md5>`.
 >
 > **CORRECTED (web-checked 2026-06-21):** the dir name is `md5(path)` **only when
 > `kaos == local`** (the default). Source `metadata.py` `WorkDirMeta.sessions_dir`
@@ -171,7 +214,7 @@ dropped.**
 | Storage tech | Plain **JSONL** (one JSON object per line) + single-object JSON sidecars | live |
 | Database? | **None** — no SQLite/leveldb/gRPC cache | live `find` |
 | Append vs rewrite | `context.jsonl` and `wire.jsonl` are **append-only** within a session; never rewritten in place | live |
-| Rollover (a.k.a. rotation) | When context grows, Kimi spills into rotation shards that **coexist** with the main file. **CURRENT kimi-cli source names them `context_<N>.jsonl`** (`context_1.jsonl`, `context_2.jsonl`…) via `soul/context.py` → `utils/path.next_available_rotation` (`f'{stem}_{N}{suffix}'`); the on-disk **`context_sub_<N>.jsonl`** (up to `_sub_42` observed) is an **OLDER kimi-cli** naming. The adapters glob only the `context_sub_` prefix, so under current kimi-cli they would MISS the real `context_<N>.jsonl` shards. Reconstruction = main first + `context_sub_*` numerically sorted | `contextFiles()` `KimiAdapter.swift:177-191`; `getAllContextFiles()` `kimi.ts:249-274` |
+| Rollover (a.k.a. rotation) | When context grows, Kimi spills into rotation shards that **coexist** with the main file. **CURRENT kimi-cli source names them `context_<N>.jsonl`** (`context_1.jsonl`, `context_2.jsonl`…) via `soul/context.py` → `utils/path.next_available_rotation` (`f'{stem}_{N}{suffix}'`); the on-disk **`context_sub_<N>.jsonl`** (up to `_sub_42` observed) is an **OLDER kimi-cli** naming. Current adapters parse both forms. Reconstruction = main first + `context_<N>` / `context_sub_<N>` numerically sorted | `contextFiles()` in Swift; `getAllContextFiles()` in TS |
 | Resume / "last session" | `kimi.json.work_dirs[].last_session_id` records the latest session uuid per cwd (used for resume + cwd backfill). A new run mints a new `<session-uuid>` dir under the same `md5(cwd)` workspace | `kimi.json` |
 | Subagents | A session spawns nested `subagents/<id>/` — full sub-conversations with their own `context.jsonl`/`wire.jsonl`/`meta.json` | live |
 | Tasks | Async `tasks/agent-<id>/` (shell/tool tasks with `runtime.json` exit state); `[background]` in `config.toml` governs them (`max_running_tasks=4`, `agent_task_timeout_s=900`) | live |
@@ -179,20 +222,12 @@ dropped.**
 | Compaction | Context-window compaction is marked by `_checkpoint` records in `context.jsonl` and `CompactionBegin`/`CompactionEnd` events in `wire.jsonl` (camelCase, no space — verbatim wire type) ; `config.toml` `compaction_trigger_ratio=0.85` | live + config |
 | Notifications | `notifications/n*/` accumulate as immutable `event.json`+`delivery.json` pairs | live |
 
-> **`context_1.jsonl` is NOT in either adapter's glob** (the glob matches the
-> `context_sub_` prefix only). Both adapters ignore `context_1.jsonl`, so any
-> conversation lines that landed only there are not parsed. Only **2 dirs** have
-> it; live inspection shows it carries real `user`/`assistant`/`tool`/`_usage`/
-> `_checkpoint`/`_system_prompt` records.
->
-> **CORRECTED (web-checked 2026-06-21):** `context_1.jsonl` is the **legitimate
-> current rotation output**, NOT a "rare pre-rollover/legacy snapshot." Current
-> published kimi-cli source rotates to `context_<N>.jsonl` (`context_1.jsonl`,
-> `context_2.jsonl`…) via `soul/context.py` → `utils/path.next_available_rotation`;
-> the string `context_sub` does not appear in current source at all. So the
-> observed `context_sub_*` files reflect an *older* kimi-cli version, and dropping
-> `context_<N>.jsonl` is a **real shard-loss bug** under current kimi-cli, not an
-> intentional skip of a legacy artifact.
+> **RESOLVED in Engram adapters (2026-06-30):** `context_1.jsonl` is the
+> legitimate current rotation output, NOT a rare pre-rollover/legacy snapshot.
+> Current published kimi-cli source rotates to `context_<N>.jsonl`
+> (`context_1.jsonl`, `context_2.jsonl`…) via `soul/context.py` →
+> `utils/path.next_available_rotation`; the older on-disk `context_sub_*` files
+> reflect a prior kimi-cli naming. Engram now matches both shard families.
 > [next_available_rotation](https://raw.githubusercontent.com/MoonshotAI/kimi-cli/main/src/kimi_cli/utils/path.py),
 > [soul/context.py](https://raw.githubusercontent.com/MoonshotAI/kimi-cli/main/src/kimi_cli/soul/context.py)
 
@@ -435,14 +470,11 @@ parsed).
   inner `event.payload` mirrors ToolCall/ToolResult/StatusUpdate/TurnBegin/
   StepBegin shapes).
 
-**In Engram:** **NO Kimi parent-child linkage.** The discovery walk is a fixed
-**2-level** scan (`sessions/<workspace>/<session>/context.jsonl`); subagent
-`context.jsonl` files live one level deeper
-(`…/<session>/subagents/<id>/context.jsonl`) and are **never enumerated** as
-independent sessions, nor linked to the parent. No `.engram.json` sidecar (that
-is a Gemini-CLI mechanism). Engram emits `parentSessionId: nil` /
-`suggestedParentId: nil` for all Kimi sessions. Whether Kimi subagents *should*
-be grouped like Claude Code subagents is **OPEN**.
+**In Engram:** Kimi subagent contexts are enumerated as independent child
+sessions. `subagents/<id>/context.jsonl` becomes a Kimi session with
+`id=<id>`, `agentRole="subagent"`, and `parentSessionId=<parent session id>`.
+No `.engram.json` sidecar is involved (that is a Gemini-CLI mechanism), and
+`suggestedParentId` remains nil because the parent is path-derived.
 
 ---
 
@@ -456,8 +488,8 @@ be grouped like Claude Code subagents is **OPEN**.
   no space — like every other wire `message.type`), driven by
   `config.toml` `compaction_trigger_ratio=0.85` / `reserved_context_size=50000`.
   Engram skips `_checkpoint` and does not interpret compaction. The
-  `context_sub_<N>.jsonl` rollover shards are the on-disk consequence of growth
-  past the window.
+  `context_<N>.jsonl` / `context_sub_<N>.jsonl` rollover shards are the on-disk
+  consequence of growth past the window.
 
 ---
 
@@ -557,32 +589,39 @@ Engram leaves `model = nil` for Kimi despite this being available (see §15).
 
 | Engram field | Source of truth | Swift `KimiAdapter.swift` | TS `kimi.ts` | Notes / gotcha |
 |---|---|---|---|---|
-| `id` | session-dir UUID = `basename(dirname(context.jsonl))` | `:68` | `:80,84` | Workspace hash discarded. TS guards against `''`/`.`/`..` (`:84`); Swift has no guard. |
-| `source` | constant `.kimi` | `:73` | `:146` | |
-| `startTime` | first `TurnBegin` ts in `wire.jsonl` | `:74,200-208,223` | `:88,138-141,316-317` | Fallback: Swift = wireStart → `mtime-60s`; TS = wireStart → first line ts → `mtime-60s`. Live has no line ts. |
-| `endTime` | last turn `TurnEnd` (else its begin); emitted nil if == start | `:75,207,225` | `:89-92,142,318-321` | "first TurnEnd wins" — may reflect an early sub-turn. |
-| `cwd` | `kimi.json` `work_dirs[].path` keyed by `last_session_id == id` | `:76,162-175` | `:86,276-298` | `""` if no match → only most-recent session per workspace resolves. |
-| `project` | always `nil` | `:77` | n/a | Derived downstream from cwd. |
-| `model` | always `nil` | `:78` | n/a | Available in `config.toml` (Kimi-k2.6) but never parsed. |
-| `messageCount` | `userCount + assistantCount` | `:79` | `:150` | **Excludes `tool`** → undercount. |
-| `userMessageCount` | count `role=="user"` | `:59,80` | `:122-126,151` | |
-| `assistantMessageCount` | count `role=="assistant"` | `:60,81` | `:127-129,152` | |
-| `toolMessageCount` | hardcoded `0` | `:82` | `:153` | Despite many live `tool` records. |
-| `systemMessageCount` | hardcoded `0` | `:83` | `:154` | `_system_prompt` exists but never counted. |
-| `summary` | first user message text, `prefix(200)` | `:67,84` | `:124,155` | **`state.json.custom_title` IGNORED.** |
-| `sizeBytes` | sum of `context.jsonl` + all `context_sub_*.jsonl` | `:51-56,86` | `:99-107,157` | `wire.jsonl`/`state.json`/`context_1.jsonl` excluded. |
-| `filePath` | absolute path to `context.jsonl` | `:85` | `:156` | The locator. |
-| per-msg `role` | `user→.user`, `assistant→.assistant` | `:257` | `:225` | Only 2 roles ever produced. |
-| per-msg `content` | `obj.content` as string | `:258` | `:226` | **Array content (think/text) → empty string.** |
-| per-msg `timestamp` | wire turn ts via state machine; else line ts (absent live) | `:137-149,300-308` | `:203-228,237-243` | See §15 #1. |
-| per-msg `usage` | wire `StatusUpdate.token_usage` (assistant only) | `:145,261,265-281` | **not implemented** | **Swift-only.** |
-| per-msg `toolCalls` | always `nil` | `:260` | omitted | Tool calls never surfaced. |
-| `agentRole`/`originator`/`origin`/`parentSessionId`/`suggestedParentId`/`tier`/`qualityScore` | all `nil` | `:88-95` | n/a | No Kimi subagent linkage. |
+| `id` | session-dir UUID = `basename(dirname(context.jsonl))`; for subagents, the subagent directory id | `:78,200-216` | `:152,308-332` | Workspace hash discarded. TS guards against `''`/`.`/`..`; Swift has no guard. |
+| `source` | constant `.kimi` | `:79` | `:153` | |
+| `startTime` | first `TurnBegin` ts in `wire.jsonl` | `:80,245-253,268` | `:145-148,154,376` | Fallback: Swift = wireStart → `mtime-60s`; TS = wireStart → first line ts → `mtime-60s`. Live has no line ts. |
+| `endTime` | last turn `TurnEnd` (else its begin); emitted nil if == start | `:81,252,270` | `:149,155` | "first TurnEnd wins" — may reflect an early sub-turn. |
+| `cwd` | `kimi.json` `work_dirs[].path` keyed by `last_session_id == id`; subagents resolve through the parent session id | `:82,174-187` | `:94,156,349-374` | `""` if no match → only most-recent parent session per workspace resolves. |
+| `project` | always `nil` | `:83` | n/a | Derived downstream from cwd. |
+| `model` | always `nil` | `:84` | n/a | Available in `config.toml` (Kimi-k2.6) but never parsed. |
+| `messageCount` | `userCount + assistantCount` | `:85` | `:157` | **Excludes `tool`** → undercount. |
+| `userMessageCount` | count `role=="user"` | `:66,86` | `:130,158` | |
+| `assistantMessageCount` | count `role=="assistant"` | `:67,87` | `:130,159` | |
+| `toolMessageCount` | hardcoded `0` | `:88` | `:160` | Despite many live `tool` records. |
+| `systemMessageCount` | hardcoded `0` | `:89` | `:161` | `_system_prompt` exists but never counted. |
+| `summary` | first user message text, `prefix(200)` | `:74,90` | `:132-133,162` | **`state.json.custom_title` IGNORED.** |
+| `sizeBytes` | sum of `context.jsonl` + all `context_<N>.jsonl` / `context_sub_<N>.jsonl` for that locator | `:57-62,92,218-231` | `:110,164,258-275` | `wire.jsonl`/`state.json` excluded. |
+| `filePath` | absolute path to `context.jsonl` | `:91` | `:163` | The locator. |
+| per-msg `role` | `user→.user`, `assistant→.assistant` | `:302` | `:234` | Only 2 roles ever produced. |
+| per-msg `content` | `obj.content` as string | `:303` | `:235` | **Array content (think/text) → empty string.** |
+| per-msg `timestamp` | wire turn ts via state machine; else line ts (absent live) | `:144,304` | `:223,236` | See §15 #1. |
+| per-msg `usage` | wire `StatusUpdate.token_usage` (assistant only) | `:151,272-281,306` | **not implemented** | **Swift-only.** |
+| per-msg `toolCalls` | always `nil` | `:305` | omitted | Tool calls never surfaced. |
+| `agentRole` / `parentSessionId` | path-derived for `subagents/<id>/context.jsonl` | `:94,100,200-216` | `:165-166,308-332` | Main sessions keep both nil; subagents use `agentRole="subagent"` and parent session id. |
+| `originator`/`origin`/`suggestedParentId`/`tier`/`qualityScore` | all `nil` | `:95-101` | n/a | No originator/tier scoring special-case for Kimi. |
 
-**Discovery walk** (both adapters, fixed 2-level, no recursion):
-1. `detect()` — true iff `~/.kimi/sessions/` is a directory (`KimiAdapter.swift:25-27`, `kimi.ts:42-49`).
-2. Enumerate `sessions/<workspace>/<session>/context.jsonl`; locator = absolute path to `context.jsonl`; session id = parent dir name (`listSessionLocators` `:29-44`; `listSessionFiles` `:51-75`). Swift sorts results.
-3. `parseSessionInfo(locator)` reads main + `context_sub_*` (concatenated), counts user/assistant, summary = first user text, ts from `wire.jsonl`, cwd from `kimi.json`.
+**Discovery walk** (both adapters):
+1. `detect()` — true iff `~/.kimi/sessions/` is a directory (`KimiAdapter.swift:30-32`, `kimi.ts:42-49`).
+2. Enumerate `sessions/<workspace>/<session>/context.jsonl` and direct
+   `sessions/<workspace>/<session>/subagents/<id>/context.jsonl`; locator =
+   absolute path to `context.jsonl`; session id = parent dir name
+   (`listSessionLocators` `:34-50`; `listSessionFiles` `:51-81`). Swift sorts
+   results.
+3. `parseSessionInfo(locator)` reads main + `context_<N>` / `context_sub_<N>`
+   shards (concatenated), counts user/assistant, summary = first user text, ts
+   from `wire.jsonl`, cwd from `kimi.json` (using the parent id for subagents).
 
 ---
 
@@ -670,15 +709,12 @@ MoonshotAI/kimi-cli's own source (`wire/protocol.py`, `metadata.py`,
    does not; (b) startTime fallback — TS has a line-ts tier Swift lacks;
    (c) session-id sanity guard — TS only; (d) `_checkpoint` — TS explicitly
    `continue`s, Swift filters via `isConversation` (same net effect).
-10. **`context_<N>.jsonl` rotation shards dropped (CORRECTED, web-checked
-    2026-06-21).** The adapters glob only the `context_sub_` prefix. Current
-    kimi-cli source names rotation shards `context_<N>.jsonl` (`context_1.jsonl`,
-    `context_2.jsonl`…) via `utils/path.next_available_rotation`, and the string
-    `context_sub` does not appear in current source. So `context_1.jsonl` (2 dirs)
-    is the **legitimate current rotation output**, not a "rare legacy snapshot,"
-    and under current kimi-cli the adapters would miss ALL `context_<N>.jsonl`
-    shards. This is a real shard-loss bug, not an intentional skip. The older
-    `context_sub_*` naming is what the glob still matches on this disk.
+10. **`context_<N>.jsonl` rotation shard support was corrected
+    (web-checked 2026-06-21; adapter-fixed 2026-06-30).** Current kimi-cli source
+    names rotation shards `context_<N>.jsonl` (`context_1.jsonl`,
+    `context_2.jsonl`...) via `utils/path.next_available_rotation`; older local
+    stores can still contain `context_sub_<N>.jsonl`. Current adapters match
+    both families, so this is no longer a live adapter gap in the worktree.
     [next_available_rotation](https://raw.githubusercontent.com/MoonshotAI/kimi-cli/main/src/kimi_cli/utils/path.py)
 11. **`state.json` schema drift.** A newer variant carries `dynamic_subagents`
     and omits the title/archive/todo block (1/200 live). Dim 2's claimed
@@ -708,12 +744,10 @@ above (web-checked 2026-06-21):
   design — not web-verifiable; `md5(cwd)` confirmed forward-computable from
   `kimi.json` `work_dirs[].path`,
   [metadata.py](https://raw.githubusercontent.com/MoonshotAI/kimi-cli/main/src/kimi_cli/metadata.py).)*
-- Link Kimi subagents like Claude Code subagents? *(Engram-internal design — not
-  web-verifiable; subagents are first-class on disk,
+- Add richer Kimi subagent grouping UI beyond the current path-derived
+  `parentSessionId` link? *(Engram-internal design — not web-verifiable;
+  subagents are first-class on disk,
   [subagents/store.py](https://raw.githubusercontent.com/MoonshotAI/kimi-cli/main/src/kimi_cli/subagents/store.py).)*
-- Glob fix: also match the CURRENT `context_<N>.jsonl` rotation shards, not only
-  the older `context_sub_` prefix? *(Engram-internal design — the format fact is
-  resolved: current source rotates to `context_<N>.jsonl`, see gotcha #10.)*
 
 **Format facts confirmed against official sources (web-checked 2026-06-21):**
 the following items, previously framed as "to verify," are now source-confirmed

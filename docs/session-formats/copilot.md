@@ -1,6 +1,7 @@
 # GitHub Copilot CLI — Session Format Reference
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-02 (Engram provider audit recheck)
+Current-state verification: 2026-07-02 (live store + adapter/DB diff)
 
 > **Scope.** This documents the **GitHub Copilot CLI / coding agent**
 > (`producer: "copilot-agent"`, `client_name: github/cli`, binary `copilot-agent`),
@@ -16,7 +17,7 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 
 | Basis | Detail |
 |---|---|
-| **Live on-disk store** | `~/.copilot/session-state/` — **465 session directories** on this machine. **222** carry an `events.jsonl`; all 465 carry `workspace.yaml` + `checkpoints/`. Plus the store-wide `~/.copilot/session-store.db` (5.1 MB SQLite, `schema_version = 4`). Event-type census aggregated over multiple large `events.jsonl` files; one 8643-event session and one 1990-event session (`67b3717b-…`) sampled in depth. |
+| **Live on-disk store** | `~/.copilot/session-state/` — **470 session directories** on this machine. **227** carry an `events.jsonl`; all 470 carry `workspace.yaml` + `checkpoints/`. Plus the store-wide `~/.copilot/session-store.db` (5.1 MB SQLite, `schema_version = 4`). Event-type census aggregated over multiple large `events.jsonl` files; one 8643-event session and one 1990-event session (`67b3717b-…`) sampled in depth. |
 | **Repo fixtures** | `/Users/bing/-Code-/engram/tests/fixtures/copilot/session-1/` (synthetic, 3-line `events.jsonl` + 4-key `workspace.yaml`); `/Users/bing/-Code-/engram/tests/fixtures/adapter-parity/copilot/success.expected.json` (golden parity). |
 | **Adapters (codified knowledge)** | Swift product: `macos/Shared/EngramCore/Adapters/Sources/CopilotAdapter.swift`. TS reference: `src/adapters/copilot.ts`. Tests: `tests/adapters/copilot.test.ts`. |
 
@@ -27,6 +28,14 @@ types, per-message tokens/model/reasoning, rich `workspace.yaml`, a fully-struct
 parallel SQLite mirror) than what either adapter consumes (4 event types + a 4-field
 token subset). Both adapters parse a strict, lossy subset. No format-level
 contradictions found; all discrepancies are coverage gaps, flagged inline.
+
+**Current Engram status:** The 2026-07-02 read-only smoke listed and parsed 227/227
+event locators, streamed 20,868 messages (946 user + 19,922 assistant), attached
+shutdown usage to 208 assistant messages, and found 0 parser/stream count
+mismatches. The live Engram DB has 227 `copilot` rows and 227 `file_index_state`
+rows (`ok`, schema v1), with 0 missing current ids and 0 DB-only ids. Field
+freshness still lags in 8 rows: 6 summary-only rows retain old YAML quote pairs,
+and 2 rows retain older count/end-time snapshots.
 
 ---
 
@@ -55,8 +64,8 @@ the shared "Copilot" brand. See [§15](#15-lineage-gotchas-version-drift--edge-c
 **Engram's view (lossy).** Engram surfaces only `session.start`, `user.message`,
 `assistant.message`, and `session.shutdown` (for token totals). All tool I/O, hooks,
 subagents, skills, reasoning, compaction, per-message tokens/model, and the SQLite
-mirror are **dropped**. On a 465-dir store Engram surfaces **222 sessions** (those
-with a real event log); the 243 events-less dirs (empty checkpoint templates) are
+mirror are **dropped**. On the current 470-dir store Engram surfaces **227 sessions**
+(those with a real event log); the 243 events-less dirs (empty checkpoint templates) are
 silently skipped.
 
 ```
@@ -71,13 +80,13 @@ silently skipped.
    Engram IGNORES ──────────────► session.db  files/  research/  rewind-snapshots/  plan.md  inuse.<pid>.lock
 
    Engram parse priority (per dir):
-     1. events.jsonl present?          → parse as JSONL events session   (222/465)
-     2. else checkpoints/index.md has  → parse as checkpoint-only session  (0/465 live)
+     1. events.jsonl present?          → parse as JSONL events session   (227/470)
+     2. else checkpoints/index.md has  → parse as checkpoint-only session  (0/470 live)
         ≥1 valid table row?
-     3. else                           → skip silently                    (243/465)
+     3. else                           → skip silently                    (243/470)
 ```
 
-**Evidence basis used:** LIVE store (465 dirs, 222 with events) + repo fixtures
+**Evidence basis used:** LIVE store (470 dirs, 227 with events) + repo fixtures
 (1 synthetic session + golden parity JSON) + both adapters. Live data is authoritative.
 
 ---
@@ -103,22 +112,22 @@ silently skipped.
 - Rewind backups: `rewind-snapshots/backups/<16-hex-hash>-<epoch-ms>`
 - Liveness lock: `inuse.<pid>.lock` (content = bare owning PID)
 
-**Per-session child-name frequency** (aggregated across all 465 dirs, verified live):
+**Per-session child-name frequency** (aggregated across all 470 dirs, verified live):
 
-| Child | Kind | Count / 465 | Engram uses? | Meaning |
+| Child | Kind | Count / 470 | Engram uses? | Meaning |
 |---|---|---|---|---|
-| `workspace.yaml` | file | 465 | **Yes** (metadata) | Session metadata: id, cwd, repo, branch, timestamps, summary |
-| `checkpoints/` | dir | 465 | **Yes** (fallback + index) | Checkpoint history (`index.md` + numbered `.md` bodies) |
-| `files/` | dir | 465 (mostly empty) | No | User-pasted/attached payloads (`paste-<epochms>.txt`) |
-| `research/` | dir | 465 (empty observed) | No | Web/research artifacts (empty in this store) |
-| `events.jsonl` | file | **222** | **Yes** (primary log) | Append-only event stream — the transcript |
-| `session.db` | file | 150 | No | Per-session SQLite: `todos`, `todo_deps`, `inbox_entries` |
+| `workspace.yaml` | file | 470 | **Yes** (metadata) | Session metadata: id, cwd, repo, branch, timestamps, summary |
+| `checkpoints/` | dir | 470 | **Yes** (fallback + index) | Checkpoint history (`index.md` + numbered `.md` bodies) |
+| `files/` | dir | 470 (mostly empty) | No | User-pasted/attached payloads (`paste-<epochms>.txt`) |
+| `research/` | dir | 470 (empty observed) | No | Web/research artifacts (empty in this store) |
+| `events.jsonl` | file | **227** | **Yes** (primary log) | Append-only event stream — the transcript |
+| `session.db` | file | 155 | No | Per-session SQLite: `todos`, `todo_deps`, `inbox_entries` |
 | `rewind-snapshots/` | dir | 32 | No | File-edit backups for the "rewind/undo" feature |
 | `plan.md` | file | 15 | No | Agent's free-form working plan |
 | `inuse.<pid>.lock` | file | transient (4 live) | No | Liveness lock; content = owning PID |
 | `.DS_Store` | file | 1 | No | macOS Finder cruft |
 
-**Key fact:** of 465 dirs, only **222 carry `events.jsonl`**. The other **243** have only
+**Key fact:** of 470 dirs, only **227 carry `events.jsonl`**. The other **243** have only
 an empty `checkpoints/index.md` template (zero data rows) and are **silently skipped**
 by Engram (see [§9 discovery](#9-how-engram-discovers--enumerates-sessions)).
 
@@ -186,10 +195,13 @@ filesystem JSONL/YAML/Markdown is the source of truth for the adapter.
 
 ## 4. Record / line taxonomy (`events.jsonl` event types)
 
-Every line is one JSON object with **exactly 5 envelope keys**
-(`type`, `id`, `parentId`, `timestamp`, `data`). Below is the **full event-type
-vocabulary** observed live (~28 distinct types; counts from sampled large sessions to
-convey relative volume). The **Engram** column marks the 4 types the adapters parse.
+Every line is one JSON object. Current live data has two envelope keysets: the
+base 5 keys (`type`, `id`, `parentId`, `timestamp`, `data`) on 111,216 events,
+and the same keys plus `agentId` on 14,629 events. The `agentId` envelope appears
+on subagent-scoped assistant/tool/hook/skill/error events; Engram ignores it, so
+it does not change parsed message counts. Below is the **full event-type
+vocabulary** observed live (~28 distinct types; counts from sampled large sessions
+to convey relative volume). The **Engram** column marks the 4 types the adapters parse.
 
 | `type` | Engram | `data` layer carries / meaning |
 |---|---|---|
@@ -248,34 +260,34 @@ adapters ignore `id` and `parentId` entirely.
 
 Flat YAML (`key: value`). Both adapters use a **naive line parser** (not a real YAML
 parser): Swift `readWorkspace` splits each line on the first `:`, requires the key to
-match `^\w+$` (`CopilotAdapter.swift:361-375`); TS `readWorkspace` uses
-`/^(\w+):\s*(.+)$/` and additionally strips matched outer quotes
-(`copilot.ts:364-378`, `stripYamlQuotes:438-446`). Both survive colons in ISO
-timestamps; nested/multi-line YAML would silently drop. Frequencies are exact counts
-across all 465 files.
+match `^\w+$`, and strips matched outer quotes
+(`CopilotAdapter.swift:363-389`); TS `readWorkspace` uses `/^(\w+):\s*(.+)$/` and
+also strips matched outer quotes (`copilot.ts:364-378`, `stripYamlQuotes:438-446`).
+Both survive colons in ISO timestamps; nested/multi-line YAML would silently drop.
+Frequencies are exact counts across all 470 files.
 
-| Key | Freq /465 | Type | Meaning | Engram uses |
+| Key | Freq /470 | Type | Meaning | Engram uses |
 |---|---:|---|---|---|
-| `id` | 465 | string(uuid) | Session UUID (overrides dir name) | **Yes** → `Session.id` |
-| `cwd` | 465 | string(path) | Working dir | **Yes** → `cwd` (fallback: `session.start.context.cwd`) |
-| `created_at` | 465 | ISO-8601 | Session start | **Yes** → `startTime` |
-| `updated_at` | 465 | ISO-8601 | Last activity | **Yes** → `endTime` seed |
-| `summary_count` | 465 | int | # of summaries/compactions | No |
-| `git_root` | 219 | string(path) | Repo root | No |
-| `branch` | 219 | string | Git branch | No |
-| `repository` | 166 | string | `owner/repo` | No |
+| `id` | 470 | string(uuid) | Session UUID (overrides dir name) | **Yes** → `Session.id` |
+| `cwd` | 470 | string(path) | Working dir | **Yes** → `cwd` (fallback: `session.start.context.cwd`) |
+| `created_at` | 470 | ISO-8601 | Session start | **Yes** → `startTime` |
+| `updated_at` | 470 | ISO-8601 | Last activity | **Yes** → `endTime` seed |
+| `summary_count` | 470 | int | # of summaries/compactions | No |
+| `git_root` | 224 | string(path) | Repo root | No |
+| `branch` | 224 | string | Git branch | No |
+| `repository` | 171 | string | `owner/repo` | No |
 | `summary` | 159 | string | Pre-baked session summary | **Yes** → `summary` (1st priority) |
-| `host_type` | 148 | string | Forge type (e.g. `github`) | No |
-| `user_named` | 141 | bool | Was `name` user-set? | No |
-| `name` | 133 | string | Display **title** (often AI-generated) | **No** — see [§14](#14-engram-mapping) data loss |
-| `client_name` | 14 | string | Client (`github/cli`) | No |
+| `host_type` | 153 | string | Forge type (e.g. `github`) | No |
+| `user_named` | 146 | bool | Was `name` user-set? | No |
+| `name` | 138 | string | Display **title** (often AI-generated) | **No** — see [§14](#14-engram-mapping) data loss |
+| `client_name` | 19 | string | Client (`github/cli`) | No |
 | `remote_steerable` | 3 | bool | Remote-control flag | No |
 | `mc_task_id` | 3 | string(uuid) | Mission-control task linkage | No |
 | `mc_session_id` | 3 | string(uuid) | Mission-control session linkage | No |
 | `mc_last_event_id` | 3 | string(uuid) | Mission-control last-event linkage | No |
 
 > **Correction vs Dim reports.** `summary` is **not** "rare/absent" — it appears in
-> **159/465** live files, and Engram prefers it over the first-user-text fallback. In
+> **159/470** live files, and Engram prefers it over the first-user-text fallback. In
 > the sampled in-depth session, `summary` + `summary_count` were both present.
 
 ---
@@ -293,7 +305,7 @@ redacted).
 | `sessionId` | string(uuid) | Session id (mirrors dir name) | `"00f0af74-…"` |
 | `version` | int | Event-schema version | `1` |
 | `producer` | string | Emitter id | `"copilot-agent"` |
-| `copilotVersion` | string | CLI version | `"1.0.63"` |
+| `copilotVersion` | string | CLI version | `"1.0.65"` |
 | `startTime` | string(ISO) | Start time (Engram fallback start) | `"2026-06-20T04:00:25.530Z"` |
 | `contextTier` | string\|null | Context window tier. **Optional/version-variable — rare live (4/60 files)** | `null` |
 | `alreadyInUse` | bool | Resumed/locked already. **Optional/version-variable (51/60 files; absent in the largest live session)** | `false` |
@@ -548,7 +560,7 @@ inside a subagent carry `parentToolCallId`. The per-session `session.db`
 
 Two summary mechanisms exist on disk:
 
-1. **`workspace.yaml summary:`** — a pre-baked session summary (159/465 live). **Engram
+1. **`workspace.yaml summary:`** — a pre-baked session summary (159/470 live). **Engram
    uses this** as the first-priority `summary` (`CopilotAdapter.swift:110`; `copilot.ts:129`),
    falling back to the first 200 chars of the first user message.
 2. **In-stream compaction** — `session.compaction_start` / `session.compaction_complete`
@@ -559,7 +571,7 @@ Two summary mechanisms exist on disk:
    summaries of session state; Engram uses them only as a **fallback** when
    `events.jsonl` is absent (never triggered live — see [§9 discovery](#9-how-engram-discovers--enumerates-sessions)).
 
-`workspace.yaml summary_count` records the number of summaries/compactions (all 465 live
+`workspace.yaml summary_count` records the number of summaries/compactions (all 470 live
 had a value; all sampled were `0`).
 
 ---
@@ -571,9 +583,9 @@ completeness because they are fully-structured mirrors of the JSONL/Markdown dat
 
 ### 12.1 `~/.copilot/session-store.db` — store-wide mirror (`schema_version = 4`)
 
-WAL-mode SQLite (+`-shm`/`-wal`). Live row counts: sessions=135, turns=236,
+WAL-mode SQLite (+`-shm`/`-wal`). Live row counts: sessions=140, turns=241,
 checkpoints=9, session_refs=27, session_files=0, forge_trajectory_events=0,
-dynamic_context_items=0. **Row counts lag the filesystem** (135 sessions vs 465 dirs) —
+dynamic_context_items=0. **Row counts lag the filesystem** (140 sessions vs 470 dirs) —
 it is a derived/recent-activity cache, NOT the source of truth.
 
 ```sql
@@ -651,7 +663,7 @@ CREATE VIRTUAL TABLE search_index USING fts5(   -- FTS5 over content
 > ([jonmagic](https://jonmagic.com/posts/github-copilot-session-search-and-resume-cli/),
 > [dfberry](https://dfberry.github.io/2026-04-16-session-storage-decision-guide)).
 
-### 12.2 `~/.copilot/session-state/<uuid>/session.db` — per-session (150 dirs)
+### 12.2 `~/.copilot/session-state/<uuid>/session.db` — per-session (155 dirs)
 
 The agent's TODO list + inter-agent inbox (verified live schema):
 
@@ -683,7 +695,7 @@ CREATE TABLE inbox_entries (                     -- inter-agent message inbox
 
 | Artifact | Location | Kind | Engram | Meaning |
 |---|---|---|---|---|
-| `session.db` | `<uuid>/session.db` | SQLite | No | TODOs + inter-agent inbox ([§12.2](#122-copilotsession-stateuuidsessiondb--per-session-150-dirs)) |
+| `session.db` | `<uuid>/session.db` | SQLite | No | TODOs + inter-agent inbox ([§12.2](#122-copilotsession-stateuuidsessiondb--per-session-155-dirs)) |
 | `rewind-snapshots/` | `<uuid>/rewind-snapshots/` | dir | No | `index.json` = `{version, snapshots, filePathMap}`; `backups/<16-hex-hash>-<epoch-ms>` = verbatim pre-edit file copies for "rewind/undo" |
 | `files/` | `<uuid>/files/` | dir | No | User-pasted payloads: `paste-<epoch-ms>.txt` |
 | `research/` | `<uuid>/research/` | dir | No | Web/research artifacts (empty in this store) |
@@ -726,7 +738,7 @@ Source field/record → Engram `Session`/`Message` field → adapter `file:line`
 
 ### Data-loss inventory (what Engram does NOT consume)
 
-1. **`workspace.name`** — a real, often AI-generated **title** (133/465 live). Engram
+1. **`workspace.name`** — a real, often AI-generated **title** (138/470 live). Engram
    instead uses first 200 chars of the first user prompt. Biggest UX miss.
 2. **Tool activity** — `tool.execution_start/complete` and `assistant.message.toolRequests`
    entirely dropped; `toolMessageCount` hardcoded 0 → zero Copilot tool/file analytics.
@@ -770,34 +782,47 @@ this directory for the closest sibling.
 
 ### Gotchas / version drift / edge cases
 
-- **Swift ≠ TS on YAML quotes (latent parity bug).** TS strips a matched outer quote
-  pair via `stripYamlQuotes` (`copilot.ts:438-446`); **Swift does not** (no equivalent
-  in `readWorkspace`). Live: 6 quoted `name:` values (ignored anyway), 0 quoted
-  `cwd`/`id` today → divergence is **latent, not active**. If Copilot ever quotes
-  `cwd:`/`id:`, Swift keeps literal quotes while TS strips → drift. Covered by TS test
-  `tests/adapters/copilot.test.ts:162-199`; **no Swift counterpart exists.**
+- **YAML quote handling is aligned.** Both Swift and TS strip one matched outer quote
+  pair from `workspace.yaml` values (`CopilotAdapter.swift:363-389`,
+  `copilot.ts:364-378`, `stripYamlQuotes:438-446`). Live: 6 quoted `name:` values
+  (ignored by Engram), 0 quoted `cwd`/`id` today. Covered by TS
+  `tests/adapters/copilot.test.ts` and Swift
+  `AdapterMessageCountTests.testCopilotStripsMatchedYamlQuotePairs`.
 - **Empty-but-non-zero assistant messages.** Live: a large fraction — **⅓ to ~½
   depending on session** (one session 86/261 ≈ ⅓; another, 51835c08, 1445/2827 ≈ 51%) —
   of `assistant.message` events have empty `content` (tool-call-only turns). Engram
   counts all as assistant messages → `assistantMessageCount` inflated vs human-readable
   turns; transcript shows blank rows. Magnitude generalizes worse than the one cited ⅓ sample.
+- **Live DB field freshness still lags parser fixes.** The 2026-07-02
+  adapter-vs-DB id diff is clean (227 adapter locators, 227 DB rows, 227
+  `file_index_state ok/v1` rows), but 8 existing DB rows retain older parser
+  snapshots. Six are summary-only quote-stripping debt from before the Swift/TS
+  YAML quote fix, e.g. DB `"Reply with only: OK"` vs current
+  `Reply with only: OK`. The remaining two rows are the older count/end-time
+  snapshots: `51835c08-bea0-4594-83e7-9fe69b71808a` is DB 1,952 vs current
+  2,863 messages, and `ad05ab2d-ddcb-419f-8452-57ec21d4b96f` is DB 2,009 vs
+  current 2,103. File size and file-index state are aligned; reindex/cleanup is
+  needed to refresh these 8 historical rows.
 - **`messageCount` two opposite distortions.** It excludes tool/hook traffic
   (understates real activity for tool-heavy sessions) AND counts empty assistant rows
   (overstates conversational turns).
 - **Both-present directories.** A dir with `events.jsonl` **and** populated `checkpoints/`
   is parsed as events; checkpoint summaries are never surfaced.
-- **Header-only `index.md`** (243/465 live) → 0 entries → directory **silently skipped**
+- **Header-only `index.md`** (243/470 live) → 0 entries → directory **silently skipped**
   (no error, session disappears from Engram).
 - **`cwd: /` checkpoint sessions** become root-scoped, near-empty Session rows
   (often `created_at == updated_at`).
 - **Checkpoint fallback unverified live.** The events-absent → checkpoint-index path is
-  implemented in both adapters but **never exercised** on this live store (every
-  populated-checkpoint dir also has `events.jsonl`; the 243 events-less dirs have empty
-  templates). Behavior against real fallback data is unproven from disk alone.
-- **`copilotVersion` drift / unversioned schema.** Live shows `1.0.63` (and older
-  `1.0.18`/`1.0.63` in the store). The adapter is forgiving — it ignores unknown `type`
-  values, so new types (`skill.invoked`, `subagent.*`, `session.model_change`, absent
-  from the synthetic fixture) are tolerated. A breaking rename of
+  implemented in both adapters but **never exercised** on this live store: 26 checkpoint
+  indexes have parseable entries, but every one also has `events.jsonl`; the 243
+  events-less dirs have empty templates. Behavior against real fallback data is
+  unproven from disk alone.
+- **`copilotVersion` drift / unversioned schema.** Current live data includes
+  `0.0.420`/`0.0.421`/`0.0.422` plus sparse `1.0.x` versions from `1.0.2` up
+  to `1.0.65`; `1.0.63` remains present but is not the newest observed version.
+  The adapter is forgiving — it ignores unknown `type` values, so new types
+  (`skill.invoked`, `subagent.*`, `session.model_change`, absent from the synthetic fixture)
+  are tolerated. A breaking rename of
   `user.message`/`assistant.message`/`session.shutdown` would **silently zero out** a
   session.
 - **Fixtures lag reality badly.** The synthetic fixture is 3 events (no shutdown,
@@ -808,8 +833,8 @@ this directory for the closest sibling.
   (live: 3-4 models in one session) → correct session total but no per-model/per-turn split.
 - **No agent-role / parent linking.** Every Copilot session is top-level in Engram
   ([§10](#10-subagent--parent-child--dispatch)).
-- **SQLite mirror lag.** `session-store.db` (135 sessions / 236 turns / 9 checkpoints)
-  lags the filesystem (465 dirs). It is derived/recent-activity; Engram does not read it.
+- **SQLite mirror lag.** `session-store.db` (140 sessions / 241 turns / 9 checkpoints)
+  lags the filesystem (470 dirs). It is derived/recent-activity; Engram does not read it.
 
 ### Open questions
 
@@ -834,7 +859,7 @@ this directory for the closest sibling.
   versions populate `forge_trajectory_events` **cannot be confirmed from public sources**
   ([jonmagic](https://jonmagic.com/posts/github-copilot-session-search-and-resume-cli/),
   [dfberry](https://dfberry.github.io/2026-04-16-session-storage-decision-guide)).
-- **243/465 events-less dirs** (~52%). **Confirmed (official):** these are
+- **243/470 events-less dirs** (~52%). **Confirmed (official):** these are
   aborted/never-prompted launches, not a cleanup artifact. GitHub
   [issue #1451](https://github.com/github/copilot-cli/issues/1451) documents that empty
   session directories accumulate from sessions "opened but never interacted with" / that

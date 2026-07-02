@@ -143,6 +143,91 @@ describe('OpenCodeAdapter', () => {
     }
   });
 
+  it('counts and streams only one row per contentful message id', async () => {
+    const { mkdtempSync, copyFileSync, rmSync: rm } = require('node:fs');
+    const { tmpdir } = require('node:os');
+    const base = mkdtempSync(join(tmpdir(), 'engram-oc-parts-'));
+    const driftDb = join(base, 'opencode.db');
+    copyFileSync(FIXTURE_DB, driftDb);
+    const db = new Database(driftDb);
+    try {
+      db.exec(`
+        INSERT INTO session VALUES (
+          'ses_parts', 'proj_001', NULL, 'parts-session', '/Users/test/parts',
+          'Part aggregation', '0.0.1', NULL, 0, 0, 0, NULL, NULL, NULL,
+          1770000100000, 1770000160000, NULL, NULL
+        );
+        INSERT INTO message VALUES (
+          'msg_toolonly', 'ses_parts', 1770000101000, 1770000101000,
+          '{"role":"user","time":{"created":1770000101000}}'
+        );
+        INSERT INTO part VALUES (
+          'part_toolonly', 'msg_toolonly', 1770000101000, 1770000101000,
+          '{"type":"tool","text":"not transcript text"}'
+        );
+        INSERT INTO message VALUES (
+          'msg_empty', 'ses_parts', 1770000102000, 1770000102000,
+          '{"role":"user","time":{"created":1770000102000}}'
+        );
+        INSERT INTO part VALUES (
+          'part_empty', 'msg_empty', 1770000102000, 1770000102000,
+          '{"type":"text","text":"   "}'
+        );
+        INSERT INTO message VALUES (
+          'msg_value', 'ses_parts', 1770000103000, 1770000103000,
+          '{"role":"user","time":{"created":1770000103000}}'
+        );
+        INSERT INTO part VALUES (
+          'part_value', 'msg_value', 1770000103000, 1770000103000,
+          '{"type":"text","value":"question from value"}'
+        );
+        INSERT INTO message VALUES (
+          'msg_multi', 'ses_parts', 1770000104000, 1770000104000,
+          '{"role":"assistant","time":{"created":1770000104000},"tokens":{"input":10,"output":2}}'
+        );
+        INSERT INTO part VALUES (
+          'part_multi_1', 'msg_multi', 1770000104000, 1770000104000,
+          '{"type":"text","text":"answer"}'
+        );
+        INSERT INTO part VALUES (
+          'part_multi_2', 'msg_multi', 1770000105000, 1770000105000,
+          '{"type":"text","text":"follow-up"}'
+        );
+      `);
+    } finally {
+      db.close();
+    }
+
+    try {
+      const driftAdapter = new OpenCodeAdapter(driftDb);
+      const locator = `${driftDb}::ses_parts`;
+      const info = await driftAdapter.parseSessionInfo(locator);
+      expect(info?.messageCount).toBe(2);
+      expect(info?.userMessageCount).toBe(1);
+      expect(info?.assistantMessageCount).toBe(1);
+
+      const messages = [];
+      for await (const msg of driftAdapter.streamMessages(locator))
+        messages.push(msg);
+      expect(messages.map((message) => message.content)).toEqual([
+        'question from value',
+        'answer\nfollow-up',
+      ]);
+
+      const paged = [];
+      for await (const msg of driftAdapter.streamMessages(locator, {
+        offset: 1,
+        limit: 1,
+      }))
+        paged.push(msg);
+      expect(paged.map((message) => message.content)).toEqual([
+        'answer\nfollow-up',
+      ]);
+    } finally {
+      rm(base, { recursive: true, force: true });
+    }
+  });
+
   it('sizeBytes reflects the session payload, not the whole shared SQLite file', async () => {
     const files: string[] = [];
     for await (const f of adapter.listSessionFiles()) files.push(f);

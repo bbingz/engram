@@ -76,6 +76,182 @@ describe('IflowAdapter', () => {
     }
   });
 
+  it('attaches assistant usage metadata to streamed assistant messages', async () => {
+    const tmpRoot = join(tmpdir(), `engram-iflow-usage-${Date.now()}`);
+    const filePath = join(tmpRoot, 'usage.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          uuid: 'u1',
+          parentUuid: null,
+          sessionId: 'iflow-usage',
+          timestamp: '2026-04-01T00:00:00.000Z',
+          type: 'user',
+          cwd: '/x',
+          message: {
+            role: 'user',
+            content: 'track usage',
+          },
+        }),
+        JSON.stringify({
+          uuid: 'a1',
+          parentUuid: 'u1',
+          sessionId: 'iflow-usage',
+          timestamp: '2026-04-01T00:00:01.000Z',
+          type: 'assistant',
+          cwd: '/x',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'usage tracked' }],
+            usage: {
+              input_tokens: 321,
+              output_tokens: 65,
+            },
+          },
+        }),
+      ].join('\n'),
+    );
+    try {
+      const messages = [];
+      for await (const m of adapter.streamMessages(filePath)) messages.push(m);
+
+      expect(messages[0].usage).toBeUndefined();
+      expect(messages[1].usage).toEqual({
+        inputTokens: 321,
+        outputTokens: 65,
+      });
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('skips user-form system injections from streamed messages', async () => {
+    const tmpRoot = join(tmpdir(), `engram-iflow-system-${Date.now()}`);
+    const filePath = join(tmpRoot, 'system.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          uuid: 's1',
+          sessionId: 'iflow-system',
+          timestamp: '2026-04-01T00:00:00.000Z',
+          type: 'user',
+          cwd: '/x',
+          message: {
+            role: 'user',
+            content:
+              '# AGENTS.md instructions for /x\n\n<INSTRUCTIONS>system prompt</INSTRUCTIONS>',
+          },
+        }),
+        JSON.stringify({
+          uuid: 'u1',
+          sessionId: 'iflow-system',
+          timestamp: '2026-04-01T00:00:01.000Z',
+          type: 'user',
+          cwd: '/x',
+          message: {
+            role: 'user',
+            content: 'real prompt',
+          },
+        }),
+        JSON.stringify({
+          uuid: 'a1',
+          sessionId: 'iflow-system',
+          timestamp: '2026-04-01T00:00:02.000Z',
+          type: 'assistant',
+          cwd: '/x',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'answer' }],
+          },
+        }),
+      ].join('\n'),
+    );
+    try {
+      const info = await adapter.parseSessionInfo(filePath);
+      const messages = [];
+      for await (const m of adapter.streamMessages(filePath)) messages.push(m);
+
+      expect(info?.systemMessageCount).toBe(1);
+      expect(info?.userMessageCount).toBe(1);
+      expect(info?.assistantMessageCount).toBe(1);
+      expect(info?.messageCount).toBe(messages.length);
+      expect(messages.map((m) => m.content)).toEqual(['real prompt', 'answer']);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('skips tool-only turns from counts and streamed messages', async () => {
+    const tmpRoot = join(tmpdir(), `engram-iflow-tool-only-${Date.now()}`);
+    const filePath = join(tmpRoot, 'tool-only.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          uuid: 'u1',
+          sessionId: 'iflow-tool-only',
+          timestamp: '2026-04-01T00:00:00.000Z',
+          type: 'user',
+          cwd: '/x',
+          message: {
+            role: 'user',
+            content: 'real prompt',
+          },
+        }),
+        JSON.stringify({
+          uuid: 'a-tool',
+          sessionId: 'iflow-tool-only',
+          timestamp: '2026-04-01T00:00:01.000Z',
+          type: 'assistant',
+          cwd: '/x',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'tool_use', name: 'read_file' }],
+          },
+        }),
+        JSON.stringify({
+          uuid: 'u-tool',
+          sessionId: 'iflow-tool-only',
+          timestamp: '2026-04-01T00:00:02.000Z',
+          type: 'user',
+          cwd: '/x',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', content: 'file output' }],
+          },
+        }),
+        JSON.stringify({
+          uuid: 'a1',
+          sessionId: 'iflow-tool-only',
+          timestamp: '2026-04-01T00:00:03.000Z',
+          type: 'assistant',
+          cwd: '/x',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'answer' }],
+          },
+        }),
+      ].join('\n'),
+    );
+    try {
+      const info = await adapter.parseSessionInfo(filePath);
+      const messages = [];
+      for await (const m of adapter.streamMessages(filePath)) messages.push(m);
+
+      expect(info?.userMessageCount).toBe(1);
+      expect(info?.assistantMessageCount).toBe(1);
+      expect(info?.messageCount).toBe(2);
+      expect(messages.map((m) => m.content)).toEqual(['real prompt', 'answer']);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('streamMessages respects limit', async () => {
     const messages = [];
     for await (const msg of adapter.streamMessages(FIXTURE, { limit: 1 })) {

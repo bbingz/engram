@@ -25,6 +25,52 @@ describe('KimiAdapter', () => {
     expect(files[0]).toContain('context.jsonl');
   });
 
+  it('listSessionFiles yields subagent contexts and links them to the parent session', async () => {
+    const tmpRoot = join(tmpdir(), `engram-kimi-subagent-${Date.now()}`);
+    const sessionsRoot = join(tmpRoot, 'sessions');
+    const sessionDir = join(sessionsRoot, 'ws', 'kimi-parent-session');
+    const subagentDir = join(sessionDir, 'subagents', 'agent-abc123');
+    const parentContext = join(sessionDir, 'context.jsonl');
+    const subagentContext = join(subagentDir, 'context.jsonl');
+    mkdirSync(subagentDir, { recursive: true });
+    writeFileSync(parentContext, '{"role":"user","content":"parent task"}\n');
+    writeFileSync(
+      subagentContext,
+      [
+        '{"role":"user","content":"subagent task"}',
+        '{"role":"assistant","content":"subagent result"}',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(tmpRoot, 'kimi.json'),
+      JSON.stringify({
+        work_dirs: [
+          {
+            path: '/tmp/kimi-project',
+            kaos: 'workspace-1',
+            last_session_id: 'kimi-parent-session',
+          },
+        ],
+      }),
+    );
+
+    try {
+      const a = new KimiAdapter(sessionsRoot, join(tmpRoot, 'kimi.json'));
+      const files: string[] = [];
+      for await (const f of a.listSessionFiles()) files.push(f);
+      expect(files.sort()).toEqual([parentContext, subagentContext].sort());
+
+      const info = await a.parseSessionInfo(subagentContext);
+      expect(info?.id).toBe('agent-abc123');
+      expect(info?.agentRole).toBe('subagent');
+      expect(info?.parentSessionId).toBe('kimi-parent-session');
+      expect(info?.cwd).toBe('/tmp/kimi-project');
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('parseSessionInfo extracts metadata', async () => {
     const info = await adapter.parseSessionInfo(FIXTURE_CONTEXT);
     expect(info).not.toBeNull();
