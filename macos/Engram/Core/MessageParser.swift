@@ -29,7 +29,7 @@ struct MessageParser {
 
     private static func parseLegacy(filePath: String, source: String) -> [ChatMessage] {
         switch source {
-        case "claude-code", "qwen", "iflow", "lobsterai", "minimax":
+        case "claude-code", "qwen", "iflow", "lobsterai", "minimax", "mimo", "doubao", "glm", "deepseek":
             return parseTypeMessageFormat(filePath: filePath, source: source)
         case "kimi":
             return parseRoleDirectFormat(filePath: filePath, skipFirst: false, source: source)
@@ -58,9 +58,9 @@ struct MessageParser {
         source: String,
         offset: Int?,
         limit: Int?
-    ) async -> [ChatMessage]? {
+        ) async -> [ChatMessage]? {
         guard let sourceName = SourceName(rawValue: source),
-              let adapter = uiAdapterRegistry().adapter(for: sourceName)
+              let adapter = uiAdapterRegistry().adapter(for: sourceName, locator: filePath)
         else {
             return nil
         }
@@ -88,7 +88,7 @@ struct MessageParser {
         limit: Int?
     ) async -> (messages: [ChatMessage], producedCount: Int) {
         if let sourceName = SourceName(rawValue: source),
-           let adapter = uiAdapterRegistry().adapter(for: sourceName) {
+           let adapter = uiAdapterRegistry().adapter(for: sourceName, locator: filePath) {
             // Trust the adapter on success, INCLUDING a legitimately empty window
             // (paging past EOF, or a window that is entirely tool messages). Only a
             // nil result — adapter error / no stream — falls back to the legacy
@@ -110,27 +110,7 @@ struct MessageParser {
     }
 
     private static func uiAdapterRegistry() -> AdapterRegistry {
-        AdapterRegistry(
-            adapters: [
-                CodexAdapter(),
-                ClaudeCodeAdapter(),
-                ClaudeCodeDerivedSourceAdapter(source: .minimax),
-                ClaudeCodeDerivedSourceAdapter(source: .lobsterai),
-                GeminiCliAdapter(),
-                OpenCodeAdapter(),
-                IflowAdapter(),
-                QwenAdapter(),
-                QoderAdapter(),
-                KimiAdapter(),
-                ClineAdapter(),
-                CursorAdapter(),
-                VsCodeAdapter(),
-                WindsurfAdapter(enableLiveSync: false),
-                AntigravityAdapter(enableLiveSync: false),
-                CommandCodeAdapter(),
-                CopilotAdapter()
-            ]
-        )
+        AdapterRegistry(adapters: SessionAdapterFactory.defaultAdapters())
     }
 
     private static func adapterMessages(

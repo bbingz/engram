@@ -29,7 +29,7 @@ final class EngramWebUIServer: @unchecked Sendable {
     // MCPDatabase. Optional so teardown can release the GRDB pool
     // deterministically rather than relying on ARC timing.
     private var databaseQueue: DatabaseQueue?
-    private let adapters: [SourceName: any SessionAdapter]
+    private let adapters: [any SessionAdapter]
     private let authToken: String
 
     /// `authToken` is required (SEC-C1): every request must present it as a
@@ -45,13 +45,7 @@ final class EngramWebUIServer: @unchecked Sendable {
         var configuration = Configuration()
         configuration.readonly = true
         self.databaseQueue = try DatabaseQueue(path: databasePath, configuration: configuration)
-        // First registration wins; a duplicate source must not crash the
-        // service at init (same hardening as AdapterRegistry).
-        var adapterMap: [SourceName: any SessionAdapter] = [:]
-        for adapter in SessionAdapterFactory.defaultAdapters() where adapterMap[adapter.source] == nil {
-            adapterMap[adapter.source] = adapter
-        }
-        self.adapters = adapterMap
+        self.adapters = SessionAdapterFactory.defaultAdapters()
     }
 
     func run() async throws {
@@ -368,9 +362,9 @@ final class EngramWebUIServer: @unchecked Sendable {
         limit: Int
     ) async throws -> (messages: [NormalizedMessage], hasMore: Bool, nextOffset: Int) {
         guard let source = SourceName(rawValue: session.source),
-              let adapter = adapters[source],
               let locator = session.readablePath,
-              !locator.isEmpty
+              !locator.isEmpty,
+              let adapter = SessionAdapterFactory.adapter(for: source, locator: locator, adapters: adapters)
         else {
             return ([], false, offset)
         }

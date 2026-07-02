@@ -580,6 +580,10 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         }
 
         let limit = max(1, min(request.limit, 100))
+        if let exactID = try await exactSessionIDSearch(query: query, request: request) {
+            return exactID
+        }
+
         if semanticRequested {
             do {
                 if let semantic = try await semanticSearch(
@@ -606,6 +610,37 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             ? "Semantic search is unavailable in the local service; returning keyword results only."
             : nil
         return try await keywordSearch(query: query, request: request, limit: limit, warning: warning)
+    }
+
+    private func exactSessionIDSearch(
+        query: String,
+        request: EngramServiceSearchRequest
+    ) async throws -> EngramServiceSearchResponse? {
+        try await read { db in
+            var parts = ["""
+                SELECT s.*, '' AS snippet
+                FROM sessions s
+                WHERE s.id = ?
+                  AND s.hidden_at IS NULL
+                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+            """]
+            var args: [DatabaseValueConvertible] = [query]
+            appendSearchFilters(for: request, to: &parts, args: &args)
+            parts.append("LIMIT 1")
+
+            guard let row = try Row.fetchOne(
+                db,
+                sql: parts.joined(separator: " "),
+                arguments: StatementArguments(args)
+            ) else {
+                return nil
+            }
+            return EngramServiceSearchResponse(
+                items: [item(from: row, snippetOverride: "", matchType: "id", score: 1)],
+                searchModes: ["id"],
+                warning: nil
+            )
+        }
     }
 
     private func keywordSearch(
@@ -1198,7 +1233,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             ? .antigravity
             : SourceName(rawValue: source)
         guard let sourceName,
-              let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
+              let adapter = SessionAdapterFactory.adapter(for: sourceName, locator: trimmed)
         else {
             return []
         }
@@ -1794,6 +1829,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             sizeBytes: row["size_bytes"] as Int?,
             indexedAt: row["indexed_at"] as String?,
             agentRole: row["agent_role"] as String?,
+            originator: row["originator"] as String?,
             customName: row["custom_name"] as String?,
             tier: row["tier"] as String?,
             toolMessageCount: row["tool_message_count"] as Int?,

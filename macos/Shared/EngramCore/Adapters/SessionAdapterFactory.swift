@@ -4,17 +4,24 @@ protocol ModificationFilteredSessionAdapter: SessionAdapter {
     func listSessionLocators(modifiedSince: Date, fileManager: FileManager) async throws -> [String]
 }
 
+protocol LocatorOwningSessionAdapter: SessionAdapter {
+    func ownsLocator(_ locator: String) -> Bool
+}
+
 public enum SessionAdapterFactory {
     public static func defaultAdapters() -> [any SessionAdapter] {
         let claudeCode = ClaudeCodeAdapter()
         return [
             CodexAdapter(),
+            GrokAdapter(),
             claudeCode,
             ClaudeCodeDerivedSourceAdapter(source: .minimax, base: claudeCode),
             ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: claudeCode),
+        ] + claudeCodeProviderAdapters() + [
             GeminiCliAdapter(),
             OpenCodeAdapter(),
             IflowAdapter(),
+            PiAdapter(),
             QwenAdapter(),
             QoderAdapter(),
             KimiAdapter(),
@@ -26,6 +33,35 @@ public enum SessionAdapterFactory {
             AntigravityAdapter(enableLiveSync: false),
             CopilotAdapter()
         ]
+    }
+
+    public static func adapter(
+        for source: SourceName,
+        locator: String,
+        adapters: [any SessionAdapter] = defaultAdapters()
+    ) -> (any SessionAdapter)? {
+        let candidates = adapters.filter { $0.source == source }
+        guard candidates.count > 1 else { return candidates.first }
+        if let owner = candidates.first(where: { adapter in
+            (adapter as? LocatorOwningSessionAdapter)?.ownsLocator(locator) == true
+        }) {
+            return owner
+        }
+        // No adapter positively owns this locator. Skip any adapter that
+        // EXPLICITLY disowns it (a LocatorOwningSessionAdapter whose
+        // ownsLocator returned false — e.g. a `~/.claude-<name>` provider-root
+        // clone asked about a native locator). This keeps resolution correct
+        // regardless of registration order, so a clone can never capture a
+        // native locator just because it was registered first. Non-owning
+        // adapters (native/derived that don't implement the protocol) remain
+        // eligible.
+        if let fallback = candidates.first(where: { adapter in
+            guard let owning = adapter as? LocatorOwningSessionAdapter else { return true }
+            return owning.ownsLocator(locator)
+        }) {
+            return fallback
+        }
+        return candidates.first
     }
 
     public static func recentCodexAdapters(now: Date = Date(), days: Int = 2) -> [any SessionAdapter] {
@@ -54,12 +90,15 @@ public enum SessionAdapterFactory {
         let cutoff = now.addingTimeInterval(-Double(max(days, 1)) * 24 * 60 * 60)
         let claudeCode = ClaudeCodeAdapter()
         let fileBackedAdapters: [any SessionAdapter] = [
+            GrokAdapter(),
             claudeCode,
             ClaudeCodeDerivedSourceAdapter(source: .minimax, base: claudeCode),
             ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: claudeCode),
+        ] + claudeCodeProviderAdapters() + [
             GeminiCliAdapter(),
             OpenCodeAdapter(),
             IflowAdapter(),
+            PiAdapter(),
             QwenAdapter(),
             QoderAdapter(),
             KimiAdapter(),
@@ -73,6 +112,30 @@ public enum SessionAdapterFactory {
         ]
         return recentCodexAdapters(now: now, days: days) +
             fileBackedAdapters.map { RecentlyModifiedSessionAdapter(base: $0, modifiedSince: cutoff) }
+    }
+
+    private static func claudeCodeProviderAdapters() -> [any SessionAdapter] {
+        [
+            ("kimi", .kimi),
+            ("minimax", .minimax),
+            ("mimo", .mimo),
+            ("mimosg", .mimo),
+            ("qwen", .qwen),
+            ("doubao", .doubao),
+            ("glm", .glm),
+            ("glmc", .glm),
+            ("ds", .deepseek),
+            ("dsc", .deepseek),
+            ("openai", .codex),
+        ].map { name, source in
+            ClaudeCodeAdapter(
+                source: source,
+                projectsRoot: FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(".claude-\(name)/projects")
+                    .path,
+                originator: "Claude Code"
+            )
+        }
     }
 }
 

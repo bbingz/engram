@@ -24,6 +24,7 @@ public struct AuthoritativeSessionSnapshot: Equatable, Sendable {
     public var instructionCount: Int?
     public var humanTurnCount: Int?
     public var instructionSummary: String?
+    public var originator: String?
     public var origin: String?
     public var tier: SessionTier?
     public var agentRole: String?
@@ -56,6 +57,7 @@ public struct AuthoritativeSessionSnapshot: Equatable, Sendable {
         instructionCount: Int? = nil,
         humanTurnCount: Int? = nil,
         instructionSummary: String? = nil,
+        originator: String? = nil,
         origin: String? = nil,
         tier: SessionTier? = nil,
         agentRole: String? = nil,
@@ -87,6 +89,7 @@ public struct AuthoritativeSessionSnapshot: Equatable, Sendable {
         self.instructionCount = instructionCount
         self.humanTurnCount = humanTurnCount
         self.instructionSummary = instructionSummary
+        self.originator = originator
         self.origin = origin
         self.tier = tier
         self.agentRole = agentRole

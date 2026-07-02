@@ -58,6 +58,7 @@ final class CursorAdapter: SessionAdapter, Sendable {
                 composerId: locatorParts.composerId
             )
             let visibleBubbles = bubbleResult.bubbles.compactMap(Self.visibleBubble)
+            guard !visibleBubbles.isEmpty else { return .failure(.malformedJSON) }
             let userCount = visibleBubbles.filter { $0.role == .user }.count
             let assistantCount = visibleBubbles.filter { $0.role == .assistant }.count
             let firstBubbleTimestamp = Self.firstVisibleBubbleTimestamp(bubbleResult.bubbles)
@@ -66,9 +67,7 @@ final class CursorAdapter: SessionAdapter, Sendable {
                 Phase4AdapterSupport.double(composerData["lastUpdatedAt"]) ??
                 0
             let lastUpdatedAt = Phase4AdapterSupport.double(composerData["lastUpdatedAt"]) ?? createdAt
-            let summary = JSONLAdapterSupport.string(
-                JSONLAdapterSupport.object(composerData["latestConversationSummary"])?["summary"]
-            )
+            let summary = Self.summaryText(from: composerData["latestConversationSummary"])
             // Per-session size = this composer's raw JSON payload plus the raw
             // JSON of any separately-stored bubble rows. state.vscdb is shared
             // by every Cursor session, so measuring the whole file (the old
@@ -82,7 +81,7 @@ final class CursorAdapter: SessionAdapter, Sendable {
                     source: .cursor,
                     startTime: Phase4AdapterSupport.isoFromMilliseconds(createdAt),
                     endTime: lastUpdatedAt != createdAt ? Phase4AdapterSupport.isoFromMilliseconds(lastUpdatedAt) : nil,
-                    cwd: "",
+                    cwd: Self.inferCWD(from: composerData),
                     project: nil,
                     model: nil,
                     messageCount: userCount + assistantCount,
@@ -246,6 +245,42 @@ final class CursorAdapter: SessionAdapter, Sendable {
             ) {
                 return timestamp
             }
+        }
+        return nil
+    }
+
+    private static func summaryText(from value: Any?) -> String? {
+        if let text = JSONLAdapterSupport.string(value), !text.isEmpty {
+            return text
+        }
+        guard let object = JSONLAdapterSupport.object(value) else { return nil }
+        return summaryText(from: object["summary"])
+    }
+
+    private static func inferCWD(from composerData: Phase4AdapterSupport.JSONObject) -> String {
+        guard let context = JSONLAdapterSupport.object(composerData["context"]) else {
+            return ""
+        }
+        if let folder = firstFSPath(in: context["folderSelections"]) {
+            return folder
+        }
+        if let file = firstFSPath(in: context["fileSelections"]) {
+            return URL(fileURLWithPath: file).deletingLastPathComponent().path
+        }
+        return ""
+    }
+
+    private static func firstFSPath(in value: Any?) -> String? {
+        guard let selections = JSONLAdapterSupport.array(value) else { return nil }
+        for selectionValue in selections {
+            guard let selection = JSONLAdapterSupport.object(selectionValue),
+                  let uri = JSONLAdapterSupport.object(selection["uri"]),
+                  let path = JSONLAdapterSupport.string(uri["fsPath"]),
+                  !path.isEmpty
+            else {
+                continue
+            }
+            return path
         }
         return nil
     }

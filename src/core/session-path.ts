@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+
 export function isReadableSessionPath(
   value: string | null | undefined,
 ): value is string {
@@ -11,8 +13,9 @@ export function isReadableSessionPath(
 export function pickReadableSessionPath(
   ...values: Array<string | null | undefined>
 ): string {
-  for (const value of values) {
-    if (isReadableSessionPath(value)) return value;
+  const readable = values.filter(isReadableSessionPath);
+  for (const value of readable) {
+    if (existsSync(value)) return value;
   }
-  return '';
+  return readable[0] ?? '';
 }

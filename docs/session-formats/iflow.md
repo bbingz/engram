@@ -1,6 +1,6 @@
 # iFlow — Session Format Reference
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-02 (Engram provider audit recheck).
 
 > Definitive English reference for how **iFlow CLI** persists its AI-coding
 > sessions on disk, and how Engram's `IflowAdapter` (Swift product parser + TS
@@ -43,15 +43,49 @@ Two sources of truth cross-checked; **on conflict REAL data wins, discrepancy fl
    - `tests/fixtures/iflow/{sample.jsonl, schema_drift.jsonl}` (2 standalone fixtures — `sample.jsonl` = user/assistant/user; `schema_drift.jsonl` = 2 forward-tolerance lines).
    - `tests/fixtures/adapter-parity/iflow/{success.expected.json, input/-Users-test-my-project/session-sample.jsonl}` (1 input of 3 lines + 1 expected output).
 3. **Engram adapters (codified knowledge)** —
-   - Swift product parser: `macos/Shared/EngramCore/Adapters/Sources/IflowAdapter.swift` (207 lines).
-   - TS reference parser: `src/adapters/iflow.ts` (213 lines).
+   - Swift product parser: `macos/Shared/EngramCore/Adapters/Sources/IflowAdapter.swift` (210 lines).
+   - TS reference parser: `src/adapters/iflow.ts` (233 lines).
    - Shared JSONL helper: `enum JSONLAdapterSupport` (defined inside `macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift:4`), plus `macos/Shared/EngramCore/Adapters/ParserLimits.swift` (one dir **above** `Adapters/Sources/`, not a sibling of the parsers) and `StreamingLineReader`.
    - Project-move encoder: `EngramCoreWrite/ProjectMove/Sources.swift` (`encodeIflow`, `:489-499`).
 
 **Discrepancies found & resolved (REAL wins):**
 - The project registry is at **`~/.iflow/config/projects.json`** (it exists), **not** `~/.iflow/projects.json` (that path does not exist). Both are sub-claims of the dimension reports; the `config/` path is correct.
 - **`tests/fixtures/iflow/` DOES exist** (2 files). One dimension report claimed it was absent — that claim is **wrong**; both `sample.jsonl` and `schema_drift.jsonl` are present.
-- No discrepancy that **drops data**: both live `.jsonl` files match the discovery filter, parse cleanly, and surface correctly (contrast Gemini, whose live `.jsonl` sessions are silently dropped). All notable findings are *lineage* and *behavioral edge cases* (see §15).
+- No discrepancy that **drops live data**: both live `.jsonl` files match the discovery filter, parse cleanly, and surface correctly (contrast Gemini, whose live `.jsonl` sessions are silently dropped). All notable findings are *lineage* and *behavioral edge cases* (see §15).
+- Worktree fix on 2026-07-01: `parseSessionInfo` and `streamMessages` now skip text-empty/tool-only turns in addition to user-form system injections. This changes the live corpus from 45 raw envelopes to 17 visible transcript messages (5 user + 12 assistant); the installed DB counts remain stale until reindex.
+- Worktree MCP fix on 2026-07-01: `get_session` now falls back from stale `session_local_state.local_readable_path` to the existing `sessions.file_path`. This matters for `session-041101e6-...`, whose local-readable path pointed at a nonexistent `...-Code-coding-memory/...jsonl` while the real file still exists under `...-Code-engram/...jsonl`.
+- Worktree TS parity fix on 2026-07-01: retained TS `streamMessages` now attaches non-zero assistant `message.usage.{input_tokens,output_tokens}` metadata, matching the Swift product parser. The live TS smoke now reports 1 streamed assistant message with usage.
+- Fresh 2026-07-02 live re-smoke corrected the content-block histogram to
+  **`text` ×12, `tool_use` ×31, `tool_result` ×13** across both files. The
+  `tool_result.content` envelope has two observed shapes: 12/13 use
+  `[callId, responseParts, resultDisplay]`; the small session has 1/13 compact
+  `{functionResponse}` without the outer wrapper.
+
+## Current Local Audit
+
+2026-07-02 native `~/.iflow/projects` smoke listed and parsed 2/2 JSONL
+transcripts. Raw scan found 45 records, 0 malformed lines, 18 `user` records,
+and 27 `assistant` records. Of those, the current worktree parser treats 17 as
+visible transcript messages (5 user + 12 assistant) and skips 28 text-empty
+tool-only envelopes (13 user/tool-result + 15 assistant/tool-use). Worktree
+stream count now matches parser `messageCount`: 17 vs 17. Retained TS now
+attaches usage metadata to 1 streamed assistant message (small session line 4,
+16472 input / 224 output tokens).
+The current content-block histogram is `text` ×12, `tool_use` ×31, and
+`tool_result` ×13; 12 tool results use the full Gemini wrapper and 1 uses a
+compact direct `functionResponse` wrapper.
+
+Current `~/.engram/index.sqlite` has 2 `iflow` rows, 2 native-path rows, and 2
+`file_index_state` rows with `parse_status='ok'`; adapter locator diff is 0
+missing and 0 stale. The DB metadata is still stale from old parser/indexer
+results: both rows retain decoded `project` values (`coding-memory` and
+`WebSite_GLM`) even though the current adapter returns `project: nil`, and both
+message-count snapshots still reflect the old parser (45 total, 18 user, 27
+assistant) until a reindex. Installed
+`/Applications/Engram.app` build `20260701074505` still uses the stale
+`local_readable_path` for the small session and returns 0 messages there; the
+repo-local Debug `EngramMCP` built from this worktree falls back to the real
+`sessions.file_path` and returns 3 messages.
 
 ---
 
@@ -84,13 +118,13 @@ Two sources of truth cross-checked; **on conflict REAL data wins, discrepancy fl
   layer 3        ├─ content[] { type:"text", text }               ← joined: "\n\n" (Swift) / "\n" (TS)
   layer 3        ├─ content[] { type:"tool_use", id, name, input } ← IGNORED
   layer 3        ├─ content[] { type:"tool_result", tool_use_id, content } ← IGNORED (user records)
-  layer 3        └─ usage { input_tokens, output_tokens }         ← Swift only; TS drops it
+  layer 3        └─ usage { input_tokens, output_tokens }         ← consumed on assistant messages; omitted if both 0
   layer 4              ├─ toolUseResult { status, timestamp, toolName }   (top-level on user record; IGNORED)
   layer 4              └─ tool_result.content { callId, responseParts, resultDisplay }   (Gemini lineage; IGNORED)
   layer 5                    └─ responseParts.functionResponse { id, name, response{output} }   (IGNORED)
 ```
 
-**TL;DR for Engram engineers.** Engram reads only `user`/`assistant` records and keeps `sessionId` (with `session-` prefix → `id`), `cwd` (in-file, first non-empty), `timestamp` (first=start, last=end), per-message `model` (first seen), flattened **`text`-block** content, and (Swift only) per-message `usage`. It sets `project: nil` (never reads `config/projects.json`; `decodeCwd` is dead code), and **drops** `uuid`/`parentUuid`/`isSidechain`/`userType`/`gitBranch`/`version`/`toolUseResult`/`stop_reason`/`stop_sequence`/inner `message.id`/`message.type`; all `tool_use` and `tool_result` blocks; and (TS path) **all** token usage.
+**TL;DR for Engram engineers.** Engram reads only `user`/`assistant` records and keeps `sessionId` (with `session-` prefix → `id`), `cwd` (in-file, first non-empty), `timestamp` (first=start, last=end), per-message `model` (first seen), flattened **`text`-block** content, and assistant per-message `usage` when non-zero. User-form system injections (`# AGENTS.md instructions for`, `<INSTRUCTIONS>`, or `<local-command-caveat>`) are counted in `systemMessageCount` and excluded from streamed messages. It sets `project: nil` (never reads `config/projects.json`; never decodes the directory name), and **drops** `uuid`/`parentUuid`/`isSidechain`/`userType`/`gitBranch`/`version`/`toolUseResult`/`stop_reason`/`stop_sequence`/inner `message.id`/`message.type`; all `tool_use` and `tool_result` blocks; and zero-valued token usage.
 
 ---
 
@@ -112,7 +146,7 @@ Two sources of truth cross-checked; **on conflict REAL data wins, discrepancy fl
 
 | Token | Grammar | Live examples | Notes |
 |---|---|---|---|
-| `<encodedProjectDir>` | absolute cwd with `/` → `-` (leading `/` becomes leading `-`) | `-Users-bing-Code-WebSite_GLM`, `-Users-bing-Code-engram` | Claude-Code-style path encoding. Engram does **not** decode it (`project: nil`); it reads `cwd` from inside the file instead. The project-move encoder (`Sources.swift encodeIflow :489-499`) is **lossy** — it strips per-segment leading/trailing dashes, so `-Code-` → `Code`. The adapter's own `decodeCwd` uses a *different* (`--`→sentinel) scheme and is **dead code**; the two are not inverses (see §15 #2). |
+| `<encodedProjectDir>` | absolute cwd with `/` → `-` (leading `/` becomes leading `-`) | `-Users-bing-Code-WebSite_GLM`, `-Users-bing-Code-engram` | Claude-Code-style path encoding. Engram does **not** decode it (`project: nil`); it reads `cwd` from inside the file instead. The project-move encoder (`Sources.swift encodeIflow :489-499`) is **lossy** — it strips per-segment leading/trailing dashes, so `-Code-` → `Code`. Current adapters have no reverse decoder, which avoids pretending this lossy name can be round-tripped (see §15 #2). |
 | session file | `session-<UUID>.jsonl` | `session-b5785972-6711-443a-9bb4-e361146f8e79.jsonl`, `session-041101e6-2a7f-4dfd-90b0-57888a353f6a.jsonl` | `<UUID>` = standard 36-char lowercase UUID. **No** timestamp prefix, **no** 8-hex suffix (unlike Gemini's `session-<ts>-<8hex>`). **Discovery filter:** name `hasPrefix("session-")` AND `pathExtension == "jsonl"` (Swift:28 / TS:40). |
 | in-file `sessionId` | `session-<UUID>` — **includes the `session-` prefix** | `"session-041101e6-2a7f-4dfd-90b0-57888a353f6a"` | **CONFIRMED across both live files:** `sessionId` == filename stem (`.jsonl` removed) exactly. Engram's stored `id` is therefore `session-<UUID>`, **NOT** a bare UUID. Differs from Gemini/Qwen, where the filename suffix is only `sessionId[0:8]`. |
 
@@ -155,27 +189,27 @@ Two sources of truth cross-checked; **on conflict REAL data wins, discrepancy fl
 | **Discovery** | `detect()` true iff `~/.iflow/projects` is a directory (Swift:18-20 `isDirectory`; TS:23-30 `stat`). | adapter |
 | **Enumeration** | For each **direct child dir** of `projects/`, emit files whose name **starts with `session-` AND extension is `.jsonl`** (Swift:22-34 `hasPrefix("session-") && pathExtension == "jsonl"`; TS:32-51 `startsWith('session-') && endsWith('.jsonl')`). **No `chats/` traversal** (unlike Qwen). Swift returns the list **sorted** (`locators.sorted()` :33); TS yields lazily per-dir in `readdir` order and swallows unreadable dirs (`catch {}` :44-46). | adapter |
 | **Size cap (Swift)** | File > **100 MB** → `.fileTooLarge` (`ParserLimits.maxFileBytes = 100*1024*1024`, `Adapters/ParserLimits.swift:17`, via `validateFileSize :47-49`); per-line > **8 MB** → handled by `StreamingLineReader(maxLineBytes:8*1024*1024)`; > **10,000** parsed objects → `.messageLimitExceeded` (`CodexAdapter.swift:71,86`). | `Adapters/ParserLimits.swift:17-19`; `CodexAdapter.swift` |
-| **Size cap (TS)** | **NONE.** Unlike `gemini-cli.ts` (10 MB `MAX_SESSION_JSON_BYTES`), `iflow.ts` has no size/line/count cap — whole file streamed line by line. Swift-vs-TS divergence. | `iflow.ts:170-184` |
+| **Size cap (TS)** | **NONE.** Unlike `gemini-cli.ts` (10 MB `MAX_SESSION_JSON_BYTES`), `iflow.ts` has no size/line/count cap — whole file streamed line by line. Swift-vs-TS divergence. | `iflow.ts:168-181` |
 | **Atomicity guard (Swift only)** | `JSONLAdapterSupport.readObjects` re-checks file identity (size/mtime/resource-id) before+after read; mismatch → `.fileModifiedDuringParse` (an actively-appended live session is rejected, retried later). More likely for iFlow than Gemini since iFlow truly appends per turn. | `CodexAdapter.swift:78-81` |
-| **FD-leak guard (TS only)** | `readLines` uses `try/finally` to close the readline interface + stream even on early break (limit/offset), preventing `EMFILE`. | `iflow.ts:170-184` |
+| **FD-leak guard (TS only)** | `readLines` uses `try/finally` to close the readline interface + stream even on early break (limit/offset), preventing `EMFILE`. | `iflow.ts:168-181` |
 
 ---
 
 ## 4. Record / line taxonomy (layer 1)
 
-One file = N lines; each line is one JSON object. The discriminator is the top-level **`type`** field. **Observed live + fixtures:** only `user` and `assistant`. Both adapters accept **only** these two; any other `type` is `continue`-skipped (Swift:52-54 / TS:71). `guard !sessionId.isEmpty` else `.malformedJSON` (Swift:89) / `return null` (TS:98).
+One file = N lines; each line is one JSON object. The discriminator is the top-level **`type`** field. **Observed live + fixtures:** only `user` and `assistant`. Both adapters accept **only** these two; any other `type` is `continue`-skipped (Swift:52-54 / TS:71). `guard !sessionId.isEmpty` else `.malformedJSON` (Swift:93) / `return null` (TS:100).
 
 | `type` | live count | `message.role` | content shape(s) | carries `toolUseResult`? | Engram role | Counted? |
 |---|---|---|---|---|---|---|
-| `user` | 18 | `"user"` | `string` (real prompt) **or** `array[{tool_result}]` (tool-output turn) | only when content is `tool_result` | `role: user` | yes (user count), **unless** classified as system-injection |
-| `assistant` | 27 | `"assistant"` | `array[ {text} \| {tool_use} ]` | never | `role: assistant` | yes (assistant count) |
+| `user` | 18 | `"user"` | `string` (real prompt) **or** `array[{tool_result}]` (tool-output turn) | only when content is `tool_result` | `role: user` | yes only when flattened text is non-empty and not system-injection |
+| `assistant` | 27 | `"assistant"` | `array[ {text} \| {tool_use} ]` | never | `role: assistant` | yes only when flattened text is non-empty |
 | _(any other)_ | 0 | — | — | — | skipped | no |
 
 **At the top-level `type` discriminator, there is no standalone `system`, `summary`, `info`, `tool`, or `meta` line type** (unlike Gemini's `info` or Qwen's `system`/`ui_telemetry`). "System" is a *derived* sub-classification of a `user` line, not a line type (see §5 and §7). iFlow has no `ui_telemetry` token row — usage is inline on the assistant message.
 
 > **Confirmed (official): meta/compaction records DO exist on disk — disguised as `type:"user"`.** The official bundle's message creators (`createUserMessage`, `createAssistantMessage`, `createToolResultMessage`, `createCompressionMessage`, `createMetaMessage`) write tool-result, compaction (context-summary), AND meta records all with **top-level `type:"user"`** inside `message:{role:"user",…}` — compaction carries an internal compression marker, meta carries `isMeta:true`. So the discriminator stays `user`/`assistant` only (the statement above holds at that level), but compaction and meta records are persisted disguised as `user` records and are silently counted as user messages by Engram, which does not special-case the `isMeta`/compression flag. There is no `type:"system"` / `type:"summary"` / `type:"info"` anywhere in the writer ([source](https://www.npmjs.com/package/@iflow-ai/iflow-cli)).
 
-> **`messageCount` semantics gotcha (REAL).** A `user` record is counted as a user message **unless** its flattened text matches `isSystemInjection` (Swift:79-85 / TS:86-93). It does **NOT** skip empty-content records. In the live 238 KB session, **12 of 16 user records are `tool_result`-only** (array of `{type:"tool_result"}`, no `text` block) → `extractContent` returns `""`, `isSystemInjection("")` is false → each is **counted as a user message** with empty text. So live `userMessageCount` = 16 (not 4 "real" prompts), and `messageCount` = 16 + 25 = 41 = raw line count. iFlow's `messageCount` therefore inflates with tool turns — contrast Gemini Swift, which pre-filters empty content. See §15 #4.
+> **`messageCount` semantics gotcha (FIXED in worktree; live DB stale).** A `user` or `assistant` record now counts only when `extractContent(message.content).trim()` is non-empty; user-form system injections are counted in `systemMessageCount` and skipped from streams. In the live 238 KB session, **12 of 16 user records are `tool_result`-only** and **15 of 25 assistant records are `tool_use`-only**, so the current parser reports 14 visible transcript messages (4 user + 10 assistant), not 41 raw envelopes. The installed DB still stores the old 41/16/25 counts until reindex. See §15 #4.
 
 ---
 
@@ -204,7 +238,7 @@ Field presence **differs by `type`**. **Verified key-sets (live):**
 
 ### 5a. `toolUseResult` envelope (layer-4 nested object)
 
-Present only on `user` lines whose content block is a `tool_result`. **Live key set (all 12 occurrences identical):** `[status, timestamp, toolName]`.
+Present only on `user` lines whose content block is a `tool_result`. **Live key set (all 13 occurrences identical):** `[status, timestamp, toolName]`.
 
 | Field | Type | Meaning | Live value |
 |---|---|---|---|
@@ -238,7 +272,7 @@ Live: a plain prompt user turn has `content` as a **string**; a tool-result-carr
 | `role` | string `"assistant"` | role | required | ❌ | `"assistant"` |
 | `content` | array of content blocks | Assistant output (text + tool_use) | required | ✅ (only `text` flattened) | `[{type:"text",text:"…"},{type:"tool_use",…}]` |
 | `model` | string | Model id that produced the turn | live: always | ✅ → session `model` (first seen) | `"glm-5"` (all 25) |
-| `usage` | object `{input_tokens, output_tokens}` | Per-turn token usage (Anthropic naming) | live: always (may be all-zero) | ✅ **Swift only** | `{input_tokens:16472, output_tokens:224}` |
+| `usage` | object `{input_tokens, output_tokens}` | Per-turn token usage (Anthropic naming) | live: always (may be all-zero) | ✅ Swift + TS assistant messages | `{input_tokens:16472, output_tokens:224}` |
 | `id` | string | Anthropic message id | live: always | ❌ | `"r1"` (fixture) / `msg_…` |
 | `type` | string `"message"` | inner message-kind | live: always | ❌ | `"message"` |
 | `stop_reason` | string \| null | Anthropic stop reason; **always `null`** live | optional | ❌ | `null` |
@@ -246,15 +280,15 @@ Live: a plain prompt user turn has `content` as a **string**; a tool-result-carr
 
 ### 6.3 Content blocks (layer 3 — `message.content[]`)
 
-Block discriminator = inner `type`. **Live histogram across both files:** `text` ×10, `tool_use` ×30, `tool_result` ×12 (large session) + the small session's blocks. **No `thinking`/`reasoning`/`redacted_thinking` block exists** — verified: the content-type histogram contains only the three below; iFlow records no chain-of-thought to disk.
+Block discriminator = inner `type`. **Live histogram across both files:** `text` ×12, `tool_use` ×31, `tool_result` ×13. **No `thinking`/`reasoning`/`redacted_thinking` block exists** — verified: the content-type histogram contains only the three below; iFlow records no chain-of-thought to disk.
 
 | Block `type` | Keys | Consumed? | Notes |
 |---|---|---|---|
-| `text` | `{type:"text", text}` | ✅ | non-empty `.text` joined: **`"\n\n"` (Swift, `IflowAdapter.swift:185`)** vs **`"\n"` (TS, `iflow.ts:204`)** — separator divergence |
-| `tool_use` | `{type:"tool_use", id, name, input}` | ❌ | assistant's request to run a tool; dropped (`toolCalls:nil` Swift:161) |
+| `text` | `{type:"text", text}` | ✅ | non-empty `.text` joined with **`"\n"`** in Swift and TS |
+| `tool_use` | `{type:"tool_use", id, name, input}` | ❌ | assistant's request to run a tool; dropped (`toolCalls:nil` Swift:165) |
 | `tool_result` | `{type:"tool_result", tool_use_id, content}` | ❌ | inside a `user` record; dropped (only `text` kept) |
 
-`extractContent` (`IflowAdapter.swift:172-186`, `iflow.ts:194-207`): bare string → used verbatim; array → join non-empty `.text` from `type=="text"` blocks; else → `""`. **`tool_result` blocks contribute no text** → flattened to `""` (see §4 count gotcha).
+`extractContent` (`IflowAdapter.swift:176-190`, `iflow.ts:192-205`): bare string → used verbatim; array → join non-empty `.text` from `type=="text"` blocks; else → `""`. **`tool_result` blocks contribute no text** → flattened to `""` (see §4 count gotcha).
 
 #### `text` block
 ```json
@@ -266,7 +300,7 @@ Block discriminator = inner `type`. **Live histogram across both files:** `text`
 { "type": "tool_use", "id": "call_-7848967933605705235", "name": "list_directory", "input": { "path": "<abs path>" } }
 ```
 - `id` — call id; **links to the matching `tool_result.tool_use_id`**.
-- `name` — live set: `read_file`(16), `task`(6), `list_directory`(4), `replace`(2), `write_file`(2).
+- `name` — live set: `read_file`(17), `task`(6), `list_directory`(4), `replace`(2), `write_file`(2).
 - `input` — args; shape varies by tool. **`task` = subagent dispatch** — its `input` keys are `description, prompt, subagent_type` (6 live), iFlow's native multi-agent mechanism. Engram does **not** parse it (see §7, §10).
 
 #### Layer 2/3 examples (anonymized; keys verbatim)
@@ -289,7 +323,7 @@ Block discriminator = inner `type`. **Live histogram across both files:** `text`
 
 ### 6.4 System-message detection (derived, not a line type)
 
-`isSystemInjection` (Swift:166-170 / TS:154-160) re-classifies a `user` line as **system** (→ `systemMessageCount++`, excluded from user count and from the summary) when its flattened text:
+`isSystemInjection` (Swift:170-174 / TS:160-165) re-classifies a `user` line as **system** (→ `systemMessageCount++`, excluded from user count and from the summary) when its flattened text:
 - `hasPrefix("# AGENTS.md instructions for ")`, OR
 - `contains("<INSTRUCTIONS>")`, OR
 - `hasPrefix("<local-command-caveat>")`.
@@ -307,7 +341,7 @@ Tool calls live as `tool_use` content blocks inside an **assistant** record; the
 { "type": "tool_result", "tool_use_id": "call_-7848967933605705235", "content": { /* nested object — layer 4 */ } }
 ```
 - `tool_use_id` — back-reference to the producing `tool_use.id`.
-- `content` — an **object** (not string/array), a nested Gemini-style result envelope. **Live key set (all 12): `[callId, responseParts, resultDisplay]`.**
+- `content` — an **object** (not string/array), with two observed Gemini-lineage result envelope shapes: 12/13 use the full wrapper `[callId, responseParts, resultDisplay]`; 1/13 uses compact direct `{functionResponse}`.
 - `is_error` — **absent in all live data**; would flag a failed tool call.
 
 ### 7.2 `tool_result.content` — nested result envelope (layer 4, Gemini-CLI lineage)
@@ -316,25 +350,29 @@ Tool calls live as `tool_use` content blocks inside an **assistant** record; the
   "responseParts": { "functionResponse": { "id":"call_…","name":"list_directory","response":{ "output":"<result>" } } },
   "resultDisplay": "<human-readable result>" }
 ```
-- `callId` — == `tool_use_id` == `tool_use.id` (triple-confirmed equal across all 12 results).
-- `responseParts` — always `{ functionResponse: {…} }` — the **Gemini `functionResponse` shape** (layer 5).
-- `resultDisplay` — **string OR object**. Live: **10/12 string** (e.g. `"Listed 7 item(s)."`); **2/12 object** with keys `[fileDiff, fileName, newContent, originalContent]` (for `write_file`/`replace` edit diffs).
+```json
+{ "functionResponse": { "id":"call_…","name":"read_file","response":{ "output":"<result>" } } }
+```
+- `callId` — present in the full wrapper only; there, `callId` == `tool_use_id` == `tool_use.id` and also equals `responseParts.functionResponse.id`. The compact wrapper omits `callId`, but `functionResponse.id` still equals `tool_use_id`; 0/13 id mismatches observed.
+- `responseParts` — present in the full wrapper only (12/13), always `{ functionResponse: {…} }`; the compact wrapper stores `functionResponse` directly (1/13).
+- `resultDisplay` — present in the full wrapper only (12/13): **10/12 string** (e.g. `"Listed 7 item(s)."`); **2/12 object** with keys `[fileDiff, fileName, newContent, originalContent]` (for `write_file`/`replace` edit diffs). It is absent from the compact wrapper.
 
 ### 7.3 `functionResponse` (layer 5, deepest)
 ```json
 { "id":"call_…","name":"read_file","response":{ "output":"<file contents>" } }
 ```
-Keys: `id, name, response`. `response` = `{output: <string>}` (all 12 live `output` are strings).
+Keys: `id, name, response`. `response` = `{output: <string>}` (all 13 live `output` are strings).
 
-### Tool-call ↔ result linkage chain (5 layers)
+### Tool-call ↔ result linkage chain
 ```
 assistant.message.content[].tool_use.id
    ═══ equals ═══  user.message.content[].tool_result.tool_use_id
-   ═══ equals ═══  tool_result.content.callId
-   ═══ equals ═══  tool_result.content.responseParts.functionResponse.id
+   ═══ equals ═══  tool_result.content.callId                                 (full wrapper)
+   ═══ equals ═══  tool_result.content.responseParts.functionResponse.id       (full wrapper)
+   ═══ equals ═══  tool_result.content.functionResponse.id                     (compact wrapper)
 ```
 
-**Engram imports NONE of this.** Swift sets `toolCalls:nil` (`IflowAdapter.swift:161`); TS `streamMessages` never emits tool blocks (`iflow.ts:144-150` yields only role/content/timestamp). `toolMessageCount: 0` (Swift:103 / TS:110). Tool-result text is dropped by `extractContent`. Parity `success.expected.json` encodes zero tool import via `toolCalls: []` and `fileToolCounts: {}` (there is **no** `toolCallCount` key in the expected file — its 16 top-level keys do not include one). Tool calls are fully on disk but invisible in Engram.
+**Engram imports NONE of this.** Swift sets `toolCalls:nil` (`IflowAdapter.swift:165`); TS `streamMessages` never emits tool blocks (`iflow.ts:151-155` yields only role/content/timestamp). `toolMessageCount: 0` (Swift:107 / TS:112). Tool-result text is dropped by `extractContent`. Parity `success.expected.json` encodes zero tool import via `toolCalls: []` and `fileToolCounts: {}` (there is **no** `toolCallCount` key in the expected file — its 16 top-level keys do not include one). Tool calls are fully on disk but invisible in Engram.
 
 ---
 
@@ -359,7 +397,7 @@ Per-turn usage lives in `message.usage` on **assistant** records (layer 3). **An
 | `cache_read_input_tokens` | int | (Anthropic-style) — **absent** in iFlow | — |
 | `cache_creation_input_tokens` | int | (Anthropic-style) — **absent** in iFlow | — |
 
-**Derivation** (Swift `usage()` `IflowAdapter.swift:188-198`):
+**Derivation** (Swift `usage()` `IflowAdapter.swift:192-201`):
 - `inputTokens = input_tokens`, `outputTokens = output_tokens` (no cache fields read — note iFlow does **not** use the shared `JSONLAdapterSupport.usage` that also parses cache tokens, so even if iFlow emitted cache fields they'd be ignored).
 - Returns `nil` if **both** are 0 (`:194-196`). Usage attached **only to assistant** turns (`:162`); user turns carry `usage:nil`.
 
@@ -375,13 +413,13 @@ No price/cost stored; Engram computes cost downstream.
 
 **Within-file linkage exists but is ignored.** Each record has `parentUuid`/`uuid` forming an intra-session DAG, and `isSidechain:bool` marks sub-agent sidechains — both **Anthropic-style**. Neither adapter reads them. iFlow's native multi-agent mechanism is the `task` tool (`tool_use` with `input.{description,prompt,subagent_type}`, 6 live occurrences) — but it is dropped along with all other tool data (`toolCalls:nil`, `toolMessageCount:0`).
 
-**Cross-session parent linking: none built-in, NO sidecar.** Unlike Gemini (Layer 1c `<sessionId>.engram.json` sidecar) and Codex (`originator`), the iFlow adapter sets `parentSessionId:nil`, `suggestedParentId:nil`, `originator:nil`, `agentRole:nil`, `origin:nil` (`IflowAdapter.swift:109-116`). There is **no `readSidecar`** for iFlow and **0** `*.engram.json` files live. iFlow sessions rely entirely on Engram's **Layer 2 heuristic** (temporal/cwd scoring) for any parent attribution — there is no deterministic link path for iFlow.
+**Cross-session parent linking: none built-in, NO sidecar.** Unlike Gemini (Layer 1c `<sessionId>.engram.json` sidecar) and Codex (`originator`), the iFlow adapter sets `parentSessionId:nil`, `suggestedParentId:nil`, `originator:nil`, `agentRole:nil`, `origin:nil` (`IflowAdapter.swift:113-120`). There is **no `readSidecar`** for iFlow and **0** `*.engram.json` files live. iFlow sessions rely entirely on Engram's **Layer 2 heuristic** (temporal/cwd scoring) for any parent attribution — there is no deterministic link path for iFlow.
 
 ---
 
 ## 11. Summary / compaction
 
-**N/A on disk** — no summary/compaction record type observed (no `system`/`summary`/`info` line type in 2 live sessions, neither compacted). Engram synthesizes a session **summary** itself: the first non-system `user` message's flattened text, capped at 200 chars (`summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200))` `IflowAdapter.swift:105`; `firstUserText.slice(0,200) || undefined` `iflow.ts:112`). Derived, not stored.
+**N/A on disk** — no summary/compaction record type observed (no `system`/`summary`/`info` line type in 2 live sessions, neither compacted). Engram synthesizes a session **summary** itself: the first non-system `user` message's flattened text, capped at 200 chars (`summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200))` `IflowAdapter.swift:109`; `firstUserText.slice(0,200) || undefined` `iflow.ts:114`). Derived, not stored.
 
 Edge case: if the first user turn is a tool-result-only message (empty text), `firstUserText` stays `""` until a later text-bearing user turn (see §15 #4).
 
@@ -414,31 +452,31 @@ Present live but **NOT consumed**:
 
 | Engram field | Source field/record | Swift file:line | TS file:line | Notes |
 |---|---|---|---|---|
-| `id` | first `sessionId` (verbatim, incl. `session-` prefix) | `:58-60, 93` | `:73, 101` | required (else `.malformedJSON` :89 / `null` :98) |
-| `source` | constant | `:4, 94` | `:16, 102` | `.iflow` / `'iflow'` |
-| `startTime` | first record `timestamp` | `:64-66, 95` | `:75, 103` | required |
-| `endTime` | last record `timestamp` (nil if == start) | `:67-69, 96` | `:76, 104` | optional |
-| `cwd` | first non-empty in-file `cwd` field | `:61-63, 97` | `:74, 105` | from **user records only** live; NOT decoded from dir name |
-| `project` | **`nil`** (never derived) | `:98` | (omitted) | encoded dir name NOT decoded; `decodeCwd` is dead code |
-| `model` | first `message.model` | `:71-74, 99` | `:79-81, 106` | **surfaced** (live `glm-5`) — unlike Gemini (always nil) |
-| `messageCount` | `userCount + assistantCount` | `:100` | `:107` | **includes tool-result user turns**; excludes system-injection; tool blocks not counted |
-| `userMessageCount` | `type=="user"` & not system-injection | `:82-84, 101` | `:88-92, 108` | empty/tool-result content still counted |
-| `assistantMessageCount` | `type=="assistant"` | `:76-77, 102` | `:83-84, 109` | |
-| `toolMessageCount` | constant `0` | `:103` | `:110` | tool blocks never counted as messages |
-| `systemMessageCount` | system-injection user records | `:80-81, 104` | `:87-89, 111` | AGENTS.md / `<INSTRUCTIONS>` / `<local-command-caveat>` |
-| `summary` / title | first non-system user text, `prefix(200)` | `:84, 105` | `:91-93, 112` | empty → nil |
-| `filePath` | locator | `:106` | `:113` | |
-| `sizeBytes` | file size | `:107` | `:114` | Swift `JSONLAdapterSupport.fileSize`; TS `stat.size` |
-| `agentRole` / `originator` / `origin` | `nil` | `:109-111` | (omitted) | no dispatch detection for iFlow |
-| `parentSessionId` / `suggestedParentId` | `nil` | `:115-116` | (omitted) | no sidecar; Layer 2 heuristic only |
-| `summaryMessageCount` / `tier` / `qualityScore` / `indexedAt` | `nil` | `:108, 112-114` | (omitted) | set downstream, not by adapter |
-| **per-msg** `role` | `type=="user"`→`.user`, else `.assistant` | `:158` | `:145-149` | |
-| **per-msg** `content` | `extractContent(message.content)` (join `text` blocks; bare string verbatim) | `:159, 172-186` | `:147, 194-207` | tool_result/tool_use yield no text; separator **`\n\n` Swift vs `\n` TS** |
-| **per-msg** `timestamp` | record `timestamp` | `:160` | `:148` | |
-| **per-msg** `usage` | assistant `message.usage` → `TokenUsage{input_tokens,output_tokens}` | `:162, 188-198` | **none** | **Swift only**; nil if both 0 |
-| **per-msg** `toolCalls` | `nil` (dropped) | `:161` | (none) | tool data not surfaced |
+| `id` | first `sessionId` (verbatim, incl. `session-` prefix) | `:58-60, 97` | `:73, 103` | required (else `.malformedJSON` :93 / `null` :100) |
+| `source` | constant | `:4, 98` | `:16, 104` | `.iflow` / `'iflow'` |
+| `startTime` | first record `timestamp` | `:64-66, 99` | `:75, 105` | required |
+| `endTime` | last record `timestamp` (nil if == start) | `:67-69, 100` | `:76, 106` | optional |
+| `cwd` | first non-empty in-file `cwd` field | `:61-63, 101` | `:74, 107` | from **user records only** live; NOT decoded from dir name |
+| `project` | **`nil`** (never derived) | `:102` | (omitted) | encoded dir name is NOT decoded |
+| `model` | first `message.model` | `:71-74, 103` | `:79-81, 108` | **surfaced** (live `glm-5`) — unlike Gemini (always nil) |
+| `messageCount` | `userCount + assistantCount` | `:104` | `:109` | counts only non-empty flattened text turns; excludes system-injection and tool-only envelopes |
+| `userMessageCount` | `type=="user"` & non-empty text & not system-injection | `:87-88, 105` | `:92-95, 110` | tool-result-only content is skipped |
+| `assistantMessageCount` | `type=="assistant"` & non-empty text | `:81-82, 106` | `:86-87, 111` | tool-use-only content is skipped |
+| `toolMessageCount` | constant `0` | `:107` | `:112` | tool blocks never counted as messages |
+| `systemMessageCount` | system-injection user records | `:84-85, 108` | `:89-90, 113` | AGENTS.md / `<INSTRUCTIONS>` / `<local-command-caveat>` |
+| `summary` / title | first non-system user text, `prefix(200)` | `:88-89, 109` | `:93-95, 114` | empty → nil |
+| `filePath` | locator | `:110` | `:115` | |
+| `sizeBytes` | file size | `:111` | `:116` | Swift `JSONLAdapterSupport.fileSize`; TS `stat.size` |
+| `agentRole` / `originator` / `origin` | `nil` | `:113-115` | (omitted) | no dispatch detection for iFlow |
+| `parentSessionId` / `suggestedParentId` | `nil` | `:119-120` | (omitted) | no sidecar; Layer 2 heuristic only |
+| `summaryMessageCount` / `tier` / `qualityScore` / `indexedAt` | `nil` | `:112, 116-118` | (omitted) | set downstream, not by adapter |
+| **per-msg** `role` | `type=="user"`→`.user`, else `.assistant` | `:162` | `:152` | |
+| **per-msg** `content` | `extractContent(message.content)` (join `text` blocks; bare string verbatim) | `:163, 176-190` | `:153, 192-205` | tool_result/tool_use yield no text; Swift and TS both join kept text blocks with `\n` |
+| **per-msg** `timestamp` | record `timestamp` | `:164` | `:154` | |
+| **per-msg** `usage` | assistant `message.usage` → `TokenUsage{input_tokens,output_tokens}` | `:166, 192-201` | `:156-159, 197-207` | Swift nil / TS undefined if both 0 |
+| **per-msg** `toolCalls` | `nil` (dropped) | `:165` | (none) | tool data not surfaced |
 
-**What Engram does NOT consume:** `config/projects.json` (entire registry), `tmp/.../logs.json`, the encoded dir name (`project:nil`, `decodeCwd` dead code); per-record `uuid`/`parentUuid`/`isSidechain`/`userType`/`gitBranch`/`version`/`toolUseResult`; assistant `message.id`/`message.type`/`stop_reason`/`stop_sequence`; all `tool_use` & `tool_result` blocks (and the 5-layer linkage chain); and (TS path) all token usage. There is no on-disk envelope `messageCount`/`model` to consume — `messageCount` is recomputed and `model` is read from inside `message`.
+**What Engram does NOT consume:** `config/projects.json` (entire registry), `tmp/.../logs.json`, the encoded dir name (`project:nil`, no reverse decoding); per-record `uuid`/`parentUuid`/`isSidechain`/`userType`/`gitBranch`/`version`/`toolUseResult`; assistant `message.id`/`message.type`/`stop_reason`/`stop_sequence`; all `tool_use` & `tool_result` blocks (and their linkage chain); and zero-valued token usage. There is no on-disk envelope `messageCount`/`model` to consume — `messageCount` is recomputed and `model` is read from inside `message`.
 
 ---
 
@@ -466,17 +504,17 @@ iFlow sits between the Anthropic family and the Gemini/Qwen family:
 | Codebase lineage | **Gemini CLI fork** (`Copyright … Google LLC` SPDX headers, `google.gemini-cli` reference in `bundle/iflow.js`) | Gemini CLI (origin) | Gemini CLI fork | **Gemini-CLI fork** |
 | Models run | **multi-model**: default `glm-4.7` + `Qwen3-Coder-Plus`; also Kimi K2, DeepSeek v3.2, GLM-4.6, any OpenAI-compatible endpoint (live sample happened to use `glm-5`) | Gemini | Qwen | — |
 
-**Verdict:** iFlow is, at the **codebase** level, a **Gemini CLI fork** — confirmed by the `Copyright 2025/2026 Google LLC` SPDX headers and the `google.gemini-cli` reference in the official `bundle/iflow.js` ([source](https://www.npmjs.com/package/@iflow-ai/iflow-cli)). It is NOT Claude-Code-derived. On top of that Gemini-CLI codebase it layers, by design, an **Anthropic / Claude-Code transcript envelope** (content blocks, usage naming, `parentUuid`/`isSidechain` DAG; the injection markers are Engram's heuristic, not iFlow's — see §6.4), wears a **Qwen-style directory skin** (`~/.tool/projects/<encoded-dir>/`), and keeps **Gemini-CLI tool-result internals** (`callId`/`responseParts`/`functionResponse`). It is NOT a Gemini fork at the *transcript-schema* level even though it is a Gemini fork at the *codebase* level. iFlow is **multi-model** (default `glm-4.7` + `Qwen3-Coder-Plus`, plus Kimi K2 / DeepSeek v3.2 / GLM-4.6 / any OpenAI-compatible endpoint), not GLM-only; the live sample merely ran `glm-5`. The `IflowAdapter` code structure is copied from the Qwen/Gemini sibling template (same `JSONLAdapterSupport`, same `parseSessionInfo` skeleton), which is why the dead `decodeCwd` helper survives. Engram handles iFlow correctly because it treats it as its own adapter with Anthropic-shaped `content`/`usage` extraction — the lineage trap (parsing it as Gemini `{text}`/`tokens`) was avoided. **Note:** iFlow CLI is officially shutting down on 2026-04-17 (Beijing time); users are told to migrate to Qoder ([source](https://platform.iflow.cn/en/cli/changelog)).
+**Verdict:** iFlow is, at the **codebase** level, a **Gemini CLI fork** — confirmed by the `Copyright 2025/2026 Google LLC` SPDX headers and the `google.gemini-cli` reference in the official `bundle/iflow.js` ([source](https://www.npmjs.com/package/@iflow-ai/iflow-cli)). It is NOT Claude-Code-derived. On top of that Gemini-CLI codebase it layers, by design, an **Anthropic / Claude-Code transcript envelope** (content blocks, usage naming, `parentUuid`/`isSidechain` DAG; the injection markers are Engram's heuristic, not iFlow's — see §6.4), wears a **Qwen-style directory skin** (`~/.tool/projects/<encoded-dir>/`), and keeps **Gemini-CLI tool-result internals** (`callId`/`responseParts`/`functionResponse`). It is NOT a Gemini fork at the *transcript-schema* level even though it is a Gemini fork at the *codebase* level. iFlow is **multi-model** (default `glm-4.7` + `Qwen3-Coder-Plus`, plus Kimi K2 / DeepSeek v3.2 / GLM-4.6 / any OpenAI-compatible endpoint), not GLM-only; the live sample merely ran `glm-5`. The `IflowAdapter` code structure is copied from the Qwen/Gemini sibling template (same `JSONLAdapterSupport`, same `parseSessionInfo` skeleton), but unlike project-move encoding it intentionally does not decode the lossy directory name. Engram handles iFlow correctly because it treats it as its own adapter with Anthropic-shaped `content`/`usage` extraction — the lineage trap (parsing it as Gemini `{text}`/`tokens`) was avoided. **Note:** iFlow CLI is officially shutting down on 2026-04-17 (Beijing time); users are told to migrate to Qoder ([source](https://platform.iflow.cn/en/cli/changelog)).
 
 ### Gotchas / version drift / edge cases
 
-1. **`messageCount` inflates with tool turns.** Tool-result-only `user` records (no `text`) are counted as user messages (no empty-content skip). Live: 12 of 16 "user" records are tool results → `userMessageCount`=16, `messageCount`=41 (= line count). Engram's count ≠ count of real human prompts.
-2. **Encoded dir name is LOSSY and never used for cwd.** `Sources.swift encodeIflow` (`:489-499`) strips per-segment leading/trailing dashes, so `/Users/u/-Code-/engram` → `-Users-u-Code-engram` (the `-Code-` dashes vanish). The adapter's own `decodeCwd` (`:143-148`, TS `:163-168`) uses a *different* scheme (`--`→sentinel, `-`→`/`) and is **dead code** (never called). The encoder/decoder are not inverses; the dir name cannot round-trip to cwd. Engram sidesteps this by trusting the in-file `cwd`. The project-move docstring (`Sources.swift:484-488`) flags the lossiness and notes a pre-flight cwd probe catches collisions.
+1. **Old `messageCount` inflated with tool turns; worktree parser fixed it.** Tool-result-only `user` records and tool-use-only `assistant` records flatten to `""` and are now skipped before count/stream. Live: the 41-line large session becomes 14 visible messages (4 user + 10 assistant); the 4-line small session becomes 3 visible messages (1 user + 2 assistant). Existing DB rows still show old counts until reindex.
+2. **Encoded dir name is LOSSY and never used for cwd.** `Sources.swift encodeIflow` (`:489-499`) strips per-segment leading/trailing dashes, so `/Users/u/-Code-/engram` → `-Users-u-Code-engram` (the `-Code-` dashes vanish). Current Swift and TS adapters do not have a reverse decoder and do not attempt to infer cwd/project from the directory name; the name cannot round-trip to cwd. Engram sidesteps this by trusting the in-file `cwd`. The project-move docstring (`Sources.swift:488-492`) flags the lossiness and notes a pre-flight cwd probe catches collisions.
 3. **`id` includes the `session-` prefix.** Stored `id` = `session-<UUID>`, not a bare UUID. Cross-tool joins / parent-detection by raw UUID must account for the prefix.
-4. **tool_result-only user turns are counted as empty-content user messages.** A `user` record whose `content` is `[{type:"tool_result",…}]` flattens to `""` (only `text` blocks kept). `isSystemInjection("")` is false → it increments `userCount` with empty content, and contributes an empty-content message in `streamMessages` (Swift does NOT pre-filter empty content here, unlike Gemini). If the first user turn is tool-result-only, the synthesized `summary` stays empty until a later text-bearing user turn.
+4. **tool_result/tool_use envelopes are preserved on disk but invisible in Engram transcript output.** A `user` record whose `content` is `[{type:"tool_result",…}]` or an `assistant` record with only `tool_use` blocks flattens to `""`; current Swift and TS skip it before count/stream. If a future file contains only tool envelopes, it may still have a `sessionId` but no visible transcript turns.
 5. **`cwd` only on `user` records.** Live: `cwd`/`gitBranch`/`version` appear on 16/16 user records and 0/25 assistant records. A session with no user record (all assistant) or where iFlow stops emitting `cwd` would yield `cwd=""` (the adapter reads `cwd` only from the first record that carries it). Hypothetical given current data; flagged.
 6. **`model` IS surfaced (good) — but only the first one.** Unlike Gemini (always nil), iFlow reports `model` (live `glm-5`). Only the **first** assistant `model` is kept; a session that switches models mid-stream reports only the first.
-7. **Token usage is Swift-only and frequently zero.** TS drops all usage. Swift reads `input_tokens`/`output_tokens`, returns nil if both 0 — and the live GLM proxy reports 0 for the 238 KB session's 25 turns, so usage is often absent in practice even on the Swift path. Non-zero is possible (small session line 4: 16472/224).
+7. **Token usage is consumed by both Swift and TS, but frequently zero.** Both paths read assistant `input_tokens`/`output_tokens` and omit usage when both are 0. The live GLM proxy reports 0 for the 238 KB session's 25 assistant turns, so usage is often absent in practice. Non-zero is possible and now covered in retained TS too (small session line 4: 16472/224; live TS smoke sees 1 streamed assistant message with usage).
 8. **Text-join separator drift Swift vs TS.** Swift joins multi-text-block content with `"\n\n"` (`:185`); TS with `"\n"` (`:204`). The same multi-part assistant turn renders differently across the two parsers.
 9. **TS has no size/line/message caps; Swift caps at 100 MB / 8 MB / 10,000.** A pathological large iFlow file is skipped by Swift (`.fileTooLarge` > 100 MB) but fully streamed by TS. (TS iFlow also lacks Gemini-TS's 10 MB cap.)
 10. **File-identity guard (Swift only).** Swift throws `.fileModifiedDuringParse` if the file changes mid-read — an actively-appended live session can fail and be retried later. More likely for iFlow than Gemini since iFlow truly appends per turn.

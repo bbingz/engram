@@ -64,6 +64,7 @@ export class CodexAdapter implements SessionAdapter {
       let firstUserText = '';
       let lastTimestamp = '';
       let detectedModel: string | undefined;
+      let turnContextModel: string | undefined;
 
       for await (const line of this.readLines(filePath)) {
         const obj = this.parseLine(line);
@@ -79,24 +80,38 @@ export class CodexAdapter implements SessionAdapter {
           meta = obj.payload as Record<string, unknown>;
         }
 
+        if (obj.type === 'turn_context' && !turnContextModel) {
+          const payload = obj.payload as Record<string, unknown>;
+          if (typeof payload.model === 'string') {
+            turnContextModel = payload.model;
+          }
+        }
+
         if (obj.type === 'response_item') {
           const payload = obj.payload as Record<string, unknown>;
-          // The real model name lives on response_item.payload.model
-          // (e.g. "gpt-5.3-codex"); session_meta only carries provider name.
+          // Older rollouts may carry the model on response_item.payload.model;
+          // current rollouts carry it on turn_context.payload.model.
           if (!detectedModel && typeof payload.model === 'string') {
             detectedModel = payload.model;
           }
           if (payload.type === 'message') {
             const role = payload.role as string;
             if (role === 'user') {
-              const text = this.extractText(payload.content as unknown[]);
-              if (this.isSystemInjection(text)) {
+              const rawText = this.extractText(payload.content as unknown[]);
+              const normalized = this.normalizeUserText(rawText);
+              if (normalized.strippedSystemContent) {
                 systemCount++;
-              } else {
+              }
+              if (normalized.userText) {
                 userCount++;
                 if (!firstUserText) {
-                  firstUserText = text;
+                  firstUserText = normalized.userText;
                 }
+              } else if (
+                !normalized.strippedSystemContent &&
+                this.isSystemInjection(rawText)
+              ) {
+                systemCount++;
               }
             } else if (role === 'assistant') {
               assistantCount++;
@@ -138,7 +153,10 @@ export class CodexAdapter implements SessionAdapter {
         startTime,
         endTime: lastTimestamp || undefined,
         cwd: (payload.cwd as string) || '',
-        model: detectedModel || (payload.model as string | undefined),
+        model:
+          detectedModel ||
+          turnContextModel ||
+          (payload.model as string | undefined),
         messageCount: userCount + assistantCount + toolCount,
         userMessageCount: userCount,
         assistantMessageCount: assistantCount,
@@ -207,12 +225,21 @@ export class CodexAdapter implements SessionAdapter {
       if (payload.type === 'message') {
         const role = payload.role as string;
         if (role !== 'user' && role !== 'assistant') continue;
-        const built: Message = {
-          role: role as 'user' | 'assistant',
-          content: this.extractText(payload.content as unknown[]),
-          timestamp,
-        };
-        if (role === 'assistant') {
+        const rawText = this.extractText(payload.content as unknown[]);
+        if (role === 'user') {
+          const normalized = this.normalizeUserText(rawText);
+          if (!normalized.userText) continue;
+          msg = {
+            role: 'user',
+            content: normalized.userText,
+            timestamp,
+          };
+        } else {
+          const built: Message = {
+            role: 'assistant',
+            content: rawText,
+            timestamp,
+          };
           const rawUsage = payload.usage as Record<string, unknown> | undefined;
           if (rawUsage && typeof rawUsage === 'object') {
             built.usage = {
@@ -226,8 +253,8 @@ export class CodexAdapter implements SessionAdapter {
                 | undefined,
             };
           }
+          msg = built;
         }
-        msg = built;
       } else if (payload.type === 'function_call') {
         const name = (payload.name as string) || '';
         const argsStr = truncateJSON(payload.arguments, 500) ?? '';
@@ -357,12 +384,60 @@ export class CodexAdapter implements SessionAdapter {
     );
   }
 
+  private normalizeUserText(text: string): {
+    userText?: string;
+    strippedSystemContent: boolean;
+  } {
+    let remaining = text.trim();
+    let strippedSystemContent = false;
+
+    if (
+      remaining.startsWith('# AGENTS.md instructions for ') ||
+      remaining.startsWith('<INSTRUCTIONS>')
+    ) {
+      const end = remaining.indexOf('</INSTRUCTIONS>');
+      if (end !== -1) {
+        remaining = remaining.slice(end + '</INSTRUCTIONS>'.length).trim();
+        strippedSystemContent = true;
+      }
+    }
+
+    let removedBlock = true;
+    while (removedBlock) {
+      removedBlock = false;
+      for (const tag of [
+        'local-command-caveat',
+        'environment_context',
+        'skills_instructions',
+        'plugins_instructions',
+      ]) {
+        const open = `<${tag}>`;
+        const close = `</${tag}>`;
+        if (!remaining.startsWith(open)) continue;
+        const end = remaining.indexOf(close);
+        if (end === -1) continue;
+        remaining = remaining.slice(end + close.length).trim();
+        strippedSystemContent = true;
+        removedBlock = true;
+      }
+    }
+
+    if (!remaining) {
+      return {
+        userText: undefined,
+        strippedSystemContent:
+          strippedSystemContent || this.isSystemInjection(text),
+      };
+    }
+    if (!strippedSystemContent && this.isSystemInjection(remaining)) {
+      return { userText: undefined, strippedSystemContent: true };
+    }
+    return { userText: remaining, strippedSystemContent };
+  }
+
   private extractText(content: unknown[]): string {
     if (!Array.isArray(content)) return '';
-    // Search the full array for a usable text payload. Returning on the first
-    // truthy `text`/`input_text` field would surface stray strings on non-text
-    // blocks (e.g. a tool_use entry that happens to carry a `text` name) and
-    // hide the real user/assistant text that follows.
+    const parts: string[] = [];
     for (const item of content) {
       if (item === null || typeof item !== 'object') continue;
       const c = item as Record<string, unknown>;
@@ -375,10 +450,13 @@ export class CodexAdapter implements SessionAdapter {
       ) {
         continue;
       }
-      if (typeof c.text === 'string' && c.text) return c.text;
-      if (typeof c.input_text === 'string' && c.input_text) return c.input_text;
+      if (typeof c.text === 'string' && c.text) {
+        parts.push(c.text);
+      } else if (typeof c.input_text === 'string' && c.input_text) {
+        parts.push(c.input_text);
+      }
     }
-    return '';
+    return parts.join('\n\n');
   }
 
   async isAccessible(locator: string): Promise<boolean> {

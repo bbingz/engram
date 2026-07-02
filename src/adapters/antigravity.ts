@@ -25,6 +25,14 @@ interface CacheMetaLine {
   pbSizeBytes?: number; // .pb file size stored for dedup consistency
 }
 
+const CLI_TOOL_MESSAGE_TYPES = new Set([
+  'VIEW_FILE',
+  'TOOL_OUTPUT',
+  'COMMAND_OUTPUT',
+  'SHELL_OUTPUT',
+  'APPLY_PATCH',
+]);
+
 export class AntigravityAdapter implements SessionAdapter {
   readonly name = 'antigravity' as const;
   private daemonDir: string;
@@ -295,21 +303,7 @@ export class AntigravityAdapter implements SessionAdapter {
       let cwd = meta.cwd || '';
       if (!cwd) {
         const content = await readFileHead(filePath, 50000);
-        const pathMatches =
-          content.match(/\/Users\/[^/]+\/-Code-\/([^/\s"'`)]+)/g) || [];
-        if (pathMatches.length > 0) {
-          // Count occurrences of each project name, pick the most frequent
-          const counts = new Map<string, number>();
-          for (const p of pathMatches) {
-            const m = p.match(/\/-Code-\/([^/\s"'`)]+)/);
-            if (m) counts.set(m[1], (counts.get(m[1]) || 0) + 1);
-          }
-          const topProject = [...counts.entries()].sort(
-            (a, b) => b[1] - a[1],
-          )[0];
-          if (topProject)
-            cwd = `/Users/${homedir().split('/').pop()}/-Code-/${topProject[0]}`;
-        }
+        cwd = this.inferCwdFromAbsolutePaths(content);
       }
 
       return {
@@ -495,7 +489,7 @@ export class AntigravityAdapter implements SessionAdapter {
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       };
     }
-    if (!content) return null;
+    if (!CLI_TOOL_MESSAGE_TYPES.has(type ?? '') || !content) return null;
     return { role: 'tool', content, timestamp };
   }
 
@@ -546,21 +540,75 @@ export class AntigravityAdapter implements SessionAdapter {
   private async inferCwd(filePath: string): Promise<string> {
     try {
       const content = await readFileHead(filePath, 50000);
-      const pathMatches =
-        content.match(/\/Users\/[^/]+\/-Code-\/([^/\s"'`)]+)/g) || [];
-      if (pathMatches.length === 0) return '';
-      const counts = new Map<string, number>();
-      for (const p of pathMatches) {
-        const m = p.match(/\/-Code-\/([^/\s"'`)]+)/);
-        if (m) counts.set(m[1], (counts.get(m[1]) || 0) + 1);
-      }
-      const topProject = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
-      return topProject
-        ? `/Users/${homedir().split('/').pop()}/-Code-/${topProject[0]}`
-        : '';
+      return this.inferCwdFromAbsolutePaths(content);
     } catch {
       return '';
     }
+  }
+
+  private inferCwdFromAbsolutePaths(text: string): string {
+    const pathPattern = /(\/(?:[^/\s"'`]+\/)+)[^/\s"'`]+/g;
+    const invalidPathTokenPattern = /[\\<>:]/;
+    const allowedPathRoots = new Set([
+      'Applications',
+      'Library',
+      'Users',
+      'Volumes',
+      'app',
+      'etc',
+      'home',
+      'mnt',
+      'opt',
+      'private',
+      'srv',
+      'tmp',
+      'usr',
+      'var',
+      'workspace',
+      'workspaces',
+    ]);
+    const ignoredPathComponents = new Set([
+      '.git',
+      '.pnpm',
+      '.yarn',
+      'DerivedData',
+      'node_modules',
+    ]);
+    const counts = new Map<string, number>();
+    for (const match of text.matchAll(pathPattern)) {
+      const fullMatch = match[0] ?? '';
+      const directory = match[1]?.replace(/\/$/, '');
+      if (
+        !directory ||
+        invalidPathTokenPattern.test(fullMatch) ||
+        invalidPathTokenPattern.test(directory)
+      ) {
+        continue;
+      }
+      const components = fullMatch.split('/').filter(Boolean);
+      const root = components[0];
+      const leaf = components.at(-1) ?? '';
+      if (
+        components.length < 3 ||
+        !root ||
+        !allowedPathRoots.has(root) ||
+        !leaf.includes('.') ||
+        components.some((component) => ignoredPathComponents.has(component))
+      ) {
+        continue;
+      }
+      counts.set(directory, (counts.get(directory) ?? 0) + 1);
+    }
+    if (counts.size === 0) return '';
+    const top = [...counts.entries()].sort(
+      ([left, leftCount], [right, rightCount]) => {
+        if (rightCount !== leftCount) return rightCount - leftCount;
+        if (left < right) return -1;
+        if (left > right) return 1;
+        return 0;
+      },
+    )[0];
+    return top?.[0] ?? '';
   }
 }
 

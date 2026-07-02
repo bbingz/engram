@@ -66,8 +66,9 @@ public final class SwiftIndexer {
     /// Writes one batch and returns the count of rows that did NOT fail.
     /// Logs each per-snapshot failure so a silent fake-success cannot happen.
     private func writeBatchCountingSuccesses(_ batch: [ScannedSnapshot]) throws -> Int {
-        let snapshots = batch.map(\.snapshot)
-        let statesBySessionId = Dictionary(uniqueKeysWithValues: batch.compactMap { scanned in
+        let deduplicatedBatch = deduplicateBatchBySessionId(batch)
+        let snapshots = deduplicatedBatch.map(\.snapshot)
+        let statesBySessionId = Dictionary(uniqueKeysWithValues: deduplicatedBatch.compactMap { scanned in
             scanned.fileState.map { (scanned.snapshot.id, $0) }
         })
         let result = try sink.upsertBatch(snapshots, reason: .initialScan)
@@ -84,7 +85,26 @@ public final class SwiftIndexer {
                 try upsertFileIndexStateIsolated(state, source: state.source, locator: state.locator)
             }
         }
-        return batch.count - failures
+        return deduplicatedBatch.count - failures
+    }
+
+    private func deduplicateBatchBySessionId(_ batch: [ScannedSnapshot]) -> [ScannedSnapshot] {
+        var seenSessionIds = Set<String>()
+        var deduplicatedBatch: [ScannedSnapshot] = []
+        deduplicatedBatch.reserveCapacity(batch.count)
+
+        for scanned in batch {
+            if seenSessionIds.insert(scanned.snapshot.id).inserted {
+                deduplicatedBatch.append(scanned)
+                continue
+            }
+
+            Self.log.error(
+                "duplicate session id in index batch; keeping first snapshot: session=\(scanned.snapshot.id, privacy: .private) locator=\(scanned.snapshot.sourceLocator, privacy: .private)"
+            )
+        }
+
+        return deduplicatedBatch
     }
 
     public func collectSnapshots(sources: Set<SourceName>? = nil) async throws -> [AuthoritativeSessionSnapshot] {
@@ -174,6 +194,11 @@ public final class SwiftIndexer {
                 let currentStat = FileIndexStat.directFileStat(locator: locator)
                 let knownIndexedState = knownFileStates?[locator]
                 let knownParseState = fileIndexStates?[locator]
+                let currentOkParseStateNeedsSessionRepair = currentStat.map { stat in
+                    knownParseState?.parseStatus == .ok
+                        && knownParseState?.sameFileIdentity(as: stat) == true
+                        && knownIndexedState?.sizeBytes != stat.sizeBytes
+                } ?? false
                 // Historical rows can be known/unchanged but predate instruction extraction.
                 let needsInstructionBackfill =
                     knownIndexedState?.needsInstructionBackfill == true
@@ -182,16 +207,17 @@ public final class SwiftIndexer {
                 if let currentStat,
                    !needsInstructionBackfill,
                    FileIndexDecision.decide(
-                    stat: currentStat,
-                    state: knownParseState,
-                    now: Date()
-                   ) == .skip {
+                       stat: currentStat,
+                       state: knownParseState,
+                       now: Date()
+                   ) == .skip,
+                   !currentOkParseStateNeedsSessionRepair {
                     continue
                 }
                 if let currentFile = currentStat?.legacyState,
                    let indexed = knownIndexedState {
                     if !needsInstructionBackfill {
-                        if skipKnownFileLocators {
+                        if skipKnownFileLocators && !currentOkParseStateNeedsSessionRepair {
                             try recordFileIndexSuccess(source: adapter.source, locator: locator, stat: currentStat)
                             continue
                         }
@@ -445,6 +471,7 @@ public final class SwiftIndexer {
             instructionCount: instructionCount,
             humanTurnCount: humanTurnCount,
             instructionSummary: instructionSummary,
+            originator: info.originator,
             origin: authoritativeNode,
             tier: tier,
             agentRole: info.agentRole,
@@ -461,6 +488,7 @@ public final class SwiftIndexer {
         ]
         if let project = info.project { fields.append(("project", jsonString(project))) }
         if let model = info.model { fields.append(("model", jsonString(model))) }
+        if let originator = info.originator { fields.append(("originator", jsonString(originator))) }
         fields.append(("messageCount", "\(info.messageCount)"))
         fields.append(("userMessageCount", "\(info.userMessageCount)"))
         fields.append(("assistantMessageCount", "\(info.assistantMessageCount)"))
@@ -541,5 +569,16 @@ public final class SwiftIndexer {
     // instruction extraction can be trusted. Others store NULL instruction signals
     // (default-visible). Graduate a source by adding it here + an adapter-uniformity
     // parity test proving its stream emits non-empty .user content.
-    private static let reliableInstructionSources: Set<SourceName> = [.claudeCode, .codex]
+    private static let reliableInstructionSources: Set<SourceName> = [
+        .claudeCode,
+        .codex,
+        .kimi,
+        .minimax,
+        .mimo,
+        .qwen,
+        .doubao,
+        .glm,
+        .deepseek,
+        .lobsterai,
+    ]
 }

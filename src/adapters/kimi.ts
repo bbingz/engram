@@ -49,20 +49,27 @@ export class KimiAdapter implements SessionAdapter {
   }
 
   async *listSessionFiles(): AsyncGenerator<string> {
-    // Structure: sessionsRoot/<workspace-id>/<session-id>/context.jsonl
+    // Structure: sessionsRoot/<workspace-hash-or-kaos-hash>/<session-id>/context.jsonl.
+    // The first path component is treated as opaque; kimi.json is the cwd source of truth.
     try {
-      const workspaceDirs = await readdir(this.sessionsRoot);
+      const workspaceDirs = (await readdir(this.sessionsRoot)).sort();
       for (const wsDir of workspaceDirs) {
         const wsPath = join(this.sessionsRoot, wsDir);
         try {
-          const sessionDirs = await readdir(wsPath);
+          const sessionDirs = (await readdir(wsPath)).sort();
           for (const sessDir of sessionDirs) {
-            const contextPath = join(wsPath, sessDir, 'context.jsonl');
+            const sessionPath = join(wsPath, sessDir);
+            const contextPath = join(sessionPath, 'context.jsonl');
             try {
               await stat(contextPath);
               yield contextPath;
             } catch {
               // context.jsonl does not exist in this session dir
+            }
+            for (const subagentContext of await this.getSubagentContextFiles(
+              sessionPath,
+            )) {
+              yield subagentContext;
             }
           }
         } catch {
@@ -77,13 +84,14 @@ export class KimiAdapter implements SessionAdapter {
   async parseSessionInfo(filePath: string): Promise<SessionInfo | null> {
     try {
       const fileStat = await stat(filePath);
-      const sessionId = basename(dirname(filePath));
+      const identity = this.locatorIdentity(filePath);
+      const sessionId = identity.sessionId;
       // The session id is derived from the directory name and used as the DB
       // primary key + kimi.json lookup. Reject empty / relative-path artifacts
       // ('', '.', '..') so we never upsert a session under a bogus id.
       if (!sessionId || sessionId === '.' || sessionId === '..') return null;
 
-      const cwd = await this.resolveCwd(sessionId);
+      const cwd = await this.resolveCwd(identity.parentSessionId ?? sessionId);
       const turns = await this.readTurnTimestamps(filePath);
       const wireStart = turns[0]?.begin ?? '';
       const wireEnd =
@@ -154,6 +162,8 @@ export class KimiAdapter implements SessionAdapter {
         summary: firstUserText.slice(0, 200) || undefined,
         filePath,
         sizeBytes: totalSize,
+        agentRole: identity.agentRole,
+        parentSessionId: identity.parentSessionId,
       };
     } catch {
       return null;
@@ -262,6 +272,58 @@ export class KimiAdapter implements SessionAdapter {
       // can't read directory — just use the main file
     }
     return files;
+  }
+
+  private async getSubagentContextFiles(
+    sessionPath: string,
+  ): Promise<string[]> {
+    const contexts: string[] = [];
+    try {
+      const entries = (
+        await readdir(join(sessionPath, 'subagents'), {
+          withFileTypes: true,
+        })
+      ).sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const contextPath = join(
+          sessionPath,
+          'subagents',
+          entry.name,
+          'context.jsonl',
+        );
+        try {
+          await stat(contextPath);
+          contexts.push(contextPath);
+        } catch {
+          // subagent directory without a context transcript
+        }
+      }
+    } catch {
+      // no subagents directory
+    }
+    return contexts;
+  }
+
+  private locatorIdentity(filePath: string): {
+    sessionId: string;
+    agentRole?: string;
+    parentSessionId?: string;
+  } {
+    const sessionDir = dirname(filePath);
+    const sessionId = basename(sessionDir);
+    const maybeSubagentsDir = dirname(sessionDir);
+    if (basename(maybeSubagentsDir) === 'subagents') {
+      const parentSessionId = basename(dirname(maybeSubagentsDir));
+      if (
+        parentSessionId &&
+        parentSessionId !== '.' &&
+        parentSessionId !== '..'
+      ) {
+        return { sessionId, agentRole: 'subagent', parentSessionId };
+      }
+    }
+    return { sessionId };
   }
 
   private contextShardIndex(filename: string): number | null {

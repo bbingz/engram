@@ -354,6 +354,7 @@ struct EngramServiceSearchResponse: Codable, Equatable, Sendable {
         let sizeBytes: Int?
         let indexedAt: String?
         let agentRole: String?
+        let originator: String?
         let customName: String?
         let tier: String?
         let toolMessageCount: Int?
@@ -385,6 +386,7 @@ struct EngramServiceSearchResponse: Codable, Equatable, Sendable {
             sizeBytes: Int? = nil,
             indexedAt: String? = nil,
             agentRole: String? = nil,
+            originator: String? = nil,
             customName: String? = nil,
             tier: String? = nil,
             toolMessageCount: Int? = nil,
@@ -415,6 +417,7 @@ struct EngramServiceSearchResponse: Codable, Equatable, Sendable {
             self.sizeBytes = sizeBytes
             self.indexedAt = indexedAt
             self.agentRole = agentRole
+            self.originator = originator
             self.customName = customName
             self.tier = tier
             self.toolMessageCount = toolMessageCount

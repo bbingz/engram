@@ -55,6 +55,53 @@ describe('ClineAdapter', () => {
     });
   });
 
+  it('accumulates consecutive api request token usage before the assistant reply', async () => {
+    const tmpRoot = join(tmpdir(), `engram-cline-usage-${Date.now()}`);
+    const taskDir = join(tmpRoot, 'tasks', 'usage-task');
+    const filePath = join(taskDir, 'ui_messages.json');
+    mkdirSync(taskDir, { recursive: true });
+    writeFileSync(
+      filePath,
+      JSON.stringify([
+        { ts: 1770000000000, type: 'say', say: 'task', text: 'usage task' },
+        {
+          ts: 1770000000001,
+          type: 'say',
+          say: 'api_req_started',
+          text: JSON.stringify({ tokensIn: 10, tokensOut: 5 }),
+        },
+        {
+          ts: 1770000000002,
+          type: 'say',
+          say: 'api_req_started',
+          text: JSON.stringify({ tokensIn: 7, tokensOut: 3 }),
+        },
+        {
+          ts: 1770000000003,
+          type: 'say',
+          say: 'text',
+          text: 'assistant reply',
+          partial: false,
+        },
+      ]),
+    );
+    try {
+      const adapter = new ClineAdapter(join(tmpRoot, 'tasks'));
+      const messages = [];
+      for await (const msg of adapter.streamMessages(filePath)) {
+        messages.push(msg);
+      }
+      expect(messages.find((m) => m.role === 'assistant')?.usage).toEqual({
+        inputTokens: 17,
+        outputTokens: 8,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      });
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('lists legacy claude_messages.json when ui_messages.json is absent', async () => {
     const tmpRoot = join(tmpdir(), `engram-cline-legacy-${Date.now()}`);
     const taskDir = join(tmpRoot, 'tasks', 'legacy-task');

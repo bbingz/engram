@@ -114,6 +114,15 @@ describe('CommandCodeAdapter', () => {
       expect(info?.summary).toBe('real question');
     });
 
+    it('skips injection wrappers from streamed messages', async () => {
+      const info = await adapter.parseSessionInfo(path);
+      const messages = [];
+      for await (const msg of adapter.streamMessages(path)) messages.push(msg);
+
+      expect(info?.messageCount).toBe(messages.length);
+      expect(messages.map((m) => m.content)).toEqual(['real question']);
+    });
+
     it('falls back to file mtime when no timestamp present', async () => {
       const noTsPath = join(tmpRoot, 'no-ts.jsonl');
       writeFileSync(

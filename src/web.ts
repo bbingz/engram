@@ -908,12 +908,18 @@ export function createApp(
   const SOURCE_PATHS: Record<string, string> = {
     'claude-code': join(HOME, '.claude/projects'),
     codex: join(HOME, '.codex/sessions'),
+    grok: join(HOME, '.grok/sessions'),
     'gemini-cli': join(HOME, '.gemini/tmp'),
     opencode: join(HOME, '.local/share/opencode/opencode.db'),
     iflow: join(HOME, '.iflow/projects'),
     qwen: join(HOME, '.qwen/projects'),
     qoder: join(HOME, '.qoder/projects'),
     kimi: join(HOME, '.kimi/sessions'),
+    minimax: join(HOME, '.claude-minimax/projects'),
+    mimo: join(HOME, '.claude-mimo/projects'),
+    doubao: join(HOME, '.claude-doubao/projects'),
+    glm: join(HOME, '.claude-glm/projects'),
+    deepseek: join(HOME, '.claude-ds/projects'),
     commandcode: join(HOME, '.commandcode/projects'),
     cline: join(HOME, '.cline/data/tasks'),
     cursor: join(
@@ -931,6 +937,10 @@ export function createApp(
   const DERIVED_SOURCES: Record<string, string> = {
     lobsterai: 'claude-code',
     minimax: 'claude-code',
+    mimo: 'claude-code',
+    doubao: 'claude-code',
+    glm: 'claude-code',
+    deepseek: 'claude-code',
   };
 
   async function getHealthData() {
@@ -938,7 +948,8 @@ export function createApp(
 
     const sources = sourceStats.map((s) => {
       const derivedFrom = DERIVED_SOURCES[s.source];
-      const path = SOURCE_PATHS[derivedFrom ?? s.source] ?? '';
+      const path =
+        SOURCE_PATHS[s.source] ?? SOURCE_PATHS[derivedFrom ?? s.source] ?? '';
       return {
         name: s.source,
         sessionCount: s.sessionCount,

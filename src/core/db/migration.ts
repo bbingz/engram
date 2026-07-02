@@ -62,6 +62,8 @@ export function runMigrations(
       db.exec('ALTER TABLE sessions ADD COLUMN human_turn_count INTEGER');
     if (!colNames.has('instruction_summary'))
       db.exec('ALTER TABLE sessions ADD COLUMN instruction_summary TEXT');
+    if (!colNames.has('originator'))
+      db.exec('ALTER TABLE sessions ADD COLUMN originator TEXT');
     if (!colNames.has('size_bytes'))
       db.exec(
         'ALTER TABLE sessions ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0',
@@ -141,6 +143,7 @@ export function runMigrations(
       instruction_count INTEGER,
       human_turn_count INTEGER,
       instruction_summary TEXT,
+      originator TEXT,
       file_path TEXT NOT NULL,
       size_bytes INTEGER NOT NULL DEFAULT 0,
       indexed_at TEXT NOT NULL DEFAULT (datetime('now')),

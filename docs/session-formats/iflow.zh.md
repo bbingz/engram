@@ -2,7 +2,7 @@
 
 > 本文档为英文权威版 iflow.md 的中文阅读副本;若有出入以英文版为准。
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-02 (Engram provider audit recheck).
 
 > 关于 **iFlow CLI** 如何在磁盘上持久化其 AI 编码会话,以及 Engram 的 `IflowAdapter`
 > (Swift 产品解析器 + TS 参考解析器)如何发现并消费这些会话的权威英文参考。与
@@ -41,15 +41,49 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
    - `tests/fixtures/iflow/{sample.jsonl, schema_drift.jsonl}`(2 个独立 fixture —— `sample.jsonl` = user/assistant/user;`schema_drift.jsonl` = 2 行前向容忍数据)。
    - `tests/fixtures/adapter-parity/iflow/{success.expected.json, input/-Users-test-my-project/session-sample.jsonl}`(1 个 3 行的输入 + 1 个期望输出)。
 3. **Engram adapters (codified knowledge)** ——
-   - Swift 产品解析器:`macos/Shared/EngramCore/Adapters/Sources/IflowAdapter.swift`(207 行)。
-   - TS 参考解析器:`src/adapters/iflow.ts`(213 行)。
+   - Swift 产品解析器:`macos/Shared/EngramCore/Adapters/Sources/IflowAdapter.swift`(210 行)。
+   - TS 参考解析器:`src/adapters/iflow.ts`(233 行)。
    - 共享 JSONL 辅助器:`enum JSONLAdapterSupport`(定义于 `macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift:4` 内部),外加 `macos/Shared/EngramCore/Adapters/ParserLimits.swift`(位于 `Adapters/Sources/` 的**上一级**目录,不是解析器的同级)以及 `StreamingLineReader`。
    - 项目迁移编码器:`EngramCoreWrite/ProjectMove/Sources.swift`(`encodeIflow`,`:489-499`)。
 
 **发现并解决的差异(以真实数据为准):**
 - 项目注册表位于 **`~/.iflow/config/projects.json`**(它确实存在),**而非** `~/.iflow/projects.json`(该路径不存在)。两者都是维度报告的子论断;`config/` 路径是正确的。
 - **`tests/fixtures/iflow/` 确实存在**(2 个文件)。某份维度报告声称它不存在 —— 该论断是**错误的**;`sample.jsonl` 和 `schema_drift.jsonl` 都在。
-- 没有**丢失数据**的差异:两个真实 `.jsonl` 文件都匹配发现过滤器、干净解析并正确呈现(与 Gemini 形成对比,后者的真实 `.jsonl` 会话会被静默丢弃)。所有值得注意的发现都属于*血统*与*行为边界情况*(见 §15)。
+- 没有**丢失真实数据**的差异:两个真实 `.jsonl` 文件都匹配发现过滤器、干净解析并正确呈现(与 Gemini 形成对比,后者的真实 `.jsonl` 会话会被静默丢弃)。所有值得注意的发现都属于*血统*与*行为边界情况*(见 §15)。
+- 2026-07-01 worktree 修复:`parseSessionInfo` 和 `streamMessages` 现在除了 user-form
+  system injection 之外,也会跳过 text 为空的 tool-only 轮次。真实语料因此从 45 条原始 envelope
+  变成 17 条可见 transcript 消息(5 user + 12 assistant);已安装 DB 的计数在重新索引前仍是旧值。
+- 2026-07-01 worktree MCP 修复:`get_session` 现在会从 stale
+  `session_local_state.local_readable_path` 回退到仍存在的 `sessions.file_path`。这影响
+  `session-041101e6-...`:其 local-readable path 指向不存在的 `...-Code-coding-memory/...jsonl`,
+  但真实文件仍在 `...-Code-engram/...jsonl`。
+- 2026-07-01 worktree TS parity 修复:保留的 TS `streamMessages` 现在会附带非零 assistant
+  `message.usage.{input_tokens,output_tokens}` 元数据,与 Swift 产品解析器一致。最新 live TS
+  smoke 看到 1 条 streamed assistant message 带 usage。
+- 2026-07-02 最新 live re-smoke 将 content-block 直方图校准为两文件合计
+  **`text` ×12、`tool_use` ×31、`tool_result` ×13**。`tool_result.content`
+  有两种实测形态:12/13 使用 `[callId, responseParts, resultDisplay]`
+  完整信封;小会话中 1/13 使用无外层 wrapper 的紧凑 `{functionResponse}`。
+
+## 当前本机审计
+
+2026-07-02 native `~/.iflow/projects` smoke 列出并解析 2/2 个 JSONL 转录文件。
+原始扫描发现 45 条记录、0 条畸形行、18 条 `user` 和 27 条 `assistant`。其中当前
+worktree parser 只把 17 条视为可见 transcript 消息(5 user + 12 assistant),并跳过
+28 条 text 为空的 tool-only envelope(13 条 user/tool-result + 15 条 assistant/tool-use)。
+当前 worktree stream count 与 parser `messageCount` 一致:17 vs 17。保留 TS 现在为
+1 条 streamed assistant message 附带 usage 元数据(小会话第 4 行,16472 input / 224 output tokens)。
+当前 content-block 直方图为 `text` ×12、`tool_use` ×31、`tool_result` ×13;
+其中 12 条工具结果使用完整 Gemini wrapper,1 条使用直接 `functionResponse` 的紧凑 wrapper。
+
+当前 `~/.engram/index.sqlite` 有 2 个 `iflow` 行、2 个 native-path 行,并且
+`file_index_state` 有 2 行 `parse_status='ok'`;adapter locator diff 为 0 missing 和 0 stale。
+DB metadata 在重新索引前仍是旧 parser/indexer 结果:两行仍保留已解码的 `project`
+值(`coding-memory` 和 `WebSite_GLM`),但当前 adapter 返回 `project: nil`;两行
+message counts 也仍是旧 parser 结果(合计 45,18 user,27 assistant)。
+已安装 `/Applications/Engram.app` build `20260701074505` 对小会话仍使用 stale
+`local_readable_path`,因此返回 0 条消息;从当前 worktree 构建的 repo-local Debug
+`EngramMCP` 会回退到真实 `sessions.file_path`,并返回 3 条消息。
 
 ---
 
@@ -82,13 +116,13 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
   layer 3        ├─ content[] { type:"text", text }               ← joined: "\n\n" (Swift) / "\n" (TS)
   layer 3        ├─ content[] { type:"tool_use", id, name, input } ← IGNORED
   layer 3        ├─ content[] { type:"tool_result", tool_use_id, content } ← IGNORED (user records)
-  layer 3        └─ usage { input_tokens, output_tokens }         ← Swift only; TS drops it
+  layer 3        └─ usage { input_tokens, output_tokens }         ← assistant 消息消费;两者都为 0 时省略
   layer 4              ├─ toolUseResult { status, timestamp, toolName }   (top-level on user record; IGNORED)
   layer 4              └─ tool_result.content { callId, responseParts, resultDisplay }   (Gemini lineage; IGNORED)
   layer 5                    └─ responseParts.functionResponse { id, name, response{output} }   (IGNORED)
 ```
 
-**给 Engram 工程师的 TL;DR。** Engram 只读取 `user`/`assistant` 记录,并保留 `sessionId`(含 `session-` 前缀 → `id`)、`cwd`(取文件内首个非空值)、`timestamp`(首=开始,末=结束)、每条消息的 `model`(首次出现的值)、扁平化后的 **`text` 块**内容,以及(仅 Swift)每条消息的 `usage`。它将 `project` 设为 `nil`(从不读取 `config/projects.json`;`decodeCwd` 是死代码),并**丢弃** `uuid`/`parentUuid`/`isSidechain`/`userType`/`gitBranch`/`version`/`toolUseResult`/`stop_reason`/`stop_sequence`/内层 `message.id`/`message.type`;所有 `tool_use` 和 `tool_result` 块;以及(TS 路径)**全部** token 用量。
+**给 Engram 工程师的 TL;DR。** Engram 只读取 `user`/`assistant` 记录,并保留 `sessionId`(含 `session-` 前缀 → `id`)、`cwd`(取文件内首个非空值)、`timestamp`(首=开始,末=结束)、每条消息的 `model`(首次出现的值)、扁平化后的 **`text` 块**内容,以及非零 assistant per-message `usage`。User-form system injection(`# AGENTS.md instructions for`、`<INSTRUCTIONS>` 或 `<local-command-caveat>`)会计入 `systemMessageCount` 并从 streamed messages 中排除。它将 `project` 设为 `nil`(从不读取 `config/projects.json`;也不解码目录名),并**丢弃** `uuid`/`parentUuid`/`isSidechain`/`userType`/`gitBranch`/`version`/`toolUseResult`/`stop_reason`/`stop_sequence`/内层 `message.id`/`message.type`;所有 `tool_use` 和 `tool_result` 块;以及零值 token 用量。
 
 ---
 
@@ -110,7 +144,7 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 
 | Token | Grammar | Live examples | Notes |
 |---|---|---|---|
-| `<encodedProjectDir>` | 绝对 cwd,`/` → `-`(前导 `/` 变为前导 `-`) | `-Users-bing-Code-WebSite_GLM`、`-Users-bing-Code-engram` | Claude-Code 风格的路径编码。Engram **不**对其解码(`project: nil`);它转而从文件内部读取 `cwd`。项目迁移编码器(`Sources.swift encodeIflow :489-499`)是**有损的** —— 它会剥除每段前导/尾随的破折号,因此 `-Code-` → `Code`。适配器自带的 `decodeCwd` 使用一套*不同的*(`--`→哨兵)方案,且是**死代码**;两者并非互逆(见 §15 #2)。 |
+| `<encodedProjectDir>` | 绝对 cwd,`/` → `-`(前导 `/` 变为前导 `-`) | `-Users-bing-Code-WebSite_GLM`、`-Users-bing-Code-engram` | Claude-Code 风格的路径编码。Engram **不**对其解码(`project: nil`);它转而从文件内部读取 `cwd`。项目迁移编码器(`Sources.swift encodeIflow :489-499`)是**有损的** —— 它会剥除每段前导/尾随的破折号,因此 `-Code-` → `Code`。当前适配器没有反向 decoder,避免假装该有损目录名可往返还原(见 §15 #2)。 |
 | session file | `session-<UUID>.jsonl` | `session-b5785972-6711-443a-9bb4-e361146f8e79.jsonl`、`session-041101e6-2a7f-4dfd-90b0-57888a353f6a.jsonl` | `<UUID>` = 标准 36 字符小写 UUID。**没有**时间戳前缀,**没有** 8 位十六进制后缀(不同于 Gemini 的 `session-<ts>-<8hex>`)。**发现过滤器:** 名称 `hasPrefix("session-")` 且 `pathExtension == "jsonl"`(Swift:28 / TS:40)。 |
 | in-file `sessionId` | `session-<UUID>` —— **包含 `session-` 前缀** | `"session-041101e6-2a7f-4dfd-90b0-57888a353f6a"` | **两个真实文件均确认:** `sessionId` == 文件名主干(去掉 `.jsonl`)完全相等。因此 Engram 存储的 `id` 是 `session-<UUID>`,**而非**裸 UUID。与 Gemini/Qwen 不同,后两者文件名后缀仅为 `sessionId[0:8]`。 |
 
@@ -153,27 +187,27 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 | **Discovery** | `detect()` 当且仅当 `~/.iflow/projects` 是目录时为 true(Swift:18-20 `isDirectory`;TS:23-30 `stat`)。 | adapter |
 | **Enumeration** | 对 `projects/` 的**每个直接子目录**,产出名称**以 `session-` 开头且扩展名为 `.jsonl`** 的文件(Swift:22-34 `hasPrefix("session-") && pathExtension == "jsonl"`;TS:32-51 `startsWith('session-') && endsWith('.jsonl')`)。**不遍历 `chats/`**(不同于 Qwen)。Swift 返回**已排序**列表(`locators.sorted()` :33);TS 按 `readdir` 顺序逐目录惰性产出,并吞掉不可读目录(`catch {}` :44-46)。 | adapter |
 | **Size cap (Swift)** | 文件 > **100 MB** → `.fileTooLarge`(`ParserLimits.maxFileBytes = 100*1024*1024`,`Adapters/ParserLimits.swift:17`,经由 `validateFileSize :47-49`);单行 > **8 MB** → 由 `StreamingLineReader(maxLineBytes:8*1024*1024)` 处理;解析对象 > **10,000** → `.messageLimitExceeded`(`CodexAdapter.swift:71,86`)。 | `Adapters/ParserLimits.swift:17-19`; `CodexAdapter.swift` |
-| **Size cap (TS)** | **无。** 不同于 `gemini-cli.ts`(10 MB `MAX_SESSION_JSON_BYTES`),`iflow.ts` 没有任何大小/行数/计数上限 —— 整文件逐行流式读取。Swift 与 TS 的分歧。 | `iflow.ts:170-184` |
+| **Size cap (TS)** | **无。** 不同于 `gemini-cli.ts`(10 MB `MAX_SESSION_JSON_BYTES`),`iflow.ts` 没有任何大小/行数/计数上限 —— 整文件逐行流式读取。Swift 与 TS 的分歧。 | `iflow.ts:168-181` |
 | **Atomicity guard (Swift only)** | `JSONLAdapterSupport.readObjects` 在读取前后重新校验文件身份(size/mtime/resource-id);不匹配 → `.fileModifiedDuringParse`(一个正在被追加的真实会话会被拒绝,稍后重试)。相比 Gemini,iFlow 更易触发,因为 iFlow 每轮都真正追加。 | `CodexAdapter.swift:78-81` |
-| **FD-leak guard (TS only)** | `readLines` 使用 `try/finally` 在提前 break(limit/offset)时也关闭 readline 接口 + 流,防止 `EMFILE`。 | `iflow.ts:170-184` |
+| **FD-leak guard (TS only)** | `readLines` 使用 `try/finally` 在提前 break(limit/offset)时也关闭 readline 接口 + 流,防止 `EMFILE`。 | `iflow.ts:168-181` |
 
 ---
 
 ## 4. Record / line taxonomy (layer 1)
 
-一个文件 = N 行;每行是一个 JSON 对象。判别字段是顶层 **`type`**。**真实数据 + fixtures 中观察到:** 只有 `user` 和 `assistant`。两个适配器**只**接受这两种;任何其他 `type` 都被 `continue`-跳过(Swift:52-54 / TS:71)。`guard !sessionId.isEmpty` 否则 `.malformedJSON`(Swift:89)/ `return null`(TS:98)。
+一个文件 = N 行;每行是一个 JSON 对象。判别字段是顶层 **`type`**。**真实数据 + fixtures 中观察到:** 只有 `user` 和 `assistant`。两个适配器**只**接受这两种;任何其他 `type` 都被 `continue`-跳过(Swift:52-54 / TS:71)。`guard !sessionId.isEmpty` 否则 `.malformedJSON`(Swift:93)/ `return null`(TS:100)。
 
 | `type` | live count | `message.role` | content shape(s) | carries `toolUseResult`? | Engram role | Counted? |
 |---|---|---|---|---|---|---|
-| `user` | 18 | `"user"` | `string`(真实 prompt)**或** `array[{tool_result}]`(工具输出轮) | only when content is `tool_result` | `role: user` | yes(user 计数),**除非**被归类为 system-injection |
-| `assistant` | 27 | `"assistant"` | `array[ {text} \| {tool_use} ]` | never | `role: assistant` | yes(assistant 计数) |
+| `user` | 18 | `"user"` | `string`(真实 prompt)**或** `array[{tool_result}]`(工具输出轮) | only when content is `tool_result` | `role: user` | 只有扁平化文本非空且不是 system-injection 时才计数 |
+| `assistant` | 27 | `"assistant"` | `array[ {text} \| {tool_use} ]` | never | `role: assistant` | 只有扁平化文本非空时才计数 |
 | _(any other)_ | 0 | — | — | — | skipped | no |
 
 **在顶层 `type` 判别字段层面,不存在独立的 `system`、`summary`、`info`、`tool` 或 `meta` 行类型**(不同于 Gemini 的 `info` 或 Qwen 的 `system`/`ui_telemetry`)。"System" 是 `user` 行的一个*派生*子分类,而非一种行类型(见 §5 与 §7)。iFlow 没有 `ui_telemetry` 的 token 行 —— 用量是内联在 assistant 消息上的。
 
 > **Confirmed (official):meta/压缩记录确实存在于磁盘上 —— 伪装成 `type:"user"`。** 官方 bundle 的消息创建器(`createUserMessage`、`createAssistantMessage`、`createToolResultMessage`、`createCompressionMessage`、`createMetaMessage`)将工具结果、压缩(上下文摘要)以及 meta 记录全部以**顶层 `type:"user"`** 写入 `message:{role:"user",…}` 内 —— 压缩记录携带内部压缩标记,meta 记录携带 `isMeta:true`。因此判别字段仍只有 `user`/`assistant`(上面的陈述在该层面成立),但压缩与 meta 记录伪装成 `user` 记录持久化在磁盘上,并被 Engram 静默计为 user 消息(Engram 不对 `isMeta`/压缩标记做特殊处理)。writer 中任何位置都没有 `type:"system"` / `type:"summary"` / `type:"info"`([source](https://www.npmjs.com/package/@iflow-ai/iflow-cli))。
 
-> **`messageCount` 语义陷阱(REAL)。** 一条 `user` 记录会被计为 user 消息,**除非**其扁平化文本匹配 `isSystemInjection`(Swift:79-85 / TS:86-93)。它**不会**跳过空内容记录。在真实的 238 KB 会话中,**16 条 user 记录里有 12 条仅含 `tool_result`**(`{type:"tool_result"}` 数组,没有 `text` 块)→ `extractContent` 返回 `""`,`isSystemInjection("")` 为 false → 每条都被**计为一条 user 消息**且文本为空。因此实测 `userMessageCount` = 16(而非 4 条 "真实" prompt),`messageCount` = 16 + 25 = 41 = 原始行数。iFlow 的 `messageCount` 因此会随工具轮次膨胀 —— 对比 Gemini Swift,后者会预先过滤空内容。见 §15 #4。
+> **`messageCount` 语义陷阱(已在 worktree 修复;live DB 仍旧)。** 一条 `user` 或 `assistant` 记录现在只有在 `extractContent(message.content).trim()` 非空时才计入;user-form system injection 计入 `systemMessageCount` 并从 stream 跳过。在真实 238 KB 会话中,**16 条 user 里 12 条仅含 `tool_result`**,且 **25 条 assistant 里 15 条仅含 `tool_use`**,因此当前 parser 报告 14 条可见 transcript 消息(4 user + 10 assistant),而不是 41 条原始 envelope。已安装 DB 在重新索引前仍保存旧的 41/16/25 计数。见 §15 #4。
 
 ---
 
@@ -202,7 +236,7 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 
 ### 5a. `toolUseResult` envelope (layer-4 nested object)
 
-仅出现在内容块为 `tool_result` 的 `user` 行上。**实测键集(12 次出现完全一致):** `[status, timestamp, toolName]`。
+仅出现在内容块为 `tool_result` 的 `user` 行上。**实测键集(13 次出现完全一致):** `[status, timestamp, toolName]`。
 
 | Field | Type | Meaning | Live value |
 |---|---|---|---|
@@ -236,7 +270,7 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 | `role` | string `"assistant"` | role | required | ❌ | `"assistant"` |
 | `content` | array of content blocks | assistant 输出(text + tool_use) | required | ✅(只扁平化 `text`) | `[{type:"text",text:"…"},{type:"tool_use",…}]` |
 | `model` | string | 产生该轮的模型 id | live: always | ✅ → 会话 `model`(首次出现) | `"glm-5"`(全部 25) |
-| `usage` | object `{input_tokens, output_tokens}` | 每轮 token 用量(Anthropic 命名) | live: always(可能全为零) | ✅ **仅 Swift** | `{input_tokens:16472, output_tokens:224}` |
+| `usage` | object `{input_tokens, output_tokens}` | 每轮 token 用量(Anthropic 命名) | live: always(可能全为零) | ✅ Swift + TS assistant messages | `{input_tokens:16472, output_tokens:224}` |
 | `id` | string | Anthropic 消息 id | live: always | ❌ | `"r1"`(fixture)/ `msg_…` |
 | `type` | string `"message"` | 内层消息种类 | live: always | ❌ | `"message"` |
 | `stop_reason` | string \| null | Anthropic stop reason;实测**始终 `null`** | optional | ❌ | `null` |
@@ -244,15 +278,15 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 
 ### 6.3 Content blocks (layer 3 — `message.content[]`)
 
-块判别字段 = 内层 `type`。**两文件实测直方图:** `text` ×10、`tool_use` ×30、`tool_result` ×12(大会话)+ 小会话的块。**不存在 `thinking`/`reasoning`/`redacted_thinking` 块** —— 已验证:内容类型直方图只含下列三种;iFlow 不向磁盘记录任何思维链。
+块判别字段 = 内层 `type`。**两文件实测直方图:** `text` ×12、`tool_use` ×31、`tool_result` ×13。**不存在 `thinking`/`reasoning`/`redacted_thinking` 块** —— 已验证:内容类型直方图只含下列三种;iFlow 不向磁盘记录任何思维链。
 
 | Block `type` | Keys | Consumed? | Notes |
 |---|---|---|---|
-| `text` | `{type:"text", text}` | ✅ | 非空 `.text` 连接:**`"\n\n"`(Swift,`IflowAdapter.swift:185`)** vs **`"\n"`(TS,`iflow.ts:204`)** —— 分隔符分歧 |
-| `tool_use` | `{type:"tool_use", id, name, input}` | ❌ | assistant 发起工具运行的请求;丢弃(`toolCalls:nil` Swift:161) |
+| `text` | `{type:"text", text}` | ✅ | 非空 `.text` 在 Swift 与 TS 中都用 **`"\n"`** 连接 |
+| `tool_use` | `{type:"tool_use", id, name, input}` | ❌ | assistant 发起工具运行的请求;丢弃(`toolCalls:nil` Swift:165) |
 | `tool_result` | `{type:"tool_result", tool_use_id, content}` | ❌ | 位于 `user` 记录内;丢弃(只保留 `text`) |
 
-`extractContent`(`IflowAdapter.swift:172-186`、`iflow.ts:194-207`):裸字符串 → 逐字使用;数组 → 连接 `type=="text"` 块中非空的 `.text`;否则 → `""`。**`tool_result` 块不贡献任何文本** → 扁平化为 `""`(见 §4 计数陷阱)。
+`extractContent`(`IflowAdapter.swift:176-190`、`iflow.ts:192-205`):裸字符串 → 逐字使用;数组 → 连接 `type=="text"` 块中非空的 `.text`;否则 → `""`。**`tool_result` 块不贡献任何文本** → 扁平化为 `""`(见 §4 计数陷阱)。
 
 #### `text` block
 ```json
@@ -264,7 +298,7 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 { "type": "tool_use", "id": "call_-7848967933605705235", "name": "list_directory", "input": { "path": "<abs path>" } }
 ```
 - `id` —— call id;**链接到匹配的 `tool_result.tool_use_id`**。
-- `name` —— 实测集合:`read_file`(16)、`task`(6)、`list_directory`(4)、`replace`(2)、`write_file`(2)。
+- `name` —— 实测集合:`read_file`(17)、`task`(6)、`list_directory`(4)、`replace`(2)、`write_file`(2)。
 - `input` —— 参数;形态因工具而异。**`task` = 子代理派发** —— 其 `input` 键为 `description, prompt, subagent_type`(实测 6 次),是 iFlow 原生的多代理机制。Engram **不**解析它(见 §7、§10)。
 
 #### Layer 2/3 examples (anonymized; keys verbatim)
@@ -287,7 +321,7 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 
 ### 6.4 System-message detection (derived, not a line type)
 
-`isSystemInjection`(Swift:166-170 / TS:154-160)在某 `user` 行的扁平化文本满足以下条件时将其重新归类为 **system**(→ `systemMessageCount++`,从 user 计数和摘要中排除):
+`isSystemInjection`(Swift:170-174 / TS:160-165)在某 `user` 行的扁平化文本满足以下条件时将其重新归类为 **system**(→ `systemMessageCount++`,从 user 计数和摘要中排除):
 - `hasPrefix("# AGENTS.md instructions for ")`,或
 - `contains("<INSTRUCTIONS>")`,或
 - `hasPrefix("<local-command-caveat>")`。
@@ -305,7 +339,7 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 { "type": "tool_result", "tool_use_id": "call_-7848967933605705235", "content": { /* nested object — layer 4 */ } }
 ```
 - `tool_use_id` —— 回指产生它的 `tool_use.id`。
-- `content` —— 一个**对象**(非 string/array),是嵌套的 Gemini 风格结果信封。**实测键集(全部 12):`[callId, responseParts, resultDisplay]`。**
+- `content` —— 一个**对象**(非 string/array),有两种实测 Gemini 血统结果信封形态:12/13 使用完整 wrapper `[callId, responseParts, resultDisplay]`;1/13 使用紧凑的直接 `{functionResponse}`。
 - `is_error` —— **所有真实数据中均缺失**;若存在则标记一次失败的工具调用。
 
 ### 7.2 `tool_result.content` — nested result envelope (layer 4, Gemini-CLI lineage)
@@ -314,25 +348,29 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
   "responseParts": { "functionResponse": { "id":"call_…","name":"list_directory","response":{ "output":"<result>" } } },
   "resultDisplay": "<human-readable result>" }
 ```
-- `callId` —— == `tool_use_id` == `tool_use.id`(全部 12 个结果三方确认相等)。
-- `responseParts` —— 始终为 `{ functionResponse: {…} }` —— 即 **Gemini `functionResponse` 形态**(layer 5)。
-- `resultDisplay` —— **字符串或对象**。实测:**10/12 为字符串**(如 `"Listed 7 item(s)."`);**2/12 为对象**,键为 `[fileDiff, fileName, newContent, originalContent]`(用于 `write_file`/`replace` 的编辑 diff)。
+```json
+{ "functionResponse": { "id":"call_…","name":"read_file","response":{ "output":"<result>" } } }
+```
+- `callId` —— 只存在于完整 wrapper;在那里 `callId` == `tool_use_id` == `tool_use.id`,并且也等于 `responseParts.functionResponse.id`。紧凑 wrapper 缺少 `callId`,但 `functionResponse.id` 仍等于 `tool_use_id`;实测 0/13 个 id mismatch。
+- `responseParts` —— 只存在于完整 wrapper(12/13),始终为 `{ functionResponse: {…} }`;紧凑 wrapper 直接存放 `functionResponse`(1/13)。
+- `resultDisplay` —— 只存在于完整 wrapper(12/13):**10/12 为字符串**(如 `"Listed 7 item(s)."`);**2/12 为对象**,键为 `[fileDiff, fileName, newContent, originalContent]`(用于 `write_file`/`replace` 的编辑 diff)。紧凑 wrapper 中缺失。
 
 ### 7.3 `functionResponse` (layer 5, deepest)
 ```json
 { "id":"call_…","name":"read_file","response":{ "output":"<file contents>" } }
 ```
-键:`id, name, response`。`response` = `{output: <string>}`(全部 12 个实测 `output` 均为字符串)。
+键:`id, name, response`。`response` = `{output: <string>}`(全部 13 个实测 `output` 均为字符串)。
 
-### Tool-call ↔ result linkage chain (5 layers)
+### Tool-call ↔ result linkage chain
 ```
 assistant.message.content[].tool_use.id
    ═══ equals ═══  user.message.content[].tool_result.tool_use_id
-   ═══ equals ═══  tool_result.content.callId
-   ═══ equals ═══  tool_result.content.responseParts.functionResponse.id
+   ═══ equals ═══  tool_result.content.callId                                 (full wrapper)
+   ═══ equals ═══  tool_result.content.responseParts.functionResponse.id       (full wrapper)
+   ═══ equals ═══  tool_result.content.functionResponse.id                     (compact wrapper)
 ```
 
-**Engram 不导入其中任何内容。** Swift 设 `toolCalls:nil`(`IflowAdapter.swift:161`);TS `streamMessages` 从不产出工具块(`iflow.ts:144-150` 只产出 role/content/timestamp)。`toolMessageCount: 0`(Swift:103 / TS:110)。工具结果文本被 `extractContent` 丢弃。Parity `success.expected.json` 通过 `toolCalls: []` 和 `fileToolCounts: {}` 编码零工具导入(期望文件中**没有** `toolCallCount` 键 —— 其 16 个顶层键不包含它)。工具调用完整地存在于磁盘上,但在 Engram 中不可见。
+**Engram 不导入其中任何内容。** Swift 设 `toolCalls:nil`(`IflowAdapter.swift:165`);TS `streamMessages` 从不产出工具块(`iflow.ts:151-155` 只产出 role/content/timestamp)。`toolMessageCount: 0`(Swift:107 / TS:112)。工具结果文本被 `extractContent` 丢弃。Parity `success.expected.json` 通过 `toolCalls: []` 和 `fileToolCounts: {}` 编码零工具导入(期望文件中**没有** `toolCallCount` 键 —— 其 16 个顶层键不包含它)。工具调用完整地存在于磁盘上,但在 Engram 中不可见。
 
 ---
 
@@ -357,13 +395,12 @@ assistant.message.content[].tool_use.id
 | `cache_read_input_tokens` | int | (Anthropic 风格)—— iFlow 中**缺失** | — |
 | `cache_creation_input_tokens` | int | (Anthropic 风格)—— iFlow 中**缺失** | — |
 
-**推导**(Swift `usage()` `IflowAdapter.swift:188-198`):
+**推导**(Swift `usage()` `IflowAdapter.swift:192-201`;TS `usage()` `iflow.ts:197-207`):
 - `inputTokens = input_tokens`,`outputTokens = output_tokens`(不读取缓存字段 —— 注意 iFlow **不**使用同时解析缓存 token 的共享 `JSONLAdapterSupport.usage`,因此即便 iFlow 发出缓存字段也会被忽略)。
-- 若**两者**都为 0 则返回 `nil`(`:194-196`)。用量**仅附加于 assistant** 轮(`:162`);user 轮携带 `usage:nil`。
+- 若**两者**都为 0 则 Swift 返回 `nil` / TS 返回 `undefined`。用量**仅附加于 assistant** 轮(Swift `:166`;TS `:156-159`);user 轮不携带 usage。
 
 > **差异标注。**
-> 1. **TS 参考适配器丢弃全部 token 用量** —— `iflow.ts` 中任何位置都没有 `usage`/`tokens` 处理(`streamMessages` 只产出 `{role,content,timestamp}`,`:144-150`)。Swift 是**唯一**产出 iFlow cost/usage 的路径。(与 Gemini、Qwen 相同的 TS-vs-Swift 分裂。)
-> 2. **实测用量绝大多数为零。** 238 KB GLM 会话中全部 25 个 assistant 轮都报告 `{input_tokens:0, output_tokens:0}` → `>0` 守卫使 Swift 在这些轮上的用量为 `nil`。GLM 代理在那里报告零计数。**非零是可能的**:小会话最后一个 assistant 轮为 `{input_tokens:16472, output_tokens:224}`。parity fixture 的 `usage:{}` 为空,产生全零 `usageTotals` —— 它**掩盖**了该分歧而非测试提取逻辑。
+> 1. **实测用量绝大多数为零。** 238 KB GLM 会话中全部 25 个 assistant 轮都报告 `{input_tokens:0, output_tokens:0}` → `>0` 守卫使 Swift/TS 在这些轮上省略 usage。GLM 代理在那里报告零计数。**非零是可能的**:小会话最后一个 assistant 轮为 `{input_tokens:16472, output_tokens:224}`。保留 TS live smoke 现在看到 1 条 streamed assistant message 带 usage;parity fixture 的 `usage:{}` 为空,产生全零 `usageTotals`。
 
 不存储任何 price/cost;Engram 在下游计算成本。
 
@@ -373,13 +410,13 @@ assistant.message.content[].tool_use.id
 
 **文件内链接存在但被忽略。** 每条记录有 `parentUuid`/`uuid` 构成会话内 DAG,`isSidechain:bool` 标记子代理 sidechain —— 两者都是 **Anthropic 风格**。两个适配器都不读取它们。iFlow 原生的多代理机制是 `task` 工具(`tool_use`,带 `input.{description,prompt,subagent_type}`,实测 6 次)—— 但它与所有其他工具数据一同被丢弃(`toolCalls:nil`,`toolMessageCount:0`)。
 
-**跨会话父级链接:无内建机制,无 sidecar。** 不同于 Gemini(Layer 1c `<sessionId>.engram.json` sidecar)和 Codex(`originator`),iFlow 适配器将 `parentSessionId:nil`、`suggestedParentId:nil`、`originator:nil`、`agentRole:nil`、`origin:nil`(`IflowAdapter.swift:109-116`)。iFlow **没有 `readSidecar`**,真实环境中也有 **0** 个 `*.engram.json` 文件。iFlow 会话的任何父级归属完全依赖 Engram 的 **Layer 2 启发式**(时间/cwd 评分)—— iFlow 不存在确定性的链接路径。
+**跨会话父级链接:无内建机制,无 sidecar。** 不同于 Gemini(Layer 1c `<sessionId>.engram.json` sidecar)和 Codex(`originator`),iFlow 适配器将 `parentSessionId:nil`、`suggestedParentId:nil`、`originator:nil`、`agentRole:nil`、`origin:nil`(`IflowAdapter.swift:113-120`)。iFlow **没有 `readSidecar`**,真实环境中也有 **0** 个 `*.engram.json` 文件。iFlow 会话的任何父级归属完全依赖 Engram 的 **Layer 2 启发式**(时间/cwd 评分)—— iFlow 不存在确定性的链接路径。
 
 ---
 
 ## 11. Summary / compaction
 
-**磁盘上不适用** —— 未观察到 summary/compaction 记录类型(2 个真实会话中均无 `system`/`summary`/`info` 行类型,二者均未被压缩)。Engram 自行合成会话**摘要**:取首个非 system 的 `user` 消息的扁平化文本,截断至 200 字符(`summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200))` `IflowAdapter.swift:105`;`firstUserText.slice(0,200) || undefined` `iflow.ts:112`)。派生而来,非存储。
+**磁盘上不适用** —— 未观察到 summary/compaction 记录类型(2 个真实会话中均无 `system`/`summary`/`info` 行类型,二者均未被压缩)。Engram 自行合成会话**摘要**:取首个非 system 的 `user` 消息的扁平化文本,截断至 200 字符(`summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200))` `IflowAdapter.swift:109`;`firstUserText.slice(0,200) || undefined` `iflow.ts:114`)。派生而来,非存储。
 
 边界情况:若首个 user 轮是仅含工具结果的消息(空文本),`firstUserText` 会保持 `""` 直到后续出现带文本的 user 轮(见 §15 #4)。
 
@@ -417,26 +454,26 @@ assistant.message.content[].tool_use.id
 | `startTime` | 首条记录 `timestamp` | `:64-66, 95` | `:75, 103` | required |
 | `endTime` | 末条记录 `timestamp`(若 == start 则为 nil) | `:67-69, 96` | `:76, 104` | optional |
 | `cwd` | 文件内首个非空 `cwd` 字段 | `:61-63, 97` | `:74, 105` | 实测仅来自 **user 记录**;不从目录名解码 |
-| `project` | **`nil`**(从不派生) | `:98` | (omitted) | 编码目录名不解码;`decodeCwd` 是死代码 |
+| `project` | **`nil`**(从不派生) | `:102` | (omitted) | 编码目录名不解码 |
 | `model` | 首个 `message.model` | `:71-74, 99` | `:79-81, 106` | **被呈现**(实测 `glm-5`)—— 不同于 Gemini(始终 nil) |
-| `messageCount` | `userCount + assistantCount` | `:100` | `:107` | **包含工具结果 user 轮**;排除 system-injection;工具块不计数 |
-| `userMessageCount` | `type=="user"` 且非 system-injection | `:82-84, 101` | `:88-92, 108` | 空/工具结果内容仍计数 |
-| `assistantMessageCount` | `type=="assistant"` | `:76-77, 102` | `:83-84, 109` | |
-| `toolMessageCount` | constant `0` | `:103` | `:110` | 工具块从不计为消息 |
-| `systemMessageCount` | system-injection user 记录 | `:80-81, 104` | `:87-89, 111` | AGENTS.md / `<INSTRUCTIONS>` / `<local-command-caveat>` |
-| `summary` / title | 首个非 system user 文本,`prefix(200)` | `:84, 105` | `:91-93, 112` | 空 → nil |
+| `messageCount` | `userCount + assistantCount` | `:105` | `:109` | 只计入扁平化文本非空的轮次;排除 system-injection 与 tool-only envelope |
+| `userMessageCount` | `type=="user"` 且非空文本且非 system-injection | `:87-89, 106` | `:88-95, 110` | tool-result-only 内容会被跳过 |
+| `assistantMessageCount` | `type=="assistant"` 且非空文本 | `:81-82, 107` | `:88-89, 111` | tool-use-only 内容会被跳过 |
+| `toolMessageCount` | constant `0` | `:108` | `:112` | 工具块从不计为消息 |
+| `systemMessageCount` | system-injection user 记录 | `:85-86, 109` | `:91-92, 113` | AGENTS.md / `<INSTRUCTIONS>` / `<local-command-caveat>` |
+| `summary` / title | 首个非 system user 文本,`prefix(200)` | `:89, 110` | `:94-95, 114` | 空 → nil |
 | `filePath` | locator | `:106` | `:113` | |
 | `sizeBytes` | 文件大小 | `:107` | `:114` | Swift `JSONLAdapterSupport.fileSize`;TS `stat.size` |
 | `agentRole` / `originator` / `origin` | `nil` | `:109-111` | (omitted) | iFlow 无派发检测 |
 | `parentSessionId` / `suggestedParentId` | `nil` | `:115-116` | (omitted) | 无 sidecar;仅 Layer 2 启发式 |
 | `summaryMessageCount` / `tier` / `qualityScore` / `indexedAt` | `nil` | `:108, 112-114` | (omitted) | 下游设置,非适配器设置 |
 | **per-msg** `role` | `type=="user"`→`.user`,否则 `.assistant` | `:158` | `:145-149` | |
-| **per-msg** `content` | `extractContent(message.content)`(连接 `text` 块;裸字符串逐字) | `:159, 172-186` | `:147, 194-207` | tool_result/tool_use 不产出文本;分隔符 **`\n\n` Swift vs `\n` TS** |
+| **per-msg** `content` | `extractContent(message.content)`(连接 `text` 块;裸字符串逐字) | `:159, 172-186` | `:147, 194-207` | tool_result/tool_use 不产出文本;Swift 与 TS 都用 `\n` 连接保留的 text 块 |
 | **per-msg** `timestamp` | 记录 `timestamp` | `:160` | `:148` | |
-| **per-msg** `usage` | assistant `message.usage` → `TokenUsage{input_tokens,output_tokens}` | `:162, 188-198` | **none** | **仅 Swift**;两者都为 0 则 nil |
+| **per-msg** `usage` | assistant `message.usage` → `TokenUsage{input_tokens,output_tokens}` | `:166, 192-201` | `:156-159, 197-207` | Swift nil / TS undefined if both 0 |
 | **per-msg** `toolCalls` | `nil`(丢弃) | `:161` | (none) | 工具数据不呈现 |
 
-**Engram 不消费的内容:** `config/projects.json`(整个注册表)、`tmp/.../logs.json`、编码目录名(`project:nil`,`decodeCwd` 死代码);每条记录的 `uuid`/`parentUuid`/`isSidechain`/`userType`/`gitBranch`/`version`/`toolUseResult`;assistant 的 `message.id`/`message.type`/`stop_reason`/`stop_sequence`;所有 `tool_use` & `tool_result` 块(及 5 层链接链);以及(TS 路径)全部 token 用量。磁盘上没有信封级 `messageCount`/`model` 可消费 —— `messageCount` 重新计算,`model` 从 `message` 内部读取。
+**Engram 不消费的内容:** `config/projects.json`(整个注册表)、`tmp/.../logs.json`、编码目录名(`project:nil`,无反向解码);每条记录的 `uuid`/`parentUuid`/`isSidechain`/`userType`/`gitBranch`/`version`/`toolUseResult`;assistant 的 `message.id`/`message.type`/`stop_reason`/`stop_sequence`;所有 `tool_use` & `tool_result` 块(及其链接链);以及零值 token 用量。磁盘上没有信封级 `messageCount`/`model` 可消费 —— `messageCount` 重新计算,`model` 从 `message` 内部读取。
 
 ---
 
@@ -464,17 +501,17 @@ iFlow 介于 Anthropic 家族与 Gemini/Qwen 家族之间:
 | Codebase lineage | **Gemini CLI fork**(`bundle/iflow.js` 中有 `Copyright … Google LLC` SPDX 头部、`google.gemini-cli` 引用) | Gemini CLI(原始) | Gemini CLI fork | **Gemini-CLI fork** |
 | Models run | **多模型**:默认 `glm-4.7` + `Qwen3-Coder-Plus`;另有 Kimi K2、DeepSeek v3.2、GLM-4.6、任意 OpenAI 兼容端点(真实样本恰好用了 `glm-5`) | Gemini | Qwen | — |
 
-**结论:** 在**代码库**层面,iFlow 是一个 **Gemini CLI fork** —— 由官方 `bundle/iflow.js` 中的 `Copyright 2025/2026 Google LLC` SPDX 头部及 `google.gemini-cli` 引用确认([source](https://www.npmjs.com/package/@iflow-ai/iflow-cli))。它**不是** Claude-Code 衍生的。在该 Gemini-CLI 代码库之上,它有意叠加了一层 **Anthropic / Claude-Code 转录信封**(内容块、用量命名、`parentUuid`/`isSidechain` DAG;注入标记是 Engram 的启发式,而非 iFlow 自身的 —— 见 §6.4),披着 **Qwen 风格目录外皮**(`~/.tool/projects/<encoded-dir>/`),并保留 **Gemini-CLI 工具结果内核**(`callId`/`responseParts`/`functionResponse`)。它在*转录 schema* 层面**不是** Gemini 的分支,尽管在*代码库*层面它确实是 Gemini 的分支。iFlow 是**多模型**的(默认 `glm-4.7` + `Qwen3-Coder-Plus`,外加 Kimi K2 / DeepSeek v3.2 / GLM-4.6 / 任意 OpenAI 兼容端点),并非 GLM-only;真实样本只是恰好运行了 `glm-5`。`IflowAdapter` 的代码结构是从 Qwen/Gemini 同级模板复制而来(相同的 `JSONLAdapterSupport`、相同的 `parseSessionInfo` 骨架),这也是死代码 `decodeCwd` 辅助器残留的原因。Engram 之所以能正确处理 iFlow,是因为它把它当作拥有 Anthropic 形态 `content`/`usage` 提取逻辑的独立适配器来对待 —— 规避了血统陷阱(把它当作 Gemini `{text}`/`tokens` 来解析)。**注意:** iFlow CLI 官方将于 2026-04-17(北京时间)关停;官方建议用户迁移至 Qoder([source](https://platform.iflow.cn/en/cli/changelog))。
+**结论:** 在**代码库**层面,iFlow 是一个 **Gemini CLI fork** —— 由官方 `bundle/iflow.js` 中的 `Copyright 2025/2026 Google LLC` SPDX 头部及 `google.gemini-cli` 引用确认([source](https://www.npmjs.com/package/@iflow-ai/iflow-cli))。它**不是** Claude-Code 衍生的。在该 Gemini-CLI 代码库之上,它有意叠加了一层 **Anthropic / Claude-Code 转录信封**(内容块、用量命名、`parentUuid`/`isSidechain` DAG;注入标记是 Engram 的启发式,而非 iFlow 自身的 —— 见 §6.4),披着 **Qwen 风格目录外皮**(`~/.tool/projects/<encoded-dir>/`),并保留 **Gemini-CLI 工具结果内核**(`callId`/`responseParts`/`functionResponse`)。它在*转录 schema* 层面**不是** Gemini 的分支,尽管在*代码库*层面它确实是 Gemini 的分支。iFlow 是**多模型**的(默认 `glm-4.7` + `Qwen3-Coder-Plus`,外加 Kimi K2 / DeepSeek v3.2 / GLM-4.6 / 任意 OpenAI 兼容端点),并非 GLM-only;真实样本只是恰好运行了 `glm-5`。`IflowAdapter` 的代码结构是从 Qwen/Gemini 同级模板复制而来(相同的 `JSONLAdapterSupport`、相同的 `parseSessionInfo` 骨架),但不同于项目迁移编码器,它刻意不解码有损目录名。Engram 之所以能正确处理 iFlow,是因为它把它当作拥有 Anthropic 形态 `content`/`usage` 提取逻辑的独立适配器来对待 —— 规避了血统陷阱(把它当作 Gemini `{text}`/`tokens` 来解析)。**注意:** iFlow CLI 官方将于 2026-04-17(北京时间)关停;官方建议用户迁移至 Qoder([source](https://platform.iflow.cn/en/cli/changelog))。
 
 ### Gotchas / version drift / edge cases
 
-1. **`messageCount` 随工具轮次膨胀。** 仅含工具结果的 `user` 记录(无 `text`)被计为 user 消息(无空内容跳过)。实测:16 条 "user" 记录中有 12 条是工具结果 → `userMessageCount`=16,`messageCount`=41(= 行数)。Engram 的计数 ≠ 真实人类 prompt 的数量。
-2. **编码目录名是有损的,且从不用于 cwd。** `Sources.swift encodeIflow`(`:489-499`)剥除每段前导/尾随破折号,故 `/Users/u/-Code-/engram` → `-Users-u-Code-engram`(`-Code-` 的破折号消失)。适配器自带的 `decodeCwd`(`:143-148`,TS `:163-168`)使用*不同的*方案(`--`→哨兵,`-`→`/`)且是**死代码**(从未被调用)。编码器/解码器并非互逆;目录名无法往返还原为 cwd。Engram 通过信任文件内 `cwd` 来规避。项目迁移 docstring(`Sources.swift:484-488`)标注了这种有损性,并指出一次预检 cwd 探测会捕获冲突。
+1. **旧 `messageCount` 会随工具轮次膨胀;worktree parser 已修复。** 仅含工具结果的 `user` 记录与仅含工具调用的 `assistant` 记录会扁平化为 `""`,现在会在 count/stream 前跳过。实测:41 行大会话变成 14 条可见消息(4 user + 10 assistant);4 行小会话变成 3 条可见消息(1 user + 2 assistant)。现有 DB 行在重新索引前仍显示旧计数。
+2. **编码目录名是有损的,且从不用于 cwd。** `Sources.swift encodeIflow`(`:489-499`)剥除每段前导/尾随破折号,故 `/Users/u/-Code-/engram` → `-Users-u-Code-engram`(`-Code-` 的破折号消失)。当前 Swift 和 TS 适配器没有反向 decoder,也不会从目录名推断 cwd/project;目录名无法往返还原为 cwd。Engram 通过信任文件内 `cwd` 来规避。项目迁移 docstring(`Sources.swift:488-492`)标注了这种有损性,并指出一次预检 cwd 探测会捕获冲突。
 3. **`id` 包含 `session-` 前缀。** 存储的 `id` = `session-<UUID>`,而非裸 UUID。按原始 UUID 进行的跨工具联结 / 父级检测必须考虑该前缀。
-4. **仅含工具结果的 user 轮被计为空内容 user 消息。** 一条 `content` 为 `[{type:"tool_result",…}]` 的 `user` 记录扁平化为 `""`(只保留 `text` 块)。`isSystemInjection("")` 为 false → 它以空内容递增 `userCount`,并在 `streamMessages` 中贡献一条空内容消息(Swift 在此**不**预过滤空内容,不同于 Gemini)。若首个 user 轮仅含工具结果,合成的 `summary` 会保持空白直到后续出现带文本的 user 轮。
+4. **tool_result/tool_use envelope 会保留在磁盘上,但不会进入 Engram transcript 输出。** `content` 为 `[{type:"tool_result",…}]` 的 `user` 记录或只含 `tool_use` 块的 `assistant` 记录会扁平化为 `""`;当前 Swift 与 TS 会在 count/stream 前跳过。未来如果某个文件只有 tool envelope,它可能有 `sessionId` 但没有可见 transcript 轮次。
 5. **`cwd` 只出现在 `user` 记录上。** 实测:`cwd`/`gitBranch`/`version` 出现在 16/16 条 user 记录上,0/25 条 assistant 记录上。一个没有 user 记录(全为 assistant)、或 iFlow 停止发出 `cwd` 的会话会产出 `cwd=""`(适配器只从首个携带 `cwd` 的记录读取它)。在当前数据下属假设情况;特此标注。
 6. **`model` 被呈现(好事)—— 但只取第一个。** 不同于 Gemini(始终 nil),iFlow 报告 `model`(实测 `glm-5`)。只保留**第一个** assistant `model`;中途切换模型的会话只报告第一个。
-7. **Token 用量仅 Swift 有,且常为零。** TS 丢弃全部用量。Swift 读取 `input_tokens`/`output_tokens`,两者都为 0 时返回 nil —— 而实测 GLM 代理在 238 KB 会话的 25 轮上均报告 0,因此即便在 Swift 路径上,实践中用量也常常缺失。非零是可能的(小会话第 4 行:16472/224)。
+7. **Token 用量 Swift 与 TS 都消费,但常为零。** 两条路径都读取 assistant `input_tokens`/`output_tokens`,并在两者都为 0 时省略 usage。实测 GLM 代理在 238 KB 会话的 25 个 assistant 轮次上均报告 0,因此实践中用量常常缺失。非零是可能的,且现在 TS 也覆盖(小会话第 4 行:16472/224;live TS smoke 看到 1 条 streamed assistant message 带 usage)。
 8. **文本连接分隔符在 Swift 与 TS 间漂移。** Swift 用 `"\n\n"` 连接多文本块内容(`:185`);TS 用 `"\n"`(`:204`)。同一个多段 assistant 轮在两个解析器下渲染不同。
 9. **TS 无大小/行数/消息上限;Swift 上限 100 MB / 8 MB / 10,000。** 一个病态的大 iFlow 文件会被 Swift 跳过(`.fileTooLarge` > 100 MB),但被 TS 完整流式读取。(TS 版 iFlow 也缺少 Gemini-TS 的 10 MB 上限。)
 10. **文件身份守卫(仅 Swift)。** 若文件在读取中途变化,Swift 抛出 `.fileModifiedDuringParse` —— 一个正在被追加的真实会话可能失败并稍后重试。相比 Gemini,iFlow 更易触发,因为 iFlow 每轮都真正追加。

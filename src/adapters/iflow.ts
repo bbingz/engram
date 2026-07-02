@@ -10,6 +10,7 @@ import type {
   SessionAdapter,
   SessionInfo,
   StreamMessagesOptions,
+  TokenUsage,
 } from './types.js';
 
 export class IflowAdapter implements SessionAdapter {
@@ -80,10 +81,12 @@ export class IflowAdapter implements SessionAdapter {
           detectedModel = msg.model;
         }
 
+        const text = this.extractContent(msg?.content);
+        if (!text.trim()) continue;
+
         if (type === 'assistant') {
           assistantCount++;
         } else if (type === 'user') {
-          const text = this.extractContent(msg?.content);
           if (this.isSystemInjection(text)) {
             systemCount++;
           } else {
@@ -135,17 +138,25 @@ export class IflowAdapter implements SessionAdapter {
       const type = obj.type as string;
       if (type !== 'user' && type !== 'assistant') continue;
 
+      const msg = obj.message as Record<string, unknown>;
+      const content = this.extractContent(msg?.content);
+      if (type === 'user' && this.isSystemInjection(content)) continue;
+      if (!content.trim()) continue;
+
       if (count < offset) {
         count++;
         continue;
       }
       count++;
 
-      const msg = obj.message as Record<string, unknown>;
       yield {
         role: type as 'user' | 'assistant',
-        content: this.extractContent(msg?.content),
+        content,
         timestamp: obj.timestamp as string | undefined,
+        usage:
+          type === 'assistant'
+            ? this.usage(msg?.usage as Record<string, unknown> | undefined)
+            : undefined,
       };
       yielded++;
     }
@@ -181,6 +192,24 @@ export class IflowAdapter implements SessionAdapter {
     } catch {
       return null;
     }
+  }
+
+  private usage(usage?: Record<string, unknown>): TokenUsage | undefined {
+    if (!usage) return undefined;
+    const tokenUsage = {
+      inputTokens: this.int(usage.input_tokens),
+      outputTokens: this.int(usage.output_tokens),
+    };
+    if (tokenUsage.inputTokens > 0 || tokenUsage.outputTokens > 0) {
+      return tokenUsage;
+    }
+    return undefined;
+  }
+
+  private int(value: unknown): number {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') return Number.parseInt(value, 10) || 0;
+    return 0;
   }
 
   private extractContent(content: unknown): string {

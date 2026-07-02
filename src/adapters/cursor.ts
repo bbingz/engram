@@ -9,13 +9,14 @@ import type {
   SessionAdapter,
   SessionInfo,
   StreamMessagesOptions,
+  TokenUsage,
 } from './types.js';
 
 interface ComposerData {
   composerId: string;
-  createdAt: number;
-  lastUpdatedAt: number;
-  latestConversationSummary?: { summary?: string };
+  createdAt?: number;
+  lastUpdatedAt?: number;
+  latestConversationSummary?: { summary?: unknown };
   context?: {
     fileSelections?: { uri?: { fsPath?: string } }[];
     folderSelections?: { uri?: { fsPath?: string } }[];
@@ -27,6 +28,7 @@ interface BubbleData {
   text?: string;
   rawText?: string;
   timingInfo?: { clientStartTime?: number };
+  tokenCount?: { inputTokens?: unknown; outputTokens?: unknown };
 }
 
 export class CursorAdapter implements SessionAdapter {
@@ -112,7 +114,8 @@ export class CursorAdapter implements SessionAdapter {
           for (const br of bubbleRows) {
             perSessionBytes += Buffer.byteLength(br.value ?? '', 'utf8');
             try {
-              bubbles.push(JSON.parse(br.value));
+              const bubble = JSON.parse(br.value);
+              if (this.isBubbleData(bubble)) bubbles.push(bubble);
             } catch {
               /* skip */
             }
@@ -121,6 +124,7 @@ export class CursorAdapter implements SessionAdapter {
         let userMessageCount = 0;
         let assistantMessageCount = 0;
         for (const b of bubbles) {
+          if (!this.isBubbleData(b)) continue;
           const role =
             b.type === 1 ? 'user' : b.type === 2 ? 'assistant' : null;
           if (!role) continue;
@@ -129,14 +133,23 @@ export class CursorAdapter implements SessionAdapter {
           if (role === 'user') userMessageCount++;
           else assistantMessageCount++;
         }
+        if (userMessageCount + assistantMessageCount === 0) return null;
+
+        const createdAt =
+          this.numberValue(data.createdAt) ??
+          this.firstVisibleBubbleTimestamp(bubbles) ??
+          this.numberValue(data.lastUpdatedAt) ??
+          0;
+        const lastUpdatedAt = this.numberValue(data.lastUpdatedAt) ?? createdAt;
+        const summary = this.summary(data.latestConversationSummary);
 
         return {
           id: data.composerId,
           source: 'cursor',
-          startTime: new Date(data.createdAt).toISOString(),
+          startTime: new Date(createdAt).toISOString(),
           endTime:
-            data.lastUpdatedAt !== data.createdAt
-              ? new Date(data.lastUpdatedAt).toISOString()
+            lastUpdatedAt !== createdAt
+              ? new Date(lastUpdatedAt).toISOString()
               : undefined,
           cwd: this.inferCwd(data),
           messageCount: userMessageCount + assistantMessageCount,
@@ -144,7 +157,7 @@ export class CursorAdapter implements SessionAdapter {
           assistantMessageCount,
           toolMessageCount: 0,
           systemMessageCount: 0,
-          summary: data.latestConversationSummary?.summary?.slice(0, 200),
+          summary,
           filePath,
           sizeBytes: perSessionBytes,
         };
@@ -194,7 +207,8 @@ export class CursorAdapter implements SessionAdapter {
             .all(`bubbleId:${composerId}:%`) as { value: string }[];
           for (const row of rows) {
             try {
-              bubbles.push(JSON.parse(row.value));
+              const bubble = JSON.parse(row.value);
+              if (this.isBubbleData(bubble)) bubbles.push(bubble);
             } catch {
               /* skip */
             }
@@ -204,6 +218,7 @@ export class CursorAdapter implements SessionAdapter {
         let yielded = 0;
         for (const bubble of bubbles) {
           if (yielded >= limit) break;
+          if (!this.isBubbleData(bubble)) continue;
           const role =
             bubble.type === 1 ? 'user' : bubble.type === 2 ? 'assistant' : null;
           if (!role) continue;
@@ -215,10 +230,13 @@ export class CursorAdapter implements SessionAdapter {
           }
           count++;
           const ts = bubble.timingInfo?.clientStartTime;
+          const usage =
+            role === 'assistant' ? this.usage(bubble.tokenCount) : undefined;
           yield {
             role,
             content,
             timestamp: ts ? new Date(ts).toISOString() : undefined,
+            usage,
           };
           yielded++;
         }
@@ -239,6 +257,65 @@ export class CursorAdapter implements SessionAdapter {
     const file = data.context?.fileSelections?.[0]?.uri?.fsPath;
     if (file) return dirname(file);
     return '';
+  }
+
+  private firstVisibleBubbleTimestamp(
+    bubbles: BubbleData[],
+  ): number | undefined {
+    for (const bubble of bubbles) {
+      if (!this.isBubbleData(bubble)) continue;
+      const role =
+        bubble.type === 1 ? 'user' : bubble.type === 2 ? 'assistant' : null;
+      if (!role) continue;
+      const content = bubble.text || bubble.rawText || '';
+      if (!content.trim()) continue;
+      const timestamp = this.numberValue(bubble.timingInfo?.clientStartTime);
+      if (timestamp !== undefined) return timestamp;
+    }
+    return undefined;
+  }
+
+  private isBubbleData(value: unknown): value is BubbleData {
+    return value !== null && typeof value === 'object';
+  }
+
+  private numberValue(value: unknown): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return undefined;
+  }
+
+  private summary(
+    value: ComposerData['latestConversationSummary'],
+  ): string | undefined {
+    return this.summaryText(value);
+  }
+
+  private summaryText(value: unknown): string | undefined {
+    if (typeof value === 'string') return value.slice(0, 200);
+    if (value !== null && typeof value === 'object') {
+      return this.summaryText((value as { summary?: unknown }).summary);
+    }
+    return undefined;
+  }
+
+  private usage(tokenCount: BubbleData['tokenCount']): TokenUsage | undefined {
+    if (!tokenCount) return undefined;
+    const usage = {
+      inputTokens: this.int(tokenCount.inputTokens),
+      outputTokens: this.int(tokenCount.outputTokens),
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    };
+    if (usage.inputTokens === 0 && usage.outputTokens === 0) return undefined;
+    return usage;
+  }
+
+  private int(value: unknown): number {
+    return Math.trunc(this.numberValue(value) ?? 0);
   }
 
   private parsePath(filePath: string): {

@@ -1,7 +1,9 @@
 import Foundation
+import GRDB
 import SQLite3
 import XCTest
 @testable import EngramCoreRead
+@testable import EngramCoreWrite
 
 /// Coverage for the adapter message-count fixes (data-integrity review pass):
 /// parseSessionInfo counts must reflect only the turns that streamMessages
@@ -39,6 +41,806 @@ final class AdapterMessageCountTests: XCTestCase {
     private func jsonLine(_ object: [String: Any]) throws -> String {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
         return String(decoding: data, as: UTF8.self)
+    }
+
+    private func writeJSON(_ object: Any, to url: URL) throws {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
+        try data.write(to: url)
+    }
+
+    private func writeJSONL(_ objects: [[String: Any]], to url: URL) throws {
+        try objects.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func standardizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
+    private func makeGrokFixture(root: URL) throws -> (sessionDir: URL, transcript: URL) {
+        let encodedCwd = "%2FUsers%2Fbing%2F-Automations-%2FPrefict-Trading-Bot"
+        let sessionDir = root
+            .appendingPathComponent(encodedCwd, isDirectory: true)
+            .appendingPathComponent("019f179d-0888-76b1-9325-5a91ace595df", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+
+        try writeJSON(
+            [
+                "info": [
+                    "id": "019f179d-0888-76b1-9325-5a91ace595df",
+                    "cwd": "/Users/bing/-Automations-/Prefict-Trading-Bot"
+                ],
+                "session_summary": "Reconstruct Technical Route from X Post Clues and Validate Closed Loop",
+                "generated_title": "Reconstruct Technical Route from X Post Clues and Validate Closed Loop",
+                "created_at": "2026-06-30T08:19:55.275395Z",
+                "updated_at": "2026-06-30T11:12:27.482957Z",
+                "current_model_id": "grok-build",
+                "agent_name": "grok-build-plan",
+                "num_messages": 7,
+                "num_chat_messages": 5,
+                "chat_format_version": 1
+            ],
+            to: sessionDir.appendingPathComponent("summary.json")
+        )
+        try writeJSON(
+            [
+                "working_directory": "/Users/bing/-Automations-/Prefict-Trading-Bot",
+                "system_prompt_label": "Grok"
+            ],
+            to: sessionDir.appendingPathComponent("prompt_context.json")
+        )
+        let transcript = sessionDir.appendingPathComponent("chat_history.jsonl")
+        try writeJSONL(
+            [
+                ["type": "system", "content": "You are Grok released by xAI."],
+                [
+                    "type": "user",
+                    "content": [[
+                        "type": "text",
+                        "text": "<user_info>\nWorkspace Path: /Users/bing/-Automations-/Prefict-Trading-Bot\n</user_info>"
+                    ]]
+                ],
+                [
+                    "type": "reasoning",
+                    "content": "Inspecting public clues before writing the route."
+                ],
+                [
+                    "type": "backend_tool_call",
+                    "name": "list_dir",
+                    "arguments": #"{"target_directory":"."}"#
+                ],
+                [
+                    "type": "user",
+                    "content": [[
+                        "type": "text",
+                        "text": "<user_query>\nhttps://x.com/ZhanweiC/status/2071750256715505947\n\n你按他说的线索，完整还原出他的技术路线？\n</user_query>"
+                    ]]
+                ],
+                [
+                    "type": "assistant",
+                    "content": "我会先抓取线索并还原技术路线。",
+                    "tool_calls": [[
+                        "id": "call-1",
+                        "name": "web_fetch",
+                        "arguments": #"{"url":"https://github.com/PredictDotFun/sdk-python"}"#
+                    ]],
+                    "model_id": "grok-build",
+                    "model_fingerprint": "fp_36bb860c5ab2a013"
+                ],
+                [
+                    "type": "tool_result",
+                    "tool_call_id": "call-1",
+                    "content": "Predict.fun SDK README"
+                ]
+            ],
+            to: transcript
+        )
+        return (sessionDir, transcript)
+    }
+
+    private func makeClaudeCodeFixture(
+        projectsRoot: URL,
+        projectName: String = "-Users-bing--Code--MimoProject",
+        sessionId: String = "cc-mimo-1",
+        model: String = "mimo-v2.5-pro"
+    ) throws -> URL {
+        let projectDir = projectsRoot.appendingPathComponent(projectName, isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        let transcript = projectDir.appendingPathComponent("\(sessionId).jsonl")
+        let assistantContent: [[String: Any]] = [
+            ["type": "text", "text": "Indexed under the provider source."]
+        ]
+        try writeJSONL(
+            [
+                [
+                    "type": "user",
+                    "sessionId": sessionId,
+                    "cwd": "/Users/bing/-Code-/MimoProject",
+                    "timestamp": "2026-06-30T01:00:00.000Z",
+                    "message": [
+                        "role": "user",
+                        "content": "Build the provider routed session index.",
+                    ],
+                ],
+                [
+                    "type": "assistant",
+                    "sessionId": sessionId,
+                    "cwd": "/Users/bing/-Code-/MimoProject",
+                    "timestamp": "2026-06-30T01:00:01.000Z",
+                    "message": [
+                        "role": "assistant",
+                        "model": model,
+                        "content": assistantContent,
+                    ],
+                ],
+            ],
+            to: transcript
+        )
+        return transcript
+    }
+
+    private func makeClaudeCodeSubagentFixture(
+        projectsRoot: URL,
+        projectName: String = "-Users-bing--Code--MimoProject",
+        parentSessionId: String = "cc-mimo-parent",
+        agentId: String,
+        nestedWorkflowId: String? = nil
+    ) throws -> URL {
+        var subagentsDir = projectsRoot
+            .appendingPathComponent(projectName, isDirectory: true)
+            .appendingPathComponent(parentSessionId, isDirectory: true)
+            .appendingPathComponent("subagents", isDirectory: true)
+        if let nestedWorkflowId {
+            subagentsDir = subagentsDir
+                .appendingPathComponent("workflows", isDirectory: true)
+                .appendingPathComponent(nestedWorkflowId, isDirectory: true)
+        }
+        try FileManager.default.createDirectory(at: subagentsDir, withIntermediateDirectories: true)
+        let transcript = subagentsDir.appendingPathComponent("agent-\(agentId).jsonl")
+        try writeJSONL(
+            [
+                [
+                    "type": "user",
+                    "sessionId": parentSessionId,
+                    "agentId": agentId,
+                    "cwd": "/Users/bing/-Code-/MimoProject",
+                    "timestamp": "2026-06-30T01:00:00.000Z",
+                    "isSidechain": true,
+                    "message": [
+                        "role": "user",
+                        "content": "Review the provider parser.",
+                    ],
+                ],
+                [
+                    "type": "assistant",
+                    "sessionId": parentSessionId,
+                    "agentId": agentId,
+                    "cwd": "/Users/bing/-Code-/MimoProject",
+                    "timestamp": "2026-06-30T01:00:01.000Z",
+                    "isSidechain": true,
+                    "message": [
+                        "role": "assistant",
+                        "model": "mimo-v2.5-pro",
+                        "content": [["type": "text", "text": "Nested workflow subagent parsed."]],
+                    ],
+                ],
+            ],
+            to: transcript
+        )
+        return transcript
+    }
+
+    private func makeClaudeCodeLocalCommandOnlyFixture(projectsRoot: URL) throws -> URL {
+        let projectDir = projectsRoot.appendingPathComponent("-Users-bing--Code--DrCom", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        let transcript = projectDir.appendingPathComponent("local-command-only.jsonl")
+        try writeJSONL(
+            [
+                [
+                    "type": "mode",
+                    "mode": "normal",
+                    "sessionId": "local-command-only",
+                ],
+                [
+                    "type": "permission-mode",
+                    "permissionMode": "bypassPermissions",
+                    "sessionId": "local-command-only",
+                ],
+                [
+                    "type": "user",
+                    "sessionId": "local-command-only",
+                    "cwd": "/Users/bing/-Code-/DrCom",
+                    "timestamp": "2026-06-29T13:20:16.846Z",
+                    "isMeta": true,
+                    "message": [
+                        "role": "user",
+                        "content": "<local-command-caveat>Caveat: ignore local commands.</local-command-caveat>",
+                    ],
+                ],
+                [
+                    "type": "user",
+                    "sessionId": "local-command-only",
+                    "cwd": "/Users/bing/-Code-/DrCom",
+                    "timestamp": "2026-06-29T13:20:16.846Z",
+                    "message": [
+                        "role": "user",
+                        "content": "<command-name>/effort</command-name>\n<command-message>effort</command-message>",
+                    ],
+                ],
+                [
+                    "type": "user",
+                    "sessionId": "local-command-only",
+                    "cwd": "/Users/bing/-Code-/DrCom",
+                    "timestamp": "2026-06-29T13:20:16.846Z",
+                    "message": [
+                        "role": "user",
+                        "content": "<local-command-stdout>Set effort level to ultracode</local-command-stdout>",
+                    ],
+                ],
+            ],
+            to: transcript
+        )
+        return transcript
+    }
+
+    private struct LiveClaudeCodeProviderRootSpec {
+        let name: String
+        let source: SourceName
+    }
+
+    // MARK: - Grok
+
+    func testGrokAdapterDiscoversSessionDirectoriesAndParsesMetadata() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try makeGrokFixture(root: root)
+
+        let adapter = GrokAdapter(sessionsRoot: root.path)
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertEqual(locators.count, 1)
+        XCTAssertTrue(locators[0].hasSuffix(
+            "%2FUsers%2Fbing%2F-Automations-%2FPrefict-Trading-Bot/019f179d-0888-76b1-9325-5a91ace595df/chat_history.jsonl"
+        ))
+
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: fixture.transcript.path))
+        XCTAssertEqual(info.id, "019f179d-0888-76b1-9325-5a91ace595df")
+        XCTAssertEqual(info.source, .grok)
+        XCTAssertEqual(info.cwd, "/Users/bing/-Automations-/Prefict-Trading-Bot")
+        XCTAssertEqual(info.model, "grok-build")
+        XCTAssertEqual(info.startTime, "2026-06-30T08:19:55.275395Z")
+        XCTAssertEqual(info.endTime, "2026-06-30T11:12:27.482957Z")
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+        XCTAssertEqual(info.toolMessageCount, 1)
+        XCTAssertEqual(info.systemMessageCount, 2)
+        XCTAssertEqual(info.messageCount, 3)
+        XCTAssertEqual(info.summary, "https://x.com/ZhanweiC/status/2071750256715505947\n\n你按他说的线索，完整还原出他的技术路线？")
+        XCTAssertEqual(info.filePath, fixture.transcript.path)
+        XCTAssertGreaterThan(info.sizeBytes, 0)
+    }
+
+    func testGrokAdapterStreamsCleanMessagesAndToolCalls() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try makeGrokFixture(root: root)
+
+        let adapter = GrokAdapter(sessionsRoot: root.path)
+        let streamed = try await drain(adapter, locator: fixture.transcript.path)
+
+        XCTAssertEqual(streamed.map(\.role), [.user, .assistant, .tool])
+        XCTAssertEqual(streamed[0].content, "https://x.com/ZhanweiC/status/2071750256715505947\n\n你按他说的线索，完整还原出他的技术路线？")
+        XCTAssertEqual(streamed[1].content, "我会先抓取线索并还原技术路线。")
+        XCTAssertEqual(streamed[1].toolCalls?.first?.name, "web_fetch")
+        XCTAssertEqual(streamed[1].toolCalls?.first?.input, #"{"url":"https://github.com/PredictDotFun/sdk-python"}"#)
+        XCTAssertEqual(streamed[2].content, "Predict.fun SDK README")
+    }
+
+    func testGrokAdapterIsRegisteredAndIndexable() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try makeGrokFixture(root: root)
+
+        XCTAssertTrue(SessionAdapterFactory.defaultAdapters().contains { $0.source == .grok })
+        let adapter = GrokAdapter(sessionsRoot: root.path)
+        let indexer = SwiftIndexer(sink: AdapterMessageCountNoopSink(), adapters: [adapter])
+        let snapshots = try await indexer.collectSnapshots()
+
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertEqual(snapshots.first?.source, .grok)
+        XCTAssertEqual(snapshots.first?.id, "019f179d-0888-76b1-9325-5a91ace595df")
+        XCTAssertEqual(snapshots.first?.messageCount, 3)
+        XCTAssertNotEqual(snapshots.first?.tier, .skip)
+    }
+
+    func testLiveGrokCorpusIndexesExpectedLocalSessions() async throws {
+        guard ProcessInfo.processInfo.environment["ENGRAM_LIVE_GROK_CORPUS_SMOKE"] == "1" else {
+            throw XCTSkip("set ENGRAM_LIVE_GROK_CORPUS_SMOKE=1 to scan the local Grok corpus")
+        }
+
+        let sessionsRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".grok/sessions", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: sessionsRoot.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            throw XCTSkip("missing local Grok sessions root: \(sessionsRoot.path)")
+        }
+
+        let adapter = GrokAdapter(sessionsRoot: sessionsRoot.path)
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertGreaterThan(locators.count, 0)
+
+        var parsed = 0
+        var userMessages = 0
+        var assistantMessages = 0
+        var toolMessages = 0
+        var systemMessages = 0
+        var models = Set<String>()
+        for locator in locators {
+            switch try await adapter.parseSessionInfo(locator: locator) {
+            case .success(let info):
+                XCTAssertEqual(info.source, .grok)
+                XCTAssertFalse(info.id.isEmpty)
+                XCTAssertFalse(info.cwd.isEmpty)
+                XCTAssertTrue(info.filePath.hasSuffix("/chat_history.jsonl") || info.filePath.hasSuffix("/updates.jsonl"))
+                parsed += 1
+                userMessages += info.userMessageCount
+                assistantMessages += info.assistantMessageCount
+                toolMessages += info.toolMessageCount
+                systemMessages += info.systemMessageCount
+                if let model = info.model, !model.isEmpty {
+                    models.insert(model)
+                }
+            case .failure:
+                break
+            }
+        }
+        XCTAssertEqual(parsed, locators.count)
+        XCTAssertGreaterThan(userMessages, 0)
+        XCTAssertGreaterThan(assistantMessages, 0)
+        XCTAssertGreaterThan(toolMessages, 0)
+        XCTAssertGreaterThan(systemMessages, 0)
+        XCTAssertTrue(models.contains("grok-build"))
+
+        let runRoot = tempDir()
+        defer { try? FileManager.default.removeItem(at: runRoot) }
+        let writer = try EngramDatabaseWriter(path: runRoot.appendingPathComponent("index.sqlite").path)
+        try writer.migrate()
+        _ = try await writer.indexAllSessions(adapters: [adapter])
+        let rowCount = try writer.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE source = 'grok'") ?? 0
+        }
+        XCTAssertEqual(rowCount, parsed)
+        print(
+            "LIVE_GROK_CORPUS_SMOKE listed=\(locators.count) parsed=\(parsed) rows=\(rowCount) user=\(userMessages) assistant=\(assistantMessages) tool=\(toolMessages) system=\(systemMessages) models=\(models.sorted().joined(separator: ","))"
+        )
+    }
+
+    // MARK: - Claude Code provider roots
+
+    func testClaudeCodeProviderRootParsesAsProviderSourceWithOriginator() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectsRoot = root.appendingPathComponent(".claude-mimo/projects", isDirectory: true)
+        let transcript = try makeClaudeCodeFixture(projectsRoot: projectsRoot)
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: projectsRoot.path)
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertEqual(locators.map(standardizedPath), [standardizedPath(transcript.path)])
+
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: transcript.path))
+        XCTAssertEqual(info.source.rawValue, "mimo")
+        XCTAssertEqual(info.originator, "Claude Code")
+        XCTAssertEqual(info.model, "mimo-v2.5-pro")
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+
+        let streamed = try await drain(adapter, locator: transcript.path)
+        XCTAssertEqual(streamed.map(\.role), [.user, .assistant])
+        XCTAssertEqual(streamed.map(\.content), [
+            "Build the provider routed session index.",
+            "Indexed under the provider source.",
+        ])
+    }
+
+    func testClaudeCodeProviderRootSkipsSystemInjectionInStreamCount() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectsRoot = root.appendingPathComponent(".claude-qwen/projects", isDirectory: true)
+        let projectDir = projectsRoot.appendingPathComponent("-Users-test-provider", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        let transcript = projectDir.appendingPathComponent("provider-session.jsonl")
+        try writeJSONL(
+            [
+                [
+                    "type": "user",
+                    "sessionId": "provider-session",
+                    "cwd": "/Users/test/provider",
+                    "timestamp": "2026-04-29T10:00:00.000Z",
+                    "message": [
+                        "role": "user",
+                        "content": "<command-message>goal</command-message>\n<command-name>/goal</command-name>",
+                    ],
+                ],
+                [
+                    "type": "user",
+                    "sessionId": "provider-session",
+                    "cwd": "/Users/test/provider",
+                    "timestamp": "2026-04-29T10:00:01.000Z",
+                    "message": [
+                        "role": "user",
+                        "content": "real question",
+                    ],
+                ],
+                [
+                    "type": "assistant",
+                    "sessionId": "provider-session",
+                    "timestamp": "2026-04-29T10:00:02.000Z",
+                    "message": [
+                        "role": "assistant",
+                        "model": "qwen3.7-plus",
+                        "content": [["type": "text", "text": "real answer"]],
+                    ],
+                ],
+            ],
+            to: transcript
+        )
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: projectsRoot.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: transcript.path))
+        XCTAssertEqual(info.source, .qwen)
+        XCTAssertEqual(info.systemMessageCount, 1)
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+        XCTAssertEqual(info.messageCount, 2)
+
+        let streamed = try await drain(adapter, locator: transcript.path)
+        XCTAssertEqual(info.messageCount, streamed.count, "count must match streamed message count")
+        XCTAssertEqual(streamed.map(\.content), ["real question", "real answer"])
+
+        let offsetStream = try await adapter.streamMessages(
+            locator: transcript.path,
+            options: StreamMessagesOptions(offset: 1)
+        )
+        var offsetMessages: [NormalizedMessage] = []
+        for try await message in offsetStream {
+            offsetMessages.append(message)
+        }
+        XCTAssertEqual(offsetMessages.map(\.content), ["real answer"])
+    }
+
+    func testClaudeCodeProviderRootDiscoversNestedWorkflowSubagents() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectsRoot = root.appendingPathComponent(".claude-mimo/projects", isDirectory: true)
+        let parent = try makeClaudeCodeFixture(projectsRoot: projectsRoot, sessionId: "cc-mimo-parent")
+        let directSubagent = try makeClaudeCodeSubagentFixture(
+            projectsRoot: projectsRoot,
+            agentId: "direct"
+        )
+        let workflowSubagent = try makeClaudeCodeSubagentFixture(
+            projectsRoot: projectsRoot,
+            agentId: "workflow",
+            nestedWorkflowId: "wf_123"
+        )
+        let workflowJournal = workflowSubagent
+            .deletingLastPathComponent()
+            .appendingPathComponent("journal.jsonl")
+        try jsonLine([
+            "type": "workflow_event",
+            "workflowId": "wf_123",
+            "event": "started",
+        ])
+        .appending("\n")
+        .write(to: workflowJournal, atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: projectsRoot.path)
+        let locators = try await adapter.listSessionLocators().map(standardizedPath)
+
+        XCTAssertEqual(
+            Set(locators),
+            Set([parent.path, directSubagent.path, workflowSubagent.path].map(standardizedPath))
+        )
+
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: workflowSubagent.path))
+        XCTAssertEqual(info.id, "workflow")
+        XCTAssertEqual(info.source, .mimo)
+        XCTAssertEqual(info.originator, "Claude Code")
+        XCTAssertEqual(info.agentRole, "subagent")
+        XCTAssertEqual(info.parentSessionId, "cc-mimo-parent")
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+    }
+
+    func testLiveNativeClaudeCodeCorpusHasIdentityCoverageInDatabase() async throws {
+        guard ProcessInfo.processInfo.environment["ENGRAM_LIVE_CLAUDE_CODE_CORPUS_SMOKE"] == "1" else {
+            throw XCTSkip("set ENGRAM_LIVE_CLAUDE_CODE_CORPUS_SMOKE=1 to scan the local native Claude Code corpus")
+        }
+
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let projectsRoot = home.appendingPathComponent(".claude/projects", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: projectsRoot.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            throw XCTSkip("missing native Claude Code projects root: \(projectsRoot.path)")
+        }
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: projectsRoot.path)
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertGreaterThan(locators.count, 0)
+
+        var parsed = 0
+        var claudeParsed = 0
+        var minimaxParsed = 0
+        var parseFailures = 0
+        var seenCurrentIds = Set<String>()
+        var duplicateCurrentIds = Set<String>()
+        for locator in locators {
+            switch try await adapter.parseSessionInfo(locator: locator) {
+            case .success(let info):
+                parsed += 1
+                if info.source == .minimax {
+                    minimaxParsed += 1
+                    continue
+                }
+                guard info.source == .claudeCode else { continue }
+                claudeParsed += 1
+                if !seenCurrentIds.insert(info.id).inserted {
+                    duplicateCurrentIds.insert(info.id)
+                }
+            case .failure:
+                parseFailures += 1
+            }
+        }
+        XCTAssertGreaterThan(claudeParsed, 0)
+
+        let writer = try EngramDatabaseWriter(path: home.appendingPathComponent(".engram/index.sqlite").path)
+        let row = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*) AS rows,
+                       SUM(CASE WHEN agent_role = 'subagent' THEN 1 ELSE 0 END) AS subagents,
+                       SUM(CASE WHEN COALESCE(NULLIF(source_locator, ''), file_path) LIKE '%/subagents/workflows/%' THEN 1 ELSE 0 END) AS workflow_subagents
+                FROM sessions
+                WHERE source = 'claude-code'
+                  AND COALESCE(NULLIF(source_locator, ''), file_path) LIKE '/Users/bing/.claude/projects/%'
+                """
+            )
+        }
+        let dbIds = try writer.read { db in
+            try Set(String.fetchAll(
+                db,
+                sql: """
+                SELECT id
+                FROM sessions
+                WHERE source = 'claude-code'
+                  AND COALESCE(NULLIF(source_locator, ''), file_path) LIKE '/Users/bing/.claude/projects/%'
+                """
+            ))
+        }
+
+        XCTAssertEqual(seenCurrentIds.subtracting(dbIds), [])
+        print(
+            "LIVE_CLAUDE_CODE_CORPUS_SMOKE locators=\(locators.count) parsed=\(parsed) claude_parsed=\(claudeParsed) minimax_parsed=\(minimaxParsed) parse_failures=\(parseFailures) unique_ids=\(seenCurrentIds.count) duplicate_ids=\(duplicateCurrentIds.count) db_rows=\(row?["rows"] as Int? ?? 0) db_subagents=\(row?["subagents"] as Int? ?? 0) db_workflow_subagents=\(row?["workflow_subagents"] as Int? ?? 0)"
+        )
+    }
+
+    func testClaudeCodeLegacyRootAgentFileParsesAsSubagent() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectsRoot = root.appendingPathComponent(".claude/projects", isDirectory: true)
+        let projectDir = projectsRoot.appendingPathComponent("-Users-bing--Code--Legacy", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        let transcript = projectDir.appendingPathComponent("agent-legacy.jsonl")
+        try writeJSONL(
+            [
+                [
+                    "type": "user",
+                    "isSidechain": true,
+                    "sessionId": "legacy-parent-session",
+                    "agentId": "legacy-agent",
+                    "cwd": "/Users/bing/-Code-/Legacy",
+                    "timestamp": "2026-06-30T01:00:00.000Z",
+                    "message": [
+                        "role": "user",
+                        "content": "Warmup",
+                    ],
+                ],
+                [
+                    "type": "assistant",
+                    "isSidechain": true,
+                    "sessionId": "legacy-parent-session",
+                    "agentId": "legacy-agent",
+                    "cwd": "/Users/bing/-Code-/Legacy",
+                    "timestamp": "2026-06-30T01:00:01.000Z",
+                    "message": [
+                        "role": "assistant",
+                        "content": [["type": "text", "text": "Ready."]],
+                    ],
+                ],
+            ],
+            to: transcript
+        )
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: projectsRoot.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: transcript.path))
+
+        XCTAssertEqual(info.id, "legacy-agent")
+        XCTAssertEqual(info.agentRole, "subagent")
+        XCTAssertEqual(info.parentSessionId, "legacy-parent-session")
+    }
+
+    func testClaudeCodeSkipsLocalCommandOnlySessions() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectsRoot = root.appendingPathComponent(".claude-glmc/projects", isDirectory: true)
+        let transcript = try makeClaudeCodeLocalCommandOnlyFixture(projectsRoot: projectsRoot)
+
+        let adapter = ClaudeCodeAdapter(source: .glm, projectsRoot: projectsRoot.path, originator: "Claude Code")
+        switch try await adapter.parseSessionInfo(locator: transcript.path) {
+        case .success(let info):
+            XCTFail("expected local-command-only session to be skipped, got messageCount=\(info.messageCount)")
+        case .failure:
+            break
+        }
+    }
+
+    func testDefaultAdaptersRegisterCcWrapperProviderSources() {
+        let sources = SessionAdapterFactory.defaultAdapters().map(\.source.rawValue)
+
+        XCTAssertTrue(Set(sources).isSuperset(of: [
+            "kimi",
+            "minimax",
+            "mimo",
+            "qwen",
+            "doubao",
+            "glm",
+            "deepseek",
+            "codex",
+        ]))
+        XCTAssertGreaterThanOrEqual(sources.filter { $0 == "kimi" }.count, 2)
+        XCTAssertGreaterThanOrEqual(sources.filter { $0 == "qwen" }.count, 2)
+        XCTAssertGreaterThanOrEqual(sources.filter { $0 == "codex" }.count, 2)
+    }
+
+    func testIndexingPersistsClaudeCodeProviderOriginator() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectsRoot = root.appendingPathComponent(".claude-mimo/projects", isDirectory: true)
+        _ = try makeClaudeCodeFixture(projectsRoot: projectsRoot)
+        let adapter = ClaudeCodeAdapter(projectsRoot: projectsRoot.path)
+
+        let indexer = SwiftIndexer(sink: AdapterMessageCountNoopSink(), adapters: [adapter])
+        let snapshots = try await indexer.collectSnapshots()
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertEqual(snapshots.first?.source.rawValue, "mimo")
+        let snapshotOriginator = Mirror(reflecting: try XCTUnwrap(snapshots.first))
+            .children
+            .first { $0.label == "originator" }?
+            .value as? String
+        XCTAssertEqual(snapshotOriginator, "Claude Code")
+
+        let writer = try EngramDatabaseWriter(path: root.appendingPathComponent("index.sqlite").path)
+        try writer.migrate()
+        _ = try await writer.indexAllSessions(adapters: [adapter])
+        let row = try writer.read { db in
+            try Row.fetchOne(db, sql: "SELECT source, originator FROM sessions WHERE id = 'cc-mimo-1'")
+        }
+        XCTAssertEqual(row?["source"] as String?, "mimo")
+        XCTAssertEqual(row?["originator"] as String?, "Claude Code")
+    }
+
+    func testLiveClaudeCodeProviderRootsIndexExpectedLocalCorpus() async throws {
+        guard ProcessInfo.processInfo.environment["ENGRAM_LIVE_CC_PROVIDER_ROOT_SMOKE"] == "1" else {
+            throw XCTSkip("set ENGRAM_LIVE_CC_PROVIDER_ROOT_SMOKE=1 to run against local ~/.claude-* provider roots")
+        }
+
+        let specs = [
+            LiveClaudeCodeProviderRootSpec(name: "kimi", source: .kimi),
+            LiveClaudeCodeProviderRootSpec(name: "minimax", source: .minimax),
+            LiveClaudeCodeProviderRootSpec(name: "mimo", source: .mimo),
+            LiveClaudeCodeProviderRootSpec(name: "mimosg", source: .mimo),
+            LiveClaudeCodeProviderRootSpec(name: "qwen", source: .qwen),
+            LiveClaudeCodeProviderRootSpec(name: "doubao", source: .doubao),
+            LiveClaudeCodeProviderRootSpec(name: "glm", source: .glm),
+            LiveClaudeCodeProviderRootSpec(name: "glmc", source: .glm),
+            LiveClaudeCodeProviderRootSpec(name: "ds", source: .deepseek),
+            LiveClaudeCodeProviderRootSpec(name: "dsc", source: .deepseek),
+            LiveClaudeCodeProviderRootSpec(name: "openai", source: .codex),
+        ]
+        let falsePositivePath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude-glmc/projects/-Users-bing--Code--DrCom/2b9addbc-e168-48d7-af0c-3320bb7faf66.jsonl")
+            .path
+        let runRoot = tempDir()
+        defer { try? FileManager.default.removeItem(at: runRoot) }
+
+        var adapters: [any SessionAdapter] = []
+        var expected: [(name: String, source: SourceName, parsed: Int, subagents: Int)] = []
+
+        for spec in specs {
+            let projectsRoot = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".claude-\(spec.name)/projects", isDirectory: true)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: projectsRoot.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                throw XCTSkip("missing local provider root: \(projectsRoot.path)")
+            }
+
+            let adapter = ClaudeCodeAdapter(
+                source: spec.source,
+                projectsRoot: projectsRoot.path,
+                originator: "Claude Code"
+            )
+            let locators = try await adapter.listSessionLocators()
+            var parsed = 0
+            var subagents = 0
+            for locator in locators {
+                switch try await adapter.parseSessionInfo(locator: locator) {
+                case .success(let info):
+                    XCTAssertNotEqual(locator, falsePositivePath, "local-command-only side channel must not parse")
+                    XCTAssertEqual(info.source, spec.source)
+                    XCTAssertEqual(info.originator, "Claude Code")
+                    let streamed = try await drain(adapter, locator: locator)
+                    XCTAssertEqual(info.messageCount, streamed.count, "stream/count mismatch for \(locator)")
+                    parsed += 1
+                    if info.agentRole == "subagent" {
+                        subagents += 1
+                    }
+                case .failure:
+                    break
+                }
+            }
+
+            XCTAssertGreaterThan(parsed, 0, "expected parseable conversations under \(projectsRoot.path)")
+            adapters.append(adapter)
+            expected.append((name: spec.name, source: spec.source, parsed: parsed, subagents: subagents))
+        }
+
+        let writer = try EngramDatabaseWriter(path: runRoot.appendingPathComponent("index.sqlite").path)
+        try writer.migrate()
+        _ = try await writer.indexAllSessions(adapters: adapters)
+
+        var totalActual = 0
+        var totalExpected = 0
+        for item in expected {
+            let rootPattern = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".claude-\(item.name)/projects")
+                .path + "/%"
+            let row = try writer.read { db in
+                try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*) AS actual,
+                           SUM(CASE WHEN agent_role = 'subagent' THEN 1 ELSE 0 END) AS subagents
+                    FROM sessions
+                    WHERE source = ?
+                      AND COALESCE(NULLIF(source_locator, ''), file_path) LIKE ?
+                    """,
+                    arguments: [item.source.rawValue, rootPattern]
+                )
+            }
+            let actual: Int = row?["actual"] ?? 0
+            let actualSubagents: Int = row?["subagents"] ?? 0
+            XCTAssertEqual(actual, item.parsed, "row count mismatch for .claude-\(item.name)")
+            XCTAssertEqual(actualSubagents, item.subagents, "subagent count mismatch for .claude-\(item.name)")
+            totalActual += actual
+            totalExpected += item.parsed
+            print(
+                "LIVE_CC_PROVIDER_ROOT_SMOKE root=.claude-\(item.name) source=\(item.source.rawValue) expected=\(item.parsed) actual=\(actual) subagents=\(actualSubagents)"
+            )
+        }
+
+        let falsePositiveCount = try writer.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM sessions WHERE COALESCE(NULLIF(source_locator, ''), file_path) = ?",
+                arguments: [falsePositivePath]
+            ) ?? 0
+        }
+        XCTAssertEqual(falsePositiveCount, 0)
+        XCTAssertEqual(totalActual, totalExpected)
+        print("LIVE_CC_PROVIDER_ROOT_SMOKE total_expected=\(totalExpected) total_actual=\(totalActual)")
     }
 
     // MARK: - VsCode
@@ -129,6 +931,38 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.assistantMessageCount, 1)
         XCTAssertEqual(info.summary, "request from mutation log")
         XCTAssertEqual(streamed.map(\.content), ["request from mutation log", "answer from mutation log"])
+    }
+
+    func testVsCodeUsesSessionWorkingDirectoryWhenWorkspaceJsonMissing() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatDir = root.appendingPathComponent("ws-working-dir/chatSessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatDir, withIntermediateDirectories: true)
+
+        let session: [String: Any] = [
+            "kind": 0,
+            "v": [
+                "sessionId": "vs-working-dir",
+                "creationDate": 1_700_000_000_000,
+                "workingDirectory": "file:///Users/test/from-session",
+                "requests": [
+                    [
+                        "timestamp": 1_700_000_000_000,
+                        "message": ["text": "cwd fallback"],
+                        "response": [
+                            ["value": ["kind": "markdownContent", "content": ["value": "ok"]]]
+                        ],
+                    ],
+                ],
+            ],
+        ]
+        let file = chatDir.appendingPathComponent("sess.jsonl")
+        try (try jsonLine(session) + "\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = VsCodeAdapter(workspaceStorageDir: root.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+
+        XCTAssertEqual(info.cwd, "/Users/test/from-session")
     }
 
     func testVsCodeRejectsDeepMutationPaths() async throws {
@@ -323,6 +1157,65 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(streamed.map(\.content), ["jsonl prompt", "jsonl answer"])
     }
 
+    func testGeminiListsNativeNestedSubagentJsonlFilesWithParentLinks() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("tmp/hash-001", isDirectory: true)
+        let subagentDir = projectDir.appendingPathComponent(
+            "chats/parent-session-001",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: subagentDir, withIntermediateDirectories: true)
+        try "/Users/test/gemini".write(
+            to: projectDir.appendingPathComponent(".project_root"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let lines: [[String: Any]] = [
+            [
+                "kind": "subagent",
+                "sessionId": "subagent-session-001",
+                "projectHash": "hash-001",
+                "startTime": "2026-06-22T01:00:00.000Z",
+                "lastUpdated": "2026-06-22T01:00:00.000Z",
+            ],
+            [
+                "id": "m1",
+                "timestamp": "2026-06-22T01:00:01.000Z",
+                "type": "user",
+                "content": [["text": "subagent task"]],
+            ],
+            [
+                "id": "m2",
+                "timestamp": "2026-06-22T01:00:02.000Z",
+                "type": "gemini",
+                "content": "subagent answer",
+            ],
+        ]
+        let file = subagentDir.appendingPathComponent("subagent-session-001.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = GeminiCliAdapter(
+            tmpRoot: root.appendingPathComponent("tmp").path,
+            projectsFile: root.appendingPathComponent("projects.json").path
+        )
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertEqual(
+            locators.map { URL(fileURLWithPath: $0).standardizedFileURL.path },
+            [file.standardizedFileURL.path]
+        )
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+
+        XCTAssertEqual(info.id, "subagent-session-001")
+        XCTAssertEqual(info.agentRole, "subagent")
+        XCTAssertEqual(info.parentSessionId, "parent-session-001")
+        XCTAssertEqual(info.project, "hash-001")
+        XCTAssertEqual(info.cwd, "/Users/test/gemini")
+        XCTAssertEqual(info.messageCount, 2)
+    }
+
     func testGeminiIgnoresOversizedSidecar() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -439,7 +1332,207 @@ final class AdapterMessageCountTests: XCTestCase {
         let adapter = IflowAdapter(projectsRoot: root.appendingPathComponent("projects").path)
         let streamed = try await drain(adapter, locator: file.path)
 
-        XCTAssertEqual(streamed.map(\.content), ["first\n\nsecond"])
+        XCTAssertEqual(streamed.map(\.content), ["first\nsecond"])
+    }
+
+    func testIflowSkipsSystemInjectionInStreamCount() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("projects/-Users-test-iflow-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "uuid": "iflow-system-1",
+                "sessionId": "iflow-system-1",
+                "timestamp": "2026-06-01T10:00:00.000Z",
+                "type": "user",
+                "message": [
+                    "role": "user",
+                    "content": "# AGENTS.md instructions for /tmp/iflow-project\n\n<INSTRUCTIONS>system prompt</INSTRUCTIONS>",
+                ],
+                "cwd": "/tmp/iflow-project",
+            ],
+            [
+                "uuid": "iflow-system-2",
+                "sessionId": "iflow-system-1",
+                "timestamp": "2026-06-01T10:00:01.000Z",
+                "type": "user",
+                "message": [
+                    "role": "user",
+                    "content": "real prompt",
+                ],
+                "cwd": "/tmp/iflow-project",
+            ],
+            [
+                "uuid": "iflow-system-3",
+                "sessionId": "iflow-system-1",
+                "timestamp": "2026-06-01T10:00:02.000Z",
+                "type": "assistant",
+                "message": [
+                    "role": "assistant",
+                    "content": [
+                        ["type": "text", "text": "answer"],
+                    ],
+                ],
+                "cwd": "/tmp/iflow-project",
+            ],
+        ]
+        let file = projectDir.appendingPathComponent("session-system.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = IflowAdapter(projectsRoot: root.appendingPathComponent("projects").path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(info.systemMessageCount, 1)
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+        XCTAssertEqual(info.messageCount, streamed.count)
+        XCTAssertEqual(streamed.map(\.content), ["real prompt", "answer"])
+    }
+
+    func testIflowSkipsToolOnlyTurnsInStreamCount() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("projects/-Users-test-iflow-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "uuid": "iflow-tool-1",
+                "sessionId": "iflow-tool-only-1",
+                "timestamp": "2026-06-01T10:00:00.000Z",
+                "type": "user",
+                "message": [
+                    "role": "user",
+                    "content": "real prompt",
+                ],
+                "cwd": "/tmp/iflow-project",
+            ],
+            [
+                "uuid": "iflow-tool-2",
+                "sessionId": "iflow-tool-only-1",
+                "timestamp": "2026-06-01T10:00:01.000Z",
+                "type": "assistant",
+                "message": [
+                    "role": "assistant",
+                    "content": [
+                        ["type": "tool_use", "name": "read_file"],
+                    ],
+                ],
+                "cwd": "/tmp/iflow-project",
+            ],
+            [
+                "uuid": "iflow-tool-3",
+                "sessionId": "iflow-tool-only-1",
+                "timestamp": "2026-06-01T10:00:02.000Z",
+                "type": "user",
+                "message": [
+                    "role": "user",
+                    "content": [
+                        ["type": "tool_result", "content": "file output"],
+                    ],
+                ],
+                "cwd": "/tmp/iflow-project",
+            ],
+            [
+                "uuid": "iflow-tool-4",
+                "sessionId": "iflow-tool-only-1",
+                "timestamp": "2026-06-01T10:00:03.000Z",
+                "type": "assistant",
+                "message": [
+                    "role": "assistant",
+                    "content": [
+                        ["type": "text", "text": "answer"],
+                    ],
+                ],
+                "cwd": "/tmp/iflow-project",
+            ],
+        ]
+        let file = projectDir.appendingPathComponent("session-tool-only.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = IflowAdapter(projectsRoot: root.appendingPathComponent("projects").path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+        XCTAssertEqual(info.messageCount, 2)
+        XCTAssertEqual(streamed.map(\.content), ["real prompt", "answer"])
+    }
+
+    // MARK: - CommandCode
+
+    func testCommandCodeSkipsSystemInjectionInStreamCount() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("projects/users-test-commandcode-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "id": "cc-system-1",
+                "sessionId": "cc-system-1",
+                "role": "user",
+                "cwd": "/tmp/commandcode-project",
+                "content": [
+                    [
+                        "type": "text",
+                        "text": "<command-message>goal</command-message>\n<command-name>/goal</command-name>",
+                    ],
+                ],
+                "timestamp": "2026-06-01T10:00:00.000Z",
+            ],
+            [
+                "id": "cc-system-2",
+                "sessionId": "cc-system-1",
+                "role": "user",
+                "cwd": "/tmp/commandcode-project",
+                "content": [
+                    ["type": "text", "text": "real prompt"],
+                ],
+                "timestamp": "2026-06-01T10:00:01.000Z",
+            ],
+            [
+                "id": "cc-system-3",
+                "sessionId": "cc-system-1",
+                "role": "assistant",
+                "cwd": "/tmp/commandcode-project",
+                "content": [
+                    ["type": "text", "text": "answer"],
+                ],
+                "timestamp": "2026-06-01T10:00:02.000Z",
+            ],
+            [
+                "id": "cc-system-4",
+                "sessionId": "cc-system-1",
+                "role": "tool",
+                "cwd": "/tmp/commandcode-project",
+                "content": [
+                    ["type": "tool-result", "output": "tool output"],
+                ],
+                "timestamp": "2026-06-01T10:00:03.000Z",
+            ],
+        ]
+        let file = projectDir.appendingPathComponent("commandcode-session.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CommandCodeAdapter(projectsRoot: root.appendingPathComponent("projects").path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(info.systemMessageCount, 1)
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+        XCTAssertEqual(info.toolMessageCount, 1)
+        XCTAssertEqual(info.messageCount, streamed.count)
+        XCTAssertEqual(streamed.map(\.role), [.user, .assistant, .tool])
+        XCTAssertEqual(streamed.map(\.content), ["real prompt", "answer", "tool output"])
     }
 
     // MARK: - Kimi
@@ -545,6 +1638,207 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.userMessageCount, 2)
         XCTAssertEqual(info.assistantMessageCount, 1)
         XCTAssertEqual(streamed.map(\.content), ["main question", "visible answer", "follow-up from shard"])
+    }
+
+    func testKimiDiscoversAndLinksSubagentContexts() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("workspace-1/kimi-parent-session", isDirectory: true)
+        let subagentDir = sessionDir.appendingPathComponent("subagents/agent-abc123", isDirectory: true)
+        try FileManager.default.createDirectory(at: subagentDir, withIntermediateDirectories: true)
+
+        let parentContext = sessionDir.appendingPathComponent("context.jsonl")
+        try writeJSONL(
+            [["role": "user", "content": "parent task"]],
+            to: parentContext
+        )
+        let subagentContext = subagentDir.appendingPathComponent("context.jsonl")
+        try writeJSONL(
+            [
+                ["role": "user", "content": "subagent task"],
+                ["role": "assistant", "content": "subagent result"],
+            ],
+            to: subagentContext
+        )
+        try writeJSON(
+            [
+                "work_dirs": [[
+                    "path": "/tmp/kimi-project",
+                    "kaos": "workspace-1",
+                    "last_session_id": "kimi-parent-session",
+                ]],
+            ],
+            to: root.appendingPathComponent("kimi.json")
+        )
+
+        let adapter = KimiAdapter(
+            sessionsRoot: root.path,
+            kimiJsonPath: root.appendingPathComponent("kimi.json").path
+        )
+        let locators = try await adapter.listSessionLocators()
+
+        XCTAssertEqual(
+            locators.map(standardizedPath).sorted(),
+            [parentContext.path, subagentContext.path].map(standardizedPath).sorted()
+        )
+
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: subagentContext.path))
+        XCTAssertEqual(info.id, "agent-abc123")
+        XCTAssertEqual(info.agentRole, "subagent")
+        XCTAssertEqual(info.parentSessionId, "kimi-parent-session")
+        XCTAssertEqual(info.cwd, "/tmp/kimi-project")
+    }
+
+    func testLiveKimiCorpusIndexesCanonicalContextLocators() async throws {
+        guard ProcessInfo.processInfo.environment["ENGRAM_LIVE_KIMI_CORPUS_SMOKE"] == "1" else {
+            throw XCTSkip("set ENGRAM_LIVE_KIMI_CORPUS_SMOKE=1 to scan the local Kimi corpus")
+        }
+
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let sessionsRoot = home.appendingPathComponent(".kimi/sessions", isDirectory: true)
+        let kimiJsonPath = home.appendingPathComponent(".kimi/kimi.json")
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: sessionsRoot.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            throw XCTSkip("missing local Kimi sessions root: \(sessionsRoot.path)")
+        }
+
+        let adapter = KimiAdapter(sessionsRoot: sessionsRoot.path, kimiJsonPath: kimiJsonPath.path)
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertGreaterThan(locators.count, 0)
+
+        let snapshots = try await SwiftIndexer(
+            sink: AdapterMessageCountNoopSink(),
+            adapters: [adapter]
+        ).collectSnapshots()
+        XCTAssertEqual(snapshots.count, locators.count)
+        XCTAssertTrue(snapshots.allSatisfy { $0.sourceLocator.hasSuffix("/context.jsonl") })
+
+        let runRoot = tempDir()
+        defer { try? FileManager.default.removeItem(at: runRoot) }
+        let writer = try EngramDatabaseWriter(path: runRoot.appendingPathComponent("index.sqlite").path)
+        try writer.migrate()
+
+        if var staleProbe = snapshots.first(where: { snapshot in
+            FileManager.default.fileExists(atPath: URL(fileURLWithPath: snapshot.sourceLocator)
+                .deletingLastPathComponent()
+                .appendingPathComponent("wire.jsonl")
+                .path)
+        }) {
+            let canonicalLocator = staleProbe.sourceLocator
+            staleProbe.sourceLocator = URL(fileURLWithPath: canonicalLocator)
+                .deletingLastPathComponent()
+                .appendingPathComponent("wire.jsonl")
+                .path
+
+            try writer.write { db in
+                let snapshotWriter = SessionSnapshotWriter(db: db)
+                _ = try snapshotWriter.writeAuthoritativeSnapshot(staleProbe)
+                var canonicalProbe = staleProbe
+                canonicalProbe.sourceLocator = canonicalLocator
+                let result = try snapshotWriter.writeAuthoritativeSnapshot(canonicalProbe)
+                XCTAssertEqual(result.action, .merge)
+            }
+        } else {
+            XCTFail("expected at least one Kimi session with sibling wire.jsonl")
+        }
+
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            for snapshot in snapshots {
+                _ = try snapshotWriter.writeAuthoritativeSnapshot(snapshot)
+            }
+        }
+
+        let row = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*) AS rows,
+                       SUM(CASE WHEN agent_role = 'subagent' THEN 1 ELSE 0 END) AS subagents,
+                       SUM(CASE WHEN COALESCE(NULLIF(source_locator, ''), file_path) NOT LIKE '%/context.jsonl' THEN 1 ELSE 0 END) AS non_canonical
+                FROM sessions
+                WHERE source = 'kimi'
+                """
+            )
+        }
+        let rowCount: Int = row?["rows"] ?? 0
+        let subagentCount: Int = row?["subagents"] ?? 0
+        let nonCanonicalCount: Int = row?["non_canonical"] ?? 0
+        XCTAssertEqual(rowCount, snapshots.count)
+        XCTAssertEqual(
+            subagentCount,
+            snapshots.filter { $0.agentRole == "subagent" }.count
+        )
+        XCTAssertEqual(nonCanonicalCount, 0)
+
+        let storedLocators = try writer.read { db in
+            try String.fetchAll(
+                db,
+                sql: """
+                SELECT COALESCE(NULLIF(source_locator, ''), file_path)
+                FROM sessions
+                WHERE source = 'kimi'
+                """
+            )
+        }
+        XCTAssertEqual(Set(storedLocators.map(standardizedPath)), Set(locators.map(standardizedPath)))
+        print(
+            "LIVE_KIMI_CORPUS_SMOKE locators=\(locators.count) rows=\(storedLocators.count) subagents=\(snapshots.filter { $0.agentRole == "subagent" }.count)"
+        )
+    }
+
+    func testLiveKimiDatabaseRescanRefreshesCanonicalSessionRows() async throws {
+        let confirmation = "I_UNDERSTAND_THIS_MUTATES_LIVE_ENGRAM_DB"
+        guard ProcessInfo.processInfo.environment["ENGRAM_LIVE_KIMI_DB_RESCAN"] == confirmation else {
+            throw XCTSkip("set ENGRAM_LIVE_KIMI_DB_RESCAN=\(confirmation) to write current Kimi snapshots into ~/.engram/index.sqlite")
+        }
+
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let databasePath = home.appendingPathComponent(".engram/index.sqlite").path
+        let sessionsRoot = home.appendingPathComponent(".kimi/sessions", isDirectory: true)
+        let kimiJsonPath = home.appendingPathComponent(".kimi/kimi.json")
+
+        let adapter = KimiAdapter(sessionsRoot: sessionsRoot.path, kimiJsonPath: kimiJsonPath.path)
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertGreaterThan(locators.count, 0)
+
+        let snapshots = try await SwiftIndexer(
+            sink: AdapterMessageCountNoopSink(),
+            adapters: [adapter]
+        ).collectSnapshots()
+        XCTAssertEqual(snapshots.count, locators.count)
+
+        let writer = try EngramDatabaseWriter(path: databasePath)
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            for snapshot in snapshots {
+                _ = try snapshotWriter.writeAuthoritativeSnapshot(snapshot)
+            }
+        }
+
+        let canonicalLocators = Set(locators.map(standardizedPath))
+        let storedLocators = try writer.read { db in
+            try String.fetchAll(
+                db,
+                sql: """
+                SELECT COALESCE(NULLIF(source_locator, ''), file_path)
+                FROM sessions
+                WHERE source = 'kimi'
+                  AND COALESCE(NULLIF(source_locator, ''), file_path) LIKE '/Users/bing/.kimi/%'
+                """
+            )
+        }
+        let storedSet = Set(storedLocators.map(standardizedPath))
+        XCTAssertEqual(canonicalLocators.subtracting(storedSet), [])
+
+        let remainingNonCanonical = storedLocators.filter { locator in
+            !locator.hasSuffix("/context.jsonl")
+        }.count
+        print(
+            "LIVE_KIMI_DB_RESCAN current_locators=\(canonicalLocators.count) live_rows=\(storedLocators.count) remaining_noncanonical=\(remainingNonCanonical)"
+        )
     }
 
     // MARK: - Qwen
@@ -660,6 +1954,61 @@ final class AdapterMessageCountTests: XCTestCase {
         )
     }
 
+    func testQwenSkipsSystemInjectionInStreamCount() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("project-1/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "type": "user",
+                "sessionId": "qwen-system-1",
+                "cwd": "/tmp/qwen-project",
+                "timestamp": "2026-06-01T10:00:00.000Z",
+                "message": [
+                    "role": "user",
+                    "parts": [
+                        ["text": "\nYou are Qwen Code, an interactive CLI agent. Analyze the current directory."],
+                    ],
+                ],
+            ],
+            [
+                "type": "user",
+                "sessionId": "qwen-system-1",
+                "cwd": "/tmp/qwen-project",
+                "timestamp": "2026-06-01T10:00:01.000Z",
+                "message": [
+                    "role": "user",
+                    "parts": [["text": "real prompt"]],
+                ],
+            ],
+            [
+                "type": "assistant",
+                "sessionId": "qwen-system-1",
+                "cwd": "/tmp/qwen-project",
+                "timestamp": "2026-06-01T10:00:02.000Z",
+                "message": [
+                    "role": "model",
+                    "parts": [["text": "answer"]],
+                ],
+            ],
+        ]
+        let file = chatsDir.appendingPathComponent("qwen-system.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QwenAdapter(projectsRoot: root.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(info.systemMessageCount, 1)
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+        XCTAssertEqual(info.messageCount, streamed.count)
+        XCTAssertEqual(streamed.map(\.content), ["real prompt", "answer"])
+    }
+
     func testQwenCombinesMultipartTextContent() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -688,7 +2037,7 @@ final class AdapterMessageCountTests: XCTestCase {
         let adapter = QwenAdapter(projectsRoot: root.path)
         let streamed = try await drain(adapter, locator: file.path)
 
-        XCTAssertEqual(streamed.map(\.content), ["first\n\nsecond"])
+        XCTAssertEqual(streamed.map(\.content), ["first\nsecond"])
     }
 
     func testQwenSkipsThoughtTextParts() async throws {
@@ -782,7 +2131,143 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.cwd, "")
     }
 
+    // MARK: - Pi
+
+    func testPiAdapterListsParsesAndStreamsSessions() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("--Users-test--project--", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let file = sessionDir.appendingPathComponent(
+            "2026-04-29T01-00-00-000Z_019dd6e3-91d1-7326-8299-314858773a0e.jsonl"
+        )
+        try writeJSONL(
+            [
+                [
+                    "type": "session",
+                    "version": 1,
+                    "id": "019dd6e3-91d1-7326-8299-314858773a0e",
+                    "timestamp": "2026-04-29T01:00:00.000Z",
+                    "cwd": "/Users/test/project",
+                ],
+                [
+                    "type": "model_change",
+                    "id": "model-1",
+                    "parentId": "019dd6e3-91d1-7326-8299-314858773a0e",
+                    "timestamp": "2026-04-29T01:00:01.000Z",
+                    "modelId": "mimo-v2.5-pro",
+                ],
+                [
+                    "type": "message",
+                    "id": "msg-user",
+                    "parentId": "019dd6e3-91d1-7326-8299-314858773a0e",
+                    "timestamp": "2026-04-29T01:00:02.000Z",
+                    "message": [
+                        "role": "user",
+                        "content": [["type": "text", "text": "Fix the Pi parser"]],
+                        "timestamp": "2026-04-29T01:00:02.000Z",
+                    ],
+                ],
+                [
+                    "type": "message",
+                    "id": "msg-assistant",
+                    "parentId": "msg-user",
+                    "timestamp": "2026-04-29T01:00:03.000Z",
+                    "message": [
+                        "role": "assistant",
+                        "content": [
+                            ["type": "text", "text": "I will inspect it."],
+                            ["type": "toolCall", "name": "read", "arguments": ["path": "/Users/test/project/package.json"]],
+                        ],
+                        "model": "mimo-v2.5-pro",
+                        "usage": ["input": 10, "output": 5, "cacheRead": 2, "cacheWrite": 1],
+                        "timestamp": "2026-04-29T01:00:03.000Z",
+                    ],
+                ],
+                [
+                    "type": "message",
+                    "id": "msg-tool",
+                    "parentId": "msg-assistant",
+                    "timestamp": "2026-04-29T01:00:04.000Z",
+                    "message": [
+                        "role": "toolResult",
+                        "content": [["type": "text", "text": #"{"name":"fixture"}"#]],
+                        "timestamp": "2026-04-29T01:00:04.000Z",
+                    ],
+                ],
+            ],
+            to: file
+        )
+
+        let adapter = PiAdapter(sessionsRoot: root.path)
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertEqual(locators.map(standardizedPath), [standardizedPath(file.path)])
+
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(info.id, "019dd6e3-91d1-7326-8299-314858773a0e")
+        XCTAssertEqual(info.source, .pi)
+        XCTAssertEqual(info.cwd, "/Users/test/project")
+        XCTAssertEqual(info.model, "mimo-v2.5-pro")
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+        XCTAssertEqual(info.toolMessageCount, 1)
+        XCTAssertEqual(info.messageCount, 3)
+        XCTAssertEqual(info.summary, "Fix the Pi parser")
+        XCTAssertEqual(streamed.map(\.role), [.user, .assistant, .tool])
+        XCTAssertEqual(
+            streamed[1].usage,
+            TokenUsage(inputTokens: 10, outputTokens: 5, cacheReadTokens: 2, cacheCreationTokens: 1)
+        )
+        XCTAssertEqual(streamed[1].toolCalls?.first?.name, "read")
+        XCTAssertEqual(streamed[1].toolCalls?.first?.input, #"{"path":"/Users/test/project/package.json"}"#)
+    }
+
     // MARK: - Codex
+
+    func testCodexUsesTurnContextModelWhenResponseItemsDoNotCarryModel() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-turn-context.jsonl")
+
+        let lines: [[String: Any]] = [
+            [
+                "timestamp": "2026-07-01T08:00:00.000Z",
+                "type": "session_meta",
+                "payload": [
+                    "id": "codex-turn-context-1",
+                    "timestamp": "2026-07-01T08:00:00.000Z",
+                    "cwd": "/tmp/codex-turn-context",
+                    "model_provider": "openai",
+                ],
+            ],
+            [
+                "timestamp": "2026-07-01T08:00:01.000Z",
+                "type": "turn_context",
+                "payload": [
+                    "model": "gpt-5-codex",
+                    "model_provider": "openai",
+                ],
+            ],
+            [
+                "timestamp": "2026-07-01T08:00:02.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "user",
+                    "content": [["type": "input_text", "text": "remember model"]],
+                ],
+            ],
+        ]
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(sessionsRoot: root.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+
+        XCTAssertEqual(info.model, "gpt-5-codex")
+    }
 
     func testCodexAttachesTokenCountEventUsageToPreviousAssistantMessage() async throws {
         let root = tempDir()
@@ -1321,6 +2806,30 @@ final class AdapterMessageCountTests: XCTestCase {
         )
     }
 
+    func testCursorReadsNestedLatestConversationSummary() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorUsageFixture(dbPath: dbPath)
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: "\(dbPath)?composer=cmp_usage"))
+
+        XCTAssertEqual(info.summary, "Nested Cursor summary")
+    }
+
+    func testCursorInfersCwdFromComposerContextFileSelection() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorUsageFixture(dbPath: dbPath)
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: "\(dbPath)?composer=cmp_usage"))
+
+        XCTAssertEqual(info.cwd, "/Users/test/proj/src")
+    }
+
     func testCursorComposerMissingCreatedAtUsesFirstBubbleTimestamp() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1332,6 +2841,23 @@ final class AdapterMessageCountTests: XCTestCase {
 
         XCTAssertEqual(info.startTime, "2023-11-14T22:13:21.000Z")
         XCTAssertEqual(info.endTime, "2023-11-14T22:13:22.000Z")
+    }
+
+    func testCursorRejectsMetadataOnlyComposerWithoutVisibleMessages() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorFixture(dbPath: dbPath)
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let result = try await adapter.parseSessionInfo(locator: "\(dbPath)?composer=cmp_1")
+
+        switch result {
+        case .success(let info):
+            XCTFail("metadata-only Cursor composer should not parse as session, got messageCount=\(info.messageCount)")
+        case .failure(let failure):
+            XCTAssertEqual(failure, .malformedJSON)
+        }
     }
 
     /// Minimal OpenCode schema with: 1 user msg (text part), 1 assistant msg
@@ -1436,7 +2962,7 @@ final class AdapterMessageCountTests: XCTestCase {
         }
 
         try exec("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")
-        try exec("INSERT INTO cursorDiskKV VALUES ('composerData:cmp_usage', '{\"composerId\":\"cmp_usage\"}')")
+        try exec("INSERT INTO cursorDiskKV VALUES ('composerData:cmp_usage', '{\"composerId\":\"cmp_usage\",\"latestConversationSummary\":{\"summary\":{\"summary\":\"Nested Cursor summary\"}},\"context\":{\"fileSelections\":[{\"uri\":{\"fsPath\":\"/Users/test/proj/src/index.ts\"}}]}}')")
         try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_usage:u1', '{\"type\":1,\"text\":\"Track Cursor usage\",\"timingInfo\":{\"clientStartTime\":1700000001000},\"tokenCount\":{\"inputTokens\":77,\"outputTokens\":0}}')")
         try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_usage:a1', '{\"type\":2,\"text\":\"Cursor usage tracked.\",\"timingInfo\":{\"clientStartTime\":1700000002000},\"tokenCount\":{\"inputTokens\":123,\"outputTokens\":45}}')")
     }
@@ -1477,7 +3003,39 @@ final class AdapterMessageCountTests: XCTestCase {
         )
     }
 
+    func testAntigravityCWDInferenceIgnoresMarkupLikeSlashTokens() {
+        let text = """
+        {"content":"</bash_command_reminder>\\n<foo/bar>"}
+        {"content":"/Users/bing/-Code-/engram\\"}
+        """
+
+        XCTAssertEqual(AntigravityAdapter.inferCWDFromAbsolutePaths(in: text), "")
+    }
+
+    func testAntigravityCWDInferenceIgnoresURLAndRouteLikeSlashTokens() {
+        let text = """
+        {"content":"https://github.com/bbingz/engram and http://localhost:5173/components/ui"}
+        {"content":"Menu: /编辑/视图 /reports /CI/Bug修复 /components/ui"}
+        """
+
+        XCTAssertEqual(AntigravityAdapter.inferCWDFromAbsolutePaths(in: text), "")
+    }
+
     func testAntigravityCWDInferenceReturnsEmptyWithoutPaths() {
         XCTAssertEqual(AntigravityAdapter.inferCWDFromAbsolutePaths(in: "no absolute paths in auth.ts here"), "")
+    }
+}
+
+private struct AdapterMessageCountNoopSink: IndexingWriteSink {
+    func upsertBatch(
+        _ snapshots: [AuthoritativeSessionSnapshot],
+        reason: IndexingWriteReason
+    ) throws -> SessionBatchUpsertResult {
+        SessionBatchUpsertResult(
+            reason: reason,
+            results: snapshots.map {
+                SessionBatchItemResult(sessionId: $0.id, action: .merge, enqueuedJobs: [])
+            }
+        )
     }
 }

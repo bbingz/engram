@@ -1,6 +1,6 @@
 # Qwen Code — Session Format Reference
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-01.
 
 > Definitive English reference for how **Qwen Code** (Alibaba's Gemini-CLI fork)
 > persists its sessions on disk, and how Engram's `QwenAdapter` (Swift product +
@@ -16,11 +16,51 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 
 **Evidence basis (this doc).** Three sources cross-checked; on conflict REAL data wins, discrepancy flagged.
 
-1. **LIVE on-disk store** — `~/.qwen/` on this machine (CONFIRMED present). **744 `.jsonl` session transcripts** under `~/.qwen/projects/<encodedCwd>/chats/` across **42 project dirs**, plus **16 `~/.qwen/tmp/<64-hex>/` dirs** of which **15 hold a `logs.json`** (telemetry, no transcripts) and **1 holds none**. **No `~/.qwen/projects.json`** (CONFIRMED absent — a key divergence from Gemini). The live `~/.qwen` root also carries **session-keyed non-transcript artifacts** the adapter ignores: `debug/<sessionId>.txt` (**750 live** per-session INFO/DEBUG logs, filename stem == sessionId, 1:1 with a transcript) and `todos/<sessionId>.json` (`{sessionId, todos:[{content,id,status}]}`), plus global `memories/MEMORY.md`, `skills/<name>/`, and `settings.json.orig` (see [§14](#14-auxiliary-files-present-live-not-consumed)). *(Flag: a prior research note claimed 44 project dirs / 18 tmp dirs / 3 without logs.json; this live store shows **42 / 16 / 1** respectively — REAL data wins. The 744-transcript figure and absent `projects.json` are exact in both.)* CLI version spread on disk: `0.10.5` → `0.18.4` (sampled modal cluster `0.14.5`/`0.15.x`). Record-type census over sampled rich sessions: `system/ui_telemetry`, `tool_result`, `assistant`, `user`, `system/attribution_snapshot`, `system/slash_command` — all six types present. Model values seen: `qwen3.5-plus`, `qwen3.6-plus` (and `qwen3.7-plus` in usage ledgers).
+1. **LIVE on-disk store** — `~/.qwen/` on this machine (CONFIRMED present). 2026-07-01 local audit found **787 `.jsonl` session transcripts** under `~/.qwen/projects/<encodedCwd>/chats/` across **43 project dirs**, plus **17 `~/.qwen/tmp/<64-hex>/` dirs** of which **15 hold a `logs.json`** (telemetry, no transcripts) and **2 hold none**. **No `~/.qwen/projects.json`** (CONFIRMED absent — a key divergence from Gemini). The live `~/.qwen` root also carries **session-keyed non-transcript artifacts** the adapter ignores: `debug/<sessionId>.txt` (**749 live** per-session INFO/DEBUG logs, filename stem == sessionId) and `todos/<sessionId>.json` (**4 live**, `{sessionId, todos:[{content,id,status}]}`), plus global `memories/MEMORY.md`, `skills/<name>/`, and `settings.json.orig` (see [§14](#14-auxiliary-files-present-live-not-consumed)). CLI version spread on disk remains in the `0.10.5` → `0.18.x` family from the earlier research pass. Record-type census over sampled rich sessions: `system/ui_telemetry`, `tool_result`, `assistant`, `user`, `system/attribution_snapshot`, `system/slash_command` — all six types present. Current parsed model distribution is `qwen3.5-plus` (517), `qwen3.6-plus` (147), `qwen3.7-plus` (51), `coder-model` (1), and no model field (63).
 2. **Repo fixtures** — `tests/fixtures/qwen/{sample.jsonl (758 B, 3 lines), schema_drift.jsonl (511 B, 2 lines)}` and `tests/fixtures/adapter-parity/qwen/{success.expected.json, input/-Users-test-my-project/chats/sample.jsonl}`. The iFlow sibling fixtures (`tests/fixtures/iflow/{sample.jsonl, schema_drift.jsonl}`) were also read for lineage contrast.
-3. **Engram adapters (codified knowledge)** — Swift product parser `macos/Shared/EngramCore/Adapters/Sources/QwenAdapter.swift` (242 lines); TS reference parser `src/adapters/qwen.ts` (211 lines). Shared I/O helper `JSONLAdapterSupport` lives inside `macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift`; parse caps in `macos/Shared/EngramCore/Adapters/ParserLimits.swift`.
+3. **Engram adapters (codified knowledge)** — Swift product parser `macos/Shared/EngramCore/Adapters/Sources/QwenAdapter.swift` (253 lines); TS reference parser `src/adapters/qwen.ts` (273 lines). Shared I/O helper `JSONLAdapterSupport` lives inside `macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift`; parse caps in `macos/Shared/EngramCore/Adapters/ParserLimits.swift`.
 
-**Headline discrepancy (REAL vs fixtures/adapter).** The repo fixtures are a **stale `v0.10.5` schema** — flat `user`/`assistant` records with `message.parts[].text` and a top-level `model`, no telemetry, no `tool_result`, no `usageMetadata`, no `thought` parts. **Live `v0.14+` data is far richer**: every assistant turn is interleaved with `system/ui_telemetry` rows (`qwen-code.api_response`/`tool_call`/`api_error`), `tool_result` records, `system/attribution_snapshot`, and `system/slash_command`; assistant `message.parts[]` carry `thought:true` and `functionCall` blocks; per-turn token usage lives in a **top-level `usageMetadata`** object. The adapter handles the live forms structurally (it filters by `type`, extracts only `text` parts, and mines telemetry), so most live richness is **parsed-but-dropped** rather than mis-parsed. See [§15](#15-lineage-gotchas-version-drift--edge-cases).
+**Headline discrepancy (REAL vs fixtures/adapter).** The repo fixtures are a **stale `v0.10.5` schema** — flat `user`/`assistant` records with `message.parts[].text` and a top-level `model`, no telemetry, no `tool_result`, no `usageMetadata`, no `thought` parts. **Live `v0.14+` data is far richer**: every assistant turn is interleaved with `system/ui_telemetry` rows (`qwen-code.api_response`/`tool_call`/`api_error`), `tool_result` records, `system/attribution_snapshot`, and `system/slash_command`; assistant `message.parts[]` carry `thought:true` and `functionCall` blocks; per-turn token usage lives in a **top-level `usageMetadata`** object. The adapters handle the live forms structurally: Swift and retained TS filter by `type`, extract only non-thought text parts, and attach assistant usage from `usageMetadata` or `system/ui_telemetry`; rich non-transcript payloads such as tool results, attribution snapshots, slash commands, and function-call blocks remain intentionally parsed-but-dropped rather than mis-parsed. See [§15](#15-lineage-gotchas-version-drift--edge-cases).
+
+## Current Local Audit
+
+2026-07-01 native `~/.qwen/projects` smoke listed 787 JSONL files and parsed
+779 conversation files as `qwen`. Raw scan found 5,158 records, 0 malformed
+lines, 799 `user`, 1,143 `assistant`, 795 `tool_result`, and 2,421 `system`
+records. The 8 skipped files contain only 28 `type:"system"` records, so they
+are not parseable conversations under the current `QwenAdapter` contract.
+The native `~/.qwen/projects` slice in current `~/.engram/index.sqlite` has
+779 `qwen` rows, all under `/Users/bing/.qwen/%`; native Qwen DB row coverage
+is correct.
+The broader `source='qwen'` DB total is 1,425 rows because it also includes
+646 `.claude-qwen` provider-root sessions, which are covered by the separate
+`Qwen provider root (cc-qwen)` audit row; native `file_index_state` remains
+779 `ok` plus 8 `retry/malformedJSON`.
+
+The same smoke found one pre-fix stream/count drift: a user-form system
+injection was counted as `systemMessageCount` but still emitted by
+`streamMessages`, yielding 1,942 streamed messages vs 1,941 parsed messages.
+Current worktree TS and Swift adapters now skip the same system injections in
+stream output; rerun live smoke reports `messageCount=1,941`,
+`streamed=1,941`, 0 per-file mismatches, and 1,140 streamed assistant messages
+with token usage attached. Installed `/Applications/Engram.app`
+build `20260701074505` includes the stream fix: installed MCP now returns 49
+page-1 messages for real native Qwen row
+`c159a22a-9399-49f0-9c17-7bd92dbaf7ce` with `sessionMessageCount=175` and does
+not leak the Qwen system prompt.
+
+The separate Claude Code provider-root route `~/.claude-qwen/projects` is not a
+native Qwen store; it uses Claude Code JSONL and is parsed by `ClaudeCodeAdapter`
+with source `qwen`. A 2026-07-02 provider-root field smoke listed 654 JSONL
+files, 23,234 records, 0 malformed lines, parsed 646 conversations as `qwen`,
+found 640 subagents with parent links, and found 0 stream/count mismatches.
+Installed `/Applications/Engram.app` build `20260701074505` has 646 DB rows
+under `/Users/bing/.claude-qwen/%` and locator diff is closed. All 654
+`.claude-qwen` `file_index_state` rows are still schema version 1, but the
+corrected visible-tool-result parser reports 0 field-stale current provider-root
+rows. The earlier 483-row stale-count note was a retained-TS audit-tooling false
+positive: TS was counting non-visible Claude `tool_result` rows that the Swift
+product already drops.
 
 ---
 
@@ -40,7 +80,7 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 ├── output-language.md, tip_history.json, installation_id   ── CLI config (never read)
 ├── memories/MEMORY.md                          ── global memory file (often empty; NOT a transcript; never read)
 ├── skills/<name>/                              ── installed skills (e.g. superpowers, fireworks-tech-graph) (never read)
-├── debug/<sessionId>.txt                       ── per-session INFO/DEBUG log; SESSION-KEYED (stem == sessionId); never read  (750 live)
+├── debug/<sessionId>.txt                       ── per-session INFO/DEBUG log; SESSION-KEYED (stem == sessionId); never read  (749 live)
 ├── todos/<sessionId>.json                      ── per-session todo list { sessionId, todos:[{content,id,status}] }; SESSION-KEYED; never read
 ├── usage_record.jsonl                          ── per-session aggregate usage ledger (NOT per-session transcript; never read)
 ├── usage/token-usage-YYYY-MM.jsonl             ── per-request token ledger (never read)
@@ -63,13 +103,13 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
   line layer 3        └─ uiEvent   { event.name, input_token_count, output_token_count, cached..., thoughts..., tool..., ... }
 ```
 
-**TL;DR for Engram engineers.** Engram globs `*.jsonl`, keeps `sessionId / cwd / model / startTime / endTime` (taken from the first qualifying record), flattens conversation text from **only** `user` + `assistant` records' `message.parts[].text` (joined with `\n\n` in Swift, `\n` in TS — a separator drift), counts user vs assistant, reclassifies system-injection `user` records (text starting `You are Qwen Code` or containing `<INSTRUCTIONS>`) into a `systemMessageCount`, and derives token usage from `usageMetadata` with a `system/ui_telemetry api_response` fallback (**Swift only**). It **drops**: the entire `tool_result` record type (`toolMessageCount` hard-coded `0`), all `system` rows except as a token side-channel, `parts[].thought`-flag (text leaks in), `parts[].functionCall`/`functionResponse`, `parentUuid`, `uuid`, `gitBranch`, `version`, `contextWindowSize`, `usageMetadata.{thoughtsTokenCount,totalTokenCount}`, the `<encodedCwd>` dir name (→ `project: nil`), and the per-project `meta.json`/`extract-cursor.json`/`memory/` plus the `tmp/*/logs.json` and `usage/*` ledgers. `parentSessionId`/`suggestedParentId`/`agentRole`/`originator` are all `nil` (no sidecar read). The **TS reference path additionally drops all token usage**.
+**TL;DR for Engram engineers.** Engram globs `*.jsonl`, keeps `sessionId / cwd / model / startTime / endTime` (taken from the first qualifying record), flattens conversation text from **only** `user` + `assistant` records' non-thought `message.parts[].text` (joined with `\n` in both Swift and TS), counts user vs assistant, reclassifies system-injection `user` records (text starting `You are Qwen Code` or containing `<INSTRUCTIONS>`) into a `systemMessageCount` and excludes them from streamed messages, and derives token usage from `usageMetadata` with a `system/ui_telemetry api_response` fallback in both Swift and retained TS. It **drops**: the entire `tool_result` record type (`toolMessageCount` hard-coded `0`), all `system` rows except as a token side-channel, `parts[].thought` text, `parts[].functionCall`/`functionResponse`, `parentUuid`, `uuid`, `gitBranch`, `version`, `contextWindowSize`, `usageMetadata.{thoughtsTokenCount,totalTokenCount}`, the `<encodedCwd>` dir name (→ `project: nil`), and the per-project `meta.json`/`extract-cursor.json`/`memory/` plus the `tmp/*/logs.json` and `usage/*` ledgers. `parentSessionId`/`suggestedParentId`/`agentRole`/`originator` are all `nil` (no sidecar read).
 
 ---
 
 ## 2. On-disk layout & file naming
 
-**Authoritative root** (both adapters): `~/.qwen/projects/` — `QwenAdapter.swift:9-11` (`.qwen/projects`), `qwen.ts:20` (`join(homedir(), '.qwen', 'projects')`). **CONFIRMED by live store** (744 `.jsonl` under `~/.qwen/projects/*/chats/`, 42 project dirs). Within each project dir, transcripts live under `chats/` (`QwenAdapter.swift:27`, `qwen.ts:36`). There is **no `~/.qwen/tmp/` transcript path** (Qwen's `tmp/<64-hex>/` holds only `logs.json` telemetry) and **no `~/.qwen/projects.json`** (Gemini's `cwd→name` map is absent — CONFIRMED).
+**Authoritative root** (both adapters): `~/.qwen/projects/` — `QwenAdapter.swift:9-11` (`.qwen/projects`), `qwen.ts:20` (`join(homedir(), '.qwen', 'projects')`). **CONFIRMED by live store** (787 `.jsonl` under `~/.qwen/projects/*/chats/`, 43 project dirs on 2026-07-01). Within each project dir, transcripts live under `chats/` (`QwenAdapter.swift:27`, `qwen.ts:36`). There is **no `~/.qwen/tmp/` transcript path** (Qwen's `tmp/<64-hex>/` holds only `logs.json` telemetry) and **no `~/.qwen/projects.json`** (Gemini's `cwd→name` map is absent — CONFIRMED).
 
 | Path | Role | Storage tech |
 |---|---|---|
@@ -165,9 +205,9 @@ One file = an ordered sequence of JSON objects, one per line. The top-level `typ
 | `system` / `attribution_snapshot` | (none) | Git/file-attribution snapshot (`systemPayload.snapshot`) | dropped | **no** |
 | `system` / `slash_command` | (none) | Slash-command marker (`systemPayload.{phase,rawCommand}`, e.g. `/init`, `/model`, `/exit`) | dropped | **no** |
 
-**Filtering rule (both adapters):** the `parseSessionInfo` scan and `message()`/`streamMessages` loops accept **only** `type == "user" || type == "assistant"` for conversation (Swift:54-58, 159-163; TS:71, 137). Every other `type` (`tool_result`, all `system`, unknown) is skipped for content. `system/ui_telemetry` rows are inspected separately, **but only for token telemetry** (Swift `telemetryUsage` :174-196; TS does not inspect them at all). `toolMessageCount` is therefore always `0`; `systemMessageCount` counts only **injection-reclassified user lines**, NOT the raw `type:"system"` records (a misleading name — see §15 gotcha 7).
+**Filtering rule (both adapters):** the `parseSessionInfo` scan and `message()`/`streamMessages` loops accept **only** `type == "user" || type == "assistant"` for conversation (Swift:54-58, 159-163; TS:71, 137). Every other `type` (`tool_result`, all `system`, unknown) is skipped for content. `system/ui_telemetry` rows are inspected separately, **but only for token telemetry** (Swift `telemetryUsage` :178-200; TS does not inspect them at all). `toolMessageCount` is therefore always `0`; `systemMessageCount` counts only **injection-reclassified user lines**, NOT the raw `type:"system"` records (a misleading name — see §15 gotcha 7).
 
-> **System-injection sub-classification.** A `user` record whose flattened text starts with `\nYou are Qwen Code` / `You are Qwen Code`, or contains `<INSTRUCTIONS>`, is reclassified as **system** (counted in `systemMessageCount`, excluded from `userMessageCount`, and not eligible to become the summary). — `isSystemInjection` Swift:222-226 / TS:157-163.
+> **System-injection sub-classification.** A `user` record whose flattened text starts with `\nYou are Qwen Code` / `You are Qwen Code`, or contains `<INSTRUCTIONS>`, is reclassified as **system** (counted in `systemMessageCount`, excluded from `userMessageCount`, excluded from stream output, and not eligible to become the summary). — `isSystemInjection` Swift:226-230 / TS:160-165; stream skip Swift:164-167 / TS:139-142.
 
 > **`role` vs `type`.** The inner `message.role` for `assistant` records is `"model"` (Gemini convention; never `"assistant"` live), and `tool_result.message.role` is `"user"`. Engram derives role from the **top-level `type`**, ignoring `message.role`. This matters because `tool_result` records carry `message.role:"user"` — they are excluded by the `type` filter, not by role, so they do NOT inflate the user count. (The `schema_drift.jsonl` fixture uses `role:"assistant"` and still parses, since role is unread.)
 
@@ -212,7 +252,9 @@ Top-level keys per record. There is **no top-level session-envelope object** (un
 | `role` | string | `"user"` (user & tool_result) / `"model"` (assistant; drift fixture also uses `"assistant"`) | all | ❌ (Engram derives role from top-level `type`, not `message.role`) |
 | `parts` | array<object> | Ordered content blocks (§6.5) | all | ✅ (only `.text` kept) |
 
-`extractContent` reads `message.parts[]`, keeps each element's non-empty `.text`, joins them — **`\n\n`** (Swift:240) / **`\n`** (TS:203). See §8 for the reasoning-leak caveat.
+`extractContent` reads `message.parts[]`, keeps each non-thought element's
+non-empty `.text`, and joins them with **`\n`** in both Swift and TS.
+See §8 for the reasoning-stripping behavior.
 
 ### 6.2 `type:"user"` record
 
@@ -239,8 +281,8 @@ Top-level keys per record. There is **no top-level session-envelope object** (un
 | Field | Type | Meaning | Optional | Consumed? |
 |---|---|---|---|---|
 | `model` | string | Model that produced the turn (top-level) | required (assistant) | ✅ (session `model`) |
-| `message.parts` | array | Mixed: reasoning (`thought:true`), final text, tool calls (`functionCall`) (§6.5) | required | ✅ (text + thought-text joined) |
-| `usageMetadata` | object | Per-turn token usage (§9) | optional | ✅ (Swift) |
+| `message.parts` | array | Mixed: reasoning (`thought:true`), final text, tool calls (`functionCall`) (§6.5) | required | ✅ (non-thought text joined) |
+| `usageMetadata` | object | Per-turn token usage (§9) | optional | ✅ (Swift + TS) |
 | `contextWindowSize` | int | Model context window | optional | ❌ |
 
 ```json
@@ -270,14 +312,18 @@ Whole-store census of part shapes (sampled): assistant parts split among `[text,
 
 | Block shape | Where | Meaning | Consumed? |
 |---|---|---|---|
-| `{ "text": "<string>" }` | user, assistant | Plain text turn / answer | ✅ (joined; `\n\n` Swift, `\n` TS) |
-| `{ "text": "<string>", "thought": true }` | assistant | Reasoning text flagged as a thought | ✅ **text is kept** — Swift/TS only check for a non-empty `text` key, so reasoning text is folded into the assistant content (the `thought:true` flag is ignored). |
+| `{ "text": "<string>" }` | user, assistant | Plain text turn / answer | ✅ (joined with `\n`) |
+| `{ "text": "<string>", "thought": true }` | assistant | Reasoning text flagged as a thought | ❌ skipped — current Swift/TS `extractContent` ignores `thought:true` text parts. |
 | `{ "functionCall": { id, name, args } }` | assistant | Tool invocation request | ❌ (no `text` key → skipped by `extractContent`) |
 | `{ "functionResponse": { id, name, response } }` | tool_result | Tool return payload | ❌ (whole `tool_result` record dropped) |
 
-**Extraction** (`extractContent` Swift:228-241 / TS:194-206): iterate `message.parts`, keep each element's non-empty `.text`, join. Blocks without a `text` key (`functionCall`/`functionResponse`) contribute nothing.
+**Extraction** (`extractContent` Swift:228-241 / TS:194-206): iterate `message.parts`, keep each element's non-empty `.text` only when `thought:true` is not set, join. Blocks without a `text` key (`functionCall`/`functionResponse`) contribute nothing.
 
-> **Coverage flag.** Because the only filter is "has a non-empty `text`", an assistant `thought` part's reasoning text **leaks into the normalized content** — Qwen does **not** strip reasoning the way the Gemini adapter drops its separate `thoughts[]` array. Conversely, an assistant turn whose `parts` are *only* `functionCall` flattens to **empty content** (still counted as an assistant turn — counted by `type`, not content).
+> **Coverage flag.** Current Swift and TS parsers strip assistant `thought:true`
+> parts before normalization, matching the intent of Gemini's separate
+> `thoughts[]` drop. Conversely, an assistant turn whose `parts` are *only*
+> `functionCall` flattens to **empty content** (still counted as an assistant turn
+> — counted by `type`, not content).
 
 ```json
 // assistant message.parts[] (anonymized) — mixed text / thought / functionCall
@@ -354,9 +400,13 @@ Verified live `tool_result` keys: `{cwd, gitBranch, message, parentUuid, session
 
 Qwen has **no separate `thoughts[]` array** (Gemini does). Reasoning is an **in-band** `parts[]` element on the assistant record: `{ "text": "<reasoning>", "thought": true }` (§6.5), preceding the final answer part(s). The reasoning **token count** is reported separately as `usageMetadata.thoughtsTokenCount` / `ui_telemetry.thoughts_token_count` (§9).
 
-**Engram keeps the reasoning text** — `extractContent` joins every part with a non-empty `.text` and does **not** check `thought` (Swift:228-241, TS:194-206), so an assistant message's stored `content` = **reasoning text concatenated with the final answer**.
+**Engram strips the reasoning text** — `extractContent` skips parts whose
+`thought` flag is `true` (Swift:228-241, TS:194-206), so an assistant message's
+stored `content` is the user-visible text, not the reasoning text.
 
-> **Lineage contrast / behavioral asymmetry.** Gemini stores reasoning in a separate top-level `thoughts[]` array that Engram **drops**; Qwen inlines reasoning into `parts` and Engram **keeps it**. So Engram's Qwen assistant content is "thoughts + answer", not just the answer — a real behavioral difference created purely by the format difference (flag this with maintainers: intended or a bug? — see §15 open questions).
+> **Lineage contrast.** Gemini stores reasoning in a separate top-level
+> `thoughts[]` array that Engram drops. Qwen inlines reasoning into `parts`, but
+> the `thought:true` flag gives Engram an equivalent drop signal.
 
 ```json
 "parts": [
@@ -369,17 +419,17 @@ Qwen has **no separate `thoughts[]` array** (Gemini does). Reasoning is an **in-
 
 ## 9. Token usage & cost
 
-Qwen exposes per-turn usage in **two places** — the Swift adapter reads both, preferring `usageMetadata`. (The **TS adapter reads neither** — it drops all token usage.)
+Qwen exposes per-turn usage in **two places**. Swift product code and the retained TS adapter both read both, preferring `usageMetadata`; the 2026-07-02 native live smoke attached usage to 1,140 streamed assistant messages.
 
 ### 9.1 Primary — top-level `usageMetadata` on the assistant record
 
-Verified live keys: `{cachedContentTokenCount, candidatesTokenCount, promptTokenCount, thoughtsTokenCount, totalTokenCount}`. Read by `usage()` (Swift:198-213).
+Verified live keys: `{cachedContentTokenCount, candidatesTokenCount, promptTokenCount, thoughtsTokenCount, totalTokenCount}`. Read by `usage()` (Swift:208-223; TS:223-231).
 
 ```json
 { "promptTokenCount": 17297, "candidatesTokenCount": 533, "thoughtsTokenCount": 20, "totalTokenCount": 17830, "cachedContentTokenCount": 0 }
 ```
 
-| Field | Type | Meaning | Engram (Swift) mapping |
+| Field | Type | Meaning | Engram mapping |
 |---|---|---|---|
 | `promptTokenCount` | int | Prompt/input tokens | `inputTokens` (used **as-is**, NOT cache-subtracted) |
 | `candidatesTokenCount` | int | Completion tokens | `outputTokens` |
@@ -389,11 +439,11 @@ Verified live keys: `{cachedContentTokenCount, candidatesTokenCount, promptToken
 
 `cacheCreationTokens` is always `0` (Qwen reports no cache-creation count). **Confirmed (official): this is structurally permanent, not just unobserved.** `usageMetadata` is stored as-is from the Google GenAI `GenerateContentResponseUsageMetadata` type ([`chatRecordingService.ts`](https://raw.githubusercontent.com/QwenLM/qwen-code/main/packages/core/src/services/chatRecordingService.ts); [field reference](https://v03.api.js.langchain.com/interfaces/_langchain_google_common.types.GenerateContentResponseUsageMetadata.html)) whose fields are `promptTokenCount`, `candidatesTokenCount`, `cachedContentTokenCount` (cache **read**), `thoughtsTokenCount`, `toolUsePromptTokenCount`, `totalTokenCount` (+ `*TokensDetails` breakdowns) — there is **no cache-creation field** in the schema, only `cachedContentTokenCount` (read). `usage()` returns `nil` if input+output+cacheRead are all 0; `user` records carry no usage (Swift:170).
 
-### 9.2 Fallback — `system/ui_telemetry` `api_response` rows (Swift only)
+### 9.2 Fallback — `system/ui_telemetry` `api_response` rows
 
-A `type:"system"`, `subtype:"ui_telemetry"` row whose `systemPayload.uiEvent["event.name"] == "qwen-code.api_response"` is mined for tokens **only when the following assistant record lacks `usageMetadata`** (`telemetryUsage` Swift:174-196). Verified live `api_response` uiEvent keys: `{auth_type, cached_content_token_count, duration_ms, event.name, event.timestamp, input_token_count, model, output_token_count, prompt_id, response_id, status_code, thoughts_token_count, total_token_count}`.
+A `type:"system"`, `subtype:"ui_telemetry"` row whose `systemPayload.uiEvent["event.name"] == "qwen-code.api_response"` is mined for tokens **only when the following assistant record lacks `usageMetadata`** (`telemetryUsage` Swift:184-206; TS:209-221). Verified live `api_response` uiEvent keys: `{auth_type, cached_content_token_count, duration_ms, event.name, event.timestamp, input_token_count, model, output_token_count, prompt_id, response_id, status_code, thoughts_token_count, total_token_count}`.
 
-**Mechanism (Swift `messages(from:)` :140-153):** telemetry rows appear **before** the assistant record they describe. The parser buffers `pendingTelemetryUsage`; a telemetry row sets it and is itself dropped (returns `nil` → not a message); the next assistant message takes `metadataUsage ?? telemetryUsage` (Swift:170) and clears the buffer (Swift:148-150).
+**Mechanism (Swift `messages(from:)` :146-159; TS `streamMessages` :127-175):** telemetry rows appear **before** the assistant record they describe. The parser buffers `pendingTelemetryUsage`; a telemetry row sets it and is itself dropped (not a message); the next assistant message takes `metadataUsage ?? telemetryUsage` (Swift:180; TS:161-164) and clears the buffer.
 
 | uiEvent field | → TokenUsage |
 |---|---|
@@ -408,8 +458,8 @@ All other uiEvent fields (`thoughts_token_count`, `tool_token_count`, `total_tok
 > **Telemetry `event.name` census (live, rich session):** `qwen-code.tool_call` (most common), `qwen-code.api_response`, `qwen-code.api_error` (rare). The adapter matches **only `api_response`** (Swift:179) — `tool_call`/`api_error` telemetry is ignored, so `api_error` turns' cost is currently unrecorded.
 
 > **Discrepancy flags.**
-> 1. **TS drops ALL token usage** — `qwen.ts` has no `usageMetadata`/telemetry handling. Swift is the only path producing Qwen cost/usage. (Same Swift-vs-TS split as Gemini.)
-> 2. **Parity fixture masks it:** the stale fixture has no `usageMetadata`/telemetry, so `usageTotals` is all-zero and never exercises extraction. Real sessions DO populate usage.
+> 1. **Older docs and fixtures used to mask TS usage extraction:** the stale parity fixture has no `usageMetadata`/telemetry, so `usageTotals` is all-zero unless focused tests or live smoke exercise extraction. Current retained TS now matches Swift for `usageMetadata` and telemetry fallback.
+> 2. **Live telemetry fallback is currently rare:** the latest full native smoke found 0 `qwen-code.api_response` telemetry rows in the scanned corpus, while 1,140 assistant messages carried top-level `usageMetadata`.
 > 3. **`thoughtsTokenCount` is NOT folded into output** for Qwen (Gemini folds `thoughts`+`tool` into output). Qwen's `outputTokens` = `candidatesTokenCount` only.
 > 4. **No cache subtraction** (vs Gemini). Qwen Swift maps `promptTokenCount → inputTokens` directly (Swift:201); the Gemini Swift adapter does `inputTokens = max(input − cached, 0)`. So Qwen `inputTokens` **includes** cached tokens; Gemini's excludes them. Cross-source cost comparisons are inconsistent (apples-to-oranges).
 
@@ -505,12 +555,12 @@ No per-token price/cost is stored on disk; Engram computes cost downstream.
 | `sizeBytes` | file size | `:108` | `:115` | Swift `JSONLAdapterSupport.fileSize`; TS `stat.size` |
 | `parentSessionId` / `suggestedParentId` / `agentRole` / `originator` | **`nil`** (no sidecar read) | `:110,116-117` | (omitted) | Diverges from Gemini Layer 1c; set later by heuristics/backfill |
 | **per-message** `role` | `type=="assistant"`→assistant else user | `:170` | `:146,149` | from top-level `type`, not `message.role` |
-| **per-message** `content` | `extractContent(message.parts[].text)` joined | `:167,228-241` | `:150,194-206` | thought text leaks in; `functionCall`/`functionResponse` dropped; separator `\n\n` (Swift) vs `\n` (TS) |
+| **per-message** `content` | non-thought `extractContent(message.parts[].text)` joined | `:167,228-241` | `:150,194-206` | thought text skipped; `functionCall`/`functionResponse` dropped; separator `\n` in both Swift and TS |
 | **per-message** `timestamp` | `timestamp` | `:168` | `:151` | |
-| **per-message** `usage` | assistant `usageMetadata` ?? pending `ui_telemetry` | `:164,170,174-213` | **none** | **Swift only** |
+| **per-message** `usage` | assistant `usageMetadata` ?? pending `ui_telemetry` | `:174-180,184-223` | `:157-164,209-231` | Swift + TS |
 | **per-message** `toolCalls` | `nil` | `:169` | (none) | dropped |
 
-**What Engram does NOT consume:** the entire `tool_result` record type; all `system` rows except `ui_telemetry/api_response` token mining (Swift); `parts[].functionCall`/`functionResponse` (but `thought` text leaks in); `message.role`; `parentUuid`; `uuid`; `gitBranch`; `version`; `contextWindowSize`; `usageMetadata.{thoughtsTokenCount,totalTokenCount}`; the whole `uiEvent` minus 3 token fields; the `<encodedCwd>` dir name (→ `project:nil`); `meta.json`; `extract-cursor.json`; `memory/`; `tmp/*/logs.json`; `usage/*` ledgers; and (TS path) **all** token usage. There is no on-disk `messageCount`/sidecar to consume.
+**What Engram does NOT consume:** the entire `tool_result` record type; all `system` rows except `ui_telemetry/api_response` token mining; `parts[].thought` text; `parts[].functionCall`/`functionResponse`; `message.role`; `parentUuid`; `uuid`; `gitBranch`; `version`; `contextWindowSize`; `usageMetadata.{thoughtsTokenCount,totalTokenCount}`; the whole `uiEvent` minus 3 token fields; the `<encodedCwd>` dir name (→ `project:nil`); `meta.json`; `extract-cursor.json`; `memory/`; `tmp/*/logs.json`; and `usage/*` ledgers. There is no on-disk `messageCount`/sidecar to consume.
 
 ---
 
@@ -530,7 +580,7 @@ Qwen Code is a **fork of Google Gemini CLI** that **forked the content model but
 | Content shape | `messages[].content` = string / `[{text}]` | **`message.parts[].text`, assistant `role:"model"`** | ✓ (Gemini `parts`/`model` heritage) |
 | Record types | `user`/`gemini`/`model`/`info` | **`user`/`assistant`/`tool_result`/`system{ui_telemetry,attribution_snapshot,slash_command}`** | ✗ |
 | Tool calls | inline in assistant `toolCalls[]` (+ result) | **split: assistant `functionCall` + separate `tool_result`** | ✗ |
-| Reasoning | separate `thoughts[]` array (text **dropped** by Engram) | **in-band `{text,thought:true}` part (text KEPT by Engram)** | ✗ behavior |
+| Reasoning | separate `thoughts[]` array (text **dropped** by Engram) | **in-band `{text,thought:true}` part (text also dropped by Engram)** | ✓ behavior / ✗ storage |
 | Token usage | `tokens{input,output,cached,thoughts,tool,total}`; `inputTokens=max(input−cached,0)`, thoughts/tool folded into output | **`usageMetadata{promptTokenCount,…}` + `ui_telemetry` fallback**; `promptTokenCount` un-decached, thoughts unused | ✗ names + arithmetic |
 | Engram `project` | dir name | **`nil`** | ✗ |
 | Engram sidecar (Layer 1c) | reads `<sessionId>.engram.json` + `originator` | **not read** (heuristic + Polycli backfill only) | ✗ |
@@ -543,14 +593,14 @@ This whole family is **distinct** from the VS Code `.vscdb`/leveldb family (Curs
 
 ### Gotchas / version drift / edge cases
 
-1. **Fixtures are stale `v0.10.5` schema (HIGH).** `tests/fixtures/qwen/*` and the parity input use the flat 3-line `user`/`assistant` form with `message.parts[].text`, top-level `model`, and **no** telemetry/`tool_result`/`system`/`usageMetadata`/`thought` parts. Live `v0.14.5+` is far richer. The fixtures validate only the happy text path and **do not test** token extraction, telemetry fallback, `tool_result` skipping, injection filtering, or thought-leak. `schema_drift.jsonl` only proves unknown-key tolerance.
+1. **Fixtures are stale `v0.10.5` schema (HIGH).** `tests/fixtures/qwen/*` and the parity input use the flat 3-line `user`/`assistant` form with `message.parts[].text`, top-level `model`, and **no** telemetry/`tool_result`/`system`/`usageMetadata`/`thought` parts. Live `v0.14.5+` is far richer. The fixtures validate only the happy text path and **do not test** token extraction, telemetry fallback, `tool_result` skipping, or injection filtering. Focused Swift/TS tests now cover thought-part skipping; `schema_drift.jsonl` only proves unknown-key tolerance.
 2. **`gemini-cli.md` §15 overstates the shared layout (CRITICAL correction).** It claims Qwen "reuses the same `tmp/<dir>/chats/` + `projects.json` layout." **REAL data contradicts this:** Qwen uses `~/.qwen/projects/<encodedCwd>/chats/<uuid>.jsonl`, has **no `projects.json`**, and its `tmp/*/` holds only `logs.json` telemetry. Qwen shares Gemini's content shape, not its file layout. Correct that doc.
 3. **`tool_result` dropped, `toolMessageCount` always 0.** Tool I/O is fully on disk (a rich session can hold hundreds of `tool_result` records) but invisible in Engram. Linkage is `id`/`callId`-based across two records, not co-located like Gemini.
 4. **Tool calls invisible + content can be empty.** Assistant turns whose `parts` are only `functionCall` count as assistant turns (counted by `type`) but flatten to **empty content**.
-5. **Reasoning text leaks into assistant content (opposite of Gemini).** `extractContent` keeps any part with a `text` key, including `{text,thought:true}` reasoning — Qwen does NOT strip reasoning the way Gemini does. Engram's Qwen assistant content = reasoning + answer concatenated.
+5. **Reasoning text is stripped.** Current Swift/TS `extractContent` skips `{text,thought:true}` parts, so Engram's Qwen assistant content keeps the answer text but not the reasoning part.
 6. **`thoughtsTokenCount` not summed.** Qwen `outputTokens` = `candidatesTokenCount` only (Gemini folds thoughts+tool into output). Cross-tool output-token totals are not apples-to-apples.
 7. **No cache subtraction (vs Gemini).** Qwen Swift maps `promptTokenCount → inputTokens` directly; Gemini does `max(input − cached, 0)`. So Qwen `inputTokens` includes cached tokens. Cross-source cost comparisons are inconsistent.
-8. **Tokens only in the Swift product path.** TS reference adapter reports zero usage for Qwen; parity fixture (all-zero `usageTotals`) masks this.
+8. **Token usage is covered in Swift and retained TS, but stale fixtures still mask it.** The parity fixture has all-zero `usageTotals`; focused tests and live smoke are required to prove Qwen usage extraction.
 9. **`systemMessageCount` ≠ count of `type:"system"` records.** Engram's `systemMessageCount` counts **system-injection user messages** (prompts starting `"You are Qwen Code"` / containing `<INSTRUCTIONS>`), NOT the (numerous) actual `type:"system"` records. The name is misleading.
 10. **System-injection detection is brittle.** Hard-coded English prefixes (`"You are Qwen Code"`); a localized or reworded system prompt would be miscounted as a real user message and could become the `summary`.
 11. **`project` always nil; `cwd` comes from inside the file.** The dash-encoded cwd dir name is never decoded; `cwd` comes from the in-record field. A session where no `user`/`assistant` record carries `cwd` would get an empty `cwd`.
@@ -558,11 +608,11 @@ This whole family is **distinct** from the VS Code `.vscdb`/leveldb family (Curs
 13. **Per-line `version` can drift mid-file** across CLI upgrades on resume (live range `0.10.5`…`0.18.4`); neither adapter reads it, so any schema drift is **silent**. "Session version" is not single-valued.
 14. **Size/parse caps differ Swift vs TS — and Qwen's truncation is SILENT.** TS has **no** file-size, line-size, or message-count cap (streams everything). Swift caps file 100 MB / line 8 MB / messages 10,000 and adds the mid-read file-identity guard. **Key correction:** because `QwenAdapter` calls `readObjects` WITHOUT `reportFailures` (`QwenAdapter.swift:40,131`; default `false` at `CodexAdapter.swift:61`), the message-count and per-line-byte caps are **swallowed, not surfaced** for Qwen — a >10,000-record session is **silently truncated** to the first 10,000 parsed objects (NO `.messageLimitExceeded` is raised, contrast Codex which passes `reportFailures:true`), and a >8 MB line is silently skipped. The TS path reads such a session in full (unbounded). Only **`.fileTooLarge`** (pre-read >100 MB, dropped by Swift / kept by TS) and **`.fileModifiedDuringParse`** (`CodexAdapter.swift:79-80`, NOT gated by `reportFailures`) actually surface for Qwen.
 15. **File-identity guard (Swift only).** An actively-appended live session can trip `.fileModifiedDuringParse` and be retried — common because Qwen appends continuously.
-16. **Content join separator drift.** Swift joins parts with `\n\n`, TS with `\n` — multi-part message bodies render with different spacing across the two parsers.
+16. **Content join separator is aligned.** Swift and TS now join retained text parts with `\n`; the current live corpus has 0 assistant messages with multiple non-thought text parts, so this is future-facing coverage rather than a current DB-count change.
 17. **Whole-file load on every read.** Neither path uses the streaming `windowedMessages` helper; paged reads load the entire file each time (O(file) per page for large sessions).
 18. **Filename ≠ Gemini grammar, no prefix filter.** Bare `<sessionId>.jsonl`, no `session-` prefix or timestamp — and the adapter does **not** prefix-filter (any `.jsonl` under `chats/` is parsed), unlike Gemini/iFlow which require `session-`.
-19. **`tmp/<64-hex>/` dirs** are a Gemini-fork remnant (project-hash dirs), parallel to the human-slug dirs under `projects/`. **CONFIRMED from source** ([`storage.ts`](https://raw.githubusercontent.com/QwenLM/qwen-code/main/packages/core/src/config/storage.ts)): `getProjectTempDir()` = `~/.qwen/tmp/<getProjectHash(cwd)>`, and `getProjectHash(p)` = `crypto.createHash('sha256').update(normalizedPath).digest('hex')` — a SHA-256 hex digest (exactly 64 hex chars) of the (Windows-lowercased) absolute cwd. So `tmp/<64-hex>` and `projects/<encodedCwd>` name the **same** project two different ways; only `projects/` holds `chats/`. **Most** tmp dirs hold a `logs.json` telemetry file (live: 15 of 16; **1 holds none** — empty/no logs), never a transcript. Engram reads only `projects/`.
-20. **Other session-keyed artifacts live OUTSIDE `projects/`.** `debug/<sessionId>.txt` (750 live INFO/DEBUG logs, stem == sessionId, 1:1 with a transcript) and `todos/<sessionId>.json` (`{sessionId, todos:[{content,id,status}]}`) are keyed by `sessionId` exactly like the transcripts, yet sit at `~/.qwen/` top level — so a reader hunting "all per-session data Qwen writes" must look beyond `projects/`. Both are ignored: the adapter only enumerates `projects/<encodedCwd>/chats/*.jsonl` (`QwenAdapter.swift:22-36`). Also at root: global `memories/MEMORY.md`, `skills/<name>/`, `settings.json.orig` (none session data, none read).
+19. **`tmp/<64-hex>/` dirs** are a Gemini-fork remnant (project-hash dirs), parallel to the human-slug dirs under `projects/`. **CONFIRMED from source** ([`storage.ts`](https://raw.githubusercontent.com/QwenLM/qwen-code/main/packages/core/src/config/storage.ts)): `getProjectTempDir()` = `~/.qwen/tmp/<getProjectHash(cwd)>`, and `getProjectHash(p)` = `crypto.createHash('sha256').update(normalizedPath).digest('hex')` — a SHA-256 hex digest (exactly 64 hex chars) of the (Windows-lowercased) absolute cwd. So `tmp/<64-hex>` and `projects/<encodedCwd>` name the **same** project two different ways; only `projects/` holds `chats/`. **Most** tmp dirs hold a `logs.json` telemetry file (live 2026-07-01: 15 of 17; **2 hold none** — empty/no logs), never a transcript. Engram reads only `projects/`.
+20. **Other session-keyed artifacts live OUTSIDE `projects/`.** `debug/<sessionId>.txt` (749 live INFO/DEBUG logs, stem == sessionId) and `todos/<sessionId>.json` (4 live, `{sessionId, todos:[{content,id,status}]}`) are keyed by `sessionId` exactly like the transcripts, yet sit at `~/.qwen/` top level — so a reader hunting "all per-session data Qwen writes" must look beyond `projects/`. Both are ignored: the adapter only enumerates `projects/<encodedCwd>/chats/*.jsonl` (`QwenAdapter.swift:22-36`). Also at root: global `memories/MEMORY.md`, `skills/<name>/`, `settings.json.orig` (none session data, none read).
 
 ### Open questions / resolved (web-confirmed 2026-06-21)
 
@@ -581,7 +631,7 @@ Most items below were resolved against qwen-code's published source on 2026-06-2
 - Full enum of `toolCallResult.errorType` (live seen: `file_not_found`, `execution_denied`, `invalid_tool_params`, `unhandled_exception`, `edit_no_occurrence_found`) and `ui_telemetry.tool_call.decision`/`tool_type` (`auto_accept`/`native` seen) (web-checked 2026-06-21: no authoritative single-file enum found — emitted across multiple tool-execution/telemetry layers; authenticated GitHub code search would be the next step; low-impact since the whole `tool_result` type is dropped).
 - Role of `extract-cursor.json` (two live shapes: `{updatedAt}` vs `{sessionId,processedOffset,updatedAt}`); `processedOffset` byte-offset vs record-index unconfirmed; writer/consumer unconfirmed (web-checked 2026-06-21: no authoritative source found — `chatRecordingService.ts` writes ONLY `chats/<sessionId>.jsonl`, and the Insight pipeline caches under `~/.qwen/insights/facets/` keyed by session id with no cursor/checkpoint/`processedOffset` file; not produced by any inspected code path).
 - Whether `qwen-code.api_error` / `qwen-code.tool_call` telemetry should also feed usage (Engram-internal design — not web-verifiable). Format fact (confirmed): `api_error` events carry no `usageMetadata` and a failed turn produces no assistant `usageMetadata`, so the cost of failed API calls is genuinely absent from per-turn usage fields; `tool_call` telemetry carries `tool_token_count` but no prompt/completion split. — [`chatRecordingService.ts`](https://raw.githubusercontent.com/QwenLM/qwen-code/main/packages/core/src/services/chatRecordingService.ts)
-- **Behavioral choices (Engram-internal design — not web-verifiable):** whether to strip reasoning (`thought:true`) text and whether to subtract cache from `inputTokens` (vs Gemini). Format facts that bound the decision (confirmed): (a) reasoning is an in-band part with `thought:true` on the assistant record (no separate `thoughts[]` array), so the flag is the only signal available to strip it; (b) `promptTokenCount` and `cachedContentTokenCount` are separate fields, so cache subtraction is possible if desired. — [`chatRecordingService.ts`](https://raw.githubusercontent.com/QwenLM/qwen-code/main/packages/core/src/services/chatRecordingService.ts)
+- **Behavioral choices (Engram-internal design — not web-verifiable):** current Engram strips reasoning (`thought:true`) text but still maps `promptTokenCount` directly without subtracting cache (vs Gemini). Format facts that bound the cache decision (confirmed): `promptTokenCount` and `cachedContentTokenCount` are separate fields, so cache subtraction is possible if desired. — [`chatRecordingService.ts`](https://raw.githubusercontent.com/QwenLM/qwen-code/main/packages/core/src/services/chatRecordingService.ts)
 - Whether Engram should add a Qwen `.engram.json` sidecar / originator path for deterministic Claude-Code/Polycli dispatch linking (Engram-internal design — not web-verifiable). Format fact (confirmed): qwen-code's `ChatRecord` schema has no cross-session parent field and no originator field (`parentUuid` is intra-session only), so any sidecar/originator path would be an Engram-added convention. — [`chatRecordingService.ts`](https://raw.githubusercontent.com/QwenLM/qwen-code/main/packages/core/src/services/chatRecordingService.ts)
 
 ---

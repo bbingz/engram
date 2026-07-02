@@ -1,6 +1,7 @@
 # Windsurf (Cascade) — Session Format Reference
 
 Last researched: 2026-06-21 (Engram session-format research workflow)
+Engram adapter status refreshed: 2026-07-02 (local source/live DB audit)
 
 > **Sibling tool:** Windsurf shares its *entire* code path with **Antigravity** (the
 > "Cascade family" — both are Codeium/Cascade-derived). `CascadeCacheSupport`,
@@ -42,13 +43,20 @@ Engram therefore uses a **two-stage model**:
 2. **Index the JSONL cache.** The indexer reads only the cache; it never opens a `.pb`.
 
 **Critical: stage 1 is DISABLED in the shipped Swift product.** The factory constructs
-`WindsurfAdapter(enableLiveSync: false)` (`SessionAdapterFactory.swift:25,70`), so `sync()`
+`WindsurfAdapter(enableLiveSync: false)` (`SessionAdapterFactory.swift:32,95`), so `sync()`
 returns immediately at its `guard enableLiveSync …` (`WindsurfAdapter.swift:204-208`). The
 product is **strictly cache-only**: it indexes whatever `*.jsonl` already exists in
 `~/.engram/cache/windsurf/` and writes nothing new. With an empty cache and no prior
 sync, the product currently surfaces **zero** Windsurf sessions on this machine. The TS
 reference adapter (`src/adapters/windsurf.ts`) has no `enableLiveSync` gate and is the only
 path that ever *produces* cache files.
+
+**Current Engram status (2026-07-02):** This remains a cache-only gap, not a
+cache parser mismatch. The live upstream store still has 2 raw `.pb` files
+(43,357 bytes and 2,228,085 bytes), `~/.codeium/windsurf/daemon` is absent,
+`~/.engram/cache/windsurf` exists with 0 `*.jsonl`, the adapter detects the cache
+root but lists/parses 0 sessions, and live DB has 0 `windsurf` rows plus 0
+`windsurf` `file_index_state` rows.
 
 **Mental model (layering / ASCII).**
 
@@ -106,7 +114,7 @@ see §6/§15) is confirmed by source, not by a live-generated artifact (none exi
 
 Defaults are wired in both adapters: `WindsurfAdapter.init` (`WindsurfAdapter.swift:106-113`)
 and the TS constructor (`windsurf.ts:38-42`). `SourceCatalog` lists the Windsurf
-`defaultPath` as `~/.codeium/windsurf/daemon` (`SourceCatalog.swift:38`), i.e. the discovery
+`defaultPath` as `~/.codeium/windsurf/daemon` (`SourceCatalog.swift:44`), i.e. the discovery
 dir, even though the parsed data lives in the Engram cache.
 
 ### Naming grammar
@@ -160,7 +168,7 @@ and `~/.engram/cache/windsurf/*.jsonl` (always). Everything else under
 | **Rollover** | No size/time-based *splitting* of a single conversation. But conversations are **not** kept for life: Windsurf enforces a retention cap of ~20 conversations in Cascade — creating the 21st permanently deletes the oldest ("your first conversation is gone forever") ([issue #136](https://github.com/Exafunction/codeium/issues/136)). So the upstream `.pb` for an evicted conversation is deleted by Windsurf. Engram's own JSONL cache is never pruned (see Archive/deletion row), so an evicted conversation's stale `.jsonl` lingers in the cache after its `.pb` is gone. |
 | **Freshness gate** | Sync regenerates a cache only if **stale**: cache missing, or `cache.mtime < pb.mtime` (`isFresh`, `WindsurfAdapter.swift:238-256`; TS `windsurf.ts:73-77`). A `requireContent` flag would also treat caches `≤ 200` bytes as stale, but the live call passes `requireContent:false` (`:214`), so tiny/empty caches are NOT auto-refreshed on that basis. |
 | **Archive / deletion** | Engram never deletes cache files. If a Windsurf conversation is deleted upstream, its `.jsonl` is simply never refreshed and lingers; sync only *creates/overwrites*, never prunes. |
-| **Live sync status in product** | **OFF.** `WindsurfAdapter(enableLiveSync: false)` (`SessionAdapterFactory.swift:25,70`). The adapter *default* is `true` (`WindsurfAdapter.swift:116`) but the factory overrides it. `sync()` early-returns; product is strictly cache-only. The cache-only status is **canonicalized** in `LiveSyncDisabledSources.ids = ["windsurf", "antigravity"]` (`macos/Shared/Service/LiveSyncDisabledSources.swift:15`) and surfaced to the user as a **"Cache only" badge** in the app UI, so the live-sync-off state is shown honestly rather than implied as a broken/active sync. |
+| **Live sync status in product** | **OFF.** `WindsurfAdapter(enableLiveSync: false)` (`SessionAdapterFactory.swift:32,95`). The adapter *default* is `true` (`WindsurfAdapter.swift:116`) but the factory overrides it. `sync()` early-returns; product is strictly cache-only. The cache-only status is **canonicalized** in `LiveSyncDisabledSources.ids = ["windsurf", "antigravity"]` (`macos/Shared/Service/LiveSyncDisabledSources.swift:15`) and surfaced to the user as a **"Cache only" badge** in the app UI, so the live-sync-off state is shown honestly rather than implied as a broken/active sync. |
 
 ### Discovery / enumeration flow
 
@@ -443,12 +451,12 @@ Codeium/"Cascade"-derived. `CascadeCacheSupport`, `CascadeClient`, `CascadeDisco
 Same daemon-JSON discovery contract (`httpPort`+`csrfToken`), same
 `language_server_pb.LanguageServerService` RPCs, same Markdown→message parsing, same JSONL
 cache shape (meta line + `{role,content}` lines). Both registered
-`enableLiveSync:false` (`SessionAdapterFactory.swift:25-26,70-71`).
+`enableLiveSync:false` (`SessionAdapterFactory.swift:32-33,95-96`).
 
 **Differences from Antigravity:** roots only —
 - Windsurf: `~/.codeium/windsurf/{daemon,cascade}`. For Windsurf the `SourceCatalog`
   `defaultPath` **equals** the Cascade daemon-discovery dir: both are
-  `~/.codeium/windsurf/daemon` (`SourceCatalog.swift:38`; `CascadeDiscovery.swift:13`).
+  `~/.codeium/windsurf/daemon` (`SourceCatalog.swift:44`; `CascadeDiscovery.swift:13`).
 - Antigravity: `~/.gemini/antigravity/daemon` (Google/Antigravity rebrand under `.gemini`)
   for Cascade daemon discovery (`CascadeDiscovery.swift:5`), and Antigravity *additionally*
   reads Antigravity CLI **brain transcripts** at `~/.gemini/antigravity-cli/brain`
@@ -476,7 +484,7 @@ not format sharing).
 ### Gotchas & version drift
 
 1. **Live sync OFF in product (biggest gotcha).** `enableLiveSync:false`
-   (`SessionAdapterFactory.swift:25,70`). The adapter default is `true`
+   (`SessionAdapterFactory.swift:32,95`). The adapter default is `true`
    (`WindsurfAdapter.swift:116`) but the factory overrides it. `sync()` returns immediately
    (`:204-208`); the cache is never auto-populated. Clean machine = **zero Windsurf
    sessions** even though `.pb` files exist.

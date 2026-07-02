@@ -2,17 +2,21 @@ import Foundation
 
 struct AdapterRegistry {
     private var adaptersBySource: [SourceName: any SessionAdapter]
+    private var adapterListsBySource: [SourceName: [any SessionAdapter]]
 
     init(adapters: [any SessionAdapter] = []) {
         var map: [SourceName: any SessionAdapter] = [:]
+        var lists: [SourceName: [any SessionAdapter]] = [:]
         map.reserveCapacity(adapters.count)
         for adapter in adapters {
+            lists[adapter.source, default: []].append(adapter)
             // First registration wins; duplicates are skipped instead of crashing.
             if map[adapter.source] == nil {
                 map[adapter.source] = adapter
             }
         }
         adaptersBySource = map
+        adapterListsBySource = lists
     }
 
     var sources: [SourceName] {
@@ -21,6 +25,14 @@ struct AdapterRegistry {
 
     func adapter(for source: SourceName) -> (any SessionAdapter)? {
         adaptersBySource[source]
+    }
+
+    func adapter(for source: SourceName, locator: String) -> (any SessionAdapter)? {
+        SessionAdapterFactory.adapter(
+            for: source,
+            locator: locator,
+            adapters: adapterListsBySource[source] ?? []
+        )
     }
 }
 

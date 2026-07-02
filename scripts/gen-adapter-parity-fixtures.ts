@@ -13,6 +13,7 @@ import { GeminiCliAdapter } from '../src/adapters/gemini-cli.js';
 import { IflowAdapter } from '../src/adapters/iflow.js';
 import { KimiAdapter } from '../src/adapters/kimi.js';
 import { OpenCodeAdapter } from '../src/adapters/opencode.js';
+import { PiAdapter } from '../src/adapters/pi.js';
 import { QoderAdapter } from '../src/adapters/qoder.js';
 import { QwenAdapter } from '../src/adapters/qwen.js';
 import type {
@@ -24,7 +25,10 @@ import type {
 import { VsCodeAdapter } from '../src/adapters/vscode.js';
 import { WindsurfAdapter } from '../src/adapters/windsurf.js';
 
-type SupportedFixtureSource = Exclude<SourceName, 'lobsterai' | 'minimax'>;
+type SupportedFixtureSource = Exclude<
+  SourceName,
+  'grok' | 'lobsterai' | 'minimax' | 'mimo' | 'doubao' | 'glm' | 'deepseek'
+>;
 
 interface AdapterFixture {
   schemaVersion: 1;
@@ -64,6 +68,7 @@ const supportedSources = [
   'iflow',
   'kimi',
   'opencode',
+  'pi',
   'qoder',
   'qwen',
   'vscode',
@@ -233,6 +238,16 @@ function makeAdapter(source: SupportedFixtureSource, root: string) {
       const dbPath = join(inputRoot, 'sample.db');
       makeOpenCodeDb(dbPath);
       return { adapter: new OpenCodeAdapter(dbPath), inputRoot };
+    }
+    case 'pi': {
+      copyFileFixture(
+        join(sourceFixtureRoot, 'pi/sample.jsonl'),
+        join(
+          inputRoot,
+          '--Users-test--project--/2026-04-29T01-00-00-000Z_019dd6e3-91d1-7326-8299-314858773a0e.jsonl',
+        ),
+      );
+      return { adapter: new PiAdapter(inputRoot), inputRoot };
     }
     case 'iflow': {
       copyFileFixture(

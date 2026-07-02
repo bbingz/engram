@@ -434,6 +434,10 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
         let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
         var counts: [String: Int] = [:]
         for match in matches {
+            guard let fullRange = Range(match.range, in: text) else {
+                continue
+            }
+            let fullMatch = String(text[fullRange])
             // Capture group 1 is the directory portion (everything up to and
             // including the final slash). Drop the trailing slash so the cwd is
             // returned without it.
@@ -446,12 +450,65 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
             if directory.count > 1, directory.hasSuffix("/") {
                 directory.removeLast()
             }
+            if !isPlausibleCWDPathCandidate(fullMatch: fullMatch, directory: directory) {
+                continue
+            }
             counts[directory, default: 0] += 1
         }
         guard let top = counts.sorted(by: { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }).first else {
             return ""
         }
         return top.key
+    }
+
+    private static func containsInvalidPathTokenCharacters(_ value: String) -> Bool {
+        value.contains("\\") || value.contains("<") || value.contains(">") || value.contains(":")
+    }
+
+    private static func isPlausibleCWDPathCandidate(fullMatch: String, directory: String) -> Bool {
+        if containsInvalidPathTokenCharacters(fullMatch) || containsInvalidPathTokenCharacters(directory) {
+            return false
+        }
+
+        let components = fullMatch.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard components.count >= 3, let root = components.first else {
+            return false
+        }
+
+        let allowedRoots: Set<String> = [
+            "Applications",
+            "Library",
+            "Users",
+            "Volumes",
+            "app",
+            "etc",
+            "home",
+            "mnt",
+            "opt",
+            "private",
+            "srv",
+            "tmp",
+            "usr",
+            "var",
+            "workspace",
+            "workspaces",
+        ]
+        guard allowedRoots.contains(root) else {
+            return false
+        }
+
+        let ignoredComponents: Set<String> = [
+            ".git",
+            ".pnpm",
+            ".yarn",
+            "DerivedData",
+            "node_modules",
+        ]
+        if components.contains(where: { ignoredComponents.contains($0) }) {
+            return false
+        }
+
+        return components.last?.contains(".") == true
     }
 
     private static func isoString(_ date: Date) -> String {

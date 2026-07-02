@@ -12,7 +12,7 @@
     ]
   },
   "schemaVersion": 1,
-  "sourceCommit": "9e43f40b",
+  "sourceCommit": "f9a236dc",
   "tables": {
     "metadata": {
       "count": 2,
@@ -48,7 +48,7 @@
       "rows": [
         {
           "created_at": "<volatile>",
-          "id": "codex-session-001:1:89cd3cb21bcf114bd480ebaab1d782416d1b4ea060716344c81c141f7fd38d4f:embedding",
+          "id": "codex-session-001:1:390aa910df6aa489a1a2309802d029a3f2a03197f697eb9b82e9d22436a7844b:embedding",
           "job_kind": "embedding",
           "last_error": null,
           "retry_count": 0,
@@ -59,7 +59,7 @@
         },
         {
           "created_at": "<volatile>",
-          "id": "codex-session-001:1:89cd3cb21bcf114bd480ebaab1d782416d1b4ea060716344c81c141f7fd38d4f:fts",
+          "id": "codex-session-001:1:390aa910df6aa489a1a2309802d029a3f2a03197f697eb9b82e9d22436a7844b:fts",
           "job_kind": "fts",
           "last_error": null,
           "retry_count": 0,
@@ -69,7 +69,7 @@
           "updated_at": "<volatile>"
         }
       ],
-      "sha256": "35b5047e54b9e277cf2b05260955c6dabbfaca21ff8c2f8adc82811d06858c09"
+      "sha256": "c14fbb61ebe251db4d233026e425c6c5ca1868e6c2108148ec0d7547ce0f25bd"
     },
     "session_tools": {
       "count": 1,
@@ -86,6 +86,7 @@
       "count": 1,
       "rows": [
         {
+          "access_count": 0,
           "agent_role": null,
           "assistant_message_count": 1,
           "authoritative_node": "fixture-node",
@@ -95,15 +96,18 @@
           "file_path": "<repo>/tests/fixtures/indexer-parity/fixture-root/codex/2026/01/15/rollout-sample.jsonl",
           "generated_title": "帮我修复登录 bug，用户无法登录",
           "hidden_at": null,
+          "human_turn_count": 2,
           "id": "codex-session-001",
           "indexed_at": "<volatile>",
+          "instruction_count": 1,
+          "instruction_summary": "帮我修复登录 bug，用户无法登录",
           "last_accessed_at": null,
           "link_checked_at": "<volatile>",
           "link_source": null,
-          "access_count": 0,
           "message_count": 4,
           "model": null,
           "origin": "fixture-node",
+          "originator": "codex_cli_rs",
           "orphan_reason": null,
           "orphan_since": null,
           "orphan_status": null,
@@ -111,16 +115,13 @@
           "project": "my-project",
           "quality_score": 68,
           "size_bytes": 1199,
-          "snapshot_hash": "89cd3cb21bcf114bd480ebaab1d782416d1b4ea060716344c81c141f7fd38d4f",
+          "snapshot_hash": "390aa910df6aa489a1a2309802d029a3f2a03197f697eb9b82e9d22436a7844b",
           "source": "codex",
           "source_locator": "<repo>/tests/fixtures/indexer-parity/fixture-root/codex/2026/01/15/rollout-sample.jsonl",
           "start_time": "2026-01-15T10:00:00.000Z",
           "suggested_parent_id": null,
           "summary": "帮我修复登录 bug，用户无法登录",
           "summary_message_count": 3,
-          "instruction_count": 1,
-          "human_turn_count": 2,
-          "instruction_summary": "帮我修复登录 bug，用户无法登录",
           "sync_version": 1,
           "system_message_count": 0,
           "tier": "normal",
@@ -128,7 +129,7 @@
           "user_message_count": 2
         }
       ],
-      "sha256": "465e327e09c0ab4a09f03c8dbb3222277c1c19186309d2a9c7bbc498bede062f"
+      "sha256": "8d9fb6f7a2ada48ee1d553a6cbc8d618ca1c4e4c8a47a5e0930bb5422da43813"
     }
   }
 }

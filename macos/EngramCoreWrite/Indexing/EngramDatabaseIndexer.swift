@@ -277,14 +277,26 @@ public extension EngramDatabaseWriter {
             return EngramDatabaseIndexResult(indexed: 0, total: status.total, todayParents: status.todayParents)
         }
 
-        let adaptersBySource = Dictionary(adapters.map { ($0.source, $0) }, uniquingKeysWith: { first, _ in first })
+        let adaptersBySource = Dictionary(grouping: adapters, by: { $0.source })
         var batch: [InstructionBackfillSignal] = []
         var updated = 0
 
         for source in candidates.keys.sorted(by: { $0.rawValue < $1.rawValue }) {
-            guard let adapter = adaptersBySource[source] else { continue }
+            let sourceAdapters = adaptersBySource[source] ?? []
+            guard !sourceAdapters.isEmpty else { continue }
             for locator in candidates[source] ?? [] {
                 guard FileIndexStat.directFileStat(locator: locator) != nil else { continue }
+                // Resolve per-locator: a source can register several adapters
+                // (e.g. the native Kimi/Qwen adapter plus a ClaudeCode
+                // provider-root clone that maps ~/.claude-<name> to the same
+                // source). First-wins would stream native files through the
+                // clone's Claude-JSONL parser and zero their signals, so pick
+                // the adapter that owns this locator.
+                guard let adapter = SessionAdapterFactory.adapter(
+                    for: source,
+                    locator: locator,
+                    adapters: sourceAdapters
+                ) else { continue }
                 do {
                     if let signal = try await instructionBackfillSignal(adapter: adapter, locator: locator) {
                         batch.append(signal)
@@ -315,14 +327,23 @@ public extension EngramDatabaseWriter {
             return EngramDatabaseIndexResult(indexed: 0, total: status.total, todayParents: status.todayParents)
         }
 
-        let adaptersBySource = Dictionary(adapters.map { ($0.source, $0) }, uniquingKeysWith: { first, _ in first })
+        let adaptersBySource = Dictionary(grouping: adapters, by: { $0.source })
         var batch: [ImplementationBeatBackfillSignal] = []
         var updated = 0
 
         for source in candidates.keys.sorted(by: { $0.rawValue < $1.rawValue }) {
-            guard let adapter = adaptersBySource[source] else { continue }
+            let sourceAdapters = adaptersBySource[source] ?? []
+            guard !sourceAdapters.isEmpty else { continue }
             for candidate in candidates[source] ?? [] {
                 guard FileIndexStat.directFileStat(locator: candidate.locator) != nil else { continue }
+                // Locator-aware for the same reason as the instruction backfill:
+                // native and provider-root clones share a source, so resolve by
+                // which adapter owns this locator instead of first-wins.
+                guard let adapter = SessionAdapterFactory.adapter(
+                    for: source,
+                    locator: candidate.locator,
+                    adapters: sourceAdapters
+                ) else { continue }
                 do {
                     if let signal = try await implementationBeatBackfillSignal(adapter: adapter, candidate: candidate) {
                         batch.append(signal)

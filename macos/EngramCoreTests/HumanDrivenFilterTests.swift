@@ -42,6 +42,13 @@ final class HumanDrivenFilterTests: XCTestCase {
         }
     }
 
+    private func expectedReliableSources(prefix: String = "") -> String {
+        let quoted = HumanDrivenFilter.instructionSignalSources
+            .map { "'\($0)'" }
+            .joined(separator: ", ")
+        return "\(prefix)source NOT IN (\(quoted))"
+    }
+
     func testPredicateSelectsHumanDrivenSet() throws {
         let writer = try EngramDatabaseWriter(path: tempDir.appendingPathComponent("f.sqlite").path)
         try writer.migrate()
@@ -69,7 +76,7 @@ final class HumanDrivenFilterTests: XCTestCase {
         XCTAssertTrue(predicate.hasPrefix("("))
         XCTAssertTrue(predicate.hasSuffix(")"))
         XCTAssertTrue(predicate.contains("agent_role IS NULL"))
-        XCTAssertTrue(predicate.contains("source NOT IN ('claude-code', 'codex')"))
+        XCTAssertTrue(predicate.contains(expectedReliableSources()))
         XCTAssertTrue(predicate.contains("instruction_count >= \(HumanDrivenFilter.minInstructions)"))
         XCTAssertTrue(predicate.contains("human_turn_count >= \(HumanDrivenFilter.minHumanTurns)"))
         XCTAssertTrue(predicate.contains("user_message_count >= \(HumanDrivenFilter.minHumanTurns)"))
@@ -81,7 +88,7 @@ final class HumanDrivenFilterTests: XCTestCase {
         XCTAssertTrue(predicate.hasPrefix("("))
         XCTAssertTrue(predicate.hasSuffix(")"))
         XCTAssertTrue(predicate.contains("s.agent_role IS NULL"))
-        XCTAssertTrue(predicate.contains("s.source NOT IN ('claude-code', 'codex')"))
+        XCTAssertTrue(predicate.contains(expectedReliableSources(prefix: "s.")))
         XCTAssertTrue(predicate.contains("s.instruction_count >= \(HumanDrivenFilter.minInstructions)"))
         XCTAssertTrue(predicate.contains("s.human_turn_count >= \(HumanDrivenFilter.minHumanTurns)"))
         XCTAssertTrue(predicate.contains("s.user_message_count >= \(HumanDrivenFilter.minHumanTurns)"))

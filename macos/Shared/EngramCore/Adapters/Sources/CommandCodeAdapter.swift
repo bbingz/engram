@@ -147,9 +147,13 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
         guard let roleString = JSONLAdapterSupport.string(object["role"]),
               let role = NormalizedMessageRole(rawValue: roleString)
         else { return nil }
+        let content = extractContent(object["content"])
+        if role == .user, isSystemInjection(content) {
+            return nil
+        }
         return NormalizedMessage(
             role: role,
-            content: extractContent(object["content"]),
+            content: content,
             timestamp: timestamp(from: object),
             toolCalls: nonEmptyToolCalls(from: object["content"]),
             usage: nil

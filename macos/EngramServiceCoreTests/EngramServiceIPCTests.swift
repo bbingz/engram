@@ -1687,6 +1687,18 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(search.items.map(\.id), ["s1"])
     }
 
+    func testSQLiteReadProviderSearchFindsExactSessionIdOutsideFTSContent() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let search = try await provider.search(EngramServiceSearchRequest(query: "s2", mode: "keyword", limit: 10))
+
+        XCTAssertEqual(search.items.map(\.id), ["s2"])
+        XCTAssertEqual(search.items.first?.matchType, "id")
+        XCTAssertEqual(search.searchModes, ["id"])
+    }
+
     // Latin/MATCH search must return a match-centered, highlighted snippet
     // (FTS5 snippet()) rather than the transcript from char 0, so humans get the
     // same windowed result the MCP/AI path already produces. Regression guard:
@@ -3383,8 +3395,9 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(disabled, ["codex", "windsurf"])
 
         let all = SessionAdapterFactory.defaultAdapters()
+        let removedCount = all.filter { disabled.contains($0.source.rawValue) }.count
         let enabled = all.filter { !disabled.contains($0.source.rawValue) }
-        XCTAssertEqual(enabled.count, all.count - 2)
+        XCTAssertEqual(enabled.count, all.count - removedCount)
         let enabledIDs = Set(enabled.map { $0.source.rawValue })
         XCTAssertFalse(enabledIDs.contains("codex"))
         XCTAssertFalse(enabledIDs.contains("windsurf"))

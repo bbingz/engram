@@ -52,7 +52,7 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
             let lastTimestamp = Phase4AdapterSupport.double(requestObjects.last?["timestamp"])
             let sessionId = JSONLAdapterSupport.string(session["sessionId"]) ??
                 URL(fileURLWithPath: locator).deletingPathExtension().lastPathComponent
-            let cwd = Self.readWorkspaceCwd(for: locator)
+            let cwd = Self.readCwd(for: locator, session: session)
 
             return .success(
                 NormalizedSessionInfo(
@@ -277,6 +277,15 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
             return readCodeWorkspaceFirstFolder(workspacePath)
         }
         return ""
+    }
+
+    private static func readCwd(for locator: String, session: Phase4AdapterSupport.JSONObject) -> String {
+        let workspaceCwd = readWorkspaceCwd(for: locator)
+        if !workspaceCwd.isEmpty { return workspaceCwd }
+        guard let workingDirectory = JSONLAdapterSupport.string(session["workingDirectory"]) else {
+            return ""
+        }
+        return decodeFileURI(workingDirectory)
     }
 
     private static func readCodeWorkspaceFirstFolder(_ workspacePath: String) -> String {

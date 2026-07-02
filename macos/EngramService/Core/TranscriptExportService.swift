@@ -330,7 +330,7 @@ enum ServiceTranscriptReader {
         }
 
         switch source {
-        case "claude-code", "qwen", "qoder", "iflow", "lobsterai", "minimax":
+        case "claude-code", "qwen", "qoder", "iflow", "lobsterai", "minimax", "mimo", "doubao", "glm", "deepseek":
             return visibleMessages(parseTypeMessageFormat(filePath: filePath), source: source)
         case "commandcode":
             return visibleMessages(parseCommandCodeFormat(filePath: filePath), source: source)
@@ -369,7 +369,7 @@ enum ServiceTranscriptReader {
     // a semaphore can starve/deadlock the pool under concurrent exports.
     private static func readWithAdapterRegistry(filePath: String, source: String) async throws -> [ServiceTranscriptMessage]? {
         guard let sourceName = adapterSourceName(for: source),
-              let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
+              let adapter = SessionAdapterFactory.adapter(for: sourceName, locator: filePath)
         else {
             return nil
         }

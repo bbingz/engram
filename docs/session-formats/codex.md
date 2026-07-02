@@ -1,14 +1,16 @@
 # Codex Session Format — Definitive Reference
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-06-21 (Engram session-format research workflow);
+native current-state verification updated: 2026-07-02; `cc-codex`
+provider-root verification updated: 2026-07-02.
 
 This is the permanent, exhaustive reference for how the **Codex CLI** (OpenAI's coding
 agent) persists sessions on disk, and how Engram's `CodexAdapter` consumes them. It is
 cross-checked against two sources of truth:
 
-1. **The real on-disk files** under `~/.codex/` on this machine (2,505 rollout `.jsonl`
-   files + 5 archived, spanning Codex CLI `0.60.1` → `0.142.0-alpha.6`, Nov 2025 →
-   Jun 2026). When the format and the adapters disagree, **on-disk reality wins** and the
+1. **The real on-disk files** under `~/.codex/` on this machine (2,659 active rollout
+   `.jsonl` files + 5 archived as of 2026-07-02; earlier corpus statistics in this
+   document were sampled from the 2026-06-21 2,505 + 5 corpus). When the format and the adapters disagree, **on-disk reality wins** and the
    discrepancy is flagged.
 2. **Engram's adapters** that already parse the format:
    - `/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift` (the shipped product parser)
@@ -47,6 +49,49 @@ the *content variant inside* (`message` / `reasoning` / `function_call` / `token
 compaction rewrites lives in top-level `compacted` records. Engram streams the JSONL,
 re-derives everything (id, times, cwd, model, counts, usage, summary) and **never reads the
 SQLite layer**.
+
+## Claude Code Provider-Root Variant (`cc-codex`)
+
+This document's main body describes native Codex CLI rollout files under
+`~/.codex/`. Local `cc-codex` sessions are different: they are Claude Code JSONL
+files under `~/.claude-openai/projects`, created by the user's `cc-codex`
+wrapper (`_cc_with openai`), and Engram maps them to source `codex` by
+provider-root path.
+
+2026-07-02 local smoke over `~/.claude-openai/projects`:
+
+| Listed JSONL | Parsed conversations | Subagents | Parent links | Source |
+|---:|---:|---:|---:|---|
+| 2,823 | 2,693 | 2,659 | 2,659 | `codex` |
+
+Model metadata is backend metadata and is not used for source ownership; the
+provider root path owns the `codex` source. The skipped files are workflow
+`journal.jsonl` status logs plus local-command/system-injection side-channel
+sessions with no displayable conversation turns.
+
+Fresh field-level smoke found 192,351 raw records and 0 malformed lines. The
+retained TS parser listed 2,823 locators, parsed 2,693 conversations, and found
+0 parser/stream count mismatches after visible-tool-result alignment with
+Swift.
+
+DB/runtime check from the same pass:
+
+- Installed `/Applications/Engram.app` build `20260701074505` has 2,526
+  `codex` rows under `/Users/bing/.claude-openai/%` and 2,654
+  `file_index_state` rows for the root (2,526 `ok`, 128 `retry`), all still
+  schema version 1.
+- Fresh parser evidence sees 167 parseable `cc-codex` locators outside
+  `sessions`: 166 have no `file_index_state`, and 1 is already represented in
+  `file_index_state` as `retry/malformedJSON`. The current delta is an
+  active-write/retry frontier, not missing provider-root support.
+- The corrected visible-tool-result parser reports 0 field-stale current
+  provider-root rows. The earlier 2,433-row stale-count note was a retained-TS
+  audit-tooling false positive: TS was counting non-visible Claude
+  `tool_result` rows that the Swift product already drops. This audit did not
+  mutate `/Users/bing/.engram/index.sqlite`.
+
+Do not use native `codex` row counts as proof that `cc-codex` is indexed. They
+share the Engram source id but have different on-disk formats and roots.
 
 **ASCII layering diagram:**
 
@@ -106,7 +151,7 @@ and starts a new numbered one rather than migrating in place. Inside each file a
 `~/.codex/sqlite/` are an **older location/generation** (Codex relocated the DB root up from
 `~/.codex/sqlite/` to `~/.codex/` directly) — classified as legacy by stale mtime AND lower
 migration version (legacy `state_5` is at migration **35** / **2267 threads**; live is at
-**39** / **2510 threads**). Only `codex-dev.db` is unique to the `sqlite/` subdir.
+**40** / **2664 threads**). Only `codex-dev.db` is unique to the `sqlite/` subdir.
 
 ### Rollout transcript: file path & naming grammar
 
@@ -123,9 +168,15 @@ Path template: `~/.codex/sessions/YYYY/MM/DD/rollout-<TS>-<UUID>.jsonl`
 `YYYY/MM/DD` tree into a **flat** `archived_sessions/` dir (filename unchanged), sets
 `threads.archived=1` + `threads.archived_at`, and rewrites `threads.rollout_path` to the new
 location. VERIFIED: all 5 `archived=1` rows have `rollout_path` =
-`~/.codex/archived_sessions/rollout-...jsonl`; all 2505 `archived=0` rows point into the
-`sessions/YYYY/MM/DD` tree. Disk count (2505 tree + 5 archived) == DB count (2510) exactly —
-no orphans either direction in this store.
+`~/.codex/archived_sessions/rollout-...jsonl`; all 2659 `archived=0` rows point into the
+`sessions/YYYY/MM/DD` tree as of 2026-07-02. Disk count (2659 tree + 5 archived) ==
+Codex `state_5.sqlite` thread count (2664) exactly. Engram's own `~/.engram/index.sqlite`
+currently has 2662 native `codex` rows under `/Users/bing/.codex/%`, with 2 parseable
+rollout files absent and 0 stale session extras; latest native `codex` indexed_at is
+`2026-07-01T04:11:11Z`. Existing Engram DB model values are also stale (`openai` provider
+name in 1808 rows, NULL/empty in 838, `gpt-5.5` in 15, and `custom` in 1); current source
+parses concrete models from JSONL for 2610/2664 sessions after the
+2026-07-01 `turn_context.payload.model` fix.
 
 ### Tree example
 
@@ -184,7 +235,7 @@ Do **not** conflate the top-level record `type` with the nested `payload.type`:
 | Layer | What it is | Field | Examples |
 |---|---|---|---|
 | **L0 envelope** | one JSONL line = one record | `{timestamp, type, payload}` | — |
-| **L1 record type** | the kind of envelope | `.type` | `session_meta`, `response_item`, `event_msg`, `turn_context`, `compacted` |
+| **L1 record type** | the kind of envelope | `.type` | `session_meta`, `response_item`, `event_msg`, `turn_context`, `compacted`, `world_state` |
 | **L2 payload type** | the variant inside | `.payload.type` | `message`, `reasoning`, `function_call`, `token_count`, `agent_message` … |
 | **L3 content block** | nested array element | `.payload.content[].type` / `.payload.summary[].type` | `input_text`, `output_text`, `input_image`, `summary_text` |
 
@@ -201,27 +252,30 @@ Do **not** conflate the top-level record `type` with the nested `payload.type`:
 ### L1 (top-level) record types
 
 VERIFIED histogram in one real recent file: 65 `response_item`, 37 `event_msg`,
-1 `session_meta`, 1 `turn_context`. These dominate on disk, but the on-disk five are NOT the
-complete record set. Confirmed (official): the authoritative `RolloutItem` enum
+1 `session_meta`, 1 `turn_context`. These dominate on disk, but the on-disk set is NOT
+closed. Confirmed (official, 2026-06-21): the authoritative `RolloutItem` enum
 ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
 has **SIX** variants (`serde(tag="type", content="payload", rename_all="snake_case")`):
 `SessionMeta`, `ResponseItem`, `InterAgentCommunication`, `Compacted`, `TurnContext`,
 `EventMsg`. Earlier drafts omitted **`inter_agent_communication`** — a real top-level rollout
 record (durable inter-agent delivery metadata reconstructed as a model-visible
-`agent_message`). It is added as the 6th L1 type below.
+`agent_message`). Local corpus verification on 2026-07-02 also found 200 top-level
+`world_state` records in current desktop/Responses sessions; treat those as environment-state
+snapshots and do not assume the L1 set is exhausted by the older official enum check.
 
 | L1 `type` | Role | Purpose | When emitted | Engram consumes? |
 |---|---|---|---|---|
 | `session_meta` | **first line** of every rollout (header) | session identity + environment | exactly 1 per file (first wins) | **Yes** — identity |
-| `turn_context` | per-turn runtime config snapshot | model/sandbox/approval/effort/mode for the turn | ≥1 per turn (newer CLI only; absent in 0.60.1) | **No** (ignored) |
+| `turn_context` | per-turn runtime config snapshot | model/sandbox/approval/effort/mode for the turn | ≥1 per turn (newer CLI only; absent in 0.60.1) | **Yes** — model fallback |
 | `response_item` | model-API conversation item | the actual transcript (msgs, reasoning, tool calls/results) | the bulk of lines | **Yes** — messages |
 | `event_msg` | runtime/UI event (not a model item) | token accounting, task lifecycle, tool telemetry, compaction marker | interleaved throughout | **Only `token_count`** |
 | `compacted` | context-compaction checkpoint | rewrites/compacts the conversation history | only when context is compacted | **No** (ignored) |
 | `inter_agent_communication` | durable inter-agent delivery record | inter-agent delivery metadata, reconstructed as a model-visible `agent_message` | multi-agent sessions only | **No** (ignored) |
+| `world_state` | environment/context snapshot | full world-state/context packet for desktop/runtime resumes | rare/current desktop sessions | **No** (ignored) |
 
-> Engram branches solely on `session_meta`, `response_item`, and `event_msg`. It ignores
-> `turn_context`, `compacted`, and `inter_agent_communication` entirely (`codex.ts`
-> L78/L82/L201/L300; `CodexAdapter.swift` L279/L283/L467/L519).
+> Engram branches on `session_meta`, `turn_context`, `response_item`, and `event_msg`. It uses
+> `turn_context.payload.model` only as a session model fallback; it ignores `compacted`,
+> `inter_agent_communication`, `world_state`, and all non-`token_count` `event_msg` records.
 
 ### L2 (nested) types separated by record
 
@@ -246,7 +300,7 @@ record (durable inter-agent delivery metadata reconstructed as a model-visible
 > `payload.type` values beyond the original list, several in the hundreds:
 > `thread_name_updated` (372), `collab_waiting_end` (474), `collab_agent_spawn_end` (441),
 > `collab_close_end` (289), `collab_agent_interaction_end` (71), `collab_resume_end` (1),
-> `view_image_tool_call` (403), `image_generation_end` (227), `item_completed` (14),
+> `view_image_tool_call` (403), `image_generation_end` (244), `item_completed` (14),
 > `dynamic_tool_call_request` (3), `dynamic_tool_call_response` (3). Treat the taxonomy as
 > growing across CLI versions, not enumerable-and-done. Field tables + anonymized examples
 > for all 11 are in the Appendix (and the `collab_*` family is cross-referenced in the
@@ -300,7 +354,7 @@ if `id` is missing/empty.
 | `parent_thread_id` | string (UUIDv7) | parent thread for spawned subagents (also nested in `source`) | ≈239 files | `"019ee02d-c140-7813-8897-56f02fb68e88"` |
 | `multi_agent_version` | string | multi-agent protocol version | ≈239 files | `"v1"` |
 | `dynamic_tools` | object/array | runtime-registered tools | rare (≈42 files) | `{...}` |
-| `model` | string | rarely present in meta; Engram uses it only if no `response_item.payload.model` was seen | rare | `"gpt-5.5"` |
+| `model` | string | rarely present in meta; Engram uses it only if no `response_item.payload.model` or `turn_context.payload.model` was seen | rare/absent in current corpus | `"gpt-5.5"` |
 
 **`originator` distinct values** (DB + disk sampling; counts approximate across ~2500 sessions):
 
@@ -392,22 +446,22 @@ if `id` is missing/empty.
 
 - *Text key:* the block discriminator is `type:"input_text"`/`"output_text"`, but the actual
   string is **always** under the key `text`. Both adapters defensively also try
-  `object["input_text"]` / `object["output_text"]` keys (`codex.ts` L378-379;
-  `CodexAdapter.swift` L611-614) — those fallbacks **never match modern Codex data**.
-- *Multi-block divergence:* Swift `extractText` joins **all** text blocks with `\n\n`; TS
-  `extractText` returns only the **first** text block. On multi-block user messages (which
-  occur), **TS under-captures**.
-- *Per-item usage absent:* both adapters read assistant `payload.usage` (`codex.ts` L216;
-  `CodexAdapter.swift` L491) as a per-message usage source, but a scan of modern files found
+  `object["input_text"]` / `object["output_text"]` keys; those fallbacks **never match
+  modern Codex data**.
+- *Multi-block text:* both Swift and retained TS now join all retained text blocks with
+  `\n\n` after skipping non-text blocks, so multi-part user/assistant content is no longer
+  truncated to the first block.
+- *Per-item usage absent:* both adapters read assistant `payload.usage` as a per-message
+  usage source, but a scan of modern files found
   **zero** `response_item.payload.usage`. Per-turn usage comes exclusively from
   `event_msg/token_count`. This is a latent code path that would silently take precedence if
   a future Codex re-adds inline usage.
-- *Model absent on item:* both read `response_item.payload.model` as the real model id
-  (`codex.ts` L86; `CodexAdapter.swift` L289). Modern files do not carry it on
-  `response_item`; in practice model is recovered from `turn_context.model` / DB / fallback.
-  In this store the adapters end up with `nil` model from JSONL because neither
-  `response_item.payload.model` nor `session_meta.model` is present — model name is therefore
-  often unavailable to Engram from a modern rollout alone.
+- *Model absent on item:* modern files do not carry `response_item.payload.model`
+  (0 occurrences in the 2026-07-01 local corpus); concrete model names are carried by
+  `turn_context.payload.model` (48,834 records). The 2026-07-01 adapter fix makes both TS and
+  Swift read `turn_context.payload.model` after preserving the old `response_item` fallback.
+  Current source parses concrete models for 2610/2664 local Codex sessions; the remaining 54
+  older/sparse sessions have no available model field.
 
 ---
 
@@ -538,7 +592,11 @@ array), not free text.
 **Engram tool handling.** `function_call` → one `tool`-role message `"<name> <args(truncated
 500)>"`, counted **once** in `toolCount`. `function_call_output` → a `tool`-role message
 (output truncated 2000), **not re-counted** (avoids doubling). Adapters do **not** join
-call↔output; they emit each as a separate message. `custom_tool_call*`, `web_search_call`,
+call↔output; they emit each as a separate message for transcript display. This means
+full-stream transcript length can legitimately exceed `SessionInfo.messageCount`: the
+2026-07-02 retained-TS smoke parsed 701,043 session-counted messages but streamed 1,195,657
+display messages, with 2,564 sessions differing because `function_call_output` is displayable
+but not counted as an additional tool use. `custom_tool_call*`, `web_search_call`,
 `tool_search_*`, and all `event_msg` tool telemetry are dropped.
 
 ---
@@ -770,17 +828,17 @@ DB `threads.source` distribution (verbatim copy of the meta source), grouped by 
 
 | `source` | Count | Note |
 |---|---|---|
-| `{"subagent":{"thread_spawn":{...}}}` | **1561** | **LARGEST single category** — native spawned subagents; each blob differs only in the nested parent/depth/role, but they all share this prefix. **62% of all 2510 threads.** Exactly equals `thread_spawn_edges` row count (1561). |
-| `vscode` | 461 | Codex VS Code / desktop app |
-| `cli` | 399 | interactive terminal |
+| `{"subagent":{"thread_spawn":{...}}}` | **1623** | **LARGEST single category** — native spawned subagents; each blob differs only in the nested parent/depth/role, but they all share this prefix. **61% of all 2664 threads.** Exactly equals `thread_spawn_edges` row count (1623). |
+| `cli` | 481 | interactive terminal |
+| `vscode` | 471 | Codex VS Code / desktop app |
 | `exec` | 65 | headless `codex exec` |
 | `{"subagent":"review"}` | 18 | review subagents (simple string form; NOT in `thread_spawn_edges`) |
 | `unknown` | 6 | unclassified |
 
 > This store is **majority-subagent**: the `{subagent:{thread_spawn}}` form is the dominant
-> single category (1561), not a scattered long tail. Any naive consumer that treats `source`
+> single category (1623), not a scattered long tail. Any naive consumer that treats `source`
 > as a small enum of strings will misclassify the majority of rows. (evidence:
-> `sqlite3 state_5.sqlite` GROUP BY on the `source` prefix; `thread_spawn_edges` COUNT = 1561.)
+> `sqlite3 state_5.sqlite` GROUP BY on the `source` prefix; `thread_spawn_edges` COUNT = 1623.)
 
 > **Neither Engram adapter reads `meta.source`.** The rich `{subagent:{thread_spawn:{...}}}`
 > parent/depth/role graph is currently **un-mined** — a deterministic Layer-1 signal beyond
@@ -906,7 +964,7 @@ appended to.
 
 | Path | Size | Status | Role |
 |---|---|---|---|
-| `~/.codex/state_5.sqlite` | 16 MB | **ACTIVE** | thread catalog + agent-job + spawn graph (migration **39**, 2510 threads) |
+| `~/.codex/state_5.sqlite` | 16 MB | **ACTIVE** | thread catalog + agent-job + spawn graph (migration **40**, 2664 threads) |
 | `~/.codex/memories_1.sqlite` | 940 KB | **ACTIVE** | memory-extraction pipeline |
 | `~/.codex/goals_1.sqlite` | 60 KB | **ACTIVE** | long-running thread goals |
 | `~/.codex/logs_2.sqlite` | **1.3 GB** | **ACTIVE** | structured Rust app/trace logs |
@@ -923,8 +981,9 @@ ledger. The `state_5` ledger is a changelog of the mechanism's evolution — tel
 `1 threads`, `2 logs` → `23 drop logs` (logs split to `logs_N`), `6/16 memories` →
 `35 drop memory tables` (split to `memories_1`), `29 thread goals` → `34 drop thread goals`
 (split to `goals_1`), `21 thread spawn edges`, `24 remote control enrollments`,
-`38 external agent config imports`, `39 threads recency at` (newest; legacy DB lacks the
-`recency_at`/`recency_at_ms` columns — the exact delta of migration 39). This is *why* there
+`38 external agent config imports`, `39 threads recency at`, `40 threads history mode`
+(newest; legacy DB lacks the `recency_at`/`recency_at_ms` columns and migration 40's
+thread-history-mode additions). This is *why* there
 are four DB files: tables that grow huge (logs) or are independently versioned (memories,
 goals) were carved out of `state_5` into their own generation-suffixed files.
 
@@ -934,7 +993,7 @@ Tables: `threads`, `thread_dynamic_tools`, `thread_spawn_edges`, `agent_jobs`,
 `agent_job_items`, `backfill_state`, `remote_control_enrollments`,
 `external_agent_config_imports`, `_sqlx_migrations`.
 
-#### `threads` — the rollout session index (2,510 rows; one per rollout)
+#### `threads` — the rollout session index (2,664 rows; one per rollout)
 
 | Column | Type | Meaning | Example |
 |---|---|---|---|
@@ -986,7 +1045,7 @@ and `recency_at` on insert/update.
 }
 ```
 
-#### `thread_spawn_edges` — the subagent parent→child graph (1,561 rows)
+#### `thread_spawn_edges` — the subagent parent→child graph (1,623 rows)
 
 ```sql
 CREATE TABLE thread_spawn_edges (
@@ -1001,10 +1060,10 @@ CREATE INDEX idx_thread_spawn_edges_parent_status ON thread_spawn_edges(parent_t
 |---|---|---|
 | `parent_thread_id` | TEXT NOT NULL | spawning (parent) thread `id` |
 | `child_thread_id` | TEXT PK | spawned (child) subagent thread `id` |
-| `status` | TEXT | `closed`(834) / `open`(727) — inferred live-vs-finished spawn relationship |
+| `status` | TEXT | `closed`(884) / `open`(739) — inferred live-vs-finished spawn relationship |
 
-**Referential integrity verified:** all 1561 edges have both endpoints in `threads`. Top
-parents fan out widely (one parent → 126 children) — orchestrators dispatching subagent
+**Referential integrity verified:** all 1623 edges have both endpoints in `threads`. Top
+parents fan out widely (one parent → 129 children) — orchestrators dispatching subagent
 swarms. The `parent_thread_id` inside `threads.source` JSON equals
 `thread_spawn_edges.parent_thread_id` for the same child (redundant encodings). **`review`
 subagents (`{"subagent":"review"}`, 18) are NOT in `thread_spawn_edges`** — their provenance
@@ -1159,8 +1218,9 @@ Concrete table: source record/field → Engram `Session`/`Message` field → ada
 | `session_meta.payload.agent_role` | `agentRole` (precedence over originator) | L121, L125 | L322, L324 |
 | `originator == "Claude Code"` (no role) | `agentRole = "dispatched"` (Layer-1b) | L125-126 (exact match) | L324 via `OriginatorClassifier.isClaudeCode` (normalized) |
 | (classifier) | normalize trim/lower/`_`→`-`/space→`-` then `== "claude-code"` | — | `SessionAdapter.swift` L23-32 |
-| `response_item.payload.model` | `model` (real model id; first occurrence) | L84-88 | L289-291 |
-| `session_meta.payload.model` | `model` fallback if no item model | L141 | L333 |
+| `response_item.payload.model` | `model` (old/legacy item model; first occurrence, highest priority) | L92-96 | L311-313 |
+| `turn_context.payload.model` | `model` fallback for modern rollouts | L83-88, L149-152 | L298-303, L355 |
+| `session_meta.payload.model` | final `model` fallback if no item or turn-context model | L152 | L355 |
 | `response_item`/`message`/`user` (text via `extractText`) | user message; `summary` = first user text (200) | L89-100, L360-382 | L294-305, L478-485, L604-618 |
 | user-text system-injection strip | `<INSTRUCTIONS>`, `<environment_context>`, `<local-command-caveat>`, AGENTS.md, skills/plugins → `systemCount` | L93, L345-358 | L296-305, L563-602 |
 | `response_item`/`message`/`assistant` | assistant message; `assistantCount` | L101-103, L207-230 | L306-307, L473-492 |
@@ -1173,7 +1233,7 @@ Concrete table: source record/field → Engram `Session`/`Message` field → ada
 | enumeration | TS glob `**/rollout-*.jsonl`; Swift recursive `rollout-` prefix + `.jsonl`, no symlinks | L38-49 | L250-258 |
 | incremental fast path | per-day roots `~/.codex/sessions/YYYY/MM/DD` for last N (local) days (sessions/ only; excludes archived) | — | `SessionAdapterFactory.swift` `recentCodexAdapters` L31-51 |
 | registration | `CodexAdapter()` in `defaultAdapters()` / `recentActiveAdapters()` | — | `SessionAdapterFactory.swift` L8-11, L53-74 |
-| `reasoning`, `custom_tool_call*`, `web_search_call`, `tool_search_*`, `turn_context`, `compacted`, all non-`token_count` `event_msg` | **dropped** (default branch) | (gap) | `message(from:)` `default` L513-514 |
+| `reasoning`, `custom_tool_call*`, `web_search_call`, `tool_search_*`, `compacted`, `world_state`, all non-`token_count` `event_msg` | **dropped** (default branch) | (gap) | `message(from:)` `default` L535-536 |
 | `session_meta.source`, `parent_thread_id`, `forked_from_id`, `thread_source`, `git`, `base_instructions` | **not read** | (gap) | (gap) |
 | any SQLite DB (`state_5`/`threads`/`thread_spawn_edges`/…) | **never read** — Engram re-derives from JSONL only | (gap) | (gap) |
 
@@ -1210,9 +1270,9 @@ Concrete table: source record/field → Engram `Session`/`Message` field → ada
 6. **TS multi-block under-capture:** TS `extractText` returns only the first block; Swift joins
    all with `\n\n`. Multi-block user messages exist.
 7. **Modern files carry no `response_item.payload.model` / `.usage`:** model now comes from
-   `turn_context`/DB (Engram often ends up with `nil` model from JSONL alone); usage comes
-   only from `event_msg.token_count`. Latent: if Codex re-adds inline usage, adapters silently
-   prefer it.
+   `turn_context.payload.model` (fixed in TS + Swift on 2026-07-01); usage comes only from
+   `event_msg.token_count`. Latent: if Codex re-adds inline usage, adapters silently prefer
+   it.
 8. **TS vs Swift originator matching diverges** (exact vs normalized) — a `claude_code`/
    `claude-code` originator dispatches on Swift but not TS.
 9. **Cost blind spot:** `gpt-5.*`/`*-codex` models have no `MODEL_PRICING` entry and won't
@@ -1287,7 +1347,7 @@ intact.
 ```
 
 ```json
-// L1 turn_context — per-turn config (ignored by Engram)
+// L1 turn_context — per-turn config (Engram consumes only payload.model)
 { "timestamp":"2026-06-21T07:37:18.935Z","type":"turn_context","payload":{
     "turn_id":"019ee91c-***","cwd":"/Users/<user>/p","workspace_roots":["/Users/<user>/p"],
     "current_date":"2026-06-21","timezone":"Asia/Shanghai","approval_policy":"never",
@@ -1631,7 +1691,8 @@ not web-verifiable by design. Status of each previously-open question:
   ([models.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/models.rs))
 - **Confirmed (official):** no `ResponseItem` variant has a `model` field; the model lives on
   `TurnContextItem.model` (required `String`). So a modern rollout carries no
-  `response_item.payload.model` — model comes from `turn_context`.
+  `response_item.payload.model` — model comes from `turn_context`. Engram now consumes this
+  field for session model attribution.
   ([models.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/models.rs),
   [protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
 - **Confirmed (official):** `ResponseItem::Reasoning` = `{id, summary, content,
@@ -1695,8 +1756,9 @@ not web-verifiable by design. Status of each previously-open question:
   on-disk observation.
   ([protocol.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs))
 - **Engram-internal design — not web-verifiable:** whether the Swift product has its own
-  pricing path, and that `turn_context`/`compacted`/`inter_agent_communication` are ignored by
-  Engram, are Engram-internal facts, out of web scope.
+  pricing path, and that `turn_context` is used only for model fallback while
+  `compacted`/`inter_agent_communication`/`world_state` are ignored by Engram, are
+  Engram-internal facts, out of web scope.
 - **Out of scope — not web-verifiable by design:** `history.jsonl` / `session_index.jsonl`
   shapes and all per-machine corpus statistics (file counts, originator/model distributions,
   archived counts, migration row counts) are this-machine measurements, not tool-format facts.

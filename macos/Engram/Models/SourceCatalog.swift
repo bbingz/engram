@@ -15,7 +15,7 @@ struct SourceCatalogEntry {
 
 /// Single canonical catalog of the source adapters Engram ships with.
 ///
-/// Mirrors `SessionAdapterFactory.defaultAdapters()` (17 registered adapters).
+/// Mirrors the unique source ids registered by `SessionAdapterFactory.defaultAdapters()`.
 /// Used by `SourcePulseView` to surface configured-but-empty/undetected
 /// sources that the live service query (`GROUP BY source`) cannot return
 /// because they have no indexed sessions yet.
@@ -23,7 +23,13 @@ enum SourceCatalog {
     static let all: [SourceCatalogEntry] = [
         .init(source: "claude-code", defaultPath: "~/.claude/projects"),
         .init(source: "codex",       defaultPath: "~/.codex/sessions"),
+        .init(source: "grok",        defaultPath: "~/.grok/sessions"),
+        .init(source: "pi",          defaultPath: "~/.pi/agent/sessions"),
         .init(source: "minimax",     defaultPath: "~/.claude/projects"),
+        .init(source: "mimo",        defaultPath: "~/.claude-mimo/projects"),
+        .init(source: "doubao",      defaultPath: "~/.claude-doubao/projects"),
+        .init(source: "glm",         defaultPath: "~/.claude-glm/projects"),
+        .init(source: "deepseek",    defaultPath: "~/.claude-ds/projects"),
         .init(source: "lobsterai",   defaultPath: "~/.claude/projects"),
         .init(source: "gemini-cli",  defaultPath: "~/.gemini/tmp"),
         .init(source: "opencode",    defaultPath: "~/.local/share/opencode/opencode.db"),

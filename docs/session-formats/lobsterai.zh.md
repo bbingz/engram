@@ -2,12 +2,16 @@
 
 > 本文档为英文权威版 lobsterai.md 的中文阅读副本;若有出入以英文版为准。
 
-Last researched: 2026-06-21
+Last researched: 2026-07-01 (local Engram source/live corpus; web sources last checked 2026-06-21)
 
 > **证据基础:** 适配器源码(Swift + TypeScript)+ 适配器一致性
 > 测试,并与本机的**磁盘实时数据**交叉核对:
-> `~/.claude/projects/-Users-bing-lobsterai-project/`(1 个目录;仅含索引)。
-> 实时数据与适配器之间的一处差异已在
+> `~/.claude/projects/-Users-bing-lobsterai-project/`(27 个 JSONL 会话文件、
+> 16 个 tool-result 文本 sidecar,以及 `sessions-index.json`)。当前解析器对这些
+> JSONL 的分类是 23 个 `claude-code`、2 个 `minimax`、2 个跳过的 side-channel
+> 文件;0 个被适配器分类为 `lobsterai`。实时 DB 仍有 1 条历史遗留的
+> `lobsterai` false-positive 行,且没有 `lobsterai` `file_index_state`。实时路径
+> 子串与适配器严格 path-component 规则之间的差异已在
 > [Gotchas](#gotchas) 中标记。
 
 ## Overview
@@ -44,13 +48,13 @@ Code 适配器的薄包装,仅保留被 Claude Code 适配器分类为
 
 - `ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: claudeCode)`
   注册于
-  `macos/.../Adapters/SessionAdapterFactory.swift:14`(以及 `:59`)。
-- 包装器本身:`macos/.../Adapters/Sources/ClaudeCodeAdapter.swift:573`
+  `macos/.../Adapters/SessionAdapterFactory.swift:19`(以及 `:82`)。
+- 包装器本身:`macos/.../Adapters/Sources/ClaudeCodeAdapter.swift:630`
   (`ClaudeCodeDerivedSourceAdapter`);它通过
   `precondition(source == .minimax || source == .lobsterai)`
-  (`ClaudeCodeAdapter.swift:578`)将自身约束到 MiniMax/LobsterAI,并将
+  (`ClaudeCodeAdapter.swift:635`)将自身约束到 MiniMax/LobsterAI,并将
   `projectsRoot` 默认设为
-  `~/.claude/projects`(`ClaudeCodeAdapter.swift:585`)。
+  `~/.claude/projects`(`ClaudeCodeAdapter.swift:642-644`)。
 
 ## What differs from Claude Code
 
@@ -94,11 +98,11 @@ Code 适配器的薄包装,仅保留被 Claude Code 适配器分类为
 
 | 关注点 | Swift | TypeScript |
 |---|---|---|
-| `detectSource(model, filePath)`(先做路径检查) | `ClaudeCodeAdapter.swift:212-213` | `claude-code.ts:180-183` |
-| 路径分量匹配器 | `hasLobsterAIPathComponent` `ClaudeCodeAdapter.swift:225-239`(字符串相等/`hasPrefix` 集合) | `hasLobsterAIPathComponent` `claude-code.ts:199-203`(上面的正则) |
-| 仅定位符的提示(列表时) | `detectSourceHint` `ClaudeCodeAdapter.swift:241-244` | n/a |
-| 来源枚举条目 | `SourceName.lobsterai` `SessionAdapter.swift:14` | `types.ts:14` |
-| 显示标签 / 颜色 | n/a(Swift `SourceColors`) | `views.ts:21` `'Lobster AI'`,`:41` `#f1c40f` |
+| `detectSource(model, filePath)`(先做路径检查) | `ClaudeCodeAdapter.swift:266-277` | `claude-code.ts:218-229` |
+| 路径分量匹配器 | `hasLobsterAIPathComponent` `ClaudeCodeAdapter.swift:279-293`(字符串相等/`hasPrefix` 集合) | `hasLobsterAIPathComponent` `claude-code.ts:268-272`(上面的正则) |
+| 仅定位符的提示(列表时) | `detectSourceHint` `ClaudeCodeAdapter.swift:295-298` | n/a |
+| 来源枚举条目 | `SourceName.lobsterai` `SessionAdapter.swift:20` | `types.ts:20` |
+| 显示标签 / 颜色 | `SourceColors.swift:53` 标签,`:31` 颜色 | `views.ts:21` `'Lobster AI'`,`:41` `#f1c40f` |
 
 **存储位置细微差别:** 无。LobsterAI 共享 Claude Code 的根目录、文件
 命名、JSONL 格式与监视器(watcher)路径(`watcher.ts:48` 列出了 `lobsterai`,但
@@ -122,25 +126,25 @@ Claude-Code 格式的 JSONL 转录会被索引。
 1. Claude Code 适配器列出 `~/.claude/projects/` 下的每一个 `.jsonl`(以及
    `subagents/*.jsonl`)
    定位符
-   (`ClaudeCodeAdapter.swift:27-48`;派生来源的 Swift 列举:
-   `listDerivedSessionLocators` `ClaudeCodeAdapter.swift:57-80`,它通过
+   (`ClaudeCodeAdapter.swift:33-51`;派生来源的 Swift 列举:
+   `listDerivedSessionLocators` `ClaudeCodeAdapter.swift:61-83`,它通过
    `detectSourceHint` 对每个定位符分类,只保留与 `source` 匹配的那些)。
 2. 对每个会话,`detectSource` 在**任何基于模型的逻辑之前先运行
    路径检查**:如果某个路径分量匹配 LobsterAI 规则 →
    `lobsterai`;否则落入模型规则(若模型包含 `minimax` 则为
    `minimax`,否则为 `claude-code`)。
-   - Swift:`ClaudeCodeAdapter.swift:212-223`
-   - TypeScript:`claude-code.ts:180-191`
+   - Swift:`ClaudeCodeAdapter.swift:266-277`
+   - TypeScript:`claude-code.ts:218-229`
 3. 仅当解析出的 `source == .lobsterai` 时,包装器才保留该会话,
    否则返回 `.unsupportedVirtualLocator`
-   (`ClaudeCodeAdapter.swift:612-621`)。这可防止同一文件被基础适配器与
+   (`ClaudeCodeAdapter.swift:669-677`)。这可防止同一文件被基础适配器与
    派生适配器双重计数。
 4. 在 UI 分组/健康度方面,LobsterAI 被报告为**派生自
-   `claude-code`**(`web.ts:931-934` `DERIVED_SOURCES`)。
+   `claude-code`**(`web.ts:937-939` `DERIVED_SOURCES`)。
 
 因此 `lobsterai` 与 `claude-code` 之分完全由
 `detectSource` / `hasLobsterAIPathComponent`
-(`ClaudeCodeAdapter.swift:212`+`225`,`claude-code.ts:180`+`199`)决定。下游一切
+(`ClaudeCodeAdapter.swift:266`+`279`,`claude-code.ts:218`+`268`)决定。下游一切
 (记录解析、消息流式处理、分层)都原封不动地复用 Claude Code
 路径。
 
@@ -150,22 +154,22 @@ Claude-Code 格式的 JSONL 转录会被索引。
   *完整路径分量*,它等于 `lobsterai`,或以 `lobsterai` + 一个 `._-`
   分隔符开头。`notlobsterai-project` 与 `.lobsteraiproject` 是明确的
   诱饵(decoy),会解析为 `claude-code`(在
-  `tests/adapters/claude-code.test.ts:84-166` 中断言)。
+  `tests/adapters/claude-code.test.ts:319-395` 中断言)。
 - **实时数据差异(本机):** 唯一看起来像 LobsterAI 的磁盘
   数据是 `~/.claude/projects/-Users-bing-lobsterai-project/`。它的名字是一个
   **cwd 编码**目录(`/Users/bing/lobsterai/project` →
   `-Users-bing-lobsterai-project`),所以 `lobsterai` 只是作为编码分量
   `-Users-bing-lobsterai-project` 的一个子串出现,而它**不是**
   分隔符界定的。因此当前适配器将这些会话分类为
-  **`claude-code`,而非 `lobsterai`。** 检测依赖于一个字面命名为
-  `lobsterai*`/`.lobsterai*` 的项目*目录*,而 LobsterAI 的 cwd 编码
-  并不总会产生这种名字。(以磁盘上的实际情况为准:不要假设“目录包含
-  lobsterai” ⇒ `lobsterai`。)
-- **仅含索引的目录。** 该实时目录当前只持有
-  `sessions-index.json`(一个 LobsterAI 应用索引,引用了
-  已不再存在的 `<sessionId>.jsonl` 文件)。Engram 索引的是
-  `.jsonl` 转录,而非 `sessions-index.json`;在没有 `.jsonl` 文件
-  存在的情况下,这个目录什么也不会被索引。
+  **`claude-code` 或 `minimax`,而非 `lobsterai`。** 当前实时内容是 27 个
+  JSONL 会话文件、16 个 `tool-results/*.txt` sidecar,以及
+  `sessions-index.json`:23 个解析为 `claude-code`,2 个解析为 `minimax`,2 个是
+  被跳过的 side-channel 文件。实时 DB 仍有 1 条历史遗留的 `lobsterai`
+  false-positive 行,但当前适配器分类结果是 0 个 `lobsterai` locator 和 0 条
+  `lobsterai` `file_index_state`。检测依赖于一个字面命名为
+  `lobsterai*`/`.lobsterai*` 的项目*目录*,而 LobsterAI 的 cwd 编码并不总会产生
+  这种名字。(以磁盘上的实际情况为准:不要假设“目录包含 lobsterai” ⇒
+  `lobsterai`。)
 - **模型混用对检测无害。** LobsterAI 会话通常携带
   `claude*` 模型,而路径检查先运行,所以模型永远不会把一条
   真正的 LobsterAI 路径降级。反过来,一个非 `lobsterai*`
@@ -173,11 +177,11 @@ Claude-Code 格式的 JSONL 转录会被索引。
 - **MiniMax 共享这一完全相同的覆盖层。** 同一个 `ClaudeCodeDerivedSourceAdapter`
   和 `detectSource` 将 `minimax`(通过模型子串 `minimax`)、
   `lobsterai`(通过路径)与 `claude-code` 区分开来。`precondition`
-  (`ClaudeCodeAdapter.swift:578`)将包装器限制到这两个派生
+  (`ClaudeCodeAdapter.swift:635`)将包装器限制到这两个派生
   来源。
 - **Swift 与 TS 的实现形式不同,但行为相同。** Swift 使用一个
-  显式的相等性/`hasPrefix` 集合(`ClaudeCodeAdapter.swift:230-237`);TS 使用
-  一条正则(`claude-code.ts:202`)。两者都接受相同的 `._-` 分隔 /
+  显式的相等性/`hasPrefix` 集合(`ClaudeCodeAdapter.swift:279-293`);TS 使用
+  一条正则(`claude-code.ts:268-272`)。两者都接受相同的 `._-` 分隔 /
   前导点变体;若任一方改动,需保持二者同步。
 
 ## Web-confirmation status (web-checked 2026-06-21)

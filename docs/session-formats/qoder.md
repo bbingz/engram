@@ -1,6 +1,7 @@
 # Qoder Session Format
 
 Last researched: 2026-06-21 (Engram session-format research workflow)
+Engram adapter status refreshed: 2026-07-02 (local source/live DB audit)
 
 > **Evidence basis:** BOTH (1) **LIVE on-disk store** at `~/.qoder/projects/` —
 > **7** project directories, **13** top-level session `.jsonl` files, **44**
@@ -24,6 +25,12 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 > (flagged inline). All quoted samples are anonymized: message text / thinking /
 > code / tool I/O / backup filenames / secrets / personal paths scrubbed, but
 > **every key, type, and structure is verbatim** — format, not content.
+
+**Current Engram status (2026-07-02):** The live store and DB still match the
+adapter exactly: 57 JSONL files listed and parsed, 44 subagent rows with 44
+parent links, 0 nested workflow JSONL files, 4,637 streamed messages, 0
+parser/stream mismatches, 57 DB rows, 57 `file_index_state ok` rows, and 0
+missing, DB-only, or field-stale current ids.
 
 Qoder is a **Claude-Code-JSONL-family** store. If you have read the Claude Code
 session-format doc, the envelope and content-block model here will be familiar;

@@ -3,7 +3,9 @@ import Foundation
 public enum SourceName: String, CaseIterable, Codable, Sendable {
     case codex
     case claudeCode = "claude-code"
+    case grok
     case copilot
+    case pi
     case geminiCli = "gemini-cli"
     case opencode
     case iflow
@@ -11,6 +13,10 @@ public enum SourceName: String, CaseIterable, Codable, Sendable {
     case qoder
     case kimi
     case minimax
+    case mimo
+    case doubao
+    case glm
+    case deepseek
     case lobsterai
     case commandcode
     case cline

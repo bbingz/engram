@@ -1,6 +1,7 @@
 # Kimi CLI — 会话格式参考
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-02 (Engram provider audit recheck).
+Adapter sync updated: 2026-06-30.
 
 > 本文档为英文权威版 kimi.md 的中文阅读副本;若有出入以英文版为准。
 
@@ -12,9 +13,9 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 - **本机磁盘上的实时存储** `~/.kimi/` —— **49 个 workspace 目录**
   （`/bin/ls -1 ~/.kimi/sessions` = 49；`find -mindepth1 -maxdepth1 -type d` = 49；
   与 `kimi.json` `work_dirs` 匹配 = 49），
-  **573 个 `context.jsonl`** *(= 在 Engram 解析的 2 层深度
-  `sessions/<ws>/<sess>/` 下为 459 个 *+ 114 个从未被枚举的更深层
-  `subagents/<id>/context.jsonl`)*，**566 个 `wire.jsonl`** *(= 452 个会话级 + 114
+  **573 个 `context.jsonl`** *(= `sessions/<ws>/<sess>/` 下 459 个主会话
+  context + 114 个更深层 `subagents/<id>/context.jsonl` 子会话 context；当前适配器
+  都会枚举)*，**566 个 `wire.jsonl`** *(= 452 个会话级 + 114
   个 subagent)*，**393 个 `state.json`**，**42
   个 `context_sub_*.jsonl`**，**2 个 `context_1.jsonl`**，**6 个 `subagents/`** 目录，**1
   个 `tasks/`** 目录，**1 个 `notifications/`** 目录。角色、键集、块类型、
@@ -32,6 +33,45 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 发生冲突时，**以磁盘上的真实数据为准**，并在行内标注差异。
 所有引用的样本都已 **匿名化为结构（键 + 值类型）**；不会复现任何
 消息文本、代码、路径、token 或密钥。
+
+## 当前本机审计
+
+2026-07-02 native `~/.kimi/sessions` smoke 列出并解析 573/573 个 canonical
+`context.jsonl` locator 为 `kimi`：459 个主会话 context，114 个
+`subagents/<id>/context.jsonl` 子会话 context。114 个 subagent context 全部带
+`agentRole='subagent'` 和 `parentSessionId`；当前 102 个 session 能通过
+`~/.kimi/kimi.json` 解析出 cwd。同一 raw store 仍有 566 个 `wire.jsonl` 和
+44 个轮转分片（`2 context_N`，`42 context_sub_N`），它们作为辅助数据读取，
+不是独立 session locator。
+TS live stream smoke 产出 4,036 条 transcript messages（1,061 user + 2,975
+assistant），parser/stream count mismatch 为 0。
+
+当前 `~/.engram/index.sqlite` 在 `/Users/bing/.kimi/%` 下有 689 个 native `kimi`
+行。全部 573 个当前 canonical `context.jsonl` locator 都已进入
+`file_index_state`（`ok`/schema v1，最新 native `indexed_at`
+`2026-07-01T05:46:43Z`），也都存在于 `sessions.source_locator`；仍有 116 个
+source-locator 口径的 DB-only native 行属于 stale cleanup。不要只用
+`sessions.file_path` 判断 Kimi locator 是否闭合：当前只有 251 行的 `file_path`
+等于当前 context locator，另有 438 个 native 行保留旧的 readable/sidecar 路径
+（`264 wire.jsonl`、`56 notification`、`26 state.json`、`89 other sidecar/artifact`
+以及 `3 obsolete context.jsonl`）。当前还有 2 行的 parser-owned 计数/大小字段陈旧。
+更宽的 parser-vs-DB metadata diff 也能看到当前行上保留下来的旧 `cwd`、
+`agent_role`、`parent_session_id` 以及 start/end/path 值；这些主要来自
+`SessionSnapshotWriter` 的保留规则，不应直接解读为 parser 计数漂移。
+已安装 `/Applications/Engram.app` build `20260701074505`
+的 MCP 对真实 native Kimi 行 `ed48cf04-9543-45f0-8cbc-988406b1ca65` 返回
+50 条 page-1 messages,`sessionMessageCount=201`。
+
+独立的 Claude Code provider-root 路线 `~/.claude-kimi/projects` 不是 native Kimi
+存储；它使用 Claude Code JSONL，由 `ClaudeCodeAdapter` 以 `kimi` source 解析。
+2026-07-02 审计列出 2,090 个 provider-root JSONL 文件、95,845 条记录、0 条畸形行，
+解析 2,076 个 conversation，发现 2,067 个带 parent link 的 subagent，且
+stream/count mismatch 为 0。已安装 `/Applications/Engram.app` build
+`20260701074505` 在 `/Users/bing/.claude-kimi/%` 下有 2,076 个 DB 行，locator diff
+已闭合。2,090 个 `.claude-kimi` `file_index_state` 行仍全是 schema version 1，但修正后的
+visible-tool-result parser 报告 0 个字段陈旧的当前 provider-root 行。此前 809 行
+stale-count 结论是 retained TS 审计工具误报：TS 当时会计入 Swift 产品已丢弃的非可见
+Claude `tool_result` 行。
 
 ---
 
@@ -63,12 +103,12 @@ Engram 解析 `context.jsonl`（+ 轮转分片）以获取计数/文本，解析
      └─ <md5(cwd)>/               ← workspace hash dir (32 hex)                        [grouping key, not decoded]
          └─ <session-uuid>/       ← session dir; dir name = Engram session id
              ├─ context.jsonl     ← conversation records (role-discriminated)         [PARSED]
-             ├─ context_<N>.jsonl ← rotation shards in CURRENT kimi-cli source        [NOT in glob → dropped]
+             ├─ context_<N>.jsonl ← rotation shards in CURRENT kimi-cli source        [PARSED]
              ├─ context_sub_N.jsonl ← rotation shards in OLDER kimi-cli (on disk)     [PARSED]
-             ├─ context_1.jsonl   ← legitimate current rotation shard (2 dirs)        [NOT in glob → dropped]
+             ├─ context_1.jsonl   ← legitimate current rotation shard (2 dirs)        [PARSED]
              ├─ wire.jsonl        ← agent-protocol events (ts + token usage)          [PARSED: 3 of 16 types]
              ├─ state.json        ← lifecycle/title/todos/plan/archive               [NOT parsed]
-             ├─ subagents/<id>/   ← nested child agents (own context+wire+meta)        [NOT enumerated]
+             ├─ subagents/<id>/   ← nested child agents (own context+wire+meta)        [PARSED as child sessions]
              ├─ tasks/agent-<id>/ ← async shell/tool tasks (spec/runtime/output)       [NOT parsed]
              └─ notifications/n*/ ← per-session notifications (event+delivery)          [NOT parsed]
 ```
@@ -86,8 +126,9 @@ context.jsonl line            wire.jsonl line
 **给 Engram 的 TL;DR：** `id` = 会话目录 UUID；`cwd` 来自 `kimi.json`；
 `summary` = 首条用户消息（≤200 字符）；时间戳来自 `wire.jsonl` 的
 `TurnBegin`/`TurnEnd`；token 用量来自 `wire.jsonl` `StatusUpdate`（**仅 Swift**）；
-只计入 `user`+`assistant` 记录；**`tool` 记录、数组内容块、tool 调用、reasoning
-以及 `state.json.custom_title` 全部被丢弃。**
+subagent `context.jsonl` 会作为子会话索引并带上 `agentRole=subagent` 与
+`parentSessionId`；只计入 `user`+`assistant` 记录；**`tool` 记录、数组内容块、
+tool 调用、reasoning 以及 `state.json.custom_title` 全部被丢弃。**
 
 ---
 
@@ -138,20 +179,17 @@ context.jsonl line            wire.jsonl line
 
 | Token | 语法 | 推导 | 是否验证 |
 |---|---|---|---|
-| `<workspace-hash>` | `^[0-9a-f]{32}$`（本地 kaos）/ `<kaos>_<md5>`（非本地） | 当 `kaos == local`（默认）时为 **`md5(absolute_cwd_path)`**；否则为 `f'{kaos}_{md5}'` | **是** —— 采样的 10/10 个 `work_dirs[].path` 其 `md5(path)` 都等于一个真实的 workspace 目录。源码确认：`metadata.py` `WorkDirMeta.sessions_dir` |
+| `<workspace-hash>` | `^[0-9a-f]{32}$`（本地 kaos）/ `<kaos>_<md5>`（非本地） | 当 `kaos == local`（默认）时为 **`md5(absolute_cwd_path)`**；否则为 `f'{kaos}_{md5}'` | **是** —— 本机 49/49 个 `work_dirs[].path` 其 `md5(path)` 都等于一个真实的 workspace 目录。源码确认：`metadata.py` `WorkDirMeta.sessions_dir` |
 | `<session-uuid>` | RFC-4122 UUID v4 | 每个会话随机生成 | 实时（`64892815-2590-475c-8112-9c82df9b16f2`） |
-| `context_<N>.jsonl` | `N` = 十进制整数 | 当前 kimi-cli 源码中的轮转索引（`utils/path.next_available_rotation` → `f'{stem}_{N}{suffix}'`） | 源码确认；不被适配器 glob 匹配 |
-| `context_sub_<N>.jsonl` | `N` = 十进制整数 | 旧版 kimi-cli 中的轮转索引（磁盘上观察到 1..42） | 实时 + `KimiAdapter.swift:183`，`kimi.ts:255`；该字符串在当前源码中不存在 |
+| `context_<N>.jsonl` | `N` = 十进制整数 | 当前 kimi-cli 源码中的轮转索引（`utils/path.next_available_rotation` → `f'{stem}_{N}{suffix}'`） | 源码确认；当前 `contextShardIndex` 会匹配 |
+| `context_sub_<N>.jsonl` | `N` = 十进制整数 | 旧版 kimi-cli 中的轮转索引（磁盘上观察到 1..42） | 实时；当前 `contextShardIndex` 为兼容旧存储仍会匹配 |
 | subagent id | `^[0-9a-f]{9}$` | 每个 subagent | 实时（`a616a2fc4`） |
 | task id | `agent-<8 lowercase alnum>` | 每个 task | 实时（`agent-oiyhtezo`） |
 | notification id | `n<8 hex>` | 每个 notification | 实时（`n0838353a`） |
 
-> **DISCREPANCY（适配器文档注释 vs 现实）：** 两个适配器都把布局注释为
-> `sessionsRoot/<workspace-id>/<session-id>/context.jsonl`，并把第一层
-> 当成一个不透明的 "workspace id"。实际上这一层是
-> **`md5(cwd)`** —— 已验证 10/10。适配器从不解码该哈希；它们完全依赖
-> `kimi.json` 来恢复 cwd。功能上是正确的，但布局注释低估了 workspace 目录名
-> 其实是 cwd 的一个 *可正向计算* 的哈希（一条未被利用的解析路径 —— 见 §15）。
+> **实现说明：** 当前适配器把会话路径第一层当作不透明组件，因为 `kimi.json`
+> 才是 cwd 的事实来源。在常见的本地场景中，这一层是 **`md5(cwd)`** —— 本机已验证
+> 49/49 匹配；但非本地 kaos root 会使用 `<kaos>_<md5>`，所以适配器有意不反解它。
 >
 > **CORRECTED（web-checked 2026-06-21）：** 目录名 **仅当 `kaos == local`**（默认）时
 > 才是 `md5(path)`。源码 `metadata.py` `WorkDirMeta.sessions_dir`
@@ -169,7 +207,7 @@ context.jsonl line            wire.jsonl line
 | 存储技术 | 纯 **JSONL**（每行一个 JSON 对象）+ 单对象 JSON 旁车文件 | 实时 |
 | 数据库？ | **无** —— 没有 SQLite/leveldb/gRPC cache | 实时 `find` |
 | 追加 vs 重写 | 在一个会话内，`context.jsonl` 和 `wire.jsonl` 是 **仅追加**；从不原地重写 | 实时 |
-| 轮转（即 rotation） | 当上下文增长时，Kimi 会溢出到与主文件 **共存** 的轮转分片中。**当前 kimi-cli 源码把它们命名为 `context_<N>.jsonl`**（`context_1.jsonl`、`context_2.jsonl` 等），通过 `soul/context.py` → `utils/path.next_available_rotation`（`f'{stem}_{N}{suffix}'`）；磁盘上的 **`context_sub_<N>.jsonl`**（观察到最多 `_sub_42`）是一种 **旧版 kimi-cli** 的命名。适配器只 glob `context_sub_` 前缀，因此在当前 kimi-cli 下它们会 MISS 真实的 `context_<N>.jsonl` 分片。重建方式 = 先主文件 + `context_sub_*` 按数字排序 | `contextFiles()` `KimiAdapter.swift:177-191`；`getAllContextFiles()` `kimi.ts:249-274` |
+| 轮转（即 rotation） | 当上下文增长时，Kimi 会溢出到与主文件 **共存** 的轮转分片中。**当前 kimi-cli 源码把它们命名为 `context_<N>.jsonl`**（`context_1.jsonl`、`context_2.jsonl` 等），通过 `soul/context.py` → `utils/path.next_available_rotation`（`f'{stem}_{N}{suffix}'`）；磁盘上的 **`context_sub_<N>.jsonl`**（观察到最多 `_sub_42`）是一种 **旧版 kimi-cli** 的命名。当前适配器两种形式都解析。重建方式 = 先主文件 + `context_<N>` / `context_sub_<N>` 按数字排序 | Swift `contextFiles()`；TS `getAllContextFiles()` |
 | 恢复 / "上次会话" | `kimi.json.work_dirs[].last_session_id` 记录每个 cwd 最新的会话 uuid（用于恢复 + cwd 回填）。一次新运行会在同一个 `md5(cwd)` workspace 下铸造一个新的 `<session-uuid>` 目录 | `kimi.json` |
 | Subagents | 一个会话会派生嵌套的 `subagents/<id>/` —— 拥有各自 `context.jsonl`/`wire.jsonl`/`meta.json` 的完整子对话 | 实时 |
 | Tasks | 异步 `tasks/agent-<id>/`（带 `runtime.json` 退出状态的 shell/tool 任务）；`config.toml` 中的 `[background]` 管理它们（`max_running_tasks=4`，`agent_task_timeout_s=900`） | 实时 |
@@ -177,19 +215,12 @@ context.jsonl line            wire.jsonl line
 | 压缩 | 上下文窗口压缩在 `context.jsonl` 中由 `_checkpoint` 记录标记，在 `wire.jsonl` 中由 `CompactionBegin`/`CompactionEnd` 事件标记（驼峰式，无空格 —— 逐字的 wire 类型）；`config.toml` `compaction_trigger_ratio=0.85` | 实时 + config |
 | 通知 | `notifications/n*/` 以不可变的 `event.json`+`delivery.json` 成对累积 | 实时 |
 
-> **`context_1.jsonl` 不在任何一个适配器的 glob 中**（glob 只匹配
-> `context_sub_` 前缀）。两个适配器都忽略 `context_1.jsonl`，因此任何只落在
-> 那里的对话行都不会被解析。只有 **2 个目录** 拥有它；实时检查显示它携带真实的
-> `user`/`assistant`/`tool`/`_usage`/`_checkpoint`/`_system_prompt` 记录。
->
-> **CORRECTED（web-checked 2026-06-21）：** `context_1.jsonl` 是 **合法的
-> 当前轮转输出**，而非 "罕见的预轮转/遗留快照"。当前发布的 kimi-cli 源码
+> **已在 Engram 适配器中解决（2026-06-30）：** `context_1.jsonl` 是合法的
+> 当前轮转输出，而非 "罕见的预轮转/遗留快照"。当前发布的 kimi-cli 源码
 > 通过 `soul/context.py` → `utils/path.next_available_rotation` 轮转到
-> `context_<N>.jsonl`（`context_1.jsonl`、`context_2.jsonl` 等）；
-> 字符串 `context_sub` 在当前源码中完全不出现。因此观察到的
-> `context_sub_*` 文件反映的是一个 *较旧* 的 kimi-cli 版本，而丢弃
-> `context_<N>.jsonl` 在当前 kimi-cli 下是一个 **真实的分片丢失 bug**，而非
-> 对遗留产物的有意跳过。
+> `context_<N>.jsonl`（`context_1.jsonl`、`context_2.jsonl` 等）；较旧的
+> 磁盘 `context_sub_*` 文件反映的是旧版 kimi-cli 命名。Engram 现在同时匹配
+> 两类分片。
 > [next_available_rotation](https://raw.githubusercontent.com/MoonshotAI/kimi-cli/main/src/kimi_cli/utils/path.py),
 > [soul/context.py](https://raw.githubusercontent.com/MoonshotAI/kimi-cli/main/src/kimi_cli/soul/context.py)
 
@@ -426,14 +457,11 @@ context.jsonl line            wire.jsonl line
   `event.payload` 镜像 ToolCall/ToolResult/StatusUpdate/TurnBegin/
   StepBegin 的形态）。
 
-**在 Engram 中：** **没有 Kimi 的父子关联。** 发现遍历是一个固定的
-**2 层** 扫描（`sessions/<workspace>/<session>/context.jsonl`）；subagent
-`context.jsonl` 文件位于更深一层
-（`…/<session>/subagents/<id>/context.jsonl`），既 **从不被枚举** 为
-独立会话，也不与父会话关联。没有 `.engram.json` 旁车文件（那是
-Gemini-CLI 的机制）。Engram 为所有 Kimi 会话发出 `parentSessionId: nil` /
-`suggestedParentId: nil`。Kimi subagents *是否应该* 像 Claude Code subagents
-那样被分组，仍然 **OPEN**。
+**在 Engram 中：** Kimi subagent context 会作为独立子会话枚举。
+`subagents/<id>/context.jsonl` 会成为一个 Kimi 会话，`id=<id>`，
+`agentRole="subagent"`，`parentSessionId=<parent session id>`。没有
+`.engram.json` 旁车文件（那是 Gemini-CLI 的机制）；`suggestedParentId`
+仍为 nil，因为父级来自路径推导。
 
 ---
 
@@ -447,7 +475,7 @@ Gemini-CLI 的机制）。Engram 为所有 Kimi 会话发出 `parentSessionId: n
   无空格 —— 与其他所有 wire `message.type` 一样）的形式存在，由
   `config.toml` `compaction_trigger_ratio=0.85` / `reserved_context_size=50000` 驱动。
   Engram 跳过 `_checkpoint` 且不解释压缩。
-  `context_sub_<N>.jsonl` 轮转分片是增长超出窗口后在磁盘上的后果。
+  `context_<N>.jsonl` / `context_sub_<N>.jsonl` 轮转分片是增长超出窗口后在磁盘上的后果。
 
 ---
 
@@ -546,11 +574,11 @@ base_url = "https://api.kimi.com/coding/v1"
 
 | Engram 字段 | 真相来源 | Swift `KimiAdapter.swift` | TS `kimi.ts` | 注意 / 陷阱 |
 |---|---|---|---|---|
-| `id` | 会话目录 UUID = `basename(dirname(context.jsonl))` | `:68` | `:80,84` | workspace 哈希被丢弃。TS 防护 `''`/`.`/`..`（`:84`）；Swift 无防护。 |
+| `id` | 会话目录 UUID = `basename(dirname(context.jsonl))`；subagent 使用 subagent 目录 id | `:78,194-210` | `:86-91,307-325` | workspace 哈希被丢弃。TS 防护 `''`/`.`/`..`；Swift 无防护。 |
 | `source` | 常量 `.kimi` | `:73` | `:146` | |
 | `startTime` | `wire.jsonl` 中首个 `TurnBegin` ts | `:74,200-208,223` | `:88,138-141,316-317` | 回退：Swift = wireStart → `mtime-60s`；TS = wireStart → 首行 ts → `mtime-60s`。实时没有行 ts。 |
 | `endTime` | 最后一回合的 `TurnEnd`（否则其 begin）；若 == start 则发出 nil | `:75,207,225` | `:89-92,142,318-321` | "首个 TurnEnd 胜出" —— 可能反映一个早期子回合。 |
-| `cwd` | `kimi.json` `work_dirs[].path`，以 `last_session_id == id` 为键 | `:76,162-175` | `:86,276-298` | 无匹配则为 `""` → 只有每个 workspace 最近的会话能解析。 |
+| `cwd` | `kimi.json` `work_dirs[].path`，以 `last_session_id == id` 为键；subagent 通过父 session id 解析 | `:82,168-180` | `:93,356-378` | 无匹配则为 `""` → 只有每个 workspace 最近的父会话能解析。 |
 | `project` | 始终 `nil` | `:77` | n/a | 下游从 cwd 派生。 |
 | `model` | 始终 `nil` | `:78` | n/a | 在 `config.toml` 中可用（Kimi-k2.6），但从不解析。 |
 | `messageCount` | `userCount + assistantCount` | `:79` | `:150` | **排除 `tool`** → 计数偏低。 |
@@ -559,19 +587,25 @@ base_url = "https://api.kimi.com/coding/v1"
 | `toolMessageCount` | 硬编码 `0` | `:82` | `:153` | 尽管有许多实时 `tool` 记录。 |
 | `systemMessageCount` | 硬编码 `0` | `:83` | `:154` | `_system_prompt` 存在但从不计数。 |
 | `summary` | 首条用户消息文本，`prefix(200)` | `:67,84` | `:124,155` | **`state.json.custom_title` 被忽略。** |
-| `sizeBytes` | `context.jsonl` + 所有 `context_sub_*.jsonl` 之和 | `:51-56,86` | `:99-107,157` | `wire.jsonl`/`state.json`/`context_1.jsonl` 被排除。 |
+| `sizeBytes` | 该 locator 的 `context.jsonl` + 所有 `context_<N>.jsonl` / `context_sub_<N>.jsonl` 之和 | `:54-62,92,212-238` | `:106-114,163,253-273,328-331` | `wire.jsonl`/`state.json` 被排除。 |
 | `filePath` | 到 `context.jsonl` 的绝对路径 | `:85` | `:156` | 定位符。 |
 | per-msg `role` | `user→.user`，`assistant→.assistant` | `:257` | `:225` | 只会产生 2 种角色。 |
 | per-msg `content` | `obj.content` 作为字符串 | `:258` | `:226` | **数组内容（think/text）→ 空字符串。** |
 | per-msg `timestamp` | 通过状态机的 wire 回合 ts；否则行 ts（实时缺失） | `:137-149,300-308` | `:203-228,237-243` | 见 §15 #1。 |
 | per-msg `usage` | wire `StatusUpdate.token_usage`（仅助手） | `:145,261,265-281` | **未实现** | **仅 Swift。** |
 | per-msg `toolCalls` | 始终 `nil` | `:260` | 省略 | tool 调用从不浮现。 |
-| `agentRole`/`originator`/`origin`/`parentSessionId`/`suggestedParentId`/`tier`/`qualityScore` | 全为 `nil` | `:88-95` | n/a | 无 Kimi subagent 关联。 |
+| `agentRole` / `parentSessionId` | 对 `subagents/<id>/context.jsonl` 从路径推导 | `:94,100,194-210` | `:164-165,307-325` | 主会话两者均为 nil；subagent 使用 `agentRole="subagent"` 和父会话 id。 |
+| `originator`/`origin`/`suggestedParentId`/`tier`/`qualityScore` | 全为 `nil` | `:95-101` | n/a | Kimi 没有 originator/tier 特例。 |
 
-**发现遍历**（两个适配器，固定 2 层，无递归）：
+**发现遍历**（两个适配器）：
 1. `detect()` —— 当且仅当 `~/.kimi/sessions/` 是一个目录时为真（`KimiAdapter.swift:25-27`，`kimi.ts:42-49`）。
-2. 枚举 `sessions/<workspace>/<session>/context.jsonl`；定位符 = 到 `context.jsonl` 的绝对路径；会话 id = 父目录名（`listSessionLocators` `:29-44`；`listSessionFiles` `:51-75`）。Swift 对结果排序。
-3. `parseSessionInfo(locator)` 读取主文件 + `context_sub_*`（拼接），计数 user/assistant，summary = 首条用户文本，ts 来自 `wire.jsonl`，cwd 来自 `kimi.json`。
+2. 枚举 `sessions/<workspace>/<session>/context.jsonl` 以及直接子目录
+   `sessions/<workspace>/<session>/subagents/<id>/context.jsonl`；定位符 =
+   到 `context.jsonl` 的绝对路径；会话 id = 父目录名
+   （`listSessionLocators` `:34-50`；`listSessionFiles` `:51-81`）。Swift 对结果排序。
+3. `parseSessionInfo(locator)` 读取主文件 + `context_<N>` / `context_sub_<N>`
+   分片（拼接），计数 user/assistant，summary = 首条用户文本，ts 来自
+   `wire.jsonl`，cwd 来自 `kimi.json`（subagent 使用父 id）。
 
 ---
 
@@ -656,15 +690,12 @@ Cursor ↔ VS Code ↔ Copilot ↔ Cline（`.vscdb`/leveldb）。可交叉参考
    不读；（b）startTime 回退 —— TS 有一个 Swift 缺少的行 ts 层级；
    （c）session-id 合理性防护 —— 仅 TS；（d）`_checkpoint` —— TS 显式
    `continue`，Swift 通过 `isConversation` 过滤（净效果相同）。
-10. **`context_<N>.jsonl` 轮转分片被丢弃（CORRECTED，web-checked
-    2026-06-21）。** 适配器只 glob `context_sub_` 前缀。当前
-    kimi-cli 源码通过 `utils/path.next_available_rotation` 把轮转分片命名为
-    `context_<N>.jsonl`（`context_1.jsonl`、`context_2.jsonl` 等），且字符串
-    `context_sub` 在当前源码中不出现。因此 `context_1.jsonl`（2 个目录）
-    是 **合法的当前轮转输出**，而非 "罕见的遗留快照"，
-    并且在当前 kimi-cli 下适配器会漏掉所有 `context_<N>.jsonl`
-    分片。这是一个真实的分片丢失 bug，而非有意的跳过。较旧的
-    `context_sub_*` 命名才是 glob 在本机磁盘上仍能匹配到的。
+10. **`context_<N>.jsonl` 轮转分片支持已修正（web-checked
+    2026-06-21；adapter-fixed 2026-06-30）。** 当前 kimi-cli 源码通过
+    `utils/path.next_available_rotation` 把轮转分片命名为
+    `context_<N>.jsonl`（`context_1.jsonl`、`context_2.jsonl` 等）；较旧的
+    本地存储仍可能包含 `context_sub_<N>.jsonl`。当前适配器两类都匹配，
+    因此这在当前 worktree 中不再是活跃适配器缺口。
     [next_available_rotation](https://raw.githubusercontent.com/MoonshotAI/kimi-cli/main/src/kimi_cli/utils/path.py)
 11. **`state.json` schema 漂移。** 一个较新变体携带 `dynamic_subagents`
     并省略 title/archive/todo 块（实时 1/200）。Dim 2 声称的
@@ -693,12 +724,9 @@ Cursor ↔ VS Code ↔ Copilot ↔ Cline（`.vscdb`/leveldb）。可交叉参考
   设计 —— 不可经 web 验证；`md5(cwd)` 已确认可从
   `kimi.json` `work_dirs[].path` 正向计算，
   [metadata.py](https://raw.githubusercontent.com/MoonshotAI/kimi-cli/main/src/kimi_cli/metadata.py)。）*
-- 像 Claude Code subagents 那样关联 Kimi subagents？*（Engram 内部设计 —— 不可
-  经 web 验证；subagents 在磁盘上是一等公民，
+- 在当前路径推导的 `parentSessionId` 链接之外，给 Kimi subagents 添加更丰富的
+  UI 分组？*（Engram 内部设计 —— 不可经 web 验证；subagents 在磁盘上是一等公民，
   [subagents/store.py](https://raw.githubusercontent.com/MoonshotAI/kimi-cli/main/src/kimi_cli/subagents/store.py)。）*
-- Glob 修复：也匹配当前的 `context_<N>.jsonl` 轮转分片，而不只是
-  较旧的 `context_sub_` 前缀？*（Engram 内部设计 —— 格式事实已
-  解决：当前源码轮转到 `context_<N>.jsonl`，见陷阱 #10。）*
 
 **对照官方来源确认的格式事实（web-checked 2026-06-21）：**
 下列各项之前被框定为 "待验证"，现已被源码确认

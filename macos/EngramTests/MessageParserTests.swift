@@ -237,7 +237,13 @@ final class MessageParserTests: XCTestCase {
         let path = try fixturePath("system-prompts.jsonl")
         let messages = await MessageParser.parse(filePath: path, source: "claude-code")
 
-        XCTAssertEqual(messages.count, 4)
+        // The ClaudeCode adapter stream now drops pure system-injection noise
+        // records (`<local-command-stdout>`, `<command-name>`, AGENTS.md, skill
+        // bootstraps) to match parseSessionInfo's system counting and TS/Swift
+        // stream parity, so the transcript surfaces only the 3 conversational /
+        // system-context messages. The dropped `<local-command-stdout>` line is
+        // no longer displayed.
+        XCTAssertEqual(messages.count, 3)
         // <system-reminder> → systemPrompt
         XCTAssertEqual(messages[0].systemCategory, .systemPrompt)
         XCTAssertTrue(messages[0].isSystem)
@@ -246,8 +252,6 @@ final class MessageParserTests: XCTestCase {
         XCTAssertFalse(messages[1].isSystem)
         // <environment_context> → systemPrompt
         XCTAssertEqual(messages[2].systemCategory, .systemPrompt)
-        // <local-command-stdout> → agentComm
-        XCTAssertEqual(messages[3].systemCategory, .agentComm)
     }
 
     func testParseWithOffsetAndLimit() async throws {

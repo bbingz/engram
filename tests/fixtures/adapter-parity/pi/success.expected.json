@@ -1,0 +1,93 @@
+{
+  "failure": null,
+  "fileToolCounts": {},
+  "generatedAtCommit": "f9a236dc",
+  "inputPath": "pi/input/--Users-test--project--/2026-04-29T01-00-00-000Z_019dd6e3-91d1-7326-8299-314858773a0e.jsonl",
+  "insightFields": {
+    "firstUserSummary": "Fix the Pi parser",
+    "messageCount": 3,
+    "toolCallCount": 1
+  },
+  "locator": "pi/input/--Users-test--project--/2026-04-29T01-00-00-000Z_019dd6e3-91d1-7326-8299-314858773a0e.jsonl",
+  "messages": [
+    {
+      "content": "Fix the Pi parser",
+      "role": "user",
+      "timestamp": "2026-04-29T01:00:02.000Z"
+    },
+    {
+      "content": "I will inspect it.",
+      "role": "assistant",
+      "timestamp": "2026-04-29T01:00:03.000Z",
+      "toolCalls": [
+        {
+          "input": "{\"path\":\"/Users/test/project/package.json\"}",
+          "name": "read"
+        }
+      ],
+      "usage": {
+        "cacheCreationTokens": 1,
+        "cacheReadTokens": 2,
+        "inputTokens": 10,
+        "outputTokens": 5
+      }
+    },
+    {
+      "content": "{\"name\":\"fixture\"}",
+      "role": "tool",
+      "timestamp": "2026-04-29T01:00:04.000Z"
+    }
+  ],
+  "nodeVersion": "v26.4.0",
+  "projectFields": {
+    "cwd": "/Users/test/project",
+    "project": null,
+    "source": "pi"
+  },
+  "schemaVersion": 1,
+  "searchIndexFields": {
+    "contentPreview": "Fix the Pi parser\nI will inspect it.\n{\"name\":\"fixture\"}",
+    "contentSha256InputBytes": 55,
+    "roles": [
+      "user",
+      "assistant",
+      "tool"
+    ]
+  },
+  "sessionInfo": {
+    "assistantMessageCount": 1,
+    "cwd": "/Users/test/project",
+    "endTime": "2026-04-29T01:00:04.000Z",
+    "filePath": "<fixtureRoot>/pi/input/--Users-test--project--/2026-04-29T01-00-00-000Z_019dd6e3-91d1-7326-8299-314858773a0e.jsonl",
+    "id": "019dd6e3-91d1-7326-8299-314858773a0e",
+    "messageCount": 3,
+    "model": "mimo-v2.5-pro",
+    "sizeBytes": 1310,
+    "source": "pi",
+    "startTime": "2026-04-29T01:00:00.000Z",
+    "summary": "Fix the Pi parser",
+    "systemMessageCount": 0,
+    "toolMessageCount": 1,
+    "userMessageCount": 1
+  },
+  "source": "pi",
+  "statsFields": {
+    "assistantMessageCount": 1,
+    "messageCount": 3,
+    "systemMessageCount": 0,
+    "toolMessageCount": 1,
+    "userMessageCount": 1
+  },
+  "toolCalls": [
+    {
+      "input": "{\"path\":\"/Users/test/project/package.json\"}",
+      "name": "read"
+    }
+  ],
+  "usageTotals": {
+    "cacheCreationTokens": 1,
+    "cacheReadTokens": 2,
+    "inputTokens": 10,
+    "outputTokens": 5
+  }
+}

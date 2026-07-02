@@ -1,6 +1,6 @@
 # Cursor Session Format — Definitive Engram Reference
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-02 (original research 2026-06-21; live adapter refresh 2026-07-02)
 
 > **Evidence basis.** PRIMARY = the **live on-disk store** on this machine (the
 > user's real Cursor data): `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`
@@ -20,6 +20,13 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 > **5 NULL value / 51 empty / 4 headers-only / 4 inline**. Of 6 composers with a
 > summary, **all 6** store `latestConversationSummary.summary` as an **object**
 > (0 strings). Bubble `type` distribution: **71 user / 444 assistant**.
+>
+> 2026-07-02 read-only refresh: the TS adapter still lists 59 virtual locators,
+> parses 8 real conversations, rejects 51 metadata-only composers, streams 345
+> messages (86 user / 259 assistant), emits 46 usage-bearing assistant messages,
+> and has 0 parser/stream count mismatches. The live Engram DB still has 59
+> `cursor` rows, no `cursor` `file_index_state` rows, 51 historical zero-message
+> rows, and 6 non-empty rows with stale whole-DB `size_bytes=29581312`.
 
 ---
 
@@ -190,7 +197,7 @@ checkpointId:191ae4eb-4c8f-4cb3-8531-b783611e03a6:<checkpointUuid>
   time share the single `globalStorage/state.vscdb`. Growth is unbounded within
   one file (28.2 MB here). Both adapters therefore compute per-session size as
   **just that composer's JSON payload + its separate bubble rows' raw bytes**,
-  NOT the whole file (`CursorAdapter.swift:72-77,95`, `cursor.ts:99-119,149`).
+  NOT the whole file (`CursorAdapter.swift:71-76,94`, `cursor.ts:99-113,160`).
 
 - **Archive / delete.** Cursor marks composers via `isArchived` / `isDraft`
   flags in the `composer.composerHeaders` catalog (ItemTable). Deletion removes
@@ -230,8 +237,8 @@ following **record types** keyed within `cursorDiskKV` (plus singleton keys in
 ### The two conversation storage formats (the central lifecycle fork)
 
 A composer's messages are stored in one of **two** mutually-exclusive ways. Both
-adapters handle them with a fallback chain (`CursorAdapter.swift:191-219`,
-`cursor.ts:106-120` / `188-202`):
+adapters handle them with a fallback chain (`CursorAdapter.swift:190-218`,
+`cursor.ts:106-120` / `188-205`):
 
 1. **Inline (legacy)** — `composerData.conversation[]` is a non-empty array of
    bubble objects inline in the composer row. `rawBubbleBytes = 0` (nothing
@@ -242,7 +249,9 @@ adapters handle them with a fallback chain (`CursorAdapter.swift:191-219`,
    `bubbleId:<cid>:<bid>` row. Engram fetches these with
    `WHERE key LIKE 'bubbleId:<cid>:%' ORDER BY rowid ASC`. **Live: 4 / 64.**
 3. **Empty / draft** — neither a non-empty `conversation` nor matching
-   `bubbleId:` rows → emits a 0-message session. **Live: 51 / 64 (~80%).**
+   `bubbleId:` rows → current adapters reject it as non-conversational.
+   **Live: 51 / 64 (~80%)**, all now parse as null/failure rather than
+   0-message sessions.
 4. **NULL value** — `composerData:` key present, `value IS NULL` → skipped by the
    guard. **Live: 5 / 64.**
 
@@ -278,8 +287,8 @@ isFileListExpanded, unifiedMode, forceMode, isAgentic`).
 | `fullConversationHeadersOnly` | array<{bubbleId,type[,serverBubbleId]}> | Ordered bubble manifest (modern) | yes | no (LIKE used instead) | see §6.0 |
 | `conversationMap` | object | Map keyed by bubbleId (usually `{}` when split) | yes | no | `{}` |
 | `generatingBubbleIds` | array | Bubbles still streaming | yes | no | `[]` |
-| `latestConversationSummary` | object | `{ summary, lastBubbleId }` → Engram `summary` (≤200 chars) | yes (6/64) | **partially (see drift)** | see below |
-| `context` | object | Attached files/folders/terminals/git/docs/rules + `mentions` | no | TS only (cwd) | see below |
+| `latestConversationSummary` | object | `{ summary, lastBubbleId }` → Engram `summary` (≤200 chars) | yes (6/64) | **yes** | string and nested-object forms supported after 2026-07-01 fix |
+| `context` | object | Attached files/folders/terminals/git/docs/rules + `mentions` | no | yes (cwd) | first folderSelection, else dirname(first fileSelection) |
 | `codeBlockData` | object (URI → [CodeBlock]) | All model-suggested edits, per-file, versioned | yes | no | see below |
 | `originalModelLines` | object (URI → lines) | Pre-edit file line snapshots | yes | no | `{}` |
 | `usageData` | object (model → `{costInCents,amount}`) | **Per-session cost/usage** | yes (often `{}`) | no | `{ "claude-3.5-sonnet": { "costInCents":611, "amount":80 } }` |
@@ -300,19 +309,19 @@ isFileListExpanded, unifiedMode, forceMode, isAgentic`).
 \* `createdAt`/`lastUpdatedAt` are required in practice but the Swift adapter
 derives `createdAt` defensively: `composerData.createdAt` → first visible
 bubble's `timingInfo.clientStartTime` → `lastUpdatedAt` → `0`
-(`CursorAdapter.swift:64-67`). Timestamps convert via
-`isoFromMilliseconds = isoFromSeconds(ms / 1000.0)`
-(`GeminiCliAdapter.swift:49-51`). The TS adapter naively does
-`new Date(createdAt).toISOString()` (`cursor.ts:136`).
+(`CursorAdapter.swift:64-67`). The TS adapter now mirrors that fallback chain
+(`cursor.ts:136-140`) before converting with `new Date(createdAt).toISOString()`.
+Timestamps convert via `isoFromMilliseconds = isoFromSeconds(ms / 1000.0)`
+(`GeminiCliAdapter.swift:49-51`) on the Swift side.
 
-**`latestConversationSummary` — VERSION-DRIFT BUG (REAL vs adapter conflict).**
+**`latestConversationSummary` — modern nested summary shape (fixed 2026-07-01).**
 Inner keys verified live: outer = `[summary, lastBubbleId]`; inner
 `summary` object = `[summary, truncationLastBubbleIdInclusive,
 clientShouldStartSendingFromInclusiveBubbleId, previousConversationSummaryBubbleId,
 includesToolResults]`.
 
 ```json
-// FIXTURE (what the adapter expects): summary is a STRING
+// Legacy / fixture form: summary is a STRING
 "latestConversationSummary": { "summary": "Fix the login bug" }
 
 // LIVE STORE (modern Cursor): summary is a nested OBJECT
@@ -327,19 +336,20 @@ includesToolResults]`.
   "lastBubbleId": "<bid>"
 }
 ```
-Both adapters read `latestConversationSummary.summary` and expect a String:
-- Swift `CursorAdapter.swift:69-71` → `JSONLAdapterSupport.string(...)` which is
-  `value as? String` (`CodexAdapter.swift:97-99`) → **returns `nil` when the
-  value is a dict** → `summary` dropped.
-- TS `cursor.ts:147` → `data.latestConversationSummary?.summary?.slice(0,200)` →
-  `.slice` on an object → `undefined`.
+Older adapters only read `latestConversationSummary.summary` as a String, so
+the modern object form was dropped. The 2026-07-01 fix changed both adapters to
+recursively extract the first string at `summary`:
+- Swift `CursorAdapter.swift:70,252-258` → `summaryText(from:)`, then 200-char
+  truncation at `:92`.
+- TS `cursor.ts:142,286-298` → `summary()` / `summaryText()`, then 200-char
+  truncation.
 
 **In all 6 live composers that have a summary, `summary.summary` is an OBJECT
-(0 strings).** The modern Cursor summary is **never** ingested by the current
-adapter. The string form only appears in the fixture.
+(0 strings).** After the fix, Engram ingests the modern Cursor summary instead
+of falling back to the first visible user message for previews.
 
 **`context` shape** (every sub-array has a parallel `mentions.*` object). Engram
-(TS only) infers cwd from `context.folderSelections[0].uri.fsPath`, else
+infers cwd from `context.folderSelections[0].uri.fsPath`, else
 `dirname(context.fileSelections[0].uri.fsPath)`:
 ```json
 {
@@ -553,22 +563,21 @@ empty `text` are dropped, so they never appear in counts or transcript.
 
 ## 9. Token usage & cost
 
-Three usage surfaces exist; Engram consumes only the per-message one (Swift only).
+Three usage surfaces exist; Engram consumes only the per-message one.
 
 | Surface | Location | Type | Consumed |
 |---|---|---|---|
-| Per-message tokens | `bubble.tokenCount = {inputTokens, outputTokens}` | object | **Swift only** → message `usage` |
+| Per-message tokens | `bubble.tokenCount = {inputTokens, outputTokens}` | object | **Swift + TS** → message `usage` |
 | Cumulative tokens | `bubble.tokenCountUpUntilHere` (int) + `tokenDetailsUpUntilHere` ([{relativeWorkspacePath, count, lineCount}]) | int/array | no |
 | Per-session cost | `composerData.usageData = {model → {costInCents, amount}}` + `composerData.tokenCount` (int) | object/int | no |
 
-- **Swift** maps per-bubble `tokenCount → TokenUsage` for assistant messages
-  (`CursorAdapter.swift:150-152, 253-263`), with `cacheReadTokens=0`,
+- Swift maps per-bubble `tokenCount → TokenUsage` for assistant messages
+  (`CursorAdapter.swift:149-150,288-298`), with `cacheReadTokens=0`,
   `cacheCreationTokens=0`, and a guard that **drops zero-token usage**
-  (`inputTokens>0 || outputTokens>0`). Live sample bubbles often have
-  `{"inputTokens":0,"outputTokens":0}` → no usage emitted.
-- **TS does NOT emit usage at all** — a Swift↔TS behavioral divergence. The
-  parity fixture happens to dodge it because its assistant bubble has no
-  `tokenCount`.
+  (`inputTokens>0 || outputTokens>0`). TS now mirrors this behavior
+  (`cursor.ts:233-239,305-318`). The latest 2026-07-02 live TS smoke emitted 46
+  usage-bearing assistant messages; live sample bubbles with
+  `{"inputTokens":0,"outputTokens":0}` still emit no usage.
 - **`composerData.usageData`** is frequently `{}` live (no cost recorded) and is
   **ignored** by both adapters along with `composerData.tokenCount`.
 
@@ -599,10 +608,10 @@ encodes its own compaction boundaries:
 truncates older bubbles and replaces them with the summary when re-sending
 context to the model.
 
-**Engram intends to ingest `latestConversationSummary.summary` (≤200 chars) into
-`summary`, but the modern nested-object shape defeats it** — see the §5 / §15
-drift bug. Effectively, summary is **never ingested** from the live modern store
-(0/6 strings); Engram falls back to the first user message for any preview/title.
+Engram ingests `latestConversationSummary.summary` (≤200 chars) into
+`summary`. Since 2026-07-01, both adapters handle the modern nested-object
+shape (`summary.summary`) as well as the legacy string form, so the 6 live
+modern-summary composers no longer drop their session summaries.
 
 ---
 
@@ -699,43 +708,42 @@ cache.
 
 ## 14. Engram mapping
 
-**Adapter registration.** Source enum `case cursor`
-(`macos/Shared/EngramCore/Adapters/SessionAdapter.swift:17`); constructed in the
-default factory at `SessionAdapterFactory.swift:23` and `:68`, and in
-`macos/Engram/Core/MessageParser.swift:126` (one of the 17 default adapters).
-TS class `CursorAdapter` (`src/adapters/cursor.ts:32`).
+**Adapter registration.** Source enum `case cursor`; constructed by
+`SessionAdapterFactory.defaultAdapters()` / `recentActiveAdapters()` and reached
+from `MessageParser` through the adapter-registry fallback path. TS class
+`CursorAdapter` mirrors the Swift product adapter for retained tooling.
 
 ### Session-level (`NormalizedSessionInfo`)
 
 | Engram field | Cursor source | Swift file:line | TS file:line | Notes / discrepancy |
 |---|---|---|---|---|
-| `id` | `composerData.composerId` (fallback: locator composerId) | `CursorAdapter.swift:81` | `cursor.ts:134` | UUID |
-| `source` | constant `.cursor` / `'cursor'` | `:82` | `:135` | — |
-| `startTime` | `createdAt` → else first visible bubble `timingInfo.clientStartTime` → else `lastUpdatedAt` → else 0 | `:64-67, 83` | `:136` | **Swift has richer fallback chain; TS uses `createdAt` only.** |
-| `endTime` | `lastUpdatedAt` (only if ≠ createdAt, else `nil`) | `:68, 84` | `:137-140` | — |
-| `cwd` | **Swift: hardcoded `""`**; TS: `inferCwd` = first folderSelection.fsPath, else `dirname(first fileSelection.fsPath)`, else `""` | `:85` | `:141, 236-242` | **DISCREPANCY: Swift never infers cwd.** Live: folderSelections 0/64, fileSelections 8/64, so TS emits a dir for those 8; Swift emits `""` for all. |
-| `project` | always `nil` | `:86` | (n/a in TS shape) | Composers not bound to a workspace |
-| `model` | always `nil` | `:87` | (absent) | Not extracted |
-| `messageCount` | userCount + assistantCount (visible bubbles) | `:88` | `:142` | — |
-| `userMessageCount` | count of visible `type==1` | `:61, 89` | `:129, 143` | — |
-| `assistantMessageCount` | count of visible `type==2` | `:62, 90` | `:130, 144` | — |
-| `toolMessageCount` | **hardcoded 0** | `:91` | `:145` | `toolFormerData` not counted |
-| `systemMessageCount` | **hardcoded 0** | `:92` | `:146` | Cursor has no system bubbles |
-| `summary` | `latestConversationSummary.summary` truncated to 200 chars | `:69-71, 93` | `:147` | **Modern store: nested object → yields `nil` (§5 bug)** |
-| `filePath` | the virtual locator `<db>?composer=<id>` | `:94` | `:148` | — |
-| `sizeBytes` | per-session = `len(composerValue)` + Σ `len(bubble rows)` | `:72-77, 95` | `:99-119, 149` | NOT the whole 28 MB file (parity comment) |
-| `indexedAt` | `nil` | `:96` | (absent) | Set downstream |
-| `agentRole`/`originator`/`origin`/`parentSessionId`/`suggestedParentId`/`tier`/`qualityScore`/`summaryMessageCount` | all `nil` | `:97-104` | (absent) | Set by downstream pipeline |
+| `id` | `composerData.composerId` (fallback: locator composerId) | `CursorAdapter.swift:80` | `cursor.ts:145` | UUID |
+| `source` | constant `.cursor` / `'cursor'` | `:81` | `:146` | — |
+| `startTime` | `createdAt` → else first visible bubble `timingInfo.clientStartTime` → else `lastUpdatedAt` → else 0 | `:64-68,82` | `:136-140,147` | Swift and TS aligned on fallback chain |
+| `endTime` | `lastUpdatedAt` (only if ≠ createdAt, else `nil`) | `:69,83` | `:141,148-151` | — |
+| `cwd` | first `folderSelections[].uri.fsPath`, else `dirname(first fileSelections[].uri.fsPath)`, else `""` | `:84,260-286` | `:152,249-254` | Best-effort only: Cursor does not bind composers to workspaces; live folderSelections 0/64 and fileSelections 8/64 |
+| `project` | always `nil` | `:85` | (n/a in TS shape) | Composers not bound to a workspace |
+| `model` | always `nil` | `:86` | (absent) | Not extracted |
+| `messageCount` | userCount + assistantCount (visible bubbles) | `:87` | `:153` | — |
+| `userMessageCount` | count of visible `type==1` | `:62,88` | `:122-132,154` | — |
+| `assistantMessageCount` | count of visible `type==2` | `:63,89` | `:122-132,155` | — |
+| `toolMessageCount` | **hardcoded 0** | `:90` | `:156` | `toolFormerData` not counted |
+| `systemMessageCount` | **hardcoded 0** | `:91` | `:157` | Cursor has no system bubbles |
+| `summary` | `latestConversationSummary.summary` / nested `summary.summary` truncated to 200 chars | `:70,92,252-258` | `:142,158,291-303` | String and modern nested-object forms supported |
+| `filePath` | the virtual locator `<db>?composer=<id>` | `:93` | `:159` | — |
+| `sizeBytes` | per-session = `len(composerValue)` + Σ `len(bubble rows)` | `:71-76,94` | `:99-113,160` | NOT the whole 28 MB file (parity comment) |
+| `indexedAt` | `nil` | `:95` | (absent) | Set downstream |
+| `agentRole`/`originator`/`origin`/`parentSessionId`/`suggestedParentId`/`tier`/`qualityScore`/`summaryMessageCount` | all `nil` | `:96-103` | (absent) | Set by downstream pipeline |
 
 ### Per-message (`NormalizedMessage`)
 
 | Engram field | Cursor source | Swift file:line | TS file:line |
 |---|---|---|---|
-| `role` | `type` 1→user, 2→assistant | `:224-232` | `:207-208` |
-| `content` | `text` ‖ `rawText` (non-empty) | `:234-235` | `:210` |
-| `timestamp` | `timingInfo.clientStartTime` (ms→ISO) | `:141-144` | `:217, 221` |
-| `usage` | assistant only: `{inputTokens,outputTokens}` from `tokenCount` (cache=0; zero-usage dropped) | `:150-152, 253-263` | **not mapped in TS** |
-| `toolCalls` | always `nil` | `:149` | (absent) |
+| `role` | `type` 1→user, 2→assistant | `:223-231` | `:222-224` |
+| `content` | `text` ‖ `rawText` (non-empty) | `:233-235` | `:225-226` |
+| `timestamp` | `timingInfo.clientStartTime` (ms→ISO) | `:140-143` | `:232,238` |
+| `usage` | assistant only: `{inputTokens,outputTokens}` from `tokenCount` (cache=0; zero-usage dropped) | `:149-150,288-298` | `:233-239,305-318` |
+| `toolCalls` | always `nil` | `:148` | (absent) |
 
 **Discovery / enumeration pipeline:**
 1. `detect()` — true iff `globalStorage/state.vscdb` exists
@@ -746,17 +754,16 @@ TS class `CursorAdapter` (`src/adapters/cursor.ts:32`).
    `<dbPath>?composer=<composerId>` (`CursorAdapter.swift:20-36`,
    `cursor.ts:59-84`).
 3. `parseSessionInfo(locator)` — split on `?composer=` (`parseVirtualLocator`,
-   `CursorAdapter.swift:175-181`; `parsePath`, `cursor.ts:244-254`), fetch
+   `CursorAdapter.swift:174-180`; `parsePath`, `cursor.ts:321-331`), fetch
    `composerData:<id>`, resolve bubbles via the two-format fallback, count visible
    user/assistant bubbles, compute timestamps + per-session size.
 4. `streamMessages(locator, options)` — same fetch + fallback, map each visible
    bubble to `NormalizedMessage`, apply offset/limit window.
 5. `isAccessible(locator)` — cheap probe
    `SELECT 1 FROM cursorDiskKV WHERE key='composerData:<id>' LIMIT 1`, cached
-   (`CursorAdapter.swift:163-173`, `cursor.ts:256-276`).
+   (`CursorAdapter.swift:162-172`, `cursor.ts:333-353`).
 
-**Dropped entirely by Engram:** `name` (chat title), modern
-`latestConversationSummary.summary` object, `toolFormerData` (all tool
+**Dropped entirely by Engram:** `name` (chat title), `toolFormerData` (all tool
 calls/results), `codeBlocks`/`codeBlockData`/`codeBlockDiff` (all edits/diffs),
 `isThought`/`allThinkingBlocks` (reasoning), `usageData`/`tokenCountUpUntilHere`
 (cost/cumulative tokens), `checkpointId`, `agentKv`, `messageRequestContext`,
@@ -797,8 +804,8 @@ Takeaways:
 ### Gotchas, version drift, edge cases
 
 1. **Message order relies on `rowid`, not the header manifest.** Engram orders
-   separate bubbles by SQLite `rowid ASC` (`CursorAdapter.swift:206`,
-   `cursor.ts:192`), NOT by `fullConversationHeadersOnly[]`. The manifest is the
+   separate bubbles by SQLite `rowid ASC` (`CursorAdapter.swift:205`,
+   `cursor.ts:203`), NOT by `fullConversationHeadersOnly[]`. The manifest is the
    authoritative **structural/insertion** order of bubbles within a composer (not
    a wall-clock order — this store has "no reliable timestamps"); community
    guidance uses `ROWID` only for ordering whole CONVERSATIONS by recency, because
@@ -806,19 +813,24 @@ Takeaways:
    `rowid` is a safe per-BUBBLE order, so relying on it (instead of the manifest)
    for a re-inserted / edited bubble is a plausible-but-unverified risk
    ([source](https://github.com/vltansky/cursor-chat-history-mcp/blob/main/docs/research.md)).
-2. **Summary nesting drift (HIGH IMPACT).** Modern store nests `summary` as an
-   object (`{summary, truncationLastBubbleIdInclusive, …}`); both adapters expect
-   a string → summary silently dropped for ALL live sessions (**0/6 strings**).
-   The fixture still encodes the old string form, so there is **no regression
-   guard** for the object form.
-3. **Title (`name`) ignored** despite being present (8/64) and the only reliable
-   title signal once summaries are dropped.
+2. **Summary nesting drift is fixed.** Modern store nests `summary` as an object
+   (`{summary, truncationLastBubbleIdInclusive, …}`); the 2026-07-01 adapters
+   now read both the old string form and the modern nested form, with TS and
+   Swift regression guards.
+3. **Title (`name`) ignored** despite being present (8/64). This is less urgent
+   now that nested summaries are ingested, but `name` remains the only explicit
+   title field in modern Cursor composer data.
 4. **Format trichotomy + NULL.** Live: 4 inline / 4 headers-only / 51 empty /
-   5 NULL (64 total). **~80% are empty drafts** that emit 0-message sessions; the
-   adapter does not filter them (relies on downstream `tier=skip`/`lite`).
-5. **cwd is `""` in the shipped Swift product** (TS-only inference). Even TS
-   would emit `""` for most: folderSelections are 0/64 live; only the 8 composers
-   with fileSelections would get a `dirname`.
+   5 NULL (64 total). Current adapters reject metadata-only composers, but the
+   live Engram DB still has 51 historical zero-message `cursor` rows until
+   cleanup/reindex. A 2026-07-02 field-level recheck also found 6 non-empty
+   live DB rows with stale whole-DB `size_bytes` values from before the
+   per-composer payload sizing fix.
+5. **cwd is best-effort.** Swift and TS both infer from folderSelections first,
+   then fileSelections. Most live composers still emit `""`: folderSelections are
+   0/64; 8 raw composer records have fileSelections, but the current live parser
+   resolves cwd for only 2 parseable sessions because metadata-only composers are
+   rejected before they become sessions.
 6. **Tool turns dropped.** `toolFormerData` carries real tool calls
    (`includesToolResults:true` in summaries), but `toolMessageCount`/`toolCalls`
    are zeroed; tool-only assistant turns (empty `text`) vanish from transcript and
@@ -828,14 +840,14 @@ Takeaways:
    `timestamp:nil` for them. Swift falls back to the first-bubble timestamp then `createdAt` for the
    session `startTime`, but individual messages without `timingInfo` get a `nil`
    timestamp.
-8. **Token usage parity gap.** Swift emits per-message assistant usage from
-   `tokenCount`; TS does not — an untested Swift↔TS divergence. The parity
-   fixture dodges it (its bubble lacks `tokenCount`). Live bubbles are often
-   `{0,0}` → no usage emitted anyway (zero-usage guard).
+8. **Token usage parity is fixed.** Swift and TS now emit per-message assistant
+   usage from `tokenCount` with the same zero-usage guard. A focused TS test
+   covers non-zero `{inputTokens, outputTokens}`, and the live TS smoke emits
+   46 usage-bearing assistant messages.
 9. **NULL `composerData` values (5/64)** and malformed JSON are silently skipped
    (guard at `CursorAdapter.swift:27`, `compactMap` in TS).
 10. **Locator coupling.** Locator is `<dbPath>?composer=<id>`; parsing splits on
-    the literal `?composer=` (`CursorAdapter.swift:175-181`, `cursor.ts:248`). A
+    the literal `?composer=` (`CursorAdapter.swift:174-180`, `cursor.ts:321-331`). A
     composerId containing that substring would break parsing (not observed,
     unvalidated).
 11. **Reasoning effectively absent.** `allThinkingBlocks` is `[]` across all 444
@@ -856,10 +868,9 @@ Takeaways:
 - **Modern nested-summary form.** Confirmed (official): the object nesting is
   real product behavior, not a doc artifact. Community RE types declare
   `latestConversationSummary` as `{ summary: { summary: string } }` and read the
-  text at `latestConversationSummary.summary.summary`; an adapter that reads
-  `latestConversationSummary.summary` and expects a String gets an object and
-  drops it — exactly the live finding. Whether Cursor regards the nesting as a
-  bug vs intentional is not stated by any source (the format is undocumented)
+  text at `latestConversationSummary.summary.summary`; Engram now follows that
+  nested path while keeping the legacy string form. Whether Cursor regards the
+  nesting as a bug vs intentional is not stated by any source (the format is undocumented)
   ([source](https://github.com/vltansky/cursor-chat-history-mcp/blob/main/src/database/types.ts)).
 - **`composerData.name` as title.** Confirmed (official): `name` IS the
   conversation title in the modern format (vltansky types: `name?: string; //
@@ -867,10 +878,11 @@ Takeaways:
   lists `"name"` as the chat title). The factual premise is verified; whether
   Engram SHOULD ingest it is an Engram-internal design decision
   ([source](https://github.com/vltansky/cursor-chat-history-mcp/blob/main/src/database/types.ts), [source](https://vibe-replay.com/blog/cursor-local-storage/)).
-- **Swift `cwd=""` vs TS inference.** (Engram-internal design - not
-  web-verifiable.) The format premise is verified though: `context.fileSelections[].uri.fsPath/path`
-  exists on composers and bubbles, so cwd inference from those fields is
-  technically possible — consistent with the TS approach
+- **cwd inference source.** (Engram-internal design - not web-verifiable.) The
+  format premise is verified: `context.fileSelections[].uri.fsPath/path` exists
+  on composers and bubbles, so Engram uses those fields for best-effort cwd
+  inference. Whether additional context fields should participate remains a
+  product decision
   ([source](https://github.com/vltansky/cursor-chat-history-mcp/blob/main/src/database/types.ts)).
 - **Intended session-level cost source.** Confirmed (official) that token/usage
   is frequently absent or zero (vibe-replay: "many sessions still have no usable
@@ -934,7 +946,7 @@ CREATE TABLE cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);
 }
 ```
 
-### `composerData.latestConversationSummary` (modern, nested object — drift)
+### `composerData.latestConversationSummary` (modern, nested object)
 ```json
 {
   "summary": {

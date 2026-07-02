@@ -40,12 +40,15 @@ final class SessionSnapshotClassificationTests: XCTestCase {
         tier: SessionTier? = .normal,
         agentRole: String? = nil,
         parentSessionId: String? = nil,
+        sourceLocator: String? = nil,
+        syncVersion: Int = 1,
         implementationBeats: [SessionImplementationBeat] = []
     ) -> AuthoritativeSessionSnapshot {
-        AuthoritativeSessionSnapshot(
-            id: id, source: source, authoritativeNode: "node", syncVersion: 1,
+        let effectiveSourceLocator = sourceLocator ?? "/tmp/\(id).jsonl"
+        return AuthoritativeSessionSnapshot(
+            id: id, source: source, authoritativeNode: "node", syncVersion: syncVersion,
             snapshotHash: "\(hash)-\(id)", indexedAt: "2026-05-23T10:00:00Z",
-            sourceLocator: "/tmp/\(id).jsonl", sizeBytes: sizeBytes, startTime: "2026-05-23T10:00:00.000Z",
+            sourceLocator: effectiveSourceLocator, sizeBytes: sizeBytes, startTime: "2026-05-23T10:00:00.000Z",
             cwd: cwd, messageCount: messageCount, userMessageCount: userMessageCount,
             assistantMessageCount: assistantMessageCount, toolMessageCount: toolMessageCount, systemMessageCount: systemMessageCount,
             summaryMessageCount: summaryMessageCount,
@@ -206,6 +209,75 @@ final class SessionSnapshotClassificationTests: XCTestCase {
             XCTAssertEqual(row?["assistant_message_count"], 2)
             XCTAssertEqual(row?["tool_message_count"], 1)
             XCTAssertEqual(row?["system_message_count"], 0)
+        }
+    }
+
+    func testReindexRefreshesCanonicalLocatorWhenOnlyLocatorChanges() throws {
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "canonical-locator",
+                    hash: "stable",
+                    sizeBytes: 100,
+                    sourceLocator: "/tmp/kimi/session/subagent/wire.jsonl"
+                )
+            )
+
+            let result = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "canonical-locator",
+                    hash: "stable",
+                    sizeBytes: 100,
+                    sourceLocator: "/tmp/kimi/session/subagent/context.jsonl"
+                )
+            )
+
+            XCTAssertEqual(result.action, .merge)
+            let row = try Row.fetchOne(db, sql: """
+                SELECT file_path, source_locator
+                  FROM sessions
+                 WHERE id = 'canonical-locator'
+                """)
+            XCTAssertEqual(row?["source_locator"], "/tmp/kimi/session/subagent/context.jsonl")
+            XCTAssertEqual(row?["file_path"], "/tmp/kimi/session/subagent/context.jsonl")
+        }
+    }
+
+    func testLocalReindexRefreshesCanonicalLocatorDespiteLegacyHigherSyncVersion() throws {
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "legacy-high-sync-locator",
+                    hash: "legacy",
+                    sizeBytes: 399,
+                    sourceLocator: "/tmp/kimi/session/subagent/meta.json",
+                    syncVersion: 936
+                )
+            )
+
+            let result = try w.writeAuthoritativeSnapshot(
+                snapshot(
+                    id: "legacy-high-sync-locator",
+                    hash: "canonical",
+                    sizeBytes: 125_184,
+                    sourceLocator: "/tmp/kimi/session/subagent/context.jsonl",
+                    syncVersion: 1
+                )
+            )
+
+            XCTAssertEqual(result.action, .merge)
+            let row = try Row.fetchOne(db, sql: """
+                SELECT file_path, source_locator, sync_version, snapshot_hash, size_bytes
+                  FROM sessions
+                 WHERE id = 'legacy-high-sync-locator'
+                """)
+            XCTAssertEqual(row?["source_locator"], "/tmp/kimi/session/subagent/context.jsonl")
+            XCTAssertEqual(row?["file_path"], "/tmp/kimi/session/subagent/context.jsonl")
+            XCTAssertEqual(row?["sync_version"], 936)
+            XCTAssertEqual(row?["snapshot_hash"], "canonical-legacy-high-sync-locator")
+            XCTAssertEqual(row?["size_bytes"], 125_184)
         }
     }
 

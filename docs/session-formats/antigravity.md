@@ -1,14 +1,14 @@
 # Antigravity Session Format — Definitive Reference
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-02 (Engram session-format research workflow + live recheck)
 
 > **Evidence basis (this doc):** LIVE on-disk store on this machine **+** both Engram adapters
 > (Swift product `AntigravityAdapter.swift`, TS reference `src/adapters/antigravity.ts`) **+** repo
 > fixtures. Files actually sampled:
 > - IDE cache: **58** `~/.engram/cache/antigravity/*.jsonl`
 > - IDE source protobufs: **61** `~/.gemini/antigravity/conversations/*.pb`
-> - CLI brain: **151** session dirs, of which **143** have `transcript.jsonl` and **128** have `transcript_full.jsonl`
-> - Aggregate CLI records scanned: **8 673** lines across all 143 transcripts
+> - CLI brain: **168** session dirs, of which **160** have `transcript.jsonl` and **145** have `transcript_full.jsonl`
+> - Aggregate CLI records scanned: **9 038** lines across all 160 transcripts
 > - Aggregate cache message lines scanned: **2 303**
 > - Fixtures: `tests/fixtures/antigravity/cache/conv-001.jsonl` (3 lines), `tests/fixtures/antigravity-cli/transcript.jsonl` (4 lines)
 > - Schema: `macos/Shared/EngramCore/Adapters/Cascade/cascade.proto`, gRPC client `CascadeClient.swift`
@@ -17,6 +17,16 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 > dimension reports (storage-lifecycle, record-schema, engram-mapping); their conflicting claims were
 > re-verified against live data and the actual repo files (notably the proto, the tool list, and the
 > `status` enum), and corrected where they diverged.
+
+**Current Engram status (2026-07-02):** Read-only recheck still lists 61 raw IDE
+`.pb` files, 58 Engram cache JSONL files, 160 canonical CLI `transcript.jsonl`
+files, and 145 ignored `transcript_full.jsonl` auxiliaries. Parsing the 58 cache
+files plus 160 canonical CLI transcripts yields 218/218 sessions, 8,237 streamed
+messages, and 0 parser/stream mismatches. Live DB has 218 `antigravity` rows and
+218 `file_index_state ok/v1` rows with 0 missing current ids and 0 DB-only ids.
+Remaining DB freshness debt is unchanged: 130 current rows have stale fields
+versus the current parser, mostly 128 old cwd snapshots, plus 3 stale broad-tool
+count rows and 1 stale `source_locator` pointing at `transcript_full.jsonl`.
 
 ---
 
@@ -44,12 +54,13 @@ never decoded). Branch B is a *native rich agentic event log* (steps, tools, rea
 that Engram reads as-is but then heavily filters.
 
 **The single most important lineage fact:** in the shipped Swift product, `AntigravityAdapter` is
-constructed with **`enableLiveSync: false`** at **all three** product construction sites
-(`SessionAdapterFactory.swift:26`, `:71`, and `MessageParser.swift:129`). So the product
-**never runs gRPC sync** and **never decodes the `.pb` files**. Branch A surfaces *only* cache JSONL
-written earlier (by a legacy TS run); Branch B is read live (it is already JSONL on disk). On a fresh
-Swift-only machine with no prior TS sync, Branch A yields **nothing** and only CLI brain transcripts
-appear.
+constructed with **`enableLiveSync: false`** in the factory entry points
+(`SessionAdapterFactory.swift:33` and `:96`). UI transcript reads route through
+`MessageParser.swift:113` to `SessionAdapterFactory.defaultAdapters()`, not a separate construction
+site. So the product **never runs gRPC sync** and **never decodes the `.pb` files**. Branch A surfaces
+*only* cache JSONL written earlier (by a legacy TS run); Branch B is read live (it is already JSONL on
+disk). On a fresh Swift-only machine with no prior TS sync, Branch A yields **nothing** and only CLI
+brain transcripts appear.
 
 ```
                           ANTIGRAVITY  (two products, one adapter)
@@ -102,7 +113,7 @@ appear.
             └── .system_generated/
                 ├── logs/
                 │   ├── transcript.jsonl          # <-- THE file Engram reads
-                │   └── transcript_full.jsonl     # superset variant, IGNORED by Engram (128 dirs)
+                │   └── transcript_full.jsonl     # superset variant, IGNORED by Engram (145 dirs)
                 ├── messages/
                 │   └── <uuid>.json               # per-message inter-agent bus blobs (IGNORED)
                 └── tasks/
@@ -151,9 +162,9 @@ appear.
   - **`.pb`-scan backfill** (`syncFromPbFiles`, `:179-211`): the gRPC list returns only ~10 recent
     conversations, so a second pass scans `conversations/*.pb` for ids the API didn't return and writes
     cache entries with file-mtime-derived `createdAt`/`updatedAt` and `title:""`.
-- ⚠ **In the shipped product, sync is OFF** (`AntigravityAdapter(enableLiveSync: false)` at all three
-  product construction sites — `SessionAdapterFactory.swift:26,71` **and** `MessageParser.swift:129`;
-  any edit to the live-sync flag must touch all three). `sync()` early-returns (`:131`), so Engram reads only the
+- ⚠ **In the shipped product, sync is OFF** (`AntigravityAdapter(enableLiveSync: false)` at the factory
+  construction sites — `SessionAdapterFactory.swift:33,96`; `MessageParser.swift:113` uses the
+  factory-backed registry). `sync()` early-returns (`:131`), so Engram reads only the
   **pre-existing** `~/.engram/cache/antigravity/*.jsonl`. New IDE conversations after the last legacy
   sync are **not** picked up. The TS reference adapter (`antigravity.ts`) has no such gate and *would*
   sync live.
@@ -171,10 +182,10 @@ appear.
   `.system_generated/logs/transcript.jsonl` as the agent runs (append, never rewrite — `step_index` is
   monotonic). `status:"RUNNING"` records are written mid-step and finalized to `DONE` (or `ERROR`).
 - No rollover/archive — one file grows for the session's life.
-- Empty/aborted sessions leave a `brain/<uuid>/` dir with **no** transcript (151 dirs, 143 transcripts
+- Empty/aborted sessions leave a `brain/<uuid>/` dir with **no** transcript (168 dirs, 160 transcripts
   → 8 dirs have none). Engram skips dirs lacking the transcript.
 - Engram reads the transcript **directly, on demand**; there is **no** Engram-side cache for Branch B.
-- `transcript_full.jsonl` (128 dirs) is a parallel superset transcript (same schema). Engram never
+- `transcript_full.jsonl` (145 dirs) is a parallel superset transcript (same schema). Engram never
   enumerates it.
 
 ---
@@ -191,31 +202,31 @@ JSONL: **line 1 = metadata object**, **lines 2..N = message objects**. Two line 
 
 ### 4.2 Branch B transcript `transcript.jsonl`
 Plain JSONL, **one object per agent "step"**, NO leading metadata line (the whole file is records).
-All 16 `type` values found across 8 673 live records, with the producer (`source`) and the role the
+All 16 `type` values found across 9 038 live records, with the producer (`source`) and the role the
 adapter assigns:
 
 | `type` | n (live, all transcripts) | Purpose | Adapter role | Note |
 |---|---:|---|---|---|
-| `PLANNER_RESPONSE` | 3 884 | model turn: text and/or `thinking` and/or `tool_calls` | **assistant** | carries `thinking`, `tool_calls` |
-| `VIEW_FILE` | 1 694 | file-read tool **result** | **tool** | only tool result the Swift adapter keeps |
-| `GREP_SEARCH` | 1 239 | grep tool **result** | DROPPED (Swift) / tool (TS) | see §7 |
-| `SYSTEM_MESSAGE` | 353 | system/control text | DROPPED | |
-| `EPHEMERAL_MESSAGE` | 334 | transient UI text | DROPPED | |
-| `LIST_DIRECTORY` | 263 | dir-list **result** | DROPPED (Swift) / tool (TS) | |
-| `GENERIC` | 197 | misc event | DROPPED (Swift) / tool (TS) | |
-| `USER_INPUT` | 155 | the human prompt | **user** | |
-| `RUN_COMMAND` | 143 | shell command **result** | DROPPED (Swift) / tool (TS) | |
-| `FIND` | 102 | file-find **result** | DROPPED (Swift) / tool (TS) | |
-| `SEARCH_WEB` | 91 | web-search **result** | DROPPED (Swift) / tool (TS) | |
-| `CODE_ACTION` | 78 | code edit/patch action | DROPPED (Swift) / tool (TS) | |
-| `CONVERSATION_HISTORY` | 74 | history boundary marker | DROPPED | **no `content`** |
-| `ERROR_MESSAGE` | 37 | error event | DROPPED | extra `error` key; `content` absent (12) or string (25), never null |
-| `INVOKE_SUBAGENT` | 24 | subagent dispatch marker | DROPPED | see §10 |
-| `CHECKPOINT` | 5 | checkpoint marker | DROPPED | |
+| `PLANNER_RESPONSE` | 4 015 | model turn: text and/or `thinking` and/or `tool_calls` | **assistant** | carries `thinking`, `tool_calls` |
+| `VIEW_FILE` | 1 747 | file-read tool **result** | **tool** | only live tool-result type both adapters keep |
+| `GREP_SEARCH` | 1 251 | grep tool **result** | DROPPED | see §7 |
+| `EPHEMERAL_MESSAGE` | 384 | transient UI text | DROPPED | |
+| `SYSTEM_MESSAGE` | 362 | system/control text | DROPPED | |
+| `LIST_DIRECTORY` | 292 | dir-list **result** | DROPPED | |
+| `GENERIC` | 212 | misc event | DROPPED | |
+| `USER_INPUT` | 172 | the human prompt | **user** | |
+| `RUN_COMMAND` | 152 | shell command **result** | DROPPED | |
+| `FIND` | 102 | file-find **result** | DROPPED | |
+| `SEARCH_WEB` | 91 | web-search **result** | DROPPED | |
+| `CONVERSATION_HISTORY` | 84 | history boundary marker | DROPPED | **no `content`** |
+| `CODE_ACTION` | 82 | code edit/patch action | DROPPED | |
+| `ERROR_MESSAGE` | 40 | error event | DROPPED | extra `error` key; `content` absent (12) or string (28), never null |
+| `INVOKE_SUBAGENT` | 27 | subagent dispatch marker | DROPPED | see §10 |
+| `CHECKPOINT` | 25 | checkpoint marker | DROPPED | |
 
-> **Adapter mapping** (`cliMessage`, Swift `:345-368` / TS `:483-500`): `USER_INPUT`→user;
+> **Adapter mapping** (`cliMessage`, Swift `:345-368` / TS `:491-507`): `USER_INPUT`→user;
 > `PLANNER_RESPONSE`→assistant (uses `content`, falls back to `thinking`, attaches `toolCalls`); a
-> fixed tool-result allowlist → tool. The whitelists DIFFER between Swift and TS — see §7.
+> fixed tool-result allowlist → tool. Swift and TS now use the same allowlist — see §7.
 
 ---
 
@@ -246,8 +257,8 @@ adapter assigns:
 |---|---|---|---|---|
 | `type` | string enum | step/record kind (16 values, §4.2) | **required** | `"PLANNER_RESPONSE"` |
 | `step_index` | int | monotonic step ordinal (resume/ordering) | **required** | `0 … 931` |
-| `source` | string enum | producer: `MODEL` (7 715) / `SYSTEM` (803) / `USER_EXPLICIT` (155) | **required** | `"MODEL"` |
-| `status` | string enum | lifecycle: `DONE` (8 511) / `RUNNING` (77) / **`ERROR` (85)** | **required** | `"DONE"` |
+| `source` | string enum | producer: `MODEL` (7 971) / `SYSTEM` (895) / `USER_EXPLICIT` (172) | **required** | `"MODEL"` |
+| `status` | string enum | lifecycle: `DONE` (8 875) / `RUNNING` (78) / **`ERROR` (85)** | **required** | `"DONE"` |
 | `created_at` | string (ISO-8601 UTC, **second precision, NO ms**) | step timestamp | **required** | `"2026-05-19T23:58:09Z"` |
 | `content` | string | text body / tool output / user input | type-dependent — either a non-empty string or the **key is absent** (omitted on `CONVERSATION_HISTORY` and on tool-only planner steps). **Never JSON `null`, never `""`** in live data. | `"<str len=423>"` |
 | `thinking` | string | model reasoning (on `PLANNER_RESPONSE`) | optional | `"<str len=365>"` |
@@ -274,7 +285,7 @@ adapter assigns:
 **Verified:** all 2 303 live message lines have **exactly** `{content, role}`. The Swift writer
 (`CascadeCacheSupport.writeCache`, `WindsurfAdapter.swift:73-77`) emits only `role`+`content` with sorted
 keys, so cache timestamps are structurally impossible. The reader (`normalizedMessages`, `:19-35`) and TS
-`streamMessages` (`:368-396`) *tolerate* an optional `timestamp`, but the writer never produces one →
+`streamMessages` (`:376-404`) *tolerate* an optional `timestamp`, but the writer never produces one →
 Branch-A per-message timestamps are always `nil`.
 
 ```json
@@ -287,13 +298,13 @@ Branch-A per-message timestamps are always `nil`.
 
 - **`USER_INPUT`** → `content` = the human prompt (verbatim).
 - **`PLANNER_RESPONSE`** → assistant turn. `content` is either a non-empty string or the key is
-  **absent** (never JSON `null` or `""` in live data — 3 217 records omit it, 667 have a string). The
+  **absent** (never JSON `null` or `""` in live data — 3 324 records omit it, 691 have a string). The
   adapter coalesces a missing/non-string `content` to `""` via `typeof obj.content === 'string' ? … : ''`
-  (`antigravity.ts:486`) and then falls back to `thinking`. May carry `tool_calls`.
+  (`antigravity.ts:494`) and then falls back to `thinking`. May carry `tool_calls`.
 - **Tool-result records** (`VIEW_FILE`, `GREP_SEARCH`, `RUN_COMMAND`, `LIST_DIRECTORY`, `FIND`,
   `SEARCH_WEB`, `CODE_ACTION`) → `content` = tool output text (always a non-empty string).
 - **`CONVERSATION_HISTORY`** → no `content` key (history boundary marker).
-- **`ERROR_MESSAGE`** → `error` string; `content` is either a non-empty string (25 records) or the key is
+- **`ERROR_MESSAGE`** → `error` string; `content` is either a non-empty string (28 records) or the key is
   **absent** (12 records) — never `null`.
 
 ```json
@@ -308,12 +319,12 @@ Branch-A per-message timestamps are always `nil`.
 
 ### Branch A — N/A
 The cache contains **no tool calls and no tool results** (flattened away during sync). `toolMessageCount`
-is hard-coded `0` for Branch A (`AntigravityAdapter.swift:84`; TS `:324`).
+is hard-coded `0` for Branch A (`AntigravityAdapter.swift:84`; TS `:332`).
 
 ### Branch B — calls and results are SEPARATE records, linked only by ordering
 
 - **Call** = a `tool_calls[]` entry inside a `PLANNER_RESPONSE`.
-  - Observed object key-set is **always** `{args, name}` (3 865/3 865).
+  - Observed object key-set is **always** `{args, name}` (3 998/3 998).
   - `name` (string): the tool. `args` (object): tool-specific params; **every** tool also carries two UI
     strings `toolAction` + `toolSummary`.
 - **Result** = a *later, separate* record (`VIEW_FILE`, `RUN_COMMAND`, etc.) whose `content` is the output.
@@ -326,49 +337,47 @@ is hard-coded `0` for Branch A (`AntigravityAdapter.swift:84`; TS `:324`).
 
 | tool | n | `args` keys (besides `toolAction`,`toolSummary`) |
 |---|---:|---|
-| `view_file` | 1721 | `AbsolutePath, StartLine, EndLine, ContentOffset, IsSkillFile` |
-| `grep_search` | 1239 | `Query, SearchPath, Includes, IsRegex, CaseInsensitive, MatchPerLine` |
-| `list_dir` | 263 | `DirectoryPath` |
-| `run_command` | 144 | `CommandLine, Cwd, WaitMsBeforeAsync` |
+| `view_file` | 1776 | `AbsolutePath, StartLine, EndLine, ContentOffset, IsSkillFile` |
+| `grep_search` | 1251 | `Query, SearchPath, Includes, IsRegex, CaseInsensitive, MatchPerLine` |
+| `list_dir` | 293 | `DirectoryPath` |
+| `run_command` | 154 | `CommandLine, Cwd, WaitMsBeforeAsync` |
 | `find_by_name` | 102 | `Pattern, SearchDirectory, Excludes, Extensions, MaxDepth, Type` |
-| `send_message` | 91 | `Message, Recipient` |
+| `send_message` | 99 | `Message, Recipient` |
 | `search_web` | 91 | `query` |
 | `schedule` | 59 | `Prompt, CronExpression, DurationSeconds, TimerCondition` |
 | `replace_file_content` | 50 | `TargetFile, TargetContent, ReplacementContent, Instruction, StartLine, EndLine, AllowMultiple, Description` |
-| `write_to_file` | 29 | `TargetFile, CodeContent, Description, Overwrite, IsArtifact, ArtifactMetadata` |
-| `invoke_subagent` | 24 | `Subagents` |
+| `write_to_file` | 34 | `TargetFile, CodeContent, Description, Overwrite, IsArtifact, ArtifactMetadata` |
+| `invoke_subagent` | 30 | `Subagents` |
+| `define_subagent` | 22 | `name, description, system_prompt, enable_mcp_tools, enable_subagent_tools, enable_write_tools` |
 | `manage_task` | 21 | `Action, TaskId` |
-| `define_subagent` | 18 | `name, description, system_prompt, enable_mcp_tools, enable_subagent_tools, enable_write_tools` |
 | `list_permissions` | 4 | (only the two UI strings) |
+| `manage_subagents` | 4 | `Action` |
+| `Running_command` | 3 | (only the three UI strings) |
 | `call_mcp_tool` | 2 | `ServerName, ToolName, Arguments` |
 | `ask_permission` | 2 | `Action, Reason, Target` |
-| `manage_subagents` | 2 | `Action` |
-| `Running_command` | 2 | (only the two UI strings) |
 | `multi_replace_file_content` | 1 | `TargetFile, Description, Instruction, ReplacementChunks` |
 
 > **Correction vs. dimension reports:** DIM 2 listed ~11 tools; live data has **19** (adds 8:
 > `find_by_name`, `send_message`, `define_subagent`, `call_mcp_tool`, `ask_permission`,
 > `multi_replace_file_content`, `manage_subagents`, and a stray `Running_command`).
 
-### ⚠ Swift↔TS divergence on tool-result mapping (live-affecting)
+### Tool-result mapping: Swift↔TS aligned, but live vocabulary still outgrew the allowlist
 
 The Swift adapter's tool-result allowlist (`AntigravityAdapter.swift:362`) matches:
 `VIEW_FILE`, `TOOL_OUTPUT`, `COMMAND_OUTPUT`, `SHELL_OUTPUT`, `APPLY_PATCH`.
 
-But of those, **only `VIEW_FILE` actually occurs** in 143 live transcripts. `TOOL_OUTPUT` /
+The TS reference now uses the same allowlist (`antigravity.ts:28-34`, `:506-507`). Of those types,
+**only `VIEW_FILE` actually occurs** in 160 live transcripts. `TOOL_OUTPUT` /
 `COMMAND_OUTPUT` / `SHELL_OUTPUT` / `APPLY_PATCH` match **zero** live records (dead cases — an older or
 speculative schema vocabulary). Meanwhile the real result types (`RUN_COMMAND`, `GREP_SEARCH`,
-`LIST_DIRECTORY`, `FIND`, `SEARCH_WEB`, `CODE_ACTION` — ~1 900 records) hit the Swift `default: return nil`
-→ **dropped**.
+`LIST_DIRECTORY`, `FIND`, `SEARCH_WEB`, `CODE_ACTION` — 1 970 records) hit the `default: return nil`
+path in Swift and the shared TS allowlist miss path → **dropped**.
 
-The TS reference behaves differently: after `USER_INPUT`/`PLANNER_RESPONSE`, **any** record with
-non-empty `content` becomes `role:'tool'` (`antigravity.ts:498-499`). So TS counts `RUN_COMMAND`,
-`GREP_SEARCH`, `GENERIC`, `SYSTEM_MESSAGE`, etc. as tool messages; Swift does not.
-
-**Consequence:** for the same file, `toolMessageCount`, `messageCount`, and the streamed transcript
-**differ** between the shipped Swift product (≈ `VIEW_FILE` count only) and the TS reference (much higher).
-The parity fixture (`tests/fixtures/antigravity-cli/transcript.jsonl`) contains only
-`USER_INPUT`/`PLANNER_RESPONSE`/`VIEW_FILE`, so **CI does not exercise this divergence**.
+**Consequence:** Swift and TS now agree for the same file, but both preserve only the `VIEW_FILE`
+tool-result subset of the current live vocabulary. For the current local corpus this means 160 CLI
+transcripts map to 172 user messages, 4 015 assistant messages, and 1 747 tool messages (5 934 total);
+with the 2 303 Cascade cache message lines, the TS live smoke streams **8 237** Antigravity messages
+across 218 locators with 0 stream/count mismatches.
 
 ---
 
@@ -377,8 +386,8 @@ The parity fixture (`tests/fixtures/antigravity-cli/transcript.jsonl`) contains 
 - **Branch A:** N/A — no reasoning in the cache.
 - **Branch B:** stored as the `thinking` string on `PLANNER_RESPONSE`. The adapter uses it **only as a
   fallback** for assistant `content` when `content` is missing — live, the `content` key is simply absent
-  on tool-only planner steps (3 217 records), which the adapter coalesces to `""` and then replaces with
-  `thinking` (`:354`, TS `:489`). When a planner step has *both* `content` and `thinking`, the `thinking`
+  on tool-only planner steps (3 324 records), which the adapter coalesces to `""` and then replaces with
+  `thinking` (`:354`, TS `:497`). When a planner step has *both* `content` and `thinking`, the `thinking`
   is **discarded**.
 
 ---
@@ -399,8 +408,8 @@ The parity fixture (`tests/fixtures/antigravity-cli/transcript.jsonl`) contains 
 
 **N/A for Engram linkage — Antigravity's internal subagent structure is NOT used for Engram parent/child grouping.**
 
-- Branch B emits subagent records: `INVOKE_SUBAGENT` (24), and tool calls `invoke_subagent` (24),
-  `define_subagent` (18), `manage_subagents` (2). These mark Antigravity-internal subagent dispatch.
+- Branch B emits subagent records: `INVOKE_SUBAGENT` (27), and tool calls `invoke_subagent` (30),
+  `define_subagent` (22), `manage_subagents` (4). These mark Antigravity-internal subagent dispatch.
 - All of these are **dropped** by the adapter (`INVOKE_SUBAGENT` is not in any role allowlist;
   `invoke_subagent`/`define_subagent` survive only as `tool_calls` text on the planner step that emits
   them). Engram does **not** build `parent_session_id`/`suggested_parent_id` links from them.
@@ -415,10 +424,10 @@ The parity fixture (`tests/fixtures/antigravity-cli/transcript.jsonl`) contains 
 
 - **Branch A:** `summary` field in the meta line (AI-generated, from gRPC; present on 18/58 files). The
   adapter's session `summary` = first non-empty of `title` / `summary` / first-user-text, capped 200 chars
-  (`:71,86`; TS `:326-328`).
-- **Branch B:** no explicit summary field. The CLI emits `CONVERSATION_HISTORY` boundary markers (74) and
-  `CHECKPOINT` markers (5) which *resemble* compaction boundaries, but they are **dropped** by the adapter.
-  Session `summary` = first-user-text capped 200 chars (`:324`; TS `:474`).
+  (`:71,86`; TS `:334-336`).
+- **Branch B:** no explicit summary field. The CLI emits `CONVERSATION_HISTORY` boundary markers (84) and
+  `CHECKPOINT` markers (25) which *resemble* compaction boundaries, but they are **dropped** by the adapter.
+  Session `summary` = first-user-text capped 200 chars (`:324`; TS `:482`).
 - No true transcript compaction/rollover is performed by Engram for either branch.
 
 ---
@@ -486,7 +495,7 @@ message GetAllCascadeTrajectoriesResponse { map<string, CascadeTrajectorySummary
 |---|---|---|
 | `~/.gemini/antigravity/daemon/ls_<hex>.log` | Go language-server log | No (discovery only, when live) |
 | `~/.gemini/antigravity/agyhub_summaries_proto.pb`, `antigravity_state.pbtxt`, `user_settings.pb`, `installation_id`, `browserAllowlist.txt` | aggregate engine state | No |
-| `~/.gemini/antigravity-cli/brain/<uuid>/transcript_full.jsonl` | superset transcript (same schema), 128 dirs | **No** (never enumerated) |
+| `~/.gemini/antigravity-cli/brain/<uuid>/transcript_full.jsonl` | superset transcript (same schema), 145 dirs | **No** (never enumerated) |
 | `.../.system_generated/messages/<uuid>.json` | inter-agent message-bus blob. **Structurally varied.** Most files are a single message object — base keys `{id, sender, recipient, content, priority, renderDetails, timestamp}` plus optional `hideFromUser` (bool) and `sourceMetadata` (object); `renderDetails` is sometimes omitted. **But some files are a UUID-keyed MAP** of such message objects (top-level keys are bare message UUIDs, not field names), and a few are a tiny `{last_read_unix_nano}` cursor file. | **No** (richer than the JSONL, but ignored) |
 | `.../.system_generated/tasks/task-<n>.log` | task execution logs | No |
 | `<uuid>/implementation_plan.md`, `review_report.md` | user-visible artifacts | No |
@@ -500,41 +509,41 @@ message GetAllCascadeTrajectoriesResponse { map<string, CascadeTrajectorySummary
 
 | Engram field | Branch | Swift (`AntigravityAdapter.swift`) | TS (`antigravity.ts`) | Derivation |
 |---|---|---|---|---|
-| `id` | A | `:55,73` | `:250,316` | `meta.id` (UUID); fail if empty |
-| `id` | B | `:305` `cliSessionId` `:384-414` | `:461,520-544` | brain `<uuid>` dir name parsed from path; fallback = filename stem |
-| `source` | both | `:75` (`.antigravity`) | `:317` (`"antigravity"`) | constant |
-| `startTime` | A | `:76` | `:318` | `meta.createdAt` |
-| `startTime` | B | `:286-288,314` | `:452,464` | first record's `created_at` |
-| `endTime` | A | `:77` | `:319` | `meta.updatedAt` **only if ≠ createdAt**, else `nil` |
-| `endTime` | B | `:289-291,315` | `:453,467` | last record's `created_at`, only if ≠ start |
-| `cwd` | A | `:69,416-424` | `:295-313` | `meta.cwd` if present; else inferred from abs paths in first 50 KB |
-| `cwd` | B | `:316,416-424` | `:468,546-564` | always inferred (no cwd in transcript) |
+| `id` | A | `:55,73` | `:258,324` | `meta.id` (UUID); fail if empty |
+| `id` | B | `:305` `cliSessionId` `:384-414` | `:469,528-544` | brain `<uuid>` dir name parsed from path; fallback = filename stem |
+| `source` | both | `:75` (`.antigravity`) | `:325` (`"antigravity"`) | constant |
+| `startTime` | A | `:76` | `:326` | `meta.createdAt` |
+| `startTime` | B | `:286-288,314` | `:460,474` | first record's `created_at` |
+| `endTime` | A | `:77` | `:327` | `meta.updatedAt` **only if ≠ createdAt**, else `nil` |
+| `endTime` | B | `:289-291,315` | `:461,475` | last record's `created_at`, only if ≠ start |
+| `cwd` | A | `:69,416-423,430-511` | `:303-306,549-611` | `meta.cwd` if present; else inferred from plausible local absolute file paths in first 50 KB |
+| `cwd` | B | `:316,416-423,430-511` | `:462,540-611` | always inferred from plausible local absolute file paths (no cwd in transcript) |
 | `project` | both | `:79` (`nil`) | (absent) | never set — left to indexer |
 | `model` | both | `:80` (`nil`) | (absent) | never set (§9) |
-| `messageCount` | A | `:81` | `:321` | `userCount + assistantCount` |
-| `messageCount` | B | `:319` | `:469` | `user + assistant + tool` |
-| `userMessageCount` | A | `:63,82` | `:283-285,322` | `role=="user"` cache lines |
-| `userMessageCount` | B | `:293-295,321` | `:454-456,471` | `USER_INPUT` count |
-| `assistantMessageCount` | A | `:64,83` | `:286,323` | `role=="assistant"` count |
-| `assistantMessageCount` | B | `:296-297,322` | `:457,472` | `PLANNER_RESPONSE` count |
-| `toolMessageCount` | A | `:84` (`=0`) | `:324` (`=0`) | always 0 |
-| `toolMessageCount` | B | `:298-299,323` | `:458,473` | mapped tool records (**Swift: ≈VIEW_FILE only; TS: all content-bearing other types** — §7) |
-| `systemMessageCount` | both | `:85,323` (`=0`) | `:325,473` (`=0`) | always 0 |
-| `summary` | A | `:71,86` | `:326-328` | `title` ?? `summary` ?? firstUserText, trunc 200 |
-| `summary` | B | `:324` | `:474` | firstUserText, trunc 200 |
-| `filePath` | both | `:87,326` | `:329,475` | the `.jsonl` locator path |
-| `sizeBytes` | A | `:88,233-245` | `:259-268,330` | `meta.pbSizeBytes` if >0; else stat `.pb`; else stat cache file |
-| `sizeBytes` | B | `:326` | `:439,476` | stat of the transcript file |
+| `messageCount` | A | `:81` | `:329` | `userCount + assistantCount` |
+| `messageCount` | B | `:319` | `:477` | `user + assistant + tool` |
+| `userMessageCount` | A | `:63,82` | `:291-293,330` | `role=="user"` cache lines |
+| `userMessageCount` | B | `:293-295,321` | `:462-464,478` | `USER_INPUT` count |
+| `assistantMessageCount` | A | `:64,83` | `:294-295,331` | `role=="assistant"` count |
+| `assistantMessageCount` | B | `:296-297,322` | `:465,479` | `PLANNER_RESPONSE` count |
+| `toolMessageCount` | A | `:84` (`=0`) | `:332` (`=0`) | always 0 |
+| `toolMessageCount` | B | `:298-299,323` | `:466,480` | mapped allowlisted tool records (live: `VIEW_FILE` only — §7) |
+| `systemMessageCount` | both | `:85,323` (`=0`) | `:333,481` (`=0`) | always 0 |
+| `summary` | A | `:71,86` | `:334-336` | `title` ?? `summary` ?? firstUserText, trunc 200 |
+| `summary` | B | `:324` | `:482` | firstUserText, trunc 200 |
+| `filePath` | both | `:87,326` | `:337,483` | the `.jsonl` locator path |
+| `sizeBytes` | A | `:88,233-245` | `:267-275,338` | `meta.pbSizeBytes` if >0; else stat `.pb`; else stat cache file |
+| `sizeBytes` | B | `:326` | `:447,484` | stat of the transcript file |
 | `NormalizedMessage.usage` | both | `:360` (`nil`) | not set | never set (§9) |
-| `NormalizedToolCall` | B | `cliToolCalls` `:370-382` `{name, input=jsonString(args,500), output:nil}` | `:502-518` `{name, input=truncateJSON(args,500)}` | call only; **no output linkage** |
+| `NormalizedToolCall` | B | `cliToolCalls` `:370-382` `{name, input=jsonString(args,500), output:nil}` | `:510-526` `{name, input=truncateJSON(args,500)}` | call only; **no output linkage** |
 | `agentRole`/`originator`/`origin`/`parentSessionId`/`suggestedParentId`/`tier`/`qualityScore`/`indexedAt`/`summaryMessageCount` | both | `:89-97,327-335` all `nil` | (absent) | left to indexer / parent-detection / tiering |
 
 **Discovery & routing helpers:**
-- `detect()` (`:36-40`; TS `:51-68`): true if any of `daemonDir`, `cacheDir`, `cliBrainDir` exists.
+- `detect()` (`:36-40`; TS `:59-76`): true if any of `daemonDir`, `cacheDir`, `cliBrainDir` exists.
 - `listSessionLocators()` (`:42-45`): `sync()` then sorted union of cache `.jsonl` locators
   (`CascadeCacheSupport.jsonlLocators`, `WindsurfAdapter.swift:6-11`) + CLI transcript locators
   (`cliTranscriptLocators`, `:247-260`).
-- `isCLITranscript()` (`:262-270`; TS `:424-433`): path under `brain/` root, OR matches
+- `isCLITranscript()` (`:262-270`; TS `:432-441`): path under `brain/` root, OR matches
   `…/.gemini/antigravity-cli/brain/…/.system_generated/logs/transcript.jsonl`.
 
 ---
@@ -584,39 +593,46 @@ back to `.antigravity` (`EngramServiceReadProvider.swift:1017`; also `Transcript
 1. **Product = cache-only (Branch A) / live (Branch B).** With `enableLiveSync:false`, Branch A surfaces
    only cache files written earlier by the non-product TS path. A clean Swift-only install with no prior
    TS run → **no IDE Cascade sessions**, only CLI brain transcripts; the `.pb` files sit untouched.
-2. **Swift↔TS Branch-B divergence (live, uncovered by CI).** §7 — TS counts every content-bearing
-   non-USER/non-PLANNER record as a tool message; Swift maps only `VIEW_FILE` (plus 3 dead types). Tool
-   counts and streamed content differ for the same file; the parity fixture contains none of the
-   divergent types.
-3. **Dead Swift switch cases = version drift.** `TOOL_OUTPUT` / `COMMAND_OUTPUT` / `SHELL_OUTPUT` /
-   `APPLY_PATCH` (`:362`) match **zero** live records. Real tool outputs (`RUN_COMMAND`, `GREP_SEARCH`,
-   `CODE_ACTION`, …) are unhandled — the adapter parses an outdated record-type vocabulary.
-4. **`cwd` inference differs Swift vs TS.** TS uses a **hard-coded `/Users/<user>/-Code-/<project>` regex**
-   (`antigravity.ts:299,311,550,559`) tied to this user's directory layout — wrong on any non-`-Code-`
-   layout. Swift replaced it with a **generic most-frequent-directory heuristic**
-   (`inferCWDFromAbsolutePaths`, `:430-455`) that makes no assumption about the user. Inferred cwd will
-   differ for the same file; the Swift one is the portable/correct one.
-5. **`createdAt === updatedAt` → no `endTime`.** Common for short conversations; Engram then has only a
-   start time (`:77`, `:319`).
-6. **`pbSizeBytes` vs cache size mismatch.** `sizeBytes` reports the `.pb` size (KB → tens of MB, one
+2. **Swift↔TS Branch-B mapping is aligned now, but narrow.** §7 — both adapters map only the fixed
+   tool-result allowlist; in the current live corpus that means only `VIEW_FILE` is preserved as a tool
+   message. Real tool outputs (`RUN_COMMAND`, `GREP_SEARCH`, `CODE_ACTION`, …) remain unhandled by both.
+3. **Dead allowlist cases = version drift.** `TOOL_OUTPUT` / `COMMAND_OUTPUT` / `SHELL_OUTPUT` /
+   `APPLY_PATCH` (`:362`, TS `:30-33`) match **zero** live records. The allowlist still reflects an older
+   or speculative record vocabulary.
+4. **`cwd` inference is aligned now, but intentionally conservative.** Swift and TS both use a generic
+   most-frequent-directory heuristic (`inferCWDFromAbsolutePaths`, Swift `:430-511`; TS `:549-611`) rather
+   than the old hard-coded `/Users/<user>/-Code-/<project>` pattern. Both adapters reject JSON-escaped
+   paths, markup-like slash tokens, URL/localhost fragments, route/menu-looking paths, dependency/cache
+   components such as `node_modules`, and candidates without a file-like leaf. This avoids false cwd values
+   such as `/github.com/bbingz`, `/localhost:5173`, `/CI`, and `/components/ui`; it may return `""` when a
+   transcript mentions only directories and no plausible local file path. The 2026-07-02 live smoke did
+   return 3 plausible local source directories ending in `/src/components`; those are valid local-path
+   candidates and should not be grouped with route/menu false positives.
+5. **Live DB still contains old cwd snapshots.** The 2026-07-02 live smoke parsed all 218 current
+   Antigravity locators with 0 stream/count mismatches, 0 missing current ids, and 0 DB-only ids, but the
+   existing DB still has 128 Antigravity rows whose stored cwd came from the older broad heuristic. A
+   current-worktree reindex is needed to refresh those rows.
+6. **`createdAt === updatedAt` → no `endTime`.** Common for short conversations; Engram then has only a
+   start time (`:77`, TS `:327`).
+7. **`pbSizeBytes` vs cache size mismatch.** `sizeBytes` reports the `.pb` size (KB → tens of MB, one
    live file 25.9 MB) while the cache `.jsonl` is a few KB. Size-based UI/sorting reflects the full
    conversation, not the stored text. Cache files ≤ 200 bytes are treated as "no content" by the freshness
-   gate (`:188,220-223`; TS `:95,174`).
-7. **gRPC list returns only ~10 recent** (TS comment `:140,148`); `syncFromPbFiles` backfills the rest —
+   gate (`:188,220-223`; TS `:103,182`).
+8. **gRPC list returns only ~10 recent** (TS comment `:148,156`); `syncFromPbFiles` backfills the rest —
    but only in the live-sync (non-product) path.
-8. **`getTrajectoryMessages` flattens to user/assistant text only** (`CascadeClient.swift:55-90`): only
+9. **`getTrajectoryMessages` flattens to user/assistant text only** (`CascadeClient.swift:55-90`): only
    `USER_INPUT`/`PLANNER_RESPONSE`/`NOTIFY_USER` steps → messages; all tool/file steps in the trajectory
    are dropped at the gRPC boundary. So even live sync loses Branch-A tool calls.
-9. **Three-tier content fallback (Branch A sync):** trajectory messages → markdown (`## User`/`## Cascade`)
-   → conversation summary as a single assistant message (Swift `:153-161`; TS `:103-112`). A cache file
+10. **Three-tier content fallback (Branch A sync):** trajectory messages → markdown (`## User`/`## Cascade`)
+   → conversation summary as a single assistant message (Swift `:153-161`; TS `:111-120`). A cache file
    may therefore contain only one synthetic assistant line.
-10. **Zero token/cost contribution** (§9) — Antigravity sessions show as zero-cost in any cost dashboard.
-11. **Richer per-message JSON ignored.** `.system_generated/messages/*.json` (base keys
+11. **Zero token/cost contribution** (§9) — Antigravity sessions show as zero-cost in any cost dashboard.
+12. **Richer per-message JSON ignored.** `.system_generated/messages/*.json` (base keys
     `{id, sender, recipient, content, priority, renderDetails, timestamp}` plus optional `hideFromUser`
     and `sourceMetadata`; some files are instead a UUID-keyed MAP of such objects — see §13/§16.9) hold
     more structure than the flattened `transcript.jsonl`, but the adapter reads only the JSONL. Future
     fidelity work should target these (and may close the timestamp gap).
-12. **`status:"ERROR"` exists** (85 live records) beyond DONE/RUNNING — the adapter does not branch on
+13. **`status:"ERROR"` exists** (85 live records) beyond DONE/RUNNING — the adapter does not branch on
     `status` at all, so error/running steps are parsed by `type` like any other.
 
 ### 15.3 Open questions / resolved (web-confirmed 2026-06-21)
@@ -646,9 +662,10 @@ back to `.antigravity` (`EngramServiceReadProvider.swift:1017`; also `Transcript
   official CLI repo, the codelab, and the leaked CLI system prompt all enumerate `USER_INPUT`,
   `PLANNER_RESPONSE`, `CONVERSATION_HISTORY`, `SEARCH_WEB`, `VIEW_FILE`, … but none of these four; absence
   is not proof they never existed.)**
-- **Intended Swift↔TS Branch-B behavior** — should Swift adopt TS's generic tool fallback, or is dropping
-  correct? Ambiguous; not exercised by the parity fixture. **(Engram-internal design — not
-  web-verifiable.)**
+- **Intended Antigravity Branch-B tool-result coverage** — should both adapters expand beyond `VIEW_FILE`
+  to preserve current live result types such as `RUN_COMMAND` and `GREP_SEARCH`, or is dropping those
+  noisy tool outputs intentional? Ambiguous; the adapters are now aligned, but the product policy remains
+  an Engram-internal design question and is not web-verifiable.
 - **Fixture `timestamp`** on cache message lines (`conv-001.jsonl`) — no live cache file has it and
   `writeCache` cannot produce it; whether the fixture is stale/aspirational or reflects an older cache
   format is unconfirmed. **(Engram-internal design — not web-verifiable: this is an Engram-owned cache file

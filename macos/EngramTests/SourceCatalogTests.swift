@@ -4,8 +4,11 @@ import XCTest
 final class SourceCatalogTests: XCTestCase {
     // MARK: - Catalog shape
 
-    func testCatalogHasSeventeenEntries() {
-        XCTAssertEqual(SourceCatalog.all.count, 17)
+    func testCatalogMatchesRegisteredSourceNames() {
+        let catalogIDs = Set(SourceCatalog.all.map(\.id))
+        let sourceIDs = Set(SourceName.allCases.map(\.rawValue))
+        XCTAssertEqual(catalogIDs, sourceIDs)
+        XCTAssertEqual(SourceCatalog.all.count, SourceName.allCases.count)
     }
 
     func testCatalogIDsAreUnique() {

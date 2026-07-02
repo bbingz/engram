@@ -119,7 +119,20 @@ export class ClineAdapter implements SessionAdapter {
     for (const m of msgs) {
       if (yielded >= limit) break;
       if (m.say === 'api_req_started') {
-        pendingUsage = this.apiRequestUsage(m);
+        const usage = this.apiRequestUsage(m);
+        if (usage) {
+          pendingUsage = {
+            inputTokens: (pendingUsage?.inputTokens ?? 0) + usage.inputTokens,
+            outputTokens:
+              (pendingUsage?.outputTokens ?? 0) + usage.outputTokens,
+            cacheReadTokens:
+              (pendingUsage?.cacheReadTokens ?? 0) +
+              (usage.cacheReadTokens ?? 0),
+            cacheCreationTokens:
+              (pendingUsage?.cacheCreationTokens ?? 0) +
+              (usage.cacheCreationTokens ?? 0),
+          };
+        }
         continue;
       }
       if (

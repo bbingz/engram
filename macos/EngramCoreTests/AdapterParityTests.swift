@@ -155,6 +155,7 @@ final class AdapterParityTests: XCTestCase {
                 kimiJsonPath: fixtureRoot.appendingPathComponent("kimi/input/kimi.json").path
             ),
             OpenCodeAdapter(dbPath: fixtureRoot.appendingPathComponent("opencode/input/sample.db").path),
+            PiAdapter(sessionsRoot: fixtureRoot.appendingPathComponent("pi/input").path),
             QoderAdapter(projectsRoot: fixtureRoot.appendingPathComponent("qoder/input").path),
             QwenAdapter(projectsRoot: fixtureRoot.appendingPathComponent("qwen/input").path),
             VsCodeAdapter(workspaceStorageDir: fixtureRoot.appendingPathComponent("vscode/input").path),
@@ -175,6 +176,7 @@ final class AdapterParityTests: XCTestCase {
             .iflow,
             .kimi,
             .opencode,
+            .pi,
             .qoder,
             .qwen,
             .vscode,

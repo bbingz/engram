@@ -1,24 +1,47 @@
 # CommandCode Session Format
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-02 (Engram provider audit recheck; npm latest checked 0.40.17)
 
 > **Evidence basis.** This doc was assembled from TWO sources of truth, cross-checked, with REAL data winning on conflict:
-> 1. **LIVE on-disk store** at `~/.commandcode/` — **11 project directories**, **29 session `.jsonl` files** (excluding checkpoints), **21 `.checkpoints.jsonl` files**, **18 `.meta.json` files**, **1,385 message records** (all `metadata.version: 2`), plus CLI-global files (`config.json`, `auth.json`, `history.jsonl`, `updates.json`, `trusted-hooks.json`, `plans/`, `file-history/`).
+> 1. **LIVE on-disk store** at `~/.commandcode/` — **14 project directories**, **39 session `.jsonl` files** (excluding checkpoints), **27 `.checkpoints.jsonl` files**, **23 `.meta.json` files**, **1,541 message records** (all `metadata.version: 2`), plus CLI-global files (`config.json`, `auth.json`, `history.jsonl`, `updates.json`, `trusted-hooks.json`, `plans/`, `file-history/`).
 > 2. **Repo fixture** `/Users/bing/-Code-/engram/tests/fixtures/commandcode/sample.jsonl` (1 file, 3 records).
 > 3. **Engram adapters** (codified knowledge): Swift product parser `macos/Shared/EngramCore/Adapters/Sources/CommandCodeAdapter.swift`; TS reference parser `src/adapters/commandcode.ts`.
 >
-> Every schema/field claim below was re-verified against the live store on 2026-06-21 (top-level keysets, metadata keysets, content-block type counts, tool input/output types, role distribution). Discrepancies between live data, the fixture, and the adapters are flagged inline.
+> Every live schema/field claim below was re-verified against the live store on 2026-07-02 (top-level keysets, metadata keysets, content-block type counts, tool input/output types, role distribution). Official-source notes were originally deep-checked against the npm bundle, and the latest npm version was rechecked as `command-code@0.40.17` on 2026-07-02. Discrepancies between live data, the fixture, and the adapters are flagged inline.
+
+## Current Local Audit
+
+2026-07-02 native `~/.commandcode/projects` smoke listed and parsed 39/39
+session JSONL files across 14 project dirs, excluding 27 `.checkpoints.jsonl`
+sidecars and 23 `.meta.json` files. Raw scan found 1,541 transcript records, 0
+malformed lines, 92 `user`, 1,016 `assistant`, and 433 `tool` records; one
+user record is a Claude-style system injection, so the adapter streams 1,540
+messages (91 user + 1,016 assistant + 433 tool) with 0 parser/stream count
+mismatches. The current content-block histogram remains `text` x857,
+`reasoning` x243, `tool-call` x705, `tool-result` x705, and `image` x4; current
+tool-call input is 703 object + 2 string + 0 `args`, and all 705 tool-result
+outputs are objects.
+
+Current `~/.engram/index.sqlite` still has locator/index closure: 39
+`commandcode` rows, 39 `file_index_state` rows, all `ok` at schema v1, 0
+missing locators, and 0 DB-only rows; latest `indexed_at` remains
+`2026-07-01T04:54:19Z`. Field comparison is broader than the older count-only
+wording: all 39 rows retain decoded `project` snapshots even though the current
+adapter returns `project: nil`; the prior 3 appended-session rows also remain
+stale for `end_time`, `message_count`, `assistant_message_count`,
+`tool_message_count`, and `size_bytes`. Reindex is needed to refresh the 39
+project snapshots and the 3 count/end/size snapshots.
 
 ---
 
 ## 1. Overview & TL;DR
 
-**CommandCode** (provider string `command-code`) is a **multi-provider CLI AI coding agent** — the agent shell is the "provider", and the underlying LLM is configurable (live `config.json` carries `deepseek/deepseek-v4-pro`; per-session `.meta.json` files carry `Qwen/Qwen3.7-Max`, `deepseek/deepseek-v4-pro`). Engram treats it as a single source named `commandcode`.
+**CommandCode** (provider string `command-code`) is a **multi-provider CLI AI coding agent** — the agent shell is the "provider", and the underlying LLM is configurable (live `config.json` carries `deepseek/deepseek-v4-pro`; per-session `.meta.json` files carry `Qwen/Qwen3.7-Max`, `deepseek/deepseek-v4-pro`). Engram treats it as a single source named `commandcode`. Latest npm version checked on 2026-07-02: `0.40.17`.
 
 **What/where/how saved:**
 - **What:** one JSONL transcript per session, one JSON record per line, one record per message turn (`user` / `assistant` / `tool`).
 - **Where:** `~/.commandcode/projects/<projectSlug>/<sessionId>.jsonl`, one directory per working directory (cwd), one UUID-named file per session.
-- **How:** line-delimited JSON (JSONL); in current CommandCode (v0.40.0) each save is a full atomic file rewrite (whole array re-serialized, ids regenerated), not an append — see §3. No rollover. Per-session sidecars (`.meta.json` title/model, `.checkpoints.jsonl` file-history snapshots) and a separate `file-history/<sessionId>/` blob store hold UX/restore state.
+- **How:** line-delimited JSON (JSONL); in current CommandCode (latest checked v0.40.17) each save is a full atomic file rewrite (whole array re-serialized, ids regenerated), not an append — see §3. No rollover. Per-session sidecars (`.meta.json` title/model, `.checkpoints.jsonl` file-history snapshots) and a separate `file-history/<sessionId>/` blob store hold UX/restore state.
 
 **Mental model:** CommandCode is a **Claude-Code clone at the on-disk layout layer** (`~/.<tool>/projects/<path-encoded-cwd>/<uuid>.jsonl` + sibling `.checkpoints.jsonl` + identical Claude-style system-injection markers) but a **Vercel-AI-SDK-style dialect at the content-block layer** (`type: "tool-call"` with `toolName`+`input`, `type: "tool-result"` with `output`, `type: "reasoning"`). See §15 lineage.
 
@@ -63,7 +86,7 @@ Two distinct nesting layers matter throughout this doc:
 | `~/.commandcode/` | dir | no | CLI-global root |
 | `~/.commandcode/projects/` | dir | **yes — enumerated** | sessions root; `detect()` is true iff this is a directory |
 | `~/.commandcode/projects/<projectSlug>/` | dir | yes (enumerated) | one dir per working directory (cwd) |
-| `<projectSlug>/<sessionId>.jsonl` | **JSONL transcript** | **YES — the session** | append-only message log |
+| `<projectSlug>/<sessionId>.jsonl` | **JSONL transcript** | **YES — the session** | per-session transcript; current writer rewrites the whole file atomically |
 | `<projectSlug>/<sessionId>.checkpoints.jsonl` | JSONL | **NO — explicitly excluded** | file-history snapshots (undo/restore) |
 | `<projectSlug>/<sessionId>.meta.json` | JSON | NO | session `title` (+ optional `model`) |
 | `<projectSlug>/settings.json` | JSON | NO | per-project UX flags (e.g. `tasteOnboarding`) |
@@ -85,7 +108,7 @@ Two distinct nesting layers matter throughout this doc:
 | Meta file | `<uuid>.meta.json` | as above | not read |
 | File-history blob | `<contentHash>-<seq>@v<N>` | `a0aed1deec1d862c-53@v2` | `@vN` increments per edit |
 
-**cwd decode** (`decodeCwd`, Swift `:226-233` / `decodeCwdFromLocator`, TS `:183-190`): replace `--`→`\0`, `-`→`/`, `\0`→`-`. Used **only as a fallback** when no record carries `cwd`. In live data `cwd` is never on a record (0/1,385), so the decoded slug is ALWAYS the cwd source — and it is approximate, not a faithful path (e.g. `users-bing-net-work-safeline` → `users/bing/net/work/safeline`, losing the leading slash and any literal hyphens). No live project dir contains `--`, so the double-dash escape path is exercised only by synthetic tests.
+**cwd decode** (`decodeCwd`, Swift `:226-233` / `decodeCwdFromLocator`, TS `:183-190`): replace `--`→`\0`, `-`→`/`, `\0`→`-`. Used **only as a fallback** when no record carries `cwd`. In live data `cwd` is never on a record (0/1,541), so the decoded slug is ALWAYS the cwd source — and it is approximate, not a faithful path (e.g. `users-bing-net-work-safeline` → `users/bing/net/work/safeline`, losing the leading slash and any literal hyphens). No live project dir contains `--`, so the double-dash escape path is exercised only by synthetic tests.
 
 ### Live tree example (anonymized)
 
@@ -122,10 +145,10 @@ Two distinct nesting layers matter throughout this doc:
 ## 3. File lifecycle & generation
 
 - **Storage tech: line-delimited JSON (JSONL).** One record per line; this is a file store, not a DB. (`JSONLAdapterSupport.readObjects` Swift `:38`; `readLines` TS `:156`.)
-- **Write model: full atomic rewrite, NOT append.** Corrected (official): current CommandCode (v0.40.0) re-serializes the **entire** in-memory message array on every save, writes `<file>.<pid>.tmp`, and renames over the session `.jsonl` (full atomic file rewrite). Each save regenerates **all** record `id`s (fresh `crypto.randomUUID()`) and recomputes `parentId` from `this.lastMessageId`, which starts `null` and is never seeded from resumed data — so record `id`s/`parentId`s are NOT stable across saves, and the first record's `parentId` is `null`. `appendFile` is used only for logs, hook audit, and the global `history.jsonl` — never for the session transcript. The append-only + monotonic-id + non-null-first-`parentId` behavior the live store shows reflects an OLDER CommandCode build; the on-disk RESULT is unchanged (one JSONL file per session, same 8-key envelope), so downstream parsing is unaffected. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz))
+- **Write model: full atomic rewrite, NOT append.** Corrected (official): current CommandCode (latest checked v0.40.17) re-serializes the **entire** in-memory message array on every save, writes `<file>.<pid>.tmp`, and renames over the session `.jsonl` (full atomic file rewrite). Each save regenerates **all** record `id`s (fresh `crypto.randomUUID()`) and recomputes `parentId` from `this.lastMessageId`, which starts `null` and is never seeded from resumed data — so record `id`s/`parentId`s are NOT stable across saves, and the first record's `parentId` is `null`. `appendFile` is used only for logs, hook audit, and the global `history.jsonl` — never for the session transcript. The append-only + monotonic-id + non-null-first-`parentId` behavior most of this live store shows reflects OLDER CommandCode builds; the on-disk RESULT is unchanged (one JSONL file per session, same 8-key envelope), so downstream parsing is unaffected. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz))
 - **DB vs file:** **file** — no SQLite, leveldb, or gRPC cache for transcripts. (Contrast with Cursor/VS Code/Copilot/Cline — see §12.)
 - **File per session, dir per cwd:** one UUID-named `.jsonl` per session; sessions for the same cwd cluster under one `projectSlug` directory. The writer guarantees the filename stem always equals the file's own `sessionId`.
-- **Resume / linked-list continuation:** records form a `parentId` chain (linked DAG) WITHIN a file. The live store's **first record's `parentId` being non-null and pointing to an id NOT present in that file** reflects the older appending build; in current source `parentId` is an intra-file chain only and the first record's `parentId` is `null` (as the **fixture** root shows). CommandCode does NOT thread `parentId` across resumed files. (See §15, resolved.)
+- **Resume / linked-list continuation:** records form a `parentId` chain (linked DAG) WITHIN a file. The live store still has **38/39 files whose first record's `parentId` is non-null and points to an id NOT present in that file**, reflecting older appending builds; 1/39 files now has a `null` first `parentId`, matching current source and the fixture. CommandCode does NOT thread `parentId` across resumed files. (See §15, resolved.)
 - **No rollover:** files are not size- or time-rotated; a session is one file start to finish (largest live transcript ≈ 462 KB / 473,116 bytes).
 - **Sidecar lifecycle:** `.meta.json` (title/model) and `.checkpoints.jsonl` (file-history) are written alongside each session; `file-history/<sessionId>/` accumulates versioned blobs (`@v1, @v2, …`) as files are edited during the session.
 - **No archive tier on disk:** no separate archived/compacted location; old sessions simply remain in `projects/`.
@@ -140,9 +163,9 @@ CommandCode is JSONL-backed (not DB-backed), so the taxonomy is **record/line ty
 
 | Record kind | Discriminator | Count (live) | Purpose | Engram handling |
 |---|---|---|---|---|
-| user message | `role: "user"` | 80 | human prompt OR injected system wrapper | counted as user, or reclassified as system if `isSystemInjection` matches |
-| assistant message | `role: "assistant"` | 940 | model reply (text / reasoning / tool-call) | counted as assistant |
-| tool message | `role: "tool"` | 365 | tool execution results | counted as tool |
+| user message | `role: "user"` | 92 | human prompt OR injected system wrapper | counted as user, or reclassified as system if `isSystemInjection` matches |
+| assistant message | `role: "assistant"` | 1,016 | model reply (text / reasoning / tool-call) | counted as assistant |
+| tool message | `role: "tool"` | 433 | tool execution results | counted as tool |
 | (any other role) | — | 0 | — | **dropped** (Swift `:53-55`, TS `:72-73`) |
 
 There is **no `system` role on disk.** Engram derives `systemMessageCount` by reclassifying `user` records whose extracted text matches Claude-style injected wrappers (`isSystemInjection`, Swift `:168-178` / TS `:230-242`).
@@ -151,7 +174,7 @@ There is **no `system` role on disk.** Engram derives `systemMessageCount` by re
 
 | File | Record kind | Discriminator | Purpose |
 |---|---|---|---|
-| `.checkpoints.jsonl` | file-history snapshot | `type: "file-history-snapshot"` (only value seen, 65/65) | undo/restore anchor → backup blobs in `file-history/` |
+| `.checkpoints.jsonl` | file-history snapshot | `type: "file-history-snapshot"` (only value seen, 73/73) | undo/restore anchor → backup blobs in `file-history/` |
 | `history.jsonl` | global prompt entry | `{p, t}` | cross-session prompt history |
 | `.meta.json` | session metadata | `{title, model?}` (single object, not JSONL) | human title + optional model |
 
@@ -159,7 +182,7 @@ There is **no `system` role on disk.** Engram derives `systemMessageCount` by re
 
 ## 5. Shared envelope / metadata fields
 
-Every transcript record has **exactly 8 top-level keys** — verified uniform across all 1,385 live records (`["content","gitBranch","id","metadata","parentId","role","sessionId","timestamp"]`). The envelope is identical for all three roles. There are **no optional top-level keys in live data**.
+Every transcript record has **exactly 8 top-level keys** — verified uniform across all 1,541 live records (`["content","gitBranch","id","metadata","parentId","role","sessionId","timestamp"]`). The envelope is identical for all three roles. There are **no optional top-level keys in live data**.
 
 ### Record envelope (outer / record layer)
 
@@ -167,64 +190,65 @@ Every transcript record has **exactly 8 top-level keys** — verified uniform ac
 |---|---|---|---|---|
 | `id` | string (UUID) | per-message id; target of the next record's `parentId` | no | `"d6d46e72-aa15-4049-8c26-84c15207258c"` |
 | `sessionId` | string (UUID) | owning session; first non-empty seeds `SessionInfo.id` | no | `"400d4036-a1e4-4a22-b24a-9ebc7db0871c"` |
-| `parentId` | string \| null | id of the preceding message in the same file (intra-file chain); tool record's `parentId` = the assistant record's `id`. Corrected (official): in v0.40.0 the writer recomputes this from `lastMessageId` (starts `null`, never seeded from resume), so the first record's `parentId` is `null` ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz)) | no | current/fixture root: `null`; older-build live store: `"410a7034-…"` (non-null) |
+| `parentId` | string \| null | id of the preceding message in the same file (intra-file chain); tool record's `parentId` = the assistant record's `id`. Corrected (official): in latest-checked v0.40.17 the writer recomputes this from `lastMessageId` (starts `null`, never seeded from resume), so the first record's `parentId` is `null` ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz)) | no | current/fixture root: `null`; older-build live store: `"410a7034-…"` (non-null) |
 | `role` | enum `user`\|`assistant`\|`tool` | message author (no `system` role on disk) | no | `"assistant"` |
 | `timestamp` | string (ISO-8601 UTC) | record wall-clock time; monotonic within file; duplicated in `metadata.timestamp` (always equal) | no | `"2026-05-25T01:56:44.064Z"` |
 | `gitBranch` | string | git branch at capture time; `"-"` when not in a repo | no | `"main"` |
-| `content` | array \| string | message payload (see §6); array in 1,371/1,385, bare string in 14 (user only) | no | `[ {type:"text",…} ]` |
+| `content` | array \| string | message payload (see §6); array in 1,521/1,541, bare string in 20 (user only) | no | `[ {type:"text",…} ]` |
 | `metadata` | object | per-record provenance envelope (see below) | no | `{source,timestamp,version,…}` |
-| `cwd` | string | working dir | **YES — absent in all live records (0/1,385)**; present in fixture | (live: never) |
-| `model` | string | model id | **YES — absent in all live records (0/1,385)**; present in fixture (assistant only) | (live: never) |
+| `cwd` | string | working dir | **YES — absent in all live records (0/1,541)**; present in fixture | (live: never) |
+| `model` | string | model id | **YES — absent in all live records (0/1,541)**; present in fixture (assistant only) | (live: never) |
 
 > The adapter timestamp resolver reads top-level `timestamp` first, then `metadata.timestamp` (Swift `:159-164` / TS `:175-181`). The model resolver reads top-level `model`, then `metadata.model` (Swift `:62-67` / TS `:76-79`) — **neither path exists in live v2 data**, so `model` resolves to `nil` for live CommandCode sessions.
 
 ### `metadata` sub-object
 
-`metadata` is always present. 5 observed key-set variants (live); union of all keys:
+`metadata` is always present. 6 observed key-set variants (live); union of all keys:
 
-| Field | Type | Meaning | Optional (freq of 1,385) | Example |
+| Field | Type | Meaning | Optional (freq of 1,541) | Example |
 |---|---|---|---|---|
-| `source` | string | origin channel; constant `"cli"` | always (1385) | `"cli"` |
-| `timestamp` | string (ISO) | mirror of top-level `timestamp` (always equal); adapter fallback | always (1385) | `"2026-05-25T01:56:44.064Z"` |
-| `version` | int | record schema version; constant `2` | always (1385) | `2` |
-| `messageId` | string (UUID) | provider/UI message id (the schema field carried through); checkpoints anchor to it via `snapshot.messageId`. **always differs from top-level `id`** (66/66) | optional (66) | `"685c1246-b555-4593-b068-4be3f4d72303"` |
-| `entrypoint` | string | invocation mode; the **only** value the source defines is `"print"` (constant `Oh="print"`), assigned solely by `resolvePrintSession()` for headless one-shot `--print`/`-p`. Interactive sessions write NO `entrypoint` key. Corrected (official) ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz)) | optional (16) | `"print"` |
-| `isAutomated` | bool | machine-generated / injected turn; the CLI sets it on automated slash-command prompts (`isAutomatedSlashCommandPrompt`) and similar non-human turns. Confirmed (official) ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz)) | rare (2) | `true` |
-| `isMeta` | bool | meta turn (`createMessageWithMeta`/`sanitizeMessage` paths, e.g. empty-content meta turns). Confirmed (official) ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz)) | rare (1) | `true` |
+| `source` | string | origin channel; constant `"cli"` | always (1,541) | `"cli"` |
+| `timestamp` | string (ISO) | mirror of top-level `timestamp` (always equal); adapter fallback | always (1,541) | `"2026-05-25T01:56:44.064Z"` |
+| `version` | int | record schema version; constant `2` | always (1,541) | `2` |
+| `messageId` | string (UUID) | provider/UI message id (the schema field carried through); checkpoints anchor to it via `snapshot.messageId`. **always differs from top-level `id`** (73/73) | optional (73) | `"685c1246-b555-4593-b068-4be3f4d72303"` |
+| `entrypoint` | string | invocation mode; the **only** value the source defines is `"print"` (constant `Oh="print"`), assigned solely by `resolvePrintSession()` for headless one-shot `--print`/`-p`. Interactive sessions write NO `entrypoint` key. Corrected (official) ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz)) | optional (24) | `"print"` |
+| `isAutomated` | bool | machine-generated / injected turn; the CLI sets it on automated slash-command prompts (`isAutomatedSlashCommandPrompt`) and similar non-human turns. Confirmed (official) ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz)) | rare (4) | `true` |
+| `isMeta` | bool | meta turn (`createMessageWithMeta`/`sanitizeMessage` paths, e.g. empty-content meta turns). Confirmed (official) ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz)) | rare (2) | `true` |
 
 Observed metadata key-set frequencies (live):
 ```
-1302  ["source","timestamp","version"]
-  65  ["messageId","source","timestamp","version"]
-  16  ["entrypoint","source","timestamp","version"]
-   1  ["isAutomated","isMeta","messageId","source","timestamp","version"]
+1443  ["source","timestamp","version"]
+  70  ["messageId","source","timestamp","version"]
+  24  ["entrypoint","source","timestamp","version"]
+   2  ["isAutomated","isMeta","messageId","source","timestamp","version"]
+   1  ["isAutomated","messageId","source","timestamp","version"]
    1  ["isAutomated","source","timestamp","version"]
 ```
 
-> **Schema-supported-but-unobserved keys.** Corrected (official): the full v2 `metadata` zod schema additionally allows keys the live store never carried: `model`, `duration`, `usage:{inputTokens, outputTokens, totalTokens, cacheReadTokens?, cacheWriteTokens?, estimatedCost?}`, `context:{sessionId?, threadId?, userId?}`, `highlight:bool`, `isSummary:bool`, and `hookContexts:record<string,{preToolUse?, postToolUse?}>`. These are optional and simply unpopulated in this machine's data — a future capture carrying them is expected schema, not drift. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz))
-`entrypoint:"print"` records occur in matched pairs: a `user` record whose `content` is a **bare string** (the one-shot prompt) followed by an `assistant` record with `["reasoning","text"]` — i.e. headless one-shot queries. **There is NO empty-array-content user record anywhere in the live store (0/80 user records).** All 8 live `entrypoint:"print"` user records carry bare-string content (lengths: 5× ≈34 bytes + 3 long: 40,111 / 41,768 / 70,358 bytes); these 8 are a subset of the 14 string-content user records (8 `print` + 6 with no `entrypoint`).
+> **Schema-supported-but-unobserved keys.** Corrected (official): the full v2 `metadata` zod schema additionally allows keys the live store never carried: `model`, `duration`, `usage:{inputTokens, outputTokens, totalTokens, cacheReadTokens?, cacheWriteTokens?, estimatedCost?}`, `context:{sessionId?, threadId?, userId?}`, `highlight:bool`, `isSummary:bool`, and `hookContexts:record<string,{preToolUse?, postToolUse?}>`. These are optional and simply unpopulated in this machine's data — a future capture carrying them is expected schema, not drift. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz))
+`entrypoint:"print"` records occur in matched pairs: a `user` record whose `content` is a **bare string** (the one-shot prompt) followed by an `assistant` record with `["reasoning","text"]` — i.e. headless one-shot queries. **There is NO empty-array-content user record anywhere in the live store (0/92 user records).** All 12 live `entrypoint:"print"` user records carry bare-string content (lengths: 9×34 bytes + 3 long: 40,111 / 41,768 / 70,358 bytes); these 12 are a subset of the 20 string-content user records (12 `print` + 8 with no `entrypoint`).
 
 ---
 
 ## 6. Message & content schema
 
-`content` is the **content-block layer**, nested under a record. It is an **array of typed blocks** (1,371 records) or a **bare string** (14 records, user-only). Blocks are discriminated by `.type`.
+`content` is the **content-block layer**, nested under a record. It is an **array of typed blocks** (1,521 records) or a **bare string** (20 records, user-only). Blocks are discriminated by `.type`.
 
 Live block-type counts and role segregation:
 
 ```
-assistant:text       748    assistant:reasoning  170    assistant:tool-call  584
-tool:tool-result     584    user:text             66    user:image             4
+assistant:text       785    assistant:reasoning  243    assistant:tool-call  705
+tool:tool-result     705    user:text             72    user:image             4
 ```
 
 Block types are role-segregated: `reasoning` and `tool-call` are assistant-only; `tool-result` is tool-only; `image` is user-only; `text` appears on user and assistant.
 
 | Block `type` | Keys | Meaning | Count | Engram handling |
 |---|---|---|---|---|
-| `text` | `type`, `text` | natural-language prose | 814 | extracted verbatim (Swift `:189-190` / TS `:198`) |
-| `reasoning` | `type`, `text` | model chain-of-thought | 170 | **DROPPED** — no case in `extractContent` switch (Swift `:188-201` default → nil / TS `:196-208`) |
-| `tool-call` | `type`, `toolName`, `toolCallId`, `input` | tool invocation | 584 | rendered as `` `<toolName>` `` in content; emitted as `NormalizedToolCall` (name + truncated input JSON) |
-| `tool-result` | `type`, `toolName`, `toolCallId`, `output` | tool output (typed wrapper) | 584 | `output` folded into content (string verbatim, else JSON-stringified cap 2000) |
+| `text` | `type`, `text` | natural-language prose | 857 | extracted verbatim (Swift `:189-190` / TS `:198`) |
+| `reasoning` | `type`, `text` | model chain-of-thought | 243 | **DROPPED** — no case in `extractContent` switch (Swift `:188-201` default → nil / TS `:196-208`) |
+| `tool-call` | `type`, `toolName`, `toolCallId`, `input` | tool invocation | 705 | rendered as `` `<toolName>` `` in content; emitted as `NormalizedToolCall` (name + truncated input JSON) |
+| `tool-result` | `type`, `toolName`, `toolCallId`, `output` | tool output (typed wrapper) | 705 | `output` folded into content (string verbatim, else JSON-stringified cap 2000) |
 | `image` | `type`, `image` | inline base64 data-URI image | 4 | **DROPPED** — no `image` case in either adapter |
 
 ### 6a. `text` block (user + assistant)
@@ -240,7 +264,7 @@ Block types are role-segregated: `reasoning` and `tool-call` are assistant-only;
 | Field | Type | Opt | Meaning |
 |---|---|---|---|
 | `type` | `"reasoning"` | req | discriminator |
-| `text` | string | req | chain-of-thought text (non-empty in all 170 live) |
+| `text` | string | req | chain-of-thought text (non-empty in all 243 live) |
 ```json
 { "type": "reasoning", "text": "<THINKING REDACTED>" }
 ```
@@ -252,7 +276,7 @@ Block types are role-segregated: `reasoning` and `tool-call` are assistant-only;
 | `type` | `"tool-call"` | req | discriminator | `"tool-call"` |
 | `toolName` | string | req | tool name (13 distinct, see §7) | `"shell_command"` |
 | `toolCallId` | string | req | **linkage key** to the matching `tool-result` | `"call_00_MAKdS9FclHpX38eDWrpj6245"` |
-| `input` | object (582) \| string (2) | req | tool arguments; shape per-tool | `{ "command": "<CMD>" }` |
+| `input` | object (703) \| string (2) | req | tool arguments; shape per-tool | `{ "command": "<CMD>" }` |
 ```json
 { "type": "tool-call", "toolName": "shell_command",
   "toolCallId": "call_00_MAKdS9FclHpX38eDWrpj6245",
@@ -270,7 +294,7 @@ Block types are role-segregated: `reasoning` and `tool-call` are assistant-only;
 Nested `output` sub-fields:
 | Sub-field | Type | Meaning | Example |
 |---|---|---|---|
-| `output.type` | enum | `"text"` (582) \| `"error-text"` (2) | `"text"` |
+| `output.type` | enum | `"text"` (703) \| `"error-text"` (2) | `"text"` |
 | `output.value` | string | the result/error payload | `"<TOOL OUTPUT REDACTED>"` |
 ```json
 { "type": "tool-result", "toolName": "shell_command",
@@ -289,11 +313,11 @@ Because live `output` is always the `{type,value}` object (never a bare string),
 ```
 **Engram drops this** — no `image` case in the extract switch (no placeholder).
 
-### 6f. raw-string content (user only, 14 records)
+### 6f. raw-string content (user only, 20 records)
 When `content` is a plain string instead of an array. Lengths range 7–70,358 bytes; the long ones are injected system wrappers (AGENTS.md / `<INSTRUCTIONS>` / local-command blocks). Both adapters' `isSystemInjection` reclassify such user turns into `systemMessageCount` (the on-disk `role` is still `"user"`; there is **no** `system` role on disk). Both adapters handle bare-string content verbatim (Swift `:181-183` / TS `:193-194`).
 
 ### Common assistant block orderings (live, top)
-`text` (553); `text,tool-call` (92); `tool-call` (89); `reasoning,tool-call` (59); `reasoning,text,tool-call` (22); `reasoning,text` (21). When present, `reasoning` leads the block array.
+`text` (554); `text,tool-call` (92); `tool-call` (91); `reasoning,tool-call` (82); `reasoning,text,tool-call` (38); `reasoning,text` (28). When present, `reasoning` leads the block array.
 
 ### Full assistant record example (record + content-block layers; verbatim keys, text stripped)
 ```json
@@ -324,19 +348,19 @@ When `content` is a plain string instead of an array. Lengths range 7–70,358 b
 | Call id | `tool-call.toolCallId` | e.g. `call_00_MAKdS9FclHpX38eDWrpj6245` |
 | Result id | `tool-result.toolCallId` | identical to the originating call's id |
 | Tool name (both sides) | `toolName` | mirrored on call and result |
-| Errors | `tool-result.output.type == "error-text"` | 2/584 live; otherwise `"text"` |
+| Errors | `tool-result.output.type == "error-text"` | 2/705 live; otherwise `"text"` |
 
-**Distinct `toolName` values + counts (live):** `shell_command` 184, `read_file` 123, `explore` 99, `grep` 59, `read_directory` 29, `edit_file` 23, `glob` 22, `todo_write` 20, `read_multiple_files` 9, `write_file` 9, `enter_plan_mode` 5, `exit_plan_mode` 1, `think` 1.
+**Distinct `toolName` values + counts (live):** `shell_command` 216, `read_file` 154, `explore` 127, `grep` 65, `todo_write` 33, `read_directory` 29, `glob` 26, `edit_file` 25, `write_file` 13, `read_multiple_files` 9, `enter_plan_mode` 6, `exit_plan_mode` 1, `think` 1.
 
 **Per-tool `input` shapes (top):** `shell_command`→`{command[,timeout]}`; `read_file`→`{absolutePath[,limit,offset]}`; `explore`→`{messages}`; `grep`→`{path,pattern}` or `{directory,pattern}` (the 2 string-input cases are `grep`); `edit_file`→`{filePath,newValue,oldValue}`; `write_file`→`{content,filePath}`; `todo_write`→`{todos}`; `think`→`{thought}`; `glob`→`{directory,include,pattern}`.
 
-**Engram handling.** Neither adapter actually joins call↔result. The Swift `toolCalls` (`:206-219`) / TS `toolCalls` (`:213-228`) extract only `tool-call` blocks into `NormalizedToolCall{name, input(JSON, capped 500B), output: nil}` — `output` is always nil (Swift `:217`). The result text is only folded into the flat content summary via `extractContent`. Swift accepts `input ?? args` (`:215`); TS reads only `input` (`:224`) — a parity gap (see §15 divergence 6). Live data uses object `input`, so the object-JSON-stringify path runs in production.
+**Engram handling.** Neither adapter actually joins call↔result. The Swift `toolCalls` (`:210-223`) / TS `toolCalls` (`:215-230`) extract only `tool-call` blocks into `NormalizedToolCall{name, input(JSON, capped 500B), output: nil}` — `output` is always nil. The result text is only folded into the flat content summary via `extractContent`. Current Swift and TS both accept `input ?? args`; live data has no `args` blocks, with `input` shaped as object 703/705 and string 2/705, so the object-JSON-stringify path is the production path.
 
 ---
 
 ## 8. Reasoning / thinking
 
-**Stored on disk: YES.** `reasoning` blocks (170 live, assistant-only) carry the model's chain-of-thought as plain text (`{type:"reasoning", text:"…"}`), and lead the block array when present.
+**Stored on disk: YES.** `reasoning` blocks (243 live, assistant-only) carry the model's chain-of-thought as plain text (`{type:"reasoning", text:"…"}`), and lead the block array when present.
 
 **Captured by Engram: NO.** Neither adapter's `extractContent` switch matches `reasoning` — it falls into `default` and is silently dropped from the extracted summary/transcript text. No thinking surfaces in Engram search or transcript for CommandCode.
 
@@ -344,9 +368,9 @@ When `content` is a plain string instead of an array. Lengths range 7–70,358 b
 
 ## 9. Token usage & cost
 
-**Absent in the observed data; the schema supports it but it was not populated.** The user's live store carries no usage data (verified: 0/1,385 records carry `usage`; `jq paths | grep -iE 'usage|token|cost'` → empty), so Engram cannot read it. Both adapters reflect this: Swift `message()` sets `usage: nil` (`:155`); TS omits usage entirely.
+**Absent in the observed data; the schema supports it but it was not populated.** The user's live store carries no usage data (verified: 0/1,541 records carry `usage`; path scan for `usage`/token/cost fields was empty), so Engram cannot read it. Both adapters reflect this: Swift `message()` sets `usage: nil` (`:155`); TS omits usage entirely.
 
-Corrected (official): the FORMAT does define usage. The v2 `metadata` zod schema includes an optional `usage:{inputTokens, outputTokens, totalTokens, cacheReadTokens?, cacheWriteTokens?, estimatedCost?}` object plus a `metadata.duration` field, so token/cost CAN be persisted by CommandCode — it was simply absent/unpopulated in the captured sessions (likely an older CLI build or a build that did not persist it). The earlier "no usage field anywhere in CommandCode files" claim was true for the observed data but overstated as a format claim. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz))
+Corrected (official): the FORMAT does define usage. The v2 `metadata` zod schema includes an optional `usage:{inputTokens, outputTokens, totalTokens, cacheReadTokens?, cacheWriteTokens?, estimatedCost?}` object plus a `metadata.duration` field, so token/cost CAN be persisted by CommandCode — it was simply absent/unpopulated in the captured sessions (likely an older CLI build or a build that did not persist it). The earlier "no usage field anywhere in CommandCode files" claim was true for the observed data but overstated as a format claim. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz))
 
 ---
 
@@ -354,7 +378,7 @@ Corrected (official): the FORMAT does define usage. The v2 `metadata` zod schema
 
 **N/A at the adapter layer.** CommandCode has no Gemini-style `.engram.json` sidecar, no Codex-style `originator`, and no Claude-Code-style `/subagents/` path linkage. The adapters hard-code `agentRole: nil`, `originator: nil`, `parentSessionId: nil`, `suggestedParentId: nil` (Swift `:112-119`).
 
-The record-level `parentId` field threads messages **within a single session file** as a linked DAG — but Engram does NOT model it (the transcript is flattened to linear order). It is unrelated to Engram's session-level parent/child grouping. Confirmed (official): the actual cross-session link CommandCode uses is `.meta.json#parentSessionId` (written for forked sessions via `--fork-session`), NOT the record-level `parentId` — neither adapter reads the sidecar, so Engram's `parentSessionId` stays nil. Any agent-session grouping for CommandCode would be applied downstream by the indexer's Layer-2 heuristic (temporal/cwd scoring), not by this adapter. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz))
+The record-level `parentId` field threads messages **within a single session file** as a linked DAG — but Engram does NOT model it (the transcript is flattened to linear order). It is unrelated to Engram's session-level parent/child grouping. Confirmed (official): the actual cross-session link CommandCode uses is `.meta.json#parentSessionId` (written for forked sessions via `--fork-session`), NOT the record-level `parentId` — neither adapter reads the sidecar, so Engram's `parentSessionId` stays nil. Any agent-session grouping for CommandCode would be applied downstream by the indexer's Layer-2 heuristic (temporal/cwd scoring), not by this adapter. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz))
 
 (Note: `metadata.entrypoint:"print"` and `metadata.isAutomated`/`isMeta` flag headless/automated turns that could in principle feed dispatch classification, but the adapter ignores them — see §15 Resolved questions.)
 
@@ -379,11 +403,11 @@ Engram synthesizes its own `summary` from the **first non-system user message te
 All present on disk; **none are parsed by Engram.**
 
 ### `<sessionId>.meta.json` (per-session)
-Corrected (official): the sidecar is NOT limited to `{title, model?}`. `saveSessionMeta` merges arbitrary keys; `saveSessionTitle` writes `{title}`; rename sets `userRenamed`; and the fork path (`copyForkSessionFiles`, invoked by `--fork-session`) writes additional keys. Full possible schema below ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz)).
+Corrected (official): the sidecar is NOT limited to `{title, model?}`. `saveSessionMeta` merges arbitrary keys; `saveSessionTitle` writes `{title}`; rename sets `userRenamed`; and the fork path (`copyForkSessionFiles`, invoked by `--fork-session`) writes additional keys. Full possible schema below ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz)).
 | Field | Type | Opt | Meaning | Example |
 |---|---|---|---|---|
-| `title` | string | req (18/18) | human-readable session title (auto-generated summary) | `"Review recent commits with sub-agents"` |
-| `model` | string | optional (3/18) | model used; **the only per-session model record** | `"deepseek/deepseek-v4-pro"`, `"Qwen/Qwen3.7-Max"` |
+| `title` | string | req (22/23 populated) | human-readable session title (auto-generated summary) | `"Review recent commits with sub-agents"` |
+| `model` | string | optional (3/23) | model used; **the only per-session model record** | `"deepseek/deepseek-v4-pro"`, `"Qwen/Qwen3.7-Max"` |
 | `userRenamed` | bool | optional (schema; unobserved here) | set when the user manually renames the session | `true` |
 | `parentSessionId` | string | optional (fork only) | **the REAL cross-session (fork) link** CommandCode uses — distinct from record-level `parentId`; relevant to Engram's currently-nil `parentSessionId` mapping | `"<uuid>"` |
 | `forkedAt` | string (ISO) | optional (fork only) | fork timestamp | `"2026-05-25T01:56:44.064Z"` |
@@ -393,17 +417,17 @@ Corrected (official): the sidecar is NOT limited to `{title, model?}`. `saveSess
 Top-level record (always 4 keys): `["isSnapshotUpdate","messageId","snapshot","type"]`.
 | Field | Type | Meaning | Example |
 |---|---|---|---|
-| `type` | string | constant `"file-history-snapshot"` (65/65) | `"file-history-snapshot"` |
+| `type` | string | constant `"file-history-snapshot"` (73/73) | `"file-history-snapshot"` |
 | `isSnapshotUpdate` | bool | full snapshot vs incremental update | `false` |
 | `messageId` | string (UUID) | message this snapshot is anchored to | `"f7984133-…"` |
 | `snapshot` | object | `{messageId, timestamp, trackedFileBackups}` | — |
 
-`snapshot.trackedFileBackups` = map of file-path → backup descriptor (empty `{}` when no edits). Confirmed (official) against the source zod schema: the checkpoint record is `{type: literal("file-history-snapshot"), messageId: uuid, snapshot: {messageId: uuid, trackedFileBackups: record(string, BACKUP), timestamp: string.datetime()}, isSnapshotUpdate: boolean}`, and the per-file `BACKUP` descriptor is `{backupFileName: string.nullable(), version: number.int().positive(), backupTime: string.datetime()}` ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz)):
+`snapshot.trackedFileBackups` = map of file-path → backup descriptor (empty `{}` when no edits). Confirmed (official) against the source zod schema: the checkpoint record is `{type: literal("file-history-snapshot"), messageId: uuid, snapshot: {messageId: uuid, trackedFileBackups: record(string, BACKUP), timestamp: string.datetime()}, isSnapshotUpdate: boolean}`, and the per-file `BACKUP` descriptor is `{backupFileName: string.nullable(), version: number.int().positive(), backupTime: string.datetime()}` ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz)):
 | Sub-field | Type | Meaning |
 |---|---|---|
 | `backupFileName` | string \| null | name of the backup blob under `~/.commandcode/file-history/<sessionId>/`. Corrected (official): the schema types this `string.nullable()` (can be `null`), not a plain string |
-| `backupTime` | string (ISO datetime) | when the backup was taken — Confirmed (official): typed `string.datetime()`, so it **cannot be a number** by schema (58/58 non-empty entries; `number` not observed) |
-| `version` | number | backup version — Confirmed (official): always a positive integer (`number.int().positive()`, 58/58) |
+| `backupTime` | string (ISO datetime) | when the backup was taken — Confirmed (official): typed `string.datetime()`, so it **cannot be a number** by schema (68/68 non-empty entries; `number` not observed) |
+| `version` | number | backup version — Confirmed (official): always a positive integer (`number.int().positive()`, 68/68) |
 
 These power undo/restore; the backed-up file contents live in `file-history/<sessionId>/<hash>@vN`. Engram excludes them via the `.checkpoints.jsonl` suffix filter (Swift `:28` / TS `:44`).
 
@@ -473,7 +497,7 @@ Output struct: `NormalizedSessionInfo` (Swift) / `SessionInfo` (TS). Both adapte
 
 ### What Engram does NOT consume
 1. `.meta.json` entirely — both `title` and `model` dropped (model exists on disk but is never read → `model = nil`).
-2. `reasoning` content blocks (170 live) — chain-of-thought dropped.
+2. `reasoning` content blocks (243 live) — chain-of-thought dropped.
 3. `image` content blocks (4 live) — inline base64 images dropped.
 4. `.checkpoints.jsonl` — excluded from listing.
 5. `settings.json` — per-project UI state.
@@ -505,33 +529,33 @@ CommandCode's record shape `{role, content[], sessionId, parentId, timestamp, me
 1. **GOTCHA (model lost):** the real model is in `.meta.json#model` (e.g. `deepseek/deepseek-v4-pro`), which neither adapter reads, and is absent from all live JSONL records. Production `model` is **always nil** despite the data existing on disk. Quick win: read the sidecar.
 2. **GOTCHA (title lost):** `.meta.json#title` (a curated human title) is ignored; Engram uses a 200-char first-user-message slice as `summary`.
 3. **GOTCHA (lossy cwd decode):** since live `cwd` is always absent, every session falls back to dir-name decoding, which is **irreversibly lossy for paths with hyphens** — e.g. project `my-project` decodes to `my/project`; the real path `/Users/bing/-Code-/engram` is captured as dir `users-bing-code-engram` → decodes to `users/bing/code/engram` (lost leading slash, lost `-Code-` hyphens/casing). The `--`→`-` escape only protects double-hyphens; single literal hyphens are unrecoverable.
-4. **GOTCHA (dropped reasoning/images):** 170 reasoning + 4 image blocks in live data are silently dropped from transcript and search text.
+4. **GOTCHA (dropped reasoning/images):** 243 reasoning + 4 image blocks in live data are silently dropped from transcript and search text.
 5. **GOTCHA (title surrogate):** Engram's `summary` is the first non-injected user message, which may itself be noise if the first turn is short or a probe.
 
 ### Divergences (Swift vs TS)
 
 6. **DIVERGENCE (timestamp fallback):** TS falls back to file mtime when no record has a timestamp (`:99-101`); Swift does not (leaves `startTime=""` → sorts to epoch). Low impact on live data (top-level timestamp is 100% present), but a real parity gap.
-7. **DIVERGENCE (`args` fallback):** Swift reads `input ?? args` for tool-call input (`:215`); TS reads only `input` (`:224`). The Swift parity test `testCommandCodeAdapterAcceptsArgsForToolCallInput` (`macos/EngramTests/AdapterParityTests.swift:382`) exercises the `args` path, but live data uses object `input` (582/584) — neither `args` nor string-input is the common case.
+7. **RESOLVED (`args` fallback):** Swift and TS now both read `input ?? args` for tool-call input. The Swift parity test `testCommandCodeAdapterAcceptsArgsForToolCallInput` exercises the `args` path, but live data uses `input` only (703/705 object, 2/705 string) — neither `args` nor string-input is the common case.
 
 ### Edge cases & version drift
 
-8. **EDGE (string content):** 14/1,371 live records have `content` as a bare string (not array); both adapters return it verbatim (Swift `:181-183` / TS `:193-194`).
-9. **EDGE (object output forces JSON-stringify):** `tool-result.output` is an object 584/584 in live data, so the verbatim-string path never runs; output is always JSON-serialized and capped at 2000 chars — large tool outputs are truncated in the indexed transcript.
-10. **EDGE (string tool-call input):** 2/584 live `tool-call` blocks carry a bare-string `input` (both are `grep`); `jsonString`/`truncateJSON` handle these.
+8. **EDGE (string content):** 20/1,541 live records have `content` as a bare string (not array); both adapters return it verbatim (Swift `:181-183` / TS `:193-194`).
+9. **EDGE (object output forces JSON-stringify):** `tool-result.output` is an object 705/705 in live data, so the verbatim-string path never runs; output is always JSON-serialized and capped at 2000 chars — large tool outputs are truncated in the indexed transcript.
+10. **EDGE (string tool-call input):** 2/705 live `tool-call` blocks carry a bare-string `input` (both are `grep`); `jsonString`/`truncateJSON` handle these.
 11. **EDGE (temp-dir cwd):** one live project dir is under `/private/var/folders/.../T/`, confirming temp-dir sessions are captured.
 12. **EDGE (parse-fail = drop):** any line failing `JSON.parse` is skipped; a session with zero records carrying `sessionId` is rejected entirely (Swift `:93` `.malformedJSON` / TS `:95` null).
 13. **VERSION marker:** `metadata.version: 2` on 100% of live records — a forward-compat hook neither adapter inspects. A future `version: 3` schema would parse silently with no guard.
-14. **FIXTURE vs LIVE divergence:** the fixture `sample.jsonl` (3 records) was crafted to exercise defensive paths absent from this machine's live data — it carries top-level `cwd`/`model` and a `parentId: null` root spread across two distinct record variants: the **user/root** record is a **9-key** variant `["content","cwd","gitBranch","id","metadata","parentId","role","sessionId","timestamp"]` (has top-level `cwd`, **no** `model`) with `parentId: null`; the **assistant** record is a **10-key** variant that adds `model` (top-level `cwd` AND `model`), with `parentId: "msg-001"` (the tool record is a 9-key variant, `parentId: "msg-002"`). The live store has neither the top-level `cwd`/`model` nor a null first `parentId` (every live record is the 8-key envelope with a non-null first `parentId`). NOTE (web-confirmed 2026-06-21): the fixture's `parentId: null` root actually MATCHES current CommandCode (v0.40.0), whose writer always sets the first record's `parentId = null`; the live store's non-null first `parentId` reflects an OLDER appending build, so it is the LIVE data — not the fixture — that diverges from current source on this point ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz)). The fixture's `tool-call` input is an object (`{path: …}`), matching live; its `tool-result` output is a bare string (`"file contents omitted"`), which does NOT match live (live is always the `{type,value}` object). So parity tests pass while live behavior drops the model, the cwd, and JSON-stringifies every tool-result.
+14. **FIXTURE vs LIVE divergence:** the fixture `sample.jsonl` (3 records) was crafted to exercise defensive paths mostly absent from this machine's live data — it carries top-level `cwd`/`model` and a `parentId: null` root spread across two distinct record variants: the **user/root** record is a **9-key** variant `["content","cwd","gitBranch","id","metadata","parentId","role","sessionId","timestamp"]` (has top-level `cwd`, **no** `model`) with `parentId: null`; the **assistant** record is a **10-key** variant that adds `model` (top-level `cwd` AND `model`), with `parentId: "msg-001"` (the tool record is a 9-key variant, `parentId: "msg-002"`). The live store has neither top-level `cwd` nor top-level `model`; current live first-parent distribution is 1 null-root file and 38 non-null-root files. NOTE (web-confirmed 2026-06-21, latest npm checked 2026-07-02): the fixture's `parentId: null` root MATCHES current CommandCode, whose writer starts each rewrite from `parentId = null`; the remaining live non-null first `parentId` files reflect older appending builds. The fixture's `tool-call` input is an object (`{path: …}`), matching live; its `tool-result` output is a bare string (`"file contents omitted"`), which does NOT match live (live is always the `{type,value}` object). So parity tests pass while live behavior drops the model, the cwd, and JSON-stringifies every tool-result.
 
-### Resolved questions (web-confirmed 2026-06-21)
-- **v1 schema.** Confirmed (official): the CLI defines `isLegacyFormat(e) = (!e.metadata || e.metadata.version !== 2)` — any record without `metadata.version === 2` is treated as v1/legacy. On `loadMessages()`, if any line `isLegacyFormat`, the CLI runs `legacyAnthropicToSession(...)` (via `convertUserMessage`/`convertAssistantMessage`/`buildToolNameMap`) to convert a **legacy Anthropic message format** (records shaped `{role, content}` with Anthropic-style content blocks) into v2, logs `[Session] Migrating v1 session to v2: <file> (<n> messages)`, then rewrites the file with `parentId: null` and `metadata.version: 2`. So v1 was an Anthropic-message-shaped transcript; v2 (the current on-disk format) is the `{id, timestamp, sessionId, parentId, role, content, gitBranch, metadata}` envelope. NOTE: the source's only documented legacy path is the Anthropic `{role,content}` format — the top-level `cwd`/`model` and `metadata.model` fields the Engram adapter probes are NOT present in either the v1-migration code or the v2 writer; in current code `model` lives only in `.meta.json` and `cwd` only in the project dir name, so those probes are adapter-defensive against an even-older inline layout not represented in current source. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz))
-- **Cross-session `parentId`.** Confirmed (official): in v0.40.0 the writer (`SessionManager.writeMessages`) does NOT append — it rebuilds the entire message list from the in-memory array on each save, generates a fresh `crypto.randomUUID()` for every record `id`, and sets `parentId = this.lastMessageId`, where `lastMessageId` starts `null` at construction and is only updated inside the rewrite loop (never seeded from a loaded/resumed session). So the first record's `parentId` is `null` and the chain is purely intra-file. Resume/continue (`loadMessages` → `resolvePrintSession`/`loadResumed`) reloads prior messages into memory but the next save still rewrites the whole file from `parentId: null`. CommandCode does NOT thread `parentId` across resumed files; no preamble/system record is written to a separate file; and the filename always equals the file's own `sessionId` (writer sets `sessionFilePath = <sessionId>.jsonl` and stamps each record's `sessionId = this.sessionId`). The live store's observed non-null first-record `parentId`/stable ids is most consistent with an OLDER appending build (predates v0.40). ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz))
-- **`metadata.messageId` / `isAutomated` / `isMeta` semantics.** Confirmed (official) via the source zod schema for `metadata`: `messageId` is the provider/UI message id (checkpoints anchor to it via `snapshot.messageId`); `isAutomated:boolean` marks a machine-generated/injected turn (the CLI sets it on automated slash-command prompts via `isAutomatedSlashCommandPrompt` and similar non-human turns); `isMeta:boolean` marks a meta turn (`createMessageWithMeta`/`sanitizeMessage` paths, e.g. empty-content meta turns). The inferred semantics were correct. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz))
-- **`entrypoint:"print"` / `isAutomated` dispatch potential.** Confirmed (official): the source defines a single `entrypoint` constant `Oh="print"`, assigned only by `resolvePrintSession()` when the CLI runs in headless one-shot mode via the documented `--print`/`-p` flag ([CLI reference](https://commandcode.ai/docs/reference/cli): `cmd --print "message"` runs headless, outputs the response, and exits). The writer stamps `entrypoint` into metadata only when `this.entrypoint` is set, so interactive sessions write NO `entrypoint` key — explaining why `"print"` is the only value seen on disk and why most records omit it. Whether CommandCode itself uses `entrypoint`/`isAutomated` for dispatch classification: not present in source — that is an Engram-internal design choice, out of scope for the tool format. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz))
-- **`--` escape unexercised by live data.** (Engram-internal design — not web-verifiable.) Whether the Engram adapter's `--`/`-` decode branch is exercised by the user's data is an Engram coverage observation, not a web-answerable CommandCode-format fact. On the underlying format: the CLI's `getCurrentProjectDirName` encodes `process.cwd()` via a minified helper that could not be deobfuscated to a literal regex in the bundle, so the exact escaping rule (single `-` vs `--`) was NOT independently confirmed from source. The described scheme (lowercase, non-alnum → `-`, literal `-` → `--`) comes from the Engram adapter and should be treated as adapter-asserted, not source-confirmed. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz))
+### Resolved questions (web-confirmed 2026-06-21; npm latest rechecked 2026-07-02)
+- **v1 schema.** Confirmed (official): the CLI defines `isLegacyFormat(e) = (!e.metadata || e.metadata.version !== 2)` — any record without `metadata.version === 2` is treated as v1/legacy. On `loadMessages()`, if any line `isLegacyFormat`, the CLI runs `legacyAnthropicToSession(...)` (via `convertUserMessage`/`convertAssistantMessage`/`buildToolNameMap`) to convert a **legacy Anthropic message format** (records shaped `{role, content}` with Anthropic-style content blocks) into v2, logs `[Session] Migrating v1 session to v2: <file> (<n> messages)`, then rewrites the file with `parentId: null` and `metadata.version: 2`. So v1 was an Anthropic-message-shaped transcript; v2 (the current on-disk format) is the `{id, timestamp, sessionId, parentId, role, content, gitBranch, metadata}` envelope. NOTE: the source's only documented legacy path is the Anthropic `{role,content}` format — the top-level `cwd`/`model` and `metadata.model` fields the Engram adapter probes are NOT present in either the v1-migration code or the v2 writer; in current code `model` lives only in `.meta.json` and `cwd` only in the project dir name, so those probes are adapter-defensive against an even-older inline layout not represented in current source. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz))
+- **Cross-session `parentId`.** Confirmed (official): in current npm (latest checked 0.40.17) the writer (`SessionManager.writeMessages`) does NOT append — it rebuilds the entire message list from the in-memory array on each save, generates a fresh `crypto.randomUUID()` for every record `id`, and sets `parentId = this.lastMessageId`, where `lastMessageId` starts `null` at construction and is only updated inside the rewrite loop (never seeded from a loaded/resumed session). So the first record's `parentId` is `null` and the chain is purely intra-file. Resume/continue (`loadMessages` → `resolvePrintSession`/`loadResumed`) reloads prior messages into memory but the next save still rewrites the whole file from `parentId: null`. CommandCode does NOT thread `parentId` across resumed files; no preamble/system record is written to a separate file; and the filename always equals the file's own `sessionId` (writer sets `sessionFilePath = <sessionId>.jsonl` and stamps each record's `sessionId = this.sessionId`). The 38 current live non-null first-record files are most consistent with OLDER appending builds. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz))
+- **`metadata.messageId` / `isAutomated` / `isMeta` semantics.** Confirmed (official) via the source zod schema for `metadata`: `messageId` is the provider/UI message id (checkpoints anchor to it via `snapshot.messageId`); `isAutomated:boolean` marks a machine-generated/injected turn (the CLI sets it on automated slash-command prompts via `isAutomatedSlashCommandPrompt` and similar non-human turns); `isMeta:boolean` marks a meta turn (`createMessageWithMeta`/`sanitizeMessage` paths, e.g. empty-content meta turns). The inferred semantics were correct. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz))
+- **`entrypoint:"print"` / `isAutomated` dispatch potential.** Confirmed (official): the source defines a single `entrypoint` constant `Oh="print"`, assigned only by `resolvePrintSession()` when the CLI runs in headless one-shot mode via the documented `--print`/`-p` flag ([CLI reference](https://commandcode.ai/docs/reference/cli): `cmd --print "message"` runs headless, outputs the response, and exits). The writer stamps `entrypoint` into metadata only when `this.entrypoint` is set, so interactive sessions write NO `entrypoint` key — explaining why `"print"` is the only value seen on disk and why most records omit it. Whether CommandCode itself uses `entrypoint`/`isAutomated` for dispatch classification: not present in source — that is an Engram-internal design choice, out of scope for the tool format. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz))
+- **`--` escape unexercised by live data.** (Engram-internal design — not web-verifiable.) Whether the Engram adapter's `--`/`-` decode branch is exercised by the user's data is an Engram coverage observation, not a web-answerable CommandCode-format fact. On the underlying format: the CLI's `getCurrentProjectDirName` encodes `process.cwd()` via a minified helper that could not be deobfuscated to a literal regex in the bundle, so the exact escaping rule (single `-` vs `--`) was NOT independently confirmed from source. The described scheme (lowercase, non-alnum → `-`, literal `-` → `--`) comes from the Engram adapter and should be treated as adapter-asserted, not source-confirmed. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz))
 
 ### Source availability
-Confirmed (official): CommandCode's CLI source is only partially open. The GitHub repo [CommandCodeAI/command-code](https://github.com/CommandCodeAI/command-code) is effectively a landing/readme repo (only `readme.md` + `.github`, ~3.4k stars); the [CommandCodeAI org](https://github.com/orgs/CommandCodeAI/repositories) also has an archived `cmd-old-public`. The actual shipped CLI source is published to npm as [`command-code`](https://www.npmjs.com/package/command-code) (current `0.40.0`) as a single bundled `dist/index.mjs` (~1.3 MB, minified but readable, includes the zod schemas and full `SessionManager` logic); `package.json` has no `repository`/`homepage` field. So the authoritative on-disk-format source is the npm bundle, not a browsable GitHub tree. Install: `npm i -g command-code`; bins: `cmd`, `cmdc`, `command-code`, `commandcode`. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz))
+Confirmed (official): CommandCode's CLI source is only partially open. The GitHub repo [CommandCodeAI/command-code](https://github.com/CommandCodeAI/command-code) is effectively a landing/readme repo (only `readme.md` + `.github`, ~3.4k stars); the [CommandCodeAI org](https://github.com/orgs/CommandCodeAI/repositories) also has an archived `cmd-old-public`. The actual shipped CLI source is published to npm as [`command-code`](https://www.npmjs.com/package/command-code) (latest checked `0.40.17`) as a single bundled `dist/index.mjs` (~1.3 MB, minified but readable, includes the zod schemas and full `SessionManager` logic); `package.json` has no `repository`/`homepage` field. So the authoritative on-disk-format source is the npm bundle, not a browsable GitHub tree. Install: `npm i -g command-code`; bins: `cmd`, `cmdc`, `command-code`, `commandcode`. ([source](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz))
 
 ---
 
@@ -620,7 +644,7 @@ Confirmed (official): CommandCode's CLI source is only partially open. The GitHu
 ```
 
 ### 16g. headless one-shot pair (`entrypoint:"print"`)
-The `user` record's `content` is a **bare string** (the one-shot prompt), NOT an empty array — verified across all 8 live `print` user records (lengths 5× ≈34 bytes + 3 long: 40,111 / 41,768 / 70,358 bytes); zero empty-array user-content records exist on disk.
+The `user` record's `content` is a **bare string** (the one-shot prompt), NOT an empty array — verified across all 12 live `print` user records (lengths 9×34 bytes + 3 long: 40,111 / 41,768 / 70,358 bytes); zero empty-array user-content records exist on disk.
 ```json
 { "id": "<uuid>", "timestamp": "<iso>", "sessionId": "<uuid>", "parentId": "<uuid>", "role": "user", "gitBranch": "-",
   "metadata": { "source": "cli", "version": 2, "timestamp": "<iso>", "entrypoint": "print" }, "content": "<ONE-SHOT PROMPT REDACTED>" }
@@ -674,9 +698,9 @@ Fork-session variant (written by `--fork-session` via `copyForkSessionFiles`; sc
 
 ## References (official sources)
 
-Web confirmation performed 2026-06-21 (`web_access_ok=true`). The npm bundle `dist/index.mjs` is the definitive on-disk-format source.
+Web confirmation performed 2026-06-21 (`web_access_ok=true`), with latest npm version rechecked on 2026-07-02 (`command-code@0.40.17`). The npm bundle `dist/index.mjs` is the definitive on-disk-format source.
 
-- [command-code npm package (v0.40.0) tarball](https://registry.npmjs.org/command-code/-/command-code-0.40.0.tgz) — shipped CLI bundle (`dist/index.mjs`) that reads/writes the session store; the definitive on-disk-format source (zod schemas + `SessionManager`).
+- [command-code npm package (v0.40.17) tarball](https://registry.npmjs.org/command-code/-/command-code-0.40.17.tgz) — shipped CLI bundle (`dist/index.mjs`) that reads/writes the session store; the definitive on-disk-format source (zod schemas + `SessionManager`).
 - [command-code on npm](https://www.npmjs.com/package/command-code) — package page (install `npm i -g command-code`; bins `cmd`/`cmdc`/`command-code`/`commandcode`).
 - [CommandCodeAI/command-code (GitHub)](https://github.com/CommandCodeAI/command-code) — official repo; landing/readme only (actual CLI source is published to npm).
 - [CommandCodeAI org repositories](https://github.com/orgs/CommandCodeAI/repositories) — org repo list (includes archived `cmd-old-public`).

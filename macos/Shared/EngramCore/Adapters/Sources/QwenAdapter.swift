@@ -1,6 +1,6 @@
 import Foundation
 
-final class QwenAdapter: SessionAdapter, Sendable {
+final class QwenAdapter: SessionAdapter, LocatorOwningSessionAdapter, Sendable {
     let source: SourceName = .qwen
     private let projectsRoot: URL
     private let limits: ParserLimits
@@ -137,6 +137,12 @@ final class QwenAdapter: SessionAdapter, Sendable {
         JSONLAdapterSupport.fileExists(locator)
     }
 
+    func ownsLocator(_ locator: String) -> Bool {
+        let rootPath = projectsRoot.standardizedFileURL.path
+        let locatorPath = URL(fileURLWithPath: locator).standardizedFileURL.path
+        return locatorPath == rootPath || locatorPath.hasPrefix(rootPath + "/")
+    }
+
     private static func messages(from objects: [JSONLAdapterSupport.JSONObject]) -> [NormalizedMessage] {
         var pendingTelemetryUsage: TokenUsage?
         return objects.compactMap { object in
@@ -161,10 +167,14 @@ final class QwenAdapter: SessionAdapter, Sendable {
         else {
             return nil
         }
+        let content = extractContent(JSONLAdapterSupport.object(object["message"]))
+        if type == "user", isSystemInjection(content) {
+            return nil
+        }
         let metadataUsage = usage(from: JSONLAdapterSupport.object(object["usageMetadata"]))
         return NormalizedMessage(
             role: type == "assistant" ? .assistant : .user,
-            content: extractContent(JSONLAdapterSupport.object(object["message"])),
+            content: content,
             timestamp: JSONLAdapterSupport.string(object["timestamp"]),
             toolCalls: nil,
             usage: type == "assistant" ? (metadataUsage ?? telemetryUsage) : nil
@@ -238,6 +248,6 @@ final class QwenAdapter: SessionAdapter, Sendable {
             }
             textParts.append(text)
         }
-        return textParts.joined(separator: "\n\n")
+        return textParts.joined(separator: "\n")
     }
 }

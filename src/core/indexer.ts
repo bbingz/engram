@@ -5,6 +5,7 @@ import type {
   Message,
   SessionAdapter,
   SessionInfo,
+  SourceName,
 } from '../adapters/types.js';
 import type { Database } from './db.js';
 import type { Logger } from './logger.js';
@@ -18,6 +19,173 @@ import { computeTier, type SessionTier } from './session-tier.js';
 import { SessionSnapshotWriter } from './session-writer.js';
 import type { TitleGenerator } from './title-generator.js';
 import type { Tracer } from './tracer.js';
+
+const RELIABLE_INSTRUCTION_SOURCES = new Set<SourceName>([
+  'claude-code',
+  'codex',
+  'kimi',
+  'minimax',
+  'mimo',
+  'qwen',
+  'doubao',
+  'glm',
+  'deepseek',
+  'lobsterai',
+]);
+
+const MAX_INSTRUCTIONS = 16;
+const MICRO_ACKS = new Set([
+  'ok',
+  'okay',
+  'yes',
+  'yep',
+  'yup',
+  'no',
+  'nope',
+  'y',
+  'n',
+  'k',
+  'continue',
+  'go',
+  'go on',
+  'go ahead',
+  'proceed',
+  'sure',
+  'thanks',
+  'thank you',
+  'thx',
+  'done',
+  'next',
+  'got it',
+  '继续',
+  '好',
+  '好的',
+  '嗯',
+  '行',
+  '可以',
+  '对',
+  '是',
+  '谢谢',
+  '多谢',
+  '明白',
+  '知道了',
+  '收到',
+  '好滴',
+]);
+
+const PROBE_FIRST_LINES = new Set([
+  'ping',
+  'hi',
+  'hello',
+  'test',
+  'echo',
+  'ok',
+  'hey',
+  'say hello',
+  'reply: t4',
+  'polycli_health_ok',
+]);
+
+function collapseWhitespace(value: string): string {
+  return value.trim().split(/\s+/u).join(' ');
+}
+
+function containsNonLatin(value: string): boolean {
+  return Array.from(value).some((char) => (char.codePointAt(0) ?? 0) > 0x2e80);
+}
+
+function distinctInstruction(
+  content: string,
+  seen: Set<string>,
+): string | null {
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+
+  const firstLine = (trimmed.split('\n')[0] ?? trimmed).trim();
+  if (
+    firstLine.startsWith('/') ||
+    trimmed.startsWith('<command-name>') ||
+    trimmed.startsWith('<command-message>') ||
+    trimmed.startsWith('<local-command')
+  ) {
+    return null;
+  }
+  if (
+    trimmed.startsWith('<tool_use_result') ||
+    trimmed.startsWith('<tool_result')
+  ) {
+    return null;
+  }
+
+  const normalizedFirst = collapseWhitespace(firstLine.toLowerCase());
+  if (
+    PROBE_FIRST_LINES.has(normalizedFirst) ||
+    MICRO_ACKS.has(normalizedFirst) ||
+    normalizedFirst.startsWith('no tools.')
+  ) {
+    return null;
+  }
+
+  const ackSegments = normalizedFirst
+    .split(/[,，、;；。.！!~\s]+/u)
+    .filter(Boolean);
+  if (
+    ackSegments.length >= 2 &&
+    ackSegments.every((segment) => MICRO_ACKS.has(segment))
+  ) {
+    return null;
+  }
+
+  if (
+    Array.from(firstLine).length < 8 &&
+    !/\s/u.test(firstLine) &&
+    !containsNonLatin(firstLine)
+  ) {
+    return null;
+  }
+
+  const key = collapseWhitespace(trimmed.toLowerCase()).slice(0, 200);
+  if (seen.has(key)) return null;
+  seen.add(key);
+  return trimmed.slice(0, 200);
+}
+
+function instructionSignals(
+  source: SourceName,
+  messages: Array<{ role: string; content: string }>,
+): {
+  instructionCount: number | null;
+  humanTurnCount: number | null;
+  instructionSummary: string | null;
+} {
+  if (!RELIABLE_INSTRUCTION_SOURCES.has(source)) {
+    return {
+      instructionCount: null,
+      humanTurnCount: null,
+      instructionSummary: null,
+    };
+  }
+
+  const seen = new Set<string>();
+  const instructions: string[] = [];
+  let humanTurnCount = 0;
+  for (const message of messages) {
+    if (message.role !== 'user') continue;
+    const content = message.content.trim();
+    if (!content) continue;
+    humanTurnCount++;
+    if (instructions.length >= MAX_INSTRUCTIONS) continue;
+    const instruction = distinctInstruction(message.content, seen);
+    if (instruction) instructions.push(instruction);
+  }
+
+  return {
+    instructionCount: instructions.length,
+    humanTurnCount,
+    instructionSummary:
+      instructions.length > 0 ? instructions.join('\n') : null,
+  };
+}
 
 export class Indexer {
   private writer: SessionSnapshotWriter;
@@ -187,21 +355,22 @@ export class Indexer {
     messages: Array<{ role: string; content: string }>,
   ): AuthoritativeSessionSnapshot {
     const authoritativeNode = this.opts?.authoritativeNode ?? 'local';
-    const syncPayload = {
-      cwd: info.cwd,
-      project: info.project,
-      model: info.model,
-      messageCount: info.messageCount,
-      userMessageCount: info.userMessageCount,
-      assistantMessageCount: info.assistantMessageCount,
-      toolMessageCount: info.toolMessageCount,
-      systemMessageCount: info.systemMessageCount,
-      summary: info.summary,
-      summaryMessageCount: messages.length,
-    };
+    const summaryMessageCount = messages.length;
+    const syncPayload: Record<string, unknown> = { cwd: info.cwd };
+    if (info.project !== undefined) syncPayload.project = info.project;
+    if (info.model !== undefined) syncPayload.model = info.model;
+    if (info.originator !== undefined) syncPayload.originator = info.originator;
+    syncPayload.messageCount = info.messageCount;
+    syncPayload.userMessageCount = info.userMessageCount;
+    syncPayload.assistantMessageCount = info.assistantMessageCount;
+    syncPayload.toolMessageCount = info.toolMessageCount;
+    syncPayload.systemMessageCount = info.systemMessageCount;
+    if (info.summary !== undefined) syncPayload.summary = info.summary;
+    syncPayload.summaryMessageCount = summaryMessageCount;
     const snapshotHash = createHash('sha256')
       .update(JSON.stringify(syncPayload))
       .digest('hex');
+    const instructions = instructionSignals(info.source, messages);
 
     const userMsgs = messages
       .filter((m) => m.role === 'user')
@@ -240,10 +409,23 @@ export class Indexer {
       sizeBytes: info.sizeBytes,
       startTime: info.startTime,
       endTime: info.endTime,
+      cwd: info.cwd,
+      project: info.project,
+      model: info.model,
+      messageCount: info.messageCount,
+      userMessageCount: info.userMessageCount,
+      assistantMessageCount: info.assistantMessageCount,
+      toolMessageCount: info.toolMessageCount,
+      systemMessageCount: info.systemMessageCount,
+      summary: info.summary,
+      summaryMessageCount,
+      instructionCount: instructions.instructionCount,
+      humanTurnCount: instructions.humanTurnCount,
+      instructionSummary: instructions.instructionSummary,
+      originator: info.originator ?? null,
       origin: authoritativeNode,
       tier,
       agentRole: info.agentRole ?? null,
-      ...syncPayload,
     };
   }
 

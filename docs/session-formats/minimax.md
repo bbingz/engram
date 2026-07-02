@@ -1,20 +1,29 @@
 # MiniMax — On-Disk Session Format (Detection Overlay)
 
-Last researched: 2026-06-21
+Last researched: 2026-06-21; provider-root coverage updated: 2026-07-02.
+Current-state verification: 2026-07-02 (provider-root live smoke + DB diff; native overlay last checked 2026-07-01).
 
-MiniMax is **not** a standalone session store. It is a *detection overlay* on
-top of Claude Code: a session is reclassified from `claude-code` to `minimax`
-purely by inspecting the model name, while the bytes on disk remain ordinary
-Claude Code JSONL. There is no MiniMax-specific file, directory, schema, or
-storage technology.
+MiniMax is **not** a standalone session store. Engram now has two supported
+routes for MiniMax-flavored Claude Code sessions:
+
+1. native Claude Code root detection overlay under `~/.claude/projects`, where a
+   session is reclassified from `claude-code` to `minimax` by inspecting the
+   model name;
+2. explicit provider-root mode under `~/.claude-minimax/projects`, where every
+   parseable Claude Code JSONL conversation is assigned source `minimax` from
+   the path.
+
+In both routes, the bytes on disk remain ordinary Claude Code JSONL. There is
+no MiniMax-specific file schema or storage technology.
 
 > **Evidence basis:** adapter source (TypeScript `src/adapters/claude-code.ts`,
 > Swift `ClaudeCodeAdapter.swift`) + parity/unit tests, cross-checked against the
-> **live store** `~/.claude/projects/` (5276 `*.jsonl` files scanned). **Zero**
-> real sessions currently carry an actual MiniMax `message.model` field (see
-> [Gotchas](#gotchas)), so the field tables below are adapter-defined and
-> test-fixture-confirmed, not sampled from a live MiniMax session on this
-> machine.
+> **live native store** `~/.claude/projects/` (12,111 `*.jsonl` files listed,
+> 11,219 parseable conversations, 5 native MiniMax model-hint sessions) and the
+> **provider root** `~/.claude-minimax/projects` (232 JSONL files, 228 parseable
+> MiniMax conversations). The field tables below are adapter-defined and
+> test-fixture-confirmed; current live MiniMax samples confirm the model ids
+> `MiniMax-M2.5`, `MiniMax-M3`, and `MiniMax-M2.7-highspeed`.
 
 ---
 
@@ -27,16 +36,24 @@ complete record-by-record / field-by-field format reference, see
 [claude-code.md](./claude-code.md). Everything in that document applies verbatim
 to MiniMax sessions.
 
-MiniMax differs from Claude Code in exactly one dimension: the **Engram source
-label** assigned at parse time. It is registered as a derived adapter:
+In native-root overlay mode, MiniMax differs from Claude Code in exactly one
+dimension: the **Engram source label** assigned at parse time. It is registered
+as a derived adapter:
 
 ```swift
 ClaudeCodeDerivedSourceAdapter(source: .minimax, base: claudeCode)
 ```
 
-(`SessionAdapterFactory.swift:13`, also `:58`). The derived adapter reuses the
+(`SessionAdapterFactory.swift:18`, also `:81`). The derived adapter reuses the
 shared `ClaudeCodeAdapter` base for enumeration and parsing, then keeps only the
 sessions whose detected source equals `.minimax`.
+
+In provider-root mode, `SessionAdapterFactory.claudeCodeProviderAdapters()`
+registers `ClaudeCodeAdapter(projectsRoot: "~/.claude-minimax/projects")`
+(`SessionAdapterFactory.swift:103-123`). `ClaudeCodeAdapter.providerRootSources`
+maps the `.claude-minimax` path component to `SourceName.minimax`, and
+`originator` is set to `Claude Code`. This route does not depend on
+`message.model` containing `minimax`.
 
 ---
 
@@ -44,12 +61,44 @@ sessions whose detected source equals `.minimax`.
 
 | Aspect | Value |
 |---|---|
-| Storage location | **Same** as Claude Code: `~/.claude/projects/` (no MiniMax-specific path) |
+| Storage location | Native overlay: `~/.claude/projects/`; provider-root mode: `~/.claude-minimax/projects` |
 | Storage tech | **Same**: line-delimited JSONL, one file per session |
 | File schema | **Same** Claude Code record/content-block schema — see [claude-code.md](./claude-code.md) |
-| Engram source label | `minimax` (Swift enum `SourceName.minimax`, `SessionAdapter.swift:13`; display name "MiniMax", `SourceColors.swift:40`) |
+| Engram source label | `minimax` (Swift enum `SourceName.minimax`, `SessionAdapter.swift:15`; display name "MiniMax", `SourceColors.swift:48`) |
 | Detection signal | Model name (case-insensitive substring `minimax`) read from a `user`/`assistant` record |
-| Storage-location nuance | **None.** `SourceCatalog.swift:26` lists `minimax` with `defaultPath: "~/.claude/projects"`, the same path as `claude-code` |
+| Storage-location nuance | Native overlay shares `~/.claude/projects`; provider-root mode is an explicit cc-wrapper root and is source-owned by path |
+
+### Provider-root mode
+
+The local `cc-minimax` wrapper writes Claude Code-compatible JSONL under
+`~/.claude-minimax/projects`. Current Engram source registers that root as a
+provider adapter. A 2026-07-02 provider-root field smoke listed 232 JSONL files
+under that root, found 20,884 raw records and 0 malformed lines, parsed 228
+conversation files as `minimax`, and classified the 4 skipped files as workflow
+`journal.jsonl` status logs. Of the 228 parseable provider-root sessions, 218
+are subagents with parent links; observed models are `MiniMax-M3` (215 sessions)
+and `MiniMax-M2.7-highspeed` (13 sessions). Parser/stream mismatch count is 0.
+
+Provider-root mode is path-owned:
+
+- `~/.claude-minimax/projects/.../*.jsonl` -> `source = minimax`;
+- `originator = "Claude Code"`;
+- direct and nested `subagents/**/*.jsonl` locators are covered by the shared
+  recursive Claude Code locator scan;
+- model-substring detection is not used for this root.
+
+Installed `/Applications/Engram.app` build `20260701074505` has 228
+provider-root `minimax` rows under `/Users/bing/.claude-minimax/%` plus 232
+provider-root `file_index_state` rows (228 `ok`, 4 `retry/malformedJSON`), all
+still schema version 1. Locator diff is closed (0 missing parseable adapter
+locators and 0 DB-only current locators), and the corrected visible-tool-result
+parser reports 0 field-stale current provider-root rows. The earlier 225-row
+stale-count note was a retained-TS audit-tooling false positive: TS was counting
+non-visible Claude `tool_result` rows that the Swift product already drops.
+Native `~/.claude/projects` MiniMax rows remain the separate model-hint overlay
+path. The fresh 2026-07-02 native smoke sees all 5 current `MiniMax-M2.5` rows
+with 0 field-stale current MiniMax rows; the only native MiniMax cleanup item is
+1 deleted historical DB-only row.
 
 ### The exact detection rule
 
@@ -68,7 +117,7 @@ Precedence (top-down, first match wins):
 Authoritative source (byte-for-byte parity between the two adapters):
 
 ```ts
-// src/adapters/claude-code.ts:180-191
+// src/adapters/claude-code.ts:207-217
 static detectSource(model: string, filePath?: string): SessionInfo['source'] {
   if (filePath && ClaudeCodeAdapter.hasLobsterAIPathComponent(filePath))
     return 'lobsterai';
@@ -81,7 +130,7 @@ static detectSource(model: string, filePath?: string): SessionInfo['source'] {
 ```
 
 ```swift
-// macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift:212-223
+// macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift:252-263
 static func detectSource(model: String, filePath: String? = nil) -> SourceName {
     if let filePath, hasLobsterAIPathComponent(filePath) { return .lobsterai }
     if model.isEmpty || model.hasPrefix("claude") || model.hasPrefix("<") {
@@ -93,11 +142,11 @@ static func detectSource(model: String, filePath: String? = nil) -> SourceName {
 }
 ```
 
-**Detection rule lives at:** `src/adapters/claude-code.ts:187` and
-`macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift:219`.
+**Detection rule lives at:** `src/adapters/claude-code.ts:214` and
+`macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift:259`.
 
 Confirmed model strings that match (from tests): `minimax-m1`
-(`tests/adapters/claude-code.test.ts:122`, `EngramTests/AdapterParityTests.swift:101`)
+(`tests/adapters/claude-code.test.ts:236`, `EngramTests/AdapterParityTests.swift:101`)
 and `minimax-text-01` (`EngramCoreTests/AdapterParityTests.swift:119`). The
 rule is a substring match, so any model id containing `minimax` qualifies.
 
@@ -120,27 +169,27 @@ How a single Claude-format file resolves to `minimax` vs `claude-code`:
 1. **Enumerate** — the derived adapter lists candidates via the shared base.
    `ClaudeCodeDerivedSourceAdapter.listSessionLocators()` →
    `base.listDerivedSessionLocators(source: .minimax)`
-   (`ClaudeCodeAdapter.swift:600-602`, `:57-80`). The base does a cheap
+   (`ClaudeCodeAdapter.swift:640-642`, `:61-83`). The base does a cheap
    first-model "source hint" scan (up to 64 lines / 1 MB,
-   `firstModelHint` `ClaudeCodeAdapter.swift:260-309`,
+   `firstModelHint` `ClaudeCodeAdapter.swift:300-349`,
    `modelHint` checks top-level `model`, `message.model`, then `payload.model`
-   `:322-333`) and keeps only locators whose hint equals `.minimax`. Results are
+   `:362-369`) and keeps only locators whose hint equals `.minimax`. Results are
    cached per `(path, mtime, size)` signature
-   (`ClaudeCodeSourceHintCache`, `:539-571`).
+   (`ClaudeCodeSourceHintCache`, `:579-610`).
 
 2. **Parse** — `parseSessionInfo` extracts `detectedModel` from the first
    `message.model` on a `user`/`assistant` record, then calls `detectSource`
    to set `source`.
-   - TS: model capture `src/adapters/claude-code.ts:106-108`; classification
-     `:146`.
-   - Swift: model capture `ClaudeCodeAdapter.swift:123-125`; classification
-     `:151`.
+   - TS: model capture `src/adapters/claude-code.ts:128-130`; classification
+     `:169-172`.
+   - Swift: model capture `ClaudeCodeAdapter.swift:126-128`; classification
+     `:168-171`.
 
 3. **Filter to source** — the derived adapter accepts the parse result only
    when `info.source == .minimax`, otherwise returns
    `.unsupportedVirtualLocator`
    (`ClaudeCodeDerivedSourceAdapter.parseSessionInfo`,
-   `ClaudeCodeAdapter.swift:612-621`). This guarantees a single physical file is
+   `ClaudeCodeAdapter.swift:652-660`). This guarantees a single physical file is
    owned by exactly one source even though Claude + MiniMax + Lobster all share
    the base enumerator.
 
@@ -153,7 +202,7 @@ changes is `message.model`, which feeds `detectSource`:
 
 | Field | Type | Role for MiniMax | Example |
 |---|---|---|---|
-| `message.model` | string (optional) | First non-empty value on a `user`/`assistant` record; substring `minimax` (case-insensitive) → `source = minimax`; also stored as `SessionInfo.model` | `"minimax-m1"`, `"minimax-text-01"` |
+| `message.model` | string (optional) | First non-empty value on a `user`/`assistant` record; substring `minimax` (case-insensitive) → `source = minimax`; also stored as `SessionInfo.model` | `"MiniMax-M3"`, `"MiniMax-M2.5"`, `"MiniMax-M2.7-highspeed"` |
 
 Example assistant record (anonymized; structure verbatim, this is plain Claude
 Code JSONL):
@@ -179,10 +228,10 @@ Code JSONL):
   store, `minimax` appears in many sessions, but only inside *user-message
   content text* (e.g. a prompt listing model SKUs like `MiniMax M3 / M2.x`).
   Those are **not** detected as MiniMax, because `detectSource` keys on
-  `message.model`, never on message body text. Scanning the 5276 live
-  `~/.claude/projects/*.jsonl` files found **zero** sessions with an actual
-  MiniMax `message.model` field — so on this machine the `minimax` source
-  currently yields no sessions, even though the substring is common in content.
+  `message.model`, never on message body text. Scanning the current 12,111 live
+  `~/.claude/projects/*.jsonl` locators found **5** native MiniMax model-hint
+  sessions, all with `MiniMax-M2.5`; the provider-root scan found another 228
+  path-owned MiniMax conversations under `~/.claude-minimax/projects`.
 - **Substring, not equality.** Any model id containing `minimax`
   (case-insensitive) classifies as MiniMax. A future Anthropic/third-party
   model whose id incidentally contained that substring would be mis-tagged.

@@ -10,14 +10,16 @@ import type {
   Message,
   SessionAdapter,
   SessionInfo,
+  SourceName,
   StreamMessagesOptions,
   TokenUsage,
   ToolCall,
 } from './types.js';
 
 export class ClaudeCodeAdapter implements SessionAdapter {
-  readonly name = 'claude-code' as const;
+  readonly name: SourceName;
   private projectsRoot: string;
+  private originator?: string;
 
   // Message-bearing record types. Everything else (attachment, queue-operation,
   // permission-mode, last-prompt, file-history-snapshot, summary, system, ...)
@@ -25,8 +27,32 @@ export class ClaudeCodeAdapter implements SessionAdapter {
   // user-visible message type, add it here.
   private static MESSAGE_TYPES = new Set(['user', 'assistant']);
 
-  constructor(projectsRoot?: string) {
+  private static PROVIDER_ROOT_SOURCES: Record<string, SourceName> = {
+    '.claude-kimi': 'kimi',
+    '.claude-minimax': 'minimax',
+    '.claude-mimo': 'mimo',
+    '.claude-mimosg': 'mimo',
+    '.claude-qwen': 'qwen',
+    '.claude-doubao': 'doubao',
+    '.claude-glm': 'glm',
+    '.claude-glmc': 'glm',
+    '.claude-ds': 'deepseek',
+    '.claude-dsc': 'deepseek',
+    '.claude-openai': 'codex',
+  };
+
+  constructor(
+    projectsRoot?: string,
+    options?: { source?: SourceName; originator?: string },
+  ) {
     this.projectsRoot = projectsRoot ?? join(homedir(), '.claude', 'projects');
+    this.name =
+      options?.source ??
+      ClaudeCodeAdapter.providerSourceForProjectsRoot(this.projectsRoot) ??
+      'claude-code';
+    this.originator =
+      options?.originator ??
+      (this.name === 'claude-code' ? undefined : 'Claude Code');
   }
 
   async detect(): Promise<boolean> {
@@ -52,11 +78,8 @@ export class ClaudeCodeAdapter implements SessionAdapter {
               // UUID subdirectory — look for subagents/ inside it
               const subagentsPath = join(projectPath, entry.name, 'subagents');
               try {
-                const subFiles = await readdir(subagentsPath);
-                for (const file of subFiles) {
-                  if (file.endsWith('.jsonl')) {
-                    yield join(subagentsPath, file);
-                  }
+                for await (const file of this.jsonlFilesUnder(subagentsPath)) {
+                  yield file;
                 }
               } catch {
                 // no subagents dir, skip
@@ -86,6 +109,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       let systemCount = 0;
       let firstUserText = '';
       let detectedModel = '';
+      let isSidechain = false;
 
       for await (const line of this.readLines(filePath)) {
         const obj = this.parseLine(line);
@@ -95,6 +119,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         // sessionId can live on non-message records too (permission-mode, etc.)
         // — capture it before filtering so single-record sessions still parse.
         if (!sessionId && obj.sessionId) sessionId = obj.sessionId as string;
+        if (obj.isSidechain === true) isSidechain = true;
         if (!ClaudeCodeAdapter.MESSAGE_TYPES.has(type)) continue;
 
         if (!agentId && obj.agentId) agentId = obj.agentId as string;
@@ -111,7 +136,9 @@ export class ClaudeCodeAdapter implements SessionAdapter {
           assistantCount++;
         } else if (type === 'user') {
           if (this.isToolResult(msg?.content)) {
-            toolCount++;
+            if (this.extractContent(msg?.content)) {
+              toolCount++;
+            }
           } else {
             const text = this.extractContent(msg?.content);
             if (this.isSystemInjection(text)) {
@@ -140,17 +167,27 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         startTime || new Date(fileStat.mtimeMs).toISOString();
       const safeEndTime = endTime || safeStartTime;
 
-      const isSubagent = filePath.includes('/subagents/');
+      const isPathSubagent = filePath.includes('/subagents/');
+      const isLegacyRootAgent =
+        !isPathSubagent &&
+        isSidechain &&
+        !!agentId &&
+        basename(filePath).startsWith('agent-');
+      const isSubagent = isPathSubagent || isLegacyRootAgent;
       // Subagent files share sessionId with the parent — use agentId as the unique DB key
       const id = isSubagent && agentId ? agentId : sessionId;
-      const source = ClaudeCodeAdapter.detectSource(detectedModel, filePath);
+      const source =
+        this.name === 'claude-code'
+          ? ClaudeCodeAdapter.detectSource(detectedModel, filePath)
+          : this.name;
 
-      // Extract parent session ID from subagent path
-      let parentSessionId: string | undefined;
-      if (isSubagent) {
-        const match = filePath.match(/\/([^/]+)\/subagents\/[^/]+\.jsonl$/);
-        if (match) parentSessionId = match[1];
-      }
+      // Extract parent session ID from subagent path; legacy root agent files
+      // carry the parent in sessionId and their unique key in agentId.
+      const parentSessionId = isPathSubagent
+        ? ClaudeCodeAdapter.parentSessionId(filePath)
+        : isLegacyRootAgent
+          ? sessionId
+          : undefined;
 
       return {
         id,
@@ -169,6 +206,9 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         filePath,
         sizeBytes: fileStat.size,
         agentRole: isSubagent ? 'subagent' : undefined,
+        originator:
+          this.originator ??
+          (source === 'claude-code' ? undefined : 'Claude Code'),
         parentSessionId,
       };
     } catch {
@@ -188,6 +228,37 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     // Qwen/Kimi/Gemini models can be routed through Claude-compatible clients,
     // but the session file is still owned by Claude Code's on-disk format.
     return 'claude-code';
+  }
+
+  private static providerSourceForProjectsRoot(
+    projectsRoot: string,
+  ): SourceName | undefined {
+    const components = projectsRoot
+      .split(/[\\/]+/)
+      .map((component) => component.toLowerCase());
+    for (let i = components.length - 1; i >= 0; i--) {
+      const source = ClaudeCodeAdapter.PROVIDER_ROOT_SOURCES[components[i]];
+      if (source) return source;
+    }
+    return undefined;
+  }
+
+  private async *jsonlFilesUnder(root: string): AsyncGenerator<string> {
+    const entries = await readdir(root, { withFileTypes: true });
+    for (const entry of entries) {
+      const path = join(root, entry.name);
+      if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+        yield path;
+      } else if (entry.isDirectory()) {
+        yield* this.jsonlFilesUnder(path);
+      }
+    }
+  }
+
+  private static parentSessionId(filePath: string): string | undefined {
+    const parts = filePath.split(/[\\/]+/);
+    const index = parts.indexOf('subagents');
+    return index > 0 ? parts[index - 1] : undefined;
   }
 
   private static projectNameFromCwd(cwd: string): string | undefined {
@@ -219,21 +290,36 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       const type = obj.type as string;
       if (!ClaudeCodeAdapter.MESSAGE_TYPES.has(type)) continue;
 
+      const msg = obj.message as Record<string, unknown>;
+      // parseSessionInfo classifies Claude/command bootstrap records as system
+      // messages. Do not expose them in streamMessages, and do not let them
+      // consume pagination offsets.
+      const content = this.extractContent(msg?.content);
+      const isToolResultRecord =
+        type === 'user' && this.isToolResult(msg?.content);
+      if (isToolResultRecord && !content) {
+        continue;
+      }
+      if (
+        type === 'user' &&
+        !isToolResultRecord &&
+        this.isSystemInjection(content)
+      ) {
+        continue;
+      }
+
       if (count < offset) {
         count++;
         continue;
       }
       count++;
 
-      const msg = obj.message as Record<string, unknown>;
       // user-typed records carrying tool_result content are tool messages;
       // parseSessionInfo already counts them under toolMessageCount, so the
       // streamed role must agree to keep stream + counts in sync.
-      const role: 'user' | 'assistant' | 'tool' =
-        type === 'user' && this.isToolResult(msg?.content)
-          ? 'tool'
-          : (type as 'user' | 'assistant');
-      const content = this.extractContent(msg?.content);
+      const role: 'user' | 'assistant' | 'tool' = isToolResultRecord
+        ? 'tool'
+        : (type as 'user' | 'assistant');
       const timestamp = obj.timestamp as string | undefined;
 
       // Extract usage from message object
@@ -390,7 +476,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     const name = c.name as string;
     if (ClaudeCodeAdapter.NOISE_TOOLS.has(name)) return '';
     const input = c.input as Record<string, unknown> | undefined;
-    if (name === 'AskUserQuestion' && input?.questions) {
+    if (name === 'AskUserQuestion' && Array.isArray(input?.questions)) {
       return this.formatAskUserQuestion(
         input.questions as Record<string, unknown>[],
       );
@@ -461,5 +547,43 @@ export class ClaudeCodeAdapter implements SessionAdapter {
 
   async isAccessible(locator: string): Promise<boolean> {
     return isFileAccessible(locator);
+  }
+}
+
+export class ClaudeCodeDerivedSourceAdapter implements SessionAdapter {
+  readonly name: SourceName;
+
+  constructor(
+    private readonly source: SourceName,
+    private readonly base: ClaudeCodeAdapter,
+  ) {
+    this.name = source;
+  }
+
+  async detect(): Promise<boolean> {
+    return this.base.detect();
+  }
+
+  async *listSessionFiles(): AsyncGenerator<string> {
+    for await (const file of this.base.listSessionFiles()) {
+      const info = await this.base.parseSessionInfo(file);
+      if (info?.source === this.source) yield file;
+    }
+  }
+
+  async parseSessionInfo(filePath: string): Promise<SessionInfo | null> {
+    const info = await this.base.parseSessionInfo(filePath);
+    return info?.source === this.source ? info : null;
+  }
+
+  streamMessages(
+    filePath: string,
+    opts?: StreamMessagesOptions,
+  ): AsyncGenerator<Message> {
+    return this.base.streamMessages(filePath, opts);
+  }
+
+  async isAccessible(locator: string): Promise<boolean> {
+    return this.base.isAccessible(locator);
   }
 }

@@ -127,6 +127,62 @@ describe('GeminiCliAdapter', () => {
     }
   });
 
+  it('lists native nested subagent JSONL files with parent links', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'engram-gemini-subagent-'));
+    try {
+      const projectDir = join(tmp, 'tmp', 'hash-001');
+      const subagentDir = join(projectDir, 'chats', 'parent-session-001');
+      mkdirSync(subagentDir, { recursive: true });
+      writeFileSync(join(projectDir, '.project_root'), '/Users/test/gemini');
+      const subagentPath = join(subagentDir, 'subagent-session-001.jsonl');
+      writeFileSync(
+        subagentPath,
+        [
+          JSON.stringify({
+            kind: 'subagent',
+            sessionId: 'subagent-session-001',
+            projectHash: 'hash-001',
+            startTime: '2026-06-22T01:00:00.000Z',
+            lastUpdated: '2026-06-22T01:00:00.000Z',
+          }),
+          JSON.stringify({
+            id: 'm1',
+            timestamp: '2026-06-22T01:00:01.000Z',
+            type: 'user',
+            content: [{ text: 'subagent task' }],
+          }),
+          JSON.stringify({
+            id: 'm2',
+            timestamp: '2026-06-22T01:00:02.000Z',
+            type: 'gemini',
+            content: 'subagent answer',
+          }),
+          '',
+        ].join('\n'),
+      );
+
+      const adapter = new GeminiCliAdapter(
+        join(tmp, 'tmp'),
+        join(tmp, 'no.json'),
+      );
+      const files: string[] = [];
+      for await (const file of adapter.listSessionFiles()) files.push(file);
+      expect(files).toEqual([subagentPath]);
+
+      const info = await adapter.parseSessionInfo(subagentPath);
+      expect(info).toMatchObject({
+        id: 'subagent-session-001',
+        agentRole: 'subagent',
+        parentSessionId: 'parent-session-001',
+        project: 'hash-001',
+        cwd: '/Users/test/gemini',
+        messageCount: 2,
+      });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('resolveProject returns cwd for projectName', async () => {
     const cwd = await adapter.resolveProject('my-project');
     expect(cwd).toBe('/Users/test/my-project');

@@ -508,6 +508,33 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(sink.batchSizes, [100, 100, 5])
     }
 
+    func testIndexAllDeduplicatesDuplicateSessionIdsWithinBatch() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-index-duplicate-session-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let firstLocator = root.appendingPathComponent("first.jsonl")
+        let secondLocator = root.appendingPathComponent("second.jsonl")
+        try "synthetic\n".write(to: firstLocator, atomically: true, encoding: .utf8)
+        try "synthetic\n".write(to: secondLocator, atomically: true, encoding: .utf8)
+
+        let firstAdapter = CountingSyntheticFileSessionAdapter(locator: firstLocator.path)
+        let secondAdapter = CountingSyntheticFileSessionAdapter(locator: secondLocator.path)
+        let sink = RecordingBatchSink()
+        let indexer = SwiftIndexer(
+            sink: sink,
+            adapters: [firstAdapter, secondAdapter]
+        )
+
+        let indexed = try await indexer.indexAll()
+
+        XCTAssertEqual(indexed, 1)
+        XCTAssertEqual(sink.batchSizes, [1])
+        XCTAssertEqual(firstAdapter.streamCount, 1)
+        XCTAssertEqual(secondAdapter.streamCount, 1)
+    }
+
     func testStartupIndexAllSkipsUnchangedFileLocatorsOnSecondRun() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("startup-index-skip-\(UUID().uuidString)", isDirectory: true)
@@ -585,6 +612,69 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(adapter.streamCount, firstStreamCount, "startup all-scan must not reparse known modified locators")
     }
 
+    func testStartupIndexRepairsSessionRowWhenFileIndexStateIsNewerThanSession() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-index-stale-session-current-file-state-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("session.jsonl")
+        try "hello\nlater change\n".write(to: locator, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 2_000)],
+            ofItemAtPath: locator.path
+        )
+        let currentStat = try XCTUnwrap(FileIndexStat.directFileStat(locator: locator.path))
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(
+                    id: "startup-skip",
+                    snapshotHash: "stale-session",
+                    sourceLocator: locator.path,
+                    sizeBytes: 5,
+                    authoritativeNode: "local",
+                    summary: "stale",
+                    model: "synthetic",
+                    instructionCount: 1,
+                    humanTurnCount: 1,
+                    instructionSummary: "stale"
+                )
+            )
+            try db.execute(
+                sql: """
+                UPDATE sessions
+                SET message_count = 1,
+                    assistant_message_count = 0,
+                    size_bytes = 5
+                WHERE id = 'startup-skip'
+                """
+            )
+        }
+        try writer.upsertFileIndexState(
+            FileIndexState.success(source: .codex, locator: locator.path, stat: currentStat, now: Date())
+        )
+        let adapter = CountingSyntheticFileSessionAdapter(locator: locator.path)
+
+        let result = try await writer.indexAllSessions(adapters: [adapter])
+        let row = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT message_count, assistant_message_count, size_bytes
+                FROM sessions
+                WHERE id = 'startup-skip'
+                """
+            )
+        }
+
+        XCTAssertEqual(result.indexed, 1)
+        XCTAssertEqual(adapter.streamCount, 1)
+        XCTAssertEqual(row?["message_count"] as Int?, 2)
+        XCTAssertEqual(row?["assistant_message_count"] as Int?, 1)
+        XCTAssertEqual(row?["size_bytes"] as Int64?, currentStat.sizeBytes)
+    }
+
     func testFileIndexDecisionSkipsTerminalFailureUntilFileChanges() {
         let now = Date(timeIntervalSince1970: 2_000)
         let stat = FileIndexStat(
@@ -647,6 +737,20 @@ final class IndexerParityTests: XCTestCase {
         )
         var state = FileIndexState.success(source: .codex, locator: "/tmp/ok.jsonl", stat: stat, now: now)
         state.schemaVersion = FileIndexState.currentSchemaVersion - 1
+
+        XCTAssertEqual(FileIndexDecision.decide(stat: stat, state: state, now: now), .full)
+    }
+
+    func testFileIndexDecisionInvalidatesLegacyParserSchemaVersionOne() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        let stat = FileIndexStat(
+            sizeBytes: 128,
+            modifiedAtNanos: 1_000_000_000,
+            inode: 42,
+            device: 7
+        )
+        var state = FileIndexState.success(source: .doubao, locator: "/tmp/doubao.jsonl", stat: stat, now: now)
+        state.schemaVersion = 1
 
         XCTAssertEqual(FileIndexDecision.decide(stat: stat, state: state, now: now), .full)
     }
@@ -775,6 +879,112 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(row?["instruction_count"] as Int?, 1)
         XCTAssertEqual(row?["human_turn_count"] as Int?, 1)
         XCTAssertEqual(row?["instruction_summary"] as String?, "Fix login bug")
+    }
+
+    /// Regression guard: when a source registers more than one adapter (the
+    /// native adapter plus a ClaudeCode `~/.claude-<name>` provider-root clone —
+    /// e.g. `.codex` also has the `~/.claude-openai` clone), the instruction
+    /// backfill must resolve the adapter that OWNS each locator, not just the
+    /// first one registered. First-wins would stream a native file through the
+    /// clone's Claude-JSONL parser, yield no user turns, and permanently write
+    /// instruction_count=0 (hiding the session under HumanDrivenFilter).
+    func testInstructionBackfillResolvesOwningAdapterNotFirstRegistered() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("instruction-backfill-locator-aware-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("native-session.jsonl")
+        try "hello\n".write(to: locator, atomically: true, encoding: .utf8)
+        let size = try XCTUnwrap(FileIndexStat.directFileStat(locator: locator.path)).sizeBytes
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(
+                    id: "native-owned",
+                    sourceLocator: locator.path,
+                    sizeBytes: size,
+                    authoritativeNode: "local"
+                )
+            )
+            try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE session_id = 'native-owned'")
+        }
+
+        // Clone is registered FIRST and does not own the locator (streams empty);
+        // native is registered SECOND and owns it (streams a real instruction).
+        let clone = OwnedLocatorSessionAdapter(source: .codex, ownedLocators: [], userContent: "")
+        let native = OwnedLocatorSessionAdapter(
+            source: .codex,
+            ownedLocators: [locator.path],
+            userContent: "Fix login bug"
+        )
+
+        let result = try await writer.indexInstructionBackfillSessions(adapters: [clone, native])
+        let row = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT instruction_count, human_turn_count, instruction_summary
+                FROM sessions
+                WHERE id = 'native-owned'
+                """
+            )
+        }
+
+        XCTAssertEqual(result.indexed, 1)
+        XCTAssertEqual(clone.streamCount, 0, "non-owning clone must not be streamed")
+        XCTAssertEqual(native.streamCount, 1, "owning native adapter must be streamed")
+        XCTAssertEqual(row?["instruction_count"] as Int?, 1)
+        XCTAssertEqual(row?["human_turn_count"] as Int?, 1)
+        XCTAssertEqual(row?["instruction_summary"] as String?, "Fix login bug")
+    }
+
+    /// Regression guard for the real `.codex`/`.minimax` shape: the native /
+    /// derived adapter does NOT implement `LocatorOwningSessionAdapter`, so it
+    /// cannot positively claim its locator. A ClaudeCode provider clone that
+    /// DOES conform but disowns the native locator must not win by registration
+    /// order — resolution must fall back to the non-disowning native adapter
+    /// even though the clone is registered first.
+    func testInstructionBackfillPrefersNonDisowningNativeOverConformingClone() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("instruction-backfill-nonconforming-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("native-session.jsonl")
+        try "hello\n".write(to: locator, atomically: true, encoding: .utf8)
+        let size = try XCTUnwrap(FileIndexStat.directFileStat(locator: locator.path)).sizeBytes
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(
+                    id: "native-nonconforming",
+                    sourceLocator: locator.path,
+                    sizeBytes: size,
+                    authoritativeNode: "local"
+                )
+            )
+            try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE session_id = 'native-nonconforming'")
+        }
+
+        // Conforming clone registered FIRST but disowns the locator; native
+        // adapter does not implement LocatorOwningSessionAdapter at all.
+        let clone = OwnedLocatorSessionAdapter(source: .codex, ownedLocators: [], userContent: "")
+        let native = NonOwningStreamAdapter(source: .codex, userContent: "Fix login bug")
+
+        let result = try await writer.indexInstructionBackfillSessions(adapters: [clone, native])
+        let row = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT instruction_count, human_turn_count FROM sessions WHERE id = 'native-nonconforming'"
+            )
+        }
+
+        XCTAssertEqual(result.indexed, 1)
+        XCTAssertEqual(clone.streamCount, 0, "clone that disowns the locator must not be streamed")
+        XCTAssertEqual(native.streamCount, 1, "non-conforming native adapter must be streamed")
+        XCTAssertEqual(row?["instruction_count"] as Int?, 1)
+        XCTAssertEqual(row?["human_turn_count"] as Int?, 1)
     }
 
     func testImplementationBeatBackfillIndexesExistingReliableRowsMissedByAdapterListing() async throws {
@@ -1824,6 +2034,90 @@ private final class SyntheticFileSessionAdapter: SessionAdapter {
         AsyncThrowingStream { continuation in
             continuation.yield(NormalizedMessage(role: .user, content: "hello"))
             continuation.yield(NormalizedMessage(role: .assistant, content: "done"))
+            continuation.finish()
+        }
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        FileManager.default.fileExists(atPath: locator)
+    }
+}
+
+/// Test adapter that owns an explicit set of locators, used to reproduce the
+/// multi-adapter-per-source resolution path (native adapter vs ClaudeCode
+/// provider-root clone).
+private final class OwnedLocatorSessionAdapter: SessionAdapter, LocatorOwningSessionAdapter {
+    let source: SourceName
+    private let ownedLocators: Set<String>
+    private let userContent: String
+    private(set) var streamCount = 0
+
+    init(source: SourceName, ownedLocators: [String], userContent: String) {
+        self.source = source
+        self.ownedLocators = Set(ownedLocators)
+        self.userContent = userContent
+    }
+
+    func detect() async -> Bool { true }
+
+    func listSessionLocators() async throws -> [String] { Array(ownedLocators) }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .failure(.malformedJSON)
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        streamCount += 1
+        let content = userContent
+        return AsyncThrowingStream { continuation in
+            if !content.isEmpty {
+                continuation.yield(NormalizedMessage(role: .user, content: content))
+            }
+            continuation.finish()
+        }
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        FileManager.default.fileExists(atPath: locator)
+    }
+
+    func ownsLocator(_ locator: String) -> Bool { ownedLocators.contains(locator) }
+}
+
+/// Test adapter that does NOT implement `LocatorOwningSessionAdapter`,
+/// mirroring the native `CodexAdapter` / derived MiniMax adapter which cannot
+/// positively claim a locator.
+private final class NonOwningStreamAdapter: SessionAdapter {
+    let source: SourceName
+    private let userContent: String
+    private(set) var streamCount = 0
+
+    init(source: SourceName, userContent: String) {
+        self.source = source
+        self.userContent = userContent
+    }
+
+    func detect() async -> Bool { true }
+
+    func listSessionLocators() async throws -> [String] { [] }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .failure(.malformedJSON)
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        streamCount += 1
+        let content = userContent
+        return AsyncThrowingStream { continuation in
+            if !content.isEmpty {
+                continuation.yield(NormalizedMessage(role: .user, content: content))
+            }
             continuation.finish()
         }
     }

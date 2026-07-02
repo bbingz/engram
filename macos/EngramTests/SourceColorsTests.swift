@@ -5,13 +5,9 @@ import SwiftUI
 
 final class SourceColorsTests: XCTestCase {
 
-    // All displayable source ids from SourceColors.color(for:), including legacy roots.
-    private let allSources = [
-        "claude-code", "cursor", "codex", "gemini-cli", "windsurf",
-        "cline", "vscode", "antigravity", "copilot", "opencode",
-            "iflow", "qwen", "qoder", "kimi", "minimax", "lobsterai", "antigravity-legacy",
-            "commandcode"
-    ]
+    private var allSources: [String] {
+        SourceCatalog.all.map(\.id) + ["antigravity-legacy"]
+    }
 
     func testAllKnownSourcesReturnNonNilColor() {
         for source in allSources {
@@ -40,12 +36,13 @@ final class SourceColorsTests: XCTestCase {
     }
 
     func testAllSourceNamesCovered() {
-        XCTAssertEqual(allSources.count, 18)
+        let catalogIDs = Set(SourceCatalog.all.map(\.id))
+        let sourceIDs = Set(SourceName.allCases.map(\.rawValue))
+        XCTAssertEqual(catalogIDs, sourceIDs)
+        XCTAssertEqual(allSources.count, SourceCatalog.all.count + 1)
 
-        // Each should have a corresponding label (not the default pass-through)
         for source in allSources {
             let label = SourceColors.label(for: source)
-            // Known sources have human-friendly labels (never identical to raw key, except sometimes)
             XCTAssertFalse(label.isEmpty, "Label for \(source) should not be empty")
         }
     }

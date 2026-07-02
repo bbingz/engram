@@ -142,4 +142,32 @@ describe('mergeSessionSnapshot', () => {
     expect(result.changeSet.flags.has('search_text_changed')).toBe(true);
     expect(result.changeSet.flags.has('embedding_text_changed')).toBe(true);
   });
+
+  it('accepts lower-version local locator refreshes while preserving syncVersion', () => {
+    const result = mergeSessionSnapshot(
+      makeSnapshot({
+        source: 'kimi',
+        syncVersion: 936,
+        snapshotHash: 'legacy',
+        sourceLocator: '/tmp/kimi/session/subagent/meta.json',
+        sizeBytes: 399,
+      }),
+      makeSnapshot({
+        source: 'kimi',
+        syncVersion: 1,
+        snapshotHash: 'canonical',
+        sourceLocator: '/tmp/kimi/session/subagent/context.jsonl',
+        sizeBytes: 125_184,
+      }),
+    );
+
+    expect(result.action).toBe('merge');
+    expect(result.merged.syncVersion).toBe(936);
+    expect(result.merged.snapshotHash).toBe('canonical');
+    expect(result.merged.sourceLocator).toBe(
+      '/tmp/kimi/session/subagent/context.jsonl',
+    );
+    expect(result.merged.sizeBytes).toBe(125_184);
+    expect(result.changeSet.flags.has('sync_payload_changed')).toBe(true);
+  });
 });

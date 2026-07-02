@@ -106,6 +106,171 @@ describe('QwenAdapter', () => {
     }
   });
 
+  it('attaches assistant usageMetadata to streamed assistant messages', async () => {
+    const tmpRoot = join(tmpdir(), `engram-qwen-usage-${Date.now()}`);
+    const filePath = join(tmpRoot, 'usage.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          uuid: 'u1',
+          sessionId: 'usage-001',
+          timestamp: '2026-04-01T00:00:00Z',
+          type: 'user',
+          cwd: '/x',
+          message: { role: 'user', parts: [{ text: 'track usage' }] },
+        }),
+        JSON.stringify({
+          uuid: 'a1',
+          sessionId: 'usage-001',
+          timestamp: '2026-04-01T00:00:01Z',
+          type: 'assistant',
+          cwd: '/x',
+          usageMetadata: {
+            promptTokenCount: 123,
+            candidatesTokenCount: 45,
+            cachedContentTokenCount: 6,
+          },
+          message: { role: 'model', parts: [{ text: 'usage tracked' }] },
+        }),
+      ].join('\n'),
+    );
+    try {
+      const messages = [];
+      for await (const m of adapter.streamMessages(filePath)) messages.push(m);
+
+      expect(messages[0].usage).toBeUndefined();
+      expect(messages[1].usage).toEqual({
+        inputTokens: 123,
+        outputTokens: 45,
+        cacheReadTokens: 6,
+        cacheCreationTokens: 0,
+      });
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('uses ui_telemetry usage when assistant usageMetadata is absent', async () => {
+    const tmpRoot = join(tmpdir(), `engram-qwen-telemetry-${Date.now()}`);
+    const filePath = join(tmpRoot, 'telemetry.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          uuid: 'u1',
+          sessionId: 'telemetry-001',
+          timestamp: '2026-04-01T00:00:00Z',
+          type: 'user',
+          cwd: '/x',
+          message: { role: 'user', parts: [{ text: 'use telemetry' }] },
+        }),
+        JSON.stringify({
+          uuid: 't1',
+          parentUuid: 'u1',
+          sessionId: 'telemetry-001',
+          timestamp: '2026-04-01T00:00:01Z',
+          type: 'system',
+          subtype: 'ui_telemetry',
+          cwd: '/x',
+          systemPayload: {
+            uiEvent: {
+              'event.name': 'qwen-code.api_response',
+              input_token_count: 321,
+              output_token_count: 65,
+              cached_content_token_count: 9,
+            },
+          },
+        }),
+        JSON.stringify({
+          uuid: 'a1',
+          sessionId: 'telemetry-001',
+          timestamp: '2026-04-01T00:00:02Z',
+          type: 'assistant',
+          cwd: '/x',
+          message: { role: 'model', parts: [{ text: 'telemetry tracked' }] },
+        }),
+      ].join('\n'),
+    );
+    try {
+      const messages = [];
+      for await (const m of adapter.streamMessages(filePath)) messages.push(m);
+
+      expect(messages[0].usage).toBeUndefined();
+      expect(messages[1].usage).toEqual({
+        inputTokens: 321,
+        outputTokens: 65,
+        cacheReadTokens: 9,
+        cacheCreationTokens: 0,
+      });
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('skips user-form system injections from streamed messages', async () => {
+    const tmpRoot = join(tmpdir(), `engram-qwen-system-${Date.now()}`);
+    const filePath = join(tmpRoot, 'system.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          uuid: 's1',
+          sessionId: 'system-001',
+          timestamp: '2026-04-01T00:00:00Z',
+          type: 'user',
+          cwd: '/x',
+          message: {
+            role: 'user',
+            parts: [
+              {
+                text: '\nYou are Qwen Code, an interactive CLI agent. Analyze the current directory.',
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          uuid: 'u1',
+          sessionId: 'system-001',
+          timestamp: '2026-04-01T00:00:01Z',
+          type: 'user',
+          cwd: '/x',
+          message: {
+            role: 'user',
+            parts: [{ text: 'real prompt' }],
+          },
+        }),
+        JSON.stringify({
+          uuid: 'a1',
+          sessionId: 'system-001',
+          timestamp: '2026-04-01T00:00:02Z',
+          type: 'assistant',
+          cwd: '/x',
+          message: {
+            role: 'model',
+            parts: [{ text: 'answer' }],
+          },
+        }),
+      ].join('\n'),
+    );
+    try {
+      const info = await adapter.parseSessionInfo(filePath);
+      const messages = [];
+      for await (const m of adapter.streamMessages(filePath)) messages.push(m);
+
+      expect(info?.systemMessageCount).toBe(1);
+      expect(info?.userMessageCount).toBe(1);
+      expect(info?.assistantMessageCount).toBe(1);
+      expect(info?.messageCount).toBe(messages.length);
+      expect(messages.map((m) => m.content)).toEqual(['real prompt', 'answer']);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('streamMessages respects limit', async () => {
     const messages = [];
     for await (const msg of adapter.streamMessages(FIXTURE, { limit: 1 })) {

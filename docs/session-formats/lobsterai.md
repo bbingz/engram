@@ -1,11 +1,17 @@
 # LobsterAI — On-Disk Session Format (Detection Overlay)
 
-Last researched: 2026-06-21
+Last researched: 2026-07-01 (local Engram source/live corpus; web sources last checked 2026-06-21)
 
 > **Evidence basis:** adapter source (Swift + TypeScript) + adapter parity
 > tests, cross-checked against **live on-disk data** on this machine:
-> `~/.claude/projects/-Users-bing-lobsterai-project/` (1 directory; index only).
-> A discrepancy between the live data and the adapter is flagged in
+> `~/.claude/projects/-Users-bing-lobsterai-project/` (27 JSONL session
+> files, 16 tool-result text sidecars, and `sessions-index.json`). Current
+> parser classification for those JSONL files is 23 `claude-code`, 2
+> `minimax`, and 2 skipped side-channel files; 0 are adapter-classified as
+> `lobsterai`. The live DB still has 1 stale historical `lobsterai` false
+> positive row and no `lobsterai` `file_index_state`. The discrepancy between
+> the live path substring and the adapter's strict path-component rule is
+> flagged in
 > [Gotchas](#gotchas).
 
 ## Overview
@@ -43,12 +49,12 @@ Code adapter that keeps only the locators the Claude Code adapter classifies as
 
 - `ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: claudeCode)`
   registered in
-  `macos/.../Adapters/SessionAdapterFactory.swift:14` (and `:59`).
-- The wrapper itself: `macos/.../Adapters/Sources/ClaudeCodeAdapter.swift:573`
+  `macos/.../Adapters/SessionAdapterFactory.swift:19` (and `:82`).
+- The wrapper itself: `macos/.../Adapters/Sources/ClaudeCodeAdapter.swift:630`
   (`ClaudeCodeDerivedSourceAdapter`); it constrains itself to MiniMax/LobsterAI
   via `precondition(source == .minimax || source == .lobsterai)`
-  (`ClaudeCodeAdapter.swift:578`) and defaults `projectsRoot` to
-  `~/.claude/projects` (`ClaudeCodeAdapter.swift:585`).
+  (`ClaudeCodeAdapter.swift:635`) and defaults `projectsRoot` to
+  `~/.claude/projects` (`ClaudeCodeAdapter.swift:642-644`).
 
 ## What differs from Claude Code
 
@@ -91,11 +97,11 @@ Where it lives (file:line in both adapters):
 
 | Concern | Swift | TypeScript |
 |---|---|---|
-| `detectSource(model, filePath)` (path check first) | `ClaudeCodeAdapter.swift:212-213` | `claude-code.ts:180-183` |
-| Path-component matcher | `hasLobsterAIPathComponent` `ClaudeCodeAdapter.swift:225-239` (string equality/`hasPrefix` set) | `hasLobsterAIPathComponent` `claude-code.ts:199-203` (regex above) |
-| Locator-only hint (listing) | `detectSourceHint` `ClaudeCodeAdapter.swift:241-244` | n/a |
-| Source enum entry | `SourceName.lobsterai` `SessionAdapter.swift:14` | `types.ts:14` |
-| Display label / color | n/a (Swift `SourceColors`) | `views.ts:21` `'Lobster AI'`, `:41` `#f1c40f` |
+| `detectSource(model, filePath)` (path check first) | `ClaudeCodeAdapter.swift:266-277` | `claude-code.ts:218-229` |
+| Path-component matcher | `hasLobsterAIPathComponent` `ClaudeCodeAdapter.swift:279-293` (string equality/`hasPrefix` set) | `hasLobsterAIPathComponent` `claude-code.ts:268-272` (regex above) |
+| Locator-only hint (listing) | `detectSourceHint` `ClaudeCodeAdapter.swift:295-298` | n/a |
+| Source enum entry | `SourceName.lobsterai` `SessionAdapter.swift:20` | `types.ts:20` |
+| Display label / color | `SourceColors.swift:53` label, `:31` color | `views.ts:21` `'Lobster AI'`, `:41` `#f1c40f` |
 
 **Storage-location nuance:** none. LobsterAI shares Claude Code's root, file
 naming, JSONL format, and watcher path (`watcher.ts:48` lists `lobsterai`, but
@@ -119,25 +125,25 @@ parser; the LobsterAI wrapper just filters to the resulting label.
 
 1. The Claude Code adapter lists every `.jsonl` (and `subagents/*.jsonl`)
    locator under `~/.claude/projects/`
-   (`ClaudeCodeAdapter.swift:27-48`; Swift listing for derived sources:
-   `listDerivedSessionLocators` `ClaudeCodeAdapter.swift:57-80`, which classifies
+   (`ClaudeCodeAdapter.swift:33-51`; Swift listing for derived sources:
+   `listDerivedSessionLocators` `ClaudeCodeAdapter.swift:61-83`, which classifies
    each locator via `detectSourceHint` and keeps only matches for `source`).
 2. For each session, `detectSource` runs the **path check before any
    model-based logic**: if a path component matches the LobsterAI rule →
    `lobsterai`; else fall through to model rules (`minimax` if model contains
    `minimax`, otherwise `claude-code`).
-   - Swift: `ClaudeCodeAdapter.swift:212-223`
-   - TypeScript: `claude-code.ts:180-191`
+   - Swift: `ClaudeCodeAdapter.swift:266-277`
+   - TypeScript: `claude-code.ts:218-229`
 3. The wrapper keeps a session only if its parsed `source == .lobsterai`,
    otherwise returns `.unsupportedVirtualLocator`
-   (`ClaudeCodeAdapter.swift:612-621`). This prevents the same file from being
+   (`ClaudeCodeAdapter.swift:669-677`). This prevents the same file from being
    double-counted by both the base and derived adapters.
 4. For UI grouping/health, LobsterAI is reported as **derived from
-   `claude-code`** (`web.ts:931-934` `DERIVED_SOURCES`).
+   `claude-code`** (`web.ts:937-939` `DERIVED_SOURCES`).
 
 So `lobsterai` vs `claude-code` is decided entirely by
 `detectSource` / `hasLobsterAIPathComponent`
-(`ClaudeCodeAdapter.swift:212`+`225`, `claude-code.ts:180`+`199`). Everything
+(`ClaudeCodeAdapter.swift:266`+`279`, `claude-code.ts:218`+`268`). Everything
 downstream (record parsing, message streaming, tiering) reuses the Claude Code
 path unchanged.
 
@@ -147,22 +153,22 @@ path unchanged.
   *whole path component* that equals or starts with `lobsterai` + a `._-`
   separator. `notlobsterai-project` and `.lobsteraiproject` are explicit
   decoys that resolve to `claude-code` (asserted in
-  `tests/adapters/claude-code.test.ts:84-166`).
+  `tests/adapters/claude-code.test.ts:319-395`).
 - **LIVE-DATA DISCREPANCY (this machine):** the only on-disk LobsterAI-looking
   data is `~/.claude/projects/-Users-bing-lobsterai-project/`. Its name is a
   **cwd-encoded** dir (`/Users/bing/lobsterai/project` →
   `-Users-bing-lobsterai-project`), so `lobsterai` appears only as a substring
   of the encoded component `-Users-bing-lobsterai-project`, which is **not**
   separator-bounded. Therefore the current adapter classifies these sessions as
-  **`claude-code`, not `lobsterai`.** Detection relies on a project *directory*
-  literally named `lobsterai*`/`.lobsterai*`, which LobsterAI's cwd encoding
-  does not always produce. (On disk reality wins: do not assume "dir contains
-  lobsterai" ⇒ `lobsterai`.)
-- **Index-only directory.** That live dir currently holds only
-  `sessions-index.json` (a LobsterAI app index referencing
-  `<sessionId>.jsonl` files that are no longer present). Engram indexes the
-  `.jsonl` transcripts, not `sessions-index.json`; with no `.jsonl` files
-  present, nothing is indexed from this dir.
+  **`claude-code` or `minimax`, not `lobsterai`.** Current live contents are 27
+  JSONL session files, 16 `tool-results/*.txt` sidecars, and
+  `sessions-index.json`: 23 parse as `claude-code`, 2 parse as `minimax`, and 2
+  are skipped side-channel files. Live DB still carries 1 stale historical
+  `lobsterai` false-positive row, but current adapter classification yields 0
+  `lobsterai` locators and 0 `lobsterai` `file_index_state` rows. Detection
+  relies on a project *directory* literally named `lobsterai*`/`.lobsterai*`,
+  which LobsterAI's cwd encoding does not always produce. (On disk reality
+  wins: do not assume "dir contains lobsterai" ⇒ `lobsterai`.)
 - **Model mixing is harmless to detection.** LobsterAI sessions normally carry a
   `claude*` model, and the path check runs first, so the model never downgrades
   a true LobsterAI path. Conversely, a `claude*` model in a non-`lobsterai*`
@@ -170,11 +176,11 @@ path unchanged.
 - **MiniMax shares this exact overlay.** The same `ClaudeCodeDerivedSourceAdapter`
   and `detectSource` distinguish `minimax` (by model substring `minimax`) from
   `lobsterai` (by path) from `claude-code`. The `precondition`
-  (`ClaudeCodeAdapter.swift:578`) restricts the wrapper to those two derived
+  (`ClaudeCodeAdapter.swift:635`) restricts the wrapper to those two derived
   sources.
 - **Swift vs TS implementation differ in form, not behavior.** Swift uses an
-  explicit equality/`hasPrefix` set (`ClaudeCodeAdapter.swift:230-237`); TS uses
-  one regex (`claude-code.ts:202`). Both accept the same `._-`-separated /
+  explicit equality/`hasPrefix` set (`ClaudeCodeAdapter.swift:279-293`); TS uses
+  one regex (`claude-code.ts:268-272`). Both accept the same `._-`-separated /
   leading-dot variants; keep them in sync if either changes.
 
 ## Web-confirmation status (web-checked 2026-06-21)
