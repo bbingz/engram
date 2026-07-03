@@ -1488,6 +1488,8 @@ final class IndexerParityTests: XCTestCase {
     /// golden, so they are excluded from the cross-runtime parity comparison.
     private static let parityExcludedColumns: Set<String> = [
         "offload_state",
+        // Swift-side live-session FTS debounce scheduling column; no Node golden counterpart.
+        "not_before",
     ]
 
     private func normalizedRows(_ rows: [Row]) -> [[String: AnyValue]] {
