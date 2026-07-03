@@ -83,107 +83,140 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
         do {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
             if let failure { return .failure(failure) }
-
-            var sessionId = ""
-            var agentId = ""
-            var cwd = ""
-            var startTime = ""
-            var endTime = ""
-            var userCount = 0
-            var assistantCount = 0
-            var toolCount = 0
-            var systemCount = 0
-            var firstUserText = ""
-            var detectedModel = ""
-
-            for object in objects {
-                guard let type = JSONLAdapterSupport.string(object["type"]),
-                      type == "user" || type == "assistant"
-                else {
-                    continue
-                }
-
-                if sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
-                    sessionId = value
-                }
-                if agentId.isEmpty, let value = JSONLAdapterSupport.string(object["agentId"]) {
-                    agentId = value
-                }
-                if cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) {
-                    cwd = value
-                }
-                if startTime.isEmpty, let value = JSONLAdapterSupport.string(object["timestamp"]) {
-                    startTime = value
-                }
-                if let value = JSONLAdapterSupport.string(object["timestamp"]) {
-                    endTime = value
-                }
-
-                let message = JSONLAdapterSupport.object(object["message"])
-                if detectedModel.isEmpty, let value = JSONLAdapterSupport.string(message?["model"]) {
-                    detectedModel = value
-                }
-
-                if type == "assistant" {
-                    assistantCount += 1
-                } else if Self.isToolResult(message?["content"]) {
-                    // Count a tool_result user record only when it surfaces
-                    // non-empty content, matching message(from:) which drops
-                    // empty tool results from the streamed transcript.
-                    if !Self.extractContent(message?["content"]).isEmpty {
-                        toolCount += 1
-                    }
-                } else {
-                    let text = Self.extractContent(message?["content"])
-                    if Self.isSystemInjection(text) {
-                        systemCount += 1
-                    } else {
-                        userCount += 1
-                        if firstUserText.isEmpty { firstUserText = text }
-                    }
-                }
-            }
-
-            guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
-
-            let isSubagent = locator.contains("/subagents/")
-            let id = isSubagent && !agentId.isEmpty ? agentId : sessionId
-            let source = Self.detectSource(model: detectedModel, filePath: locator)
-            let parentSessionId = isSubagent ? Self.parentSessionId(from: locator) : nil
-
-            return .success(
-                NormalizedSessionInfo(
-                    id: id,
-                    source: source,
-                    startTime: startTime,
-                    endTime: endTime != startTime ? endTime : nil,
-                    cwd: cwd,
-                    project: Self.projectName(fromCwd: cwd),
-                    model: detectedModel.isEmpty ? nil : detectedModel,
-                    messageCount: userCount + assistantCount + toolCount,
-                    userMessageCount: userCount,
-                    assistantMessageCount: assistantCount,
-                    toolMessageCount: toolCount,
-                    systemMessageCount: systemCount,
-                    summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
-                    filePath: locator,
-                    sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
-                    indexedAt: nil,
-                    agentRole: isSubagent ? "subagent" : nil,
-                    originator: nil,
-                    origin: nil,
-                    summaryMessageCount: nil,
-                    tier: nil,
-                    qualityScore: nil,
-                    parentSessionId: parentSessionId,
-                    suggestedParentId: nil
-                )
-            )
+            return Self.sessionInfo(from: objects, locator: locator)
         } catch let failure as ParserFailure {
             return .failure(failure)
         } catch {
             return .failure(.malformedJSON)
         }
+    }
+
+    /// Parse info and messages from a single file read. Mirrors
+    /// `parseSessionInfo` + `streamMessages(options: StreamMessagesOptions())`
+    /// exactly (same `sessionInfo(from:)` builder, same `message(from:)`
+    /// transform) but reads the transcript once. `readObjects(reportFailures:)`
+    /// surfaces the same failures the streamed path throws, so the indexer
+    /// records an identical outcome on failure.
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        do {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                locator: locator,
+                limits: limits,
+                reportFailures: true
+            )
+            if let failure { return .failure(failure) }
+            switch Self.sessionInfo(from: objects, locator: locator) {
+            case .failure(let reason):
+                return .failure(reason)
+            case .success(let info):
+                return .success(IndexingScan(info: info, messages: objects.compactMap(Self.message(from:))))
+            }
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
+    }
+
+    private static func sessionInfo(
+        from objects: [JSONLAdapterSupport.JSONObject],
+        locator: String
+    ) -> AdapterParseResult<NormalizedSessionInfo> {
+        var sessionId = ""
+        var agentId = ""
+        var cwd = ""
+        var startTime = ""
+        var endTime = ""
+        var userCount = 0
+        var assistantCount = 0
+        var toolCount = 0
+        var systemCount = 0
+        var firstUserText = ""
+        var detectedModel = ""
+
+        for object in objects {
+            guard let type = JSONLAdapterSupport.string(object["type"]),
+                  type == "user" || type == "assistant"
+            else {
+                continue
+            }
+
+            if sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
+                sessionId = value
+            }
+            if agentId.isEmpty, let value = JSONLAdapterSupport.string(object["agentId"]) {
+                agentId = value
+            }
+            if cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) {
+                cwd = value
+            }
+            if startTime.isEmpty, let value = JSONLAdapterSupport.string(object["timestamp"]) {
+                startTime = value
+            }
+            if let value = JSONLAdapterSupport.string(object["timestamp"]) {
+                endTime = value
+            }
+
+            let message = JSONLAdapterSupport.object(object["message"])
+            if detectedModel.isEmpty, let value = JSONLAdapterSupport.string(message?["model"]) {
+                detectedModel = value
+            }
+
+            if type == "assistant" {
+                assistantCount += 1
+            } else if Self.isToolResult(message?["content"]) {
+                // Count a tool_result user record only when it surfaces
+                // non-empty content, matching message(from:) which drops
+                // empty tool results from the streamed transcript.
+                if !Self.extractContent(message?["content"]).isEmpty {
+                    toolCount += 1
+                }
+            } else {
+                let text = Self.extractContent(message?["content"])
+                if Self.isSystemInjection(text) {
+                    systemCount += 1
+                } else {
+                    userCount += 1
+                    if firstUserText.isEmpty { firstUserText = text }
+                }
+            }
+        }
+
+        guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
+
+        let isSubagent = locator.contains("/subagents/")
+        let id = isSubagent && !agentId.isEmpty ? agentId : sessionId
+        let source = Self.detectSource(model: detectedModel, filePath: locator)
+        let parentSessionId = isSubagent ? Self.parentSessionId(from: locator) : nil
+
+        return .success(
+            NormalizedSessionInfo(
+                id: id,
+                source: source,
+                startTime: startTime,
+                endTime: endTime != startTime ? endTime : nil,
+                cwd: cwd,
+                project: Self.projectName(fromCwd: cwd),
+                model: detectedModel.isEmpty ? nil : detectedModel,
+                messageCount: userCount + assistantCount + toolCount,
+                userMessageCount: userCount,
+                assistantMessageCount: assistantCount,
+                toolMessageCount: toolCount,
+                systemMessageCount: systemCount,
+                summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
+                filePath: locator,
+                sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
+                indexedAt: nil,
+                agentRole: isSubagent ? "subagent" : nil,
+                originator: nil,
+                origin: nil,
+                summaryMessageCount: nil,
+                tier: nil,
+                qualityScore: nil,
+                parentSessionId: parentSessionId,
+                suggestedParentId: nil
+            )
+        )
     }
 
     func streamMessages(

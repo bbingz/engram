@@ -198,6 +198,19 @@ public enum AdapterParseResult<Value: Sendable>: Sendable {
     case failure(ParserFailure)
 }
 
+/// A session's parse-1 metadata plus its full message list, produced together so
+/// the indexer can read+parse a changed transcript exactly once instead of
+/// paying a separate `parseSessionInfo` pass and a `streamMessages` pass.
+public struct IndexingScan: Sendable {
+    public var info: NormalizedSessionInfo
+    public var messages: [NormalizedMessage]
+
+    public init(info: NormalizedSessionInfo, messages: [NormalizedMessage]) {
+        self.info = info
+        self.messages = messages
+    }
+}
+
 public protocol MessageAdapter {
     var source: SourceName { get }
     func streamMessages(
@@ -211,6 +224,27 @@ public protocol SessionAdapter: MessageAdapter {
     func listSessionLocators() async throws -> [String]
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo>
     func isAccessible(locator: String) async -> Bool
+    /// Parse a session's info and messages together. The default reuses the two
+    /// existing entry points (two parses); adapters that can produce both from a
+    /// single file read override this to parse once. Declared as a protocol
+    /// requirement so overrides dispatch dynamically through `any SessionAdapter`.
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan>
+}
+
+public extension SessionAdapter {
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        switch try await parseSessionInfo(locator: locator) {
+        case .failure(let failure):
+            return .failure(failure)
+        case .success(let info):
+            var messages: [NormalizedMessage] = []
+            let stream = try await streamMessages(locator: locator, options: StreamMessagesOptions())
+            for try await message in stream {
+                messages.append(message)
+            }
+            return .success(IndexingScan(info: info, messages: messages))
+        }
+    }
 }
 
 public protocol ProjectAdapter {
