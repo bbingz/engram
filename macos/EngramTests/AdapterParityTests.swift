@@ -213,7 +213,7 @@ final class AdapterParityTests: XCTestCase {
         let adapter = try source("macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift")
 
         XCTAssertTrue(
-            factory.contains("let claudeCode = ClaudeCodeAdapter()"),
+            factory.contains("let claudeCode = ClaudeCodeAdapter(sourceHintCacheDirectory: cacheDirectory)"),
             "Default adapter construction should share one Claude base between Claude and derived sources"
         )
         XCTAssertTrue(
@@ -723,15 +723,17 @@ final class AdapterParityTests: XCTestCase {
         }
         XCTAssertEqual(windowed, ["m9", "m10"])
 
-        // A full read of the same file overflows the cap, so the windowed success
-        // above is meaningful (it stopped before reaching the overflow).
-        do {
-            let stream = try await adapter.streamMessages(locator: path, options: StreamMessagesOptions())
-            for try await _ in stream {}
-            XCTFail("full read should trip the message cap")
-        } catch {
-            XCTAssertEqual(error as? ParserFailure, .messageLimitExceeded)
+        // A full (unwindowed) read of the same file overflows the cap. Instead of
+        // throwing — which would route MessageParser into its uncapped legacy
+        // fallback and re-buffer the whole file — it truncates-and-succeeds,
+        // returning the first `maxMessages` messages.
+        var full: [String] = []
+        for try await message in try await adapter.streamMessages(
+            locator: path, options: StreamMessagesOptions()
+        ) {
+            full.append(message.content)
         }
+        XCTAssertEqual(full, (0..<10).map { "m\($0)" })
     }
 
     func testAdapterParityHarnessComparesStage2Phase3Phase4AndPhase5Sources() async throws {

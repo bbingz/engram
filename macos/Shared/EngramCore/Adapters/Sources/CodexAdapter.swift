@@ -1,8 +1,21 @@
 import Darwin
 import Foundation
+import os
 
 enum JSONLAdapterSupport {
     typealias JSONObject = [String: Any]
+
+    private static let log = Logger(subsystem: "com.engram.core", category: "adapters")
+
+    /// Note a message-cap truncation on an unwindowed (limit == nil) read.
+    /// The cap already bounded memory to `maxMessages`; we surface it via the
+    /// log rather than throwing so display/read callers keep the truncated
+    /// window instead of falling back to an uncapped whole-file parse.
+    static func logTruncation(locator: String, cap: Int) {
+        log.notice(
+            "transcript truncated to message cap: cap=\(cap, privacy: .public) locator=\(locator, privacy: .private)"
+        )
+    }
 
     static func fileExists(_ path: String) -> Bool {
         statMode(path) != nil
@@ -202,7 +215,15 @@ enum JSONLAdapterSupport {
     ) throws -> [NormalizedMessage] {
         guard let limit = options.limit else {
             let (objects, failure) = try readObjects(locator: locator, limits: limits, reportFailures: true)
-            if let failure { throw failure }
+            if let failure {
+                // Truncate-and-succeed on the message cap: `readObjects` already
+                // capped `objects` at `maxMessages`, so return that window instead
+                // of throwing. Throwing here routes display/read callers (e.g.
+                // MessageParser) into the uncapped legacy parser, which re-buffers
+                // the entire multi-hundred-MB file. Other failures still propagate.
+                guard failure == .messageLimitExceeded else { throw failure }
+                logTruncation(locator: locator, cap: limits.maxMessages)
+            }
             return applyWindow(objects.compactMap(transform), options: options)
         }
 
@@ -434,7 +455,11 @@ final class CodexAdapter: SessionAdapter, Sendable {
                 guard let object = JSONLAdapterSupport.parseObject(line) else { continue }
                 parsedObjects += 1
                 if options.limit == nil, parsedObjects > limits.maxMessages {
-                    throw ParserFailure.messageLimitExceeded
+                    // Truncate-and-succeed: stop reading at the cap rather than
+                    // throwing. Throwing sends MessageParser into the uncapped
+                    // legacy parser, which buffers the whole file into memory.
+                    JSONLAdapterSupport.logTruncation(locator: locator, cap: limits.maxMessages)
+                    break
                 }
 
                 if let tokenUsage = tokenCountUsage(from: object) {

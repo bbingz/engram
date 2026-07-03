@@ -4,20 +4,27 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
     let source: SourceName = .claudeCode
     private let projectsRoot: URL
     private let limits: ParserLimits
-    private let sourceHintCache = ClaudeCodeSourceHintCache()
+    private let sourceHintCache: ClaudeCodeSourceHintCache
     private static let sourceHintScanByteLimit = 1024 * 1024
     private static let sourceHintMaxLineBytes = 512 * 1024
     private static let sourceHintLineLimit = 64
     private static let sourceHintChunkSize = 64 * 1024
 
+    /// - Parameter sourceHintCacheDirectory: When non-nil, the derived-source
+    ///   signature cache is persisted here (keyed on path + mtime + size) so a
+    ///   cold process skips head-sniffing every Claude file it has seen before.
+    ///   `nil` keeps the cache purely in-memory (used by tests and transient
+    ///   registries so they never touch `~/.engram`).
     init(
         projectsRoot: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
             .path,
-        limits: ParserLimits = .default
+        limits: ParserLimits = .default,
+        sourceHintCacheDirectory: URL? = nil
     ) {
         self.projectsRoot = URL(fileURLWithPath: projectsRoot)
         self.limits = limits
+        self.sourceHintCache = ClaudeCodeSourceHintCache(directory: sourceHintCacheDirectory)
     }
 
     func detect() async -> Bool {
@@ -76,6 +83,7 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
                 locators.append(locator)
             }
         }
+        await sourceHintCache.flush()
         return locators
     }
 
@@ -282,7 +290,7 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
     ) -> ClaudeCodeSourceHintCache.Signature? {
         do {
             let attributes = try fileManager.attributesOfItem(atPath: locator)
-            let modifiedAt = attributes[.modificationDate] as? Date ?? .distantPast
+            let modifiedAt = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
             let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
             return ClaudeCodeSourceHintCache.Signature(modifiedAt: modifiedAt, size: size)
         } catch {
@@ -571,7 +579,7 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
 
 private actor ClaudeCodeSourceHintCache {
     struct Signature: Equatable, Sendable {
-        let modifiedAt: Date
+        let modifiedAt: TimeInterval  // timeIntervalSince1970
         let size: Int64
     }
 
@@ -580,13 +588,36 @@ private actor ClaudeCodeSourceHintCache {
         let source: SourceName
     }
 
+    /// On-disk format. Bump `formatVersion` to invalidate every persisted entry
+    /// when the sniffing logic or record shape changes.
+    private struct DiskEntry: Codable {
+        let modifiedAt: TimeInterval
+        let size: Int64
+        let source: String
+    }
+
+    private struct DiskCache: Codable {
+        let version: Int
+        let entries: [String: DiskEntry]
+    }
+
+    private static let formatVersion = 1
+
+    private let fileURL: URL?
     private var entries: [String: Entry] = [:]
+    private var loaded = false
+    private var dirty = false
+
+    init(directory: URL?) {
+        self.fileURL = directory?.appendingPathComponent("claude-source-hints.json")
+    }
 
     func source(
         for locator: String,
         signature: Signature?,
         resolve: @Sendable () -> SourceName
     ) -> SourceName {
+        loadIfNeeded()
         if let signature,
            let entry = entries[locator],
            entry.signature == signature {
@@ -599,7 +630,46 @@ private actor ClaudeCodeSourceHintCache {
         } else {
             entries.removeValue(forKey: locator)
         }
+        dirty = true
         return source
+    }
+
+    /// Persist the current entries. No-op when persistence is disabled
+    /// (in-memory cache) or nothing changed since the last write.
+    func flush() {
+        guard let fileURL, dirty else { return }
+        let disk = DiskCache(
+            version: Self.formatVersion,
+            entries: entries.mapValues {
+                DiskEntry(modifiedAt: $0.signature.modifiedAt, size: $0.signature.size, source: $0.source.rawValue)
+            }
+        )
+        guard let data = try? JSONEncoder().encode(disk) else { return }
+        try? FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? data.write(to: fileURL, options: .atomic)
+        dirty = false
+    }
+
+    private func loadIfNeeded() {
+        guard !loaded else { return }
+        loaded = true
+        guard let fileURL,
+              let data = try? Data(contentsOf: fileURL),
+              let disk = try? JSONDecoder().decode(DiskCache.self, from: data),
+              disk.version == Self.formatVersion
+        else {
+            return
+        }
+        for (locator, entry) in disk.entries {
+            guard let source = SourceName(rawValue: entry.source) else { continue }
+            entries[locator] = Entry(
+                signature: Signature(modifiedAt: entry.modifiedAt, size: entry.size),
+                source: source
+            )
+        }
     }
 }
 
@@ -618,11 +688,16 @@ final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, ModificationFiltered
         projectsRoot: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
             .path,
-        limits: ParserLimits = .default
+        limits: ParserLimits = .default,
+        sourceHintCacheDirectory: URL? = nil
     ) {
         self.init(
             source: source,
-            base: ClaudeCodeAdapter(projectsRoot: projectsRoot, limits: limits)
+            base: ClaudeCodeAdapter(
+                projectsRoot: projectsRoot,
+                limits: limits,
+                sourceHintCacheDirectory: sourceHintCacheDirectory
+            )
         )
     }
 
