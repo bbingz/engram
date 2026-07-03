@@ -405,6 +405,86 @@ final class DatabaseManager: @unchecked Sendable {
         }
     }
 
+    /// Builds the FTS-driven keyword search SQL shared by `search` and
+    /// `searchWithSnippets`. Mirrors `EngramServiceReadProvider.keywordSearch`:
+    /// every query term becomes a `WITH mN AS (SELECT session_id, MIN(rank) …
+    /// GROUP BY session_id)` CTE, inner-joined on `session_id`, so the query is
+    /// driven from `sessions_fts` MATCH results and each term must appear
+    /// somewhere in the session. This replaces the old correlated shape that
+    /// probed MATCH once per `sessions` row (audit #25: 80-100s vs 81ms for the
+    /// identical query). `withSnippet` adds the FTS5 `<mark>` snippet used by the
+    /// offline-fallback GUI path. Ordering (`m0.rank, s.start_time DESC`) and the
+    /// hidden/tier/source/project/since filters are preserved exactly.
+    static func keywordSearchSQL(
+        termMatches: [String],
+        snippetMatch: String,
+        sources: Set<String>,
+        projects: Set<String>,
+        since: String?,
+        limit: Int,
+        withSnippet: Bool
+    ) -> (sql: String, args: [DatabaseValueConvertible]) {
+        var ctes: [String] = []
+        var joins: [String] = []
+        var args: [DatabaseValueConvertible] = []
+        for (index, termMatch) in termMatches.enumerated() {
+            let alias = "m\(index)"
+            ctes.append("""
+                \(alias) AS (
+                    SELECT session_id, MIN(rank) AS rank
+                    FROM sessions_fts
+                    WHERE sessions_fts MATCH ?
+                    GROUP BY session_id
+                )
+            """)
+            args.append(termMatch)
+            if index > 0 {
+                joins.append("JOIN \(alias) ON \(alias).session_id = m0.session_id")
+            }
+        }
+        if ctes.isEmpty {
+            ctes.append("""
+                m0 AS (
+                    SELECT session_id, MIN(rank) AS rank
+                    FROM sessions_fts
+                    WHERE sessions_fts MATCH ?
+                    GROUP BY session_id
+                )
+            """)
+            args.append(snippetMatch)
+        }
+        // The `?` placeholders bind in textual order: CTE MATCH terms, then the
+        // snippet MATCH (SELECT list), then filters, then LIMIT.
+        let snippetColumn = withSnippet ? """
+            , (
+                SELECT snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32)
+                FROM sessions_fts
+                WHERE sessions_fts MATCH ? AND session_id = s.id
+                ORDER BY rank
+                LIMIT 1
+            ) AS snippet
+        """ : ""
+        var parts = ["""
+            WITH \(ctes.joined(separator: ", "))
+            SELECT s.*\(snippetColumn)
+            FROM m0
+            \(joins.joined(separator: " "))
+            JOIN sessions s ON s.id = m0.session_id
+            WHERE s.hidden_at IS NULL
+              AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+        """]
+        if withSnippet {
+            args.append(snippetMatch)
+        }
+        appendSearchFilters(to: &parts, args: &args, sources: sources, projects: projects, since: since)
+        parts.append("""
+            ORDER BY m0.rank, s.start_time DESC
+            LIMIT ?
+        """)
+        args.append(limit)
+        return (parts.joined(separator: " "), args)
+    }
+
     func search(
         query: String,
         limit: Int = 10,
@@ -451,42 +531,19 @@ final class DatabaseManager: @unchecked Sendable {
         return try readInBackground { db in
             let termMatches = CJKText.ftsMatchTerms(query)
             let snippetMatch = termMatches.first ?? CJKText.ftsMatchQuery(query)
-            var parts = ["""
-                SELECT s.*
-                FROM sessions s
-                WHERE s.hidden_at IS NULL
-                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
-            """]
-            var args: [DatabaseValueConvertible] = []
-            for termMatch in termMatches {
-                parts.append("""
-                    AND EXISTS (
-                        SELECT 1 FROM sessions_fts
-                        WHERE sessions_fts MATCH ? AND session_id = s.id
-                    )
-                """)
-                args.append(termMatch)
-            }
-            Self.appendSearchFilters(
-                to: &parts,
-                args: &args,
+            let built = Self.keywordSearchSQL(
+                termMatches: termMatches,
+                snippetMatch: snippetMatch,
                 sources: sources,
                 projects: projects,
-                since: since
+                since: since,
+                limit: limit,
+                withSnippet: false
             )
-            parts.append("""
-                ORDER BY (
-                    SELECT MIN(rank) FROM sessions_fts
-                    WHERE sessions_fts MATCH ? AND session_id = s.id
-                ), s.start_time DESC
-                LIMIT ?
-            """)
-            args.append(snippetMatch)
-            args.append(limit)
             return try Session.fetchAll(
                 db,
-                sql: parts.joined(separator: " "),
-                arguments: StatementArguments(args)
+                sql: built.sql,
+                arguments: StatementArguments(built.args)
             )
         }
     }
@@ -530,41 +587,21 @@ final class DatabaseManager: @unchecked Sendable {
         return try readInBackground { db in
             let termMatches = CJKText.ftsMatchTerms(query)
             let snippetMatch = termMatches.first ?? CJKText.ftsMatchQuery(query)
-            var parts = ["""
-                SELECT s.*, (
-                    SELECT snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32)
-                    FROM sessions_fts
-                    WHERE sessions_fts MATCH ? AND session_id = s.id
-                    ORDER BY rank
-                    LIMIT 1
-                ) AS snippet
-                FROM sessions s
-                WHERE s.hidden_at IS NULL
-                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
-            """]
             // Search at session granularity: every query token must exist
-            // somewhere in the session, not necessarily in the same FTS row.
-            var args: [DatabaseValueConvertible] = [snippetMatch]
-            for termMatch in termMatches {
-                parts.append("""
-                    AND EXISTS (
-                        SELECT 1 FROM sessions_fts
-                        WHERE sessions_fts MATCH ? AND session_id = s.id
-                    )
-                """)
-                args.append(termMatch)
-            }
-            Self.appendSearchFilters(to: &parts, args: &args, sources: sources, projects: projects, since: since)
-            parts.append("""
-                ORDER BY (
-                    SELECT MIN(rank) FROM sessions_fts
-                    WHERE sessions_fts MATCH ? AND session_id = s.id
-                ), s.start_time DESC
-                LIMIT ?
-            """)
-            args.append(snippetMatch)
-            args.append(limit)
-            let rows = try Row.fetchAll(db, sql: parts.joined(separator: " "), arguments: StatementArguments(args))
+            // somewhere in the session, not necessarily in the same FTS row. The
+            // FTS5 `<mark>` snippet is a bounded per-result lookup keyed by
+            // session_id (not the old per-sessions-row MATCH scan), so the
+            // highlighted-window behavior is preserved.
+            let built = Self.keywordSearchSQL(
+                termMatches: termMatches,
+                snippetMatch: snippetMatch,
+                sources: sources,
+                projects: projects,
+                since: since,
+                limit: limit,
+                withSnippet: true
+            )
+            let rows = try Row.fetchAll(db, sql: built.sql, arguments: StatementArguments(built.args))
             return try rows.map { row in
                 (try Session(row: row), (row["snippet"] as String?) ?? "")
             }
