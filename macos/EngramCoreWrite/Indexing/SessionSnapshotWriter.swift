@@ -698,6 +698,13 @@ public final class SessionSnapshotWriter {
         return events
     }
 
+    // FTS debounce: while a session keeps appending, coalesce its re-index jobs so
+    // the writer does not re-run per append. Defer the pending job by an idle window,
+    // clamped so content is searchable within a bounded max delay of the first still-
+    // pending enqueue.
+    private static let ftsDebounceWindowSeconds = 15
+    private static let ftsMaxDeferSeconds = 90
+
     private func insertIndexJobs(
         sessionId: String,
         targetSyncVersion: Int,
@@ -706,6 +713,23 @@ public final class SessionSnapshotWriter {
     ) throws {
         for jobKind in jobKinds {
             let jobId = "\(sessionId):\(targetSyncVersion):\(targetSnapshotHash):\(jobKind.rawValue)"
+
+            // For FTS, capture the earliest still-pending enqueue BEFORE replacing the
+            // row so a burst of appends coalesces into one deferred job while honoring
+            // a bounded max delay. nil (first enqueue / no backlog) keeps not_before
+            // NULL, so a single change is indexed immediately.
+            let priorPendingFtsCreatedAt: String? = jobKind == .fts
+                ? try String.fetchOne(
+                    db,
+                    sql: """
+                    SELECT MIN(created_at) FROM session_index_jobs
+                    WHERE session_id = ? AND job_kind = 'fts'
+                      AND status IN ('pending', 'failed_retryable')
+                    """,
+                    arguments: [sessionId]
+                )
+                : nil
+
             try db.execute(
                 sql: """
                 DELETE FROM session_index_jobs
@@ -720,18 +744,36 @@ public final class SessionSnapshotWriter {
                 sql: """
                 INSERT INTO session_index_jobs (
                   id, session_id, job_kind, target_sync_version, status,
-                  retry_count, last_error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'pending', 0, NULL, datetime('now'), datetime('now'))
+                  retry_count, last_error, created_at, updated_at, not_before
+                ) VALUES (
+                  ?, ?, ?, ?, 'pending', 0, NULL,
+                  COALESCE(?, datetime('now')), datetime('now'),
+                  CASE WHEN ? IS NULL THEN NULL
+                       ELSE MIN(datetime('now', ?), datetime(?, ?)) END
+                )
                 ON CONFLICT(id) DO UPDATE SET
                   status = 'pending',
                   last_error = NULL,
-                  updated_at = datetime('now')
+                  updated_at = datetime('now'),
+                  created_at = COALESCE(?, session_index_jobs.created_at),
+                  not_before = CASE WHEN ? IS NULL THEN session_index_jobs.not_before
+                                    ELSE MIN(datetime('now', ?), datetime(?, ?)) END
                 """,
                 arguments: [
                     jobId,
                     sessionId,
                     jobKind.rawValue,
-                    targetSyncVersion
+                    targetSyncVersion,
+                    priorPendingFtsCreatedAt,
+                    priorPendingFtsCreatedAt,
+                    "+\(Self.ftsDebounceWindowSeconds) seconds",
+                    priorPendingFtsCreatedAt,
+                    "+\(Self.ftsMaxDeferSeconds) seconds",
+                    priorPendingFtsCreatedAt,
+                    priorPendingFtsCreatedAt,
+                    "+\(Self.ftsDebounceWindowSeconds) seconds",
+                    priorPendingFtsCreatedAt,
+                    "+\(Self.ftsMaxDeferSeconds) seconds"
                 ]
             )
         }
@@ -747,6 +789,9 @@ public final class SessionSnapshotWriter {
 
     private func deleteIndexArtifacts(sessionId: String) throws {
         try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = ?", arguments: [sessionId])
+        if try tableExists("fts_map") {
+            try db.execute(sql: "DELETE FROM fts_map WHERE session_id = ?", arguments: [sessionId])
+        }
         if try tableExists("session_embeddings") {
             try db.execute(sql: "DELETE FROM session_embeddings WHERE session_id = ?", arguments: [sessionId])
         }

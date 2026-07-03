@@ -131,10 +131,24 @@ enum EngramMigrations {
               retry_count INTEGER NOT NULL DEFAULT 0,
               last_error TEXT,
               created_at TEXT NOT NULL DEFAULT (datetime('now')),
-              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+              updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+              not_before TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_session_index_jobs_status ON session_index_jobs(status);
             CREATE INDEX IF NOT EXISTS idx_session_index_jobs_session_id ON session_index_jobs(session_id);
+
+            -- Companion rowid map for sessions_fts (whose session_id is UNINDEXED):
+            -- lets per-session FTS deletes seek by rowid instead of full-scanning the
+            -- index, and tracks which messages are already indexed so appends only
+            -- tokenize the new tail. Ordinary table, kept out of SchemaManifest.baseTables
+            -- (legacy fixtures predate it); missing/stale rows self-heal via full replace.
+            CREATE TABLE IF NOT EXISTS fts_map (
+              session_id TEXT NOT NULL,
+              msg_seq INTEGER NOT NULL,
+              fts_rowid INTEGER NOT NULL,
+              content_hash TEXT NOT NULL DEFAULT '',
+              PRIMARY KEY (session_id, msg_seq)
+            );
 
             CREATE TABLE IF NOT EXISTS file_index_state (
               source TEXT NOT NULL,
@@ -491,7 +505,39 @@ enum EngramMigrations {
             CREATE INDEX IF NOT EXISTS idx_sync_ledger_session ON sync_ledger(session_id, synced_at DESC);
         """)
         try ensureMinedRulesTables(db)
+        try addSessionIndexJobColumnsIfNeeded(db)
+        try backfillFtsMapIfNeeded(db)
         try migrateAuxTablesToV2(db)
+    }
+
+    /// Idempotently add columns to `session_index_jobs` on legacy DBs whose CREATE
+    /// TABLE ran before the column existed (fresh DBs get it inline above).
+    private static func addSessionIndexJobColumnsIfNeeded(_ db: GRDB.Database) throws {
+        let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(session_index_jobs)")
+        let existing = Set(rows.map { $0["name"] as String })
+        if !existing.contains("not_before") {
+            try db.execute(sql: "ALTER TABLE session_index_jobs ADD COLUMN not_before TEXT")
+        }
+    }
+
+    /// One-time `fts_map` backfill from the existing `sessions_fts` rows. Gated on a
+    /// metadata flag so it runs once; the backfill itself clears and repopulates, so
+    /// an interrupted run simply re-runs on the next launch.
+    private static func backfillFtsMapIfNeeded(_ db: GRDB.Database) throws {
+        let done = try String.fetchOne(
+            db,
+            sql: "SELECT value FROM metadata WHERE key = ?",
+            arguments: [FTSRebuildPolicy.mapBackfillKey]
+        )
+        guard done != "1" else { return }
+        try FTSRebuildPolicy.backfillFtsMap(db)
+        try db.execute(
+            sql: """
+            INSERT INTO metadata(key, value) VALUES (?, '1')
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            arguments: [FTSRebuildPolicy.mapBackfillKey]
+        )
     }
 
     static func writeSchemaMetadata(_ db: GRDB.Database) throws {
