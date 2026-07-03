@@ -518,7 +518,9 @@ final class StartupBackfillTests: XCTestCase {
                 "cleanupStaleMigrations",
                 "countSessions",
                 "countTodayParentSessions",
-                "enqueueStaleFtsJobs"
+                "enqueueStaleFtsJobs",
+                "reconcileSkipTierIndexArtifacts",
+                "pruneIndexJobs"
             ]
         )
         XCTAssertEqual(
@@ -969,6 +971,117 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testOptimizeFtsGatesOnContentSignature() throws {
+        try writer.write { db in
+            try insertSession(db, id: "s1", source: "codex", tier: "normal")
+            try db.execute(sql: "UPDATE sessions SET sync_version = 1, indexed_at = '2026-05-01T00:00:00Z' WHERE id = 's1'")
+
+            XCTAssertTrue(try StartupBackfills.optimizeFts(db), "first optimize runs and stores the signature")
+            XCTAssertFalse(try StartupBackfills.optimizeFts(db), "unchanged FTS content must skip optimize")
+
+            // New non-skip content changes the signature and re-runs optimize.
+            try insertSession(db, id: "s2", source: "codex", tier: "normal")
+            XCTAssertTrue(try StartupBackfills.optimizeFts(db), "changed content must run optimize")
+            XCTAssertFalse(try StartupBackfills.optimizeFts(db))
+        }
+    }
+
+    func testReconcileSkipTierDeletesStaleArtifactsWithoutTouchingTierOrNonSkip() throws {
+        try writer.write { db in
+            try insertSession(db, id: "skip-1", source: "codex", tier: "skip")
+            try insertSession(db, id: "keep-1", source: "codex", tier: "normal")
+            try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('skip-1', 'stale'), ('keep-1', 'kept')")
+            // The skip session still owns a completed fts job — the cheap signal
+            // that stale artifacts remain.
+            try db.execute(
+                sql: """
+                INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status) VALUES
+                  ('skip-1:1:h:fts', 'skip-1', 'fts', 1, 'completed'),
+                  ('keep-1:1:h:fts', 'keep-1', 'fts', 1, 'completed')
+                """
+            )
+
+            let removed = try StartupBackfills.reconcileSkipTierIndexArtifacts(db)
+
+            XCTAssertEqual(removed, 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'skip-1'"), 0)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'keep-1'"), 1)
+            // Tier is never modified (subagent/skip invariant preserved).
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'skip-1'"), "skip")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'keep-1'"), "normal")
+            // The skip session's obsolete job is cleared; the non-skip one remains.
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT id FROM session_index_jobs WHERE session_id = 'skip-1'"))
+            XCTAssertNotNil(try String.fetchOne(db, sql: "SELECT id FROM session_index_jobs WHERE session_id = 'keep-1'"))
+            // Idempotent: nothing qualifies now, so a re-run is a no-op.
+            XCTAssertEqual(try StartupBackfills.reconcileSkipTierIndexArtifacts(db), 0)
+        }
+    }
+
+    func testPruneIndexJobsKeepsInFlightAndLatestTerminalPerKind() throws {
+        try writer.write { db in
+            try insertSession(db, id: "hot", source: "codex", tier: "normal")
+            try db.execute(
+                sql: """
+                INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status) VALUES
+                  ('hot:1:a:fts', 'hot', 'fts', 1, 'completed'),
+                  ('hot:2:b:fts', 'hot', 'fts', 2, 'completed'),
+                  ('hot:3:c:fts', 'hot', 'fts', 3, 'not_applicable'),
+                  ('hot:4:d:fts', 'hot', 'fts', 4, 'pending'),
+                  ('hot:1:a:embedding', 'hot', 'embedding', 1, 'completed'),
+                  ('hot:2:b:embedding', 'hot', 'embedding', 2, 'failed_retryable')
+                """
+            )
+
+            let removed = try StartupBackfills.pruneIndexJobs(db)
+
+            // Only the two older terminal fts rows are pruned; the latest terminal
+            // per kind and every in-flight row survive.
+            XCTAssertEqual(removed, 2)
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT id FROM session_index_jobs ORDER BY rowid"),
+                ["hot:3:c:fts", "hot:4:d:fts", "hot:1:a:embedding", "hot:2:b:embedding"]
+            )
+        }
+    }
+
+    func testOrphanScanSkipsWithinMinimumInterval() async throws {
+        try writer.write { db in
+            try insertSession(db, id: "missing", source: "codex", filePath: "/files/missing.jsonl")
+            try db.execute(sql: "INSERT INTO metadata(key, value) VALUES ('last_orphan_scan', datetime('now'))")
+        }
+        let scanner = WriterStartupOrphanScanning(writer: writer)
+
+        let result = try await scanner.detectOrphans(adapters: [FakeAccessibilityAdapter(accessibleLocators: [])])
+
+        XCTAssertEqual(result.scanned, 0, "a scan within 24h must be skipped")
+        try writer.read { db in
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT orphan_status FROM sessions WHERE id = 'missing'"),
+                "the inaccessible session must not be flagged when the scan is skipped"
+            )
+        }
+    }
+
+    func testOrphanScanRunsAndStampsTimestampWhenLastScanIsStale() async throws {
+        try writer.write { db in
+            try insertSession(db, id: "missing", source: "codex", filePath: "/files/missing.jsonl")
+            try db.execute(sql: "INSERT INTO metadata(key, value) VALUES ('last_orphan_scan', datetime('now', '-2 days'))")
+        }
+        let scanner = WriterStartupOrphanScanning(writer: writer)
+
+        let result = try await scanner.detectOrphans(adapters: [FakeAccessibilityAdapter(accessibleLocators: [])])
+
+        XCTAssertEqual(result.scanned, 1)
+        XCTAssertEqual(result.newlyFlagged, 1)
+        try writer.read { db in
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT orphan_status FROM sessions WHERE id = 'missing'"), "suspect")
+            XCTAssertNotNil(
+                try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'last_orphan_scan'"),
+                "a completed scan must refresh the gating timestamp"
+            )
+        }
+    }
+
     private func insertSession(
         _ db: Database,
         id: String,
@@ -1278,6 +1391,16 @@ private final class RecordingStartupDatabase: StartupBackfillDatabase {
     func enqueueStaleFtsJobs() throws -> Int {
         callOrder.append("enqueueStaleFtsJobs")
         return 29
+    }
+
+    func reconcileSkipTierIndexArtifacts() throws -> Int {
+        callOrder.append("reconcileSkipTierIndexArtifacts")
+        return 0
+    }
+
+    func pruneIndexJobs() throws -> Int {
+        callOrder.append("pruneIndexJobs")
+        return 0
     }
 
     func cleanupStaleMigrations() throws -> Int {

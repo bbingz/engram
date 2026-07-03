@@ -93,6 +93,8 @@ public protocol StartupBackfillDatabase: AnyObject {
     func backfillPolycliProviderParents() throws -> StartupBackfills.ProviderParentResult
     func backfillSuggestedParents() throws -> StartupBackfills.SuggestedParentResult
     func enqueueStaleFtsJobs() throws -> Int
+    func reconcileSkipTierIndexArtifacts() throws -> Int
+    func pruneIndexJobs() throws -> Int
     func cleanupStaleMigrations() throws -> Int
 }
 
@@ -421,6 +423,24 @@ public enum StartupBackfills {
         } catch {
             log.warn("stale fts job enqueue failed", error: error)
         }
+
+        do {
+            let reconciled = try database.reconcileSkipTierIndexArtifacts()
+            if reconciled > 0 {
+                emit(StartupBackfillEvent(event: "db_maintenance", payload: ["action": .string("reconcile_skip_fts"), "removed": .int(reconciled)]))
+            }
+        } catch {
+            log.warn("skip-tier index reconcile failed", error: error)
+        }
+
+        do {
+            let pruned = try database.pruneIndexJobs()
+            if pruned > 0 {
+                emit(StartupBackfillEvent(event: "db_maintenance", payload: ["action": .string("prune_index_jobs"), "removed": .int(pruned)]))
+            }
+        } catch {
+            log.warn("index job prune failed", error: error)
+        }
     }
 
     /// Drain the FTS backlog enqueued by `runStartupBackfills`, then start the
@@ -591,9 +611,128 @@ public enum StartupBackfills {
         return removed
     }
 
-    public static func optimizeFts(_ db: Database) throws {
+    static let ftsOptimizeSignatureKey = "fts_optimize_signature"
+
+    /// FTS5 'optimize' merges every b-tree segment into one — a full read+rewrite
+    /// of the (multi-hundred-MB) index. Running it unconditionally on every launch
+    /// re-merged an unchanged index and stalled user writes queued behind the held
+    /// write gate. Gate it on a cheap content signature stored in `metadata`: skip
+    /// entirely when no FTS-eligible content changed since the last optimize.
+    /// Content the drain writes AFTER this call is consolidated on the next launch
+    /// whose signature differs — an acceptable one-launch lag, since a permanently
+    /// idle corpus has no search-perf pressure. Returns true when optimize ran.
+    @discardableResult
+    public static func optimizeFts(_ db: Database) throws -> Bool {
+        let signature = try ftsContentSignature(db)
+        let stored = try String.fetchOne(
+            db,
+            sql: "SELECT value FROM metadata WHERE key = ?",
+            arguments: [ftsOptimizeSignatureKey]
+        )
+        guard stored != signature else { return false }
+
         try db.execute(sql: "INSERT INTO sessions_fts(sessions_fts) VALUES('optimize')")
         try db.execute(sql: "INSERT INTO insights_fts(insights_fts) VALUES('optimize')")
+        try db.execute(
+            sql: """
+            INSERT INTO metadata(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            arguments: [ftsOptimizeSignatureKey, signature]
+        )
+        return true
+    }
+
+    /// Cheap proxy for "has FTS-eligible content changed since last optimize":
+    /// aggregates over the small, indexed `sessions`/`insights` rows (sub-ms) and
+    /// never touches the FTS index itself. Non-skip sessions own the sessions_fts
+    /// rows; sync_version/indexed_at advance on every content re-index.
+    private static func ftsContentSignature(_ db: Database) throws -> String {
+        let sessions = try Row.fetchOne(
+            db,
+            sql: """
+            SELECT COUNT(*) AS n,
+                   COALESCE(SUM(sync_version), 0) AS v,
+                   COALESCE(MAX(indexed_at), '') AS m
+            FROM sessions
+            WHERE COALESCE(tier, 'normal') != 'skip'
+            """
+        )
+        let insights = try Row.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) AS n, COALESCE(MAX(created_at), '') AS m FROM insights"
+        )
+        let sn: Int = sessions?["n"] ?? 0
+        let sv: Int = sessions?["v"] ?? 0
+        let sm: String = sessions?["m"] ?? ""
+        let inN: Int = insights?["n"] ?? 0
+        let inM: String = insights?["m"] ?? ""
+        return "\(sn):\(sv):\(sm):\(inN):\(inM)"
+    }
+
+    /// Cross-session sweep pruning terminal `session_index_jobs` rows that
+    /// accumulate unbounded once a session stops changing (one hot session held
+    /// 10,783). Keeps every in-flight row plus the most-recent terminal row per
+    /// (session, kind). Complements the per-insert same-session delete in
+    /// `SessionSnapshotWriter.insertIndexJobs`, which only fires as a given
+    /// session is re-indexed.
+    public static func pruneIndexJobs(_ db: Database) throws -> Int {
+        try db.executeAndCountChanges(
+            sql: """
+            DELETE FROM session_index_jobs
+            WHERE status NOT IN ('pending', 'failed_retryable')
+              AND rowid NOT IN (
+                SELECT MAX(rowid)
+                FROM session_index_jobs
+                WHERE status NOT IN ('pending', 'failed_retryable')
+                GROUP BY session_id, job_kind
+              )
+            """
+        )
+    }
+
+    /// Deletes index artifacts for any session whose CURRENT tier is 'skip'.
+    /// Today FTS/embedding rows are only removed on the non-skip→skip transition
+    /// (`SessionSnapshotWriter.shouldDeleteIndexArtifacts`), so sessions first
+    /// classified as skip — or skip rows predating that cleanup — leak stale FTS
+    /// rows. DELETE-only: it never modifies tier, so the subagent/skip invariant
+    /// holds. Because `sessions_fts.session_id` is UNINDEXED, the batched DELETE
+    /// is a full-FTS scan, so only pay it when a skip-tier session still owns an
+    /// fts/embedding job — a cheap, index-backed staleness signal. The obsolete
+    /// jobs are then cleared so the signal is empty (and this scan skipped) next
+    /// launch.
+    public static func reconcileSkipTierIndexArtifacts(_ db: Database) throws -> Int {
+        let hasStale = try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+              SELECT 1
+              FROM session_index_jobs j
+              JOIN sessions s ON s.id = j.session_id
+              WHERE j.job_kind IN ('fts', 'embedding')
+                AND COALESCE(s.tier, 'normal') = 'skip'
+            )
+            """
+        ) ?? false
+        guard hasStale else { return 0 }
+
+        let skipSubquery = "SELECT id FROM sessions WHERE COALESCE(tier, 'normal') = 'skip'"
+        let deletedFts = try db.executeAndCountChanges(
+            sql: "DELETE FROM sessions_fts WHERE session_id IN (\(skipSubquery))"
+        )
+        if try tableExists(db, "session_embeddings") {
+            try db.execute(
+                sql: "DELETE FROM session_embeddings WHERE session_id IN (\(skipSubquery))"
+            )
+        }
+        try db.execute(
+            sql: """
+            DELETE FROM session_index_jobs
+            WHERE job_kind IN ('fts', 'embedding')
+              AND session_id IN (\(skipSubquery))
+            """
+        )
+        return deletedFts
     }
 
     public static func vacuumIfNeeded(_ db: Database, fragmentationPercent: Int) throws -> Bool {
