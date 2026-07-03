@@ -185,7 +185,13 @@ enum TranscriptExportService {
         return lines.joined(separator: "\n")
     }
 
-    static func redactSensitiveContent(_ content: String) -> String {
+    // Compile the secret-redaction patterns once per process instead of once
+    // per message per request. redactSensitiveContent() is called for every
+    // displayed/exported message (Web UI page: up to 200 messages), so rebuilding
+    // 8 NSRegularExpressions on each call was pure repeated work. compactMap
+    // preserves the previous behavior of silently skipping any pattern that
+    // fails to compile.
+    private static let compiledRedactionPatterns: [NSRegularExpression] = {
         let patterns = [
             #"(?i)\b(api[_-]?key|authorization|bearer|password|secret|credential|token)\b\s*[:=]\s*["']?[A-Za-z0-9_\-+=/.]{10,}["']?"#,
             #"(?i)\bAuthorization:\s*Bearer\s+[A-Za-z0-9_\-+=/.]{10,}"#,
@@ -196,8 +202,11 @@ enum TranscriptExportService {
             #"\bxoxe-[A-Za-z0-9-]{10,}\b"#,
             #"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"#,
         ]
-        return patterns.reduce(content) { current, pattern in
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { return current }
+        return patterns.compactMap { try? NSRegularExpression(pattern: $0) }
+    }()
+
+    static func redactSensitiveContent(_ content: String) -> String {
+        compiledRedactionPatterns.reduce(content) { current, regex in
             let range = NSRange(current.startIndex..<current.endIndex, in: current)
             return regex.stringByReplacingMatches(
                 in: current,
@@ -329,6 +338,48 @@ enum ServiceTranscriptReader {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
 
+        return parseFallbackMessages(filePath: filePath, source: source)
+    }
+
+    /// Read only a small primer window (first visible message + the last
+    /// `limit - 1` visible messages) without materializing the whole transcript.
+    /// Streaming adapters consume the message stream through a bounded rolling
+    /// buffer; non-streaming (whole-document) sources fall back to the full
+    /// parse and are sliced afterwards. The selection is byte-identical to
+    /// `readMessages` followed by `primerWindow(_:limit:)`. Same size-guard and
+    /// fallback-unsafe ParserFailure semantics as `readMessages`.
+    static func readPrimerMessages(filePath: String, source: String, limit: Int) async throws -> [ServiceTranscriptMessage] {
+        let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+        if guardBeforeAdapter {
+            try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
+        }
+
+        if let windowed = try await readWithAdapterRegistry(
+            filePath: filePath,
+            source: source,
+            primerLimit: limit
+        ) {
+            return windowed
+        }
+
+        if !guardBeforeAdapter {
+            try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
+        }
+
+        return primerWindow(parseFallbackMessages(filePath: filePath, source: source), limit: limit)
+    }
+
+    /// Select the primer window from a fully materialized visible-message
+    /// sequence: everything when there are at most `limit` messages, otherwise
+    /// the first message plus the last `limit - 1`.
+    static func primerWindow(_ messages: [ServiceTranscriptMessage], limit: Int) -> [ServiceTranscriptMessage] {
+        guard limit > 0 else { return [] }
+        guard messages.count > limit else { return Array(messages.prefix(limit)) }
+        if limit == 1 { return [messages[0]] }
+        return [messages[0]] + Array(messages.suffix(limit - 1))
+    }
+
+    private static func parseFallbackMessages(filePath: String, source: String) -> [ServiceTranscriptMessage] {
         switch source {
         case "claude-code", "qwen", "qoder", "iflow", "lobsterai", "minimax":
             return visibleMessages(parseTypeMessageFormat(filePath: filePath), source: source)
@@ -367,7 +418,11 @@ enum ServiceTranscriptReader {
     // Async by design: await the adapter stream directly instead of bridging
     // back to sync via DispatchSemaphore. Blocking a cooperative-pool thread on
     // a semaphore can starve/deadlock the pool under concurrent exports.
-    private static func readWithAdapterRegistry(filePath: String, source: String) async throws -> [ServiceTranscriptMessage]? {
+    private static func readWithAdapterRegistry(
+        filePath: String,
+        source: String,
+        primerLimit: Int? = nil
+    ) async throws -> [ServiceTranscriptMessage]? {
         guard let sourceName = adapterSourceName(for: source),
               let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
         else {
@@ -379,6 +434,32 @@ enum ServiceTranscriptReader {
                 locator: filePath,
                 options: StreamMessagesOptions()
             )
+            // Primer mode: keep only the first visible message plus the last
+            // `primerLimit - 1` visible messages in a bounded rolling buffer,
+            // so a large transcript never inflates a full [ServiceTranscriptMessage]
+            // array just to build a 6-message primer.
+            if let primerLimit {
+                var first: ServiceTranscriptMessage?
+                var tail: [ServiceTranscriptMessage] = []
+                var visibleCount = 0
+                for try await message in stream {
+                    guard isDefaultVisibleMessage(
+                        role: message.role.rawValue,
+                        content: message.content,
+                        source: source
+                    ) else { continue }
+                    let converted = ServiceTranscriptMessage(
+                        role: message.role.rawValue,
+                        content: message.content,
+                        timestamp: message.timestamp
+                    )
+                    if visibleCount == 0 { first = converted }
+                    tail.append(converted)
+                    if tail.count > primerLimit { tail.removeFirst() }
+                    visibleCount += 1
+                }
+                return assemblePrimer(first: first, tail: tail, count: visibleCount, limit: primerLimit)
+            }
             var messages: [ServiceTranscriptMessage] = []
             for try await message in stream {
                 guard isDefaultVisibleMessage(
@@ -400,6 +481,22 @@ enum ServiceTranscriptReader {
         } catch {
             return nil
         }
+    }
+
+    /// Assemble the primer from a streamed rolling window. `tail` holds the last
+    /// (up to `limit`) visible messages and `count` is the total visible count.
+    /// Produces the same result as `primerWindow(_:limit:)` over the full array.
+    private static func assemblePrimer(
+        first: ServiceTranscriptMessage?,
+        tail: [ServiceTranscriptMessage],
+        count: Int,
+        limit: Int
+    ) -> [ServiceTranscriptMessage] {
+        guard limit > 0 else { return [] }
+        if count <= limit { return tail }
+        guard let first else { return tail }
+        if limit == 1 { return [first] }
+        return [first] + Array(tail.suffix(limit - 1))
     }
 
     private static func isFallbackUnsafeParserFailure(_ failure: ParserFailure) -> Bool {

@@ -252,6 +252,76 @@ final class EngramWebUIServerTests: XCTestCase {
         )
     }
 
+    // Hoisting the 8 patterns into a static precompiled array (perf finding #28)
+    // must not change redaction output. Lock the exact byte output on a
+    // representative multi-secret sample and confirm repeated calls are stable.
+    func testRedactionStaticPatternsProduceByteIdenticalOutput() {
+        let samples = [
+            "api_key: ABCDEF0123456789 tail",
+            "Authorization: Bearer ABCDEF0123456789",
+            "token=sk-abcdefghij0123456789 done",
+            "github_pat_1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ here",
+            "AKIA1234567890ABCDEF and npm_1234567890abcdef and xoxe-1234567890-abcdef",
+            "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----",
+            "no secrets here, just prose about tokens and passwords in general",
+        ]
+        let expected = [
+            "[REDACTED] tail",
+            "[REDACTED]",
+            "[REDACTED] done",
+            "[REDACTED] here",
+            "[REDACTED] and [REDACTED] and [REDACTED]",
+            "[REDACTED]",
+            "no secrets here, just prose about tokens and passwords in general",
+        ]
+        for (input, want) in zip(samples, expected) {
+            let first = TranscriptExportService.redactSensitiveContent(input)
+            XCTAssertEqual(first, want, "redaction output changed for: \(input)")
+            // Idempotent across repeated calls (precompiled regexes are reused).
+            XCTAssertEqual(TranscriptExportService.redactSensitiveContent(input), first)
+        }
+    }
+
+    // Finding #32: the session-page ETag is a weak validator derived from ACTUAL
+    // values (id + file mtime/size + offset/limit), never Swift hashValue.
+    func testSessionETagDerivesFromActualFileValues() throws {
+        let dir = NSTemporaryDirectory() + "engram-etag-\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = dir + "/transcript.jsonl"
+        try "line one\n".write(toFile: path, atomically: true, encoding: .utf8)
+
+        let base = EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 0, limit: 50)
+        XCTAssertNotNil(base)
+        XCTAssertTrue(base!.hasPrefix("W/\""), "ETag must be weak")
+        // Stable for identical inputs.
+        XCTAssertEqual(base, EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 0, limit: 50))
+        // Sensitive to id / offset / limit.
+        XCTAssertNotEqual(base, EngramWebUIServer.sessionETag(id: "s2", locator: path, offset: 0, limit: 50))
+        XCTAssertNotEqual(base, EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 50, limit: 50))
+        XCTAssertNotEqual(base, EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 0, limit: 100))
+        // Sensitive to file size/mtime.
+        try "line one\nline two\n".write(toFile: path, atomically: true, encoding: .utf8)
+        XCTAssertNotEqual(base, EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 0, limit: 50))
+        // Virtual/missing locators skip conditional-GET entirely.
+        XCTAssertNil(EngramWebUIServer.sessionETag(id: "s1", locator: nil, offset: 0, limit: 50))
+        XCTAssertNil(EngramWebUIServer.sessionETag(id: "s1", locator: "", offset: 0, limit: 50))
+        XCTAssertNil(EngramWebUIServer.sessionETag(id: "s1", locator: dir + "/missing.db::abc", offset: 0, limit: 50))
+    }
+
+    func testIfNoneMatchWeakComparison() {
+        let etag = "W/\"deadbeef\""
+        XCTAssertTrue(EngramWebUIServer.ifNoneMatch(header: etag, matches: etag))
+        // Weak comparison ignores the W/ prefix on either side.
+        XCTAssertTrue(EngramWebUIServer.ifNoneMatch(header: "\"deadbeef\"", matches: etag))
+        // Comma-separated list and wildcard.
+        XCTAssertTrue(EngramWebUIServer.ifNoneMatch(header: "W/\"other\", W/\"deadbeef\"", matches: etag))
+        XCTAssertTrue(EngramWebUIServer.ifNoneMatch(header: "*", matches: etag))
+        // Non-matches.
+        XCTAssertFalse(EngramWebUIServer.ifNoneMatch(header: nil, matches: etag))
+        XCTAssertFalse(EngramWebUIServer.ifNoneMatch(header: "W/\"other\"", matches: etag))
+    }
+
     func testLoopbackHostAndOriginValidation() {
         XCTAssertTrue(EngramWebUIServer.isLoopbackHost("127.0.0.1:3457", expectedPort: 3457))
         XCTAssertTrue(EngramWebUIServer.isLoopbackHost("localhost:3457", expectedPort: 3457))
@@ -398,7 +468,8 @@ final class EngramWebUIServerTests: XCTestCase {
         // percent-decode-failure branch — not the default .ok.
         let source = try serviceCoreSource("EngramWebUIServer.swift")
         XCTAssertTrue(
-            source.contains("return (layout(title: \"Not Found\", body: \"<p>Session not found.</p>\"), .notFound)"),
+            source.contains("html: layout(title: \"Not Found\", body: \"<p>Session not found.</p>\")")
+                && source.contains("status: .notFound"),
             "Missing session must signal HTTP 404, not a 200 that renders not-found HTML"
         )
         XCTAssertFalse(
