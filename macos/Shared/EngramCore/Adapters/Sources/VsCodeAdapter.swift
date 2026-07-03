@@ -6,6 +6,7 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
     private static let maxMutationArrayIndex = 1_000_000
     private let workspaceStorageDir: URL
     private let limits: ParserLimits
+    private let messageCache = ParsedTranscriptCache()
 
     init(
         workspaceStorageDir: String = FileManager.default.homeDirectoryForCurrentUser
@@ -95,17 +96,29 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        guard let session = try Self.readSession(locator: locator, limits: limits),
+        let signature = ParsedTranscriptCache.Signature.forFile(locator)
+        let messages: [NormalizedMessage]
+        if let cached = await messageCache.cached(locator: locator, signature: signature) {
+            messages = cached
+        } else {
+            messages = try Self.buildMessages(locator: locator, limits: limits)
+            await messageCache.store(locator: locator, signature: signature, messages: messages)
+        }
+        return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
+    }
+
+    private static func buildMessages(locator: String, limits: ParserLimits) throws -> [NormalizedMessage] {
+        guard let session = try readSession(locator: locator, limits: limits),
               let requests = JSONLAdapterSupport.array(session["requests"])
         else {
-            return JSONLAdapterSupport.stream([])
+            return []
         }
 
         var messages: [NormalizedMessage] = []
         for request in requests.compactMap({ JSONLAdapterSupport.object($0) }) {
             let timestamp = Phase4AdapterSupport.double(request["timestamp"])
                 .map { Phase4AdapterSupport.isoFromMilliseconds($0) }
-            let userText = Self.extractUserText(request)
+            let userText = extractUserText(request)
             if !userText.isEmpty {
                 messages.append(
                     NormalizedMessage(
@@ -117,7 +130,7 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
                     )
                 )
             }
-            let assistantText = Self.extractAssistantText(request)
+            let assistantText = extractAssistantText(request)
             if !assistantText.isEmpty {
                 messages.append(
                     NormalizedMessage(
@@ -130,7 +143,7 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
                 )
             }
         }
-        return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
+        return messages
     }
 
     func isAccessible(locator: String) async -> Bool {

@@ -4,6 +4,7 @@ final class CursorAdapter: SessionAdapter, Sendable {
     let source: SourceName = .cursor
     private let dbPath: String
     private let accessibilityCache = Phase4SQLiteAccessibilityCache()
+    private let messageCache = ParsedTranscriptCache()
 
     init(
         dbPath: String = FileManager.default.homeDirectoryForCurrentUser
@@ -119,6 +120,14 @@ final class CursorAdapter: SessionAdapter, Sendable {
             throw ParserFailure.unsupportedVirtualLocator
         }
 
+        // Cursor stores every composer in one SQLite DB, so the parse cache is
+        // keyed on the full virtual locator but invalidated by the backing DB
+        // file's mtime/size.
+        let signature = ParsedTranscriptCache.Signature.forFile(locatorParts.dbPath)
+        if let cached = await messageCache.cached(locator: locator, signature: signature) {
+            return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(cached, options: options))
+        }
+
         do {
             let database = try Phase4SQLiteDatabase(path: locatorParts.dbPath)
             var composerData: Phase4AdapterSupport.JSONObject = [:]
@@ -152,6 +161,7 @@ final class CursorAdapter: SessionAdapter, Sendable {
                         : nil
                 )
             }
+            await messageCache.store(locator: locator, signature: signature, messages: messages)
             return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
         } catch let failure as ParserFailure {
             throw failure

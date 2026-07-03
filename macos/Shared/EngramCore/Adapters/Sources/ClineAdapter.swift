@@ -4,6 +4,7 @@ final class ClineAdapter: SessionAdapter, Sendable {
     let source: SourceName = .cline
     private let tasksRoot: URL
     private let limits: ParserLimits
+    private let messageCache = ParsedTranscriptCache()
 
     init(
         tasksRoot: String = FileManager.default.homeDirectoryForCurrentUser
@@ -102,8 +103,15 @@ final class ClineAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        let objects = try Phase4AdapterSupport.readJSONArray(locator: locator, limits: limits)
-        let messages = Self.messages(from: objects)
+        let signature = ParsedTranscriptCache.Signature.forFile(locator)
+        let messages: [NormalizedMessage]
+        if let cached = await messageCache.cached(locator: locator, signature: signature) {
+            messages = cached
+        } else {
+            let objects = try Phase4AdapterSupport.readJSONArray(locator: locator, limits: limits)
+            messages = Self.messages(from: objects)
+            await messageCache.store(locator: locator, signature: signature, messages: messages)
+        }
         return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
     }
 
