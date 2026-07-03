@@ -4,6 +4,9 @@ import SwiftUI
 struct ActivityView: View {
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
+    // Coalesce background index-tick reloads so indexing churn doesn't refetch
+    // the activity charts on every count bump (#3).
+    @State private var lastFilterKey: [AnyHashable]? = nil
     @State private var dailySourceActivity: [(date: String, segments: [(source: String, count: Int)])] = []
     @State private var hourlyActivity: [Int] = Array(repeating: 0, count: 24)
     @State private var sourceDist: [(source: String, count: Int)] = []
@@ -34,7 +37,16 @@ struct ActivityView: View {
             .padding(24)
         }
         .accessibilityIdentifier("activity_container")
-        .task(id: serviceStatusStore.totalSessions) { await loadData() }
+        .task(id: serviceStatusStore.totalSessions) {
+            let filterKey: [AnyHashable] = []
+            let plan = BrowseReloadCoalescer.plan(filterKey: filterKey, lastFilterKey: lastFilterKey)
+            if plan.debounce {
+                try? await Task.sleep(for: BrowseReloadCoalescer.debounceInterval)
+                if Task.isCancelled { return }
+            }
+            lastFilterKey = filterKey
+            await loadData()
+        }
     }
 
     @ViewBuilder private var activityBody: some View {

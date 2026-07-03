@@ -14,6 +14,8 @@ struct HomeView: View {
     // Continue list shows only human-driven sessions.
     @AppStorage("sessions.showAll") private var showAllSessions = false
 
+    // Debounce/coalesce index-tick reloads vs. immediate filter-change reloads (#3).
+    @State private var lastFilterKey: [AnyHashable]? = nil
     @State private var kpi: DatabaseManager.KPIStats?
     @State private var recentSessions: [Session] = []
     @State private var followUpSessions: [Session] = []
@@ -41,7 +43,16 @@ struct HomeView: View {
         }
         .modernScrollIndicators()
         .accessibilityIdentifier("home_container")
-        .task(id: [AnyHashable(serviceStatusStore.totalSessions), AnyHashable(showAllSessions)]) { await loadData() }
+        .task(id: [AnyHashable(serviceStatusStore.totalSessions), AnyHashable(showAllSessions)]) {
+            let filterKey: [AnyHashable] = [AnyHashable(showAllSessions)]
+            let plan = BrowseReloadCoalescer.plan(filterKey: filterKey, lastFilterKey: lastFilterKey)
+            if plan.debounce {
+                try? await Task.sleep(for: BrowseReloadCoalescer.debounceInterval)
+                if Task.isCancelled { return }
+            }
+            lastFilterKey = filterKey
+            await loadData()
+        }
         .sheet(item: $resumeSession) { session in
             ResumeDialog(session: session)
         }
