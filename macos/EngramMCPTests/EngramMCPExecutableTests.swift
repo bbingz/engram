@@ -416,104 +416,181 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertTrue(message.contains("page must be <="), message)
     }
 
-    // #34: get_session must page via the adapter's O(offset+limit) fast path.
-    // The page content (first page and a middle page) must be identical whether
-    // the total comes from the stored message_count (fast path) or from a full
-    // parse (fallback when message_count is unavailable).
-    func testGetSessionPagingMatchesFullParseAcrossPages() throws {
+    // #34: get_session pages via the adapter's O(offset+limit) fast path, which
+    // indexes the RAW stream (offset/limit count produced records, including the
+    // tool_result and system-injection records the transcript view hides). For a
+    // transcript with NO hidden records raw == visible, so each raw window equals
+    // origin/main's dense page exactly.
+    func testGetSessionPagingPlainTranscriptRendersDensePages() throws {
         let temp = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
-        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
-        try FileManager.default.copyItem(
-            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
-            to: dbURL
+        let dbURL = try mcpContractCopy(in: temp)
+
+        // 120 plain user/assistant messages, pageSize=50.
+        let transcriptURL = temp.appendingPathComponent("session.jsonl")
+        try writeClaudeTranscript(count: 120, to: transcriptURL)
+        try setSession(dbPath: dbURL.path, filePath: transcriptURL.path, messageCount: 120)
+
+        let p1 = try getSessionPage(dbPath: dbURL.path, page: 1)
+        XCTAssertEqual(p1.currentPage, 1)
+        XCTAssertEqual(p1.texts, (1...50).map { "Message \($0)" })
+        // Probe-driven total: page 1 only advertises that another page exists.
+        XCTAssertEqual(p1.totalPages, 2)
+
+        let p2 = try getSessionPage(dbPath: dbURL.path, page: 2)
+        XCTAssertEqual(p2.currentPage, 2)
+        XCTAssertEqual(p2.texts, (51...100).map { "Message \($0)" })
+
+        let p3 = try getSessionPage(dbPath: dbURL.path, page: 3)
+        XCTAssertEqual(p3.currentPage, 3)
+        XCTAssertEqual(p3.texts, (101...120).map { "Message \($0)" })
+        // Last page: currentPage == totalPages terminates the pager.
+        XCTAssertEqual(p3.totalPages, 3)
+
+        let all = try collectAllVisibleTexts(dbPath: dbURL.path)
+        XCTAssertEqual(all.texts, (1...120).map { "Message \($0)" })
+    }
+
+    // #34 (regression for the reviewer's blocking finding): the raw stream is
+    // denser than the visible message set for real Claude Code transcripts
+    // (system-injection + tool_result records occupy raw offset slots). The
+    // pager must NOT derive totalPages from the stored message_count — that count
+    // excludes system_message_count, so the tail would be silently unreachable.
+    // Every visible turn must be reachable across pages 1...totalPages.
+    func testGetSessionPagingReachesTranscriptTailWithHiddenRecords() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = try mcpContractCopy(in: temp)
+
+        // 120 visible turns, each bracketed by a hidden system-injection record:
+        // raw_stream_length == 240, visible == 120, pageSize == 50.
+        let transcriptURL = temp.appendingPathComponent("session.jsonl")
+        try writeInterleavedClaudeTranscript(visibleTurns: 120, to: transcriptURL)
+        // message_count is set to the (smaller) visible count on purpose: a
+        // message_count-derived total would be ceil(120/50) = 3 pages and strand
+        // everything after "Message 75". The probe-driven pager must not.
+        try setSession(dbPath: dbURL.path, filePath: transcriptURL.path, messageCount: 120)
+
+        let collected = try collectAllVisibleTexts(dbPath: dbURL.path)
+        XCTAssertEqual(
+            collected.texts,
+            (1...120).map { "Message \($0)" },
+            "every visible turn must be reachable across pages — no tail loss"
+        )
+        XCTAssertGreaterThanOrEqual(
+            collected.lastPage, 4,
+            "hidden records push the raw tail past the message_count-derived page count"
         )
 
-        // 120 plain user/assistant messages => 3 pages of 50/50/20 (pageSize=50).
-        let total = 120
+        // Page 1 is a sparse raw window (25 visible of 50 raw) and advertises more.
+        let p1 = try getSessionPage(dbPath: dbURL.path, page: 1)
+        XCTAssertEqual(p1.texts, (1...25).map { "Message \($0)" })
+        XCTAssertEqual(p1.totalPages, 2)
+        // Page 4 was unreachable under the old message_count total (3 pages); it
+        // must now render the tail that would otherwise be lost.
+        let p4 = try getSessionPage(dbPath: dbURL.path, page: 4)
+        XCTAssertEqual(p4.texts, (76...100).map { "Message \($0)" })
+    }
+
+    // #34: with the fix, totalPages/reachability come from the raw look-ahead
+    // probe, never from the stored message_count. Prove the stored count is not
+    // load-bearing: accurate, zero, and inflated counts all page identically.
+    func testGetSessionPagingIsIndependentOfStoredMessageCount() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = try mcpContractCopy(in: temp)
+
         let transcriptURL = temp.appendingPathComponent("session.jsonl")
-        try writeClaudeTranscript(count: total, to: transcriptURL)
+        try writeInterleavedClaudeTranscript(visibleTurns: 120, to: transcriptURL)
 
-        func contents(page: Int, messageCount: Int) throws -> (roles: [String], texts: [String], totalPages: Int, currentPage: Int) {
-            try DatabaseQueue(path: dbURL.path).write { db in
-                try db.execute(
-                    sql: "UPDATE sessions SET source='claude-code', file_path=?, message_count=? WHERE id='mcp-fixture-01'",
-                    arguments: [transcriptURL.path, messageCount]
-                )
-            }
-            let capture = try rpc(
-                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_session\",\"arguments\":{\"id\":\"mcp-fixture-01\",\"page\":\(page)}}}",
-                environment: ["ENGRAM_MCP_DB_PATH": dbURL.path]
-            )
-            let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
-            let messages = try XCTUnwrap(structured["messages"]?.arrayValue)
-            return (
-                roles: messages.compactMap { $0["role"]?.stringValue },
-                texts: messages.compactMap { $0["content"]?.stringValue },
-                totalPages: try XCTUnwrap(structured["totalPages"]?.intValue),
-                currentPage: try XCTUnwrap(structured["currentPage"]?.intValue)
-            )
-        }
-
-        // Fast path (stored message_count) vs fallback (message_count = 0, full
-        // parse). Both must return identical page content for page 1 and a
-        // middle page (page 2), with 3 total pages either way.
-        for page in [1, 2] {
-            let fast = try contents(page: page, messageCount: total)
-            let fallback = try contents(page: page, messageCount: 0)
-
-            XCTAssertEqual(fast.currentPage, page)
-            XCTAssertEqual(fast.totalPages, 3)
-            XCTAssertEqual(fast.roles.count, 50)
-            XCTAssertEqual(fast.roles, fallback.roles, "page \(page) roles differ between fast path and full parse")
-            XCTAssertEqual(fast.texts, fallback.texts, "page \(page) content differs between fast path and full parse")
-
-            // Page N holds messages [(N-1)*50 + 1 ... N*50].
-            let expectedFirst = "Message \((page - 1) * 50 + 1)"
-            XCTAssertEqual(fast.texts.first, expectedFirst)
+        let expected = (1...120).map { "Message \($0)" }
+        for messageCount in [0, 120, 500] {
+            try setSession(dbPath: dbURL.path, filePath: transcriptURL.path, messageCount: messageCount)
+            let collected = try collectAllVisibleTexts(dbPath: dbURL.path)
+            XCTAssertEqual(collected.texts, expected, "message_count=\(messageCount) changed reachability")
+            let p1 = try getSessionPage(dbPath: dbURL.path, page: 1)
+            XCTAssertEqual(p1.totalPages, 2, "message_count=\(messageCount) leaked into totalPages")
         }
     }
 
-    // #34: totalPages must come from the stored message_count when present
-    // (fast path) and fall back to the parsed count only when it is absent.
-    func testGetSessionPagingUsesStoredMessageCountWithParseFallback() throws {
-        let temp = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: temp) }
+    private func mcpContractCopy(in temp: URL) throws -> URL {
         let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
         try FileManager.default.copyItem(
             at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
             to: dbURL
         )
+        return dbURL
+    }
 
-        // The file has 120 messages, but message_count claims 200. When the fast
-        // path is taken the total is read from message_count (=> ceil(200/50)=4
-        // pages); the parse fallback would instead report ceil(120/50)=3.
-        let transcriptURL = temp.appendingPathComponent("session.jsonl")
-        try writeClaudeTranscript(count: 120, to: transcriptURL)
-
-        func totalPages(messageCount: Int) throws -> Int {
-            try DatabaseQueue(path: dbURL.path).write { db in
-                try db.execute(
-                    sql: "UPDATE sessions SET source='claude-code', file_path=?, message_count=? WHERE id='mcp-fixture-01'",
-                    arguments: [transcriptURL.path, messageCount]
-                )
-            }
-            let capture = try rpc(
-                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_session\",\"arguments\":{\"id\":\"mcp-fixture-01\",\"page\":1}}}",
-                environment: ["ENGRAM_MCP_DB_PATH": dbURL.path]
+    private func setSession(dbPath: String, filePath: String, messageCount: Int) throws {
+        try DatabaseQueue(path: dbPath).write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET source='claude-code', file_path=?, message_count=? WHERE id='mcp-fixture-01'",
+                arguments: [filePath, messageCount]
             )
-            let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
-            return try XCTUnwrap(structured["totalPages"]?.intValue)
         }
+    }
 
-        XCTAssertEqual(try totalPages(messageCount: 200), 4, "fast path should derive totalPages from stored message_count")
-        XCTAssertEqual(try totalPages(messageCount: 0), 3, "missing message_count should fall back to the parsed count")
+    private func getSessionPage(
+        dbPath: String,
+        page: Int
+    ) throws -> (roles: [String], texts: [String], totalPages: Int, currentPage: Int) {
+        let capture = try rpc(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_session\",\"arguments\":{\"id\":\"mcp-fixture-01\",\"page\":\(page)}}}",
+            environment: ["ENGRAM_MCP_DB_PATH": dbPath]
+        )
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        let messages = try XCTUnwrap(structured["messages"]?.arrayValue)
+        return (
+            roles: messages.compactMap { $0["role"]?.stringValue },
+            texts: messages.compactMap { $0["content"]?.stringValue },
+            totalPages: try XCTUnwrap(structured["totalPages"]?.intValue),
+            currentPage: try XCTUnwrap(structured["currentPage"]?.intValue)
+        )
+    }
+
+    // Walk pages the way a client must under the probe-driven contract: keep
+    // fetching while currentPage < totalPages, terminate on raw exhaustion.
+    private func collectAllVisibleTexts(dbPath: String) throws -> (texts: [String], lastPage: Int) {
+        var all: [String] = []
+        var page = 1
+        while true {
+            let result = try getSessionPage(dbPath: dbPath, page: page)
+            XCTAssertEqual(result.currentPage, page)
+            all.append(contentsOf: result.texts)
+            if result.currentPage >= result.totalPages { break }
+            page += 1
+            if page > 100 {
+                XCTFail("paging did not terminate")
+                break
+            }
+        }
+        return (all, page)
     }
 
     private func writeClaudeTranscript(count: Int, to url: URL) throws {
         let lines = (1...count).map { n -> String in
             let role = n % 2 == 1 ? "user" : "assistant"
             return "{\"type\":\"\(role)\",\"message\":{\"role\":\"\(role)\",\"content\":\"Message \(n)\"},\"timestamp\":\"2026-01-01T00:00:00.000Z\"}"
+        }
+        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    // Each visible turn is preceded by a hidden system-injection user record
+    // (SystemMessageClassifier hides "# AGENTS.md instructions for ..."). The
+    // adapter still emits those hidden records into the raw stream, so raw length
+    // (2 * visibleTurns) exceeds both the visible count and the stored
+    // message_count — the shape that exposed the truncation bug.
+    private func writeInterleavedClaudeTranscript(visibleTurns: Int, to url: URL) throws {
+        var lines: [String] = []
+        for i in 1...visibleTurns {
+            lines.append(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"# AGENTS.md instructions for /repo turn \(i)\"},\"timestamp\":\"2026-01-01T00:00:00.000Z\"}"
+            )
+            let role = i % 2 == 1 ? "user" : "assistant"
+            lines.append(
+                "{\"type\":\"\(role)\",\"message\":{\"role\":\"\(role)\",\"content\":\"Message \(i)\"},\"timestamp\":\"2026-01-01T00:00:00.000Z\"}"
+            )
         }
         try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
     }

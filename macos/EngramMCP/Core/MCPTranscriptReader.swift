@@ -9,13 +9,9 @@ struct MCPTranscriptMessage {
 
 struct MCPTranscriptPage {
     let messages: [MCPTranscriptMessage]
-    let totalMessages: Int
+    let totalPages: Int
     let currentPage: Int
     let pageSize: Int
-
-    var totalPages: Int {
-        max(1, Int(ceil(Double(totalMessages) / Double(pageSize))))
-    }
 }
 
 private struct MCPTranscriptPageBuilder {
@@ -43,7 +39,7 @@ private struct MCPTranscriptPageBuilder {
     func build() -> MCPTranscriptPage {
         MCPTranscriptPage(
             messages: messages,
-            totalMessages: totalMessages,
+            totalPages: max(1, Int(ceil(Double(totalMessages) / Double(pageSize)))),
             currentPage: currentPage,
             pageSize: pageSize
         )
@@ -72,8 +68,7 @@ enum MCPTranscriptReader {
         source: String,
         page: Int,
         pageSize: Int,
-        roles: [String]?,
-        totalMessageCount: Int?
+        roles: [String]?
     ) async throws -> MCPTranscriptPage {
         let currentPage = max(1, min(page, maxPage))
         let effectivePageSize = max(1, min(pageSize, maxPageSize))
@@ -82,15 +77,6 @@ enum MCPTranscriptReader {
             currentPage: currentPage,
             pageSize: effectivePageSize
         )
-
-        // Fast path is only correct with no role filter: it paginates by raw
-        // adapter offset and takes the total from the stored message_count, so
-        // page boundaries and totalPages stay consistent. Role-filtered paging
-        // must count the filtered messages, so it stays on the full-parse path.
-        // A missing/zero message_count also falls back to counting via parse.
-        let knownTotal = roleFilter == nil
-            ? totalMessageCount.flatMap { $0 > 0 ? $0 : nil }
-            : nil
 
         let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
         if guardBeforeAdapter {
@@ -102,8 +88,7 @@ enum MCPTranscriptReader {
             source: source,
             currentPage: currentPage,
             pageSize: effectivePageSize,
-            roles: roleFilter,
-            knownTotal: knownTotal
+            roles: roleFilter
         ) {
             return adapterPage
         }
@@ -242,8 +227,7 @@ enum MCPTranscriptReader {
         source: String,
         currentPage: Int,
         pageSize: Int,
-        roles: [String]?,
-        knownTotal: Int?
+        roles: [String]?
     ) async throws -> MCPTranscriptPage? {
         guard let sourceName = adapterSourceName(for: source),
               let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
@@ -252,29 +236,45 @@ enum MCPTranscriptReader {
         }
 
         do {
-            if let knownTotal {
-                // Fast path: fetch only the requested raw window via the adapter's
-                // O(offset+limit) early-stopping stream instead of parsing the
-                // whole file every page. `roles` is nil here (guaranteed by the
-                // caller), so a window builder anchored at offset 0 filters/caps
-                // the window into the page; the total comes from message_count.
+            if roles == nil {
+                // Fast path: fetch only the requested RAW window via the
+                // adapter's O(offset+limit) early-stopping stream instead of
+                // parsing the whole file every page. `offset`/`limit` index the
+                // adapter's RAW stream, which also carries tool_result and
+                // system-injection records that the transcript view hides, so we
+                // must NOT derive the total from the stored message_count: that
+                // count excludes system_message_count and would undercount the
+                // raw index space, leaving the transcript tail unreachable.
+                // Instead mirror EngramWebUIServer.readMessages: a `pageSize + 1`
+                // look-ahead probe reports whether another RAW page exists, so a
+                // client paging 1...totalPages always reaches the tail. Pages are
+                // therefore sparse (fewer than pageSize visible units) for
+                // transcripts containing hidden records — the same raw-window
+                // trade-off the web pager already makes.
                 let offset = (currentPage - 1) * pageSize
                 let stream = try await adapter.streamMessages(
                     locator: filePath,
-                    options: StreamMessagesOptions(offset: offset, limit: pageSize)
+                    options: StreamMessagesOptions(offset: offset, limit: pageSize + 1)
                 )
-                var windowBuilder = MCPTranscriptPageBuilder(currentPage: 1, pageSize: pageSize)
+                var raw: [MCPTranscriptMessage] = []
                 for try await message in stream {
-                    let transcriptMessage = MCPTranscriptMessage(
-                        role: message.role.rawValue,
-                        content: message.content,
-                        timestamp: message.timestamp
+                    raw.append(
+                        MCPTranscriptMessage(
+                            role: message.role.rawValue,
+                            content: message.content,
+                            timestamp: message.timestamp
+                        )
                     )
-                    appendIfVisible(transcriptMessage, to: &windowBuilder, source: source, roles: roles)
+                    if raw.count > pageSize { break }
+                }
+                let hasMore = raw.count > pageSize
+                var windowBuilder = MCPTranscriptPageBuilder(currentPage: 1, pageSize: pageSize)
+                for message in raw.prefix(pageSize) {
+                    appendIfVisible(message, to: &windowBuilder, source: source, roles: nil)
                 }
                 return MCPTranscriptPage(
                     messages: windowBuilder.build().messages,
-                    totalMessages: knownTotal,
+                    totalPages: hasMore ? currentPage + 1 : currentPage,
                     currentPage: currentPage,
                     pageSize: pageSize
                 )

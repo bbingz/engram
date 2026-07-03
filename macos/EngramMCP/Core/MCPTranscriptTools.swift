@@ -19,8 +19,7 @@ enum MCPTranscriptTools {
                 source: session.source,
                 page: page,
                 pageSize: pageSize,
-                roles: roles,
-                totalMessageCount: session.messageCount
+                roles: roles
             )
         } catch let error as TranscriptSizeGuardError {
             throw MCPToolError.transcriptTooLarge(error.localizedDescription)
