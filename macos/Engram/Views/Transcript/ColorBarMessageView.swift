@@ -6,11 +6,39 @@ struct ColorBarMessageView: View {
     let searchText: String
     var onCopyAll: (() -> Void)? = nil
     @AppStorage("contentFontSize") var fontSize: Double = 14
+    // Per-row memo for find highlighting, keyed on the active query. Reference
+    // type so `body` (non-mutating) can populate it; view identity is the
+    // message id, so the effective key is (message id, searchText). See #27.
+    @State private var highlightCache = HighlightCache()
 
     private var barColor: Color { indexed.messageType.color }
 
-    private var typeLabel: String {
-        Self.displayLabel(for: indexed.messageType, typeIndex: indexed.typeIndex, content: indexed.message.content)
+    /// Tool-row content parsed exactly once per `body` evaluation, so the header
+    /// label and the sub-view share a single parse instead of running
+    /// ToolCallParser twice per render (#0).
+    private enum ParsedRow {
+        case toolCall(ParsedToolCall?)
+        case toolResult(ParsedToolResult?)
+        case plain
+
+        var toolName: String? {
+            switch self {
+            case .toolCall(let parsed): return parsed?.toolName
+            case .toolResult(let parsed): return parsed?.toolName
+            case .plain: return nil
+            }
+        }
+    }
+
+    private var parsedRow: ParsedRow {
+        switch indexed.messageType {
+        case .toolCall, .tool:
+            return .toolCall(ToolCallParser.parseToolCall(indexed.message.content))
+        case .toolResult:
+            return .toolResult(ToolCallParser.parseToolResult(indexed.message.content))
+        default:
+            return .plain
+        }
     }
 
     /// Header label for a transcript row. Tool rows surface the concrete tool
@@ -26,6 +54,12 @@ struct ColorBarMessageView: View {
         default:
             toolName = nil
         }
+        return headerLabel(for: type, typeIndex: typeIndex, toolName: toolName)
+    }
+
+    /// Formats the header label from an already-resolved tool name, so callers
+    /// that parsed the row once can reuse the result (see `body`).
+    static func headerLabel(for type: MessageType, typeIndex: Int, toolName: String?) -> String {
         if let toolName, !toolName.isEmpty {
             return "TOOL: \(toolName) #\(typeIndex)"
         }
@@ -45,10 +79,10 @@ struct ColorBarMessageView: View {
     }
 
     @ViewBuilder
-    private var roleHeader: some View {
+    private func roleHeader(_ label: String) -> some View {
         if indexed.messageType == .user {
             HStack(spacing: 6) {
-                Text(typeLabel)
+                Text(label)
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(barColor)
                     .padding(.horizontal, 7)
@@ -59,19 +93,33 @@ struct ColorBarMessageView: View {
             }
         } else if indexed.messageType == .assistant {
             HStack(spacing: 6) {
-                Text(typeLabel)
+                Text(label)
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(barColor)
                 Spacer(minLength: 0)
             }
         } else {
-            Text(typeLabel)
+            Text(label)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(barColor)
         }
     }
 
     private func highlightedText(_ text: String) -> AttributedString {
+        guard !searchText.isEmpty else { return AttributedString(text) }
+        // Memoize per query: unrelated re-renders (scroll, font-size change)
+        // must not re-scan the full row content on the main thread (#27). The
+        // cache lives per row, so the effective key is (message id, searchText).
+        if highlightCache.query == searchText, let cached = highlightCache.value {
+            return cached
+        }
+        let attr = Self.computeHighlight(text, searchText: searchText)
+        highlightCache.query = searchText
+        highlightCache.value = attr
+        return attr
+    }
+
+    static func computeHighlight(_ text: String, searchText: String) -> AttributedString {
         var attr = AttributedString(text)
         guard !searchText.isEmpty else { return attr }
         // Search and map ranges against the SAME string (`text`) using a
@@ -96,13 +144,20 @@ struct ColorBarMessageView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
+        // Parse the row once; header label and tool sub-views share this result.
+        let parsed = parsedRow
+        let label = Self.headerLabel(
+            for: indexed.messageType,
+            typeIndex: indexed.typeIndex,
+            toolName: parsed.toolName
+        )
+        return HStack(spacing: 0) {
             Rectangle()
                 .fill(barColor)
                 .frame(width: 3)
 
             VStack(alignment: .leading, spacing: 4) {
-                roleHeader
+                roleHeader(label)
 
                 switch indexed.messageType {
                 case .assistant, .code:
@@ -120,16 +175,16 @@ struct ColorBarMessageView: View {
                         .foregroundStyle(.secondary)
                         .italic()
                 case .toolCall:
-                    if let parsed = ToolCallParser.parseToolCall(indexed.message.content) {
-                        ToolCallView(parsed: parsed)
+                    if case let .toolCall(toolCall?) = parsed {
+                        ToolCallView(parsed: toolCall)
                     } else {
                         Text(highlightedText(indexed.message.content))
                             .font(.system(size: fontSize))
                             .textSelection(.enabled)
                     }
                 case .toolResult:
-                    if let parsed = ToolCallParser.parseToolResult(indexed.message.content) {
-                        ToolResultView(parsed: parsed)
+                    if case let .toolResult(toolResult?) = parsed {
+                        ToolResultView(parsed: toolResult)
                     } else {
                         Text(highlightedText(indexed.message.content))
                             .font(.system(size: fontSize))
@@ -170,4 +225,12 @@ struct ColorBarMessageView: View {
             }
         }
     }
+}
+
+/// Single-slot memo for a row's find highlighting. Keyed on the exact query
+/// string (never a hashValue), and instance-scoped to the row's view identity
+/// (the message id), so it holds the most recent (message id, searchText) result.
+final class HighlightCache {
+    var query: String?
+    var value: AttributedString?
 }
