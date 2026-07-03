@@ -416,6 +416,108 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertTrue(message.contains("page must be <="), message)
     }
 
+    // #34: get_session must page via the adapter's O(offset+limit) fast path.
+    // The page content (first page and a middle page) must be identical whether
+    // the total comes from the stored message_count (fast path) or from a full
+    // parse (fallback when message_count is unavailable).
+    func testGetSessionPagingMatchesFullParseAcrossPages() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+
+        // 120 plain user/assistant messages => 3 pages of 50/50/20 (pageSize=50).
+        let total = 120
+        let transcriptURL = temp.appendingPathComponent("session.jsonl")
+        try writeClaudeTranscript(count: total, to: transcriptURL)
+
+        func contents(page: Int, messageCount: Int) throws -> (roles: [String], texts: [String], totalPages: Int, currentPage: Int) {
+            try DatabaseQueue(path: dbURL.path).write { db in
+                try db.execute(
+                    sql: "UPDATE sessions SET source='claude-code', file_path=?, message_count=? WHERE id='mcp-fixture-01'",
+                    arguments: [transcriptURL.path, messageCount]
+                )
+            }
+            let capture = try rpc(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_session\",\"arguments\":{\"id\":\"mcp-fixture-01\",\"page\":\(page)}}}",
+                environment: ["ENGRAM_MCP_DB_PATH": dbURL.path]
+            )
+            let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+            let messages = try XCTUnwrap(structured["messages"]?.arrayValue)
+            return (
+                roles: messages.compactMap { $0["role"]?.stringValue },
+                texts: messages.compactMap { $0["content"]?.stringValue },
+                totalPages: try XCTUnwrap(structured["totalPages"]?.intValue),
+                currentPage: try XCTUnwrap(structured["currentPage"]?.intValue)
+            )
+        }
+
+        // Fast path (stored message_count) vs fallback (message_count = 0, full
+        // parse). Both must return identical page content for page 1 and a
+        // middle page (page 2), with 3 total pages either way.
+        for page in [1, 2] {
+            let fast = try contents(page: page, messageCount: total)
+            let fallback = try contents(page: page, messageCount: 0)
+
+            XCTAssertEqual(fast.currentPage, page)
+            XCTAssertEqual(fast.totalPages, 3)
+            XCTAssertEqual(fast.roles.count, 50)
+            XCTAssertEqual(fast.roles, fallback.roles, "page \(page) roles differ between fast path and full parse")
+            XCTAssertEqual(fast.texts, fallback.texts, "page \(page) content differs between fast path and full parse")
+
+            // Page N holds messages [(N-1)*50 + 1 ... N*50].
+            let expectedFirst = "Message \((page - 1) * 50 + 1)"
+            XCTAssertEqual(fast.texts.first, expectedFirst)
+        }
+    }
+
+    // #34: totalPages must come from the stored message_count when present
+    // (fast path) and fall back to the parsed count only when it is absent.
+    func testGetSessionPagingUsesStoredMessageCountWithParseFallback() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+
+        // The file has 120 messages, but message_count claims 200. When the fast
+        // path is taken the total is read from message_count (=> ceil(200/50)=4
+        // pages); the parse fallback would instead report ceil(120/50)=3.
+        let transcriptURL = temp.appendingPathComponent("session.jsonl")
+        try writeClaudeTranscript(count: 120, to: transcriptURL)
+
+        func totalPages(messageCount: Int) throws -> Int {
+            try DatabaseQueue(path: dbURL.path).write { db in
+                try db.execute(
+                    sql: "UPDATE sessions SET source='claude-code', file_path=?, message_count=? WHERE id='mcp-fixture-01'",
+                    arguments: [transcriptURL.path, messageCount]
+                )
+            }
+            let capture = try rpc(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_session\",\"arguments\":{\"id\":\"mcp-fixture-01\",\"page\":1}}}",
+                environment: ["ENGRAM_MCP_DB_PATH": dbURL.path]
+            )
+            let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+            return try XCTUnwrap(structured["totalPages"]?.intValue)
+        }
+
+        XCTAssertEqual(try totalPages(messageCount: 200), 4, "fast path should derive totalPages from stored message_count")
+        XCTAssertEqual(try totalPages(messageCount: 0), 3, "missing message_count should fall back to the parsed count")
+    }
+
+    private func writeClaudeTranscript(count: Int, to url: URL) throws {
+        let lines = (1...count).map { n -> String in
+            let role = n % 2 == 1 ? "user" : "assistant"
+            return "{\"type\":\"\(role)\",\"message\":{\"role\":\"\(role)\",\"content\":\"Message \(n)\"},\"timestamp\":\"2026-01-01T00:00:00.000Z\"}"
+        }
+        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+
     func testResourceReadRejectsUnknownURIScheme() throws {
         let capture = try rpc(
             """

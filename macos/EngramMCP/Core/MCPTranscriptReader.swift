@@ -72,7 +72,8 @@ enum MCPTranscriptReader {
         source: String,
         page: Int,
         pageSize: Int,
-        roles: [String]?
+        roles: [String]?,
+        totalMessageCount: Int?
     ) async throws -> MCPTranscriptPage {
         let currentPage = max(1, min(page, maxPage))
         let effectivePageSize = max(1, min(pageSize, maxPageSize))
@@ -81,6 +82,15 @@ enum MCPTranscriptReader {
             currentPage: currentPage,
             pageSize: effectivePageSize
         )
+
+        // Fast path is only correct with no role filter: it paginates by raw
+        // adapter offset and takes the total from the stored message_count, so
+        // page boundaries and totalPages stay consistent. Role-filtered paging
+        // must count the filtered messages, so it stays on the full-parse path.
+        // A missing/zero message_count also falls back to counting via parse.
+        let knownTotal = roleFilter == nil
+            ? totalMessageCount.flatMap { $0 > 0 ? $0 : nil }
+            : nil
 
         let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
         if guardBeforeAdapter {
@@ -92,7 +102,8 @@ enum MCPTranscriptReader {
             source: source,
             currentPage: currentPage,
             pageSize: effectivePageSize,
-            roles: roleFilter
+            roles: roleFilter,
+            knownTotal: knownTotal
         ) {
             return adapterPage
         }
@@ -231,7 +242,8 @@ enum MCPTranscriptReader {
         source: String,
         currentPage: Int,
         pageSize: Int,
-        roles: [String]?
+        roles: [String]?,
+        knownTotal: Int?
     ) async throws -> MCPTranscriptPage? {
         guard let sourceName = adapterSourceName(for: source),
               let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
@@ -240,6 +252,34 @@ enum MCPTranscriptReader {
         }
 
         do {
+            if let knownTotal {
+                // Fast path: fetch only the requested raw window via the adapter's
+                // O(offset+limit) early-stopping stream instead of parsing the
+                // whole file every page. `roles` is nil here (guaranteed by the
+                // caller), so a window builder anchored at offset 0 filters/caps
+                // the window into the page; the total comes from message_count.
+                let offset = (currentPage - 1) * pageSize
+                let stream = try await adapter.streamMessages(
+                    locator: filePath,
+                    options: StreamMessagesOptions(offset: offset, limit: pageSize)
+                )
+                var windowBuilder = MCPTranscriptPageBuilder(currentPage: 1, pageSize: pageSize)
+                for try await message in stream {
+                    let transcriptMessage = MCPTranscriptMessage(
+                        role: message.role.rawValue,
+                        content: message.content,
+                        timestamp: message.timestamp
+                    )
+                    appendIfVisible(transcriptMessage, to: &windowBuilder, source: source, roles: roles)
+                }
+                return MCPTranscriptPage(
+                    messages: windowBuilder.build().messages,
+                    totalMessages: knownTotal,
+                    currentPage: currentPage,
+                    pageSize: pageSize
+                )
+            }
+
             let stream = try await adapter.streamMessages(
                 locator: filePath,
                 options: StreamMessagesOptions()
