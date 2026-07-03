@@ -1764,7 +1764,7 @@
 				A8DE77EBAF4D0306A01EBB14 /* EngramTests */,
 				4879D667E5DCB8E295D66715 /* EngramUITests */,
 				546A83BCDE95FE76789717C4 /* Shared */,
-				B3C5E1A47231D6BC5C7EBDB7 /* wf_87389678-f94-7 */,
+				B3C5E1A47231D6BC5C7EBDB7 /* engram */,
 				BA522BF71FDA61848C794BF5 /* Frameworks */,
 				B62C45094E60FCB220425CA7 /* Products */,
 			);
@@ -1987,12 +1987,12 @@
 			path = Transcript;
 			sourceTree = "<group>";
 		};
-		B3C5E1A47231D6BC5C7EBDB7 /* wf_87389678-f94-7 */ = {
+		B3C5E1A47231D6BC5C7EBDB7 /* engram */ = {
 			isa = PBXGroup;
 			children = (
 				0C52AD1F6D9166A856375A95 /* tests */,
 			);
-			name = "wf_87389678-f94-7";
+			name = "engram";
 			path = ..;
 			sourceTree = "<group>";
 		};
