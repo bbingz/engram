@@ -774,6 +774,67 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(cwdMatches, ["literal-context-cwd"])
     }
 
+    // Audit #25: the local offline-fallback search must drive from sessions_fts
+    // via a CTE (mirroring EngramServiceReadProvider.keywordSearch), NOT probe
+    // MATCH once per sessions row (which cost 80-100s vs 81ms on the live DB).
+    // (a) result parity with the service-shaped CTE query, and (b) the local
+    // plan contains no correlated per-row MATCH.
+    @MainActor
+    func testSearchFTSFallbackUsesCTEShapeMatchingService() throws {
+        try insertTestSession(at: dbPath, id: "s1", source: "claude-code", startTime: "2026-05-01T10:00:00Z")
+        try insertTestSession(at: dbPath, id: "s2", source: "claude-code", startTime: "2026-05-02T10:00:00Z")
+        try insertTestSession(at: dbPath, id: "s3", source: "claude-code", startTime: "2026-05-03T10:00:00Z")
+        // s1 has the two terms in separate FTS rows; s2 in one row; s3 only "alpha".
+        try insertFTSContent(at: dbPath, sessionId: "s1", content: "alpha planning note")
+        try insertFTSContent(at: dbPath, sessionId: "s1", content: "beta verifier note")
+        try insertFTSContent(at: dbPath, sessionId: "s2", content: "alpha beta together")
+        try insertFTSContent(at: dbPath, sessionId: "s3", content: "alpha only, missing second term")
+
+        let local = try db.search(query: "alpha beta", limit: 10).map(\.id)
+
+        // (a) Parity with the service-side CTE query shape (drive from FTS,
+        // inner-join per term, order by first term's rank then start_time).
+        let terms = CJKText.ftsMatchTerms("alpha beta")
+        let reference = try DatabaseQueue(path: dbPath).read { db -> [String] in
+            try String.fetchAll(db, sql: """
+                WITH m0 AS (SELECT session_id, MIN(rank) AS rank FROM sessions_fts
+                            WHERE sessions_fts MATCH ? GROUP BY session_id),
+                     m1 AS (SELECT session_id, MIN(rank) AS rank FROM sessions_fts
+                            WHERE sessions_fts MATCH ? GROUP BY session_id)
+                SELECT s.id
+                FROM m0
+                JOIN m1 ON m1.session_id = m0.session_id
+                JOIN sessions s ON s.id = m0.session_id
+                WHERE s.hidden_at IS NULL AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+                ORDER BY m0.rank, s.start_time DESC
+                LIMIT 10
+            """, arguments: StatementArguments(terms))
+        }
+
+        XCTAssertEqual(Set(local), Set(["s1", "s2"]), "only sessions containing both terms may match")
+        XCTAssertEqual(local, reference, "local fallback must match the service CTE query shape (ids and order)")
+
+        // (b) The generated SQL no longer probes MATCH per sessions row.
+        let built = DatabaseManager.keywordSearchSQL(
+            termMatches: terms,
+            snippetMatch: terms.first ?? CJKText.ftsMatchQuery("alpha beta"),
+            sources: [], projects: [], since: nil, limit: 10, withSnippet: false
+        )
+        XCTAssertTrue(built.sql.contains("m0 AS ("), "must be CTE-driven: \(built.sql)")
+        XCTAssertTrue(built.sql.contains("m1 AS ("), "each term gets its own CTE: \(built.sql)")
+        XCTAssertFalse(built.sql.contains("EXISTS"), "correlated per-row MATCH filter must be gone")
+        XCTAssertTrue(built.sql.contains("ORDER BY m0.rank"), "rank must come from the CTE, not a correlated subquery")
+
+        // And EXPLAIN QUERY PLAN confirms no correlated subquery / full sessions scan.
+        let plan = try DatabaseQueue(path: dbPath).read { db -> String in
+            try Row.fetchAll(db, sql: "EXPLAIN QUERY PLAN \(built.sql)", arguments: StatementArguments(built.args))
+                .map { ($0["detail"] as String?) ?? "" }
+                .joined(separator: "\n")
+        }
+        XCTAssertFalse(plan.contains("CORRELATED"), "plan must have no correlated subquery:\n\(plan)")
+        XCTAssertTrue(plan.contains("sessions_fts"), "plan must be FTS-driven:\n\(plan)")
+    }
+
     @MainActor
     func testSearchShortQueryReturnsEmpty() throws {
         try insertTestSession(at: dbPath, id: "s1")
