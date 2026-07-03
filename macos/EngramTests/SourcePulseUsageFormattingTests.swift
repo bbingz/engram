@@ -43,6 +43,50 @@ final class SourcePulseUsageFormattingTests: XCTestCase {
         XCTAssertEqual(SourcePulseView.tokenCoveragePillText(123), "Tokens 100%")
     }
 
+    func testRunwayItemRequiresLocalUsageMetricAndCarriesFreshness() {
+        XCTAssertNil(SourcePulseView.runwayItem(from: EngramServiceSourceInfo(name: "codex", sessionCount: 1, latestIndexed: nil)))
+
+        let item = SourcePulseView.runwayItem(from: EngramServiceSourceInfo(
+            name: "codex",
+            sessionCount: 1,
+            latestIndexed: nil,
+            latestUsageMetric: "weekly quota pressure",
+            latestUsageValue: 91,
+            latestUsageUnit: "%",
+            latestUsageLimitValue: 100,
+            latestUsageResetAt: "2026-04-30T00:00:00Z",
+            latestUsageCollectedAt: "2026-04-23T02:06:00Z",
+            latestUsageStatus: "critical"
+        ))
+
+        XCTAssertEqual(item?.source, "codex")
+        XCTAssertEqual(item?.metric, "weekly quota pressure")
+        XCTAssertEqual(item?.collectedAt, "2026-04-23T02:06:00Z")
+        XCTAssertEqual(item?.dataSourceLabel, "local usage snapshots")
+    }
+
+    func testRunwayEmptyStateDoesNotImplyProviderCredentialOrNetworkReads() throws {
+        let sourcePath = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Engram/Views/Pages/SourcePulseView.swift")
+        let source = try String(contentsOf: sourcePath)
+
+        XCTAssertTrue(source.contains("Engram does not read provider credentials or call provider APIs by default"))
+        XCTAssertTrue(source.contains("local usage snapshots"))
+    }
+
+    func testRunwayRowsExposeStableAccessibilityIdentifiers() throws {
+        let sourcePath = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Engram/Views/Pages/SourcePulseView.swift")
+        let source = try String(contentsOf: sourcePath)
+
+        XCTAssertTrue(source.contains(".accessibilityElement(children: .combine)"))
+        XCTAssertTrue(source.contains(".accessibilityIdentifier(\"sourcePulse_runwayRow_\\(item.source)\")"))
+    }
+
     func testHealthBadgeMapsCriticalStatusToRed() throws {
         let sourcePath = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -142,16 +142,11 @@ final class DatabaseManager: @unchecked Sendable {
         includeHidden: Bool,
         subAgent: Bool?,
         topLevelOnly: Bool,
-        humanDriven: Bool
+        humanDriven: Bool,
+        taxonomy: SessionTaxonomyTag? = nil
     ) {
         if !includeHidden {
             parts.append("AND hidden_at IS NULL")
-        }
-        if topLevelOnly {
-            parts.append("AND parent_session_id IS NULL AND suggested_parent_id IS NULL")
-        }
-        if humanDriven {
-            parts.append("AND (\(HumanDrivenFilter.sqlPredicate))")
         }
         if !sources.isEmpty {
             let ph = sources.map { _ in "?" }.joined(separator: ", ")
@@ -167,12 +162,90 @@ final class DatabaseManager: @unchecked Sendable {
             parts.append("AND COALESCE(end_time, start_time) >= ?")
             args.append(since)
         }
-        if let subAgent {
-            if subAgent {
-                parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
-            } else {
-                parts.append("AND (tier IS NULL OR tier != 'skip')")
+        if taxonomy == nil {
+            if topLevelOnly {
+                parts.append("AND parent_session_id IS NULL AND suggested_parent_id IS NULL")
             }
+            if humanDriven {
+                parts.append("AND (\(HumanDrivenFilter.sqlPredicate))")
+            }
+            if let subAgent {
+                if subAgent {
+                    parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
+                } else {
+                    parts.append("AND (tier IS NULL OR tier != 'skip')")
+                }
+            }
+        }
+        if let taxonomy {
+            Self.appendTaxonomyFilter(to: &parts, includeHidden: includeHidden, taxonomy: taxonomy)
+        }
+    }
+
+    private static func sqlColumn(_ name: String, alias: String? = nil) -> String {
+        if let alias, !alias.isEmpty {
+            return "\(alias).\(name)"
+        }
+        return name
+    }
+
+    private static func codexArchivedPathPredicate(alias: String? = nil) -> String {
+        let source = sqlColumn("source", alias: alias)
+        let filePath = sqlColumn("file_path", alias: alias)
+        return """
+            (\(source) = 'codex'
+             AND (
+                \(filePath) LIKE '%/.codex/archived_sessions/%'
+                OR \(filePath) LIKE '~/.codex/archived_sessions/%'
+             ))
+        """
+    }
+
+    private static func appendTaxonomyFilter(
+        to parts: inout [String],
+        includeHidden: Bool,
+        taxonomy: SessionTaxonomyTag,
+        alias: String? = nil
+    ) {
+        let id = sqlColumn("id", alias: alias)
+        let agentRole = sqlColumn("agent_role", alias: alias)
+        let filePath = sqlColumn("file_path", alias: alias)
+        let parentSessionId = sqlColumn("parent_session_id", alias: alias)
+        let suggestedParentId = sqlColumn("suggested_parent_id", alias: alias)
+        let childHiddenClause = includeHidden ? "" : "AND hidden_at IS NULL"
+        switch taxonomy {
+        case .subagent:
+            parts.append("AND (\(agentRole) IS NOT NULL OR \(filePath) LIKE '%/subagents/%')")
+        case .workflow:
+            parts.append("""
+                AND \(id) IN (
+                    SELECT parent_session_id FROM sessions
+                    WHERE parent_session_id IS NOT NULL \(childHiddenClause)
+                    GROUP BY parent_session_id
+                )
+            """)
+        case .side:
+            parts.append("AND \(Self.codexArchivedPathPredicate(alias: alias))")
+        case .archived:
+            parts.append("AND \(Self.codexArchivedPathPredicate(alias: alias))")
+        case .orphan:
+            parts.append("""
+                AND (\(agentRole) IS NOT NULL OR \(filePath) LIKE '%/subagents/%')
+                AND \(parentSessionId) IS NULL
+                AND \(suggestedParentId) IS NULL
+            """)
+        case .suggestedParent:
+            parts.append("""
+                AND (
+                    \(suggestedParentId) IS NOT NULL
+                    OR \(id) IN (
+                        SELECT suggested_parent_id FROM sessions
+                        WHERE suggested_parent_id IS NOT NULL
+                          AND parent_session_id IS NULL \(childHiddenClause)
+                        GROUP BY suggested_parent_id
+                    )
+                )
+            """)
         }
     }
 
@@ -189,6 +262,7 @@ final class DatabaseManager: @unchecked Sendable {
         subAgent: Bool? = nil,       // nil=all, true=only sub-agents, false=hide sub-agents
         topLevelOnly: Bool = false,
         humanDriven: Bool = false,
+        taxonomy: SessionTaxonomyTag? = nil,
         sort: SessionSort = .accessedDesc,
         limit: Int = 200,
         offset: Int = 0
@@ -205,7 +279,8 @@ final class DatabaseManager: @unchecked Sendable {
                 includeHidden: includeHidden,
                 subAgent: subAgent,
                 topLevelOnly: topLevelOnly,
-                humanDriven: humanDriven
+                humanDriven: humanDriven,
+                taxonomy: taxonomy
             )
             let orderSQL = sort.orderSQL(hasAccessMetadata: try Self.hasSessionAccessMetadata(in: db))
             parts.append("ORDER BY \(orderSQL) LIMIT ? OFFSET ?")
@@ -222,7 +297,8 @@ final class DatabaseManager: @unchecked Sendable {
         includeHidden: Bool = false,
         subAgent: Bool? = nil,
         topLevelOnly: Bool = false,
-        humanDriven: Bool = false
+        humanDriven: Bool = false,
+        taxonomy: SessionTaxonomyTag? = nil
     ) throws -> SessionListStats {
         try readInBackground { db in
             var parts = ["FROM sessions WHERE 1=1"]
@@ -236,7 +312,8 @@ final class DatabaseManager: @unchecked Sendable {
                 includeHidden: includeHidden,
                 subAgent: subAgent,
                 topLevelOnly: topLevelOnly,
-                humanDriven: humanDriven
+                humanDriven: humanDriven,
+                taxonomy: taxonomy
             )
             let fromWhere = parts.joined(separator: " ")
             let row = try Row.fetchOne(db, sql: """
@@ -405,12 +482,34 @@ final class DatabaseManager: @unchecked Sendable {
         }
     }
 
+    private static func appendSearchVisibilityFilters(
+        to parts: inout [String],
+        taxonomy: SessionTaxonomyTag?
+    ) {
+        guard let taxonomy else {
+            parts.append("AND s.hidden_at IS NULL")
+            parts.append("AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))")
+            return
+        }
+        let includeHidden = taxonomy == .archived || taxonomy == .side
+        if !includeHidden {
+            parts.append("AND s.hidden_at IS NULL")
+        }
+        Self.appendTaxonomyFilter(
+            to: &parts,
+            includeHidden: includeHidden,
+            taxonomy: taxonomy,
+            alias: "s"
+        )
+    }
+
     func search(
         query: String,
         limit: Int = 10,
         sources: Set<String> = [],
         projects: Set<String> = [],
-        since: String? = nil
+        since: String? = nil,
+        taxonomy: SessionTaxonomyTag? = nil
     ) throws -> [Session] {
         guard query.count >= 2 else { return [] }
 
@@ -424,10 +523,10 @@ final class DatabaseManager: @unchecked Sendable {
                 var parts = ["""
                     SELECT DISTINCT s.* FROM sessions_fts f
                     JOIN sessions s ON s.id = f.session_id
-                    WHERE f.content LIKE ? ESCAPE '\\' AND s.hidden_at IS NULL
-                      AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+                    WHERE f.content LIKE ? ESCAPE '\\'
                 """]
                 var args: [DatabaseValueConvertible] = [pattern]
+                Self.appendSearchVisibilityFilters(to: &parts, taxonomy: taxonomy)
                 Self.appendSearchFilters(
                     to: &parts,
                     args: &args,
@@ -454,10 +553,10 @@ final class DatabaseManager: @unchecked Sendable {
             var parts = ["""
                 SELECT s.*
                 FROM sessions s
-                WHERE s.hidden_at IS NULL
-                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+                WHERE 1=1
             """]
             var args: [DatabaseValueConvertible] = []
+            Self.appendSearchVisibilityFilters(to: &parts, taxonomy: taxonomy)
             for termMatch in termMatches {
                 parts.append("""
                     AND EXISTS (
@@ -500,7 +599,8 @@ final class DatabaseManager: @unchecked Sendable {
         limit: Int = 10,
         sources: Set<String> = [],
         projects: Set<String> = [],
-        since: String? = nil
+        since: String? = nil,
+        taxonomy: SessionTaxonomyTag? = nil
     ) throws -> [(session: Session, snippet: String)] {
         guard query.count >= 2 else { return [] }
 
@@ -510,10 +610,10 @@ final class DatabaseManager: @unchecked Sendable {
                 var parts = ["""
                     SELECT s.*, f.content AS snippet FROM sessions_fts f
                     JOIN sessions s ON s.id = f.session_id
-                    WHERE f.content LIKE ? ESCAPE '\\' AND s.hidden_at IS NULL
-                      AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+                    WHERE f.content LIKE ? ESCAPE '\\'
                 """]
                 var args: [DatabaseValueConvertible] = [pattern]
+                Self.appendSearchVisibilityFilters(to: &parts, taxonomy: taxonomy)
                 Self.appendSearchFilters(to: &parts, args: &args, sources: sources, projects: projects, since: since)
                 parts.append("GROUP BY s.id ORDER BY s.start_time DESC LIMIT ?")
                 args.append(limit)
@@ -539,12 +639,12 @@ final class DatabaseManager: @unchecked Sendable {
                     LIMIT 1
                 ) AS snippet
                 FROM sessions s
-                WHERE s.hidden_at IS NULL
-                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+                WHERE 1=1
             """]
             // Search at session granularity: every query token must exist
             // somewhere in the session, not necessarily in the same FTS row.
             var args: [DatabaseValueConvertible] = [snippetMatch]
+            Self.appendSearchVisibilityFilters(to: &parts, taxonomy: taxonomy)
             for termMatch in termMatches {
                 parts.append("""
                     AND EXISTS (
@@ -1148,23 +1248,34 @@ final class DatabaseManager: @unchecked Sendable {
         days: Int = 30,
         sort: SessionSort = .updatedDesc,
         humanDriven: Bool = false,
+        taxonomy: SessionTaxonomyTag? = nil,
         limit: Int = 2_000
     ) throws -> [(date: String, sessions: [Session])] {
-        let humanClause = humanDriven ? "AND (\(HumanDrivenFilter.sqlPredicate))" : ""
         let boundedLimit = min(max(limit, 1), Self.sessionTimelineMaxLimit)
         return try readInBackground { db in
             let timestampSQL = sort.timelineTimestampSQL
+            let taxonomyFilter = SessionTaxonomyFilter(rawValue: taxonomy?.rawValue ?? "all") ?? .all
+            var parts = ["SELECT * FROM sessions WHERE 1=1"]
+            var args: [DatabaseValueConvertible] = []
+            Self.appendSessionFilters(
+                to: &parts,
+                args: &args,
+                sources: [],
+                projects: [],
+                since: nil,
+                includeHidden: taxonomyFilter.includeHidden,
+                subAgent: taxonomy == nil ? false : nil,
+                topLevelOnly: taxonomyFilter.topLevelOnly,
+                humanDriven: humanDriven,
+                taxonomy: taxonomy
+            )
+            parts.append("AND \(timestampSQL) >= DATE('now', '-\(days) days')")
+            parts.append("ORDER BY \(sort.rawValue)")
+            parts.append("LIMIT ?")
+            args.append(boundedLimit)
             let sessions = try Session.fetchAll(db, sql: """
-                SELECT * FROM sessions
-                WHERE hidden_at IS NULL
-                  AND parent_session_id IS NULL
-                  AND suggested_parent_id IS NULL
-                  AND \(timestampSQL) >= DATE('now', '-\(days) days')
-                  AND (tier IS NULL OR tier != 'skip')
-                  \(humanClause)
-                ORDER BY \(sort.rawValue)
-                LIMIT ?
-            """, arguments: [boundedLimit])
+                \(parts.joined(separator: " "))
+            """, arguments: StatementArguments(args))
             func timelineTimestamp(_ session: Session) -> String {
                 switch sort {
                 case .accessedDesc, .accessedAsc:
@@ -1196,6 +1307,13 @@ final class DatabaseManager: @unchecked Sendable {
         let sessionCount: Int
         let lastActive: String
         let sessions: [Session]
+    }
+
+    struct ProjectAlias: Identifiable, Equatable, Hashable {
+        let alias: String
+        let canonical: String
+
+        var id: String { "\(canonical)|\(alias)" }
     }
 
     // MARK: - Git Repos
@@ -1262,6 +1380,37 @@ final class DatabaseManager: @unchecked Sendable {
                 )
             }
             .sorted { $0.lastActive > $1.lastActive }
+        }
+    }
+
+    func listProjectAliases(project: String? = nil) throws -> [ProjectAlias] {
+        try readInBackground { db in
+            guard try Self.tableExists("project_aliases", db: db) else { return [] }
+            let rows: [Row]
+            if let project {
+                rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                        SELECT alias, canonical
+                        FROM project_aliases
+                        WHERE canonical = ? OR alias = ?
+                        ORDER BY canonical, alias
+                    """,
+                    arguments: [project, project]
+                )
+            } else {
+                rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                        SELECT alias, canonical
+                        FROM project_aliases
+                        ORDER BY canonical, alias
+                    """
+                )
+            }
+            return rows.map { row in
+                ProjectAlias(alias: row["alias"], canonical: row["canonical"])
+            }
         }
     }
 

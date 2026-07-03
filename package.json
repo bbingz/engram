@@ -20,6 +20,7 @@
     "generate:parent-detection-fixtures": "tsx scripts/gen-parent-detection-fixtures.ts",
     "generate:indexer-parity-fixtures": "tsx scripts/gen-indexer-parity-fixtures.ts",
     "check:fixtures": "tsx scripts/check-fixture-schema.ts",
+    "check:runtime-capabilities": "tsx scripts/check-runtime-capabilities.ts",
     "screenshots:compare": "tsx scripts/screenshot-compare.ts",
     "baselines:generate": "tsx scripts/baselines-generate.ts",
     "baselines:update": "tsx scripts/baselines-update.ts",

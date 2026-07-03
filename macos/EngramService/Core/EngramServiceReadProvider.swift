@@ -992,6 +992,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     latestUsageUnit: usage?.unit,
                     latestUsageLimitValue: usage?.limitValue,
                     latestUsageResetAt: usage?.resetAt,
+                    latestUsageCollectedAt: usage?.collectedAt,
                     latestUsageStatus: usage?.status,
                     healthStatus: sourceHealthStatus(
                         sessionCount: sessionCount,
@@ -1699,6 +1700,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         var unit: String?
         var limitValue: Double?
         var resetAt: String?
+        var collectedAt: String?
         var status: String
     }
 
@@ -1714,6 +1716,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                    u.value AS value,
                    u.unit AS unit,
                    u.reset_at AS reset_at,
+                   u.collected_at AS collected_at,
                    \(limitExpression) AS limit_value,
                    \(statusExpression) AS status
             FROM usage_snapshots u
@@ -1749,6 +1752,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 unit: row["unit"] as String?,
                 limitValue: row["limit_value"] as Double?,
                 resetAt: row["reset_at"] as String?,
+                collectedAt: row["collected_at"] as String?,
                 status: sourceUsageStatus(
                     explicitStatus: row["status"] as String?,
                     metric: row["metric"],

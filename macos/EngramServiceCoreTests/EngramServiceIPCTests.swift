@@ -1457,6 +1457,7 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(codex?.latestUsageUnit, "%")
         XCTAssertEqual(codex?.latestUsageLimitValue, 100.0)
         XCTAssertEqual(codex?.latestUsageResetAt, "2026-04-30T00:00:00Z")
+        XCTAssertEqual(codex?.latestUsageCollectedAt, "2026-04-23T02:06:00Z")
         XCTAssertEqual(codex?.latestUsageStatus, "critical")
         XCTAssertEqual(codex?.healthStatus, "critical")
 
@@ -1467,6 +1468,7 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(opencode?.latestUsageUnit, "%")
         XCTAssertEqual(opencode?.latestUsageLimitValue, 100.0)
         XCTAssertEqual(opencode?.latestUsageResetAt, "2026-04-23T07:00:00Z")
+        XCTAssertEqual(opencode?.latestUsageCollectedAt, "2026-04-23T02:05:00Z")
         XCTAssertEqual(opencode?.latestUsageStatus, "ok")
         XCTAssertEqual(opencode?.healthStatus, "healthy")
     }

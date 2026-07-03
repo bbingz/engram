@@ -73,9 +73,12 @@ struct SearchPageView: View {
     @State private var selectedProjectFilter: String?
     @State private var selectedSourceFilter: String?
     @State private var selectedTimeFilter: SearchTimeFilter = .all
+    @State private var selectedTaxonomyFilter: SessionTaxonomyFilter = .all
     @State private var projectFilters: [(name: String, count: Int)] = []
     @State private var sourceFilters: [(name: String, count: Int)] = []
     @State private var results: [SearchResult] = []
+    @State private var resultConfirmedCounts: [String: Int] = [:]
+    @State private var resultSuggestedCounts: [String: Int] = [:]
     @State private var searchModes: [String] = []
     @State private var warning: String? = nil
     @State private var isSearching = false
@@ -92,7 +95,10 @@ struct SearchPageView: View {
     }
 
     private var hasClearableFilters: Bool {
-        selectedSourceFilter != nil || selectedTimeFilter != .all || (lockedProject == nil && selectedProjectFilter != nil)
+        selectedSourceFilter != nil
+            || selectedTimeFilter != .all
+            || selectedTaxonomyFilter != .all
+            || (lockedProject == nil && selectedProjectFilter != nil)
     }
 
     init(
@@ -134,6 +140,7 @@ struct SearchPageView: View {
         .onChange(of: selectedProjectFilter) { _, _ in triggerSearchIfReady() }
         .onChange(of: selectedSourceFilter) { _, _ in triggerSearchIfReady() }
         .onChange(of: selectedTimeFilter) { _, _ in triggerSearchIfReady() }
+        .onChange(of: selectedTaxonomyFilter) { _, _ in triggerSearchIfReady() }
         .onDisappear { searchTask?.cancel(); searchTask = nil }
     }
 
@@ -146,7 +153,15 @@ struct SearchPageView: View {
                         .textFieldStyle(.plain)
                         .onSubmit { triggerSearch() }
                     if !query.isEmpty {
-                        Button(action: { query = ""; results = []; searchModes = []; warning = nil; searchFailed = false }) {
+                        Button(action: {
+                            query = ""
+                            results = []
+                            resultConfirmedCounts = [:]
+                            resultSuggestedCounts = [:]
+                            searchModes = []
+                            warning = nil
+                            searchFailed = false
+                        }) {
                             Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.tertiaryText)
                         }.buttonStyle(.plain)
                     }
@@ -213,6 +228,14 @@ struct SearchPageView: View {
                                         SessionCard(session: session) {
                                             NotificationCenter.default.post(name: .openSession, object: SessionBox(session, searchTerm: query))
                                         }
+                                        HStack(spacing: 4) {
+                                            SessionTaxonomyBadges(
+                                                session: session,
+                                                confirmedChildCount: resultConfirmedCounts[session.id] ?? 0,
+                                                suggestedChildCount: resultSuggestedCounts[session.id] ?? 0
+                                            )
+                                        }
+                                        .padding(.horizontal, 12)
                                     }
                                     if !result.snippet.isEmpty {
                                         HStack(spacing: 6) {
@@ -273,6 +296,7 @@ struct SearchPageView: View {
             projectFilterControl
             sourceFilterControl
             timeFilterControl
+            taxonomyFilterControl
             Spacer()
         }
         .controlSize(.small)
@@ -290,6 +314,9 @@ struct SearchPageView: View {
         if selectedTimeFilter != .all {
             parts.append(selectedTimeFilter.label)
         }
+        if selectedTaxonomyFilter != .all {
+            parts.append(selectedTaxonomyFilter.label)
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -299,6 +326,7 @@ struct SearchPageView: View {
         }
         selectedSourceFilter = nil
         selectedTimeFilter = .all
+        selectedTaxonomyFilter = .all
     }
 
     @ViewBuilder
@@ -379,6 +407,38 @@ struct SearchPageView: View {
         .accessibilityIdentifier("search_timeFilter")
     }
 
+    private var taxonomyFilterControl: some View {
+        Menu {
+            Button {
+                selectedTaxonomyFilter = .all
+            } label: {
+                if selectedTaxonomyFilter == .all {
+                    Label(SessionTaxonomyFilter.all.label, systemImage: "checkmark")
+                } else {
+                    Text(SessionTaxonomyFilter.all.label)
+                }
+            }
+            Divider()
+            ForEach(SessionTaxonomyFilter.allCases.filter { $0 != .all }) { option in
+                Button {
+                    guard option.isSupported else { return }
+                    selectedTaxonomyFilter = option
+                } label: {
+                    if selectedTaxonomyFilter == option {
+                        Label(option.label, systemImage: "checkmark")
+                    } else {
+                        Label(option.label, systemImage: option.systemImage)
+                    }
+                }
+                .disabled(!option.isSupported)
+            }
+        } label: {
+            Label(selectedTaxonomyFilter.label, systemImage: selectedTaxonomyFilter.systemImage)
+                .lineLimit(1)
+        }
+        .accessibilityIdentifier("search_taxonomyFilter")
+    }
+
     // MARK: - Search
 
     private func triggerSearch() {
@@ -392,12 +452,48 @@ struct SearchPageView: View {
     }
 
     private func performSearch() async {
-        guard query.count >= 2 else { results = []; searchFailed = false; return }
+        guard query.count >= 2 else {
+            results = []
+            resultConfirmedCounts = [:]
+            resultSuggestedCounts = [:]
+            searchFailed = false
+            return
+        }
         isSearching = true
         searchFailed = false
         defer { isSearching = false }
 
         do {
+            if let taxonomy = selectedTaxonomyFilter.tag {
+                let db = self.db
+                let localQuery = query
+                let localSources = selectedSourceFilter.map { Set([$0]) } ?? []
+                let localProjects = selectedProjectFilter.map { Set([$0]) } ?? []
+                let localSince = selectedTimeFilter.sinceString()
+                let localResults = try await Task.detached {
+                    try db.searchWithSnippets(
+                        query: localQuery,
+                        limit: 30,
+                        sources: localSources,
+                        projects: localProjects,
+                        since: localSince,
+                        taxonomy: taxonomy
+                    )
+                }.value
+                guard !Task.isCancelled else { return }
+                let mapped = localResults.map { r in
+                    SearchResult(id: r.session.id, session: r.session, snippet: r.snippet, matchType: "keyword", score: 0)
+                }
+                let decorated = await filterSearchResults(mapped, filter: selectedTaxonomyFilter)
+                guard !Task.isCancelled else { return }
+                searchModes = ["keyword (local taxonomy)"]
+                warning = nil
+                results = decorated.results
+                resultConfirmedCounts = decorated.confirmedCounts
+                resultSuggestedCounts = decorated.suggestedCounts
+                return
+            }
+
             let response = try await serviceClient.search(
                 EngramServiceSearchRequest(
                     query: query,
@@ -413,9 +509,14 @@ struct SearchPageView: View {
             // query that superseded it: triggerSearch cancels this task, but the
             // round-trip already returned, so guard before mutating @State.
             guard !Task.isCancelled else { return }
+            let mapped = response.items.map(\.searchResult)
+            let decorated = await filterSearchResults(mapped, filter: selectedTaxonomyFilter)
+            guard !Task.isCancelled else { return }
             searchModes = response.searchModes ?? []
             warning = response.warning
-            results = response.items.map(\.searchResult)
+            results = decorated.results
+            resultConfirmedCounts = decorated.confirmedCounts
+            resultSuggestedCounts = decorated.suggestedCounts
         } catch {
             // Fallback to local FTS
             do {
@@ -430,15 +531,23 @@ struct SearchPageView: View {
                         limit: 30,
                         sources: fallbackSources,
                         projects: fallbackProjects,
-                        since: fallbackSince
+                        since: fallbackSince,
+                        taxonomy: selectedTaxonomyFilter.tag
                     )
                 }.value
                 guard !Task.isCancelled else { return }
-                searchModes = ["keyword (offline)"]
-                warning = nil
-                results = localResults.map { r in
+                let mapped = localResults.map { r in
                     SearchResult(id: r.session.id, session: r.session, snippet: r.snippet, matchType: "keyword", score: 0)
                 }
+                let decorated = await filterSearchResults(mapped, filter: selectedTaxonomyFilter)
+                guard !Task.isCancelled else { return }
+                searchModes = selectedTaxonomyFilter.tag == nil
+                    ? ["keyword (offline)"]
+                    : ["keyword (offline taxonomy)"]
+                warning = nil
+                results = decorated.results
+                resultConfirmedCounts = decorated.confirmedCounts
+                resultSuggestedCounts = decorated.suggestedCounts
             } catch {
                 // Double-fault: service AND local FTS both threw. Surface a real
                 // failure state instead of a misleading "No results".
@@ -446,8 +555,33 @@ struct SearchPageView: View {
                 guard !Task.isCancelled else { return }
                 searchFailed = true
                 results = []
+                resultConfirmedCounts = [:]
+                resultSuggestedCounts = [:]
             }
         }
+    }
+
+    private func filterSearchResults(
+        _ candidates: [SearchResult],
+        filter: SessionTaxonomyFilter
+    ) async -> (results: [SearchResult], confirmedCounts: [String: Int], suggestedCounts: [String: Int]) {
+        let sessionIds = candidates.compactMap(\.session?.id)
+        guard !sessionIds.isEmpty else { return (candidates, [:], [:]) }
+        let db = self.db
+        let counts: ([String: Int], [String: Int]) = (try? await Task.detached {
+            let confirmed = try db.childCount(parentIds: sessionIds)
+            let suggested = try db.suggestedChildCount(parentIds: sessionIds)
+            return (confirmed, suggested)
+        }.value) ?? ([String: Int](), [String: Int]())
+        let filtered = candidates.filter { result in
+            guard let session = result.session else { return filter == .all }
+            return filter.matches(
+                session,
+                confirmedChildCount: counts.0[session.id] ?? 0,
+                suggestedChildCount: counts.1[session.id] ?? 0
+            )
+        }
+        return (filtered, counts.0, counts.1)
     }
 
     private func loadFilterOptions() async {

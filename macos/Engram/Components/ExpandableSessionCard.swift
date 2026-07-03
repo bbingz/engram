@@ -102,6 +102,12 @@ struct ExpandableSessionCard: View {
                             childCountBadge
                         }
 
+                        SessionTaxonomyBadges(
+                            session: session,
+                            confirmedChildCount: confirmedChildCount,
+                            suggestedChildCount: suggestedChildCount
+                        )
+
                         Text("\(session.messageCount) msgs")
                             .font(.caption)
                             .foregroundStyle(Theme.tertiaryText)
@@ -366,6 +372,12 @@ struct CompactChildRow: View {
                     .foregroundStyle(Theme.tertiaryText)
                     .buttonStyle(.plain)
             }
+
+            SessionTaxonomyBadges(
+                session: session,
+                confirmedChildCount: 0,
+                suggestedChildCount: 0
+            )
 
             Text(relativeTime(session.endTime ?? session.startTime))
                 .font(.caption2)

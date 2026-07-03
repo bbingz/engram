@@ -6,6 +6,7 @@ struct ProjectsView: View {
     @Environment(EngramServiceClient.self) var serviceClient
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
     @State private var projectGroups: [DatabaseManager.ProjectGroup] = []
+    @State private var projectAliases: [DatabaseManager.ProjectAlias] = []
     @State private var selectedProject: DatabaseManager.ProjectGroup? = nil
     @State private var isLoading = true
     @State private var renameTarget: String?
@@ -17,11 +18,12 @@ struct ProjectsView: View {
     @State private var isSelecting = false
     @State private var selectedProjects: Set<String> = []
     /// Three-state: nil = haven't fetched yet / last fetch failed (unknown),
-    /// true = ≥1 committed migration exists, false = none.
+    /// empty = no committed migrations, non-empty = projects touched by
+    /// recent committed migrations.
     /// Reviewer: silently preserving the last-known true value when the
     /// daemon becomes unreachable was misleading. Now the Undo button is
     /// disabled when we can't confirm the log is reachable.
-    @State private var hasRecentMigrations: Bool? = nil
+    @State private var committedMigrationProjects: Set<String>? = nil
     @State private var loadError: String? = nil
 
     private var activeCount: Int {
@@ -37,6 +39,8 @@ struct ProjectsView: View {
         return projectGroups.reduce(0) { $0 + $1.sessionCount } / projectGroups.count
     }
 
+    private var aliasCount: Int { projectAliases.count }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -47,6 +51,7 @@ struct ProjectsView: View {
                     KPICard(value: "\(projectGroups.count)", label: "Total Projects")
                     KPICard(value: "\(activeCount)", label: "Active (7d)")
                     KPICard(value: "\(avgSessions)", label: "Avg Sessions")
+                    KPICard(value: "\(aliasCount)", label: "Aliases")
                 }
 
                 if let selected = selectedProject {
@@ -63,6 +68,14 @@ struct ProjectsView: View {
                         Spacer()
                     }
                     SectionHeader(icon: "folder", title: selected.project)
+                    ProjectContinuityPanel(
+                        project: selected.project,
+                        aliases: aliases(for: selected.project),
+                        migrationState: migrationState(for: selected.project),
+                        canManageMigrations: nativeProjectMigrationCommandsEnabled,
+                        onAliases: { aliasTarget = selected.project },
+                        onHistory: { showHistorySheet = true }
+                    )
                     ProjectWorkTimeline(project: selected.project)
                     SearchPageView(
                         projectFilter: selected.project,
@@ -120,7 +133,7 @@ struct ProjectsView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
-                            .disabled(hasRecentMigrations != true)
+                            .disabled(committedMigrationProjects?.isEmpty != false)
                             .help(undoButtonHelp)
                             .accessibilityIdentifier("projects_undoButton")
                         }
@@ -160,6 +173,17 @@ struct ProjectsView: View {
                                                 .foregroundStyle(Theme.tertiaryText)
                                                 .lineLimit(1)
                                             Spacer()
+                                            let rowAliasCount = aliasCount(for: group.project)
+                                            if rowAliasCount > 0 {
+                                                Label("\(rowAliasCount)", systemImage: "tag")
+                                                    .font(.caption)
+                                                    .foregroundStyle(Theme.secondaryText)
+                                                    .padding(.horizontal, 8)
+                                                    .padding(.vertical, 2)
+                                                    .background(Theme.surfaceHighlight)
+                                                    .clipShape(Capsule())
+                                                    .accessibilityLabel("\(rowAliasCount) aliases")
+                                            }
                                             Text("\(group.sessionCount)")
                                                 .font(.caption)
                                                 .foregroundStyle(Theme.secondaryText)
@@ -289,12 +313,37 @@ struct ProjectsView: View {
         }
     }
 
+    private func aliases(for project: String) -> [DatabaseManager.ProjectAlias] {
+        projectAliases.filter { alias in
+            alias.canonical == project || alias.alias == project
+        }
+    }
+
+    private func aliasCount(for project: String) -> Int {
+        aliases(for: project).count
+    }
+
     private var undoButtonHelp: String {
-        switch hasRecentMigrations {
-        case .some(true): return "Pick a recent committed migration to reverse"
-        case .some(false): return "No recent committed migrations to undo"
+        switch committedMigrationProjects {
+        case .some(let projects) where !projects.isEmpty:
+            return "Pick a recent committed migration to reverse"
+        case .some:
+            return "No recent committed migrations to undo"
         case .none: return "Migration log unavailable — daemon may not be running"
         }
+    }
+
+    private func migrationState(for project: String) -> Bool? {
+        committedMigrationProjects?.contains(project)
+    }
+
+    private static func projectsTouched(by migration: EngramServiceMigrationLogEntry) -> [String] {
+        [
+            migration.oldPath,
+            migration.newPath,
+            migration.oldBasename,
+            migration.newBasename,
+        ].filter { !$0.isEmpty }
     }
 
     private func loadData() async {
@@ -303,14 +352,22 @@ struct ProjectsView: View {
         // UI-C1/C2: `listSessionsByProject()` fetches limit*10 rows + groups; run off-main.
         let db = self.db
         do {
-            projectGroups = try await Task.detached { try db.listSessionsByProject() }.value
+            let snapshot = try await Task.detached {
+                (
+                    groups: try db.listSessionsByProject(),
+                    aliases: try db.listProjectAliases()
+                )
+            }.value
+            projectGroups = snapshot.groups
+            projectAliases = snapshot.aliases
             loadError = nil
         } catch {
             EngramLogger.error("ProjectsView load failed", module: .ui, error: error)
             loadError = error.localizedDescription
+            projectAliases = []
         }
         guard nativeProjectMigrationCommandsEnabled else {
-            hasRecentMigrations = false
+            committedMigrationProjects = []
             return
         }
         // Refresh the Undo button's enabled state. Reviewer follow-up:
@@ -319,13 +376,129 @@ struct ProjectsView: View {
         // indicator rather than a stale optimistic one.
         do {
             let response = try await serviceClient.projectMigrations(
-                EngramServiceProjectMigrationsRequest(state: "committed", limit: 1)
+                EngramServiceProjectMigrationsRequest(state: "committed", limit: 100)
             )
-            hasRecentMigrations = !response.migrations.isEmpty
+            committedMigrationProjects = Set(response.migrations.flatMap(Self.projectsTouched(by:)))
         } catch {
             EngramLogger.error("ProjectsView migration list failed", module: .ui, error: error)
-            hasRecentMigrations = nil
+            committedMigrationProjects = nil
         }
+    }
+}
+
+private struct ProjectContinuityPanel: View {
+    let project: String
+    let aliases: [DatabaseManager.ProjectAlias]
+    let migrationState: Bool?
+    let canManageMigrations: Bool
+    let onAliases: () -> Void
+    let onHistory: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label("Continuity", systemImage: "arrow.triangle.branch")
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondaryText)
+                Spacer()
+                if canManageMigrations {
+                    Button {
+                        onAliases()
+                    } label: {
+                        Label("Aliases", systemImage: "tag")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("projectDetail_aliasesButton")
+
+                    Button {
+                        onHistory()
+                    } label: {
+                        Label("History", systemImage: "clock.arrow.circlepath")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("projectDetail_historyButton")
+                }
+            }
+
+            HStack(alignment: .top, spacing: 12) {
+                continuityMetric(
+                    icon: "tag",
+                    label: "Aliases",
+                    value: "\(aliases.count)"
+                )
+                continuityMetric(
+                    icon: "clock.arrow.circlepath",
+                    label: "Migration Log",
+                    value: migrationText
+                )
+            }
+
+            if aliases.isEmpty {
+                Text("No aliases recorded for \(project).")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.secondaryText)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(aliases.prefix(4)) { alias in
+                        HStack(spacing: 6) {
+                            Text(alias.alias)
+                                .font(.system(.caption2, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(alias.alias)
+                            Image(systemName: "arrow.right")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                            Text(alias.canonical)
+                                .font(.system(.caption2, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(alias.canonical)
+                            Spacer()
+                        }
+                    }
+                    if aliases.count > 4 {
+                        Text("+\(aliases.count - 4) more aliases")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.secondaryText)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(Theme.surface)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityIdentifier("projectDetail_continuityPanel")
+    }
+
+    private var migrationText: String {
+        switch migrationState {
+        case .some(true): "Committed"
+        case .some(false): "None"
+        case .none: "Unavailable"
+        }
+    }
+
+    private func continuityMetric(icon: String, label: String, value: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundStyle(Theme.tertiaryText)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(Theme.secondaryText)
+                Text(value)
+                    .font(.caption)
+                    .foregroundStyle(Theme.primaryText)
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

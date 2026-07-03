@@ -48,6 +48,7 @@ Those commands run only when invoked by the user or an MCP client.
 ## What Engram Stores
 
 - **SQLite database**: `~/.engram/index.sqlite` — session metadata, FTS index, and compatibility fields/tables for future vector search
+- **Usage and cost facts**: local `usage_events` / `session_costs` rows derived from indexed sessions when available; provider quota/runway panels read only these local snapshots by default
 - **Settings**: `~/.engram/settings.json` — non-sensitive configuration only
 - **API keys**: Stored securely in macOS Keychain (service: `com.engram.app`), not in plaintext files
 
@@ -61,6 +62,7 @@ By default, the macOS app talks to EngramService over a Unix domain socket under
 - **AI Summary** (optional): Sends session excerpts to your configured OpenAI-compatible chat provider when you request summary generation.
 - **Title Generation** (optional): Sends session excerpts to your configured title provider (Ollama, OpenAI, or custom OpenAI-compatible endpoint) when you request title generation.
 - **Embedding compatibility fields**: Older settings may contain Ollama/OpenAI embedding keys, but the current Swift product path does not generate embeddings or enable semantic search from those fields.
+- **Provider quota/runway**: The current Swift product path does not poll provider quota, billing, pricing, or runway APIs by default and does not auto-discover provider credentials for those panels.
 - **Remote session offload** (optional, default **OFF**): When you explicitly enable it and configure a server, regenerable index artifacts for cold/archived sessions are uploaded to a server you control. See below.
 
 ## Remote session offload (opt-in)

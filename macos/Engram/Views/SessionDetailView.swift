@@ -289,6 +289,8 @@ struct SessionDetailView: View {
 
             summarySection
 
+            taxonomyBadgesSection
+
             // Confirmed parent breadcrumb
             if let parent = confirmedParent {
                 HStack(spacing: 8) {
@@ -576,6 +578,28 @@ struct SessionDetailView: View {
     }
 
     // MARK: - Parent/Child Helpers
+
+    @ViewBuilder
+    private var taxonomyBadgesSection: some View {
+        let tags = SessionTaxonomy.tags(
+            for: session,
+            confirmedChildCount: childrenSessionCount,
+            suggestedChildCount: suggestedChildrenSessionCount
+        )
+        if !tags.isEmpty {
+            HStack(spacing: 6) {
+                SessionTaxonomyBadges(
+                    session: session,
+                    confirmedChildCount: childrenSessionCount,
+                    suggestedChildCount: suggestedChildrenSessionCount
+                )
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
+            .accessibilityIdentifier("detail_taxonomyBadges")
+        }
+    }
 
     @ViewBuilder
     private var agentSessionsSection: some View {

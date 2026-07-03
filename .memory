@@ -2,7 +2,10 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-06-28): 126 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-06-28): 129 dated entries; regenerate after adding sections -->
+- [2026-07-03 - Competitive session Timeline Side taxonomy closeout (Codex)](#2026-07-03---competitive-session-timeline-side-taxonomy-closeout-codex)
+- [2026-07-02 - Competitive session improvements review remediation (Codex)](#2026-07-02---competitive-session-improvements-review-remediation-codex)
+- [2026-07-02 - Competitive session improvements implemented from SPEC (Codex)](#2026-07-02---competitive-session-improvements-implemented-from-spec-codex)
 - [2026-07-02 - Codex takeover review and CI cleanup for PR #94 (Codex)](#2026-07-02---codex-takeover-review-and-ci-cleanup-for-pr-94-codex)
 - [2026-07-02 - Provider session-format audit closeout and Native Claude frontier refresh (Codex)](#2026-07-02---provider-session-format-audit-closeout-and-native-claude-frontier-refresh-codex)
 - [2026-07-01 - MiniMax provider root stale-count audit (Codex)](#2026-07-01---minimax-provider-root-stale-count-audit-codex)
@@ -131,6 +134,188 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-03 - Competitive session Timeline Side taxonomy closeout (Codex)
+
+- Objective: close the self-review gap left after workflow review task
+  `wo7o8md9j`: Timeline exposed the Side taxonomy filter but
+  `DatabaseManager.sessionTimeline` still only included hidden rows for
+  `.archived`, so hidden Codex side/archive-shape sessions disappeared from
+  Timeline while Sessions/Search could show them.
+- Implementation:
+  - Added `DatabaseManagerTests.testTimelineSideTaxonomyIncludesHiddenCodexSideShape`
+    as a RED regression. It inserts a hidden Codex session under
+    `.codex/archived_sessions`, calls `sessionTimeline(days:taxonomy: .side)`,
+    and expects the `side` row.
+  - Fixed `DatabaseManager.sessionTimeline` to derive both `includeHidden` and
+    `topLevelOnly` from `SessionTaxonomyFilter`, aligning Timeline with the
+    Sessions/Search taxonomy semantics already used for `.side`.
+- Verification:
+  - RED proof: targeted `xcodebuild test` failed before the fix with
+    `XCTAssertEqual failed: ("[]") is not equal to ("["side"]")`.
+  - GREEN proof: the same targeted test passed after the fix. Result:
+    `/Users/bing/Library/Developer/Xcode/DerivedData/Engram-apkspuobooepqkdrdnbizljrophn/Logs/Test/Test-Engram-2026.07.03_08-46-03-+0800.xcresult`.
+  - Review-remediation suite passed: 20 targeted Swift tests, 0 failures via
+    `xcodebuild test -project Engram.xcodeproj -scheme Engram -destination
+    'platform=macOS' CODE_SIGNING_ALLOWED=NO -skip-testing:EngramUITests` with
+    taxonomy/search/alias/project-continuity/timeline selectors. Result:
+    `/Users/bing/Library/Developer/Xcode/DerivedData/Engram-apkspuobooepqkdrdnbizljrophn/Logs/Test/Test-Engram-2026.07.03_08-47-41-+0800.xcresult`.
+  - `npm run build`, `npm run typecheck:test`, `npm run knip`,
+    `npm run check:runtime-capabilities`, and `npm test --
+    tests/docs/mcp-tools.test.ts tests/docs/runtime-capabilities.test.ts`
+    passed.
+  - Full Vitest passed: 134 files, 1630 tests via `npm test`.
+  - Full `EngramTests` passed with UI tests skipped and host locale forced to
+    English: `xcodebuild -quiet test -project Engram.xcodeproj -scheme Engram
+    -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+    -skip-testing:EngramUITests -testLanguage en -testRegion US`. Result:
+    `/Users/bing/Library/Developer/Xcode/DerivedData/Engram-apkspuobooepqkdrdnbizljrophn/Logs/Test/Test-Engram-2026.07.03_08-49-28-+0800.xcresult`.
+  - `npm run lint` exited 0 with the existing non-failing Biome warning at
+    `tests/scripts/screenshot-compare.test.ts:136`.
+  - `git diff --check` passed.
+- Remaining risk: no fresh manual macOS UI traversal was run. Current Side
+  classification still treats the indexed Codex `.codex/archived_sessions`
+  shape as both Side and Archived; if a future Codex side-chat source has a
+  distinct indexed field/path, expand `SessionTaxonomy.isSide` with another
+  regression instead of changing storage preemptively.
+
+## 2026-07-02 - Competitive session improvements review remediation (Codex)
+
+- Objective: remediate the workflow review findings for
+  `docs/superpowers/specs/2026-07-02-competitive-session-improvements-design.md`
+  after review task `wo7o8md9j` rejected the earlier "complete" claim. This
+  entry supersedes the previous closeout note for the affected taxonomy/search,
+  project-continuity, Timeline, alias, and README facts.
+- Taxonomy/search fixes:
+  - `SessionTaxonomy` no longer treats `hiddenAt` hygiene as provider archived.
+    Archived now means a Codex provider archive path under
+    `.codex/archived_sessions`.
+  - `side` is no longer a permanent unsupported placeholder. It is supported for
+    the same read-only Codex archived-session shape so badges and filters can
+    surface the indexed shape instead of returning `AND 0=1`.
+  - `SessionTaxonomyFilter.suggestedParent` no longer forces top-level-only
+    filtering, so advisory child rows with `suggested_parent_id` can be returned.
+  - `DatabaseManager.appendSessionFilters` now lets explicit taxonomy filters
+    override the default human-driven/top-level/subagent exclusions. Selecting
+    Subagent/Orphan/Suggested parent no longer silently intersects with
+    contradictory defaults.
+  - `DatabaseManager.search` and `searchWithSnippets` accept a `taxonomy`
+    parameter; taxonomy predicates are pushed into SQL before `LIMIT`. Normal
+    all-types search still excludes hidden/skip/lite rows by default.
+  - `SearchPageView` bypasses the service search only when a taxonomy filter is
+    selected and uses local taxonomy SQL before `LIMIT`; All types keeps the
+    service-first path.
+- Project/Timeline/docs fixes:
+  - `AliasSheet` now builds alias mutation requests through
+    `aliasMutationRequest(...)`; remove uses the listed alias row's canonical
+    project, so opening the sheet from the alias side of `/old -> /new` removes
+    the real `/old, /new` key.
+  - `ProjectsView` tracks the set of projects touched by recent committed
+    migrations and passes `migrationState(for: selected.project)` to
+    `ProjectContinuityPanel` instead of a global migration flag.
+  - `TimelinePageView` splits Work and Sessions loads. Default Work mode reads
+    `implementationTimeline` and project counts only; it does not load
+    `sessionTimeline`, `childCount`, or `suggestedChildCount` until Sessions mode
+    is selected.
+  - README now states that macOS Projects UI can view/add/remove Project Aliases
+    and keeps MCP as the scriptable/AI-conversation path.
+- Regression coverage added:
+  - `SessionTaxonomyTests`: hidden hygiene is not archived; Codex archived path
+    tags as side+archived; side taxonomy is supported for the indexed shape.
+  - `DatabaseManagerTests`: archived path vs hidden hygiene, taxonomy vs
+    human-driven conflicts, suggested-parent advisory child rows, workflow
+    search-before-limit, and skip-tier subagent taxonomy search.
+  - `ProjectsMigrationTests`: alias-side remove canonical selection, selected
+    project migration state, README alias UI truth.
+  - `ViewMainThreadReadTests`: Search taxonomy local-before-limit source guard
+    and Timeline Work mode no session timeline/child-count source guard.
+- Verification:
+  - TDD red check: targeted `xcodebuild test` initially failed on missing
+    `aliasMutationRequest`, proving the new alias regression was active.
+  - Targeted remediation suite passed: 20 tests, 0 failures via
+    `xcodebuild test -project Engram.xcodeproj -scheme Engram -destination
+    'platform=macOS' CODE_SIGNING_ALLOWED=NO -skip-testing:EngramUITests`
+    with the new `SessionTaxonomyTests`, `DatabaseManagerTests`,
+    `ProjectsMigrationTests`, and `ViewMainThreadReadTests` selectors. Result:
+    `/Users/bing/Library/Developer/Xcode/DerivedData/Engram-apkspuobooepqkdrdnbizljrophn/Logs/Test/Test-Engram-2026.07.02_19-00-08-+0800.xcresult`.
+  - Full `EngramTests` with host default language failed only on existing
+    locale-sensitive TodayWorkbench English assertions resolving to zh-Hans
+    strings. Re-run with `-testLanguage en -testRegion US` passed: 598 tests, 1
+    skipped, 0 failures. Result:
+    `/Users/bing/Library/Developer/Xcode/DerivedData/Engram-apkspuobooepqkdrdnbizljrophn/Logs/Test/Test-Engram-2026.07.02_19-01-23-+0800.xcresult`.
+  - `npm run check:runtime-capabilities` passed and confirmed 23 sources / 29
+    MCP tools.
+  - `npm test -- tests/docs/runtime-capabilities.test.ts
+    tests/docs/mcp-tools.test.ts` passed: 2 files, 4 tests.
+  - `git diff --check` passed.
+- Remaining risk: no fresh interactive UI smoke was run for this remediation
+  pass. The service search API still has no taxonomy parameter; this is
+  intentional for now because UI taxonomy search uses local DB SQL, while the
+  service All types path remains unchanged.
+
+## 2026-07-02 - Competitive session improvements implemented from SPEC (Codex)
+
+- Objective: implement `docs/superpowers/specs/2026-07-02-competitive-session-improvements-design.md`
+  completely while preserving Engram's boundaries: no Ask Engram, no chat Q&A,
+  no card-as-answer, no LLM answer UX, no Node product runtime, no hidden
+  provider-network quota reads, and no direct app/MCP SQLite writes.
+- Runtime truth: added `scripts/check-runtime-capabilities.ts` plus docs tests.
+  The checker derives the shipped source count from Swift `SourceName` and the
+  MCP tool count from `tests/fixtures/mcp-golden/tools.json`. README,
+  `docs/mcp-tools.md`, and `MCPStdioServer` instructions now agree on 23
+  sources, 29 MCP tools, `get_rules`, keyword-only session search fallback, and
+  MCP-first positioning. `docs/PRIVACY.md` now documents local usage/cost facts
+  and says provider quota/runway does not poll provider quota, billing, pricing,
+  or runway APIs by default and does not auto-discover provider credentials.
+- Session taxonomy: added `SessionTaxonomy` and `SessionTaxonomyBadge`, wired
+  taxonomy filters through `DatabaseManager.listSessions`, `sessionListStats`,
+  and `sessionTimeline`, and surfaced badges/filters in Sessions, Search,
+  Timeline, Session Detail, and expandable session cards. `side` remains
+  defined but unsupported until a stable indexed field exists. Codex
+  archived-session paths under
+  `.codex/archived_sessions` count as archived.
+- Project continuity: `DatabaseManager.listProjectAliases(project:)` reads local
+  `project_aliases` when present and safely returns empty when absent. Alias
+  mutations remain service-gated through `EngramServiceClient.manageProjectAlias`.
+  Projects detail now shows alias counts, alias preview, and migration-log
+  state without requiring MCP/log inspection.
+- Usage runway: `EngramServiceSourceInfo` now carries
+  `latestUsageCollectedAt`; `EngramServiceReadProvider.sources()` reads it from
+  local `usage_events`; Source Pulse shows local usage/runway snapshots with
+  freshness/reset metadata and an explicit no-provider-credential/no-provider-API
+  empty state.
+- Coverage/performance/polish: added read-only tests for taxonomy, aliases,
+  local runway formatting/empty states, service DTO compatibility, Codex
+  archived-session filtering, and list-surface transcript-parsing guards. New
+  runway rows expose stable accessibility identifiers.
+- Fresh verification: `npm test -- tests/docs/runtime-capabilities.test.ts
+  tests/docs/mcp-tools.test.ts` passed 2 files / 4 tests; `npm run
+  check:runtime-capabilities` confirmed 23 sources and 29 MCP tools; `npm run
+  lint` passed with the existing screenshot workflow template-curly warning;
+  `npm run typecheck:test` passed; targeted `EngramTests` slice passed 37
+  tests; targeted `EngramServiceCoreTests`
+  `testSQLiteReadProviderSourcesExposeArchiveHealthFacts` passed 1 test;
+  `xcodebuild -project macos/Engram.xcodeproj -scheme Engram -configuration
+  Debug build CODE_SIGNING_ALLOWED=NO` passed; `git diff --check` passed. Xcode
+  emitted non-failing AppIntents/linkd/layout warnings during targeted test
+  runs.
+- UI smoke status: attempted multi-page UI smoke, sidebar traversal, signed
+  launch smoke, and `test-without-building` variants. They did not reach
+  `Testing started`; `xcodebuild` timed out or was interrupted in XCTest
+  worker/build scheduling. Logs: `/tmp/engram-ui-smoke.log`,
+  `/tmp/engram-ui-smoke-test-without-building.log`,
+  `/tmp/engram-ui-launch-smoke.log`, and
+  `/tmp/engram-ui-launch-smoke-test-without-building.log`. As a fallback,
+  launched the DerivedData app directly through LaunchServices with
+  `--test-mode --fixture-db ... --mock-daemon`; CoreGraphics confirmed a
+  1024x681 main window for the test PID and `/tmp/engram-manual-ui-home.png`
+  shows the fixture-backed home surface rendered. Coordinate injection could not
+  reliably navigate that inactive test window, so this is render proof, not a
+  completed manual traversal.
+- Remaining risk: full unfiltered npm/Xcode suites and UI smoke were not
+  completed for this slice. Side-chat restore/write-back remains explicitly out
+  of scope, and side-chat taxonomy stays unsupported until source data provides
+  a stable indexed field.
 
 ## 2026-07-02 - Codex takeover review and CI cleanup for PR #94 (Codex)
 

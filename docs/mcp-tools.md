@@ -2,7 +2,7 @@
 
 > Current product runtime is Swift `EngramMCP`; TypeScript tool definitions are retained as development/reference material.
 >
-> **Total tools: 28** | Protocol: MCP (Model Context Protocol) | Server name: `engram`
+> **Total tools: 29** | Protocol: MCP (Model Context Protocol) | Server name: `engram`
 
 ---
 
@@ -181,6 +181,22 @@ Retrieve curated insights and memories from past sessions. Use `save_insight` to
 | query | string | **yes** | What to remember (e.g. "user's coding preferences") |
 
 **Notes:** Returns up to 10 matching insights with id, content, wing, room, importance, and distance placeholder. The Swift product path uses insight FTS keyword search, then falls back to recent insights. If no memories exist, suggests using `save_insight`.
+
+---
+
+## get_rules
+
+Retrieve reusable rules and runbooks mined from high-value cross-tool sessions.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| project | string | no | Project name to filter mined rules |
+| query | string | no | Optional keyword query for rule title/body |
+| limit | number | no | Max results. Default 10, max 50 |
+
+**Notes:** Returns `rules` and `count`. Results come from the local `mined_rules` tables when present. A keyword query uses `mined_rules_fts` when available; otherwise results fall back to local confidence and recency ordering.
 
 ---
 

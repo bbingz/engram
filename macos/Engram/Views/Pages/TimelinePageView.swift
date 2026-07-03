@@ -91,12 +91,14 @@ struct TimelinePageView: View {
     @AppStorage("sessions.showAll") private var showAllSessions = false
     @State private var timeline: [(date: String, sessions: [Session])] = []
     @State private var workTimeline: [ImplementationTimelineItem] = []
+    @State private var workProjectNames: [String] = []
     @State private var confirmedCounts: [String: Int] = [:]
     @State private var suggestedCounts: [String: Int] = [:]
     @State private var timelineMode: TimelineMode = .work
     @State private var sortMode: TimelineSortMode = .activity
     @State private var range: TimelineRange = .month
     @State private var selectedProject: String = timelineAllProjects
+    @State private var taxonomyFilter: SessionTaxonomyFilter = .all
     @State private var loadError: String? = nil
     @State private var isLoading = true
     // Session-action sheet targets + transient status banner.
@@ -124,6 +126,9 @@ struct TimelinePageView: View {
 
     // Distinct projects across the loaded window, for the client-side filter.
     private var projectOptions: [String] {
+        if timelineMode == .work {
+            return [timelineAllProjects] + workProjectNames
+        }
         let names = Set(timeline.flatMap(\.sessions).compactMap(\.project))
         return [timelineAllProjects] + names.sorted()
     }
@@ -190,14 +195,21 @@ struct TimelinePageView: View {
                     .accessibilityIdentifier("timeline_sortPicker")
                 }
                 if projectOptions.count > 1 {
-                    Picker("Project", selection: $selectedProject) {
-                        ForEach(projectOptions, id: \.self) { name in
-                            Text(name).tag(name)
+                    HStack(spacing: 8) {
+                        Picker("Project", selection: $selectedProject) {
+                            ForEach(projectOptions, id: \.self) { name in
+                                Text(name).tag(name)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: 280, alignment: .leading)
+                        .accessibilityIdentifier("timeline_projectPicker")
+                        if timelineMode == .sessions {
+                            taxonomyFilterControl
                         }
                     }
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: 280, alignment: .leading)
-                    .accessibilityIdentifier("timeline_projectPicker")
+                } else if timelineMode == .sessions {
+                    taxonomyFilterControl
                 }
                 if let loadError {
                     AlertBanner(message: "Failed to load timeline: \(loadError)")
@@ -300,6 +312,7 @@ struct TimelinePageView: View {
             AnyHashable(sortMode),
             AnyHashable(range),
             AnyHashable(selectedProject),
+            AnyHashable(taxonomyFilter.rawValue),
             AnyHashable(showAllSessions),
             AnyHashable(serviceStatusStore.totalSessions)
         ]) {
@@ -316,19 +329,37 @@ struct TimelinePageView: View {
             let days = range.days
             let humanDriven = !showAllSessions
             let selectedProjectFilter = selectedProject == timelineAllProjects ? nil : selectedProject
-            let data = try await Task.detached { [database, sort, days, humanDriven, selectedProjectFilter] in
-                let tl = try database.sessionTimeline(days: days, sort: sort, humanDriven: humanDriven)
+            if timelineMode == .work {
+                let data = try await Task.detached { [database, days, humanDriven, selectedProjectFilter] in
+                    let work = try database.implementationTimeline(
+                        days: days,
+                        project: selectedProjectFilter,
+                        humanDriven: humanDriven
+                    )
+                    let projects = try database.countsByProject().keys.sorted()
+                    return (work, projects)
+                }.value
+                workTimeline = data.0
+                workProjectNames = data.1
+                timeline = []
+                confirmedCounts = [:]
+                suggestedCounts = [:]
+                loadError = nil
+                return
+            }
+            let taxonomy = timelineMode == .sessions ? taxonomyFilter.tag : nil
+            let data = try await Task.detached { [database, sort, days, humanDriven, selectedProjectFilter, taxonomy] in
+                let tl = try database.sessionTimeline(days: days, sort: sort, humanDriven: humanDriven, taxonomy: taxonomy)
                 let allSessions = tl.flatMap(\.sessions)
                 let parentIds = allSessions.map(\.id)
                 let confirmed = try database.childCount(parentIds: parentIds)
                 let suggested = try database.suggestedChildCount(parentIds: parentIds)
-                let work = try database.implementationTimeline(days: days, project: selectedProjectFilter, humanDriven: humanDriven)
-                return (tl, confirmed, suggested, work)
+                return (tl, confirmed, suggested)
             }.value
             timeline = data.0
             confirmedCounts = data.1
             suggestedCounts = data.2
-            workTimeline = data.3
+            workTimeline = []
             loadError = nil
         } catch {
             EngramLogger.error("TimelinePage load failed", module: .ui, error: error)
@@ -411,6 +442,39 @@ struct TimelinePageView: View {
 
     private func sessionCountLabel(_ count: Int) -> String {
         String.localizedStringWithFormat(String(localized: "%lld sessions"), count)
+    }
+
+    private var taxonomyFilterControl: some View {
+        Menu {
+            Button {
+                taxonomyFilter = .all
+            } label: {
+                if taxonomyFilter == .all {
+                    Label(SessionTaxonomyFilter.all.label, systemImage: "checkmark")
+                } else {
+                    Text(SessionTaxonomyFilter.all.label)
+                }
+            }
+            Divider()
+            ForEach(SessionTaxonomyFilter.allCases.filter { $0 != .all }) { option in
+                Button {
+                    guard option.isSupported else { return }
+                    taxonomyFilter = option
+                } label: {
+                    if taxonomyFilter == option {
+                        Label(option.label, systemImage: "checkmark")
+                    } else {
+                        Label(option.label, systemImage: option.systemImage)
+                    }
+                }
+                .disabled(!option.isSupported)
+            }
+        } label: {
+            Label(taxonomyFilter.label, systemImage: taxonomyFilter.systemImage)
+                .lineLimit(1)
+        }
+        .controlSize(.small)
+        .accessibilityIdentifier("timeline_taxonomyFilter")
     }
 }
 

@@ -93,6 +93,8 @@ struct SourcePulseView: View {
                     })
                 }
 
+                UsageRunwaySection(items: sources.compactMap(Self.runwayItem(from:)))
+
                 if let costsError {
                     AlertBanner(message: "Failed to load cost data: \(costsError)")
                 }
@@ -400,6 +402,38 @@ struct SourcePulseView: View {
         "Tokens \(min(100, max(0, percent)))%"
     }
 
+    struct RunwayItem: Identifiable, Equatable {
+        let source: String
+        let metric: String
+        let value: Double
+        let unit: String?
+        let limit: Double?
+        let resetAt: String?
+        let collectedAt: String?
+        let status: String?
+
+        var id: String { "\(source)|\(metric)" }
+        var dataSourceLabel: String { "local usage snapshots" }
+    }
+
+    static func runwayItem(from source: EngramServiceSourceInfo) -> RunwayItem? {
+        guard let metric = source.latestUsageMetric,
+              let value = source.latestUsageValue
+        else {
+            return nil
+        }
+        return RunwayItem(
+            source: source.name,
+            metric: metric,
+            value: value,
+            unit: source.latestUsageUnit,
+            limit: source.latestUsageLimitValue,
+            resetAt: source.latestUsageResetAt,
+            collectedAt: source.latestUsageCollectedAt,
+            status: source.latestUsageStatus
+        )
+    }
+
     static func formattedUsageValue(_ value: Double, unit: String?, limit: Double? = nil) -> String {
         if let limit {
             return "\(oneDecimalUsageNumber(value))/\(oneDecimalUsageNumber(limit))\(unit ?? "")"
@@ -493,5 +527,98 @@ struct SourcePulseView: View {
             .padding(.vertical, 2)
             .background(Theme.surfaceHighlight)
             .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+private struct UsageRunwaySection: View {
+    let items: [SourcePulseView.RunwayItem]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(icon: "gauge.with.dots.needle.67percent", title: "Usage Runway")
+                .help("Local quota/runway snapshots from Engram usage collection. Not provider-billing authoritative.")
+
+            if items.isEmpty {
+                EmptyState(
+                    icon: "gauge.with.dots.needle.67percent",
+                    title: "No runway data",
+                    message: "No local quota or runway snapshots are available. Engram does not read provider credentials or call provider APIs by default."
+                )
+                .accessibilityIdentifier("sourcePulse_runwayEmpty")
+            } else {
+                LazyVStack(spacing: 4) {
+                    ForEach(items.sorted(by: Self.sortByUrgency)) { item in
+                        runwayRow(item)
+                    }
+                }
+                .accessibilityIdentifier("sourcePulse_runwayList")
+            }
+        }
+    }
+
+    private func runwayRow(_ item: SourcePulseView.RunwayItem) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                SourcePill(source: item.source)
+                Text(item.metric)
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Text(SourcePulseView.formattedUsageValue(item.value, unit: item.unit, limit: item.limit))
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(color(for: item.status))
+            }
+            HStack(spacing: 8) {
+                Label(item.dataSourceLabel, systemImage: "internaldrive")
+                if let collectedAt = item.collectedAt {
+                    Label("Collected \(Self.shortTimestamp(collectedAt))", systemImage: "clock")
+                }
+                if let resetAt = item.resetAt {
+                    Label("Resets \(Self.shortTimestamp(resetAt))", systemImage: "arrow.counterclockwise")
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(Theme.tertiaryText)
+            .lineLimit(1)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Theme.surface)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("sourcePulse_runwayRow_\(item.source)")
+    }
+
+    private static func sortByUrgency(_ lhs: SourcePulseView.RunwayItem, _ rhs: SourcePulseView.RunwayItem) -> Bool {
+        let lhsRank = urgencyRank(lhs.status)
+        let rhsRank = urgencyRank(rhs.status)
+        if lhsRank != rhsRank { return lhsRank < rhsRank }
+        return lhs.source < rhs.source
+    }
+
+    private static func urgencyRank(_ status: String?) -> Int {
+        switch SourcePulseView.normalizedUsageStatusForDisplay(status) {
+        case "critical": 0
+        case "attention": 1
+        default: 2
+        }
+    }
+
+    private func color(for status: String?) -> Color {
+        switch SourcePulseView.normalizedUsageStatusForDisplay(status) {
+        case "critical": .red
+        case "attention": Theme.orange
+        default: Theme.secondaryText
+        }
+    }
+
+    private static func shortTimestamp(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "T", with: " ")
+            .replacingOccurrences(of: "Z", with: "")
     }
 }

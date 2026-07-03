@@ -6,6 +6,7 @@
 // EngramServiceClientTests.swift and not visible here, so we re-declare our own).
 
 import XCTest
+import GRDB
 @testable import Engram
 
 final class ProjectsMigrationTests: XCTestCase {
@@ -137,6 +138,81 @@ final class ProjectsMigrationTests: XCTestCase {
         XCTAssertEqual(aliasConfirmation(removeResult), "Alias removed: /old")
     }
 
+    func testAliasRemoveRequestUsesListedCanonicalWhenOpenedFromAliasProject() throws {
+        let aliases = [
+            DatabaseManager.ProjectAlias(alias: "/old", canonical: "/new")
+        ]
+
+        let request = try XCTUnwrap(aliasMutationRequest(
+            action: "remove",
+            input: "/old",
+            projectName: "/old",
+            aliases: aliases
+        ))
+
+        XCTAssertEqual(request.action, "remove")
+        XCTAssertEqual(request.oldProject, "/old")
+        XCTAssertEqual(request.newProject, "/new")
+        XCTAssertEqual(request.actor, "app")
+    }
+
+    func testProjectAliasListingReadsLocalAliasTable() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+        let dbPath = tempDir.appendingPathComponent("test-\(UUID().uuidString).sqlite").path
+        defer { cleanupTempDatabase(at: dbPath) }
+        try createSessionsTable(at: dbPath)
+
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE project_aliases (
+                  alias TEXT NOT NULL,
+                  canonical TEXT NOT NULL,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  PRIMARY KEY (alias, canonical)
+                )
+            """)
+            try db.execute(
+                sql: "INSERT INTO project_aliases (alias, canonical) VALUES (?, ?), (?, ?), (?, ?)",
+                arguments: [
+                    "/old/engram", "engram",
+                    "legacy-engram", "engram",
+                    "legacy-renamed", "renamed"
+                ]
+            )
+        }
+
+        let manager = DatabaseManager(path: dbPath)
+        try manager.open()
+
+        let projectAliases = try manager.listProjectAliases(project: "engram")
+        XCTAssertEqual(projectAliases.map(\.alias), ["/old/engram", "legacy-engram"])
+        XCTAssertEqual(projectAliases.map(\.canonical), ["engram", "engram"])
+
+        let aliasProject = try manager.listProjectAliases(project: "legacy-renamed")
+        XCTAssertEqual(aliasProject.map(\.canonical), ["renamed"])
+
+        let allAliases = try manager.listProjectAliases()
+        XCTAssertEqual(allAliases.map { "\($0.alias)->\($0.canonical)" }, [
+            "/old/engram->engram",
+            "legacy-engram->engram",
+            "legacy-renamed->renamed",
+        ])
+    }
+
+    func testProjectAliasListingReturnsEmptyWithoutAliasTable() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+        let dbPath = tempDir.appendingPathComponent("test-\(UUID().uuidString).sqlite").path
+        defer { cleanupTempDatabase(at: dbPath) }
+        try createSessionsTable(at: dbPath)
+
+        let manager = DatabaseManager(path: dbPath)
+        try manager.open()
+
+        XCTAssertEqual(try manager.listProjectAliases(), [])
+        XCTAssertEqual(try manager.listProjectAliases(project: "engram"), [])
+    }
+
     // MARK: - (e) source grep: no `engram project` CLI references
 
     func testProjectSheetsContainNoEngramProjectCli() throws {
@@ -155,6 +231,28 @@ final class ProjectsMigrationTests: XCTestCase {
                 "\(relativePath) must not reference the non-shipping `engram project` CLI"
             )
         }
+    }
+
+    func testAliasSheetListsExistingAliasesInApp() throws {
+        let source = try Self.source("macos/Engram/Views/Projects/AliasSheet.swift")
+        XCTAssertTrue(source.contains("listProjectAliases(project: projectName)"))
+        XCTAssertTrue(source.contains("Aliases are read from the local index"))
+        XCTAssertFalse(source.contains("cannot be listed in-app yet"))
+        XCTAssertFalse(source.contains("listing is MCP-only"))
+    }
+
+    func testProjectsContinuityPanelUsesSelectedProjectMigrationState() throws {
+        let source = try Self.source("macos/Engram/Views/Pages/ProjectsView.swift")
+        XCTAssertTrue(source.contains("migrationState: migrationState(for: selected.project)"))
+        XCTAssertFalse(source.contains("migrationState: hasRecentMigrations"))
+    }
+
+    func testReadmeDocumentsMacOSProjectAliasManagementUi() throws {
+        let readme = try Self.source("README.md")
+        XCTAssertTrue(readme.contains("macOS App"))
+        XCTAssertTrue(readme.contains("Projects"))
+        XCTAssertTrue(readme.contains("Project Aliases"))
+        XCTAssertFalse(readme.contains("macOS App 暂未提供 Project Aliases 管理 UI"))
     }
 
     // MARK: - Helpers

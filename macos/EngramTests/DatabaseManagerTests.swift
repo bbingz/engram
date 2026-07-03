@@ -960,6 +960,136 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(engram.sessions.map(\.id), ["parent"])
     }
 
+    @MainActor
+    func testArchivedTaxonomyIncludesCodexArchivedSessionPath() throws {
+        try insertTestSession(at: dbPath, id: "active", source: "codex", startTime: "2026-07-02T03:00:00Z")
+        try insertTestSession(at: dbPath, id: "archived", source: "codex", startTime: "2026-07-02T02:00:00Z")
+        try setSessionFilePath(
+            at: dbPath,
+            sessionId: "archived",
+            filePath: "/Users/test/.codex/archived_sessions/rollout-2026-07-02T02-00-00-019f.jsonl"
+        )
+
+        let sessions = try db.listSessions(includeHidden: true, taxonomy: .archived)
+
+        XCTAssertEqual(sessions.map(\.id), ["archived"])
+    }
+
+    @MainActor
+    func testArchivedTaxonomyDoesNotTreatHiddenHygieneAsProviderArchive() throws {
+        try insertTestSession(at: dbPath, id: "hidden-hygiene", source: "claude-code", startTime: "2026-07-02T03:00:00Z")
+        try insertTestSession(at: dbPath, id: "provider-archive", source: "codex", startTime: "2026-07-02T02:00:00Z")
+        try setHidden(at: dbPath, sessionId: "hidden-hygiene", hidden: true)
+        try setSessionFilePath(
+            at: dbPath,
+            sessionId: "provider-archive",
+            filePath: "/Users/test/.codex/archived_sessions/rollout-2026-07-02T02-00-00-019f.jsonl"
+        )
+
+        let sessions = try db.listSessions(includeHidden: true, taxonomy: .archived)
+
+        XCTAssertEqual(sessions.map(\.id), ["provider-archive"])
+    }
+
+    @MainActor
+    func testTimelineSideTaxonomyIncludesHiddenCodexSideShape() throws {
+        try insertTestSession(at: dbPath, id: "active", source: "codex", startTime: "2026-07-02T03:00:00Z")
+        try insertTestSession(at: dbPath, id: "side", source: "codex", startTime: "2026-07-02T02:00:00Z")
+        try setHidden(at: dbPath, sessionId: "side", hidden: true)
+        try setSessionFilePath(
+            at: dbPath,
+            sessionId: "side",
+            filePath: "/Users/test/.codex/archived_sessions/side-019f.jsonl"
+        )
+
+        let ids = try db.sessionTimeline(days: 10_000, taxonomy: .side)
+            .flatMap(\.sessions)
+            .map(\.id)
+
+        XCTAssertEqual(ids, ["side"])
+    }
+
+    @MainActor
+    func testTaxonomySubagentBypassesHumanDrivenDefaultConflict() throws {
+        try insertTestSession(at: dbPath, id: "worker", source: "codex", tier: "skip", agentRole: "subagent")
+
+        let sessions = try db.listSessions(
+            includeHidden: false,
+            subAgent: nil,
+            topLevelOnly: false,
+            humanDriven: true,
+            taxonomy: .subagent
+        )
+
+        XCTAssertEqual(sessions.map(\.id), ["worker"])
+    }
+
+    @MainActor
+    func testTaxonomyOrphanBypassesHumanDrivenDefaultConflict() throws {
+        try insertTestSession(at: dbPath, id: "orphan-worker", source: "codex", tier: "skip", agentRole: "subagent")
+
+        let sessions = try db.listSessions(
+            includeHidden: false,
+            subAgent: nil,
+            topLevelOnly: false,
+            humanDriven: true,
+            taxonomy: .orphan
+        )
+
+        XCTAssertEqual(sessions.map(\.id), ["orphan-worker"])
+    }
+
+    @MainActor
+    func testSuggestedParentTaxonomyReturnsAdvisoryChildRows() throws {
+        try insertTestSession(at: dbPath, id: "parent", source: "codex")
+        try insertTestSession(at: dbPath, id: "suggested-child", source: "codex")
+        try setParentLinks(at: dbPath, sessionId: "suggested-child", suggestedParentId: "parent")
+
+        let sessions = try db.listSessions(
+            includeHidden: false,
+            subAgent: nil,
+            topLevelOnly: SessionTaxonomyFilter.suggestedParent.topLevelOnly,
+            humanDriven: false,
+            taxonomy: .suggestedParent
+        )
+
+        XCTAssertTrue(sessions.map(\.id).contains("suggested-child"))
+    }
+
+    @MainActor
+    func testSearchWithSnippetsAppliesWorkflowTaxonomyBeforeLimit() throws {
+        for index in 0..<30 {
+            let id = "ordinary-\(String(format: "%02d", index))"
+            try insertTestSession(
+                at: dbPath,
+                id: id,
+                source: "codex",
+                startTime: String(format: "2026-07-02T03:%02d:00Z", index)
+            )
+            try insertFTSContent(at: dbPath, sessionId: id, content: "needle ordinary session")
+        }
+        try insertTestSession(at: dbPath, id: "workflow-parent", source: "codex", startTime: "2026-07-02T01:00:00Z")
+        try insertTestSession(at: dbPath, id: "workflow-child", source: "codex", startTime: "2026-07-02T00:59:00Z")
+        try setParentLinks(at: dbPath, sessionId: "workflow-child", parentSessionId: "workflow-parent")
+        try insertFTSContent(at: dbPath, sessionId: "workflow-parent", content: "needle workflow parent")
+
+        let hits = try db.searchWithSnippets(query: "needle", limit: 30, taxonomy: .workflow)
+
+        XCTAssertEqual(hits.map(\.session.id), ["workflow-parent"])
+    }
+
+    @MainActor
+    func testSearchWithSnippetsSubagentTaxonomyCanFindSkipTierWorkers() throws {
+        try insertTestSession(at: dbPath, id: "worker", source: "codex", tier: "skip", agentRole: "subagent")
+        try insertFTSContent(at: dbPath, sessionId: "worker", content: "needle worker trace")
+
+        let defaultHits = try db.searchWithSnippets(query: "needle", limit: 10)
+        let taxonomyHits = try db.searchWithSnippets(query: "needle", limit: 10, taxonomy: .subagent)
+
+        XCTAssertEqual(defaultHits.map(\.session.id), [])
+        XCTAssertEqual(taxonomyHits.map(\.session.id), ["worker"])
+    }
+
     // MARK: - sparklineData date bucketing
 
     // sparklineData buckets by local calendar day on both the SQL and Swift
@@ -1065,6 +1195,20 @@ final class DatabaseManagerTests: XCTestCase {
             try db.execute(
                 sql: "UPDATE sessions SET parent_session_id = ?, suggested_parent_id = ? WHERE id = ?",
                 arguments: [parentSessionId, suggestedParentId, sessionId]
+            )
+        }
+    }
+
+    private func setSessionFilePath(
+        at path: String,
+        sessionId: String,
+        filePath: String
+    ) throws {
+        let queue = try DatabaseQueue(path: path)
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET file_path = ? WHERE id = ?",
+                arguments: [filePath, sessionId]
             )
         }
     }

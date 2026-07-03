@@ -482,6 +482,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
     let latestUsageUnit: String?
     let latestUsageLimitValue: Double?
     let latestUsageResetAt: String?
+    let latestUsageCollectedAt: String?
     let latestUsageStatus: String?
     let healthStatus: String
     /// True for cache-only sources (Windsurf/Antigravity) whose adapters run
@@ -504,6 +505,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         latestUsageUnit: String? = nil,
         latestUsageLimitValue: Double? = nil,
         latestUsageResetAt: String? = nil,
+        latestUsageCollectedAt: String? = nil,
         latestUsageStatus: String? = nil,
         healthStatus: String = "unknown",
         liveSyncDisabled: Bool = false
@@ -522,6 +524,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         self.latestUsageUnit = latestUsageUnit
         self.latestUsageLimitValue = latestUsageLimitValue
         self.latestUsageResetAt = latestUsageResetAt
+        self.latestUsageCollectedAt = latestUsageCollectedAt
         self.latestUsageStatus = latestUsageStatus
         self.healthStatus = healthStatus
         self.liveSyncDisabled = liveSyncDisabled
@@ -542,6 +545,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         case latestUsageUnit
         case latestUsageLimitValue
         case latestUsageResetAt
+        case latestUsageCollectedAt
         case latestUsageStatus
         case healthStatus
         case liveSyncDisabled
@@ -563,6 +567,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         latestUsageUnit = try container.decodeIfPresent(String.self, forKey: .latestUsageUnit)
         latestUsageLimitValue = try container.decodeIfPresent(Double.self, forKey: .latestUsageLimitValue)
         latestUsageResetAt = try container.decodeIfPresent(String.self, forKey: .latestUsageResetAt)
+        latestUsageCollectedAt = try container.decodeIfPresent(String.self, forKey: .latestUsageCollectedAt)
         latestUsageStatus = try container.decodeIfPresent(String.self, forKey: .latestUsageStatus)
         healthStatus = try container.decodeIfPresent(String.self, forKey: .healthStatus) ?? "unknown"
         liveSyncDisabled = try container.decodeIfPresent(Bool.self, forKey: .liveSyncDisabled) ?? false

@@ -32,10 +32,12 @@ final class SourcesSyncTests: XCTestCase {
             name: "windsurf",
             sessionCount: 1,
             latestIndexed: nil,
+            latestUsageCollectedAt: "2026-06-21T12:00:00Z",
             liveSyncDisabled: true
         )
         let data = try JSONEncoder().encode(info)
         let decoded = try JSONDecoder().decode(EngramServiceSourceInfo.self, from: data)
+        XCTAssertEqual(decoded.latestUsageCollectedAt, "2026-06-21T12:00:00Z")
         XCTAssertTrue(decoded.liveSyncDisabled)
     }
 
@@ -50,6 +52,7 @@ final class SourcesSyncTests: XCTestCase {
 
     func testMemberwiseInitDefaultsLiveSyncDisabledFalse() {
         let info = EngramServiceSourceInfo(name: "codex", sessionCount: 0, latestIndexed: nil)
+        XCTAssertNil(info.latestUsageCollectedAt)
         XCTAssertFalse(info.liveSyncDisabled)
     }
 

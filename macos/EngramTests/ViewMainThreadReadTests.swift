@@ -93,6 +93,21 @@ final class ViewMainThreadReadTests: XCTestCase {
         )
     }
 
+    func testSearchPageTaxonomyFilterUsesLocalSearchBeforeLimit() throws {
+        let s = try source("macos/Engram/Views/Pages/SearchPageView.swift")
+        let taxonomyStart = try XCTUnwrap(s.range(of: "if let taxonomy = selectedTaxonomyFilter.tag"))
+        let taxonomyEnd = try XCTUnwrap(s.range(of: "let response = try await serviceClient.search", options: [], range: taxonomyStart.lowerBound..<s.endIndex))
+        let taxonomyBranch = String(s[taxonomyStart.lowerBound..<taxonomyEnd.lowerBound])
+
+        XCTAssertTrue(taxonomyBranch.contains("let localResults = try await Task.detached"))
+        XCTAssertTrue(taxonomyBranch.contains("db.searchWithSnippets("))
+        XCTAssertTrue(taxonomyBranch.contains("taxonomy: taxonomy"))
+        XCTAssertFalse(
+            taxonomyBranch.contains("serviceClient.search"),
+            "taxonomy filters must be pushed into the local DB query before LIMIT, not applied after service search returns 30 rows"
+        )
+    }
+
     func testCommandPaletteDebouncesAndOwnsSearchTask() throws {
         let s = try source("macos/Engram/Views/CommandPaletteView.swift")
         XCTAssertTrue(s.contains("@State private var searchTask: Task<Void, Never>?"))
@@ -131,6 +146,34 @@ final class ViewMainThreadReadTests: XCTestCase {
         XCTAssertFalse(sessions.contains(".onChange(of: timeFilter) { _, _ in Task { await loadData() } }"))
     }
 
+    func testLargeHistoryListSurfacesDoNotParseFullTranscripts() throws {
+        let listSurfacePaths = [
+            "macos/Engram/Views/Pages/SessionsPageView.swift",
+            "macos/Engram/Views/Pages/TimelinePageView.swift",
+            "macos/Engram/Views/Pages/SearchPageView.swift",
+            "macos/Engram/Views/Pages/ProjectsView.swift",
+            "macos/Engram/Components/ExpandableSessionCard.swift",
+            "macos/Engram/Components/SessionCard.swift",
+        ]
+        let forbidden = [
+            "MessageParser.",
+            "ServiceTranscriptReader",
+            "TranscriptExportService",
+            "readMessages(",
+            "parseWindowed",
+        ]
+
+        for path in listSurfacePaths {
+            let text = try source(path)
+            for token in forbidden {
+                XCTAssertFalse(
+                    text.contains(token),
+                    "\(path) is a list/card surface and must stay on indexed lightweight session rows, not full transcript parsing"
+                )
+            }
+        }
+    }
+
     func testVisiblePagesReloadWhenServiceSessionCountChanges() throws {
         let pagePaths = [
             "macos/Engram/Views/Pages/HomeView.swift",
@@ -164,6 +207,19 @@ final class ViewMainThreadReadTests: XCTestCase {
             XCTAssertTrue(page.contains("serviceClient.confirmSuggestion(sessionId: child.id)"))
             XCTAssertTrue(page.contains("serviceClient.dismissSuggestion("))
         }
+    }
+
+    func testTimelineWorkModeDoesNotLoadSessionTimelineOrChildCounts() throws {
+        let s = try source("macos/Engram/Views/Pages/TimelinePageView.swift")
+        let loadStart = try XCTUnwrap(s.range(of: "private func loadData() async"))
+        let workStart = try XCTUnwrap(s.range(of: "if timelineMode == .work", options: [], range: loadStart.lowerBound..<s.endIndex))
+        let workEnd = try XCTUnwrap(s.range(of: "return", options: [], range: workStart.lowerBound..<s.endIndex))
+        let workBranch = String(s[workStart.lowerBound..<workEnd.lowerBound])
+
+        XCTAssertTrue(workBranch.contains("database.implementationTimeline("))
+        XCTAssertFalse(workBranch.contains("database.sessionTimeline("))
+        XCTAssertFalse(workBranch.contains("database.childCount("))
+        XCTAssertFalse(workBranch.contains("database.suggestedChildCount("))
     }
 
     func testTimelinePageReusesDateFormatters() throws {

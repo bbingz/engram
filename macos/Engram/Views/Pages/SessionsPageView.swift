@@ -18,6 +18,7 @@ struct SessionsPageView: View {
     @State private var avgDurationSeconds: Double?
     @State private var timeFilter = "All Time"
     @State private var sourceFilter: String? = nil
+    @State private var taxonomyFilter: SessionTaxonomyFilter = .all
     @State private var availableSources: [String] = []
     @State private var isLoading = true
     @State private var isLoadingMore = false
@@ -92,6 +93,7 @@ struct SessionsPageView: View {
                         .frame(width: 140)
                         .accessibilityIdentifier("sessions_sourcePicker")
                     }
+                    taxonomyFilterControl
                 }
 
                 if isLoading && sessions.isEmpty {
@@ -181,6 +183,7 @@ struct SessionsPageView: View {
         .task(id: [
             AnyHashable(timeFilter),
             AnyHashable(sourceFilter),
+            AnyHashable(taxonomyFilter.rawValue),
             AnyHashable(showHiddenSessions),
             AnyHashable(showAllSessions),
             AnyHashable(serviceStatusStore.totalSessions),
@@ -196,17 +199,21 @@ struct SessionsPageView: View {
             let db = self.db
             let sources: Set<String> = sourceFilter.map { [$0] } ?? []
             let since = sinceDate(for: timeFilter)
-            let includeHidden = showHiddenSessions
+            let includeHidden = showHiddenSessions || taxonomyFilter.includeHidden
             let humanDriven = !showAllSessions
+            let taxonomy = taxonomyFilter.tag
+            let subAgent = taxonomy == nil ? false : nil
+            let topLevelOnly = taxonomyFilter.topLevelOnly
             let pageSize = Self.pageSize
             let data = try await Task.detached {
                 let loaded = try db.listSessions(
                     sources: sources,
                     since: since,
                     includeHidden: includeHidden,
-                    subAgent: false,
-                    topLevelOnly: true,
+                    subAgent: subAgent,
+                    topLevelOnly: topLevelOnly,
                     humanDriven: humanDriven,
+                    taxonomy: taxonomy,
                     sort: .updatedDesc,
                     limit: pageSize
                 )
@@ -214,9 +221,10 @@ struct SessionsPageView: View {
                     sources: sources,
                     since: since,
                     includeHidden: includeHidden,
-                    subAgent: false,
-                    topLevelOnly: true,
-                    humanDriven: humanDriven
+                    subAgent: subAgent,
+                    topLevelOnly: topLevelOnly,
+                    humanDriven: humanDriven,
+                    taxonomy: taxonomy
                 )
                 let sourceOptions = try db.sessionListStats(
                     since: since,
@@ -291,8 +299,11 @@ struct SessionsPageView: View {
                 let db = self.db
                 let sources: Set<String> = sourceFilter.map { [$0] } ?? []
                 let since = sinceDate(for: timeFilter)
-                let includeHidden = showHiddenSessions
+                let includeHidden = showHiddenSessions || taxonomyFilter.includeHidden
                 let humanDriven = !showAllSessions
+                let taxonomy = taxonomyFilter.tag
+                let subAgent = taxonomy == nil ? false : nil
+                let topLevelOnly = taxonomyFilter.topLevelOnly
                 let offset = sessions.count
                 let pageSize = Self.pageSize
                 let more = try await Task.detached {
@@ -300,9 +311,10 @@ struct SessionsPageView: View {
                         sources: sources,
                         since: since,
                         includeHidden: includeHidden,
-                        subAgent: false,
-                        topLevelOnly: true,
+                        subAgent: subAgent,
+                        topLevelOnly: topLevelOnly,
                         humanDriven: humanDriven,
+                        taxonomy: taxonomy,
                         sort: .updatedDesc,
                         limit: pageSize,
                         offset: offset
@@ -333,6 +345,39 @@ struct SessionsPageView: View {
         case "This Month": return formatter.string(from: cal.date(byAdding: .month, value: -1, to: now) ?? now)
         default: return nil
         }
+    }
+
+    private var taxonomyFilterControl: some View {
+        Menu {
+            Button {
+                taxonomyFilter = .all
+            } label: {
+                if taxonomyFilter == .all {
+                    Label(SessionTaxonomyFilter.all.label, systemImage: "checkmark")
+                } else {
+                    Text(SessionTaxonomyFilter.all.label)
+                }
+            }
+            Divider()
+            ForEach(SessionTaxonomyFilter.allCases.filter { $0 != .all }) { option in
+                Button {
+                    guard option.isSupported else { return }
+                    taxonomyFilter = option
+                } label: {
+                    if taxonomyFilter == option {
+                        Label(option.label, systemImage: "checkmark")
+                    } else {
+                        Label(option.label, systemImage: option.systemImage)
+                    }
+                }
+                .disabled(!option.isSupported)
+            }
+        } label: {
+            Label(taxonomyFilter.label, systemImage: taxonomyFilter.systemImage)
+                .lineLimit(1)
+        }
+        .frame(width: 160)
+        .accessibilityIdentifier("sessions_taxonomyFilter")
     }
 
     private var avgDuration: String {
