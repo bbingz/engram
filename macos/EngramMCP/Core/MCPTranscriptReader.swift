@@ -9,13 +9,9 @@ struct MCPTranscriptMessage {
 
 struct MCPTranscriptPage {
     let messages: [MCPTranscriptMessage]
-    let totalMessages: Int
+    let totalPages: Int
     let currentPage: Int
     let pageSize: Int
-
-    var totalPages: Int {
-        max(1, Int(ceil(Double(totalMessages) / Double(pageSize))))
-    }
 }
 
 private struct MCPTranscriptPageBuilder {
@@ -40,10 +36,14 @@ private struct MCPTranscriptPageBuilder {
         totalMessages += 1
     }
 
+    // Exact count of visible messages appended so far. After a full scan this is
+    // the transcript's true visible-message total (the basis for `totalPages`).
+    var visibleMessageCount: Int { totalMessages }
+
     func build() -> MCPTranscriptPage {
         MCPTranscriptPage(
             messages: messages,
-            totalMessages: totalMessages,
+            totalPages: max(1, Int(ceil(Double(totalMessages) / Double(pageSize)))),
             currentPage: currentPage,
             pageSize: pageSize
         )
@@ -60,6 +60,37 @@ private struct MCPTranscriptPageBuilder {
                 + "\n[truncated \(omitted) characters]",
             timestamp: message.timestamp
         )
+    }
+}
+
+// Process-lifetime cache of a transcript's exact visible-message total, keyed by
+// the file's identity VALUES (locator + size + mtime), never a `hashValue`. A
+// change to size or mtime yields a different key, so a rewritten transcript is
+// never served a stale total. The first `get_session` request for a transcript
+// counts the visible total to EOF and stores it here; later pages of the same
+// transcript read it back and skip the recount.
+private struct TranscriptVisibleCountKey: Hashable {
+    let locator: String
+    let source: String
+    let sizeBytes: Int64
+    let mtimeNanos: Int64
+}
+
+private final class TranscriptVisibleCountCache: @unchecked Sendable {
+    static let shared = TranscriptVisibleCountCache()
+    private let lock = NSLock()
+    private var storage: [TranscriptVisibleCountKey: Int] = [:]
+
+    func value(for key: TranscriptVisibleCountKey) -> Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage[key]
+    }
+
+    func set(_ value: Int, for key: TranscriptVisibleCountKey) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage[key] = value
     }
 }
 
@@ -240,28 +271,164 @@ enum MCPTranscriptReader {
         }
 
         do {
-            let stream = try await adapter.streamMessages(
-                locator: filePath,
-                options: StreamMessagesOptions()
-            )
-            var builder = MCPTranscriptPageBuilder(
-                currentPage: currentPage,
-                pageSize: pageSize
-            )
-            for try await message in stream {
-                let transcriptMessage = MCPTranscriptMessage(
-                    role: message.role.rawValue,
-                    content: message.content,
-                    timestamp: message.timestamp
+            // Default (no role filter) fast path. Preserves origin/main's exact
+            // pagination contract — dense VISIBLE-unit pages (offset counted in
+            // visible messages, up to pageSize visible per page) and a `totalPages`
+            // that is the true visible page count — for ALL transcripts, including
+            // those whose adapter stream carries hidden tool_result /
+            // system-injection records. `offset`/`limit` on the adapter index the
+            // RAW (post-transform) stream, so they can NEVER stand in for a visible
+            // page boundary; instead we filter to visible in this layer.
+            //
+            // The perf win comes from a process-lifetime cache of the exact visible
+            // total. The FIRST request for a transcript scans to EOF (bounded
+            // memory: the builder keeps only the page window, not an array of the
+            // whole transcript) to serve the page AND record the total. LATER pages
+            // read the cached total and serve their window via early-stopped
+            // streaming — O(offset + limit) raw records, stopping as soon as the
+            // page window is filled, so page 1 of a 39k-message transcript never
+            // parses 39k records.
+            if roles == nil, let identity = transcriptIdentity(filePath) {
+                let key = TranscriptVisibleCountKey(
+                    locator: filePath,
+                    source: source,
+                    sizeBytes: identity.size,
+                    mtimeNanos: identity.mtimeNanos
                 )
-                appendIfVisible(transcriptMessage, to: &builder, source: source, roles: roles)
+                if let cachedTotal = TranscriptVisibleCountCache.shared.value(for: key) {
+                    let windowMessages = try await collectVisiblePageWindow(
+                        adapter: adapter,
+                        filePath: filePath,
+                        source: source,
+                        currentPage: currentPage,
+                        pageSize: pageSize
+                    )
+                    return MCPTranscriptPage(
+                        messages: windowMessages,
+                        totalPages: max(1, Int(ceil(Double(cachedTotal) / Double(pageSize)))),
+                        currentPage: currentPage,
+                        pageSize: pageSize
+                    )
+                }
+
+                let page = try await fullScanPage(
+                    adapter: adapter,
+                    filePath: filePath,
+                    source: source,
+                    currentPage: currentPage,
+                    pageSize: pageSize,
+                    roles: nil
+                )
+                TranscriptVisibleCountCache.shared.set(page.visibleTotal, for: key)
+                return page.page
             }
-            return builder.build()
+
+            // Role-filtered request (or a transcript we can't stat): the visible
+            // total depends on the role filter, so it is not cacheable against the
+            // unfiltered key. Fall back to the exact dense full scan.
+            return try await fullScanPage(
+                adapter: adapter,
+                filePath: filePath,
+                source: source,
+                currentPage: currentPage,
+                pageSize: pageSize,
+                roles: roles
+            ).page
         } catch let failure as ParserFailure where isFallbackUnsafeParserFailure(failure) {
             throw failure
         } catch {
             return nil
         }
+    }
+
+    // Full visible scan of the adapter stream: dense visible-unit page window plus
+    // the exact visible-message total. Memory stays O(pageSize) at this layer — the
+    // builder retains only the requested window, never the whole transcript.
+    private static func fullScanPage(
+        adapter: any SessionAdapter,
+        filePath: String,
+        source: String,
+        currentPage: Int,
+        pageSize: Int,
+        roles: [String]?
+    ) async throws -> (page: MCPTranscriptPage, visibleTotal: Int) {
+        let stream = try await adapter.streamMessages(
+            locator: filePath,
+            options: StreamMessagesOptions()
+        )
+        var builder = MCPTranscriptPageBuilder(
+            currentPage: currentPage,
+            pageSize: pageSize
+        )
+        for try await message in stream {
+            appendIfVisible(
+                MCPTranscriptMessage(
+                    role: message.role.rawValue,
+                    content: message.content,
+                    timestamp: message.timestamp
+                ),
+                to: &builder,
+                source: source,
+                roles: roles
+            )
+        }
+        return (builder.build(), builder.visibleMessageCount)
+    }
+
+    // Collect only the visible window `[(currentPage-1)*pageSize, currentPage*pageSize)`
+    // by streaming the adapter's RAW records in file order and filtering to visible
+    // incrementally, stopping as soon as the window is complete. `offset`/`limit`
+    // count RAW records, so we widen the raw request (doubling from the visible
+    // lower bound) until enough visible messages appear or the stream reaches EOF —
+    // total work is O(raw prefix), never the whole file for a shallow page.
+    private static func collectVisiblePageWindow(
+        adapter: any SessionAdapter,
+        filePath: String,
+        source: String,
+        currentPage: Int,
+        pageSize: Int
+    ) async throws -> [MCPTranscriptMessage] {
+        let visibleNeeded = currentPage * pageSize
+        var rawLimit = max(visibleNeeded, pageSize)
+        while true {
+            let stream = try await adapter.streamMessages(
+                locator: filePath,
+                options: StreamMessagesOptions(offset: 0, limit: rawLimit)
+            )
+            var builder = MCPTranscriptPageBuilder(currentPage: currentPage, pageSize: pageSize)
+            var rawCount = 0
+            var visibleCount = 0
+            for try await message in stream {
+                rawCount += 1
+                let transcriptMessage = MCPTranscriptMessage(
+                    role: message.role.rawValue,
+                    content: message.content,
+                    timestamp: message.timestamp
+                )
+                if isDefaultVisibleMessage(
+                    role: transcriptMessage.role,
+                    content: transcriptMessage.content,
+                    source: source
+                ) {
+                    visibleCount += 1
+                    builder.append(transcriptMessage)
+                }
+                if visibleCount >= visibleNeeded { break }
+            }
+            // Enough visible to fill the window, or the adapter yielded fewer raw
+            // records than requested (EOF): the window is as complete as it can be.
+            if visibleCount >= visibleNeeded || rawCount < rawLimit {
+                return builder.build().messages
+            }
+            rawLimit *= 2
+        }
+    }
+
+    private static func transcriptIdentity(_ path: String) -> (size: Int64, mtimeNanos: Int64)? {
+        var info = stat()
+        guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return nil }
+        let mtime = info.st_mtimespec
+        return (Int64(info.st_size), Int64(mtime.tv_sec) &* 1_000_000_000 &+ Int64(mtime.tv_nsec))
     }
 
     private static func isFallbackUnsafeParserFailure(_ failure: ParserFailure) -> Bool {
