@@ -991,6 +991,13 @@ final class StartupBackfillTests: XCTestCase {
             try insertSession(db, id: "skip-1", source: "codex", tier: "skip")
             try insertSession(db, id: "keep-1", source: "codex", tier: "normal")
             try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('skip-1', 'stale'), ('keep-1', 'kept')")
+            try db.execute(
+                sql: """
+                INSERT INTO fts_map(session_id, msg_seq, fts_rowid, content_hash) VALUES
+                  ('skip-1', 0, 1, 'stalehash'),
+                  ('keep-1', 0, 2, 'keephash')
+                """
+            )
             // The skip session still owns a completed fts job — the cheap signal
             // that stale artifacts remain.
             try db.execute(
@@ -1003,9 +1010,11 @@ final class StartupBackfillTests: XCTestCase {
 
             let removed = try StartupBackfills.reconcileSkipTierIndexArtifacts(db)
 
-            XCTAssertEqual(removed, 1)
+            XCTAssertEqual(removed, 2)
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'skip-1'"), 0)
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'keep-1'"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM fts_map WHERE session_id = 'skip-1'"), 0)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM fts_map WHERE session_id = 'keep-1'"), 1)
             // Tier is never modified (subagent/skip invariant preserved).
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'skip-1'"), "skip")
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'keep-1'"), "normal")

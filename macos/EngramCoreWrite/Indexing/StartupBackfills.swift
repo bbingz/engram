@@ -720,6 +720,12 @@ public enum StartupBackfills {
         let deletedFts = try db.executeAndCountChanges(
             sql: "DELETE FROM sessions_fts WHERE session_id IN (\(skipSubquery))"
         )
+        var deletedFtsMap = 0
+        if try tableExists(db, "fts_map") {
+            deletedFtsMap = try db.executeAndCountChanges(
+                sql: "DELETE FROM fts_map WHERE session_id IN (\(skipSubquery))"
+            )
+        }
         if try tableExists(db, "session_embeddings") {
             try db.execute(
                 sql: "DELETE FROM session_embeddings WHERE session_id IN (\(skipSubquery))"
@@ -732,7 +738,7 @@ public enum StartupBackfills {
               AND session_id IN (\(skipSubquery))
             """
         )
-        return deletedFts
+        return deletedFts + deletedFtsMap
     }
 
     public static func vacuumIfNeeded(_ db: Database, fragmentationPercent: Int) throws -> Bool {

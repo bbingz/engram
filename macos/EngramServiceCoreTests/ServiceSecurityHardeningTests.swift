@@ -119,14 +119,19 @@ final class ServiceSecurityHardeningTests: XCTestCase {
                 ))
             )
             let response = await handler.handle(request)
-            // In-root paths must NOT be rejected with a confinement error.
-            if case .failure(_, let error) = response {
-                XCTAssertNotEqual(
-                    error.name, "InvalidRequest",
-                    "in-root path must pass confinement; got \(error.message)"
-                )
-                XCTAssertFalse(error.message.contains("outside the home directory"), error.message)
+            guard case .success(_, let data, _) = response else {
+                if case .failure(_, let error) = response {
+                    return XCTFail("in-root path must pass confinement; got \(error.name): \(error.message)")
+                }
+                return XCTFail("in-root path must pass confinement")
             }
+            let decoded = try JSONDecoder().decode(EngramServiceProjectMoveResult.self, from: data)
+            let perSource = try XCTUnwrap(decoded.perSource)
+            XCTAssertFalse(perSource.isEmpty)
+            XCTAssertTrue(
+                perSource.allSatisfy { $0.root == home.path || $0.root.hasPrefix(home.path + "/") },
+                "project move dry-run must scan the confined home, got roots: \(perSource.map(\.root))"
+            )
         }
     }
 
