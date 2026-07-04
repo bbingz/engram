@@ -2,7 +2,9 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-06-28): 79 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-06-28): 81 dated entries; regenerate after adding sections -->
+- [2026-07-03 - Perf audit implemented as 8 reviewed PRs #95-#102 (Claude)](#2026-07-03---perf-audit-implemented-as-8-reviewed-prs-95-102-claude)
+- [2026-07-03 - Full performance audit: 25 verified findings, roadmap only, nothing implemented (Claude)](#2026-07-03---full-performance-audit-25-verified-findings-roadmap-only-nothing-implemented-claude)
 - [2026-06-28 - Project-detail vertical-rail timeline with AI semantic titles (Claude)](#2026-06-28---project-detail-vertical-rail-timeline-with-ai-semantic-titles-claude)
 - [2026-06-28 - Full-project audit remediation pass (Codex)](#2026-06-28---full-project-audit-remediation-pass-codex)
 - [2026-06-27 - Session implementation digest and work timeline first pass (Codex)](#2026-06-27---session-implementation-digest-and-work-timeline-first-pass-codex)
@@ -91,6 +93,103 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-03 - Perf audit implemented as 8 reviewed PRs #95-#102 (Claude)
+
+- Same-day follow-up to the audit entry below: all 25 confirmed findings (minus
+  explicit deferrals) implemented via a 21-agent workflow (opus implement →
+  adversarial review → fix, 8 parallel worktree implementers) + a 3-agent
+  closeout. All 8 PRs reached zero-blocking review verdicts. At Claude handoff,
+  PRs were OPEN, not merged. See CHANGELOG.md [Unreleased] for the full per-PR
+  breakdown and Codex deployment closeout.
+  - #98 search fallback CTE; #96 startup gating x4; #97 UI hotpath x4;
+    #99 service read/render x4; #95 MCP dense paging (contract preserved);
+    #102 indexer parse-once + skip short-circuit; #100 adapter windowed reads
+    x3; #101 fts_map incremental FTS (structural).
+- Codex follow-up on 2026-07-04 integrated all eight PR branches locally into
+  `codex/perf-integration-review`, reviewed them as a combined change, and fixed
+  three verified issues before deployment:
+  - Startup skip-tier cleanup now deletes and counts stale `fts_map` rows in
+    addition to `sessions_fts` and embeddings (`StartupBackfills` +
+    `StartupBackfillTests`).
+  - Service project move/archive/batch execution passes the HOME-scoped
+    directory into `RunProjectMoveOptions`, matching service path validation and
+    preventing dry-run tests from scanning the real `~/.claude/projects`
+    (`EngramServiceCommandHandler*` +
+    `ServiceSecurityHardeningTests.testProjectMoveAcceptsInRootPaths`).
+  - Locale-sensitive app tests now assert `String(localized:)` /
+    `String.localizedStringWithFormat` output instead of English literals
+    (`EngramServiceStatusStoreTests`, `TodayWorkbenchTests`).
+- Verification/deploy evidence from Codex follow-up:
+  - Passed: `npm run build`, `npm run lint` (existing screenshot-compare warning),
+    `npm run knip`, `npm run typecheck:test`, `npm run test:coverage` (1590
+    tests), `npm run generate:fixtures`, `npm run check:adapter-parity-fixtures`,
+    `npm run check:fixtures`, `git diff --check`, `xcodegen generate` +
+    pbxproj drift check, full `EngramCoreTests`, full `EngramServiceCore`
+    (269 tests, 1 skip), full `EngramMCPTests`, and full `Engram` app tests with
+    `EngramUITests` skipped.
+  - Release: `./scripts/build-release.sh --local-only` exported
+    `macos/build/EngramExport/Engram.app`, release verifier passed bundle
+    hygiene + Developer ID deep codesign, and `scripts/deploy-local.sh` replaced
+    `/Applications/Engram.app` with `0.1.0 (20260703234028)`. Installed
+    `codesign --verify --deep --strict` passed; launch smoke showed `Engram`
+    and `EngramService` running from `/Applications/Engram.app`.
+  - Blocked/not run: notarization, stapling, DMG, and remote CI were not run.
+    `npm run screenshots:compare` hit macOS container privacy (`EPERM` reading
+    the UI-test screenshot manifest); a capture-only UI smoke run produced no
+    screenshots before interrupt.
+- MERGE ORDER NOTE: #96 and #101 both touch SessionSnapshotWriter/
+  StartupBackfills (separate functions, small conflict risk — merge #96 first);
+  #97/#99/#100/#101/#102 all touch the tracked pbxproj (new file registrations
+  — after each merge, regenerate pbxproj from an engram-named root if conflicts
+  appear).
+- CI GOTCHA (cost 3 follow-up commits): the repo TRACKS
+  macos/Engram.xcodeproj/project.pbxproj and CI's swift-unit job runs
+  `xcodegen generate` + diff as a drift check. Rules: (1) when adding Swift
+  files you MUST commit the regenerated pbxproj; (2) xcodegen embeds the ROOT
+  DIRECTORY NAME as the top-level group name, so regenerating inside a git
+  worktree with a nonstandard name leaks that name into pbxproj — always
+  regenerate from a directory literally named `engram`; (3) a sed rename is NOT
+  enough (stale deterministic UUIDs still drift) — regenerate, don't patch.
+- Deferred follow-ups (deliberate): #19 tail-parse via parsedOffset/
+  boundaryHash (design together with fts_map incremental writes), CJK shingle
+  search structure (#26 option a; interim = skip-row purge shipped in #96),
+  MCP get_session first-request count-scan still O(file) (accepted tradeoff,
+  cached after first request).
+
+## 2026-07-03 - Full performance audit: 25 verified findings, roadmap only, nothing implemented (Claude)
+
+- Ran a 49-agent workflow audit (wf_3946e4d0-4a4) across all runtime layers.
+  43 raw findings -> 38 deduped -> 25 adversarially CONFIRMED (13 refuted with
+  live measurements). ANALYSIS ONLY — no code changed. Full roadmap + findings
+  JSON preserved at `~/.claude/projects/-Users-bing--Code--engram/2a2fe987-c55b-4676-8154-d23cf7ca992a/subagents/workflows/wf_3946e4d0-4a4/{roadmap.md,confirmed.json,refuted.json}`.
+- Two structural root causes drive 12/25 findings:
+  1. `readObjects` full-file JSON parse is the default whenever
+     `StreamMessagesOptions.limit == nil` — indexer parses every changed file
+     TWICE (`SwiftIndexer.scanSnapshots` parseSessionInfo + streamStats), MCP
+     pager (`MCPTranscriptReader.swift:243`), resume primer, and legacy
+     fallback all re-parse whole multi-MB transcripts per page.
+  2. `sessions_fts.session_id` is UNINDEXED + one FTS row PER MESSAGE (256,292
+     rows / 572MB of the 835MB DB) + delete-all/insert-all updates
+     (`FTSRebuildPolicy.replaceFtsContent`) — every append to a live session
+     full-scans the 460MB trigram index then re-tokenizes the entire
+     transcript (one session re-indexed 6,480x per session_index_jobs).
+- Top measured numbers (live 835MB / 29,093-session DB): local offline search
+  fallback in `Database.swift:454-491` (correlated per-row FTS MATCH) takes
+  80–100s vs 81ms for the service CTE (`EngramServiceReadProvider.keywordSearch`
+  652–716) — port the CTE, effort S; startup FTS `optimize`
+  (`StartupBackfills.swift:594`) costs ~7s holding the write gate on EVERY
+  launch; CJK search LIKE full-scans 96MB per debounced keystroke (LIKE is
+  deliberate — trigram MATCH unreliable for CJK, do NOT swap); 88% of sessions
+  are tier=skip yet run the heavy second indexing pass whose output is
+  discarded; `parsedOffset`/`boundaryHash` columns exist but are dead (no tail
+  parsing). Recommended FTS fix: companion session_id->rowid map table +
+  incremental inserts (avoids `FTSRebuildPolicy.expectedVersion` bump that
+  would force full re-parse of all sessions).
+- Notable REFUTED (don't re-flag): per-call SQLite connection opens (MCP ~18
+  sites, export) measured negligible locally; FTS duplicate text storage
+  (134MB) not worth changing; sessions-list page accumulation harmless;
+  startup dedup GROUP BY scan cheap.
 
 ## 2026-06-28 - Project-detail vertical-rail timeline with AI semantic titles (Claude)
 

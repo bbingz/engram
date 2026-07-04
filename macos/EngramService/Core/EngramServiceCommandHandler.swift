@@ -1992,11 +1992,15 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         }
     }
 
-    private static func homeDirectoryPath() -> String {
+    static func homeDirectoryPath() -> String {
         URL(
             fileURLWithPath: ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory(),
             isDirectory: true
         ).standardizedFileURL.path
+    }
+
+    static func homeDirectoryURL() -> URL {
+        URL(fileURLWithPath: homeDirectoryPath(), isDirectory: true)
     }
 
     private static func isAllowedSessionFilePath(_ path: String, source: String) -> Bool {

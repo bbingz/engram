@@ -6,7 +6,11 @@ protocol ModificationFilteredSessionAdapter: SessionAdapter {
 
 public enum SessionAdapterFactory {
     public static func defaultAdapters() -> [any SessionAdapter] {
-        let claudeCode = ClaudeCodeAdapter()
+        // Persist the derived-source (minimax/lobsterai) signature cache so a
+        // cold scan skips head-sniffing every Claude file it has already seen.
+        let cacheDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".engram/cache", isDirectory: true)
+        let claudeCode = ClaudeCodeAdapter(sourceHintCacheDirectory: cacheDirectory)
         return [
             CodexAdapter(),
             claudeCode,

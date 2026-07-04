@@ -455,6 +455,9 @@ public extension EngramDatabaseWriter {
                   AND COALESCE(NULLIF(s.source_locator, ''), NULLIF(s.file_path, '')) IS NOT NULL
                   AND COALESCE(NULLIF(s.source_locator, ''), NULLIF(s.file_path, '')) NOT LIKE 'sync://%'
                   AND (s.orphan_status IS NULL OR s.orphan_status != 'confirmed')
+                  -- Skip-tier work beats are filtered out of every timeline read,
+                  -- so never (re)generate them; matches SwiftIndexer's digest skip.
+                  AND (s.tier IS NULL OR s.tier != 'skip')
                   AND (
                     COALESCE(s.instruction_count, 0) > 0
                     OR COALESCE(s.human_turn_count, s.user_message_count, 0) > 0

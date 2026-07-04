@@ -29,6 +29,10 @@ struct SessionsPageView: View {
     @State private var renameText = ""
     @State private var relateTarget: Session? = nil
     @State private var actionStatus: String? = nil
+    // Filter signature at the last load; distinguishes a filter change (reload
+    // immediately from page one) from a background index tick (debounce + keep
+    // pagination). See BrowseReloadCoalescer / #3.
+    @State private var lastFilterKey: [AnyHashable]? = nil
 
     private let timeOptions = ["Today", "This Week", "This Month", "All Time"]
     private static let pageSize = 200
@@ -177,7 +181,9 @@ struct SessionsPageView: View {
         }
         // Single id-keyed task: any filter change cancels the in-flight load and
         // starts a fresh one, so a slower older load can't land last and leave
-        // the list showing the previous filter's sessions.
+        // the list showing the previous filter's sessions. A bare index-count
+        // tick (filters unchanged) is debounced and preserves pagination so
+        // scrolling doesn't jump back to page one while indexing runs (#3).
         .task(id: [
             AnyHashable(timeFilter),
             AnyHashable(sourceFilter),
@@ -185,11 +191,23 @@ struct SessionsPageView: View {
             AnyHashable(showAllSessions),
             AnyHashable(serviceStatusStore.totalSessions),
         ]) {
-            await loadData()
+            let filterKey: [AnyHashable] = [
+                AnyHashable(timeFilter),
+                AnyHashable(sourceFilter),
+                AnyHashable(showHiddenSessions),
+                AnyHashable(showAllSessions),
+            ]
+            let plan = BrowseReloadCoalescer.plan(filterKey: filterKey, lastFilterKey: lastFilterKey)
+            if plan.debounce {
+                try? await Task.sleep(for: BrowseReloadCoalescer.debounceInterval)
+                if Task.isCancelled { return }
+            }
+            lastFilterKey = filterKey
+            await loadData(preservePagination: plan.preservePagination)
         }
     }
 
-    private func loadData() async {
+    private func loadData(preservePagination: Bool = false) async {
         isLoading = true
         defer { isLoading = false }
         do {
@@ -198,7 +216,11 @@ struct SessionsPageView: View {
             let since = sinceDate(for: timeFilter)
             let includeHidden = showHiddenSessions
             let humanDriven = !showAllSessions
-            let pageSize = Self.pageSize
+            // Preserve the loaded window on an index-tick refresh; otherwise a
+            // fresh load starts at the first page.
+            let pageSize = preservePagination
+                ? BrowseReloadCoalescer.refreshLimit(loadedCount: sessions.count, pageSize: Self.pageSize)
+                : Self.pageSize
             let data = try await Task.detached {
                 let loaded = try db.listSessions(
                     sources: sources,

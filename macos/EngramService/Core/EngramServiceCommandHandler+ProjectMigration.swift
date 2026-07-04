@@ -18,6 +18,7 @@ extension EngramServiceCommandHandler {
         do {
             // SEC-C2: confine before any filesystem work. force never relaxes this.
             try validateProjectMovePaths(src: request.src, dst: request.dst)
+            let homeDirectory = homeDirectoryURL()
             let result = try await ProjectMoveOrchestrator.run(
                 writer: writer,
                 options: RunProjectMoveOptions(
@@ -28,6 +29,7 @@ extension EngramServiceCommandHandler {
                     archived: false,
                     auditNote: request.auditNote,
                     actor: parseActor(request.actor) ?? .mcp,
+                    homeDirectory: homeDirectory,
                     rolledBackOf: nil
                 )
             )
@@ -54,6 +56,7 @@ extension EngramServiceCommandHandler {
             // SEC-C2: confine the caller-supplied source before resolving an
             // archive target. force never relaxes this.
             try validateProjectPathConfined(request.src, label: "source")
+            let homeDirectory = homeDirectoryURL()
             let suggestion = try Archive.suggestTarget(
                 src: request.src,
                 options: ArchiveOptions(
@@ -82,6 +85,7 @@ extension EngramServiceCommandHandler {
                     archived: true,
                     auditNote: request.auditNote,
                     actor: parseActor(request.actor) ?? .mcp,
+                    homeDirectory: homeDirectory,
                     rolledBackOf: nil
                 )
             )
@@ -146,7 +150,10 @@ extension EngramServiceCommandHandler {
             let result = await Batch.run(
                 document,
                 writer: writer,
-                overrides: BatchOverrides(force: request.force)
+                overrides: BatchOverrides(
+                    homeDirectory: homeDirectoryURL(),
+                    force: request.force
+                )
             )
             ServiceLogger.notice(
                 "projectMoveBatch finished completed=\(result.completed.count) failed=\(result.failed.count) skipped=\(result.skipped.count)",

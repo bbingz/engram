@@ -208,7 +208,10 @@ public final class SwiftIndexer {
                     }
                 }
                 do {
-                    switch try await adapter.parseSessionInfo(locator: locator) {
+                    // One read+parse per changed file: `scanForIndexing` yields
+                    // both the session info (pass 1) and the messages the stats
+                    // pass consumes, instead of parsing the file twice.
+                    switch try await adapter.scanForIndexing(locator: locator) {
                     case .failure(let reason):
                         try recordFileIndexFailure(
                             source: adapter.source,
@@ -221,12 +224,20 @@ public final class SwiftIndexer {
                             "session parse failed: source=\(adapter.source.rawValue, privacy: .private) reason=\(reason.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
                         )
                         continue
-                    case .success(var info):
+                    case .success(let scan):
+                        var info = scan.info
                         if info.project == nil, !info.cwd.isEmpty {
                             info.project = URL(fileURLWithPath: info.cwd).lastPathComponent
                         }
 
-                        let stats = try await streamStats(adapter: adapter, locator: locator)
+                        // When pass-1 info alone already guarantees tier `.skip`,
+                        // skip the implementation-digest accumulation: skip-tier
+                        // work beats are excluded from every timeline read and the
+                        // beat backfill, so they are never surfaced. All other
+                        // stats (usage/tools/counts/instructions) still run so
+                        // costs and other read paths stay identical.
+                        let provableSkip = Self.isProvableSkip(info: info, locator: locator)
+                        let stats = computeStats(messages: scan.messages, provableSkip: provableSkip)
                         let fileState = currentStat.map {
                             FileIndexState.success(source: adapter.source, locator: locator, stat: $0, now: Date())
                         }
@@ -330,10 +341,21 @@ public final class SwiftIndexer {
         }
     }
 
-    private func streamStats(adapter: any SessionAdapter, locator: String) async throws -> SessionStreamStats {
+    /// Skip conditions that `SessionTier.compute` resolves to `.skip` using only
+    /// pass-1 info (independent of the stats pass): each returns `.skip` before
+    /// any stats-derived input is consulted, and no later branch can override a
+    /// `.skip` verdict — so when this is true the final tier is guaranteed
+    /// `.skip`, identical to computing it after the full pass.
+    private static func isProvableSkip(info: NormalizedSessionInfo, locator: String) -> Bool {
+        locator.contains("/.engram/probes/")
+            || info.agentRole != nil
+            || locator.contains("/subagents/")
+            || info.messageCount <= 1
+    }
+
+    private func computeStats(messages: [NormalizedMessage], provableSkip: Bool) -> SessionStreamStats {
         var stats = SessionStreamStats()
-        let stream = try await adapter.streamMessages(locator: locator, options: StreamMessagesOptions())
-        for try await message in stream {
+        for message in messages {
             if let usage = message.usage {
                 stats.addUsage(usage)
             }
@@ -351,7 +373,7 @@ public final class SwiftIndexer {
             }
             guard message.role == .user || message.role == .assistant else { continue }
             if message.role == .user, Self.isSystemInjection(content) { continue }
-            if !content.isEmpty {
+            if !content.isEmpty, !provableSkip {
                 stats.implementationMessages.append(
                     NormalizedMessage(role: message.role, content: content, timestamp: message.timestamp)
                 )

@@ -7,6 +7,85 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Performance: full audit + 8 optimization PRs, all adversarially reviewed (2026-07-03, Claude Code, ultracode workflows)
+
+Two-workflow pass: (1) a 49-agent audit produced 25 adversarially-verified perf
+findings against the live 835 MB / 29,093-session DB (43 raw → 25 confirmed, 13
+refuted with measurements; roadmap + findings JSON preserved under
+`~/.claude/projects/-Users-bing--Code--engram/2a2fe987-*/subagents/workflows/wf_3946e4d0-4a4/`);
+(2) a 21-agent implement→review→fix pipeline shipped the findings as 8
+file-disjoint PRs, each adversarially reviewed to zero blocking issues. At
+Claude handoff, PRs were OPEN (not merged).
+
+Codex follow-up on 2026-07-04 merged all eight PR branches locally into
+`codex/perf-integration-review`, then ran a second review/fix pass before local
+deployment. Confirmed fixes: startup skip-tier reconciliation now also deletes
+and counts stale `fts_map` rows; project move/archive/batch dry-run execution
+uses the same HOME-scoped root as service path validation, preventing local tests
+from scanning the real `~/.claude/projects`; locale-sensitive Swift tests now
+assert localized strings instead of English literals.
+
+- **Codex verification/deploy**: `npm run build`, `npm run lint` (passes with
+  the existing screenshot-compare warning), `npm run knip`,
+  `npm run typecheck:test`, `npm run test:coverage` (1590 tests),
+  `npm run generate:fixtures`, `npm run check:adapter-parity-fixtures`,
+  `npm run check:fixtures`, `git diff --check`, `xcodegen generate` +
+  pbxproj drift check, full `EngramCoreTests`, full `EngramServiceCore`
+  (269 tests, 1 skip), full `EngramMCPTests`, and full `Engram` app tests with
+  `EngramUITests` skipped all passed locally.
+- **Installed app**: `./scripts/build-release.sh --local-only` exported
+  `/Users/bing/-Code-/engram/macos/build/EngramExport/Engram.app`, release
+  verifier passed bundle hygiene + Developer ID deep codesign, and
+  `scripts/deploy-local.sh` replaced `/Applications/Engram.app` with version
+  `0.1.0 (20260703234028)`. Installed `codesign --verify --deep --strict`
+  passed; launch smoke showed `Engram` and `EngramService` running from
+  `/Applications/Engram.app`.
+- **Not run / blocked**: notarization, stapling, DMG creation, and remote CI were
+  not run. `npm run screenshots:compare` was blocked by macOS container privacy
+  (`EPERM` reading the UI-test screenshot manifest), and a capture-only UI smoke
+  run produced no screenshots before being interrupted.
+
+- **#98 perf(search)**: port service CTE keyword query into the app-local search
+  fallback in `Database.swift` — kills a measured 80–100 s frozen-app hang
+  (service briefly down) vs 81 ms; parity test local-vs-service.
+- **#96 perf(startup)**: metadata-gate the unconditional FTS `optimize`
+  (measured ~7 s holding the write gate every launch), interval-gate the 29k-row
+  orphan re-stat, cross-session prune of terminal `session_index_jobs` rows
+  (155 K rows / ~40 MB), startup reconcile deleting FTS/embedding rows for
+  current-tier-skip sessions (DELETE-only, tier untouched).
+- **#97 perf(ui)**: static regexes in `ToolCallParser`, single parse per tool
+  row in `ColorBarMessageView`, memoized find-bar highlight, debounced
+  browse-page reloads that preserve pagination during indexing ticks.
+- **#99 perf(service)**: static redaction regexes (1,600→8 compiles per page),
+  weak ETag/304 on web UI, windowed resume primer, `replayTimeline` defers its
+  FTS fallback fetch (~180 ms discarded work per transcript open).
+- **#95 perf(mcp)**: `get_session` pages via early-stopped streaming with the
+  EXACT origin/main dense visible-unit contract preserved (raw-window/sentinel
+  redesign was rejected in review); exact `totalPages` via count-scan cached per
+  (locator, size, mtime); 110 MCP tests green.
+- **#102 perf(indexer)**: parse each changed file once (was twice) and
+  short-circuit provably-skip sessions before the heavy digest pass (88 % of
+  corpus); provable-skip conditions are an exact subset of `SessionTier.compute`
+  skip returns (verified in review); 5-tier parity test matrix.
+- **#100 perf(adapters)**: `readObjects` truncate-and-succeed instead of
+  throwing into the uncapped legacy parser (kills a hundreds-of-MB spike on a
+  173 MB / 39 k-msg session), bounded whole-document parse cache keyed on
+  (locator, mtime, size) values, persisted source-hint cache (saves ~26 k file
+  head-reads per cold launch for minimax/lobsterai detection).
+- **#101 perf(fts)**: THE structural fix — companion `fts_map` table
+  (session_id → fts rowid, indexed) so per-session FTS deletes seek instead of
+  full-scanning the 460 MB trigram index; incremental append-only inserts;
+  live-session FTS job debounce; self-healing fallback when map rows are
+  missing; NO sessions_fts vtable change, NO `expectedVersion` bump.
+- **Orchestration lessons**: (a) initial implementer instructions wrongly said
+  "never commit generated Engram.xcodeproj" — this repo TRACKS pbxproj and CI
+  runs an xcodegen drift check; three branches needed follow-up
+  regenerate-and-commit fixes from an `engram`-named worktree (xcodegen embeds
+  the root directory name as the top-level group name, so agent worktree names
+  leaked into pbxproj). (b) Deferred as follow-ups: #19 tail-parse via
+  parsedOffset/boundaryHash (design together with fts_map), CJK shingle search
+  index (#26 option a), MCP first-request count-scan still O(file).
+
 ### Project-detail timeline: vertical rail + AI semantic titles + click-through (2026-06-28, Claude Code, ultracode workflow)
 
 Embedded a per-project work timeline in the Projects detail view (Workspace →

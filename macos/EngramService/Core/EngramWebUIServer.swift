@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 import Hummingbird
@@ -71,7 +72,10 @@ final class EngramWebUIServer: @unchecked Sendable {
                 return try htmlResponse(layout(title: "Not Found", body: "<p>Session not found.</p>"), status: .notFound)
             }
             let page = try await sessionPage(id: id, request: request)
-            return try htmlResponse(page.html, status: page.status)
+            if page.notModified, let etag = page.etag {
+                return Self.notModifiedResponse(etag: etag)
+            }
+            return try htmlResponse(page.html, status: page.status, etag: page.etag)
         }
         // /health is intentionally unauthenticated so the launcher's loopback
         // readiness probe can confirm the server is up. It exposes no data.
@@ -258,11 +262,23 @@ final class EngramWebUIServer: @unchecked Sendable {
         )
     }
 
-    private func sessionPage(id: String, request: Request) async throws -> (html: String, status: HTTPResponse.Status) {
+    private struct SessionRender {
+        var html: String
+        var status: HTTPResponse.Status
+        var etag: String?
+        var notModified: Bool
+    }
+
+    private func sessionPage(id: String, request: Request) async throws -> SessionRender {
         guard let session = try readSession(id: id) else {
             // Mirror the percent-decode-failure branch: a missing session is a
             // 404, not a 200 that happens to render not-found HTML.
-            return (layout(title: "Not Found", body: "<p>Session not found.</p>"), .notFound)
+            return SessionRender(
+                html: layout(title: "Not Found", body: "<p>Session not found.</p>"),
+                status: .notFound,
+                etag: nil,
+                notModified: false
+            )
         }
 
         // `offset`/`limit` are both raw message indices into the unfiltered
@@ -272,6 +288,17 @@ final class EngramWebUIServer: @unchecked Sendable {
         // Next = offset + (raw consumed) are exact inverses of this stride.
         let offset = max(0, Int(String(request.uri.queryParameters["offset"] ?? "0")) ?? 0)
         let limit = min(200, max(1, Int(String(request.uri.queryParameters["limit"] ?? "50")) ?? 50))
+
+        // Weak ETag from actual values (session id + source-file mtime/size +
+        // offset + limit) so a refresh/back-forward on an unchanged transcript
+        // can 304 before any adapter read or render. nil when the locator is not
+        // a plain on-disk file (virtual cursor/opencode/sync locators) so we
+        // never emit a false 304 for a source we cannot cheaply validate.
+        let etag = Self.sessionETag(id: session.id, locator: session.readablePath, offset: offset, limit: limit)
+        if let etag, Self.ifNoneMatch(header: request.headers[.ifNoneMatch], matches: etag) {
+            return SessionRender(html: "", status: .notModified, etag: etag, notModified: true)
+        }
+
         let messageHTML: String
         let pager: String
         let status: HTTPResponse.Status
@@ -302,26 +329,75 @@ final class EngramWebUIServer: @unchecked Sendable {
             status = Self.transcriptErrorStatus(error)
         }
 
-        return (layout(
-            title: session.displayTitle,
-            body: """
-            <a class="back" href="/">← Sessions</a>
-            <header class="sticky">
-              <h1>\(escape(session.displayTitle))</h1>
-              <p>
-                <span class="badge">\(escape(sourceLabel(session.source)))</span>
-                \(escape(session.project ?? "(no project)"))
-                · \(escape(String(session.startTime.prefix(16))))
-                · \(session.messageCount) messages
-              </p>
-            </header>
-            \(pager)
-            <main class="chat">
-              \(messageHTML.isEmpty ? "<p class=\"empty\">No transcript messages found.</p>" : messageHTML)
-            </main>
-            \(pager)
-            """
-        ), status)
+        return SessionRender(
+            html: layout(
+                title: session.displayTitle,
+                body: """
+                <a class="back" href="/">← Sessions</a>
+                <header class="sticky">
+                  <h1>\(escape(session.displayTitle))</h1>
+                  <p>
+                    <span class="badge">\(escape(sourceLabel(session.source)))</span>
+                    \(escape(session.project ?? "(no project)"))
+                    · \(escape(String(session.startTime.prefix(16))))
+                    · \(session.messageCount) messages
+                  </p>
+                </header>
+                \(pager)
+                <main class="chat">
+                  \(messageHTML.isEmpty ? "<p class=\"empty\">No transcript messages found.</p>" : messageHTML)
+                </main>
+                \(pager)
+                """
+            ),
+            status: status,
+            // Only emit the validator on a fully rendered 200. Error renders
+            // (missing/oversized transcript) must not be cached as if fresh.
+            etag: status == .ok ? etag : nil,
+            notModified: false
+        )
+    }
+
+    /// Weak ETag derived from real values only — session id, the source file's
+    /// mtime + size, and the requested offset/limit — hashed with SHA-256 (never
+    /// Swift `hashValue`). Returns nil when the locator is empty or not a plain
+    /// on-disk file, so virtual/synced locators simply skip conditional-GET.
+    static func sessionETag(id: String, locator: String?, offset: Int, limit: Int) -> String? {
+        guard let locator, !locator.isEmpty,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: locator),
+              let modified = attributes[.modificationDate] as? Date,
+              let size = attributes[.size] as? Int
+        else {
+            return nil
+        }
+        let modifiedMs = Int(modified.timeIntervalSince1970 * 1000)
+        let material = "\(id)\u{1F}\(modifiedMs)\u{1F}\(size)\u{1F}\(offset)\u{1F}\(limit)"
+        let digest = SHA256.hash(data: Data(material.utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return "W/\"\(hex)\""
+    }
+
+    /// True when an `If-None-Match` header value matches `etag` (weak comparison:
+    /// the optional `W/` prefix is ignored). Handles a comma-separated list and
+    /// the `*` wildcard.
+    static func ifNoneMatch(header: String?, matches etag: String) -> Bool {
+        guard let header else { return false }
+        if header.trimmingCharacters(in: .whitespaces) == "*" { return true }
+        let target = normalizeETag(etag)
+        return header.split(separator: ",").contains { normalizeETag(String($0)) == target }
+    }
+
+    private static func normalizeETag(_ value: String) -> String {
+        var trimmed = value.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("W/") { trimmed.removeFirst(2) }
+        return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+    }
+
+    private static func notModifiedResponse(etag: String) -> Response {
+        var headers = HTTPFields()
+        headers[.eTag] = etag
+        headers[.cacheControl] = "private, no-cache"
+        return Response(status: .notModified, headers: headers, body: ResponseBody(byteBuffer: ByteBuffer()))
     }
 
     private func readSessions(limit: Int, humanDriven: Bool = true) throws -> [WebSession] {
@@ -553,10 +629,16 @@ private struct WebSession {
     }
 }
 
-private func htmlResponse(_ html: String, status: HTTPResponse.Status = .ok) throws -> Response {
+private func htmlResponse(_ html: String, status: HTTPResponse.Status = .ok, etag: String? = nil) throws -> Response {
     var headers = HTTPFields()
     headers[.contentType] = "text/html; charset=utf-8"
     headers[.contentSecurityPolicy] = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+    // The body stays byte-identical; the validator only lets a subsequent
+    // request short-circuit to 304 via If-None-Match.
+    if let etag {
+        headers[.eTag] = etag
+        headers[.cacheControl] = "private, no-cache"
+    }
     let data = Data(html.utf8)
     headers[.contentLength] = "\(data.count)"
     return Response(status: status, headers: headers, body: ResponseBody(byteBuffer: ByteBuffer(data: data)))

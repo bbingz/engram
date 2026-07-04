@@ -416,6 +416,327 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertTrue(message.contains("page must be <="), message)
     }
 
+    // #34: get_session paging preserves origin/main's exact contract — dense
+    // VISIBLE-unit pages and a `totalPages` equal to the true visible page count.
+    // With no hidden records raw == visible, so dense pages are trivially exact.
+    func testGetSessionPagingPlainTranscriptRendersDensePages() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = try mcpContractCopy(in: temp)
+
+        // 120 plain user/assistant messages, pageSize=50 → exactly 3 dense pages.
+        let transcriptURL = temp.appendingPathComponent("session.jsonl")
+        try writeClaudeTranscript(count: 120, to: transcriptURL)
+        try setSession(dbPath: dbURL.path, filePath: transcriptURL.path, messageCount: 120)
+
+        let visible = (1...120).map { "Message \($0)" }
+        for page in [1, 2, 3] {
+            let expected = denseVisiblePage(visible: visible, page: page, pageSize: 50)
+            let actual = try getSessionPage(dbPath: dbURL.path, page: page)
+            XCTAssertEqual(actual.currentPage, page)
+            XCTAssertEqual(actual.texts, expected.texts, "page \(page) content")
+            XCTAssertEqual(actual.totalPages, expected.totalPages, "page \(page) totalPages")
+        }
+
+        let all = try collectAllVisibleTexts(dbPath: dbURL.path)
+        XCTAssertEqual(all.texts, visible)
+        XCTAssertEqual(all.lastPage, 3)
+    }
+
+    // #34 (regression for the reviewer's blocking Round-2 finding): the adapter's
+    // RAW stream is denser than the visible set for real Claude Code transcripts
+    // (system-injection / tool_result records occupy raw offset slots). Paging must
+    // still return DENSE visible-unit pages whose content and totalPages are
+    // byte-identical to origin/main's dense builder — NOT sparse raw-window pages,
+    // and NOT a rolling `hasMore` sentinel. Page 1, a middle page, and the last
+    // page must each match the reference dense slicing exactly.
+    func testGetSessionPagingRendersDenseVisiblePagesWithHiddenRecords() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = try mcpContractCopy(in: temp)
+
+        // 120 visible turns, each preceded by a hidden system-injection record:
+        // raw_stream_length == 240, visible == 120, pageSize == 50.
+        let transcriptURL = temp.appendingPathComponent("session.jsonl")
+        try writeInterleavedClaudeTranscript(visibleTurns: 120, to: transcriptURL)
+        try setSession(dbPath: dbURL.path, filePath: transcriptURL.path, messageCount: 120)
+
+        let visible = (1...120).map { "Message \($0)" }
+        // page 1 (head), page 2 (middle), page 3 (last/partial) — the three cases
+        // the lead's design calls out. Each must equal origin/main's dense output.
+        for page in [1, 2, 3] {
+            let expected = denseVisiblePage(visible: visible, page: page, pageSize: 50)
+            let actual = try getSessionPage(dbPath: dbURL.path, page: page)
+            XCTAssertEqual(actual.currentPage, page)
+            XCTAssertEqual(actual.texts, expected.texts, "page \(page) content must match origin/main dense builder")
+            XCTAssertEqual(actual.totalPages, expected.totalPages, "page \(page) totalPages must match origin/main")
+        }
+
+        // Walking pages 1...totalPages reaches every visible turn, no tail loss and
+        // no sparse pages — the last page terminates the pager (currentPage == 3).
+        let collected = try collectAllVisibleTexts(dbPath: dbURL.path)
+        XCTAssertEqual(collected.texts, visible, "every visible turn reachable, densely")
+        XCTAssertEqual(collected.lastPage, 3, "totalPages is the exact visible page count (ceil(120/50))")
+    }
+
+    // #34: totalPages is the EXACT visible page count computed from the transcript,
+    // never the stored `sessions.message_count` (which excludes system_message_count
+    // and would diverge). Accurate, zero, and inflated stored counts all page
+    // identically to the dense reference.
+    func testGetSessionPagingTotalPagesIsExactVisibleCountNotStoredMessageCount() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = try mcpContractCopy(in: temp)
+
+        let transcriptURL = temp.appendingPathComponent("session.jsonl")
+        try writeInterleavedClaudeTranscript(visibleTurns: 120, to: transcriptURL)
+
+        let expected = (1...120).map { "Message \($0)" }
+        for messageCount in [0, 120, 500] {
+            try setSession(dbPath: dbURL.path, filePath: transcriptURL.path, messageCount: messageCount)
+            let collected = try collectAllVisibleTexts(dbPath: dbURL.path)
+            XCTAssertEqual(collected.texts, expected, "message_count=\(messageCount) changed content")
+            let p1 = try getSessionPage(dbPath: dbURL.path, page: 1)
+            XCTAssertEqual(p1.totalPages, 3, "message_count=\(messageCount) leaked into totalPages")
+        }
+    }
+
+    // #34: later pages of the same transcript are served within one process from
+    // the cached visible total (the second request skips the count-scan). Prove the
+    // cache-hit path still returns dense content and the same exact totalPages the
+    // first (cache-miss) request computed — a broken cache-hit path would return a
+    // sparse window or a divergent total here.
+    func testGetSessionPagingServesLaterPagesFromCachedTotal() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = try mcpContractCopy(in: temp)
+
+        let transcriptURL = temp.appendingPathComponent("session.jsonl")
+        try writeInterleavedClaudeTranscript(visibleTurns: 120, to: transcriptURL)
+        try setSession(dbPath: dbURL.path, filePath: transcriptURL.path, messageCount: 120)
+
+        // Both requests share one process → the page-2 request hits the count cache
+        // the page-1 request populated.
+        let responses = try rpcSession(
+            [
+                #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-fixture-01","page":1}}}"#,
+                #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-fixture-01","page":2}}}"#,
+            ],
+            environment: ["ENGRAM_MCP_DB_PATH": dbURL.path]
+        )
+        let byId = Dictionary(uniqueKeysWithValues: responses.compactMap { response -> (Int, OrderedTestJSONValue)? in
+            guard let id = response["id"]?.intValue else { return nil }
+            return (id, response)
+        })
+
+        let visible = (1...120).map { "Message \($0)" }
+        let page1 = try pageContent(from: XCTUnwrap(byId[1]))
+        XCTAssertEqual(page1.texts, denseVisiblePage(visible: visible, page: 1, pageSize: 50).texts)
+        XCTAssertEqual(page1.totalPages, 3)
+
+        // Cache hit: page 2 stays dense (Message 51...100) with the same total.
+        let page2 = try pageContent(from: XCTUnwrap(byId[2]))
+        XCTAssertEqual(page2.texts, denseVisiblePage(visible: visible, page: 2, pageSize: 50).texts)
+        XCTAssertEqual(page2.totalPages, 3)
+    }
+
+    // #34: the cached total is keyed by the transcript's (locator, size, mtime), so
+    // a rewrite within the same process is never served a stale total. Request a
+    // page (populating the cache), grow the transcript, then request again in the
+    // SAME process — totalPages must reflect the NEW content.
+    func testGetSessionPagingInvalidatesCachedTotalOnFileChange() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = try mcpContractCopy(in: temp)
+
+        let transcriptURL = temp.appendingPathComponent("session.jsonl")
+        try writeClaudeTranscript(count: 120, to: transcriptURL) // 3 dense pages
+        try setSession(dbPath: dbURL.path, filePath: transcriptURL.path, messageCount: 120)
+
+        let (first, second) = try getSessionAcrossMutation(
+            dbPath: dbURL.path,
+            firstPage: 1,
+            secondPage: 1,
+            mutate: {
+                // 260 visible messages → 6 dense pages, and a larger byte size so
+                // the cache key changes even under coarse mtime granularity.
+                try writeClaudeTranscript(count: 260, to: transcriptURL)
+            }
+        )
+
+        let before = try pageContent(from: first)
+        XCTAssertEqual(before.totalPages, 3, "initial transcript is 3 dense pages")
+
+        let after = try pageContent(from: second)
+        XCTAssertEqual(
+            after.totalPages,
+            6,
+            "grown transcript must recompute totalPages (cache invalidated on size/mtime change), not serve the stale 3"
+        )
+        XCTAssertEqual(after.texts, (1...50).map { "Message \($0)" })
+    }
+
+    // Reproduces origin/main's MCPTranscriptPageBuilder dense slicing: the visible
+    // message sequence sliced into pageSize pages, totalPages = ceil(count/pageSize).
+    private func denseVisiblePage(
+        visible: [String],
+        page: Int,
+        pageSize: Int
+    ) -> (texts: [String], totalPages: Int) {
+        let totalPages = max(1, Int(ceil(Double(visible.count) / Double(pageSize))))
+        let start = (page - 1) * pageSize
+        guard start < visible.count else { return ([], totalPages) }
+        let end = min(start + pageSize, visible.count)
+        return (Array(visible[start..<end]), totalPages)
+    }
+
+    private func pageContent(
+        from response: OrderedTestJSONValue
+    ) throws -> (texts: [String], totalPages: Int, currentPage: Int) {
+        let structured = try XCTUnwrap(response["result"]?["structuredContent"])
+        let messages = try XCTUnwrap(structured["messages"]?.arrayValue)
+        return (
+            texts: messages.compactMap { $0["content"]?.stringValue },
+            totalPages: try XCTUnwrap(structured["totalPages"]?.intValue),
+            currentPage: try XCTUnwrap(structured["currentPage"]?.intValue)
+        )
+    }
+
+    // Drive one MCP process across a mid-session transcript mutation so the second
+    // request hits the SAME in-process count cache the first populated. The stdio
+    // server flushes each response (fflush(stdout)), so we can read response 1,
+    // mutate, then send request 2.
+    private func getSessionAcrossMutation(
+        dbPath: String,
+        firstPage: Int,
+        secondPage: Int,
+        mutate: () throws -> Void
+    ) throws -> (first: OrderedTestJSONValue, second: OrderedTestJSONValue) {
+        let process = Process()
+        process.executableURL = executableURL()
+        process.environment = ProcessInfo.processInfo.environment
+            .merging(["TZ": "UTC", "ENGRAM_MCP_DB_PATH": dbPath]) { _, new in new }
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        try process.run()
+
+        let out = stdoutPipe.fileHandleForReading
+        var buffer = Data()
+
+        func send(page: Int) {
+            let line = "{\"jsonrpc\":\"2.0\",\"id\":\(page),\"method\":\"tools/call\",\"params\":{\"name\":\"get_session\",\"arguments\":{\"id\":\"mcp-fixture-01\",\"page\":\(page)}}}\n"
+            stdinPipe.fileHandleForWriting.write(Data(line.utf8))
+        }
+        func readResponse() throws -> OrderedTestJSONValue {
+            while true {
+                if let newline = buffer.firstIndex(of: 0x0A) {
+                    let lineData = buffer.subdata(in: buffer.startIndex..<newline)
+                    buffer.removeSubrange(buffer.startIndex...newline)
+                    var parser = OrderedTestJSONParser(text: String(decoding: lineData, as: UTF8.self))
+                    return try parser.parse()
+                }
+                let chunk = out.availableData
+                if chunk.isEmpty { throw XCTSkip("MCP closed stdout before emitting a response line") }
+                buffer.append(chunk)
+            }
+        }
+
+        send(page: firstPage)
+        let first = try readResponse()
+        try mutate()
+        send(page: secondPage)
+        let second = try readResponse()
+        try stdinPipe.fileHandleForWriting.close()
+        process.waitUntilExit()
+        return (first, second)
+    }
+
+    private func mcpContractCopy(in temp: URL) throws -> URL {
+        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        return dbURL
+    }
+
+    private func setSession(dbPath: String, filePath: String, messageCount: Int) throws {
+        try DatabaseQueue(path: dbPath).write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET source='claude-code', file_path=?, message_count=? WHERE id='mcp-fixture-01'",
+                arguments: [filePath, messageCount]
+            )
+        }
+    }
+
+    private func getSessionPage(
+        dbPath: String,
+        page: Int
+    ) throws -> (roles: [String], texts: [String], totalPages: Int, currentPage: Int) {
+        let capture = try rpc(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_session\",\"arguments\":{\"id\":\"mcp-fixture-01\",\"page\":\(page)}}}",
+            environment: ["ENGRAM_MCP_DB_PATH": dbPath]
+        )
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        let messages = try XCTUnwrap(structured["messages"]?.arrayValue)
+        return (
+            roles: messages.compactMap { $0["role"]?.stringValue },
+            texts: messages.compactMap { $0["content"]?.stringValue },
+            totalPages: try XCTUnwrap(structured["totalPages"]?.intValue),
+            currentPage: try XCTUnwrap(structured["currentPage"]?.intValue)
+        )
+    }
+
+    // Walk pages the way a client does: keep fetching while currentPage <
+    // totalPages, terminating when the exact last page is reached.
+    private func collectAllVisibleTexts(dbPath: String) throws -> (texts: [String], lastPage: Int) {
+        var all: [String] = []
+        var page = 1
+        while true {
+            let result = try getSessionPage(dbPath: dbPath, page: page)
+            XCTAssertEqual(result.currentPage, page)
+            all.append(contentsOf: result.texts)
+            if result.currentPage >= result.totalPages { break }
+            page += 1
+            if page > 100 {
+                XCTFail("paging did not terminate")
+                break
+            }
+        }
+        return (all, page)
+    }
+
+    private func writeClaudeTranscript(count: Int, to url: URL) throws {
+        let lines = (1...count).map { n -> String in
+            let role = n % 2 == 1 ? "user" : "assistant"
+            return "{\"type\":\"\(role)\",\"message\":{\"role\":\"\(role)\",\"content\":\"Message \(n)\"},\"timestamp\":\"2026-01-01T00:00:00.000Z\"}"
+        }
+        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    // Each visible turn is preceded by a hidden system-injection user record
+    // (SystemMessageClassifier hides "# AGENTS.md instructions for ..."). The
+    // adapter still emits those hidden records into the raw stream, so raw length
+    // (2 * visibleTurns) exceeds both the visible count and the stored
+    // message_count — the shape that exposed the truncation bug.
+    private func writeInterleavedClaudeTranscript(visibleTurns: Int, to url: URL) throws {
+        var lines: [String] = []
+        for i in 1...visibleTurns {
+            lines.append(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"# AGENTS.md instructions for /repo turn \(i)\"},\"timestamp\":\"2026-01-01T00:00:00.000Z\"}"
+            )
+            let role = i % 2 == 1 ? "user" : "assistant"
+            lines.append(
+                "{\"type\":\"\(role)\",\"message\":{\"role\":\"\(role)\",\"content\":\"Message \(i)\"},\"timestamp\":\"2026-01-01T00:00:00.000Z\"}"
+            )
+        }
+        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+
     func testResourceReadRejectsUnknownURIScheme() throws {
         let capture = try rpc(
             """

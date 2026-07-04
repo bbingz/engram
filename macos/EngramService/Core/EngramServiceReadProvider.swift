@@ -1085,15 +1085,17 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
     func replayTimeline(_ request: EngramServiceReplayTimelineRequest) async throws -> EngramServiceReplayTimelineResponse {
         let limit = max(1, min(request.limit ?? 500, 2_000))
-        // Step 1: fetch ONLY Sendable scalars inside read{} — source + the
-        // readable locator (same COALESCE as IndexJobRunner.sessionContentSource)
-        // + the FTS fallback rows/total so a single read covers both paths.
+        // Step 1: fetch ONLY the cheap scalar locator — source + the readable
+        // locator (same COALESCE as IndexJobRunner.sessionContentSource). The
+        // expensive FTS COUNT + content scan is deferred to Step 3 so the common
+        // on-disk path never pays for FTS work it would immediately discard
+        // (sessions_fts.session_id is UNINDEXED → each lookup is a full scan).
         // The blocking read queue's @Sendable block cannot await the adapter
         // stream, so streaming happens OUTSIDE this block (precedent:
         // resumeTranscriptContextLines).
-        let timeline = try await read {
-            db -> (source: String?, locator: String, rows: [ReplayFTSRow], total: Int) in
-            let scalar = try Row.fetchOne(
+        let scalar = try await read {
+            db -> (source: String?, locator: String) in
+            let row = try Row.fetchOne(
                 db,
                 sql: """
                     SELECT s.source AS source,
@@ -1108,10 +1110,47 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 """,
                 arguments: [request.sessionId]
             )
-            let source = scalar?["source"] as String?
-            let locator = (scalar?["locator"] as String?) ?? ""
-            guard source != nil, try tableExists("sessions_fts", db: db) else {
-                return (source, locator, [], 0)
+            return (row?["source"] as String?, (row?["locator"] as String?) ?? "")
+        }
+
+        // Step 2 (OUTSIDE read{}): source the timeline from the real per-message
+        // adapter stream (role incl. .tool, timestamp, token usage, tool calls)
+        // when the locator is a readable on-disk transcript. This carries the
+        // data the FTS blob lacks (roles/timestamps/tokens/tool entries).
+        //
+        // Fetch one sentinel row beyond `limit` so we can detect whether the
+        // transcript has more entries. `replayEntries(..., limit:)` then drops
+        // the sentinel back down to `limit`, so the response still returns at
+        // most `limit` entries while reporting `hasMore` truthfully (the old
+        // code streamed exactly `limit` rows, so `entries.count > limit` was
+        // never true and long transcripts were silently truncated).
+        if let source = scalar.source,
+           let streamed = try? await Self.streamReplayMessages(
+               source: source,
+               locator: scalar.locator,
+               limit: limit + 1
+           ),
+           !streamed.isEmpty {
+            let entries = Self.replayEntries(from: streamed, limit: limit)
+            return EngramServiceReplayTimelineResponse(
+                sessionId: request.sessionId,
+                source: source,
+                entries: entries,
+                totalEntries: entries.count,
+                hasMore: streamed.count > limit,
+                offset: 0,
+                limit: limit
+            )
+        }
+
+        // Step 3 (only when streaming yields nothing): synced-only /
+        // missing-file / sync:// / adapter unavailable → run the FTS COUNT +
+        // content fetch now and return the (role-less) FTS-derived timeline so
+        // the view degrades gracefully rather than going blank.
+        let fallback = try await read {
+            db -> (rows: [ReplayFTSRow], total: Int) in
+            guard scalar.source != nil, try tableExists("sessions_fts", db: db) else {
+                return ([], 0)
             }
             let total = try Int.fetchOne(
                 db,
@@ -1134,49 +1173,16 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     content: ($0["content"] as String?) ?? ""
                 )
             }
-            return (source, locator, rows, total)
+            return (rows, total)
         }
 
-        // Step 2 (OUTSIDE read{}): source the timeline from the real per-message
-        // adapter stream (role incl. .tool, timestamp, token usage, tool calls)
-        // when the locator is a readable on-disk transcript. This carries the
-        // data the FTS blob lacks (roles/timestamps/tokens/tool entries).
-        //
-        // Fetch one sentinel row beyond `limit` so we can detect whether the
-        // transcript has more entries. `replayEntries(..., limit:)` then drops
-        // the sentinel back down to `limit`, so the response still returns at
-        // most `limit` entries while reporting `hasMore` truthfully (the old
-        // code streamed exactly `limit` rows, so `entries.count > limit` was
-        // never true and long transcripts were silently truncated).
-        if let source = timeline.source,
-           let streamed = try? await Self.streamReplayMessages(
-               source: source,
-               locator: timeline.locator,
-               limit: limit + 1
-           ),
-           !streamed.isEmpty {
-            let entries = Self.replayEntries(from: streamed, limit: limit)
-            return EngramServiceReplayTimelineResponse(
-                sessionId: request.sessionId,
-                source: source,
-                entries: entries,
-                totalEntries: entries.count,
-                hasMore: streamed.count > limit,
-                offset: 0,
-                limit: limit
-            )
-        }
-
-        // Fallback: synced-only / missing-file / sync:// / adapter unavailable
-        // → return the (role-less) FTS-derived timeline so the view degrades
-        // gracefully rather than going blank.
-        let entries = Self.replayEntries(from: timeline.rows, source: timeline.source, limit: limit)
+        let entries = Self.replayEntries(from: fallback.rows, source: scalar.source, limit: limit)
         return EngramServiceReplayTimelineResponse(
             sessionId: request.sessionId,
-            source: timeline.source,
+            source: scalar.source,
             entries: entries,
-            totalEntries: timeline.total,
-            hasMore: timeline.total > entries.count,
+            totalEntries: fallback.total,
+            hasMore: fallback.total > entries.count,
             offset: 0,
             limit: limit
         )
@@ -1920,27 +1926,22 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     private static func resumeTranscriptContextLines(filePath: String, source: String) async -> [String] {
         let trimmedPath = filePath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPath.isEmpty else { return [] }
-        guard let messages = try? await ServiceTranscriptReader.readMessages(filePath: trimmedPath, source: source) else {
+        // Windowed read: only the first + last-5 visible messages are needed for
+        // the primer, so stream them through a bounded buffer instead of parsing
+        // the entire transcript into a full message array.
+        guard let messages = try? await ServiceTranscriptReader.readPrimerMessages(
+            filePath: trimmedPath,
+            source: source,
+            limit: 6
+        ) else {
             return []
         }
-        return resumeTranscriptPrimerMessages(messages).compactMap { message in
+        return messages.compactMap { message in
             let redacted = TranscriptExportService.redactSensitiveContent(message.content)
             guard let content = sanitizedResumeContextExcerpt(redacted) else { return nil }
             let role = message.role == "user" ? "User" : "Assistant"
             return "\(role): \(content)"
         }
-    }
-
-    private static func resumeTranscriptPrimerMessages(
-        _ messages: [ServiceTranscriptMessage],
-        limit: Int = 6
-    ) -> [ServiceTranscriptMessage] {
-        guard limit > 0 else { return [] }
-        guard messages.count > limit else { return Array(messages.prefix(limit)) }
-        if limit == 1 {
-            return [messages[0]]
-        }
-        return [messages[0]] + Array(messages.suffix(limit - 1))
     }
 
     private static func resumeMetadataContextLines(row: Row) -> [String] {

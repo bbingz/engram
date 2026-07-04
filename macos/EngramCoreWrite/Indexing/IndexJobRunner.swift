@@ -193,9 +193,14 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         }
 
         do {
-            let contents = try await buildSearchContent(adapter: adapter, source: contentSource)
+            let messages = try await buildSearchContent(adapter: adapter, source: contentSource)
             try writer.write { db in
-                try FTSRebuildPolicy.replaceFtsContent(db, sessionId: job.sessionId, contents: contents)
+                try FTSRebuildPolicy.replaceFtsContent(
+                    db,
+                    sessionId: job.sessionId,
+                    messages: messages,
+                    summary: contentSource.summary
+                )
                 try Self.markCompleted(db, id: job.id)
                 try FTSRebuildPolicy.finalizeRebuildIfReady(db)
             }
@@ -222,8 +227,10 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         }
     }
 
-    /// Builds FTS content lines: one per non-empty user/assistant message,
-    /// plus the session summary. Mirrors fts-repo.ts `indexSessionContent`.
+    /// Builds append-stable FTS message lines: one per non-empty user/assistant
+    /// message. Mirrors fts-repo.ts `indexSessionContent`. The session summary is
+    /// passed to `replaceFtsContent` separately (it is written last and can change
+    /// independently), so message appends stay incremental.
     private func buildSearchContent(
         adapter: any SessionAdapter,
         source: SessionContentSource
@@ -235,10 +242,6 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
             contents.append(message.content)
-        }
-        if let summary = source.summary,
-           !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            contents.append(summary)
         }
         return contents
     }
@@ -273,6 +276,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             FROM session_index_jobs
             WHERE status IN ('pending', 'failed_retryable')
               AND job_kind != ?
+              AND (not_before IS NULL OR not_before <= datetime('now'))
             ORDER BY
               CASE status WHEN 'pending' THEN 0 ELSE 1 END,
               CASE job_kind WHEN 'fts' THEN 0 ELSE 1 END,

@@ -35,6 +35,25 @@ struct ToolCallParser {
         }
     }()
 
+    // Result-name patterns: "Result from ToolName:", "`ToolName` result",
+    // "Output of ToolName:". Precompiled once (mirrors toolCallHeaderPattern)
+    // so extractResultToolName doesn't recompile them on every tool-result
+    // render. Failures indicate a malformed literal — surface it loudly.
+    private static let resultToolNamePatterns: [NSRegularExpression] = {
+        let patterns = [
+            #"Result from `?([A-Za-z][A-Za-z0-9_]*)`?:"#,
+            #"`([A-Za-z][A-Za-z0-9_]*)` result"#,
+            #"Output of ([A-Za-z][A-Za-z0-9_]*):"#
+        ]
+        return patterns.map { pattern in
+            do {
+                return try NSRegularExpression(pattern: pattern, options: .caseInsensitive)
+            } catch {
+                preconditionFailure("ToolCallParser result regex failed to compile: \(error)")
+            }
+        }
+    }()
+
     // Common error signals in tool output
     private static let errorSignals: [String] = [
         "Error:", "ERROR:", "ENOENT:", "EACCES:", "EPERM:",
@@ -152,16 +171,11 @@ struct ToolCallParser {
 
     private static func extractResultToolName(from content: String) -> String? {
         // Pattern: "Result from ToolName:" or "`ToolName` result"
-        let patterns = [
-            #"Result from `?([A-Za-z][A-Za-z0-9_]*)`?:"#,
-            #"`([A-Za-z][A-Za-z0-9_]*)` result"#,
-            #"Output of ([A-Za-z][A-Za-z0-9_]*):"#
-        ]
-        for pattern in patterns {
-            if let re = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
-               let match = re.firstMatch(in: content, range: NSRange(content.startIndex..., in: content)),
-               let range = Range(match.range(at: 1), in: content) {
-                return String(content[range])
+        let range = NSRange(content.startIndex..., in: content)
+        for re in resultToolNamePatterns {
+            if let match = re.firstMatch(in: content, range: range),
+               let nameRange = Range(match.range(at: 1), in: content) {
+                return String(content[nameRange])
             }
         }
         return nil

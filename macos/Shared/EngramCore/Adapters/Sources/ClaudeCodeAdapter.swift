@@ -4,20 +4,27 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
     let source: SourceName = .claudeCode
     private let projectsRoot: URL
     private let limits: ParserLimits
-    private let sourceHintCache = ClaudeCodeSourceHintCache()
+    private let sourceHintCache: ClaudeCodeSourceHintCache
     private static let sourceHintScanByteLimit = 1024 * 1024
     private static let sourceHintMaxLineBytes = 512 * 1024
     private static let sourceHintLineLimit = 64
     private static let sourceHintChunkSize = 64 * 1024
 
+    /// - Parameter sourceHintCacheDirectory: When non-nil, the derived-source
+    ///   signature cache is persisted here (keyed on path + mtime + size) so a
+    ///   cold process skips head-sniffing every Claude file it has seen before.
+    ///   `nil` keeps the cache purely in-memory (used by tests and transient
+    ///   registries so they never touch `~/.engram`).
     init(
         projectsRoot: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
             .path,
-        limits: ParserLimits = .default
+        limits: ParserLimits = .default,
+        sourceHintCacheDirectory: URL? = nil
     ) {
         self.projectsRoot = URL(fileURLWithPath: projectsRoot)
         self.limits = limits
+        self.sourceHintCache = ClaudeCodeSourceHintCache(directory: sourceHintCacheDirectory)
     }
 
     func detect() async -> Bool {
@@ -76,6 +83,7 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
                 locators.append(locator)
             }
         }
+        await sourceHintCache.flush()
         return locators
     }
 
@@ -83,107 +91,140 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
         do {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
             if let failure { return .failure(failure) }
-
-            var sessionId = ""
-            var agentId = ""
-            var cwd = ""
-            var startTime = ""
-            var endTime = ""
-            var userCount = 0
-            var assistantCount = 0
-            var toolCount = 0
-            var systemCount = 0
-            var firstUserText = ""
-            var detectedModel = ""
-
-            for object in objects {
-                guard let type = JSONLAdapterSupport.string(object["type"]),
-                      type == "user" || type == "assistant"
-                else {
-                    continue
-                }
-
-                if sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
-                    sessionId = value
-                }
-                if agentId.isEmpty, let value = JSONLAdapterSupport.string(object["agentId"]) {
-                    agentId = value
-                }
-                if cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) {
-                    cwd = value
-                }
-                if startTime.isEmpty, let value = JSONLAdapterSupport.string(object["timestamp"]) {
-                    startTime = value
-                }
-                if let value = JSONLAdapterSupport.string(object["timestamp"]) {
-                    endTime = value
-                }
-
-                let message = JSONLAdapterSupport.object(object["message"])
-                if detectedModel.isEmpty, let value = JSONLAdapterSupport.string(message?["model"]) {
-                    detectedModel = value
-                }
-
-                if type == "assistant" {
-                    assistantCount += 1
-                } else if Self.isToolResult(message?["content"]) {
-                    // Count a tool_result user record only when it surfaces
-                    // non-empty content, matching message(from:) which drops
-                    // empty tool results from the streamed transcript.
-                    if !Self.extractContent(message?["content"]).isEmpty {
-                        toolCount += 1
-                    }
-                } else {
-                    let text = Self.extractContent(message?["content"])
-                    if Self.isSystemInjection(text) {
-                        systemCount += 1
-                    } else {
-                        userCount += 1
-                        if firstUserText.isEmpty { firstUserText = text }
-                    }
-                }
-            }
-
-            guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
-
-            let isSubagent = locator.contains("/subagents/")
-            let id = isSubagent && !agentId.isEmpty ? agentId : sessionId
-            let source = Self.detectSource(model: detectedModel, filePath: locator)
-            let parentSessionId = isSubagent ? Self.parentSessionId(from: locator) : nil
-
-            return .success(
-                NormalizedSessionInfo(
-                    id: id,
-                    source: source,
-                    startTime: startTime,
-                    endTime: endTime != startTime ? endTime : nil,
-                    cwd: cwd,
-                    project: Self.projectName(fromCwd: cwd),
-                    model: detectedModel.isEmpty ? nil : detectedModel,
-                    messageCount: userCount + assistantCount + toolCount,
-                    userMessageCount: userCount,
-                    assistantMessageCount: assistantCount,
-                    toolMessageCount: toolCount,
-                    systemMessageCount: systemCount,
-                    summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
-                    filePath: locator,
-                    sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
-                    indexedAt: nil,
-                    agentRole: isSubagent ? "subagent" : nil,
-                    originator: nil,
-                    origin: nil,
-                    summaryMessageCount: nil,
-                    tier: nil,
-                    qualityScore: nil,
-                    parentSessionId: parentSessionId,
-                    suggestedParentId: nil
-                )
-            )
+            return Self.sessionInfo(from: objects, locator: locator)
         } catch let failure as ParserFailure {
             return .failure(failure)
         } catch {
             return .failure(.malformedJSON)
         }
+    }
+
+    /// Parse info and messages from a single file read. Mirrors
+    /// `parseSessionInfo` + `streamMessages(options: StreamMessagesOptions())`
+    /// exactly (same `sessionInfo(from:)` builder, same `message(from:)`
+    /// transform) but reads the transcript once. `readObjects(reportFailures:)`
+    /// surfaces the same failures the streamed path throws, so the indexer
+    /// records an identical outcome on failure.
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        do {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                locator: locator,
+                limits: limits,
+                reportFailures: true
+            )
+            if let failure { return .failure(failure) }
+            switch Self.sessionInfo(from: objects, locator: locator) {
+            case .failure(let reason):
+                return .failure(reason)
+            case .success(let info):
+                return .success(IndexingScan(info: info, messages: objects.compactMap(Self.message(from:))))
+            }
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
+    }
+
+    private static func sessionInfo(
+        from objects: [JSONLAdapterSupport.JSONObject],
+        locator: String
+    ) -> AdapterParseResult<NormalizedSessionInfo> {
+        var sessionId = ""
+        var agentId = ""
+        var cwd = ""
+        var startTime = ""
+        var endTime = ""
+        var userCount = 0
+        var assistantCount = 0
+        var toolCount = 0
+        var systemCount = 0
+        var firstUserText = ""
+        var detectedModel = ""
+
+        for object in objects {
+            guard let type = JSONLAdapterSupport.string(object["type"]),
+                  type == "user" || type == "assistant"
+            else {
+                continue
+            }
+
+            if sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
+                sessionId = value
+            }
+            if agentId.isEmpty, let value = JSONLAdapterSupport.string(object["agentId"]) {
+                agentId = value
+            }
+            if cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) {
+                cwd = value
+            }
+            if startTime.isEmpty, let value = JSONLAdapterSupport.string(object["timestamp"]) {
+                startTime = value
+            }
+            if let value = JSONLAdapterSupport.string(object["timestamp"]) {
+                endTime = value
+            }
+
+            let message = JSONLAdapterSupport.object(object["message"])
+            if detectedModel.isEmpty, let value = JSONLAdapterSupport.string(message?["model"]) {
+                detectedModel = value
+            }
+
+            if type == "assistant" {
+                assistantCount += 1
+            } else if Self.isToolResult(message?["content"]) {
+                // Count a tool_result user record only when it surfaces
+                // non-empty content, matching message(from:) which drops
+                // empty tool results from the streamed transcript.
+                if !Self.extractContent(message?["content"]).isEmpty {
+                    toolCount += 1
+                }
+            } else {
+                let text = Self.extractContent(message?["content"])
+                if Self.isSystemInjection(text) {
+                    systemCount += 1
+                } else {
+                    userCount += 1
+                    if firstUserText.isEmpty { firstUserText = text }
+                }
+            }
+        }
+
+        guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
+
+        let isSubagent = locator.contains("/subagents/")
+        let id = isSubagent && !agentId.isEmpty ? agentId : sessionId
+        let source = Self.detectSource(model: detectedModel, filePath: locator)
+        let parentSessionId = isSubagent ? Self.parentSessionId(from: locator) : nil
+
+        return .success(
+            NormalizedSessionInfo(
+                id: id,
+                source: source,
+                startTime: startTime,
+                endTime: endTime != startTime ? endTime : nil,
+                cwd: cwd,
+                project: Self.projectName(fromCwd: cwd),
+                model: detectedModel.isEmpty ? nil : detectedModel,
+                messageCount: userCount + assistantCount + toolCount,
+                userMessageCount: userCount,
+                assistantMessageCount: assistantCount,
+                toolMessageCount: toolCount,
+                systemMessageCount: systemCount,
+                summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
+                filePath: locator,
+                sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
+                indexedAt: nil,
+                agentRole: isSubagent ? "subagent" : nil,
+                originator: nil,
+                origin: nil,
+                summaryMessageCount: nil,
+                tier: nil,
+                qualityScore: nil,
+                parentSessionId: parentSessionId,
+                suggestedParentId: nil
+            )
+        )
     }
 
     func streamMessages(
@@ -249,7 +290,7 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
     ) -> ClaudeCodeSourceHintCache.Signature? {
         do {
             let attributes = try fileManager.attributesOfItem(atPath: locator)
-            let modifiedAt = attributes[.modificationDate] as? Date ?? .distantPast
+            let modifiedAt = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
             let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
             return ClaudeCodeSourceHintCache.Signature(modifiedAt: modifiedAt, size: size)
         } catch {
@@ -538,7 +579,7 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
 
 private actor ClaudeCodeSourceHintCache {
     struct Signature: Equatable, Sendable {
-        let modifiedAt: Date
+        let modifiedAt: TimeInterval  // timeIntervalSince1970
         let size: Int64
     }
 
@@ -547,13 +588,36 @@ private actor ClaudeCodeSourceHintCache {
         let source: SourceName
     }
 
+    /// On-disk format. Bump `formatVersion` to invalidate every persisted entry
+    /// when the sniffing logic or record shape changes.
+    private struct DiskEntry: Codable {
+        let modifiedAt: TimeInterval
+        let size: Int64
+        let source: String
+    }
+
+    private struct DiskCache: Codable {
+        let version: Int
+        let entries: [String: DiskEntry]
+    }
+
+    private static let formatVersion = 1
+
+    private let fileURL: URL?
     private var entries: [String: Entry] = [:]
+    private var loaded = false
+    private var dirty = false
+
+    init(directory: URL?) {
+        self.fileURL = directory?.appendingPathComponent("claude-source-hints.json")
+    }
 
     func source(
         for locator: String,
         signature: Signature?,
         resolve: @Sendable () -> SourceName
     ) -> SourceName {
+        loadIfNeeded()
         if let signature,
            let entry = entries[locator],
            entry.signature == signature {
@@ -566,7 +630,46 @@ private actor ClaudeCodeSourceHintCache {
         } else {
             entries.removeValue(forKey: locator)
         }
+        dirty = true
         return source
+    }
+
+    /// Persist the current entries. No-op when persistence is disabled
+    /// (in-memory cache) or nothing changed since the last write.
+    func flush() {
+        guard let fileURL, dirty else { return }
+        let disk = DiskCache(
+            version: Self.formatVersion,
+            entries: entries.mapValues {
+                DiskEntry(modifiedAt: $0.signature.modifiedAt, size: $0.signature.size, source: $0.source.rawValue)
+            }
+        )
+        guard let data = try? JSONEncoder().encode(disk) else { return }
+        try? FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? data.write(to: fileURL, options: .atomic)
+        dirty = false
+    }
+
+    private func loadIfNeeded() {
+        guard !loaded else { return }
+        loaded = true
+        guard let fileURL,
+              let data = try? Data(contentsOf: fileURL),
+              let disk = try? JSONDecoder().decode(DiskCache.self, from: data),
+              disk.version == Self.formatVersion
+        else {
+            return
+        }
+        for (locator, entry) in disk.entries {
+            guard let source = SourceName(rawValue: entry.source) else { continue }
+            entries[locator] = Entry(
+                signature: Signature(modifiedAt: entry.modifiedAt, size: entry.size),
+                source: source
+            )
+        }
     }
 }
 
@@ -585,11 +688,16 @@ final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, ModificationFiltered
         projectsRoot: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
             .path,
-        limits: ParserLimits = .default
+        limits: ParserLimits = .default,
+        sourceHintCacheDirectory: URL? = nil
     ) {
         self.init(
             source: source,
-            base: ClaudeCodeAdapter(projectsRoot: projectsRoot, limits: limits)
+            base: ClaudeCodeAdapter(
+                projectsRoot: projectsRoot,
+                limits: limits,
+                sourceHintCacheDirectory: sourceHintCacheDirectory
+            )
         )
     }
 

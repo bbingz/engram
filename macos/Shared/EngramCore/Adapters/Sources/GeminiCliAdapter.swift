@@ -67,6 +67,7 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
     private let tmpRoot: URL
     private let projectsFile: URL
     private let limits: ParserLimits
+    private let messageCache = ParsedTranscriptCache()
 
     init(
         tmpRoot: String = FileManager.default.homeDirectoryForCurrentUser
@@ -169,10 +170,17 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        let object = try Self.readSession(locator: locator, limits: limits)
-        let messages = JSONLAdapterSupport.array(object["messages"])?
-            .compactMap { JSONLAdapterSupport.object($0) }
-            .compactMap(Self.message(from:)) ?? []
+        let signature = ParsedTranscriptCache.Signature.forFile(locator)
+        let messages: [NormalizedMessage]
+        if let cached = await messageCache.cached(locator: locator, signature: signature) {
+            messages = cached
+        } else {
+            let object = try Self.readSession(locator: locator, limits: limits)
+            messages = JSONLAdapterSupport.array(object["messages"])?
+                .compactMap { JSONLAdapterSupport.object($0) }
+                .compactMap(Self.message(from:)) ?? []
+            await messageCache.store(locator: locator, signature: signature, messages: messages)
+        }
         return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
     }
 

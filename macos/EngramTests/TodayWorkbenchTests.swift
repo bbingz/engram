@@ -49,7 +49,7 @@ final class TodayWorkbenchTests: XCTestCase {
         Resume context from Engram archive:
         - restore the current migration plan
         """)
-        XCTAssertEqual(item.message, "Context primer copied")
+        XCTAssertEqual(item.message, String(localized: "Context primer copied"))
     }
 
     func testResumeClipboardSuccessMessagesAreInStringCatalog() throws {
@@ -137,11 +137,14 @@ final class TodayWorkbenchTests: XCTestCase {
 
         XCTAssertEqual(
             TodayProjectWarning.warning(for: group, repos: [repo], migrations: [migration]),
-            "Migrated"
+            String(localized: "Migrated")
         )
         XCTAssertEqual(
             TodayProjectWarning.warning(for: group, repos: [repo], migrations: []),
-            "3 changed · 4 unpushed"
+            [
+                String.localizedStringWithFormat(String(localized: "%lld changed"), 3),
+                String.localizedStringWithFormat(String(localized: "%lld unpushed"), 4),
+            ].joined(separator: " · ")
         )
     }
 

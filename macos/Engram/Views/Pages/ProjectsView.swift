@@ -5,6 +5,9 @@ struct ProjectsView: View {
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceClient.self) var serviceClient
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
+    // Coalesce background index-tick reloads so indexing churn doesn't refetch
+    // the project list on every count bump (#3).
+    @State private var lastFilterKey: [AnyHashable]? = nil
     @State private var projectGroups: [DatabaseManager.ProjectGroup] = []
     @State private var selectedProject: DatabaseManager.ProjectGroup? = nil
     @State private var isLoading = true
@@ -254,7 +257,16 @@ struct ProjectsView: View {
             .padding(24)
         }
         .accessibilityIdentifier("projects_container")
-        .task(id: serviceStatusStore.totalSessions) { await loadData() }
+        .task(id: serviceStatusStore.totalSessions) {
+            let filterKey: [AnyHashable] = []
+            let plan = BrowseReloadCoalescer.plan(filterKey: filterKey, lastFilterKey: lastFilterKey)
+            if plan.debounce {
+                try? await Task.sleep(for: BrowseReloadCoalescer.debounceInterval)
+                if Task.isCancelled { return }
+            }
+            lastFilterKey = filterKey
+            await loadData()
+        }
         .sheet(item: Binding(
             get: { renameTarget.map(SheetWrappedString.init) },
             set: { renameTarget = $0?.value }

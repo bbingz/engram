@@ -6,19 +6,27 @@ final class EngramServiceStatusStoreTests: XCTestCase {
     func testDisplayStringAndRunningSemanticsMatchLegacyIndexerStatus() {
         let store = EngramServiceStatusStore()
 
-        XCTAssertEqual(store.displayString, "Stopped")
+        XCTAssertEqual(store.displayString, String(localized: "Stopped"))
         XCTAssertFalse(store.isRunning)
 
         store.status = .starting
-        XCTAssertEqual(store.displayString, "Starting...")
+        XCTAssertEqual(store.displayString, String(localized: "Starting..."))
         XCTAssertFalse(store.isRunning)
 
-        store.status = .running(total: 42, todayParents: 5)
-        XCTAssertEqual(store.displayString, "42 sessions indexed")
+        let totalSessions = 42
+        store.status = .running(total: totalSessions, todayParents: 5)
+        XCTAssertEqual(
+            store.displayString,
+            String.localizedStringWithFormat(String(localized: "%lld sessions indexed"), totalSessions)
+        )
         XCTAssertTrue(store.isRunning)
 
-        store.status = .error(message: "fail")
-        XCTAssertEqual(store.displayString, "Error: fail")
+        let errorMessage = "fail"
+        store.status = .error(message: errorMessage)
+        XCTAssertEqual(
+            store.displayString,
+            String.localizedStringWithFormat(String(localized: "Error: %@"), errorMessage)
+        )
         XCTAssertFalse(store.isRunning)
     }
 
@@ -44,13 +52,21 @@ final class EngramServiceStatusStoreTests: XCTestCase {
     func testAppliesErrorAndDegradedEvents() throws {
         let store = EngramServiceStatusStore()
 
+        let warningMessage = "slow provider"
         store.apply(try decode(#"{"event":"warning","message":"slow provider"}"#))
-        XCTAssertEqual(store.status, .degraded(message: "slow provider"))
-        XCTAssertEqual(store.displayString, "Degraded: slow provider")
+        XCTAssertEqual(store.status, .degraded(message: warningMessage))
+        XCTAssertEqual(
+            store.displayString,
+            String.localizedStringWithFormat(String(localized: "Degraded: %@"), warningMessage)
+        )
 
+        let errorMessage = "Something went wrong"
         store.apply(try decode(#"{"event":"error","message":"Something went wrong"}"#))
-        XCTAssertEqual(store.status, .error(message: "Something went wrong"))
-        XCTAssertEqual(store.displayString, "Error: Something went wrong")
+        XCTAssertEqual(store.status, .error(message: errorMessage))
+        XCTAssertEqual(
+            store.displayString,
+            String.localizedStringWithFormat(String(localized: "Error: %@"), errorMessage)
+        )
     }
 
     func testDecodesLegacyUsageDataAlias() throws {

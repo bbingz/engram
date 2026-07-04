@@ -118,7 +118,7 @@ public final class WriterStartupBackfillDatabase: StartupBackfillDatabase {
     }
 
     public func optimizeFts() throws {
-        try writer.write { db in try StartupBackfills.optimizeFts(db) }
+        _ = try writer.write { db in try StartupBackfills.optimizeFts(db) }
     }
 
     public func vacuumIfNeeded(_ fragmentationPercent: Int) throws -> Bool {
@@ -167,6 +167,14 @@ public final class WriterStartupBackfillDatabase: StartupBackfillDatabase {
         try writer.write { db in try StartupBackfills.enqueueStaleFtsJobs(db) }
     }
 
+    public func reconcileSkipTierIndexArtifacts() throws -> Int {
+        try writer.write { db in try StartupBackfills.reconcileSkipTierIndexArtifacts(db) }
+    }
+
+    public func pruneIndexJobs() throws -> Int {
+        try writer.write { db in try StartupBackfills.pruneIndexJobs(db) }
+    }
+
     public func cleanupStaleMigrations() throws -> Int {
         try writer.write { db in try StartupBackfills.cleanupStaleMigrations(db) }
     }
@@ -178,12 +186,20 @@ public final class WriterStartupBackfillDatabase: StartupBackfillDatabase {
 /// applies a conservative state machine, mirroring `src/core/db/maintenance.ts`
 /// `detectOrphans`. Recovers (clears) flags when a file reappears.
 public final class WriterStartupOrphanScanning: StartupOrphanScanning {
+    static let lastScanMetadataKey = "last_orphan_scan"
+
     private let writer: EngramDatabaseWriter
     private let gracePeriodDays: Int
+    private let minimumScanInterval: TimeInterval
 
-    public init(writer: EngramDatabaseWriter, gracePeriodDays: Int = 30) {
+    public init(
+        writer: EngramDatabaseWriter,
+        gracePeriodDays: Int = 30,
+        minimumScanInterval: TimeInterval = 24 * 60 * 60
+    ) {
         self.writer = writer
         self.gracePeriodDays = gracePeriodDays
+        self.minimumScanInterval = minimumScanInterval
     }
 
     private struct OrphanRow {
@@ -195,6 +211,14 @@ public final class WriterStartupOrphanScanning: StartupOrphanScanning {
     }
 
     public func detectOrphans(adapters: [any SessionAdapter]) async throws -> StartupOrphanScanResult {
+        // The scan loads every session row and stats every locator on disk. Its
+        // result is unchanged since the previous launch on a corpus that has not
+        // moved, so skip it within a bounded interval (files that disappear are
+        // detected on the next scan or the per-session recovery path).
+        if try scanIsWithinMinimumInterval() {
+            return StartupOrphanScanResult(scanned: 0, newlyFlagged: 0, confirmed: 0, recovered: 0, skipped: 0)
+        }
+
         let adaptersBySource = Dictionary(adapters.map { ($0.source, $0) }, uniquingKeysWith: { first, _ in first })
 
         let rows = try writer.read { db -> [OrphanRow] in
@@ -272,6 +296,7 @@ public final class WriterStartupOrphanScanning: StartupOrphanScanning {
             flagSuspect: flagSuspect,
             confirmOrphan: confirmOrphan
         )
+        try recordScanTimestamp()
 
         return StartupOrphanScanResult(
             scanned: scanned,
@@ -332,6 +357,33 @@ public final class WriterStartupOrphanScanning: StartupOrphanScanning {
 
     private static func placeholders(_ count: Int) -> String {
         Array(repeating: "?", count: count).joined(separator: ", ")
+    }
+
+    /// True when a scan ran within `minimumScanInterval`. A missing/unparseable
+    /// timestamp forces a scan (the safe default).
+    private func scanIsWithinMinimumInterval() throws -> Bool {
+        guard minimumScanInterval > 0 else { return false }
+        let last = try writer.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT value FROM metadata WHERE key = ?",
+                arguments: [Self.lastScanMetadataKey]
+            )
+        }
+        guard let last, let lastDate = Self.parseSQLiteDate(last) else { return false }
+        return Date().timeIntervalSince(lastDate) < minimumScanInterval
+    }
+
+    private func recordScanTimestamp() throws {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO metadata(key, value) VALUES (?, datetime('now'))
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                arguments: [Self.lastScanMetadataKey]
+            )
+        }
     }
 
     /// Parses SQLite `datetime('now')` output ("YYYY-MM-DD HH:MM:SS", UTC).

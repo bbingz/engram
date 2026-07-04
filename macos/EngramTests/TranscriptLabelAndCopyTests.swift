@@ -36,6 +36,45 @@ final class TranscriptLabelAndCopyTests: XCTestCase {
         )
     }
 
+    // #0: header label from a pre-parsed tool name matches the parse-from-content
+    // path, so the single-parse-per-row refactor keeps identical labels.
+    func testHeaderLabelFromToolNameMatchesDisplayLabel() {
+        XCTAssertEqual(
+            ColorBarMessageView.headerLabel(for: .toolCall, typeIndex: 2, toolName: "Read"),
+            ColorBarMessageView.displayLabel(for: .toolCall, typeIndex: 2, content: "`Read`:\n{}")
+        )
+        XCTAssertEqual(
+            ColorBarMessageView.headerLabel(for: .toolCall, typeIndex: 2, toolName: "Read"),
+            "TOOL: Read #2"
+        )
+        // Empty/nil tool name falls back to the generic type label.
+        XCTAssertEqual(
+            ColorBarMessageView.headerLabel(for: .assistant, typeIndex: 1, toolName: nil),
+            "ASSISTANT #1"
+        )
+        XCTAssertEqual(
+            ColorBarMessageView.headerLabel(for: .toolCall, typeIndex: 3, toolName: ""),
+            "TOOL CALL #3"
+        )
+    }
+
+    // #27: the memoized highlight computation still highlights every match.
+    func testComputeHighlightMarksMatches() {
+        let attr = ColorBarMessageView.computeHighlight("foo BAR foo", searchText: "foo")
+        var matched = 0
+        for run in attr.runs where run.backgroundColor == .yellow {
+            matched += String(attr[run.range].characters).count > 0 ? 1 : 0
+        }
+        XCTAssertEqual(matched, 2, "case-insensitive scan should highlight both 'foo' matches")
+    }
+
+    func testComputeHighlightEmptyQueryReturnsPlain() {
+        let attr = ColorBarMessageView.computeHighlight("foo", searchText: "")
+        for run in attr.runs {
+            XCTAssertNil(run.backgroundColor)
+        }
+    }
+
     // #5: "Copy Entire Conversation" has one testable source of truth.
     func testConversationTextJoinsRowsWithRolePrefixes() {
         let msgs = [

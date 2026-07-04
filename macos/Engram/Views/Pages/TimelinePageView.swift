@@ -99,6 +99,8 @@ struct TimelinePageView: View {
     @State private var selectedProject: String = timelineAllProjects
     @State private var loadError: String? = nil
     @State private var isLoading = true
+    // Debounce/coalesce index-tick reloads vs. immediate filter-change reloads (#3).
+    @State private var lastFilterKey: [AnyHashable]? = nil
     // Session-action sheet targets + transient status banner.
     @State private var resumeTarget: Session? = nil
     @State private var replayTarget: Session? = nil
@@ -303,6 +305,19 @@ struct TimelinePageView: View {
             AnyHashable(showAllSessions),
             AnyHashable(serviceStatusStore.totalSessions)
         ]) {
+            let filterKey: [AnyHashable] = [
+                AnyHashable(timelineMode),
+                AnyHashable(sortMode),
+                AnyHashable(range),
+                AnyHashable(selectedProject),
+                AnyHashable(showAllSessions),
+            ]
+            let plan = BrowseReloadCoalescer.plan(filterKey: filterKey, lastFilterKey: lastFilterKey)
+            if plan.debounce {
+                try? await Task.sleep(for: BrowseReloadCoalescer.debounceInterval)
+                if Task.isCancelled { return }
+            }
+            lastFilterKey = filterKey
             await loadData()
         }
     }
