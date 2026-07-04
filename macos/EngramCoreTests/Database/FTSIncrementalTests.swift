@@ -208,6 +208,58 @@ final class FTSIncrementalTests: XCTestCase {
         XCTAssertEqual(try content(writer, "s1"), ["s1 new content"])
     }
 
+    // MARK: - Reused rowid + unchanged content must not mask missing FTS rows
+
+    /// The self-heal guard must verify rowid *ownership*, not mere existence. When a
+    /// skip-tier delete frees a session's FTS rowids, leaves its `fts_map` behind, and an
+    /// unrelated insert reuses those exact rowids, an unchanged re-index of the original
+    /// session hits both the append-only fast path (content unchanged → nothing to append)
+    /// and a bare rowid-existence check (reused rowids look "present"). Without the
+    /// `session_id` ownership filter this leaves the session with zero real FTS rows and
+    /// silently unsearchable forever.
+    func testReusedRowidWithUnchangedContentIsNotMaskedByStaleMap() throws {
+        let writer = try makeWriter("ownership")
+        let messages = ["alpha ownershipword", "beta ownershipword"]
+        try writer.write { db in
+            try FTSRebuildPolicy.replaceFtsContent(db, sessionId: "s1", messages: messages, summary: nil)
+        }
+        let rowids = try readMap(writer, "s1").filter { $0.seq >= 0 }.map(\.rowid)
+        XCTAssertEqual(rowids.count, 2)
+
+        // Skip-tier delete frees s1's FTS rows but leaks its map rows.
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = 's1'")
+        }
+        // An unrelated session reuses s1's exact freed rowids.
+        try writer.write { db in
+            for rowid in rowids {
+                try db.execute(
+                    sql: "INSERT INTO sessions_fts(rowid, session_id, content) VALUES (?, 's2', 'decoy row')",
+                    arguments: [rowid]
+                )
+            }
+        }
+        // Re-index s1 with UNCHANGED content: append-only + reused-rowid count both look
+        // consistent, so only an ownership-aware guard falls back to a full replace.
+        try writer.write { db in
+            try FTSRebuildPolicy.replaceFtsContent(db, sessionId: "s1", messages: messages, summary: nil)
+        }
+
+        XCTAssertEqual(try content(writer, "s1"), messages, "s1 content must survive a reused-rowid stale map")
+        let s1Hits = try writer.read { db in
+            try String.fetchAll(
+                db,
+                sql: "SELECT DISTINCT session_id FROM sessions_fts WHERE sessions_fts MATCH ? ORDER BY session_id",
+                arguments: ["ownershipword"]
+            )
+        }
+        XCTAssertEqual(s1Hits, ["s1"], "s1 must be searchable again after the full-replace fallback")
+        let s2Survives = try writer.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 's2' AND content = 'decoy row'") ?? -1
+        }
+        XCTAssertEqual(s2Survives, rowids.count, "the ownership-guarded replace must not touch the reusing session's rows")
+    }
+
     // MARK: - Migration idempotency + one-time backfill from existing FTS rows
 
     func testMigrationBackfillsMapAndIsIdempotent() throws {

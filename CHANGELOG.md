@@ -7,6 +7,44 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Review + fix: perf-integration adversarial review, fts_map ownership bug (2026-07-04, Claude Code, ultracode workflow)
+
+Ran an 18-agent adversarial workflow review over the Codex-integrated 8-PR perf
+batch (base `f9a236dc..main`, ~35 changed Swift sources). Swift Debug build:
+clean. Ten findings surfaced and were independently re-verified against real
+code; one blocking correctness bug was fixed here, the rest are triaged below
+for follow-up.
+
+- **Fixed (was blocking): incremental-FTS self-heal ignored rowid ownership.**
+  `FTSRebuildPolicy.replaceActiveFtsContent` gated its append-only/fast path on a
+  bare rowid-existence count (`... WHERE rowid IN (SELECT fts_rowid FROM fts_map
+  WHERE session_id = ?)`). After a skip-tier delete frees a session's FTS rowids
+  and leaves its `fts_map` behind (the skip-delete path never cleans `fts_map`),
+  an unrelated insert can reuse those exact rowids; an unchanged re-index of the
+  original session then saw the reused rowids as "present" and took the
+  no-op append path, leaving the session with zero FTS rows and silently
+  unsearchable forever. Fix: add a `session_id = ?` ownership filter to the count
+  query so a reused rowid forces the full-replace fallback (which also self-heals
+  the leaked `fts_map`). Red/green proven by new test
+  `FTSIncrementalTests.testReusedRowidWithUnchangedContentIsNotMaskedByStaleMap`
+  (fails pre-fix: `content(s1) == []`; passes post-fix). The existing
+  `testFullReplaceGuardsAgainstReusedRowid` missed it by using a wrong content
+  hash, which never exercises the append-only branch.
+- **Triaged, not yet fixed** (details in session review): oversized-transcript
+  (>10k msgs) truncate-and-succeed now makes MCP `get_session` page totals and
+  the resume primer silently stale (CodexAdapter / windowedMessages;
+  MCPTranscriptReader cached-page window also bypasses the message cap); Web UI
+  session-page ETag omits DB-mutable display fields (rename/retitle serves stale
+  304); CursorAdapter parse cache keyed on the shared WAL db file's mtime/size
+  can serve stale composer data; FTS `optimize` gate is blind to full rebuilds
+  (latent, needs a future `expectedVersion` bump); whitespace-only query returns
+  empty vs old browse-all; `reconcileSkipTierIndexArtifacts` undercounts
+  `session_embeddings` deletions in telemetry (latent, vec not implemented).
+- **Verification:** `xcodebuild ... Engram build` (Debug) clean;
+  `EngramCoreTests/FTSIncrementalTests` passes with the fix; red/green
+  demonstrated for the new test. Full Swift test suite, lint, and UI/release not
+  re-run for this pass.
+
 ### Documentation: workspace cleanup memo and review archive (2026-07-04)
 
 - Added `MEMO.md` as a short newest-first project memo for cross-agent

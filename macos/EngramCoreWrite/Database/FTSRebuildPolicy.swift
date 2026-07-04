@@ -171,13 +171,16 @@ public enum FTSRebuildPolicy {
         let summaryRow = existing.first { $0.msgSeq == summaryMsgSeq }
         let indexedCount = messageRows.count
 
-        // Self-heal guard: every mapped rowid must still be present in the FTS table.
-        // If an external delete (e.g. the skip-tier reconcile) removed rows, the fast
-        // paths below would leave stale/missing content, so fall back to a full replace.
+        // Self-heal guard: every mapped rowid must still be present in the FTS table
+        // AND still belong to this session. The `session_id` filter is essential: after
+        // an external delete (e.g. the skip-tier reconcile) frees this session's rowids,
+        // an unrelated FTS insert can reuse them, so a bare rowid-existence check would
+        // count another session's row as ours and wrongly take the fast/append-only path,
+        // permanently masking our missing content. A mismatch here forces a full replace.
         let mappedFtsCount = try Int.fetchOne(
             db,
-            sql: "SELECT COUNT(*) FROM \(activeTable) WHERE rowid IN (SELECT fts_rowid FROM fts_map WHERE session_id = ?)",
-            arguments: [sessionId]
+            sql: "SELECT COUNT(*) FROM \(activeTable) WHERE session_id = ? AND rowid IN (SELECT fts_rowid FROM fts_map WHERE session_id = ?)",
+            arguments: [sessionId, sessionId]
         ) ?? 0
         let mapConsistent = mappedFtsCount == existing.count
 
