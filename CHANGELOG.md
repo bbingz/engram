@@ -7,6 +7,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Documentation: workspace cleanup memo and review archive (2026-07-04)
+
+- Added `MEMO.md` as a short newest-first project memo for cross-agent
+  workspace state.
+- Archived root-level review/audit reports into `docs/reviews/` and moved the
+  previously local `audit/` report pack into dated review files.
+- Backfilled workspace-hygiene follow-ups in `docs/followups.md`: commit the
+  archive cleanup, resolve `codex-provider-audit-remediation`, decide whether to
+  reclaim Time Machine snapshot space immediately, and normalize local ignore
+  rules.
+
 ### Performance: full audit + 8 optimization PRs, all adversarially reviewed (2026-07-03, Claude Code, ultracode workflows)
 
 Two-workflow pass: (1) a 49-agent audit produced 25 adversarially-verified perf
@@ -176,7 +187,7 @@ retained TypeScript parity surfaces.
 module-reviewer subagents in 4 batches (read-only, structured JSON findings)
 → cross-cutting synthesis. 118 findings (1 critical, 7 high, 20 medium, 87 low,
 3 info) across ~104K LOC Swift + ~33K LOC TS. Report written to
-`AUDIT-2026-06-28.md`. P0 items: VS Code mutation-log replay OOM/stack-overflow
+`docs/reviews/2026-06-28-full-project-audit.md`. P0 items: VS Code mutation-log replay OOM/stack-overflow
 DoS, LocalDirectoryBackend path traversal, AppleScript command injection in
 RepoDetailView, MCP integer-overflow crashes, adapter aux-file OOM, ReplayState
 densityBuckets crash. Dominant theme: untrusted-input bounds guards exist but
@@ -1548,7 +1559,7 @@ scan observed after redeploy.
 
 ### Codex completed full audit remediation (2026-06-10, Codex)
 
-Closed the full local remediation scope from `CODE-REVIEW-2026-06-10.md`.
+Closed the full local remediation scope from `docs/reviews/2026-06-10-multi-expert-audit.md`.
 
 - Closed all 88 confirmed findings: 26 high, 50 medium, and 12 low.
 - Adjudicated and closed all 47 additional low-severity notes; true notes were
@@ -1570,7 +1581,7 @@ Closed the full local remediation scope from `CODE-REVIEW-2026-06-10.md`.
 ### Codex remediation for high-risk audit findings (2026-06-10, Codex)
 
 Implemented and locally deployed a focused remediation slice from
-`CODE-REVIEW-2026-06-10.md`.
+`docs/reviews/2026-06-10-multi-expert-audit.md`.
 
 - Fixed resume/launch failures: Codex resume now uses the `resume` subcommand,
   CLI discovery includes common shell binary paths, Ghostty executes composite
@@ -1604,7 +1615,7 @@ Implemented and locally deployed a focused remediation slice from
 
 Fresh full-repo read-only audit by 11 parallel domain experts + adversarial
 verification (272 subagents over two passes; security dimension excluded by
-user request). Full report: `CODE-REVIEW-2026-06-10.md`. No code changed.
+user request). Full report: `docs/reviews/2026-06-10-multi-expert-audit.md`. No code changed.
 
 - 88 confirmed findings (26 high / 50 medium / 12 low, 0 critical), 9 refuted,
   1 disputed, 8 unverified carryovers, 47 low-severity notes.
@@ -1939,7 +1950,7 @@ Closed the remaining known Claude Code/Qoder project-move encoding gap.
 ### Session snapshot noop write reduction (2026-06-06, Codex)
 
 Closed two still-current Swift indexing follow-ups from
-`CODE-REVIEW-ISSUES.md`.
+`docs/reviews/2026-06-03-five-round-multi-expert-audit.md`.
 
 - **Fix**: `SessionSnapshotWriter` no longer rewrites `session_costs` for a
   fully unchanged noop snapshot. It still creates a missing zero-cost row and
@@ -1958,7 +1969,7 @@ Closed two still-current Swift indexing follow-ups from
 ### MainActor UI trampoline cleanup (2026-06-06, Codex)
 
 Closed the remaining still-current SwiftUI P3 cleanup finding from
-`CODE-REVIEW-ISSUES.md`.
+`docs/reviews/2026-06-03-five-round-multi-expert-audit.md`.
 
 - **Fix**: `MenuBarController` no longer mixes GCD main-queue trampolines with
   `Task { @MainActor in }` for deferred UI activation/session-open work. The
@@ -2100,7 +2111,7 @@ Reconciled current backlog surfaces after the recent PR sequence.
 ### Swift UI P3 cleanup follow-up (2026-06-06, Codex)
 
 Closed a small still-current UI/concurrency cleanup slice from
-`CODE-REVIEW-ISSUES.md` Round 4.
+`docs/reviews/2026-06-03-five-round-multi-expert-audit.md` Round 4.
 
 - **Command Palette search**: `CommandPaletteView` now owns and cancels a single
   debounced search task. Per-keystroke session search waits 300 ms before
@@ -2797,7 +2808,7 @@ Branch `perf/jsonl-lazy-streaming` (ultrareview pending).
 
 ### Review cleanup round — adjudication + residual fixes (2026-06-02, Claude)
 
-Re-verified every finding in `CODE-REVIEW-2026-06-02.md` against CURRENT code
+Re-verified every finding in `docs/reviews/2026-06-02-macos-swift-product-code-review.md` against CURRENT code
 (12 adjudicators, skeptical/default-unresolved). Result: 61 fixed, 5
 by-design (documented, no behavior change), 2 partial, 1 not_fixed. Closed the
 residual:
@@ -2835,7 +2846,7 @@ the safe minimum already in place.
 
 Comprehensive multi-agent review of the shipped Swift product (16 subsystems,
 security excluded) followed by a parallel fix pass. Findings and rationale are
-in `CODE-REVIEW-2026-06-02.md`. 62 findings were confirmed via adversarial
+in `docs/reviews/2026-06-02-macos-swift-product-code-review.md`. 62 findings were confirmed via adversarial
 verification; 53 were fixed this pass (4 high + the impactful mediums + safe
 lows). 787 tests across EngramCoreTests/EngramServiceCore/EngramMCPTests/
 EngramTests pass.

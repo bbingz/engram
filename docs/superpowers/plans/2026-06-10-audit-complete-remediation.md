@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close every confirmed finding in `CODE-REVIEW-2026-06-10.md` and adjudicate the 47 low-severity notes, fixing every note that is true.
+**Goal:** Close every confirmed finding in `docs/reviews/2026-06-10-multi-expert-audit.md` and adjudicate the 47 low-severity notes, fixing every note that is true.
 
 **Architecture:** Treat the audit report as an evidence queue, not as truth by itself. Each item is first checked against current source because a previous Codex pass already fixed part of the high-risk set. Behavior changes get failing tests before production edits; documentation-only drift gets bounded source/doc verification and direct doc correction.
 
@@ -13,7 +13,7 @@
 ### Task 1: Build And Maintain The Remediation Ledger
 
 **Files:**
-- Read: `CODE-REVIEW-2026-06-10.md`
+- Read: `docs/reviews/2026-06-10-multi-expert-audit.md`
 - Create/update as needed: `docs/superpowers/plans/2026-06-10-audit-complete-remediation.md`
 
 - [x] **Step 1: Extract the report scope**
@@ -210,7 +210,7 @@ The stale-claim search returned no matches, `docs/mcp-tools.md` has 28 tool sect
 
 ### Task 4: Continue Remaining Confirmed Items
 
-**Files:** Determined per item from `CODE-REVIEW-2026-06-10.md`.
+**Files:** Determined per item from `docs/reviews/2026-06-10-multi-expert-audit.md`.
 
 - [x] **Step 1: Process remaining OPEN confirmed findings in severity order**
 

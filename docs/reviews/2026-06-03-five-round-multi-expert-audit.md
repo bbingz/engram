@@ -3,7 +3,7 @@
 Goal: dispatch domain-expert subagents across 5 rounds (each round's brief
 adjusts to the prior round's surface area), adversarially verify every
 candidate finding against the actual code, and retain only the issues that can
-be defended at file:line. Prior reviews (`CODE-REVIEW-2026-06-02.md`) were
+be defended at file:line. Prior reviews (`docs/reviews/2026-06-02-macos-swift-product-code-review.md`) were
 given to every expert as "do not re-report" input.
 
 Scope priority follows `CLAUDE.md`: Swift is the product runtime; TypeScript is
@@ -775,7 +775,7 @@ Every finding above survives the following:
    retries, call-site mitigations, or test coverage that would
    invalidate the finding.
 3. **Prior-art deduplication**: every finding was cross-checked against
-   `CODE-REVIEW-2026-06-02.md`; only items not already recorded are
+   `docs/reviews/2026-06-02-macos-swift-product-code-review.md`; only items not already recorded are
    kept.
 
 One candidate finding was rejected at this gate (`SearchView`

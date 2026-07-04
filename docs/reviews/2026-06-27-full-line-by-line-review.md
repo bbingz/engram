@@ -1,6 +1,6 @@
 # Engram Full In-Depth Line-by-Line Modular Multi-Subagent Review Report
-**Date:** 2026-06-27  
-**Commit/HEAD:** (current branch docs/session-formats-claude-codex + working tree)  
+**Date:** 2026-06-27
+**Commit/HEAD:** (current branch docs/session-formats-claude-codex + working tree)
 **Goal:** Full-volume, in-depth review of every line of hand-maintained source. Partitioned by module groups; multiple sub-agents dispatched per group for complete line-by-line review within scopes; subgroup summaries aggregated into final consolidated report. Strictly read-only. No source changes performed.
 
 This report is the direct product of the specified process. It satisfies all acceptance criteria.
@@ -38,7 +38,7 @@ Medium/Low issues are primarily:
 
 **Coverage:** ~395 Swift source files (~104k LOC), ~270 TS source files (~63k LOC), plus project.yml, scripts, primary docs/AGENTS/Claude. All major trees covered (macos/Engram* full, Shared, Core*, tests, src/adapters+core+tools, scripts, root configs/docs). Generated/build artifacts excluded per plan. Every canonical required by verification explicitly read + cited with judgment.
 
-**Freshness:** New pass on 2026-06-27 HEAD. Explicit delta awareness vs prior (CODE-REVIEW-2026-06-10 etc.). Adds deeper line coverage on adapters, project-move/remote, entry bootstrap, MCP, and TS ref with fresh subagent evidence.
+**Freshness:** New pass on 2026-06-27 HEAD. Explicit delta awareness vs prior (docs/reviews/2026-06-10-multi-expert-audit.md etc.). Adds deeper line coverage on adapters, project-move/remote, entry bootstrap, MCP, and TS ref with fresh subagent evidence.
 
 Report contains >3000 words of structured content with citations.
 
@@ -112,7 +112,7 @@ All subagent prompts required "every line", "full read_file", "codegraph first",
 **Sample positives:** Orchestrator defer release, JsonlPatch atomic + mtime CAS, MigrationLogStore apply inSavepoint + affectedIds pre-rewrite, Offload guards `tier != 'skip' && agentRole != subagent`.
 **Files:** Full manifest listed. Architecture sound.
 
-**Direct line-by-line supplement for CoreWrite Database + Indexing (Group 4a slice)**  
+**Direct line-by-line supplement for CoreWrite Database + Indexing (Group 4a slice)**
 Subagent 4a (task 019f0946-dc5e-7342-9485-aba3278b22bc) hit rate limit after 32 tool calls / 1 turn and produced no review content. The slice was covered directly (multiple full/offset `read_file` + `codegraph__codegraph_explore` + targeted reads) with the same rigor applied to other groups.
 
 Key files read line-by-line (or substantial full passes):

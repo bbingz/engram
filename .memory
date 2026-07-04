@@ -1178,7 +1178,7 @@ Fixes (see `CHANGELOG.md` for the full list):
 
 ## 2026-06-10 - Codex completed full audit remediation
 
-- Goal: close every confirmed item from `CODE-REVIEW-2026-06-10.md` and
+- Goal: close every confirmed item from `docs/reviews/2026-06-10-multi-expert-audit.md` and
   adjudicate the 47 low-severity notes, fixing every note that was true.
 - Result: all 88 confirmed findings are closed in the local remediation ledger
   (26 high / 50 medium / 12 low), and all 47 low-severity notes were checked
@@ -1211,7 +1211,7 @@ Fixes (see `CHANGELOG.md` for the full list):
 
 ## 2026-06-10 - Codex remediation for high-risk audit findings
 
-- Remediated a focused high-risk slice from `CODE-REVIEW-2026-06-10.md` and
+- Remediated a focused high-risk slice from `docs/reviews/2026-06-10-multi-expert-audit.md` and
   deployed a verified local build to `/Applications/Engram.app`.
 - Fixed areas:
   - Resume/launch: Codex now uses the `resume` subcommand, CLI discovery uses
@@ -1259,7 +1259,7 @@ Fixes (see `CHANGELOG.md` for the full list):
 - Results: 88 confirmed findings (26 high / 50 medium / 12 low, 0 critical),
   9 refuted, 1 disputed, 8 UNVERIFIED carryovers (lost to the interruption,
   e.g. stale SessionCostPricing table -> cost_usd=0 for current models).
-- Report: `CODE-REVIEW-2026-06-10.md`; summary in CHANGELOG.md [Unreleased].
+- Report: `docs/reviews/2026-06-10-multi-expert-audit.md`; summary in CHANGELOG.md [Unreleased].
   Hotspots: EngramService/Core, EngramCoreWrite/Indexing, Engram/Views.
 - Systemic themes: per-view ad-hoc ISO8601 parsing; 30s IPC frame deadline vs
   long commands; sessions_fts.session_id UNINDEXED full scans; AI generation
@@ -1277,7 +1277,7 @@ Fixes (see `CHANGELOG.md` for the full list):
 - Results: 88 confirmed findings (26 high / 50 medium / 12 low, 0 critical),
   9 refuted, 1 disputed, 8 UNVERIFIED carryovers (lost to the interruption,
   e.g. stale SessionCostPricing table -> cost_usd=0 for current models).
-- Report: `CODE-REVIEW-2026-06-10.md`; summary in CHANGELOG.md [Unreleased].
+- Report: `docs/reviews/2026-06-10-multi-expert-audit.md`; summary in CHANGELOG.md [Unreleased].
   Hotspots: EngramService/Core, EngramCoreWrite/Indexing, Engram/Views.
 - Systemic themes: per-view ad-hoc ISO8601 parsing; 30s IPC frame deadline vs
   long commands; sessions_fts.session_id UNINDEXED full scans; AI generation
@@ -1807,7 +1807,7 @@ Verification:
 ## 2026-06-06 — Session snapshot noop write reduction (Codex)
 
 Codex closed two still-current Swift indexing follow-ups from
-`CODE-REVIEW-ISSUES.md`: redundant noop cost-row writes and weak
+`docs/reviews/2026-06-03-five-round-multi-expert-audit.md`: redundant noop cost-row writes and weak
 `link_source` parity coverage.
 
 Change:
@@ -1841,7 +1841,7 @@ Verification:
 ## 2026-06-06 — MainActor UI trampoline cleanup (Codex)
 
 Codex closed the remaining still-current SwiftUI P3 cleanup finding from
-`CODE-REVIEW-ISSUES.md`.
+`docs/reviews/2026-06-03-five-round-multi-expert-audit.md`.
 
 Change:
 - `MenuBarController` no longer mixes `DispatchQueue.main.async` with
@@ -1917,7 +1917,7 @@ Verification:
 ## 2026-06-06 — Off-main segmented message parsing (Codex)
 
 Codex closed a still-current SwiftUI P3 performance finding from
-`CODE-REVIEW-ISSUES.md`.
+`docs/reviews/2026-06-03-five-round-multi-expert-audit.md`.
 
 Change:
 - `SegmentedMessageView` no longer cold-parses markdown/content segments
@@ -2508,7 +2508,7 @@ Residual risk:
 Codex adjudicated the Kimi/Gemini/MiniMax/Mimo review bundle against the
 current `perf/transcript-paging` worktree and fixed the confirmed high-impact
 items with focused regression coverage. The three existing review commits before
-this pass only changed `CODE-REVIEW-ISSUES.md`; the Kimi report was pasted in
+this pass only changed `docs/reviews/2026-06-03-five-round-multi-expert-audit.md`; the Kimi report was pasted in
 chat and was not a commit.
 
 Implemented:
@@ -2879,7 +2879,7 @@ MCP root cause + fix:
 
 Review + fixes:
 - Full multi-agent review of the shipped Swift product (16 subsystems, security
-  excluded) → `CODE-REVIEW-2026-06-02.md` (62 adversarially-verified findings).
+  excluded) → `docs/reviews/2026-06-02-macos-swift-product-code-review.md` (62 adversarially-verified findings).
 - Fixed 53 in a parallel pass + closed residuals in a cleanup pass; 787 tests
   green (EngramCoreTests/EngramServiceCore/EngramMCPTests/EngramTests).
 - Re-adjudicated every finding against current code (61 fixed, 5 by-design, then
