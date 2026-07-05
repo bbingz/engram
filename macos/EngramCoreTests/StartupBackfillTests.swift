@@ -986,6 +986,23 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testOptimizeFtsReRunsWhenStoredSignatureLacksRebuildVersion() throws {
+        try writer.write { db in
+            try insertSession(db, id: "s1", source: "codex", tier: "normal")
+            try db.execute(sql: "UPDATE sessions SET sync_version = 1, indexed_at = '2026-05-01T00:00:00Z' WHERE id = 's1'")
+            try db.execute(
+                sql: """
+                INSERT INTO metadata(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                arguments: [StartupBackfills.ftsOptimizeSignatureKey, "1:1:2026-05-01T00:00:00Z:0:"]
+            )
+
+            XCTAssertTrue(try StartupBackfills.optimizeFts(db))
+            XCTAssertFalse(try StartupBackfills.optimizeFts(db))
+        }
+    }
+
     func testReconcileSkipTierDeletesStaleArtifactsWithoutTouchingTierOrNonSkip() throws {
         try writer.write { db in
             try insertSession(db, id: "skip-1", source: "codex", tier: "skip")
@@ -998,6 +1015,8 @@ final class StartupBackfillTests: XCTestCase {
                   ('keep-1', 0, 2, 'keephash')
                 """
             )
+            try db.execute(sql: "CREATE TABLE IF NOT EXISTS session_embeddings(session_id TEXT PRIMARY KEY)")
+            try db.execute(sql: "INSERT INTO session_embeddings(session_id) VALUES ('skip-1'), ('keep-1')")
             // The skip session still owns a completed fts job — the cheap signal
             // that stale artifacts remain.
             try db.execute(
@@ -1010,11 +1029,13 @@ final class StartupBackfillTests: XCTestCase {
 
             let removed = try StartupBackfills.reconcileSkipTierIndexArtifacts(db)
 
-            XCTAssertEqual(removed, 2)
+            XCTAssertEqual(removed, 3)
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'skip-1'"), 0)
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'keep-1'"), 1)
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM fts_map WHERE session_id = 'skip-1'"), 0)
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM fts_map WHERE session_id = 'keep-1'"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_embeddings WHERE session_id = 'skip-1'"), 0)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_embeddings WHERE session_id = 'keep-1'"), 1)
             // Tier is never modified (subagent/skip invariant preserved).
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'skip-1'"), "skip")
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'keep-1'"), "normal")

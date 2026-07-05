@@ -62,6 +62,216 @@ final class AdapterWindowedReadTests: XCTestCase {
         XCTAssertLessThan(count, 8, "the cap must truncate the transcript")
     }
 
+    func testClaudeCodeUnwindowedReadReportsTruncationMetadata() async throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("session.jsonl")
+        let lines = (0..<12).map { index -> String in
+            let role = index % 2 == 0 ? "user" : "assistant"
+            return "{\"type\":\"\(role)\",\"message\":{\"content\":\"m\(index)\"}}"
+        }
+        try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeAdapter(limits: ParserLimits(maxMessages: 10))
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions()
+        )
+        var contents: [String] = []
+        for try await message in result.messages {
+            contents.append(message.content)
+        }
+
+        XCTAssertEqual(contents, (0..<10).map { "m\($0)" })
+        XCTAssertTrue(result.truncated)
+        XCTAssertFalse(result.totalKnownComplete)
+        XCTAssertEqual(result.truncatedAt, 10)
+    }
+
+    func testCodexUnwindowedReadReportsTruncationMetadata() async throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("rollout.jsonl")
+        let lines = (0..<8).map { index -> String in
+            let role = index % 2 == 0 ? "user" : "assistant"
+            return "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"\(role)\",\"content\":[{\"text\":\"m\(index)\"}]}}"
+        }
+        try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(limits: ParserLimits(maxMessages: 3))
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions()
+        )
+        var contents: [String] = []
+        for try await message in result.messages {
+            contents.append(message.content)
+        }
+
+        XCTAssertGreaterThan(contents.count, 0)
+        XCTAssertLessThan(contents.count, 8, "the cap must truncate the transcript")
+        XCTAssertTrue(result.truncated)
+        XCTAssertFalse(result.totalKnownComplete)
+        XCTAssertEqual(result.truncatedAt, 3)
+    }
+
+    func testJSONLHelperAdapterReportsUnwindowedTruncationMetadata() async throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("qoder.jsonl")
+        let lines = (0..<8).map { index -> String in
+            let role = index % 2 == 0 ? "user" : "assistant"
+            return "{\"type\":\"\(role)\",\"message\":{\"content\":\"m\(index)\"}}"
+        }
+        try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QoderAdapter(limits: ParserLimits(maxMessages: 3))
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions()
+        )
+        var contents: [String] = []
+        for try await message in result.messages {
+            contents.append(message.content)
+        }
+
+        XCTAssertEqual(contents, ["m0", "m1", "m2"])
+        XCTAssertTrue(result.truncated)
+        XCTAssertFalse(result.totalKnownComplete)
+        XCTAssertEqual(result.truncatedAt, 3)
+    }
+
+    func testWholeDocumentJSONLAdapterReportsUnwindowedTruncationMetadata() async throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("qwen.jsonl")
+        let lines = (0..<8).map { index -> String in
+            let role = index % 2 == 0 ? "user" : "assistant"
+            return "{\"type\":\"\(role)\",\"sessionId\":\"s1\",\"cwd\":\"/tmp\",\"timestamp\":\"2026-01-01T00:00:0\(index)Z\",\"message\":{\"parts\":[{\"text\":\"m\(index)\"}]}}"
+        }
+        try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QwenAdapter(limits: ParserLimits(maxMessages: 3))
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions()
+        )
+        var contents: [String] = []
+        for try await message in result.messages {
+            contents.append(message.content)
+        }
+
+        XCTAssertEqual(contents, ["m0", "m1", "m2"])
+        XCTAssertTrue(result.truncated)
+        XCTAssertFalse(result.totalKnownComplete)
+        XCTAssertEqual(result.truncatedAt, 3)
+    }
+
+    func testCopilotAdapterReportsUnwindowedTruncationMetadata() async throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("events.jsonl")
+        let lines = (0..<8).map { index -> String in
+            let type = index % 2 == 0 ? "user.message" : "assistant.message"
+            return "{\"type\":\"\(type)\",\"timestamp\":\"2026-01-01T00:00:0\(index)Z\",\"data\":{\"content\":\"m\(index)\"}}"
+        }
+        try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(limits: ParserLimits(maxMessages: 3))
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions()
+        )
+        var contents: [String] = []
+        for try await message in result.messages {
+            contents.append(message.content)
+        }
+
+        XCTAssertEqual(contents, ["m0", "m1", "m2"])
+        XCTAssertTrue(result.truncated)
+        XCTAssertFalse(result.totalKnownComplete)
+        XCTAssertEqual(result.truncatedAt, 3)
+    }
+
+    func testCascadeCacheAdapterReportsUnwindowedTruncationMetadata() async throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("windsurf.jsonl")
+        var lines = [
+            #"{"id":"w1","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}"#
+        ]
+        lines += (0..<8).map { index -> String in
+            let role = index % 2 == 0 ? "user" : "assistant"
+            return "{\"role\":\"\(role)\",\"content\":\"m\(index)\"}"
+        }
+        try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = WindsurfAdapter(limits: ParserLimits(maxMessages: 4), enableLiveSync: false)
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions()
+        )
+        var contents: [String] = []
+        for try await message in result.messages {
+            contents.append(message.content)
+        }
+
+        XCTAssertEqual(contents, ["m0", "m1", "m2"])
+        XCTAssertTrue(result.truncated)
+        XCTAssertFalse(result.totalKnownComplete)
+        XCTAssertEqual(result.truncatedAt, 4)
+    }
+
+    func testClaudeCodeWindowedMetadataReadStopsBeforeTruncationProbe() async throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("session.jsonl")
+        let lines = (0..<8).map { index -> String in
+            let role = index % 2 == 0 ? "user" : "assistant"
+            return "{\"type\":\"\(role)\",\"message\":{\"content\":\"m\(index)\"}}"
+        }
+        try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeAdapter(limits: ParserLimits(maxMessages: 3))
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(offset: 0, limit: 2)
+        )
+        var contents: [String] = []
+        for try await message in result.messages {
+            contents.append(message.content)
+        }
+
+        XCTAssertEqual(contents, ["m0", "m1"])
+        XCTAssertFalse(result.truncated, "windowed page reads must stop at the page window, not scan forward to maxMessages")
+        XCTAssertNil(result.truncatedAt)
+    }
+
+    func testCodexWindowedMetadataReadStopsBeforeTruncationProbe() async throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("rollout.jsonl")
+        let lines = (0..<8).map { index -> String in
+            let role = index % 2 == 0 ? "user" : "assistant"
+            return "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"\(role)\",\"content\":[{\"text\":\"m\(index)\"}]}}"
+        }
+        try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(limits: ParserLimits(maxMessages: 3))
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions(offset: 0, limit: 2)
+        )
+        var contents: [String] = []
+        for try await message in result.messages {
+            contents.append(message.content)
+        }
+
+        XCTAssertEqual(contents, ["m0", "m1"])
+        XCTAssertFalse(result.truncated, "windowed page reads must stop at the page window, not scan forward to maxMessages")
+        XCTAssertNil(result.truncatedAt)
+    }
+
     // MARK: - #29 parse cache
 
     func testParsedTranscriptCacheHitMissAndSignatureInvalidation() async {
@@ -102,6 +312,30 @@ final class AdapterWindowedReadTests: XCTestCase {
         XCTAssertNotNil(a)
         XCTAssertNil(b)
         XCTAssertNotNil(c)
+    }
+
+    func testParsedTranscriptSignatureIncludesSQLiteWalSidecars() throws {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let database = dir.appendingPathComponent("state.vscdb")
+        let wal = URL(fileURLWithPath: database.path + "-wal")
+        let shm = URL(fileURLWithPath: database.path + "-shm")
+        try "main".write(to: database, atomically: true, encoding: .utf8)
+
+        let base = ParsedTranscriptCache.Signature.forFile(database.path)
+        XCTAssertNotNil(base)
+
+        try "wal".write(to: wal, atomically: true, encoding: .utf8)
+        let withWal = ParsedTranscriptCache.Signature.forFile(database.path)
+        XCTAssertNotEqual(base, withWal)
+
+        try "wal-changed".write(to: wal, atomically: true, encoding: .utf8)
+        let changedWal = ParsedTranscriptCache.Signature.forFile(database.path)
+        XCTAssertNotEqual(withWal, changedWal)
+
+        try "shm".write(to: shm, atomically: true, encoding: .utf8)
+        let withShm = ParsedTranscriptCache.Signature.forFile(database.path)
+        XCTAssertNotEqual(changedWal, withShm)
     }
 
     func testClineAdapterServesCachedParseAndReparsesOnChange() async throws {

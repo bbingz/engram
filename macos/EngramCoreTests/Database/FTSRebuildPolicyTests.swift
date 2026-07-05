@@ -1,5 +1,5 @@
 import EngramCoreRead
-import EngramCoreWrite
+@testable import EngramCoreWrite
 import GRDB
 import XCTest
 
@@ -108,6 +108,36 @@ final class FTSRebuildPolicyTests: XCTestCase {
         }
         XCTAssertEqual(liveRows, ["still searchable while rebuilding"])
         XCTAssertEqual(try writer.read { db in try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions_fts_rebuild") }, 0)
+    }
+
+    func testFinalizeRebuildInvalidatesStoredOptimizeSignatureForSwappedTable() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("finalize-fts-optimize.sqlite"))
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, cwd, file_path, size_bytes, sync_version, indexed_at)
+                VALUES ('s1', 'codex', '2026-01-01T00:00:00.000Z', '/tmp/p', '/tmp/s.jsonl', 42, 1, '2026-05-01T00:00:00Z');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('s1', 'legacy searchable row');
+                INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status)
+                VALUES ('s1:1::fts', 's1', 'fts', 1, 'completed');
+                INSERT INTO metadata(key, value) VALUES ('fts_version', '2')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """)
+            try FTSRebuildPolicy.apply(db)
+
+            try db.execute(sql: "INSERT INTO sessions_fts_rebuild(session_id, content) VALUES ('s1', 'rebuilt searchable row')")
+            try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE id = 's1:1::fts'")
+
+            XCTAssertTrue(try StartupBackfills.optimizeFts(db), "pre-finalize optimize stores the current content signature")
+            XCTAssertFalse(try StartupBackfills.optimizeFts(db), "unchanged signature skips before the rebuild table is swapped in")
+
+            XCTAssertTrue(try FTSRebuildPolicy.finalizeRebuildIfReady(db))
+            XCTAssertEqual(
+                try String.fetchAll(db, sql: "SELECT content FROM sessions_fts WHERE session_id = 's1'"),
+                ["rebuilt searchable row"]
+            )
+            XCTAssertTrue(try StartupBackfills.optimizeFts(db), "the swapped-in rebuild table must receive a fresh optimize pass")
+        }
     }
 
     func testInterruptedRebuildApplyResumesExistingShadowTable() throws {

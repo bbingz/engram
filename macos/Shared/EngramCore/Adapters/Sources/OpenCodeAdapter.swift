@@ -87,14 +87,17 @@ actor Phase4SQLiteAccessibilityCache {
 final class OpenCodeAdapter: SessionAdapter, Sendable {
     let source: SourceName = .opencode
     private let dbPath: String
+    private let limits: ParserLimits
     private let accessibilityCache = Phase4SQLiteAccessibilityCache()
 
     init(
         dbPath: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".local/share/opencode/opencode.db")
-            .path
+            .path,
+        limits: ParserLimits = .default
     ) {
         self.dbPath = dbPath
+        self.limits = limits
     }
 
     func detect() async -> Bool {
@@ -221,6 +224,35 @@ final class OpenCodeAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        let result = try Self.messages(locator: locator, options: options, maxMessages: limits.maxMessages)
+        return JSONLAdapterSupport.stream(result.messages)
+    }
+
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        let result = try Self.messages(locator: locator, options: options, maxMessages: limits.maxMessages)
+        return JSONLAdapterSupport.stream(result)
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        guard let locatorParts = Self.splitVirtualLocator(locator) else {
+            return false
+        }
+        return await accessibilityCache.contains(
+            path: locatorParts.dbPath,
+            sql:
+            "SELECT 1 FROM session WHERE id = ? LIMIT 1",
+            bindings: [locatorParts.sessionId]
+        )
+    }
+
+    private static func messages(
+        locator: String,
+        options: StreamMessagesOptions,
+        maxMessages: Int
+    ) throws -> JSONLAdapterSupport.WindowedMessagesResult {
         guard let locatorParts = Self.splitVirtualLocator(locator) else {
             throw ParserFailure.unsupportedVirtualLocator
         }
@@ -238,24 +270,18 @@ final class OpenCodeAdapter: SessionAdapter, Sendable {
                 bindings: [locatorParts.sessionId]
             )
             let messages = Self.messages(from: rows)
-            return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
+            let truncatedAt = options.limit == nil && messages.count > maxMessages ? maxMessages : nil
+            let boundedMessages = truncatedAt == nil ? messages : Array(messages.prefix(maxMessages))
+            return JSONLAdapterSupport.WindowedMessagesResult(
+                messages: JSONLAdapterSupport.applyWindow(boundedMessages, options: options),
+                totalKnownComplete: truncatedAt == nil,
+                truncatedAt: truncatedAt
+            )
         } catch let failure as ParserFailure {
             throw failure
         } catch {
             throw ParserFailure.sqliteUnreadable
         }
-    }
-
-    func isAccessible(locator: String) async -> Bool {
-        guard let locatorParts = Self.splitVirtualLocator(locator) else {
-            return false
-        }
-        return await accessibilityCache.contains(
-            path: locatorParts.dbPath,
-            sql:
-            "SELECT 1 FROM session WHERE id = ? LIMIT 1",
-            bindings: [locatorParts.sessionId]
-        )
     }
 
     private static func splitVirtualLocator(_ locator: String) -> (dbPath: String, sessionId: String)? {

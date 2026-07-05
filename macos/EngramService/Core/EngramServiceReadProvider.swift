@@ -1929,19 +1929,35 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         // Windowed read: only the first + last-5 visible messages are needed for
         // the primer, so stream them through a bounded buffer instead of parsing
         // the entire transcript into a full message array.
-        guard let messages = try? await ServiceTranscriptReader.readPrimerMessages(
+        guard let result = try? await ServiceTranscriptReader.readPrimerMessagesWithMetadata(
             filePath: trimmedPath,
             source: source,
             limit: 6
         ) else {
             return []
         }
-        return messages.compactMap { message in
+        var lines: [String] = result.messages.compactMap { (message: ServiceTranscriptMessage) -> String? in
             let redacted = TranscriptExportService.redactSensitiveContent(message.content)
             guard let content = sanitizedResumeContextExcerpt(redacted) else { return nil }
             let role = message.role == "user" ? "User" : "Assistant"
             return "\(role): \(content)"
         }
+        if result.truncated, let truncatedAt = result.truncatedAt {
+            lines.append("Transcript truncated at \(decimalString(truncatedAt)) messages; later content is not included.")
+        }
+        return lines
+    }
+
+    private static func decimalString(_ value: Int) -> String {
+        let digits = Array(String(value).reversed())
+        var grouped: [Character] = []
+        for (index, digit) in digits.enumerated() {
+            if index > 0, index % 3 == 0 {
+                grouped.append(",")
+            }
+            grouped.append(digit)
+        }
+        return String(grouped.reversed())
     }
 
     private static func resumeMetadataContextLines(row: Row) -> [String] {

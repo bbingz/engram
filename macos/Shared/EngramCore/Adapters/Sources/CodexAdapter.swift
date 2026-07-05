@@ -1,20 +1,15 @@
 import Darwin
 import Foundation
-import os
 
 enum JSONLAdapterSupport {
     typealias JSONObject = [String: Any]
 
-    private static let log = Logger(subsystem: "com.engram.core", category: "adapters")
+    struct WindowedMessagesResult {
+        let messages: [NormalizedMessage]
+        let totalKnownComplete: Bool
+        let truncatedAt: Int?
 
-    /// Note a message-cap truncation on an unwindowed (limit == nil) read.
-    /// The cap already bounded memory to `maxMessages`; we surface it via the
-    /// log rather than throwing so display/read callers keep the truncated
-    /// window instead of falling back to an uncapped whole-file parse.
-    static func logTruncation(locator: String, cap: Int) {
-        log.notice(
-            "transcript truncated to message cap: cap=\(cap, privacy: .public) locator=\(locator, privacy: .private)"
-        )
+        var truncated: Bool { truncatedAt != nil || !totalKnownComplete }
     }
 
     static func fileExists(_ path: String) -> Bool {
@@ -181,6 +176,14 @@ enum JSONLAdapterSupport {
         }
     }
 
+    static func stream(_ result: WindowedMessagesResult) -> StreamMessagesResult {
+        StreamMessagesResult(
+            messages: stream(result.messages),
+            totalKnownComplete: result.totalKnownComplete,
+            truncatedAt: result.truncatedAt
+        )
+    }
+
     static func applyWindow(
         _ messages: [NormalizedMessage],
         options: StreamMessagesOptions
@@ -189,6 +192,25 @@ enum JSONLAdapterSupport {
         let suffix = offset >= messages.count ? [] : Array(messages.dropFirst(offset))
         guard let limit = options.limit else { return suffix }
         return Array(suffix.prefix(max(limit, 0)))
+    }
+
+    static func wholeDocumentMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions,
+        limits: ParserLimits,
+        transform: ([JSONObject]) -> [NormalizedMessage]
+    ) throws -> WindowedMessagesResult {
+        let (objects, failure) = try readObjects(locator: locator, limits: limits, reportFailures: true)
+        var truncatedAt: Int?
+        if let failure {
+            guard failure == .messageLimitExceeded else { throw failure }
+            truncatedAt = limits.maxMessages
+        }
+        return WindowedMessagesResult(
+            messages: applyWindow(transform(objects), options: options),
+            totalKnownComplete: truncatedAt == nil,
+            truncatedAt: truncatedAt
+        )
     }
 
     /// Window a per-line JSONL transcript with offset/limit, mapping each line
@@ -213,8 +235,24 @@ enum JSONLAdapterSupport {
         limits: ParserLimits,
         transform: (JSONObject) -> NormalizedMessage?
     ) throws -> [NormalizedMessage] {
+        try windowedMessagesWithMetadata(
+            locator: locator,
+            options: options,
+            limits: limits,
+            transform: transform
+        ).messages
+    }
+
+    static func windowedMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions,
+        limits: ParserLimits,
+        detectTruncation: Bool = false,
+        transform: (JSONObject) -> NormalizedMessage?
+    ) throws -> WindowedMessagesResult {
         guard let limit = options.limit else {
             let (objects, failure) = try readObjects(locator: locator, limits: limits, reportFailures: true)
+            var truncatedAt: Int?
             if let failure {
                 // Truncate-and-succeed on the message cap: `readObjects` already
                 // capped `objects` at `maxMessages`, so return that window instead
@@ -222,33 +260,47 @@ enum JSONLAdapterSupport {
                 // MessageParser) into the uncapped legacy parser, which re-buffers
                 // the entire multi-hundred-MB file. Other failures still propagate.
                 guard failure == .messageLimitExceeded else { throw failure }
-                logTruncation(locator: locator, cap: limits.maxMessages)
+                truncatedAt = limits.maxMessages
             }
-            return applyWindow(objects.compactMap(transform), options: options)
+            return WindowedMessagesResult(
+                messages: applyWindow(objects.compactMap(transform), options: options),
+                totalKnownComplete: truncatedAt == nil,
+                truncatedAt: truncatedAt
+            )
         }
 
         let cappedLimit = max(limit, 0)
-        guard cappedLimit > 0 else { return [] }
+        guard cappedLimit > 0 else {
+            return WindowedMessagesResult(messages: [], totalKnownComplete: true, truncatedAt: nil)
+        }
         let offset = max(options.offset ?? 0, 0)
 
         return try autoreleasepool {
             let (url, _) = try prepareFile(locator: locator, limits: limits)
             let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
-            var skipped = 0
+            var produced = 0
             var messages: [NormalizedMessage] = []
 
             for line in try reader.readLines() {
                 guard let object = parseObject(line), let message = transform(object) else { continue }
-                if skipped < offset {
-                    skipped += 1
+                produced += 1
+                if produced <= offset {
                     continue
                 }
-                messages.append(message)
+                if messages.count < cappedLimit {
+                    messages.append(message)
+                }
                 if messages.count >= cappedLimit { break }
             }
 
-            if let failure = reader.failures.first { throw failure }
-            return messages
+            if let failure = reader.failures.first, messages.count < cappedLimit {
+                throw failure
+            }
+            return WindowedMessagesResult(
+                messages: messages,
+                totalKnownComplete: true,
+                truncatedAt: nil
+            )
         }
     }
 
@@ -396,12 +448,28 @@ final class CodexAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        let messages = try Self.messages(
+        let result = try Self.messages(
             locator: locator,
             options: options,
             limits: limits
         )
-        return JSONLAdapterSupport.stream(messages)
+        return JSONLAdapterSupport.stream(result.messages)
+    }
+
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        let result = try Self.messages(
+            locator: locator,
+            options: options,
+            limits: limits
+        )
+        return StreamMessagesResult(
+            messages: JSONLAdapterSupport.stream(result.messages),
+            totalKnownComplete: result.truncatedAt == nil,
+            truncatedAt: result.truncatedAt
+        )
     }
 
     func isAccessible(locator: String) async -> Bool {
@@ -416,13 +484,19 @@ final class CodexAdapter: SessionAdapter, Sendable {
         ]
     }
 
+    private struct MessageReadResult {
+        let messages: [NormalizedMessage]
+        let truncatedAt: Int?
+    }
+
     private static func messages(
         locator: String,
         options: StreamMessagesOptions,
         limits: ParserLimits
-    ) throws -> [NormalizedMessage] {
+    ) throws -> MessageReadResult {
         let cappedLimit = options.limit.map { max($0, 0) } ?? Int.max
-        guard cappedLimit > 0 else { return [] }
+        let shouldApplyMessageCap = options.limit == nil
+        guard cappedLimit > 0 else { return MessageReadResult(messages: [], truncatedAt: nil) }
         let offset = max(options.offset ?? 0, 0)
 
         return try autoreleasepool {
@@ -434,14 +508,17 @@ final class CodexAdapter: SessionAdapter, Sendable {
             var pendingMessage: NormalizedMessage?
             var pendingUsageCameFromTokenCount = false
             var pendingUsage: TokenUsage?
+            var truncatedAt: Int?
 
             func appendWindowed(_ message: NormalizedMessage) -> Bool {
                 if skipped < offset {
                     skipped += 1
                     return false
                 }
-                messages.append(message)
-                return messages.count >= cappedLimit
+                if messages.count < cappedLimit {
+                    messages.append(message)
+                }
+                return messages.count >= cappedLimit && !shouldApplyMessageCap
             }
 
             func flushPendingMessage() -> Bool {
@@ -454,11 +531,11 @@ final class CodexAdapter: SessionAdapter, Sendable {
             for line in try reader.readLines() {
                 guard let object = JSONLAdapterSupport.parseObject(line) else { continue }
                 parsedObjects += 1
-                if options.limit == nil, parsedObjects > limits.maxMessages {
+                if shouldApplyMessageCap, parsedObjects > limits.maxMessages {
                     // Truncate-and-succeed: stop reading at the cap rather than
                     // throwing. Throwing sends MessageParser into the uncapped
                     // legacy parser, which buffers the whole file into memory.
-                    JSONLAdapterSupport.logTruncation(locator: locator, cap: limits.maxMessages)
+                    truncatedAt = limits.maxMessages
                     break
                 }
 
@@ -491,14 +568,16 @@ final class CodexAdapter: SessionAdapter, Sendable {
                 _ = flushPendingMessage()
             }
 
-            if let failure = reader.failures.first { throw failure }
+            if let failure = reader.failures.first, messages.count < cappedLimit {
+                throw failure
+            }
             if options.limit == nil {
                 let after = try limits.fileIdentity(for: url)
                 guard limits.isSameFileIdentity(before, after) else {
                     throw ParserFailure.fileModifiedDuringParse
                 }
             }
-            return messages
+            return MessageReadResult(messages: messages, truncatedAt: truncatedAt)
         }
     }
 

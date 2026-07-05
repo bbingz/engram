@@ -738,6 +738,23 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testSearchWhitespaceQueryBrowsesRecentVisibleSessions() throws {
+        try insertTestSession(at: dbPath, id: "older", source: "codex", startTime: "2026-05-01T10:00:00Z", tier: "normal")
+        try insertTestSession(at: dbPath, id: "newer", source: "codex", startTime: "2026-05-02T10:00:00Z", tier: "normal")
+        try insertTestSession(at: dbPath, id: "skip", source: "codex", startTime: "2026-05-03T10:00:00Z", tier: "skip")
+        try insertTestSession(at: dbPath, id: "lite", source: "codex", startTime: "2026-05-04T10:00:00Z", tier: "lite")
+        try insertTestSession(at: dbPath, id: "hidden", source: "codex", startTime: "2026-05-05T10:00:00Z", tier: "normal")
+        try setHidden(at: dbPath, sessionId: "hidden", hidden: true)
+
+        let sessions = try db.search(query: "   ", limit: 10)
+        let hits = try db.searchWithSnippets(query: "   ", limit: 10)
+
+        XCTAssertEqual(sessions.map(\.id), ["newer", "older"])
+        XCTAssertEqual(hits.map(\.session.id), ["newer", "older"])
+        XCTAssertTrue(hits.allSatisfy { $0.snippet.isEmpty })
+    }
+
+    @MainActor
     func testProjectTimelineEscapesLikeWildcards() throws {
         try insertTestSession(at: dbPath, id: "literal-project", project: "my_repo")
         try insertTestSession(at: dbPath, id: "wildcard-project", project: "myXrepo")

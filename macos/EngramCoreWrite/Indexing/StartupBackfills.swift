@@ -667,7 +667,7 @@ public enum StartupBackfills {
         let sm: String = sessions?["m"] ?? ""
         let inN: Int = insights?["n"] ?? 0
         let inM: String = insights?["m"] ?? ""
-        return "\(sn):\(sv):\(sm):\(inN):\(inM)"
+        return "fts:\(FTSRebuildPolicy.expectedVersion):\(sn):\(sv):\(sm):\(inN):\(inM)"
     }
 
     /// Cross-session sweep pruning terminal `session_index_jobs` rows that
@@ -726,8 +726,9 @@ public enum StartupBackfills {
                 sql: "DELETE FROM fts_map WHERE session_id IN (\(skipSubquery))"
             )
         }
+        var deletedEmbeddings = 0
         if try tableExists(db, "session_embeddings") {
-            try db.execute(
+            deletedEmbeddings = try db.executeAndCountChanges(
                 sql: "DELETE FROM session_embeddings WHERE session_id IN (\(skipSubquery))"
             )
         }
@@ -738,7 +739,7 @@ public enum StartupBackfills {
               AND session_id IN (\(skipSubquery))
             """
         )
-        return deletedFts + deletedFtsMap
+        return deletedFts + deletedFtsMap + deletedEmbeddings
     }
 
     public static func vacuumIfNeeded(_ db: Database, fragmentationPercent: Int) throws -> Bool {

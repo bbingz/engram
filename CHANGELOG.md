@@ -7,6 +7,129 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: P1 truncation residuals for Web UI, Kimi, and OpenCode (2026-07-05, Codex)
+
+- Removed the unreachable Web UI oversized-transcript banner/clamp. The Web UI
+  deliberately keeps raw-window pagination over the full transcript, while
+  MCP/export whole-transcript reads remain capped and marked as truncated.
+- Added an end-to-end Web UI regression that seeds a >10k-message Codex
+  transcript and verifies `/session/...` can page past offset 10,000 without a
+  truncation banner.
+- Added `streamMessagesWithMetadata` truncation metadata for `KimiAdapter` and
+  `OpenCodeAdapter`; whole-transcript exports now write 10,000 messages and
+  report `truncatedAt = 10000` / `totalKnownComplete = false`.
+- **Verification:** focused
+  `EngramServiceCoreTests/EngramWebUIServerTests/testSessionPagePaginatesPastTenThousandWithoutTruncationBanner`,
+  `EngramServiceCoreTests/EngramServiceIPCTests/testExportSessionMarksKimiOversizedTranscriptTruncated`,
+  and
+  `EngramServiceCoreTests/EngramServiceIPCTests/testExportSessionMarksOpenCodeOversizedTranscriptTruncated`
+  passed. `xcodebuild -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug build` passed.
+
+### Verification + handoff: P1 truncation residuals after Codex fix pass (2026-07-05, Claude Code, ultracode workflow)
+
+Re-verified all six Fable perf-integration findings against the working tree
+with a 7-unit verify→adversarial-challenge workflow plus focused Swift suites.
+Five findings are comprehensively fixed (P2 Web UI ETag display fields, P2
+Cursor `-wal`/`-shm` cache signature, P3 FTS optimize gate tied to
+`expectedVersion` + rebuild-swap invalidation, P3 whitespace browse-recent
+fallback, P3 skip-tier embeddings-delete telemetry). P1's core (MCP
+`get_session` totals/tail, `collectVisiblePageWindow` cap, resume primer,
+markdown/JSON export metadata for the nine overriding adapters) is also fixed.
+**Two P1 residuals remain and are handed off to Codex** (details + file:line +
+fix direction in `docs/followups.md`, "P1 residuals after Codex fix pass"):
+
+- **Web UI oversized-transcript banner/clamp is dead code on the indexed path,
+  and its tests only cover the pure helpers.** `transcriptTruncationMarker`
+  (`EngramWebUIServer.swift:569`) fires only when `messageCount > 10_000` or
+  `readTruncatedAt != nil`; neither is reachable because stored `message_count`
+  is itself capped at ≤10_000 (`JSONLAdapterSupport.readObjects` at
+  `CodexAdapter.swift:93`, counted at `:421`) and the windowed Web UI read
+  (`:518`) leaves `truncatedAt = nil` (`shouldApplyMessageCap = options.limit ==
+  nil`, `:498`). The Web UI actually pages the full transcript via
+  `hasMore`, so this is inert code + an MCP-vs-WebUI inconsistency, not data
+  loss. The three added tests (`EngramWebUIServerTests.swift:187`–`:219`) inject
+  synthetic post-cap values and never drive the real `sessionPage` path — false
+  coverage.
+- **Silent export truncation persists on `KimiAdapter` (`:105`) and
+  `OpenCodeAdapter` (`:220`)**, which override only `streamMessages` and inherit
+  the default `streamMessagesWithMetadata` (`SessionAdapter.swift:256`–`:264`,
+  `truncatedAt = nil`); oversized sessions from those sources still cap at 10_000
+  with no marker.
+
+- **Validation:** Debug build passed; focused suites green with 0 failures —
+  `EngramCoreTests` (55: AdapterWindowedRead/FTSRebuildPolicy/StartupBackfill),
+  `EngramMCPTests` (96, incl.
+  `testGetSessionOversizedTranscriptMarksTruncationAndDoesNotServePastCapFromCache`),
+  `EngramTests/DatabaseManagerTests` (74, incl. whitespace browse),
+  `EngramServiceCoreTests` (169: WebUIServer + IPC ETag/truncation/export). Full
+  Swift suite, lint, UI, and release checks not run. No code changed in this pass
+  — verification + follow-up docs only.
+
+### Fixed: perf-integration self-review follow-ups (2026-07-05, Codex)
+
+- Propagated oversized-transcript truncation metadata for additional Swift
+  JSONL/cascade adapters (`Qoder`, `Iflow`, `CommandCode`, `Qwen`, `Copilot`,
+  `Windsurf`, and `Antigravity`) so unwindowed adapter reads no longer silently
+  report incomplete transcripts as complete.
+- Clamped Web UI transcript page reads to the known 10k truncation boundary
+  before invoking adapters, so offsets at or beyond the cap render the truncation
+  banner without exposing later content.
+- **Verification:** `AdapterWindowedReadTests`, `EngramWebUIServerTests`,
+  focused `EngramServiceIPCTests` resume/export truncation tests,
+  `EngramMCPExecutableTests/testGetSessionOversizedTranscriptMarksTruncationAndDoesNotServePastCapFromCache`,
+  `FTSRebuildPolicyTests`, `StartupBackfillTests`, and `DatabaseManagerTests`
+  passed. `xcodebuild -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug build` passed. npm/TypeScript tooling, full Swift suite,
+  UI, and release checks were not run.
+
+### Fixed: perf-integration follow-up review regressions (2026-07-04, Codex)
+
+- Restored early-stop behavior for windowed Claude Code and Codex metadata reads,
+  so Web UI transcript paging no longer scans forward to the 10k adapter cap just
+  to discover truncation. The Web UI now derives the oversized-transcript banner
+  from DB `messageCount` when a page read intentionally stops at the page window.
+- Invalidated the stored FTS optimize signature when a full FTS rebuild finalizes
+  and swaps in `sessions_fts_rebuild`, ensuring the rebuilt table receives a fresh
+  optimize pass instead of only optimizing the pre-swap table.
+- Made transcript export metadata-aware: oversized markdown exports include an
+  explicit truncation line, JSON exports include a `transcript` metadata object,
+  and the export response reports the number of messages actually written.
+- **Verification:** focused tests passed for `AdapterWindowedReadTests` windowed
+  metadata early-stop coverage, `FTSRebuildPolicyTests` rebuild-finalize optimize
+  invalidation, `EngramWebUIServerTests` truncation marker coverage, and
+  `EngramServiceIPCTests` markdown/JSON export truncation coverage. Broader
+  focused checks also passed for Web UI, MCP `get_session`, resume primer,
+  whitespace search, startup backfill, and adapter cache coverage. `xcodebuild
+  -project macos/Engram.xcodeproj -scheme Engram -configuration Debug build`
+  passed. npm/TypeScript tooling, full Swift suite, UI, and release checks were
+  not run.
+
+### Fixed: perf-integration review follow-ups A-C (2026-07-04, Codex)
+
+- **Batch A - oversized transcript truncation:** preserved the deliberate
+  adapter truncate-and-succeed behavior, but propagated explicit truncation
+  metadata through MCP `get_session`, resume primers, and the Web UI. MCP page
+  totals now reflect the reachable capped transcript window, and cached visible
+  page reads no longer bypass the 10k message cap.
+- **Batch B - cache invalidation:** included DB-mutable session display fields
+  (`displayTitle`, `project`, and `messageCount`) in Web UI session ETags, and
+  included Cursor SQLite `-wal` / `-shm` sidecars in parse-cache signatures so
+  WAL-only writes invalidate cached transcripts.
+- **Batch C - latent perf-review fixes:** tied FTS optimize signatures to
+  `FTSRebuildPolicy.expectedVersion`, restored whitespace-only search to the
+  browse-recent visible-session fallback, and counted `session_embeddings`
+  deletions in skip-tier index-artifact reconciliation telemetry.
+- **Verification:** `xcodebuild -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug build` passed after each batch. Focused Swift tests
+  passed for the new/affected paths: `AdapterWindowedReadTests` truncation and
+  WAL-signature coverage, `EngramMCPExecutableTests` oversized `get_session`,
+  `EngramWebUIServerTests` truncation banner and ETag coverage,
+  `EngramServiceIPCTests` resume-primer truncation coverage,
+  `StartupBackfillTests` optimize/reconcile coverage, and
+  `DatabaseManagerTests` whitespace search plus existing CTE-shape search.
+  Full Swift suite, npm/TypeScript tooling, UI, and release checks were not run.
+
 ### Review + fix: perf-integration adversarial review, fts_map ownership bug (2026-07-04, Claude Code, ultracode workflow)
 
 Ran an 18-agent adversarial workflow review over the Codex-integrated 8-PR perf

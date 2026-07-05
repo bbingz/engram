@@ -443,15 +443,20 @@ final class DatabaseManager: @unchecked Sendable {
             }
         }
         if ctes.isEmpty {
-            ctes.append("""
-                m0 AS (
-                    SELECT session_id, MIN(rank) AS rank
-                    FROM sessions_fts
-                    WHERE sessions_fts MATCH ?
-                    GROUP BY session_id
-                )
+            let snippetColumn = withSnippet ? ", '' AS snippet" : ""
+            var parts = ["""
+                SELECT s.*\(snippetColumn)
+                FROM sessions s
+                WHERE s.hidden_at IS NULL
+                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+            """]
+            appendSearchFilters(to: &parts, args: &args, sources: sources, projects: projects, since: since)
+            parts.append("""
+                ORDER BY s.start_time DESC
+                LIMIT ?
             """)
-            args.append(snippetMatch)
+            args.append(limit)
+            return (parts.joined(separator: " "), args)
         }
         // The `?` placeholders bind in textual order: CTE MATCH terms, then the
         // snippet MATCH (SELECT list), then filters, then LIMIT.

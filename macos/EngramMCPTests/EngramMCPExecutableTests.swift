@@ -540,6 +540,43 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(page2.totalPages, 3)
     }
 
+    func testGetSessionOversizedTranscriptMarksTruncationAndDoesNotServePastCapFromCache() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = try mcpContractCopy(in: temp)
+
+        let transcriptURL = temp.appendingPathComponent("oversized-session.jsonl")
+        try writeClaudeTranscript(count: 10_020, to: transcriptURL)
+        try setSession(dbPath: dbURL.path, filePath: transcriptURL.path, messageCount: 10_020)
+
+        let responses = try rpcSession(
+            [
+                #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-fixture-01","page":1}}}"#,
+                #"{"jsonrpc":"2.0","id":201,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-fixture-01","page":201}}}"#,
+            ],
+            environment: ["ENGRAM_MCP_DB_PATH": dbURL.path]
+        )
+        let byId = Dictionary(uniqueKeysWithValues: responses.compactMap { response -> (Int, OrderedTestJSONValue)? in
+            guard let id = response["id"]?.intValue else { return nil }
+            return (id, response)
+        })
+
+        let first = try pageContent(from: XCTUnwrap(byId[1]))
+        XCTAssertEqual(first.totalPages, 200)
+        XCTAssertEqual(first.texts.first, "Message 1")
+        XCTAssertEqual(first.totalKnownComplete, false)
+        XCTAssertEqual(first.truncated, true)
+        XCTAssertEqual(first.truncatedAt, 10_000)
+
+        let beyondCap = try pageContent(from: XCTUnwrap(byId[201]))
+        XCTAssertEqual(beyondCap.currentPage, 201)
+        XCTAssertEqual(beyondCap.totalPages, 200)
+        XCTAssertTrue(beyondCap.texts.isEmpty, "cache-hit paging must not expose messages beyond the capped total")
+        XCTAssertEqual(beyondCap.totalKnownComplete, false)
+        XCTAssertEqual(beyondCap.truncated, true)
+        XCTAssertEqual(beyondCap.truncatedAt, 10_000)
+    }
+
     // #34: the cached total is keyed by the transcript's (locator, size, mtime), so
     // a rewrite within the same process is never served a stale total. Request a
     // page (populating the cache), grow the transcript, then request again in the
@@ -592,13 +629,23 @@ final class EngramMCPExecutableTests: XCTestCase {
 
     private func pageContent(
         from response: OrderedTestJSONValue
-    ) throws -> (texts: [String], totalPages: Int, currentPage: Int) {
+    ) throws -> (
+        texts: [String],
+        totalPages: Int,
+        currentPage: Int,
+        totalKnownComplete: Bool?,
+        truncated: Bool?,
+        truncatedAt: Int?
+    ) {
         let structured = try XCTUnwrap(response["result"]?["structuredContent"])
         let messages = try XCTUnwrap(structured["messages"]?.arrayValue)
         return (
             texts: messages.compactMap { $0["content"]?.stringValue },
             totalPages: try XCTUnwrap(structured["totalPages"]?.intValue),
-            currentPage: try XCTUnwrap(structured["currentPage"]?.intValue)
+            currentPage: try XCTUnwrap(structured["currentPage"]?.intValue),
+            totalKnownComplete: structured["totalKnownComplete"]?.boolValue,
+            truncated: structured["truncated"]?.boolValue,
+            truncatedAt: structured["truncatedAt"]?.intValue
         )
     }
 

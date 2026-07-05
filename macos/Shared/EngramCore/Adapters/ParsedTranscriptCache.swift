@@ -1,31 +1,57 @@
 import Foundation
 
 /// Small bounded LRU cache of fully-parsed transcripts, keyed on
-/// (locator, file mtime + size). Whole-document adapters (Gemini CLI, Cline,
+/// (locator, file mtime + size, plus SQLite sidecars when present).
+/// Whole-document adapters (Gemini CLI, Cline,
 /// VS Code, Cursor) parse the entire file/DB before windowing, so paginated
 /// reads would otherwise re-parse the whole document on every page. Caching the
 /// parsed `[NormalizedMessage]` lets paging within a browsing session parse
-/// once; the mtime/size signature invalidates the entry the moment the file
-/// changes.
+/// once; the file signature invalidates the entry the moment the file changes.
 ///
 /// The cache is deliberately tiny (a handful of entries) so it respects the
 /// existing 10 MB per-file size guard without accumulating memory across a
 /// large scan.
 actor ParsedTranscriptCache {
     struct Signature: Equatable, Sendable {
+        struct Sidecar: Equatable, Sendable {
+            let suffix: String
+            let mtime: Double
+            let size: Int64
+        }
+
         let mtime: Double  // modificationDate as timeIntervalSince1970
         let size: Int64
+        let sidecars: [Sidecar]
+
+        init(mtime: Double, size: Int64, sidecars: [Sidecar] = []) {
+            self.mtime = mtime
+            self.size = size
+            self.sidecars = sidecars
+        }
 
         /// Signature of the file backing `path`. `path` may be a plain file
         /// locator or the on-disk file that backs a virtual locator (the caller
-        /// strips any `?composer=` / `::` suffix first).
+        /// strips any `?composer=` / `::` suffix first). SQLite WAL writes can
+        /// leave the main DB file's mtime/size unchanged, so include `-wal` and
+        /// `-shm` sidecars when present.
         static func forFile(_ path: String) -> Signature? {
+            guard let main = componentAttributes(for: path) else {
+                return nil
+            }
+            let sidecars = ["-wal", "-shm"].compactMap { suffix -> Sidecar? in
+                guard let attributes = componentAttributes(for: path + suffix) else { return nil }
+                return Sidecar(suffix: suffix, mtime: attributes.mtime, size: attributes.size)
+            }
+            return Signature(mtime: main.mtime, size: main.size, sidecars: sidecars)
+        }
+
+        private static func componentAttributes(for path: String) -> (mtime: Double, size: Int64)? {
             guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else {
                 return nil
             }
             let mtime = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
             let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
-            return Signature(mtime: mtime, size: size)
+            return (mtime, size)
         }
     }
 

@@ -139,6 +139,19 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
         return JSONLAdapterSupport.stream(messages)
     }
 
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        let result = try JSONLAdapterSupport.windowedMessagesWithMetadata(
+            locator: locator,
+            options: options,
+            limits: limits,
+            transform: Self.message(from:)
+        )
+        return JSONLAdapterSupport.stream(result)
+    }
+
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
     }

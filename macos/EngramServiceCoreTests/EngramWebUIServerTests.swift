@@ -1,4 +1,6 @@
 import XCTest
+import Darwin
+import Foundation
 import GRDB
 import EngramCoreRead
 @testable import EngramServiceCore
@@ -291,22 +293,33 @@ final class EngramWebUIServerTests: XCTestCase {
         let path = dir + "/transcript.jsonl"
         try "line one\n".write(toFile: path, atomically: true, encoding: .utf8)
 
-        let base = EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 0, limit: 50)
+        let base = EngramWebUIServer.sessionETag(
+            id: "s1",
+            locator: path,
+            offset: 0,
+            limit: 50,
+            displayTitle: "Original title",
+            project: "alpha",
+            messageCount: 12
+        )
         XCTAssertNotNil(base)
         XCTAssertTrue(base!.hasPrefix("W/\""), "ETag must be weak")
         // Stable for identical inputs.
-        XCTAssertEqual(base, EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 0, limit: 50))
-        // Sensitive to id / offset / limit.
-        XCTAssertNotEqual(base, EngramWebUIServer.sessionETag(id: "s2", locator: path, offset: 0, limit: 50))
-        XCTAssertNotEqual(base, EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 50, limit: 50))
-        XCTAssertNotEqual(base, EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 0, limit: 100))
+        XCTAssertEqual(base, EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 0, limit: 50, displayTitle: "Original title", project: "alpha", messageCount: 12))
+        // Sensitive to id / offset / limit and DB-backed display fields.
+        XCTAssertNotEqual(base, EngramWebUIServer.sessionETag(id: "s2", locator: path, offset: 0, limit: 50, displayTitle: "Original title", project: "alpha", messageCount: 12))
+        XCTAssertNotEqual(base, EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 50, limit: 50, displayTitle: "Original title", project: "alpha", messageCount: 12))
+        XCTAssertNotEqual(base, EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 0, limit: 100, displayTitle: "Original title", project: "alpha", messageCount: 12))
+        XCTAssertNotEqual(base, EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 0, limit: 50, displayTitle: "Renamed title", project: "alpha", messageCount: 12))
+        XCTAssertNotEqual(base, EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 0, limit: 50, displayTitle: "Original title", project: "beta", messageCount: 12))
+        XCTAssertNotEqual(base, EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 0, limit: 50, displayTitle: "Original title", project: "alpha", messageCount: 13))
         // Sensitive to file size/mtime.
         try "line one\nline two\n".write(toFile: path, atomically: true, encoding: .utf8)
-        XCTAssertNotEqual(base, EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 0, limit: 50))
+        XCTAssertNotEqual(base, EngramWebUIServer.sessionETag(id: "s1", locator: path, offset: 0, limit: 50, displayTitle: "Original title", project: "alpha", messageCount: 12))
         // Virtual/missing locators skip conditional-GET entirely.
-        XCTAssertNil(EngramWebUIServer.sessionETag(id: "s1", locator: nil, offset: 0, limit: 50))
-        XCTAssertNil(EngramWebUIServer.sessionETag(id: "s1", locator: "", offset: 0, limit: 50))
-        XCTAssertNil(EngramWebUIServer.sessionETag(id: "s1", locator: dir + "/missing.db::abc", offset: 0, limit: 50))
+        XCTAssertNil(EngramWebUIServer.sessionETag(id: "s1", locator: nil, offset: 0, limit: 50, displayTitle: "Original title", project: "alpha", messageCount: 12))
+        XCTAssertNil(EngramWebUIServer.sessionETag(id: "s1", locator: "", offset: 0, limit: 50, displayTitle: "Original title", project: "alpha", messageCount: 12))
+        XCTAssertNil(EngramWebUIServer.sessionETag(id: "s1", locator: dir + "/missing.db::abc", offset: 0, limit: 50, displayTitle: "Original title", project: "alpha", messageCount: 12))
     }
 
     func testIfNoneMatchWeakComparison() {
@@ -462,6 +475,62 @@ final class EngramWebUIServerTests: XCTestCase {
         XCTAssertTrue(page.messages[0].content.contains("[REDACTED]"))
     }
 
+    func testSessionPagePaginatesPastTenThousandWithoutTruncationBanner() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-webui-oversized-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let transcript = root.appendingPathComponent("oversized-codex.jsonl")
+        let lines = (0..<10_005).map { index in
+            """
+            {"timestamp":"2026-04-23T01:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"m\(index)"}]}}
+            """
+        }
+        try lines.joined(separator: "\n").write(to: transcript, atomically: true, encoding: .utf8)
+
+        let dbPath = root.appendingPathComponent("webui.sqlite").path
+        try makeMinimalDatabase(at: dbPath)
+        let queue = try DatabaseQueue(path: dbPath)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO sessions (
+                      id, source, start_time, project, summary, message_count, file_path
+                    ) VALUES (
+                      'oversized-codex', 'codex', '2026-04-23T01:00:00Z', 'engram',
+                      'Oversized Codex', 10005, ?
+                    )
+                    """,
+                arguments: [transcript.path]
+            )
+        }
+
+        let token = "test-token"
+        let port = try unusedLoopbackPort()
+        let server = try EngramWebUIServer(databasePath: dbPath, authToken: token, port: port)
+        let serverTask = Task {
+            try await server.run()
+        }
+        defer {
+            serverTask.cancel()
+            server.close()
+        }
+        try await waitForWebUI(port: port)
+
+        let html = try await fetchWebUIPath(
+            "/session/oversized-codex?offset=10000&limit=50&token=\(token)",
+            port: port
+        )
+
+        XCTAssertTrue(html.contains("m10000"), html)
+        XCTAssertTrue(html.contains("m10004"), html)
+        XCTAssertFalse(html.contains("Transcript truncated"), html)
+
+        serverTask.cancel()
+        _ = try? await serverTask.value
+    }
+
     func testMissingSessionSignalsNotFoundStatus() throws {
         // sessionPage is private + needs a Request, so assert the wiring at the
         // source level: a missing session must return .notFound, mirroring the
@@ -476,5 +545,85 @@ final class EngramWebUIServerTests: XCTestCase {
             source.contains("options: StreamMessagesOptions(offset: offset, limit: nil)"),
             "readMessages must cap the raw window, not materialize the whole post-offset suffix"
         )
+    }
+
+    private func makeMinimalDatabase(at path: String) throws {
+        let queue = try DatabaseQueue(path: path)
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE sessions (
+                  id TEXT PRIMARY KEY,
+                  source TEXT NOT NULL,
+                  start_time TEXT NOT NULL,
+                  end_time TEXT,
+                  project TEXT,
+                  summary TEXT,
+                  generated_title TEXT,
+                  custom_name TEXT,
+                  message_count INTEGER NOT NULL DEFAULT 0,
+                  file_path TEXT,
+                  source_locator TEXT,
+                  hidden_at TEXT,
+                  tier TEXT,
+                  parent_session_id TEXT,
+                  suggested_parent_id TEXT,
+                  orphan_status TEXT
+                );
+                CREATE TABLE session_local_state (
+                  session_id TEXT PRIMARY KEY,
+                  local_readable_path TEXT,
+                  hidden_at TEXT
+                );
+            """)
+        }
+    }
+
+    private func unusedLoopbackPort() throws -> Int {
+        let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { throw POSIXError(.EADDRNOTAVAIL) }
+        defer { Darwin.close(descriptor) }
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(0).bigEndian
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+        let bindResult = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EADDRNOTAVAIL) }
+
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let nameResult = withUnsafeMutablePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(descriptor, $0, &length)
+            }
+        }
+        guard nameResult == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EADDRNOTAVAIL) }
+        return Int(UInt16(bigEndian: address.sin_port))
+    }
+
+    private func waitForWebUI(port: Int) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            do {
+                let body = try await fetchWebUIPath("/health", port: port)
+                if body == "ok\n" { return }
+            } catch {
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+        }
+        XCTFail("timed out waiting for Web UI on port \(port)")
+    }
+
+    private func fetchWebUIPath(_ path: String, port: Int) async throws -> String {
+        let url = try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)\(path)"))
+        let (data, response) = try await URLSession.shared.data(from: url)
+        let status = (response as? HTTPURLResponse)?.statusCode
+        XCTAssertEqual(status, 200)
+        return String(decoding: data, as: UTF8.self)
     }
 }

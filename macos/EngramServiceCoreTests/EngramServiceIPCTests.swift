@@ -2123,6 +2123,54 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertNil(resume.error)
     }
 
+    func testSQLiteReadProviderRawTranscriptPrimerMarksOversizedTranscriptTruncation() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let transcript = paths.runtime.appendingPathComponent("s1.jsonl")
+        var lines: [String] = []
+        for index in 0..<10_020 {
+            let role = index % 2 == 0 ? "user" : "assistant"
+            let payloadRole = role == "user" ? "input_text" : "text"
+            lines.append(
+                #"{"type":"response_item","payload":{"type":"message","role":"\#(role)","content":[{"type":"\#(payloadRole)","text":"Oversized message \#(index)"}]}}"#
+            )
+        }
+        try (lines.joined(separator: "\n") + "\n").write(to: transcript, atomically: true, encoding: .utf8)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET file_path = ?, message_count = 10020 WHERE id = 's1'",
+                arguments: [transcript.path]
+            )
+            try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = 's1'")
+        }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(
+                databasePath: paths.database.path,
+                commandLocator: { command in
+                    command == "codex" ? "/usr/local/bin/codex" : nil
+                }
+            )
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let resume = try await client.resumeCommand(sessionId: "s1")
+
+        XCTAssertTrue(
+            resume.contextPrimer?.contains("Transcript truncated at 10,000 messages") ?? false,
+            resume.contextPrimer ?? ""
+        )
+        XCTAssertFalse(resume.contextPrimer?.contains("Oversized message 10019") ?? true)
+        XCTAssertNil(resume.error)
+    }
+
     func testSQLiteReadProviderFtsPrimerKeepsOpeningPromptAndRecentMessages() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -2225,6 +2273,191 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(exported.contains("world"), exported)
         XCTAssertFalse(exported.contains("hidden legacy system"), exported)
         XCTAssertFalse(exported.contains("hidden agent comm"), exported)
+    }
+
+    func testExportSessionMarksTruncatedMarkdownAndJSONTranscripts() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let transcript = paths.runtime.appendingPathComponent("oversized-codex.jsonl")
+        let lines = (0..<10_005).map { index in
+            """
+            {"timestamp":"2026-04-23T01:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"m\(index)"}]}}
+            """
+        }
+        try lines.joined(separator: "\n").write(to: transcript, atomically: true, encoding: .utf8)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET source = 'codex', file_path = ?, message_count = 10005, user_message_count = 10005, assistant_message_count = 0, tool_message_count = 0 WHERE id = 's1'",
+                arguments: [transcript.path]
+            )
+        }
+
+        let exportHome = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        let homeScope = ServiceCoreTestHomeScope(home: exportHome)
+        defer { homeScope.restore() }
+
+        let markdown = try await TranscriptExportService.exportSession(
+            EngramServiceExportSessionRequest(id: "s1", format: "markdown", outputHome: exportHome.path, actor: "test"),
+            databasePath: paths.database.path
+        )
+        XCTAssertEqual(markdown.messageCount, 10_000)
+        let markdownBody = try String(contentsOfFile: markdown.outputPath, encoding: .utf8)
+        XCTAssertTrue(markdownBody.contains("**Messages:** 10005"), markdownBody)
+        XCTAssertTrue(markdownBody.contains("Transcript truncated at 10,000 messages"), markdownBody)
+
+        let json = try await TranscriptExportService.exportSession(
+            EngramServiceExportSessionRequest(id: "s1", format: "json", outputHome: exportHome.path, actor: "test"),
+            databasePath: paths.database.path
+        )
+        XCTAssertEqual(json.messageCount, 10_000)
+        let data = try Data(contentsOf: URL(fileURLWithPath: json.outputPath))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let transcriptMetadata = try XCTUnwrap(payload["transcript"] as? [String: Any])
+        XCTAssertEqual(transcriptMetadata["truncated"] as? Bool, true)
+        XCTAssertEqual(transcriptMetadata["totalKnownComplete"] as? Bool, false)
+        XCTAssertEqual(transcriptMetadata["truncatedAt"] as? Int, 10_000)
+        XCTAssertEqual((payload["messages"] as? [[String: Any]])?.count, 10_000)
+    }
+
+    func testExportSessionMarksKimiOversizedTranscriptTruncated() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let sessionDir = paths.runtime.appendingPathComponent("kimi-session", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let transcript = sessionDir.appendingPathComponent("context.jsonl")
+        let lines = (0..<10_005).map { index in
+            """
+            {"role":"user","content":"kimi \(index)","timestamp":"2026-04-23T01:00:01Z"}
+            """
+        }
+        try lines.joined(separator: "\n").write(to: transcript, atomically: true, encoding: .utf8)
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET source = 'kimi', file_path = ?, message_count = 10005, user_message_count = 10005, assistant_message_count = 0, tool_message_count = 0 WHERE id = 's1'",
+                arguments: [transcript.path]
+            )
+        }
+
+        let exportHome = paths.runtime.appendingPathComponent("home-kimi", isDirectory: true)
+        let homeScope = ServiceCoreTestHomeScope(home: exportHome)
+        defer { homeScope.restore() }
+
+        let json = try await TranscriptExportService.exportSession(
+            EngramServiceExportSessionRequest(id: "s1", format: "json", outputHome: exportHome.path, actor: "test"),
+            databasePath: paths.database.path
+        )
+
+        try assertJSONExportMarkedTruncated(json)
+    }
+
+    func testExportSessionMarksOpenCodeOversizedTranscriptTruncated() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let opencodeDB = paths.runtime.appendingPathComponent("opencode.sqlite")
+        let opencodeSessionId = "opencode-oversized"
+        try seedOpenCodeOversizedTranscript(
+            databasePath: opencodeDB.path,
+            sessionId: opencodeSessionId,
+            messageCount: 10_005
+        )
+        let locator = "\(opencodeDB.path)::\(opencodeSessionId)"
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET source = 'opencode', file_path = ?, message_count = 10005, user_message_count = 10005, assistant_message_count = 0, tool_message_count = 0 WHERE id = 's1'",
+                arguments: [locator]
+            )
+        }
+
+        let exportHome = paths.runtime.appendingPathComponent("home-opencode", isDirectory: true)
+        let homeScope = ServiceCoreTestHomeScope(home: exportHome)
+        defer { homeScope.restore() }
+
+        let json = try await TranscriptExportService.exportSession(
+            EngramServiceExportSessionRequest(id: "s1", format: "json", outputHome: exportHome.path, actor: "test"),
+            databasePath: paths.database.path
+        )
+
+        try assertJSONExportMarkedTruncated(json)
+    }
+
+    private func assertJSONExportMarkedTruncated(_ response: EngramServiceExportSessionResponse) throws {
+        XCTAssertEqual(response.messageCount, 10_000)
+        let data = try Data(contentsOf: URL(fileURLWithPath: response.outputPath))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let transcriptMetadata = try XCTUnwrap(payload["transcript"] as? [String: Any])
+        XCTAssertEqual(transcriptMetadata["truncated"] as? Bool, true)
+        XCTAssertEqual(transcriptMetadata["totalKnownComplete"] as? Bool, false)
+        XCTAssertEqual(transcriptMetadata["truncatedAt"] as? Int, 10_000)
+        XCTAssertEqual((payload["messages"] as? [[String: Any]])?.count, 10_000)
+    }
+
+    private func seedOpenCodeOversizedTranscript(
+        databasePath: String,
+        sessionId: String,
+        messageCount: Int
+    ) throws {
+        let queue = try DatabaseQueue(path: databasePath)
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session (
+                  id TEXT PRIMARY KEY,
+                  directory TEXT,
+                  title TEXT,
+                  time_created REAL,
+                  time_updated REAL,
+                  time_archived REAL
+                );
+                CREATE TABLE message (
+                  id TEXT PRIMARY KEY,
+                  session_id TEXT,
+                  time_created REAL,
+                  data TEXT
+                );
+                CREATE TABLE part (
+                  id TEXT PRIMARY KEY,
+                  message_id TEXT,
+                  time_created REAL,
+                  data TEXT
+                );
+                INSERT INTO session (
+                  id, directory, title, time_created, time_updated, time_archived
+                ) VALUES (
+                  ?, '/tmp/engram', 'Oversized OpenCode', 1776906000000, 1776906000000, NULL
+                );
+                """, arguments: [sessionId])
+            for index in 0..<messageCount {
+                let messageId = "message-\(index)"
+                try db.execute(
+                    sql: """
+                        INSERT INTO message(id, session_id, time_created, data)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                    arguments: [
+                        messageId,
+                        sessionId,
+                        1_776_906_000_000 + index,
+                        #"{"role":"user"}"#
+                    ]
+                )
+                try db.execute(
+                    sql: """
+                        INSERT INTO part(id, message_id, time_created, data)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                    arguments: [
+                        "part-\(index)",
+                        messageId,
+                        1_776_906_000_000 + index,
+                        #"{"type":"text","text":"opencode \#(index)"}"#
+                    ]
+                )
+            }
+        }
     }
 
     func testExportSessionRejectsOversizedGeminiJSONTranscript() async throws {

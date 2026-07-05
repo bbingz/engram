@@ -25,12 +25,22 @@ enum MCPTranscriptTools {
             throw MCPToolError.transcriptTooLarge(error.localizedDescription)
         }
 
-        return .object([
+        var entries: [(String, OrderedJSONValue)] = [
             ("session", session.orderedJSONValue),
             ("messages", .array(messagePage.messages.map(messageJSON))),
             ("totalPages", .int(messagePage.totalPages)),
             ("currentPage", .int(messagePage.currentPage)),
-        ])
+        ]
+        if !messagePage.totalKnownComplete {
+            entries.append(("totalKnownComplete", .bool(false)))
+        }
+        if messagePage.truncated {
+            entries.append(("truncated", .bool(true)))
+            if let truncatedAt = messagePage.truncatedAt {
+                entries.append(("truncatedAt", .int(truncatedAt)))
+            }
+        }
+        return .object(entries)
     }
 
     static func handoff(

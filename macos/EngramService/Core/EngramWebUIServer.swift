@@ -289,12 +289,21 @@ final class EngramWebUIServer: @unchecked Sendable {
         let offset = max(0, Int(String(request.uri.queryParameters["offset"] ?? "0")) ?? 0)
         let limit = min(200, max(1, Int(String(request.uri.queryParameters["limit"] ?? "50")) ?? 50))
 
-        // Weak ETag from actual values (session id + source-file mtime/size +
-        // offset + limit) so a refresh/back-forward on an unchanged transcript
-        // can 304 before any adapter read or render. nil when the locator is not
-        // a plain on-disk file (virtual cursor/opencode/sync locators) so we
-        // never emit a false 304 for a source we cannot cheaply validate.
-        let etag = Self.sessionETag(id: session.id, locator: session.readablePath, offset: offset, limit: limit)
+        // Weak ETag from actual values (session id + DB display fields +
+        // source-file mtime/size + offset + limit) so a refresh/back-forward on
+        // an unchanged session can 304 before any adapter read or render. nil
+        // when the locator is not a plain on-disk file (virtual cursor/opencode/
+        // sync locators) so we never emit a false 304 for a source we cannot
+        // cheaply validate.
+        let etag = Self.sessionETag(
+            id: session.id,
+            locator: session.readablePath,
+            offset: offset,
+            limit: limit,
+            displayTitle: session.displayTitle,
+            project: session.project,
+            messageCount: session.messageCount
+        )
         if let etag, Self.ifNoneMatch(header: request.headers[.ifNoneMatch], matches: etag) {
             return SessionRender(html: "", status: .notModified, etag: etag, notModified: true)
         }
@@ -304,9 +313,10 @@ final class EngramWebUIServer: @unchecked Sendable {
         let status: HTTPResponse.Status
         do {
             let page = try await readMessages(for: session, offset: offset, limit: limit)
-            messageHTML = page.messages.map { message in
+            let renderedMessages = page.messages.map { message in
                 Self.renderMessageHTML(message, source: session.source)
             }.joined(separator: "\n")
+            messageHTML = renderedMessages
 
             let previousOffset = max(0, offset - limit)
             let previousLink = offset > 0
@@ -358,11 +368,20 @@ final class EngramWebUIServer: @unchecked Sendable {
         )
     }
 
-    /// Weak ETag derived from real values only — session id, the source file's
-    /// mtime + size, and the requested offset/limit — hashed with SHA-256 (never
-    /// Swift `hashValue`). Returns nil when the locator is empty or not a plain
-    /// on-disk file, so virtual/synced locators simply skip conditional-GET.
-    static func sessionETag(id: String, locator: String?, offset: Int, limit: Int) -> String? {
+    /// Weak ETag derived from real values only — session id, DB-backed display
+    /// fields, the source file's mtime + size, and the requested offset/limit —
+    /// hashed with SHA-256 (never Swift `hashValue`). Returns nil when the
+    /// locator is empty or not a plain on-disk file, so virtual/synced locators
+    /// simply skip conditional-GET.
+    static func sessionETag(
+        id: String,
+        locator: String?,
+        offset: Int,
+        limit: Int,
+        displayTitle: String? = nil,
+        project: String? = nil,
+        messageCount: Int? = nil
+    ) -> String? {
         guard let locator, !locator.isEmpty,
               let attributes = try? FileManager.default.attributesOfItem(atPath: locator),
               let modified = attributes[.modificationDate] as? Date,
@@ -371,7 +390,16 @@ final class EngramWebUIServer: @unchecked Sendable {
             return nil
         }
         let modifiedMs = Int(modified.timeIntervalSince1970 * 1000)
-        let material = "\(id)\u{1F}\(modifiedMs)\u{1F}\(size)\u{1F}\(offset)\u{1F}\(limit)"
+        let material = [
+            id,
+            displayTitle ?? "",
+            project ?? "",
+            String(messageCount ?? -1),
+            String(modifiedMs),
+            String(size),
+            String(offset),
+            String(limit)
+        ].joined(separator: "\u{1F}")
         let digest = SHA256.hash(data: Data(material.utf8))
         let hex = digest.map { String(format: "%02x", $0) }.joined()
         return "W/\"\(hex)\""
@@ -442,7 +470,11 @@ final class EngramWebUIServer: @unchecked Sendable {
         for session: WebSession,
         offset: Int,
         limit: Int
-    ) async throws -> (messages: [NormalizedMessage], hasMore: Bool, nextOffset: Int) {
+    ) async throws -> (
+        messages: [NormalizedMessage],
+        hasMore: Bool,
+        nextOffset: Int
+    ) {
         guard let source = SourceName(rawValue: session.source),
               let adapter = adapters[source],
               let locator = session.readablePath,
@@ -463,7 +495,12 @@ final class EngramWebUIServer: @unchecked Sendable {
             raw.append(message)
             if raw.count > limit { break }
         }
-        return Self.windowDisplayable(raw, source: session.source, offset: offset, limit: limit)
+        let page = Self.windowDisplayable(raw, source: session.source, offset: offset, limit: limit)
+        return (
+            page.messages,
+            page.hasMore,
+            page.nextOffset
+        )
     }
 
     /// Pure windowing/filtering over an already-offset raw message slice.

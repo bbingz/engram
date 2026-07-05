@@ -240,6 +240,24 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
         return JSONLAdapterSupport.stream(messages)
     }
 
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        let result = try JSONLAdapterSupport.windowedMessagesWithMetadata(
+            locator: locator,
+            options: options,
+            limits: limits,
+            detectTruncation: options.limit == nil,
+            transform: Self.message(from:)
+        )
+        return StreamMessagesResult(
+            messages: JSONLAdapterSupport.stream(result.messages),
+            totalKnownComplete: result.totalKnownComplete,
+            truncatedAt: result.truncatedAt
+        )
+    }
+
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
     }
@@ -733,6 +751,13 @@ final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, ModificationFiltered
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
         try await base.streamMessages(locator: locator, options: options)
+    }
+
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        try await base.streamMessagesWithMetadata(locator: locator, options: options)
     }
 
     func isAccessible(locator: String) async -> Bool {

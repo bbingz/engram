@@ -176,6 +176,24 @@ public struct StreamMessagesOptions: Equatable, Sendable {
     }
 }
 
+public struct StreamMessagesResult: Sendable {
+    public var messages: AsyncThrowingStream<NormalizedMessage, Error>
+    public var totalKnownComplete: Bool
+    public var truncatedAt: Int?
+
+    public var truncated: Bool { truncatedAt != nil || !totalKnownComplete }
+
+    public init(
+        messages: AsyncThrowingStream<NormalizedMessage, Error>,
+        totalKnownComplete: Bool = true,
+        truncatedAt: Int? = nil
+    ) {
+        self.messages = messages
+        self.totalKnownComplete = totalKnownComplete
+        self.truncatedAt = truncatedAt
+    }
+}
+
 public enum ParserFailure: String, CaseIterable, Error, Codable, Equatable, Sendable {
     case fileMissing
     case fileTooLarge
@@ -217,6 +235,10 @@ public protocol MessageAdapter {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error>
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult
 }
 
 public protocol SessionAdapter: MessageAdapter {
@@ -232,6 +254,15 @@ public protocol SessionAdapter: MessageAdapter {
 }
 
 public extension SessionAdapter {
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        StreamMessagesResult(
+            messages: try await streamMessages(locator: locator, options: options)
+        )
+    }
+
     func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
         switch try await parseSessionInfo(locator: locator) {
         case .failure(let failure):

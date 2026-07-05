@@ -133,6 +133,22 @@ final class QwenAdapter: SessionAdapter, Sendable {
         return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(Self.messages(from: objects), options: options))
     }
 
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        guard options.limit == nil else {
+            return StreamMessagesResult(messages: try await streamMessages(locator: locator, options: options))
+        }
+        let result = try JSONLAdapterSupport.wholeDocumentMessagesWithMetadata(
+            locator: locator,
+            options: options,
+            limits: limits,
+            transform: Self.messages(from:)
+        )
+        return JSONLAdapterSupport.stream(result)
+    }
+
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
     }

@@ -18,9 +18,9 @@ enum TranscriptExportService {
             throw EngramServiceError.invalidRequest(message: "Session not found: \(request.id)")
         }
 
-        let messages: [ServiceTranscriptMessage]
+        let transcript: ServiceTranscriptReader.ReadResult
         do {
-            messages = try await ServiceTranscriptReader.readMessages(
+            transcript = try await ServiceTranscriptReader.readMessagesWithMetadata(
                 filePath: session.filePath,
                 source: session.source
             )
@@ -44,14 +44,14 @@ enum TranscriptExportService {
             from: outputURL.standardizedFileURL,
             through: URL(fileURLWithPath: home, isDirectory: true).standardizedFileURL
         )
-        let content = try exportContent(session: session, messages: messages, format: request.format)
+        let content = try exportContent(session: session, transcript: transcript, format: request.format)
         try content.write(to: outputURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputURL.path)
 
         return EngramServiceExportSessionResponse(
             outputPath: outputURL.path,
             format: request.format,
-            messageCount: messages.count
+            messageCount: transcript.messages.count
         )
     }
 
@@ -144,10 +144,10 @@ enum TranscriptExportService {
 
     private static func exportContent(
         session: ServiceExportSessionRecord,
-        messages: [ServiceTranscriptMessage],
+        transcript: ServiceTranscriptReader.ReadResult,
         format: String
     ) throws -> String {
-        let redactedMessages = messages.map { message in
+        let redactedMessages = transcript.messages.map { message in
             ServiceTranscriptMessage(
                 role: message.role,
                 content: redactSensitiveContent(message.content),
@@ -155,8 +155,16 @@ enum TranscriptExportService {
             )
         }
         if format == "json" {
+            var transcriptMetadata: [String: Any] = [
+                "truncated": transcript.truncated,
+                "totalKnownComplete": transcript.totalKnownComplete,
+            ]
+            if let truncatedAt = transcript.truncatedAt {
+                transcriptMetadata["truncatedAt"] = truncatedAt
+            }
             let payload: [String: Any] = [
                 "session": session.jsonObject,
+                "transcript": transcriptMetadata,
                 "messages": redactedMessages.map(\.jsonObject),
             ]
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
@@ -170,6 +178,13 @@ enum TranscriptExportService {
             "**Date:** \(serviceLocalDateTime(session.startTime))",
             "**Project:** \(session.project ?? session.cwd)",
             "**Messages:** \(session.messageCount)",
+        ]
+        if let truncatedAt = transcript.truncatedAt {
+            lines.append("**Transcript:** Transcript truncated at \(decimalString(truncatedAt)) messages. Later content is not included in this bounded export.")
+        } else if !transcript.totalKnownComplete {
+            lines.append("**Transcript:** Transcript is not known to be complete. Later content may be missing from this bounded export.")
+        }
+        lines += [
             "",
             "---",
             "",
@@ -183,6 +198,18 @@ enum TranscriptExportService {
             lines.append("")
         }
         return lines.joined(separator: "\n")
+    }
+
+    private static func decimalString(_ value: Int) -> String {
+        let digits = Array(String(value).reversed())
+        var grouped: [Character] = []
+        for (index, digit) in digits.enumerated() {
+            if index > 0, index % 3 == 0 {
+                grouped.append(",")
+            }
+            grouped.append(digit)
+        }
+        return String(grouped.reversed())
     }
 
     // Compile the secret-redaction patterns once per process instead of once
@@ -324,21 +351,37 @@ struct ServiceTranscriptMessage: Sendable {
 }
 
 enum ServiceTranscriptReader {
+    struct ReadResult {
+        let messages: [ServiceTranscriptMessage]
+        let totalKnownComplete: Bool
+        let truncatedAt: Int?
+
+        var truncated: Bool { truncatedAt != nil || !totalKnownComplete }
+    }
+
     static func readMessages(filePath: String, source: String) async throws -> [ServiceTranscriptMessage] {
+        try await readMessagesWithMetadata(filePath: filePath, source: source).messages
+    }
+
+    static func readMessagesWithMetadata(filePath: String, source: String) async throws -> ReadResult {
         let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
         if guardBeforeAdapter {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
 
-        if let adapterMessages = try await readWithAdapterRegistry(filePath: filePath, source: source) {
-            return adapterMessages
+        if let adapterResult = try await readWithAdapterRegistry(filePath: filePath, source: source) {
+            return adapterResult
         }
 
         if !guardBeforeAdapter {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
 
-        return parseFallbackMessages(filePath: filePath, source: source)
+        return ReadResult(
+            messages: parseFallbackMessages(filePath: filePath, source: source),
+            totalKnownComplete: true,
+            truncatedAt: nil
+        )
     }
 
     /// Read only a small primer window (first visible message + the last
@@ -349,6 +392,10 @@ enum ServiceTranscriptReader {
     /// `readMessages` followed by `primerWindow(_:limit:)`. Same size-guard and
     /// fallback-unsafe ParserFailure semantics as `readMessages`.
     static func readPrimerMessages(filePath: String, source: String, limit: Int) async throws -> [ServiceTranscriptMessage] {
+        try await readPrimerMessagesWithMetadata(filePath: filePath, source: source, limit: limit).messages
+    }
+
+    static func readPrimerMessagesWithMetadata(filePath: String, source: String, limit: Int) async throws -> ReadResult {
         let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
         if guardBeforeAdapter {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
@@ -366,7 +413,11 @@ enum ServiceTranscriptReader {
             try TranscriptSizeGuard.validateFullJSONTranscript(filePath: filePath, source: source)
         }
 
-        return primerWindow(parseFallbackMessages(filePath: filePath, source: source), limit: limit)
+        return ReadResult(
+            messages: primerWindow(parseFallbackMessages(filePath: filePath, source: source), limit: limit),
+            totalKnownComplete: true,
+            truncatedAt: nil
+        )
     }
 
     /// Select the primer window from a fully materialized visible-message
@@ -422,7 +473,7 @@ enum ServiceTranscriptReader {
         filePath: String,
         source: String,
         primerLimit: Int? = nil
-    ) async throws -> [ServiceTranscriptMessage]? {
+    ) async throws -> ReadResult? {
         guard let sourceName = adapterSourceName(for: source),
               let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
         else {
@@ -430,10 +481,11 @@ enum ServiceTranscriptReader {
         }
 
         do {
-            let stream = try await adapter.streamMessages(
+            let result = try await adapter.streamMessagesWithMetadata(
                 locator: filePath,
                 options: StreamMessagesOptions()
             )
+            let stream = result.messages
             // Primer mode: keep only the first visible message plus the last
             // `primerLimit - 1` visible messages in a bounded rolling buffer,
             // so a large transcript never inflates a full [ServiceTranscriptMessage]
@@ -458,7 +510,11 @@ enum ServiceTranscriptReader {
                     if tail.count > primerLimit { tail.removeFirst() }
                     visibleCount += 1
                 }
-                return assemblePrimer(first: first, tail: tail, count: visibleCount, limit: primerLimit)
+                return ReadResult(
+                    messages: assemblePrimer(first: first, tail: tail, count: visibleCount, limit: primerLimit),
+                    totalKnownComplete: result.totalKnownComplete,
+                    truncatedAt: result.truncatedAt
+                )
             }
             var messages: [ServiceTranscriptMessage] = []
             for try await message in stream {
@@ -475,7 +531,11 @@ enum ServiceTranscriptReader {
                     )
                 )
             }
-            return messages
+            return ReadResult(
+                messages: messages,
+                totalKnownComplete: result.totalKnownComplete,
+                truncatedAt: result.truncatedAt
+            )
         } catch let failure as ParserFailure where isFallbackUnsafeParserFailure(failure) {
             throw failure
         } catch {

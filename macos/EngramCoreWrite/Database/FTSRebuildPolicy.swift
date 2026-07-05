@@ -112,6 +112,7 @@ public enum FTSRebuildPolicy {
         try db.execute(sql: "DROP TABLE IF EXISTS sessions_fts_old")
         try markCurrentVersion(db)
         try db.execute(sql: "DELETE FROM metadata WHERE key = ?", arguments: [rebuildVersionKey])
+        try db.execute(sql: "DELETE FROM metadata WHERE key = ?", arguments: [StartupBackfills.ftsOptimizeSignatureKey])
         // The swapped-in table has fresh rowids, so the map built against the old
         // active table is stale. Rebuild it from the new table (sentinel hashes force
         // one full per-session replace on the next re-index, which restores hashes).

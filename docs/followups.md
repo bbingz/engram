@@ -66,6 +66,71 @@ follow-up fix pass. Every behavior change here needs a matching Swift test.
   (e.g. keep the 413 or add an explicit "transcript truncated at N" marker)
   instead of quietly capping. Confirm the intended UX before implementing.
 
+#### P1 residuals after Codex fix pass (re-verified 2026-07-05, Claude Code)
+
+Codex's fix batches closed the *core* of P1: MCP `get_session` now surfaces
+`truncatedAt` / `totalKnownComplete=false` and computes `totalPages` from the
+capped window, `collectVisiblePageWindow` respects the cap via
+`maxRawMessages`, the resume primer marks truncation, and markdown/JSON export
+carry truncation metadata for the nine JSONL/cascade adapters that override
+`streamMessagesWithMetadata`. Verified by re-reading the working tree plus green
+focused suites (`AdapterWindowedReadTests`, `EngramMCPExecutableTests`,
+`EngramWebUIServerTests`, `EngramServiceIPCTests`, `StartupBackfillTests`,
+`DatabaseManagerTests`). The two residuals below were resolved on 2026-07-05 by
+Codex:
+
+- **Web UI oversized-transcript banner/clamp is dead code for indexed JSONL
+  sessions, and its tests only exercise the pure helpers.** The banner/clamp
+  trigger `EngramWebUIServer.transcriptTruncationMarker` (`:569`) fires only when
+  `sessionMessageCount > transcriptMaxMessages` (10_000, `:35`) **or**
+  `readTruncatedAt != nil`. Neither is reachable on the normal indexed path:
+  (1) stored `message_count` is itself capped at ≤10_000 —
+  `JSONLAdapterSupport.readObjects` stops appending at `limits.maxMessages`
+  (`CodexAdapter.swift:93`, `ParserLimits.swift:19`) and `parseSessionInfo`
+  counts only that capped object set (`CodexAdapter.swift:421`), so
+  `count > 10_000` is never true; (2) the Web UI page read passes a non-nil
+  `limit` (`EngramWebUIServer.swift:518`), so the adapter takes
+  `shouldApplyMessageCap = options.limit == nil` = false
+  (`CodexAdapter.swift:498`) and returns `truncatedAt = nil` (`:534`). Net: the
+  banner never renders and the clamp never engages; because the same windowed
+  read is uncapped, the Web UI actually pages the *full* transcript via
+  `hasMore`/`nextOffset` (`:340`), so this is not data loss — it is inert
+  defensive code plus an MCP-vs-WebUI inconsistency (MCP reports "truncated at
+  10k", the Web UI serves everything). The three added tests
+  (`EngramWebUIServerTests.swift:187`–`:219`) inject synthetic post-cap values
+  (`sessionMessageCount: 10_001`, `truncatedAt: 10_000`) into the static helpers
+  and never drive `sessionPage`/`readMessages` against a seeded >10k session, so
+  they stay green while the production trigger is unreachable — false coverage.
+  **Resolution:** Option B is now the explicit product behavior: Web UI
+  transcript pages use raw-window pagination over the full transcript, while
+  MCP/export whole-transcript surfaces remain capped and marked. The dead
+  banner/clamp helpers and their helper-only tests were removed, and
+  `EngramWebUIServerTests.testSessionPagePaginatesPastTenThousandWithoutTruncationBanner`
+  now drives a real `/session/...` page over a seeded >10k-message Codex
+  transcript.
+- **Residual silent export truncation on adapters that do not override
+  `streamMessagesWithMetadata`.** `KimiAdapter` (`:105`) and `OpenCodeAdapter`
+  (`:220`) override only `streamMessages`, so they inherit the default
+  `SessionAdapter.streamMessagesWithMetadata` (`SessionAdapter.swift:256`–`:264`)
+  which always returns `truncatedAt = nil` / `totalKnownComplete = true`. An
+  oversized (>10k message) session from either source therefore exports (and
+  MCP-pages) capped at 10_000 with no truncation marker — the exact silent
+  truncation P1 set out to remove, still present for these sources.
+  **Resolution:** `KimiAdapter` and `OpenCodeAdapter` now override
+  `streamMessagesWithMetadata` and report `truncatedAt = 10_000` /
+  `totalKnownComplete = false` for whole-transcript reads that exceed the cap.
+  Regression coverage lives in
+  `EngramServiceIPCTests.testExportSessionMarksKimiOversizedTranscriptTruncated`
+  and
+  `EngramServiceIPCTests.testExportSessionMarksOpenCodeOversizedTranscriptTruncated`.
+
+  **Validation:** focused
+  `xcodebuild test -project Engram.xcodeproj -scheme EngramServiceCore
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` with the three
+  new/changed `-only-testing` filters passed on 2026-07-05. The required
+  `xcodebuild -project macos/Engram.xcodeproj -scheme Engram -configuration
+  Debug build` also passed.
+
 ### P2 — Web UI session-page ETag omits DB-mutable display fields
 
 - **Where:** `macos/EngramService/Core/EngramWebUIServer.swift`

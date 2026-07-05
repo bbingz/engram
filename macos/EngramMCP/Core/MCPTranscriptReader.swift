@@ -12,6 +12,10 @@ struct MCPTranscriptPage {
     let totalPages: Int
     let currentPage: Int
     let pageSize: Int
+    let totalKnownComplete: Bool
+    let truncatedAt: Int?
+
+    var truncated: Bool { truncatedAt != nil || !totalKnownComplete }
 }
 
 private struct MCPTranscriptPageBuilder {
@@ -40,12 +44,14 @@ private struct MCPTranscriptPageBuilder {
     // the transcript's true visible-message total (the basis for `totalPages`).
     var visibleMessageCount: Int { totalMessages }
 
-    func build() -> MCPTranscriptPage {
+    func build(totalKnownComplete: Bool = true, truncatedAt: Int? = nil) -> MCPTranscriptPage {
         MCPTranscriptPage(
             messages: messages,
             totalPages: max(1, Int(ceil(Double(totalMessages) / Double(pageSize)))),
             currentPage: currentPage,
-            pageSize: pageSize
+            pageSize: pageSize,
+            totalKnownComplete: totalKnownComplete,
+            truncatedAt: truncatedAt
         )
     }
 
@@ -78,16 +84,22 @@ private struct TranscriptVisibleCountKey: Hashable {
 
 private final class TranscriptVisibleCountCache: @unchecked Sendable {
     static let shared = TranscriptVisibleCountCache()
-    private let lock = NSLock()
-    private var storage: [TranscriptVisibleCountKey: Int] = [:]
+    struct Value {
+        let visibleTotal: Int
+        let totalKnownComplete: Bool
+        let truncatedAt: Int?
+    }
 
-    func value(for key: TranscriptVisibleCountKey) -> Int? {
+    private let lock = NSLock()
+    private var storage: [TranscriptVisibleCountKey: Value] = [:]
+
+    func value(for key: TranscriptVisibleCountKey) -> Value? {
         lock.lock()
         defer { lock.unlock() }
         return storage[key]
     }
 
-    func set(_ value: Int, for key: TranscriptVisibleCountKey) {
+    func set(_ value: Value, for key: TranscriptVisibleCountKey) {
         lock.lock()
         defer { lock.unlock() }
         storage[key] = value
@@ -230,10 +242,11 @@ enum MCPTranscriptReader {
         }
 
         do {
-            let stream = try await adapter.streamMessages(
+            let result = try await adapter.streamMessagesWithMetadata(
                 locator: filePath,
                 options: StreamMessagesOptions()
             )
+            let stream = result.messages
             var messages: [MCPTranscriptMessage] = []
             for try await message in stream {
                 guard isDefaultVisibleMessage(
@@ -301,13 +314,16 @@ enum MCPTranscriptReader {
                         filePath: filePath,
                         source: source,
                         currentPage: currentPage,
-                        pageSize: pageSize
+                        pageSize: pageSize,
+                        maxRawMessages: cachedTotal.truncatedAt
                     )
                     return MCPTranscriptPage(
                         messages: windowMessages,
-                        totalPages: max(1, Int(ceil(Double(cachedTotal) / Double(pageSize)))),
+                        totalPages: max(1, Int(ceil(Double(cachedTotal.visibleTotal) / Double(pageSize)))),
                         currentPage: currentPage,
-                        pageSize: pageSize
+                        pageSize: pageSize,
+                        totalKnownComplete: cachedTotal.totalKnownComplete,
+                        truncatedAt: cachedTotal.truncatedAt
                     )
                 }
 
@@ -319,7 +335,14 @@ enum MCPTranscriptReader {
                     pageSize: pageSize,
                     roles: nil
                 )
-                TranscriptVisibleCountCache.shared.set(page.visibleTotal, for: key)
+                TranscriptVisibleCountCache.shared.set(
+                    TranscriptVisibleCountCache.Value(
+                        visibleTotal: page.visibleTotal,
+                        totalKnownComplete: page.page.totalKnownComplete,
+                        truncatedAt: page.page.truncatedAt
+                    ),
+                    for: key
+                )
                 return page.page
             }
 
@@ -352,10 +375,11 @@ enum MCPTranscriptReader {
         pageSize: Int,
         roles: [String]?
     ) async throws -> (page: MCPTranscriptPage, visibleTotal: Int) {
-        let stream = try await adapter.streamMessages(
+        let result = try await adapter.streamMessagesWithMetadata(
             locator: filePath,
             options: StreamMessagesOptions()
         )
+        let stream = result.messages
         var builder = MCPTranscriptPageBuilder(
             currentPage: currentPage,
             pageSize: pageSize
@@ -372,7 +396,13 @@ enum MCPTranscriptReader {
                 roles: roles
             )
         }
-        return (builder.build(), builder.visibleMessageCount)
+        return (
+            builder.build(
+                totalKnownComplete: result.totalKnownComplete,
+                truncatedAt: result.truncatedAt
+            ),
+            builder.visibleMessageCount
+        )
     }
 
     // Collect only the visible window `[(currentPage-1)*pageSize, currentPage*pageSize)`
@@ -386,10 +416,18 @@ enum MCPTranscriptReader {
         filePath: String,
         source: String,
         currentPage: Int,
-        pageSize: Int
+        pageSize: Int,
+        maxRawMessages: Int?
     ) async throws -> [MCPTranscriptMessage] {
+        let visibleStart = (currentPage - 1) * pageSize
+        if let maxRawMessages, visibleStart >= maxRawMessages {
+            return []
+        }
         let visibleNeeded = currentPage * pageSize
         var rawLimit = max(visibleNeeded, pageSize)
+        if let maxRawMessages {
+            rawLimit = min(rawLimit, maxRawMessages)
+        }
         while true {
             let stream = try await adapter.streamMessages(
                 locator: filePath,
@@ -420,7 +458,15 @@ enum MCPTranscriptReader {
             if visibleCount >= visibleNeeded || rawCount < rawLimit {
                 return builder.build().messages
             }
-            rawLimit *= 2
+            if let maxRawMessages {
+                let nextLimit = min(rawLimit * 2, maxRawMessages)
+                if nextLimit == rawLimit {
+                    return builder.build().messages
+                }
+                rawLimit = nextLimit
+            } else {
+                rawLimit *= 2
+            }
         }
     }
 

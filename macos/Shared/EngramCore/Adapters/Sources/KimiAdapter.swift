@@ -106,6 +106,27 @@ final class KimiAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        let result = try Self.messages(locator: locator, options: options, limits: limits)
+        return JSONLAdapterSupport.stream(result.messages)
+    }
+
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        let result = try Self.messages(locator: locator, options: options, limits: limits)
+        return JSONLAdapterSupport.stream(result)
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        JSONLAdapterSupport.fileExists(locator)
+    }
+
+    private static func messages(
+        locator: String,
+        options: StreamMessagesOptions,
+        limits: ParserLimits
+    ) throws -> JSONLAdapterSupport.WindowedMessagesResult {
         var messages: [NormalizedMessage] = []
         let turns = try Self.readTurnMetadata(
             wirePath: URL(fileURLWithPath: locator)
@@ -117,10 +138,19 @@ final class KimiAdapter: SessionAdapter, Sendable {
         var turnIndex = 0
         var userBoundInTurn = false
         var assistantBoundInTurn = false
+        var truncatedAt: Int?
+        let shouldApplyMessageCap = options.limit == nil
 
         for file in Self.contextFiles(for: locator) {
-            let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: file, limits: limits)
-            if let failure { throw failure }
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                locator: file,
+                limits: limits,
+                reportFailures: shouldApplyMessageCap
+            )
+            if let failure {
+                guard failure == .messageLimitExceeded else { throw failure }
+                truncatedAt = limits.maxMessages
+            }
             for object in objects {
                 guard let role = JSONLAdapterSupport.string(object["role"]),
                       role == "user" || role == "assistant"
@@ -152,11 +182,15 @@ final class KimiAdapter: SessionAdapter, Sendable {
                 }
             }
         }
-        return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
-    }
-
-    func isAccessible(locator: String) async -> Bool {
-        JSONLAdapterSupport.fileExists(locator)
+        if shouldApplyMessageCap, messages.count > limits.maxMessages {
+            truncatedAt = limits.maxMessages
+        }
+        let boundedMessages = truncatedAt == nil ? messages : Array(messages.prefix(limits.maxMessages))
+        return JSONLAdapterSupport.WindowedMessagesResult(
+            messages: JSONLAdapterSupport.applyWindow(boundedMessages, options: options),
+            totalKnownComplete: truncatedAt == nil,
+            truncatedAt: truncatedAt
+        )
     }
 
     private func resolveCwd(sessionId: String) -> String {
