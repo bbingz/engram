@@ -180,11 +180,6 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         openItem.target = self
         menu.addItem(openItem)
 
-        let webItem = NSMenuItem(title: String(localized: "Open Web UI"), action: #selector(openWebUI), keyEquivalent: "")
-        webItem.target = self
-        webItem.isEnabled = serviceStatusStore.endpointPort != nil
-        menu.addItem(webItem)
-
         let settingsItem = NSMenuItem(title: String(localized: "Settings..."), action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
@@ -312,14 +307,6 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             NSApp.activate(ignoringOtherApps: true)
         }
         self.window = win
-    }
-
-    @objc private func openWebUI() {
-        guard let port = serviceStatusStore.endpointPort else { return }
-        let host = serviceStatusStore.endpointHost ?? "127.0.0.1"
-        if let url = URL(string: "http://\(host):\(port)/") {
-            NSWorkspace.shared.open(url)
-        }
     }
 
     // When a window closes, check if any windows remain; if not, revert to accessory mode

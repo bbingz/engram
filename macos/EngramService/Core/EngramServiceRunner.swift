@@ -1,6 +1,5 @@
 import Foundation
 import GRDB
-import Security
 import EngramCoreRead
 import EngramCoreWrite
 
@@ -90,46 +89,6 @@ public enum EngramServiceRunner {
             await handler.handle(request)
         }
         try server.start()
-
-        // SEC-C1: the web UI is opt-in. Default OFF; only start when the user has
-        // explicitly enabled `webUIEnabled` in ~/.engram/settings.json.
-        let webUIEnabled = Self.readWebUIEnabled(environment: environment)
-        let webToken = webUIEnabled ? Self.provisionWebToken(runtimeDirectory: runtimeDirectory) : nil
-        let webTask = webUIEnabled ? Task {
-            do {
-                let webServer = try EngramWebUIServer(databasePath: databasePath, authToken: webToken)
-                let readyTask = Task {
-                    do {
-                        try await waitForWebHealth(host: "127.0.0.1", port: 3457)
-                        emitWebReady(host: "127.0.0.1", port: 3457)
-                    } catch is CancellationError {
-                    } catch {
-                        ServiceLogger.warn(
-                            "web ui health probe failed: \(error.localizedDescription)",
-                            category: .runner
-                        )
-                        emit(ServiceWebErrorEvent(message: error.localizedDescription))
-                    }
-                }
-                defer {
-                    readyTask.cancel()
-                }
-                try await webServer.run()
-            } catch is CancellationError {
-                return
-            } catch {
-                ServiceLogger.warn(
-                    "web ui failed to start: \(error.localizedDescription)",
-                    category: .runner
-                )
-                emit(ServiceWebErrorEvent(message: error.localizedDescription))
-            }
-        } : nil
-        if !webUIEnabled {
-            ServiceLogger.info("web ui disabled (webUIEnabled=false); not starting", category: .runner)
-        } else {
-            ServiceLogger.info("web ui enabled (webUIEnabled=true); starting local server", category: .runner)
-        }
 
         ServiceLogger.notice("service ready, listening on \(socketBasename)", category: .runner)
         writeStdoutLine(#"{"event":"ready","socket":"\#(socketPath)"}"#)
@@ -221,7 +180,6 @@ public enum EngramServiceRunner {
             initialScanTask.cancel()
             indexingTask.cancel()
             checkpointTask.cancel()
-            webTask?.cancel()
             server.stop()
         }
 
@@ -1168,45 +1126,17 @@ public enum EngramServiceRunner {
         }
     }
 
-    private static func waitForWebHealth(host: String, port: Int) async throws {
-        let url = URL(string: "http://\(host):\(port)/health")!
-        for _ in 0..<100 {
-            try Task.checkCancellation()
-            if await webHealthResponds(url: url) {
-                return
-            }
-            try await Task.sleep(nanoseconds: 100_000_000)
-        }
-        throw WebReadinessError.timeout(host: host, port: port)
-    }
-
-    private static func webHealthResponds(url: URL) async -> Bool {
-        do {
-            let (_, response) = try await URLSession.shared.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                return false
-            }
-            return httpResponse.statusCode == 200
-        } catch {
-            return false
-        }
-    }
-
     private static let stdoutLock = NSLock()
 
     /// Serialize every structured-JSON line written to stdout. Multiple startup
-    /// tasks (initial scan, indexing loop, checkpoint, web-ready) emit events
-    /// concurrently; without a lock their `print()` + `fflush` can interleave or
-    /// drop partial lines on the shared stdout stream.
+    /// tasks (initial scan, indexing loop, checkpoint) emit events concurrently;
+    /// without a lock their `print()` + `fflush` can interleave or drop partial
+    /// lines on the shared stdout stream.
     private static func writeStdoutLine(_ text: String) {
         stdoutLock.lock()
         defer { stdoutLock.unlock() }
         print(text)
         fflush(stdout)
-    }
-
-    private static func emitWebReady(host: String, port: Int) {
-        writeStdoutLine(#"{"event":"web_ready","host":"\#(host)","port":\#(port)}"#)
     }
 
     private static func emit<T: Encodable>(_ value: T) {
@@ -1216,30 +1146,6 @@ public enum EngramServiceRunner {
             return
         }
         writeStdoutLine(text)
-    }
-
-    // MARK: - Web UI gating (SEC-C1)
-
-    /// Reads the opt-in `webUIEnabled` flag. Default FALSE. An env override
-    /// (`ENGRAM_WEB_UI_ENABLED=1`) is honored for tests/dev; otherwise the value
-    /// comes from `~/.engram/settings.json`.
-    static func readWebUIEnabled(environment: [String: String]) -> Bool {
-        if let envValue = environment["ENGRAM_WEB_UI_ENABLED"] {
-            return ["1", "true", "yes"].contains(envValue.lowercased())
-        }
-        let settingsURL = FileManager.default
-            .homeDirectoryForCurrentUser
-            .appendingPathComponent(".engram", isDirectory: true)
-            .appendingPathComponent("settings.json")
-        guard let data = try? Data(contentsOf: settingsURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            return false
-        }
-        if let value = object["webUIEnabled"] as? Bool {
-            return value
-        }
-        return false
     }
 
     /// Reads the per-source ingest opt-out set (feature #2 slice B). A disabled
@@ -1351,37 +1257,6 @@ public enum EngramServiceRunner {
         return number
     }
 
-    /// Generates a per-launch bearer token and writes it to
-    /// `<runtimeDirectory>/webui.token` with mode 0600. Returns nil on failure
-    /// (the web UI then refuses to start, failing closed).
-    static func provisionWebToken(runtimeDirectory: URL) -> String? {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
-            return nil
-        }
-        let token = Data(bytes).base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-        let tokenURL = runtimeDirectory.appendingPathComponent("webui.token")
-        do {
-            let data = Data(token.utf8)
-            try? FileManager.default.removeItem(at: tokenURL)
-            let created = FileManager.default.createFile(
-                atPath: tokenURL.path,
-                contents: data,
-                attributes: [.posixPermissions: 0o600]
-            )
-            guard created else {
-                throw EngramServiceError.serviceUnavailable(message: "Cannot write web UI token")
-            }
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenURL.path)
-            return token
-        } catch {
-            ServiceLogger.warn("failed to write web ui token: \(error.localizedDescription)", category: .runner)
-            return nil
-        }
-    }
 }
 
 private struct StartupBackfillEventEnvelope: Encodable {
@@ -1396,17 +1271,6 @@ private struct StartupBackfillEventEnvelope: Encodable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(event.event, forKey: .event)
         try container.encode(event.payload, forKey: .payload)
-    }
-}
-
-private enum WebReadinessError: LocalizedError {
-    case timeout(host: String, port: Int)
-
-    var errorDescription: String? {
-        switch self {
-        case .timeout(let host, let port):
-            return "Timed out waiting for Web UI at \(host):\(port)"
-        }
     }
 }
 
@@ -1449,9 +1313,4 @@ struct ServiceUsageEvent: Encodable {
             )
         }
     }
-}
-
-private struct ServiceWebErrorEvent: Encodable {
-    let event = "web_error"
-    let message: String
 }

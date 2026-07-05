@@ -127,8 +127,6 @@ struct EngramServiceEvent: Codable, Equatable, Sendable {
     let errorDetail: String?
     let sessionId: String?
     let summary: String?
-    let port: Int?
-    let host: String?
     let action: String?
     let removed: Int?
     let usage: [EngramServiceUsageItem]?
@@ -142,8 +140,6 @@ struct EngramServiceEvent: Codable, Equatable, Sendable {
         case error
         case sessionId
         case summary
-        case port
-        case host
         case action
         case removed
         case usage
@@ -159,8 +155,6 @@ struct EngramServiceEvent: Codable, Equatable, Sendable {
         errorDetail: String? = nil,
         sessionId: String? = nil,
         summary: String? = nil,
-        port: Int? = nil,
-        host: String? = nil,
         action: String? = nil,
         removed: Int? = nil,
         usage: [EngramServiceUsageItem]? = nil
@@ -173,8 +167,6 @@ struct EngramServiceEvent: Codable, Equatable, Sendable {
         self.errorDetail = errorDetail
         self.sessionId = sessionId
         self.summary = summary
-        self.port = port
-        self.host = host
         self.action = action
         self.removed = removed
         self.usage = usage
@@ -190,8 +182,6 @@ struct EngramServiceEvent: Codable, Equatable, Sendable {
         errorDetail = try container.decodeIfPresent(String.self, forKey: .error)
         sessionId = try container.decodeIfPresent(String.self, forKey: .sessionId)
         summary = try container.decodeIfPresent(String.self, forKey: .summary)
-        port = try container.decodeIfPresent(Int.self, forKey: .port)
-        host = try container.decodeIfPresent(String.self, forKey: .host)
         action = try container.decodeIfPresent(String.self, forKey: .action)
         removed = try container.decodeIfPresent(Int.self, forKey: .removed)
         usage = try container.decodeIfPresent([EngramServiceUsageItem].self, forKey: .usage)
@@ -208,8 +198,6 @@ struct EngramServiceEvent: Codable, Equatable, Sendable {
         try container.encodeIfPresent(errorDetail, forKey: .error)
         try container.encodeIfPresent(sessionId, forKey: .sessionId)
         try container.encodeIfPresent(summary, forKey: .summary)
-        try container.encodeIfPresent(port, forKey: .port)
-        try container.encodeIfPresent(host, forKey: .host)
         try container.encodeIfPresent(action, forKey: .action)
         try container.encodeIfPresent(removed, forKey: .removed)
         try container.encodeIfPresent(usage, forKey: .usage)

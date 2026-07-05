@@ -549,28 +549,25 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
-    func testAppLaunchDoesNotMarkWebEndpointReadyBeforeServiceEvent() throws {
+    func testAppLaunchDoesNotSeedDeletedHttpWebEndpoint() throws {
         let app = try source("macos/Engram/App.swift")
         XCTAssertFalse(
             app.contains("serviceStatusStore.endpointHost = \"127.0.0.1\""),
-            "App launch must not mark the Web endpoint ready before the service emits a verified web_ready event"
+            "App launch must not seed the deleted HTTP Web UI endpoint host"
         )
         XCTAssertFalse(
             app.contains("serviceStatusStore.endpointPort = 3457"),
-            "App launch must not enable Web UI before service readiness is verified"
+            "App launch must not seed the deleted HTTP Web UI endpoint port"
         )
     }
 
-    func testServiceRunnerDoesNotEmitWebReadyBeforeServerRun() throws {
+    func testServiceRunnerDoesNotStartDeletedHttpWebUi() throws {
         let runner = try source("macos/EngramService/Core/EngramServiceRunner.swift")
-        let runRange = try XCTUnwrap(runner.range(of: "try await webServer.run()"))
-        let readyRange = try XCTUnwrap(runner.range(of: #"{"event":"web_ready""#))
-
-        XCTAssertLessThan(
-            runRange.lowerBound,
-            readyRange.lowerBound,
-            "Service must not emit web_ready before starting the Web server run loop"
-        )
+        XCTAssertFalse(runner.contains("EngramWebUIServer"))
+        XCTAssertFalse(runner.contains("readWebUIEnabled"))
+        XCTAssertFalse(runner.contains("provisionWebToken"))
+        XCTAssertFalse(runner.contains(#""web_ready""#))
+        XCTAssertFalse(runner.contains(#""web_error""#))
     }
 
     func testResumeActionLivesInSessionToolbarNotGlobalWindowToolbar() throws {
@@ -867,8 +864,16 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
             )
         }
         XCTAssertTrue(
+            generalSettings.contains("showDeveloperTools"),
+            "General settings should keep the developer tools toggle"
+        )
+        XCTAssertFalse(
             generalSettings.contains("webUIURL"),
-            "General settings should keep live Swift service Web UI discovery"
+            "General settings must not compute the deleted HTTP Web UI endpoint"
+        )
+        XCTAssertFalse(
+            generalSettings.contains("Open Web UI"),
+            "General settings must not expose the deleted HTTP Web UI button"
         )
         // The former `mcpEndpointText` showed `http://host:port/mcp`, but the
         // Swift service serves no HTTP /mcp route — MCP is the stdio EngramMCP

@@ -418,9 +418,6 @@
     "Observability & AI Audit" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可观测性和 AI 审计" } } }
     },
-    "Open Web UI" : {
-      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "打开 Web UI" } } }
-    },
     "Open transcript" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "打开转录" } } }
     },
@@ -561,9 +558,6 @@
     },
     "Web API & Security" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Web API 和安全" } } }
-    },
-    "Web UI" : {
-      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Web UI" } } }
     },
     "WORKSPACE" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "工作区" } } }

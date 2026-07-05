@@ -79,9 +79,6 @@ secure Unix socket. `EngramMCP` is the native stdio helper used by MCP clients.
   `ServiceWriterGate`; do not add new direct app/MCP SQLite writers.
 - `LegacyDaemonBridge`, `DaemonClient`, `DaemonHTTPClientCore`, app-local
   `MCPServer`, and the Node bundle phase are removed from the product path.
-- The HTTP web UI is NOT removed: the native `EngramWebUIServer` (Hummingbird)
-  is still wired into `EngramServiceRunner` and serves transcript HTML in the
-  product. Only the legacy Node `web.ts` surface is dev/reference-only.
 
 ### Database
 - Swift owns the product schema and writes through `EngramCoreWrite` /
@@ -196,13 +193,8 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
   exposes a Unix socket in a private runtime directory (`0700` parent, `0600`
   socket where the platform applies mode bits). Clients must pass the service
   capability token and peer-UID checks must match the current user.
-- HTTP web UI is opt-in/dev-facing. When enabled, bind locally, enforce
-  Host/CORS allowlists, require bearer auth for mutating `/api/*` calls when a
-  token is configured, cap API bodies, and normalize filesystem paths before
-  any filesystem operation.
-- TypeScript `src/web.ts` is retained for migration/dev tooling. Security fixes
-  there should mirror Swift behavior, but product startup and MCP traffic should
-  go through the Swift service stack.
+- The Swift product does not serve an HTTP transcript Web UI. Product startup,
+  app traffic, and MCP traffic should go through the Swift service stack.
 
 ## Conventions
 

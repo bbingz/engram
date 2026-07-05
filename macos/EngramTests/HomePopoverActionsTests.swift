@@ -66,13 +66,12 @@ final class HomePopoverActionsTests: XCTestCase {
         )
     }
 
-    func testHomeWebUiRowOpensBrowser() throws {
+    func testHomeServiceStateDropsDeletedWebUiRow() throws {
         let s = try homeView()
-        XCTAssertTrue(s.contains("NSWorkspace.shared.open"), "Web UI row must open the browser")
-        XCTAssertTrue(
-            s.contains("onTap: serviceStatusStore.endpointPort == nil ? nil : openWebUI"),
-            "Web UI row tap must be gated on an available endpoint port"
-        )
+        XCTAssertFalse(s.contains("openWebUI"), "Home must not expose the deleted Web UI action")
+        XCTAssertFalse(s.contains("webEndpointLabel"), "Home must not format a deleted Web UI endpoint")
+        XCTAssertFalse(s.contains("endpointPort"), "Home must not read deleted Web UI endpoint state")
+        XCTAssertFalse(s.contains("\"Web UI\""), "Home service state must not render a deleted Web UI row")
     }
 
     // MARK: - HomeView dead-embedding removal + indexing state

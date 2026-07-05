@@ -3594,7 +3594,7 @@ final class EngramServiceIPCTests: XCTestCase {
         // points both the write (RMW) and read (disabledSources) paths at the temp file.
         let settingsURL = URL(fileURLWithPath: "/tmp")
             .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8)).json")
-        let seed: [String: Any] = ["webUIEnabled": true, "aiModel": "gpt-4o-mini"]
+        let seed: [String: Any] = ["customSetting": true, "aiModel": "gpt-4o-mini"]
         let seedData = try JSONSerialization.data(withJSONObject: seed)
         try seedData.write(to: settingsURL)
         setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
@@ -3629,7 +3629,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
         // RMW preserved the pre-existing unrelated keys.
         let preservedAfterDisable = try loadSettings(settingsURL)
-        XCTAssertEqual(preservedAfterDisable["webUIEnabled"] as? Bool, true)
+        XCTAssertEqual(preservedAfterDisable["customSetting"] as? Bool, true)
         XCTAssertEqual(preservedAfterDisable["aiModel"] as? String, "gpt-4o-mini")
         XCTAssertEqual(preservedAfterDisable["disabledSources"] as? [String], ["codex"])
 
@@ -3644,7 +3644,7 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(stillHidden, 0, "enabling must unhide the source's sessions")
 
         let preservedAfterEnable = try loadSettings(settingsURL)
-        XCTAssertEqual(preservedAfterEnable["webUIEnabled"] as? Bool, true)
+        XCTAssertEqual(preservedAfterEnable["customSetting"] as? Bool, true)
         XCTAssertEqual(preservedAfterEnable["aiModel"] as? String, "gpt-4o-mini")
         XCTAssertEqual(preservedAfterEnable["disabledSources"] as? [String], [])
     }

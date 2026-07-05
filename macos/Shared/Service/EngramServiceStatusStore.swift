@@ -32,8 +32,6 @@ final class EngramServiceStatusStore {
     var todayParentSessions = 0
     var lastSummarySessionId: String?
     var usageData: [EngramServiceUsageItem] = []
-    var endpointHost: String?
-    var endpointPort: Int?
     var lastEventAt: Date?
 
     var displayString: String {
@@ -83,13 +81,6 @@ final class EngramServiceStatusStore {
             status = .starting
         case "ready", "indexed", "rescan", "sync_complete", "watcher_indexed":
             applyTotals(from: event)
-        case "web_ready":
-            endpointHost = event.host
-            endpointPort = event.port
-        case "web_error":
-            endpointHost = nil
-            endpointPort = nil
-            status = .degraded(message: "Web UI unavailable: \(event.message ?? "Unknown error")")
         case "summary_generated":
             applyTotals(from: event)
             lastSummarySessionId = event.sessionId
