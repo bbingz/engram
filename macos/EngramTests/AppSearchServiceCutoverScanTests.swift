@@ -412,19 +412,23 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
-    func testPopoverStatusLabelsServiceInsteadOfMcpWhenUsingServiceStatus() throws {
+    func testPopoverDropsLegacyServiceStatusLabelsInsteadOfMcpHealth() throws {
         let popover = try source("macos/Engram/Views/PopoverView.swift")
         XCTAssertFalse(
             popover.contains("label: \"MCP\""),
             "Popover must not label serviceStatusStore.isRunning as MCP helper health"
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             popover.contains("label: \"Service\""),
-            "Popover should label serviceStatusStore.isRunning as Service unless a real MCP helper health check exists"
+            "Simplified popover no longer renders the legacy Service status chip"
         )
         XCTAssertFalse(
             popover.contains("popover_status_mcp"),
             "Popover accessibility id should not imply an MCP helper health check"
+        )
+        XCTAssertFalse(
+            popover.contains("popover_status_service"),
+            "Simplified popover no longer renders the legacy Service status chip"
         )
     }
 
