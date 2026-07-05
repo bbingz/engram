@@ -3,6 +3,12 @@ import AppKit
 import SwiftUI
 import Observation
 
+enum MenuBarClickAction: Equatable {
+    case showContextMenu
+    case togglePopover
+    case openWindow
+}
+
 @MainActor
 class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private let statusItem: NSStatusItem
@@ -15,9 +21,8 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private let serviceStatusStore: EngramServiceStatusStore
     private let serviceClient: EngramServiceClient
     private let usagePressureNotifier = UsagePressureNotifier()
-    private var clickTimer: Timer?
     private var badgeTimer: Timer?
-    // Rate-limit the live-session FS scan: the 10s timer AND every
+    // Rate-limit the live-session FS scan: the badge timer AND every
     // Observation change (totalSessions / todayParentSessions) both call
     // updateBadge(), so without coalescing a burst of changes fans out into
     // repeated recursive live-session scans. Skip the scan if we ran one
@@ -117,27 +122,28 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
     // MARK: - Click handling
 
+    nonisolated static func clickAction(for eventType: NSEvent.EventType, clickCount: Int) -> MenuBarClickAction? {
+        switch eventType {
+        case .rightMouseUp:
+            return .showContextMenu
+        case .leftMouseUp:
+            return clickCount >= 2 ? .openWindow : .togglePopover
+        default:
+            return nil
+        }
+    }
+
     @objc private func handleClick() {
         guard let event = NSApp.currentEvent else { return }
-        if event.type == .rightMouseUp {
-            showContextMenu()
-            return
-        }
+        guard let action = Self.clickAction(for: event.type, clickCount: event.clickCount) else { return }
 
-        if event.clickCount >= 2 {
-            // Double-click: open standalone window
-            clickTimer?.invalidate()
-            clickTimer = nil
-            if popover.isShown { popover.performClose(nil) }
+        switch action {
+        case .showContextMenu:
+            showContextMenu()
+        case .togglePopover:
+            togglePopover()
+        case .openWindow:
             openWindow()
-        } else {
-            // Delay single-click to allow double-click detection
-            clickTimer?.invalidate()
-            clickTimer = Timer.scheduledTimer(withTimeInterval: NSEvent.doubleClickInterval, repeats: false) { [weak self] _ in
-                Task { @MainActor in
-                    self?.togglePopover()
-                }
-            }
         }
     }
 
@@ -405,8 +411,8 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private func updateBadge() {
         let today = serviceStatusStore.todayParentSessions
         // Coalesce: if we scanned live sessions recently, just refresh the cheap
-        // today-count label and skip the recursive FS scan. The 10s timer still
-        // forces a periodic scan once the interval elapses.
+        // today-count label and skip the recursive FS scan. The badge timer
+        // still forces a periodic scan once the interval elapses.
         guard Date().timeIntervalSince(lastBadgeScan) >= Self.badgeScanMinInterval else {
             refreshTodayBadge(today)
             return
@@ -432,7 +438,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     ///
     /// Gate the poll: when no cost budget is configured or threshold notifying
     /// is off/monitoring disabled, skip the costs() round-trip entirely so the
-    /// 10s timer doesn't flood telemetry + the DB for nothing.
+    /// badge timer doesn't flood telemetry + the DB for nothing.
     private func checkCostBudget() async {
         let settings = UsagePressureNotificationSettings.current()
         guard settings.monitorEnabled,

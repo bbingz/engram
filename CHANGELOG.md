@@ -7,6 +7,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: menu-bar popover click latency, hover invalidation, load ordering, and polling cadence (2026-07-05, Codex)
+
+- Corrected the performance framing: `PopoverView.loadData()` was already
+  detached from the app main thread, and `liveSessions()` scans run in the
+  separate `EngramService` process. Those paths affected content arrival, not
+  dropped frames or click latency.
+- Removed the double-click disambiguation timer from `MenuBarController`.
+  Single left-click now opens/toggles the popover immediately; double-click
+  still opens the standalone window, closing the just-opened popover if needed.
+- Scoped timeline hover state to a new row view so row hover no longer mutates
+  root `PopoverView` state, and collapsed DB-backed popover fields into one
+  snapshot assignment per refresh.
+- Consolidated popover source counts through `sourceStats`, started live-session
+  IPC concurrently with the detached DB block, and assigned DB stats before
+  awaiting live-session results. The remaining DB reads use
+  `DatabaseManager.readInBackground`, which is backed by GRDB `DatabasePool.read`.
+- Raised the popover refresh cadence to the service live-session cache TTL
+  (30s), avoiding repeated live-session IPC calls inside the cache window.
+- **Verification:** focused
+  `xcodebuild test -project macos/Engram.xcodeproj -scheme EngramTests
+  -destination 'platform=macOS' -only-testing:EngramTests/HomePopoverActionsTests`
+  passed. `xcodebuild -project macos/Engram.xcodeproj -scheme Engram
+  -configuration Debug build` passed.
+
 ### Fixed: P1 truncation residuals for Web UI, Kimi, and OpenCode (2026-07-05, Codex)
 
 - Removed the unreachable Web UI oversized-transcript banner/clamp. The Web UI

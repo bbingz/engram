@@ -1,4 +1,5 @@
 import XCTest
+@testable import Engram
 
 /// Source-inspection guards (mirroring ViewMainThreadReadTests) for WP09: the
 /// Home/Today dashboard and menu-bar popover wire-ups. SwiftUI bodies aren't
@@ -24,6 +25,10 @@ final class HomePopoverActionsTests: XCTestCase {
 
     private func popoverView() throws -> String {
         try source("macos/Engram/Views/PopoverView.swift")
+    }
+
+    private func menuBarController() throws -> String {
+        try source("macos/Engram/MenuBarController.swift")
     }
 
     private func liveCard() throws -> String {
@@ -136,6 +141,86 @@ final class HomePopoverActionsTests: XCTestCase {
         let s = try popoverView()
         XCTAssertTrue(s.contains("Timer.scheduledTimer"), "Popover must refresh via a single timer")
         XCTAssertTrue(s.contains("refreshTimer?.invalidate()"), "Popover timer must be invalidated on disappear")
+    }
+
+    func testMenuBarSingleClickRoutesToPopoverImmediately() {
+        XCTAssertEqual(MenuBarController.clickAction(for: .leftMouseUp, clickCount: 1), .togglePopover)
+        XCTAssertEqual(MenuBarController.clickAction(for: .leftMouseUp, clickCount: 2), .openWindow)
+        XCTAssertEqual(MenuBarController.clickAction(for: .rightMouseUp, clickCount: 1), .showContextMenu)
+    }
+
+    func testMenuBarClickHandlerDoesNotWaitForDoubleClickInterval() throws {
+        let s = try menuBarController()
+        XCTAssertFalse(
+            s.contains("NSEvent.doubleClickInterval"),
+            "Single-click must not wait out doubleClickInterval before opening the popover"
+        )
+        XCTAssertFalse(
+            s.contains("Timer.scheduledTimer(withTimeInterval: NSEvent.doubleClickInterval"),
+            "Click handling must not use a timer to delay single-click popover opening"
+        )
+    }
+
+    func testPopoverHoverStateIsTimelineRowLocal() throws {
+        let s = try popoverView()
+        XCTAssertFalse(
+            s.contains("@State private var hoveredSessionId"),
+            "Timeline hover state must not live on the root PopoverView"
+        )
+        XCTAssertTrue(
+            s.contains("struct PopoverTimelineRow: View"),
+            "Timeline rows must be extracted so hover invalidates only the row"
+        )
+        XCTAssertTrue(
+            s.contains("@State private var isHovered = false"),
+            "Timeline row hover must be local row state"
+        )
+    }
+
+    func testPopoverUsesSingleDataSnapshotState() throws {
+        let s = try popoverView()
+        XCTAssertTrue(s.contains("struct PopoverDataSnapshot"), "Popover DB-backed state must be grouped")
+        XCTAssertTrue(
+            s.contains("@State private var data = PopoverDataSnapshot.empty"),
+            "Popover must update DB-backed fields with one snapshot assignment"
+        )
+        XCTAssertFalse(s.contains("@State private var sourceCount"), "sourceCount must move into the snapshot")
+        XCTAssertFalse(s.contains("@State private var projectCount"), "projectCount must move into the snapshot")
+        XCTAssertFalse(s.contains("@State private var dbSize"), "dbSize must move into the snapshot")
+        XCTAssertFalse(s.contains("@State private var recentSessions"), "recentSessions must move into the snapshot")
+    }
+
+    func testPopoverSourceCountIsDerivedFromSourceStats() throws {
+        let s = try popoverView()
+        XCTAssertFalse(
+            s.contains("COUNT(DISTINCT source)"),
+            "sourceCount must be derived from sourceStats instead of issuing a redundant source-count query"
+        )
+        XCTAssertTrue(
+            s.contains("sourceCount: stats.count"),
+            "sourceCount and totalSourceCount must share the sourceStats result"
+        )
+    }
+
+    func testPopoverAssignsStatsBeforeAwaitingLiveSessions() throws {
+        let s = try popoverView()
+        guard let statsAssignment = s.range(of: "data = result"),
+              let liveAssignment = s.range(of: "liveSessions = await liveSessionsResult") else {
+            return XCTFail("Popover loadData must assign DB stats before awaiting live sessions")
+        }
+        XCTAssertLessThan(statsAssignment.lowerBound, liveAssignment.lowerBound)
+        XCTAssertTrue(
+            s.contains("async let liveSessionsResult"),
+            "liveSessions() must start in a child task concurrently with the detached DB block"
+        )
+    }
+
+    func testPopoverRefreshCadenceAlignsWithLiveSessionTTL() {
+        XCTAssertGreaterThanOrEqual(
+            PopoverRefreshPolicy.refreshInterval,
+            PopoverRefreshPolicy.liveSessionCacheTTL,
+            "Popover refresh must not poll live sessions faster than the service cache TTL"
+        )
     }
 
     // MARK: - LiveSessionCard open closure

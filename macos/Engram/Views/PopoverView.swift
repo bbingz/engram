@@ -1,20 +1,38 @@
 // macos/Engram/Views/PopoverView.swift
 import SwiftUI
 
+enum PopoverRefreshPolicy {
+    static let liveSessionCacheTTL: TimeInterval = 30
+    static let refreshInterval: TimeInterval = liveSessionCacheTTL
+}
+
+struct PopoverDataSnapshot {
+    let sourceCount: Int
+    let projectCount: Int
+    let dbSize: Int64
+    let recentSessions: [Session]
+    let activeSourceCount: Int
+    let totalSourceCount: Int
+    let lastIndexedAgo: String
+
+    static let empty = PopoverDataSnapshot(
+        sourceCount: 0,
+        projectCount: 0,
+        dbSize: 0,
+        recentSessions: [],
+        activeSourceCount: 0,
+        totalSourceCount: 0,
+        lastIndexedAgo: ""
+    )
+}
+
 struct PopoverView: View {
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
     @Environment(EngramServiceClient.self) var serviceClient
 
-    @State private var sourceCount = 0
-    @State private var projectCount = 0
-    @State private var dbSize: Int64 = 0
-    @State private var recentSessions: [Session] = []
-    @State private var activeSourceCount: Int = 0
-    @State private var totalSourceCount: Int = 0
-    @State private var lastIndexedAgo: String = ""
+    @State private var data = PopoverDataSnapshot.empty
     @State private var liveSessions: [EngramServiceLiveSessionInfo] = []
-    @State private var hoveredSessionId: String?
     @State private var refreshTimer: Timer?
     @State private var refreshTask: Task<Void, Never>?
 
@@ -39,10 +57,9 @@ struct PopoverView: View {
         .accessibilityIdentifier("popover_container")
         .task {
             await loadData()
-            // Single 10s cadence refreshes both the recent timeline and the
-            // live count while the popover stays open. Track the inner Task so
-            // it can't outlive the view / pile up.
-            refreshTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { _ in
+            // Align refresh with the service's live-session cache TTL. Track
+            // the inner Task so it can't outlive the view / pile up.
+            refreshTimer = Timer.scheduledTimer(withTimeInterval: PopoverRefreshPolicy.refreshInterval, repeats: true) { _ in
                 refreshTask?.cancel()
                 refreshTask = Task { @MainActor in await loadData() }
             }
@@ -145,11 +162,11 @@ struct PopoverView: View {
         Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 6) {
             GridRow {
                 statRow("Today", "\(serviceStatusStore.todayParentSessions)")
-                statRow("Sources", "\(sourceCount)")
+                statRow("Sources", "\(data.sourceCount)")
             }
             GridRow {
-                statRow("Projects", "\(projectCount)")
-                statRow("DB Size", formattedSize(dbSize))
+                statRow("Projects", "\(data.projectCount)")
+                statRow("DB Size", formattedSize(data.dbSize))
             }
         }
         .font(.caption)
@@ -171,13 +188,13 @@ struct PopoverView: View {
 
     private var healthSummary: some View {
         HStack(spacing: 4) {
-            Text("\(activeSourceCount)/\(totalSourceCount) sources active")
+            Text("\(data.activeSourceCount)/\(data.totalSourceCount) sources active")
                 .font(.caption2)
-                .foregroundStyle(activeSourceCount == totalSourceCount && totalSourceCount > 0 ? .green : .secondary)
+                .foregroundStyle(data.activeSourceCount == data.totalSourceCount && data.totalSourceCount > 0 ? .green : .secondary)
             Text("·")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            Text("last \(lastIndexedAgo)")
+            Text("last \(data.lastIndexedAgo)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -199,7 +216,7 @@ struct PopoverView: View {
 
     @ViewBuilder
     private var timelineSection: some View {
-        if recentSessions.isEmpty {
+        if data.recentSessions.isEmpty {
             Text(serviceStatusStore.status == .starting ? "Indexing your sessions…" : "No sessions yet")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -210,64 +227,19 @@ struct PopoverView: View {
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    let groups = groupedByDate(recentSessions)
+                    let groups = groupedByDate(data.recentSessions)
                     ForEach(groups) { group in
                         Text(group.key)
                             .font(.caption2).fontWeight(.semibold)
                             .foregroundStyle(.secondary)
                             .padding(.top, group.id == groups.first?.id ? 0 : 6)
                         ForEach(group.sessions) { session in
-                            timelineRow(session)
+                            PopoverTimelineRow(session: session)
                         }
                     }
                 }
             }
             .accessibilityIdentifier("popover_recentActivity")
-        }
-    }
-
-    private func timelineRow(_ session: Session) -> some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(SourceDisplay.color(for: session.source))
-                .frame(width: 4, height: 4)
-            Text(session.project ?? "—")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(width: 72, alignment: .leading)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Text(session.displayTitle)
-                .font(.caption)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer()
-            Text(SourceDisplay.label(for: session.source))
-                .font(.caption2)
-                .foregroundStyle(SourceDisplay.color(for: session.source))
-            Text(relativeTime(session.startTime))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Image(systemName: "chevron.right")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.vertical, 2)
-        .padding(.horizontal, 4)
-        .background(hoveredSessionId == session.id ? Color(.controlBackgroundColor).opacity(0.5) : .clear)
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .contentShape(Rectangle())
-        .help("Open session")
-        .onHover { hovering in
-            hoveredSessionId = hovering ? session.id : (hoveredSessionId == session.id ? nil : hoveredSessionId)
-        }
-        // Single click matches the chevron/hover/.help affordances (and
-        // LiveSessionCard); double click still works for muscle memory.
-        .onTapGesture {
-            NotificationCenter.default.post(name: .openWindow, object: SessionBox(session))
-        }
-        .onTapGesture(count: 2) {
-            NotificationCenter.default.post(name: .openWindow, object: SessionBox(session))
         }
     }
 
@@ -292,9 +264,12 @@ struct PopoverView: View {
 
     private func loadData() async {
         let db = self.db
+        let serviceClient = self.serviceClient
+        async let liveSessionsResult: [EngramServiceLiveSessionInfo] = Self.loadLiveSessions(serviceClient)
+
         // All DB work (including sourceStats + the stats-derived health summary)
         // runs in the detached block so nothing blocks the main thread on return.
-        let result: (Int, Int, [Session], Int64, Int, Int, String) = await Task.detached {
+        let result: PopoverDataSnapshot = await Task.detached {
             func logged<T>(_ label: String, fallback: T, _ body: () throws -> T) -> T {
                 do {
                     return try body()
@@ -304,11 +279,6 @@ struct PopoverView: View {
                 }
             }
 
-            let counts: Int = logged("source count", fallback: 0) {
-                try db.readInBackground { d in
-                    try Int.fetchOne(d, sql: "SELECT COUNT(DISTINCT source) FROM sessions WHERE hidden_at IS NULL") ?? 0
-                }
-            }
             let projectCount: Int = logged("project count", fallback: 0) {
                 try db.readInBackground { d in
                     try Int.fetchOne(d, sql: "SELECT COUNT(DISTINCT project) FROM sessions WHERE project IS NOT NULL AND hidden_at IS NULL") ?? 0
@@ -370,22 +340,28 @@ struct PopoverView: View {
             } else {
                 agoLabel = "—"
             }
-            return (counts, projectCount, sessions, size, active, stats.count, agoLabel)
+            return PopoverDataSnapshot(
+                sourceCount: stats.count,
+                projectCount: projectCount,
+                dbSize: size,
+                recentSessions: Array(sessions.prefix(15)),
+                activeSourceCount: active,
+                totalSourceCount: stats.count,
+                lastIndexedAgo: agoLabel
+            )
         }.value
-        sourceCount = result.0
-        projectCount = result.1
-        dbSize = result.3
-        recentSessions = Array(result.2.prefix(15))
-        activeSourceCount = result.4
-        totalSourceCount = result.5
-        lastIndexedAgo = result.6
+        data = result
 
         // Live section — silent-fail like the menu-bar badge so a transient
         // service hiccup hides the section instead of surfacing an error.
-        liveSessions = (try? await serviceClient.liveSessions().sessions) ?? []
+        liveSessions = await liveSessionsResult
     }
 
     // MARK: - Helpers
+
+    private static func loadLiveSessions(_ serviceClient: EngramServiceClient) async -> [EngramServiceLiveSessionInfo] {
+        (try? await serviceClient.liveSessions().sessions) ?? []
+    }
 
     private func statusDot(color: Color, label: String, hollow: Bool = false) -> some View {
         HStack(spacing: 3) {
@@ -442,13 +418,59 @@ struct PopoverView: View {
         return (settings["noiseFilter"] as? String) ?? "human-driven"
     }
 
-    private func relativeTime(_ ts: String) -> String {
-        RelativeTimeText.format(ts, style: .compact)
-    }
-
     private func formattedSize(_ bytes: Int64) -> String {
         if bytes < 1024 { return "\(bytes) B" }
         if bytes < 1_048_576 { return String(format: "%.1f KB", Double(bytes) / 1024) }
         return String(format: "%.1f MB", Double(bytes) / 1_048_576)
+    }
+}
+
+private struct PopoverTimelineRow: View {
+    let session: Session
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(SourceDisplay.color(for: session.source))
+                .frame(width: 4, height: 4)
+            Text(session.project ?? "—")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(width: 72, alignment: .leading)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Text(session.displayTitle)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+            Text(SourceDisplay.label(for: session.source))
+                .font(.caption2)
+                .foregroundStyle(SourceDisplay.color(for: session.source))
+            Text(RelativeTimeText.format(session.startTime, style: .compact))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Image(systemName: "chevron.right")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 4)
+        .background(isHovered ? Color(.controlBackgroundColor).opacity(0.5) : .clear)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .contentShape(Rectangle())
+        .help("Open session")
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        // Single click matches the chevron/hover/.help affordances (and
+        // LiveSessionCard); double click still works for muscle memory.
+        .onTapGesture {
+            NotificationCenter.default.post(name: .openWindow, object: SessionBox(session))
+        }
+        .onTapGesture(count: 2) {
+            NotificationCenter.default.post(name: .openWindow, object: SessionBox(session))
+        }
     }
 }
