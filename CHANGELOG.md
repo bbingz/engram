@@ -7,6 +7,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: PR #103 CI blocker — stale settings_dark screenshot baseline (2026-07-06, Claude)
+
+- Root cause: `macos/EngramUITests/baselines/settings_dark.png` was a stale
+  Chinese-locale capture (last touched in `322f5095`, before UI tests forced
+  `-AppleLanguages (en)`) that still contained the Web UI / MCP HTTP endpoint
+  settings rows PR #103 deletes. It passed only marginally before (SSIM
+  0.9157 vs the 0.91 threshold on the last green main run); the PR's
+  intentional settings change dropped SSIM to 0.8982 while pHash/pixel-diff
+  stayed within limits. Refreshed the baseline from CI run `28745689659`'s
+  actual capture (English, dark, 1024x681). Not a product regression.
+- Also confirmed: main HEAD `30e3a4af` is independently red on swift-unit
+  (scan test expects the popover Service chip that commit removed). PR #103
+  already carries the aligned scan test (`d77e1ffa`), so merging ITEM 0
+  restores main to green — no separate main-side fix needed.
+
 ### Changed: removed native HTTP transcript Web UI (2026-07-05, Codex)
 
 - Feature-cut item 1 removes `EngramWebUIServer`, the app settings/menu/home

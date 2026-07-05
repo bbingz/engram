@@ -31,13 +31,23 @@ Open workspace-hygiene follow-ups as of 2026-07-04:
 
 ## Open — feature-cut execution plan, adjudicated Top 10 (2026-07-05)
 
-BLOCKER (2026-07-05): stopped at ITEM 0 / PR #103 after the protocol's "CI
-stays red after 2 fix attempts" gate fired. PR head `e903a06e` passed
-`swift-unit`, `ui-test-smoke`, lint/typecheck/dead-code/fixture/security checks
-after two targeted CI fix attempts, but `ui-test-full` failed in GitHub Actions
-run `28745689659`, job `85236519360`, during `scripts/screenshot-compare.ts`.
-The only failed screenshot was `settings_dark` (`SSIM=0.8982`, `pHash=6`,
-`diff=4.7001%`). No third fix attempt was made; ITEM 0 remains unmerged.
+BLOCKER (2026-07-05, RESOLVED 2026-07-06 by Claude): stopped at ITEM 0 /
+PR #103 after the protocol's "CI stays red after 2 fix attempts" gate fired.
+PR head `e903a06e` passed everything except `ui-test-full`, where only
+`settings_dark` failed (`SSIM=0.8982` vs 0.91 threshold; `pHash=6` and
+`diff=4.7001%` were within limits). Root cause: the checked-in baseline
+`macos/EngramUITests/baselines/settings_dark.png` was stale — a
+Chinese-locale capture last touched in `322f5095`, predating the forced
+`-AppleLanguages (en)` in `TestLaunchConfig`, and still showing the Web UI /
+MCP HTTP endpoint rows this PR deletes. It had only ever passed marginally
+(SSIM 0.9157 on the last green main run); the PR's intentional settings
+change pushed it below threshold. Fixed by refreshing the baseline from CI
+run `28745689659`'s actual capture. Not a product regression. Related: main
+HEAD `30e3a4af` is independently red on `swift-unit`
+(`testPopoverStatusLabelsServiceInsteadOfMcpWhenUsingServiceStatus` expects
+the popover Service chip that `30e3a4af` removed); this PR already carries
+the aligned scan test (`d77e1ffa`), so merging ITEM 0 also restores main to
+green.
 
 GOAL for Codex: execute the cuts below. Provenance: a 38-agent opus+sonnet
 workflow (4-area inventory → 4-lens propose → dedup → adversarial verify per
