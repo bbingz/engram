@@ -1127,6 +1127,7 @@ final class EngramServiceIPCTests: XCTestCase {
             )
             _ = try await client.status()
         }
+        try await waitUntilServerDrainsClientTasks(server)
         XCTAssertEqual(server.activeClientTaskCountForTesting(), 0)
     }
 
@@ -4607,6 +4608,21 @@ private func waitUntilFileExists(_ path: String) async throws {
     while !FileManager.default.fileExists(atPath: path) {
         if Date() >= deadline {
             XCTFail("timed out waiting for \(path)")
+            return
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+}
+
+private func waitUntilServerDrainsClientTasks(
+    _ server: UnixSocketServiceServer,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async throws {
+    let deadline = Date().addingTimeInterval(5)
+    while server.activeClientTaskCountForTesting() != 0 {
+        if Date() >= deadline {
+            XCTFail("timed out waiting for server client tasks to drain", file: file, line: line)
             return
         }
         try await Task.sleep(nanoseconds: 20_000_000)
