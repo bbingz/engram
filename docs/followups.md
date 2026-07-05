@@ -29,6 +29,207 @@ Open workspace-hygiene follow-ups as of 2026-07-04:
   such as `audit/` and `.github/copilot-instructions.md`. Decide which belong in
   shared `.gitignore` and which should remain local-only.
 
+## Open — feature-cut execution plan, adjudicated Top 10 (2026-07-05)
+
+GOAL for Codex: execute the cuts below. Provenance: a 38-agent opus+sonnet
+workflow (4-area inventory → 4-lens propose → dedup → adversarial verify per
+candidate: refuter + blast-radius → opus final ranking), merged with Codex's
+own 2026-07-05 "hide/downgrade defaults" round. Every DELETE item survived
+double adversarial verification; items 9-10 are product-default demotions the
+owner explicitly approved in-session (2026-07-05).
+
+EXECUTION PROTOCOL (updated 2026-07-05, owner-approved AUTONOMOUS mode —
+supersedes the earlier "Claude reviews before merge" gate):
+
+- Run fully autonomously through STEP 0 and items 0-10 IN ORDER, one PR at a
+  time, merged before the next starts (items share test files).
+- Self-review replaces the Claude gate. After implementing each item, spawn
+  independent review sub-agents covering at least: (a) line-by-line diff
+  correctness; (b) removed-behavior audit — did any RETAINED behavior lose
+  test coverage (the exact class of miss found in PR #103: deleting a test
+  file silently uncovered the live redaction pattern matrix); (c) orphan
+  tracer — grep the post-change tree for orphans the change created:
+  project.yml/package deps, settings.json keys (add newly-dead keys to the
+  SettingsView.saveAdvancedSettings scrub), on-disk artifacts (token/cache
+  files needing one-time startup cleanup), Localizable.xcstrings keys,
+  stale comments justifying retained code via deleted features, and
+  followups/docs line anchors. Adversarially verify each finding before
+  acting; fix CONFIRMED findings pre-merge; record findings + outcomes in
+  the PR description.
+- Tombstone tests: each deleted surface gets ONE negative-assertion owner
+  per source file — never duplicate the same forbidden-string scan across
+  suites (PR #103 finding 5).
+- Merge gates per PR: CI green; self-review findings fixed or explicitly
+  deferred with reasons in the PR description; matching CHANGELOG.md entry;
+  the doc trims for that item done in the same PR; mark the item done in
+  this file.
+- STOP AND FILE A BLOCKER (do not improvise) if: CI stays red after 2 fix
+  attempts; a review finding suggests deleting anything on a KEEP list; a
+  destructive data migration seems needed; or an item's scope materially
+  exceeds this plan. Record the blocker at the top of this section and move
+  to the next item only if independent.
+
+STEP 0 (before any merge): reconcile the main-checkout working tree.
+Inspect `git status`/`git diff` — expected: (a) doc/plan files (CHANGELOG.md,
+MEMO.md, docs/followups.md, .memory) carrying this plan → commit as
+`docs(plan): file feature-cut execution plan and decision records`; (b) Swift
+popover/menubar modifications (MenuBarController, PopoverView,
+GeneralSettingsSection, EngramServiceReadProvider, HomePopoverActionsTests,
+PopoverScreen, PopoverSmokeTests, EngramServiceIPCTests) → run the focused
+suites (HomePopoverActionsTests, EngramServiceIPCTests); if green and
+coherent with the 2026-07-05 popover perf work, commit as a perf follow-up;
+if not coherent, stash with a dated note here and continue. Then rebase
+PR #103 if needed.
+
+ITEM 0 — finish PR #103 (Delete HTTP transcript web UI). Apply the review at
+https://github.com/bbingz/engram/pull/103#issuecomment-4886389830 —
+4 REQUIRED: (1) port `testRedactionCoversCommonTokenFamilies` +
+`testRedactionStaticPatternsProduceByteIdenticalOutput` from deleted
+EngramWebUIServerTests into EngramServiceCoreTests targeting
+`TranscriptExportService.redactSensitiveContent` (5 of 8 secret families
+currently uncovered); (2) add `settings.removeValue(forKey: "webUIEnabled")`
+to the SettingsView.saveAdvancedSettings scrub (~:452-457); (3) remove the
+orphaned Hummingbird dep from EngramServiceCore in macos/project.yml
+(~:113-114) + `xcodegen generate` (app-target dep at ~:168-169 is
+pre-existing dead — optional bonus); (4) one-time startup cleanup
+`try? FileManager.default.removeItem(at: runtimeDirectory
+.appendingPathComponent("webui.token"))`. 4 RECOMMENDED: consolidate the
+tombstone scans to one owner per source file; reword the two "Web UI pager"
+comments (TranscriptExportService.swift:216-219, CodexAdapter.swift:218-224)
+to name live consumers; delete orphaned `"Unavailable"` key from
+Localizable.xcstrings (~:664); annotate the perf-section EngramWebUIServer
+anchors in this file as resolved-by-deletion (PR #103). Then self-review,
+merge, and proceed to item 2 (item 1 == this PR).
+
+Ground rules:
+
+- Land or stash the uncommitted perf working tree FIRST (it touches
+  `PopoverView.swift`, `MenuBarController.swift`, `HomePopoverActionsTests`,
+  which collide with item 1).
+- One PR per numbered item; item 2 MUST be its own PR (~11K LOC).
+- Repo test rule applies: delete a feature's tests in the same PR; behavior
+  changes need matching Swift tests. Run `xcodegen generate` after
+  adding/removing Swift files; `npm run lint` must pass.
+- Items 1 and 4 both touch `EngramServiceIPCTests.swift`,
+  `SettingsHonestyTests.swift`, `AppSearchServiceCutoverScanTests.swift` —
+  if doing both, edit each shared test file once, not per-feature.
+- No destructive DB migrations: leave orphaned tables (`mined_rules`,
+  vector scaffolding) inert on installed DBs.
+- Each cut carries its own doc trim (README/CLAUDE.md/docs/mcp-tools.md:
+  MCP tool count, "Local Service Security" web-UI section, sources count).
+
+1. **DELETE EngramWebUIServer (HTTP transcript web UI).** Remove
+   `macos/EngramService/Core/EngramWebUIServer.swift` (761 LOC) +
+   `EngramWebUIServerTests.swift` (629 LOC); strip
+   `readWebUIEnabled`/`provisionWebToken`/`webTask`/`emitWebReady`/
+   `ServiceWebErrorEvent` wiring from `EngramServiceRunner.swift`; remove the
+   toggle/button/menu-item/status-tile in `NetworkSettingsSection.swift`,
+   `GeneralSettingsSection.swift`, `MenuBarController.swift`,
+   `Views/Pages/HomeView.swift`; drop `endpointHost`/`endpointPort`/
+   `web_ready`/`web_error` from `EngramServiceStatusStore.swift`; fix
+   scattered assertions in EngramServiceIPCTests/SettingsHonestyTests/
+   HomePopoverActionsTests/EngramServiceStatusStoreTests. KEEP
+   `TranscriptExportService` + `redactSensitiveContent` (used by
+   get_session/export) and the Hummingbird SPM dependency
+   (EngramRemoteServer uses it). Trim the CLAUDE.md "Local Service
+   Security" web-UI paragraphs.
+2. **DELETE legacy TS dev-server/entrypoint surface (own PR).** Remove
+   `src/web.ts`, `src/web/routes/*`, `src/web/views.ts`, `src/index.ts`,
+   `src/daemon.ts`, `src/core/lifecycle.ts`, `src/core/daemon-startup.ts`,
+   plus daemon-exclusive orphans (candidates: `auto-summary`, `alert-rules`,
+   `mock-data`, `daemon-client`, `git-probe`, `watcher` under `src/core/`)
+   and their tests + `tests/web/`. The orphan list is ADVISORY — confirm each
+   with `npm run knip`/grep before deleting; two prior passes disagreed on
+   `src/core/sync.ts` and `tests/integration/`, so keep any test/module that
+   covers retained code (`tests/web/hygiene.test.ts` likely stays). KEEP
+   modules used by retained `src/tools/*` (config, monitor, live-sessions,
+   logger, usage-collector, ai-client). REQUIRED follow-through in the same
+   PR: repoint `scripts/gen-mcp-contract-fixtures.ts` (parses `src/index.ts`
+   today) at `macos/EngramMCP/Core/MCPToolRegistry.swift` so the CI-gated
+   `tests/fixtures/mcp-golden/tools.json` Swift parity test keeps working;
+   trim `bootstrap.ts` (`createMCPDeps`/`createDaemonDeps`), `knip.json`
+   entry points, `package.json` `dev` script, `src/cli` dispatch fallback,
+   README HTTP/API section.
+3. **DELETE corpus rule mining (get_rules + background miner + schema).**
+   Remove `mineCorpusRulesOnce`/`mineRulesWithLLM`/`corpusMiningCandidates`/
+   `writeMinedRules` + 2 scheduling call sites in
+   `EngramServiceRunner.swift` (~:799-1113); `get_rules` def/dispatch in
+   `MCPToolRegistry.swift`; `getRules`/`minedRuleRows` in `MCPDatabase.swift`
+   and the get_context rule-folding branch (~:860-873, covered by
+   `testGetContextIncludesMinedRulesForProject`); `ensureMinedRulesTables` in
+   `EngramMigrations.swift` (~:586-608, 2 idempotent call sites, no FKs).
+   Update tests in EngramServiceIPCTests/EngramMCPExecutableTests/
+   MigrationRunnerTests. Existing `mined_rules` rows on installed DBs stay
+   inert. Add get_rules removal note to `docs/mcp-tools.md` (it was never
+   documented there — that omission was part of the cut rationale).
+4. **DELETE Skills + Hooks config-browser pages.** Remove
+   `Views/Pages/SkillsView.swift` + `HooksView.swift` (92 LOC each), the two
+   `Screen` enum cases + switch arms + `Section.config` entries,
+   MainWindowView dispatch arms, `skills()`/`hooks()` across
+   protocol/client/mock/`FileSystemEngramServiceReadProvider` (+3 private
+   parsing helpers used only here) + `EngramServiceSkillInfo`/`HookInfo`
+   DTOs, and tests (HooksSkillsTests, EngramServiceClientTests parts,
+   EngramUITests Skills/Hooks screens+tests). Repoint ServiceTelemetryTests'
+   one `hooks` example command to another empty-provider command (e.g.
+   `sources`). CONFIG sidebar shrinks 4→2 (Agents, Memory) — relabel if it
+   reads oddly.
+5. **DELETE lint_config MCP tool (Swift product side only).** Remove
+   `lintConfig`/`lintIssues` + the 8 lint-only private helpers from
+   `MCPFileTools.swift` (KEEP `projectReview` helpers and shared
+   `trimTrailingSlash`); registry def/dispatch/category in
+   `MCPToolRegistry.swift` (~:371, :909-910, :1138); the golden test +
+   fixture in EngramMCPExecutableTests; doc rows `docs/mcp-tools.md:297`,
+   `README.md:237`, `macos/EngramMCP/AGENTS.md:13`. LEAVE
+   `src/tools/lint_config.ts` alone (reference-only). Evidence: 0 calls in
+   ~995K tracked tool-call telemetry.
+6. **DELETE dead peer-sync settings surface.** Remove the "Sync" GroupBox in
+   `NetworkSettingsSection.swift:25` (it literally states "Sync is not
+   implemented in the Swift service") and demote the README peer-sync
+   section (~README.md:321) to a one-line historical note. Keep
+   `settings.json` legacy keys (`syncEnabled`/`syncPeers`/...) parse-tolerant
+   — do not crash on their presence; grep `macos/` for sync DTO/field
+   consumers to size the full removal before deleting beyond the UI.
+7. **DELETE verified-dead scaffolding bundle.** (a)
+   `SQLiteVecSupport.swift` probe (always reports unavailable) +
+   `VectorRebuildPolicy.swift` + `VectorRebuildPolicyTests` (~120 LOC; its
+   only caller is its own test — verify then delete). (b) The Cascade gRPC
+   live-sync subsystem (~335 LOC; both constructors pass
+   `enableLiveSync: false`). KEEP Antigravity file-based parsing (219
+   indexed sessions locally, active 2026-07-03), Windsurf cache reading, and
+   the embedding backfill + hybrid retrieval backing get_memory (live,
+   tested — do NOT bundle it into this cut; a prior proposal died for
+   exactly that over-bundling).
+8. **FOLD Favorites page into a Sessions FilterPill.** Delete the 63-LOC
+   Favorites page clone + its Screen case; add a "Starred" FilterPill on
+   SessionsPageView. KEEP star toggle, favorites table, `setFavorite` IPC,
+   and `listFavorites()` (2 callers — repoint to the pill's query path).
+   Both verifiers passed this at confidence 5.
+9. **DEMOTE project-migration batch/undo/history UI (no deletion).** In
+   `Views/Pages/ProjectsView.swift` (~:87) move Select / Move Selected /
+   Undo Recent Move / History behind an Advanced (or Developer Tools)
+   affordance; keep single-project move and ALL project_* MCP tools intact.
+   Motivation: local `migration_log` has exactly 2 rows, both
+   `_engram_e2e_test_*` from 2026-04-20, and `BatchMoveSheet.swift:8`
+   documents a dry_run-omission commit risk. `project_aliases` stays — it is
+   load-bearing for list_sessions/search/get_context.
+10. **DEFAULT-OFF archived sources: cline / iflow / lobsterai.** Keep parser
+    code + fixtures; change defaults so these three are not scanned unless
+    the user enables them (Settings > Sources under an "Archived" group).
+    Local evidence: 3/2/1 sessions, last activity 2026-02-27/2026-02-27/
+    2026-03-08. Do NOT touch minimax (234 local sessions, active). Update
+    the "17 sources" claims in README/CLAUDE.md to describe the
+    active-vs-archived split.
+
+Explicitly REJECTED (do not implement, recorded so nobody re-proposes them
+blind): hiding the `live_sessions` MCP stub (deliberate honest-unavailable
+contract with its own regression tests; hiding creates a worse inconsistent
+state), cutting Windsurf/Antigravity adapters (Antigravity is live),
+cutting the Observability suite (deliberate 2026-06-15 rebuild; UI-only cut
+strands live telemetry), cutting the whole semantic/vector bundle (hybrid
+retrieval behind get_memory is live and tested — only item 7a is dead), and
+demoting the Popover usage section (active UX work stream, owner decides
+there, not a maintenance cut).
+
 ## Open — perf-integration review findings (2026-07-04)
 
 From the 18-agent adversarial review of the Codex-integrated 8-PR perf batch

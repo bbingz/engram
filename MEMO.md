@@ -2,6 +2,13 @@
 
 ## Changelog Memo
 
+### 2026-07-05
+
+- [新增] Fable/Claude 用 38-agent opus+sonnet workflow 完成砍功能审计（4 区域清单 → 4 视角提案 → 去重 → 每候选对抗验证 → opus 终审），与 Codex 同日的“隐藏/降级默认入口”轮合并为 Top 10 执行清单，落盘在 `docs/followups.md` § "feature-cut execution plan (2026-07-05)"；Codex 按清单开工，Claude 合并前复审。Codex 的 live_sessions 隐藏提案被验证否决。
+- [修复] Fable/Claude 找到菜单栏弹窗“过长 / 低信号”的最终根因：不是首开查询慢，而是 `PopoverView` 的 Live 区域无上限渲染 `liveSessions`，service 又把 `/subagents/workflows/` churn 和 24h `recent` 会话混进来，导致最多 100 张 Live card 把弹窗撑到屏幕高度。
+- [变更] 最终修复组合：`PopoverView` 固定 400x420 最小盒并用 `Spacer` 稳住 footer；Live 区域只显示 active/idle、最多 5 条，溢出用 `popover_liveOverflow`；`EngramServiceReadProvider.considerLiveSessionCandidate` 排除路径组件含 `subagents` 的 Claude Code 子代理 transcript；菜单栏活动显示可用 `showMenuBarActivity` 关闭。
+- [验证] Fable/Claude 在 `CHANGELOG.md` 记录了 `HomePopoverActionsTests`、新增 `EngramServiceIPCTests.testFileSystemProviderExcludesSubagentChurnFromLiveScan`、Debug/Release build 与本地 `/Applications` 部署；本轮 Codex 文档同步另确认当前安装包含 `popover_liveOverflow` marker。用户已确认现在满意。
+
 ### 2026-07-04
 
 - [新增] 新增本文件作为短工作备忘，采用 newest-first 的 `Changelog Memo` 格式，并回填 2026-06 以来的关键节点；长期事实仍以 `CHANGELOG.md`、`.memory`、`docs/TODO.md`、`docs/followups.md`、`docs/roadmap.md` 为准。

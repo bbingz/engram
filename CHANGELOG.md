@@ -7,6 +7,147 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Decided: feature-cut Top 10 adjudicated and filed for Codex execution (2026-07-05, Claude)
+
+- A 38-agent opus+sonnet workflow (4-area feature inventory → 4-lens cut
+  proposals → dedup → per-candidate adversarial verification (refuter +
+  blast-radius) → opus final ranking) produced a verified Top 5 deletion
+  list: EngramWebUIServer, legacy TS web/index/daemon surface, corpus rule
+  mining (get_rules + background miner), Skills+Hooks pages, lint_config.
+- Merged with Codex's same-day "hide/downgrade defaults" round into a Top
+  10: added peer-sync dead settings surface, verified-dead scaffolding
+  (sqlite-vec probe/VectorRebuildPolicy + Cascade gRPC live-sync), Favorites
+  page → FilterPill, migration batch/undo/history UI demotion, and
+  default-off archived sources (cline/iflow/lobsterai). Codex's
+  live_sessions-hide proposal was rejected (contradicts the verified
+  honest-unavailable stub contract and its regression tests).
+- Execution list with scope guards, keep-lists, sequencing rules, and
+  rejected-candidates record: `docs/followups.md` § "Open — feature-cut
+  execution plan, adjudicated Top 10 (2026-07-05)". Codex implements;
+  process updated same day to owner-approved AUTONOMOUS mode: Codex
+  self-reviews each PR with its own sub-agents (protocol + merge gates +
+  stop conditions encoded in the followups section; seeded with the 8
+  confirmed findings from Claude's PR #103 review) and self-merges.
+  Evidence spot-checked locally: migration_log
+  = 2 e2e-test rows only; cline/iflow/lobsterai = 3/2/1 sessions (dormant
+  since Feb-Mar); lint_config = 0 calls in ~995K telemetry rows;
+  syncEnabled=false with empty syncPeers.
+
+### Fixed: popover first-open "slowness" — stable min height, no settle-resize (2026-07-05, Claude)
+
+- A measured latency audit (21-agent workflow) answered "is first-open latency
+  optimal?": wall-clock is near-optimal — timeline DB query 35ms cold / 23ms
+  warm; cold live scan 155-216ms but async and off the initial-paint path
+  (loadData assigns the DB snapshot before awaiting the live IPC). What the
+  user feels is LAYOUT SETTLING: the popover opened at intrinsic height
+  (~360px) and visibly resized 1-2x as the timeline then the Live section
+  landed.
+- Fix (the only proposal of 16 that survived adversarial verification):
+  `PopoverView.body` now uses `.frame(minWidth: 400, maxWidth: 400,
+  minHeight: 420, alignment: .top)` (420 matches the initial
+  `popover.contentSize` in MenuBarController) plus a `Spacer(minLength: 0)`
+  before the footer so sections swap in place inside a stable min-box instead
+  of the window resizing. SwiftUI note: fixed `width:` cannot be combined with
+  `minHeight:` in one `.frame` call, hence minWidth==maxWidth.
+- Rejected with reasons recorded (audit output archived in session):
+  hosting-view pre-warm (~20-60ms one-time, below feel threshold),
+  `popover.animates = false` (non-differential, removes intended polish),
+  launch-primed snapshot seeding (medium effort, animation-masked),
+  live-scan `skipDescendants` of `subagents/` dirs as a first-paint latency fix
+  (~35-40% scan cost, but off the first-paint critical path), cache pre-warm
+  timers. Note: the later "overlong popover" root-cause pass did implement
+  `/subagents/` exclusion for content volume/noise, not for first-open latency.
+- Known irreducibles: one-time SwiftUI materialization on first show
+  (~20-60ms), intentional NSPopover open animation (~150-200ms, masks the
+  cold paint), one residual grow when live sessions insert above the fold on
+  a >420px busy popover.
+- Tests: `testPopoverPinsStableMinHeight` (source-inspection) in
+  HomePopoverActionsTests.
+- **Verification:** `EngramTests/HomePopoverActionsTests` 23/23 passed;
+  Release build passed and deployed to /Applications (quit → rm -rf → cp -R →
+  relaunch, binary 16:19).
+
+### Fixed: popover still overlong — Live section was the unbounded part (2026-07-05, Claude)
+
+- A multi-agent audit (runtime evidence + adversarial verification) found why
+  the morning's popover fix didn't resolve the "too long / low signal"
+  complaint: the timeline was bounded (240pt) but the **Live section renders
+  `ForEach(liveSessions)` uncapped**. At audit time the service returned its
+  full 100-item cap (`liveSessionResultLimit`), ≈46-52pt per `LiveSessionCard`
+  → ~5,200pt of Live cards, ~90% of popover content, clamped to screen height
+  by NSPopover. Composition of those 100: **91 were `/subagents/workflows/*.jsonl`
+  churn** (the live scan recursively walks `~/.claude/projects` with no
+  subagent exclusion) and **79 were 15min-24h stale** (`recentWindow = 24h` is
+  the only admission gate; active/idle windows only pick the badge label).
+- `PopoverView.liveSection`: renders `visibleLiveSessions` — filtered to
+  `activityLevel ∈ {active, idle}` (drops 24h "recent" churn), sorted active >
+  idle then most-recent, capped at `liveSectionLimit = 5`, with a single
+  "+N more" overflow row (`popover_liveOverflow`, posts `.openWindow`). The
+  section hides entirely when nothing is active/idle.
+- `EngramServiceReadProvider.considerLiveSessionCandidate`: files with a
+  `subagents` path component are excluded from the live scan (4-line guard) —
+  subagent transcripts are accessed through their parent session.
+- Deliberately NOT changed: the service-side 24h `recentWindow` admission gate
+  stays, because `SourcePulseView` consumes the same `liveSessions()` payload
+  and uses the broader recent set; the popover filters client-side instead.
+- Tests: `testPopoverLiveSectionCapsAndFiltersCards` (source-inspection guard:
+  no raw `ForEach(liveSessions)`, prefix cap, activity filter, overflow
+  affordance) in HomePopoverActionsTests;
+  `testFileSystemProviderExcludesSubagentChurnFromLiveScan` (real temp-dir
+  filesystem scan) in EngramServiceIPCTests.
+- **Verification:** Debug build passed; `EngramTests/HomePopoverActionsTests`
+  22/22 passed; new EngramServiceCoreTests scan test passed; Release build
+  passed and deployed to /Applications (quit → rm -rf → cp -R → relaunch),
+  new binary verified via `popover_liveOverflow` marker string.
+- Implementation split: audit ran as a 27-agent workflow (opus/sonnet
+  finders + opus adversarial verifiers); code written by an opus subagent,
+  reviewed and validated by the orchestrating session.
+- User acceptance: after this root-cause pass, the user reported the result was
+  satisfactory. Future agents should treat the final root cause as unbounded
+  Live-section rendering plus subagent/recent-session churn, not generic
+  first-open latency, unless new runtime evidence says otherwise.
+
+### Added: menu-bar activity toggle + simplified popover (2026-07-05, Claude)
+
+- New `showMenuBarActivity` setting (Settings ▸ General ▸ Menu Bar), defaults
+  ON via `UserDefaults.register(defaults:)` to preserve current behavior. When
+  off, the menu bar shows only the static icon — `MenuBarController.updateBadge()`
+  clears the title and skips the live-session IPC, and `updateStatusIndicator()`
+  suppresses the usage-pressure gauge. Hard service `.degraded`/`.error` still
+  surface the warning triangle regardless of the toggle. Applied live on change
+  via the existing `UserDefaults.didChangeNotification` observer
+  (`applyMenuBarActivityPreference()`, guarded on last-applied value).
+- Simplified `PopoverView` to high-signal content only: removed the Web/Service
+  status dots, the Today/Sources/Projects/DB Size stats grid, and the
+  "X/Y sources active · last Nm" health line. Kept the Live section, the recent-
+  session timeline, the usage section, and the footer. `PopoverDataSnapshot`
+  now holds only `recentSessions`; `loadData()` drops the project-count query,
+  DB-size stat, and `sourceStats()` call. Preserved the concurrent
+  `async let liveSessionsResult` + `data = result` ordering.
+- Follow-up (same day, on user feedback that the popover rendered overlong and
+  low-signal): (a) the timeline `ScrollView` is now bounded with
+  `.frame(maxHeight: 240)` so the popover stays a fixed-size glance and scrolls
+  internally instead of growing to fit every recent session under
+  NSHostingController's `.preferredContentSize` sizing; (b) the popover now
+  **always** applies `HumanDrivenFilter.sqlPredicate` regardless of the app's
+  browse `noiseFilter` setting (the user's was `hide-skip`), so freshly-indexed
+  untiered (`tier IS NULL`) agent/probe sessions can no longer flood the top of
+  the list with "Untitled" rows — matching HumanDrivenFilter's documented role
+  as the filter for every default browse surface including the menu-bar popover.
+  Removed the now-unused `readNoiseFilter()` helper; row cap trimmed 15 → 12.
+- Tests: replaced the obsolete `testPopoverSourceCountIsDerivedFromSourceStats`
+  with `testPopoverDropsTechnicalChromeKeepsSessionContent`; added
+  `testMenuBarActivityIsGatedOnSetting`. Updated `PopoverScreen`/
+  `PopoverSmokeTests` to drop the removed `statsGrid`/`statusWeb`/`statusService`
+  elements and assert the recent-activity timeline instead.
+- **Verification:** `xcodebuild -scheme Engram -configuration Debug build`
+  passed; `-only-testing:EngramTests/HomePopoverActionsTests` passed (21 tests);
+  `build-for-testing -scheme EngramUITests` compiled.
+- **Assumptions (user was away for the design question):** menu-bar toggle =
+  "icon only" (hide today+live counts and gauge); popover = "balanced"
+  simplification. Both are the recommended defaults; adjust if the user prefers
+  keeping the today count or a minimal/keep-current popover.
+
 ### Fixed: menu-bar popover click latency, hover invalidation, load ordering, and polling cadence (2026-07-05, Codex)
 
 - Corrected the performance framing: `PopoverView.loadData()` was already

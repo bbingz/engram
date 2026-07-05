@@ -2,7 +2,9 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-06-28): 81 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-05): 82 dated entries; regenerate after adding sections -->
+- [2026-07-05 - Preference: route fan-out subagents to sonnet/opus, not Fable (Fable/Claude)](#2026-07-05---preference-route-fan-out-subagents-to-sonnetopus-not-fable-fableclaude)
+- [2026-07-05 - Menu-bar popover root cause: unbounded Live section and subagent churn (Fable/Claude)](#2026-07-05---menu-bar-popover-root-cause-unbounded-live-section-and-subagent-churn-fableclaude)
 - [2026-07-03 - Perf audit implemented as 8 reviewed PRs #95-#102 (Claude)](#2026-07-03---perf-audit-implemented-as-8-reviewed-prs-95-102-claude)
 - [2026-07-03 - Full performance audit: 25 verified findings, roadmap only, nothing implemented (Claude)](#2026-07-03---full-performance-audit-25-verified-findings-roadmap-only-nothing-implemented-claude)
 - [2026-06-28 - Project-detail vertical-rail timeline with AI semantic titles (Claude)](#2026-06-28---project-detail-vertical-rail-timeline-with-ai-semantic-titles-claude)
@@ -93,6 +95,51 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-05 - Preference: route fan-out subagents to sonnet/opus, not Fable (Fable/Claude)
+
+- User feedback ("你全都派Fable啊?") when 8 PR-review finder agents all
+  default-inherited Fable: do NOT let fan-out subagents inherit the top-tier
+  main-loop model.
+- How to apply: set `model: 'sonnet'` for mechanical scan/verify stages and
+  `model: 'opus'` for judgment-heavy propose/synthesize stages explicitly on
+  Agent / workflow agent() calls; reserve Fable for the single final
+  adjudication step or main-loop reasoning. Reference pattern: the accepted
+  2026-07-05 feature-cut workflow (sonnet mappers/verifiers, opus
+  proposers/judge).
+
+## 2026-07-05 - Menu-bar popover root cause: unbounded Live section and subagent churn (Fable/Claude)
+
+- User-visible symptom: the menu-bar popover still felt overlong/low-signal after
+  the earlier simplification and timeline cap. The final accepted root cause was
+  NOT generic first-open latency: `PopoverView.liveSection` rendered all
+  `liveSessions`, while `FileSystemEngramServiceReadProvider.liveSessions()`
+  could return the service cap of 100 recent sessions. Runtime evidence in the
+  Claude/Fable workflow found the set was dominated by Claude Code
+  `/subagents/workflows/*.jsonl` churn and stale 15min-24h `recent` sessions.
+- Final code shape:
+  - `macos/Engram/Views/PopoverView.swift`: stable min box
+    `.frame(minWidth: 400, maxWidth: 400, minHeight: 420, alignment: .top)`,
+    footer `Spacer(minLength: 0)`, `visibleLiveSessions` filters to
+    `activityLevel == "active" || "idle"`, renders
+    `visible.prefix(Self.liveSectionLimit)` with `liveSectionLimit = 5`, and
+    uses `popover_liveOverflow` for the remaining count.
+  - `macos/EngramService/Core/EngramServiceReadProvider.swift`:
+    `considerLiveSessionCandidate` excludes files whose path components contain
+    `subagents`, keeping subagent transcript churn out of the live scan.
+  - `macos/Engram/Views/Settings/GeneralSettingsSection.swift` and
+    `macos/Engram/MenuBarController.swift`: `showMenuBarActivity` lets the user
+    keep the menu-bar icon static while still surfacing hard service failures.
+- Verification recorded by Fable/Claude in `CHANGELOG.md`: source-inspection
+  `HomePopoverActionsTests` for stable height/live cap/overflow/menu-bar toggle,
+  real temp-dir `EngramServiceIPCTests.testFileSystemProviderExcludesSubagentChurnFromLiveScan`,
+  Debug build, Release/local deploy, and installed-binary marker
+  `popover_liveOverflow`. Codex doc-sync spot check on 2026-07-05 also found
+  `popover_liveOverflow` and `Show Activity in Menu Bar` in
+  `/Applications/Engram.app`.
+- Current user state: user said Fable found the root cause and the result is now
+  satisfactory. Future agents should preserve this as the accepted explanation
+  unless fresh runtime evidence contradicts it.
 
 ## 2026-07-03 - Perf audit implemented as 8 reviewed PRs #95-#102 (Claude)
 
