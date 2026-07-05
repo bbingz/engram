@@ -4,6 +4,9 @@ import XCTest
 final class TranscriptExportServiceTests: XCTestCase {
     func testRedactionCoversCommonTokenFamilies() {
         let input = """
+        sk-abcdefghij0123456789
+        ghp_1234567890abcdefghij
+        xoxb-1234567890-abcdefghij
         github_pat_1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ
         AKIA1234567890ABCDEF
         npm_1234567890abcdef
@@ -14,6 +17,9 @@ final class TranscriptExportServiceTests: XCTestCase {
         """
         let redacted = TranscriptExportService.redactSensitiveContent(input)
 
+        XCTAssertFalse(redacted.contains("sk-abcdefghij0123456789"))
+        XCTAssertFalse(redacted.contains("ghp_1234567890abcdefghij"))
+        XCTAssertFalse(redacted.contains("xoxb-1234567890-abcdefghij"))
         XCTAssertFalse(redacted.contains("github_pat_1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
         XCTAssertFalse(redacted.contains("AKIA1234567890ABCDEF"))
         XCTAssertFalse(redacted.contains("npm_1234567890abcdef"))
@@ -27,6 +33,7 @@ final class TranscriptExportServiceTests: XCTestCase {
             "api_key: ABCDEF0123456789 tail",
             "Authorization: Bearer ABCDEF0123456789",
             "token=sk-abcdefghij0123456789 done",
+            "sk-abcdefghij0123456789 and ghp_1234567890abcdefghij and xoxb-1234567890-abcdefghij",
             "github_pat_1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ here",
             "AKIA1234567890ABCDEF and npm_1234567890abcdef and xoxe-1234567890-abcdef",
             "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----",
@@ -36,6 +43,7 @@ final class TranscriptExportServiceTests: XCTestCase {
             "[REDACTED] tail",
             "[REDACTED]",
             "[REDACTED] done",
+            "[REDACTED] and [REDACTED] and [REDACTED]",
             "[REDACTED] here",
             "[REDACTED] and [REDACTED] and [REDACTED]",
             "[REDACTED]",

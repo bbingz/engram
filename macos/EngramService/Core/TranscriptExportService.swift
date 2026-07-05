@@ -213,11 +213,10 @@ enum TranscriptExportService {
     }
 
     // Compile the secret-redaction patterns once per process instead of once
-    // per message per request. redactSensitiveContent() is called for every
-    // displayed/exported message (Web UI page: up to 200 messages), so rebuilding
-    // 8 NSRegularExpressions on each call was pure repeated work. compactMap
-    // preserves the previous behavior of silently skipping any pattern that
-    // fails to compile.
+    // per message per request. redactSensitiveContent() is called across MCP and
+    // export transcript reads, so rebuilding 8 NSRegularExpressions on each call
+    // was pure repeated work. compactMap preserves the previous behavior of
+    // silently skipping any pattern that fails to compile.
     private static let compiledRedactionPatterns: [NSRegularExpression] = {
         let patterns = [
             #"(?i)\b(api[_-]?key|authorization|bearer|password|secret|credential|token)\b\s*[:=]\s*["']?[A-Za-z0-9_\-+=/.]{10,}["']?"#,

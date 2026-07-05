@@ -30,7 +30,7 @@ historical surfaces.
 | Task | Location | Notes |
 |------|----------|-------|
 | Swift app startup/UI | `macos/Engram/` | `App.swift` owns `EngramApp` and `AppDelegate`; UI reads through service/read facades. |
-| Swift service runtime | `macos/EngramService/` | Startup, IPC command handling, writer gate, indexing loop, and native web UI. |
+| Swift service runtime | `macos/EngramService/` | Startup, IPC command handling, writer gate, indexing loop, and service export/read flows. |
 | Swift MCP runtime | `macos/EngramMCP/` | Native stdio helper; tool routing lives in `Core/MCPToolRegistry.swift`. |
 | Product writes/schema/indexing | `macos/EngramCoreWrite/` | GRDB writer, migrations, indexing, startup backfills, project migration. |
 | Product reads | `macos/EngramCoreRead/` | GRDB read repositories/facades used by app and service surfaces. |
