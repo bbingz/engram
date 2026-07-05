@@ -245,8 +245,8 @@ follow-up fix pass. Every behavior change here needs a matching Swift test.
   path (`macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift:210`, and
   the `.messageLimitExceeded` return around `:98`–`:113`); consumers
   `macos/EngramMCP/Core/MCPTranscriptReader.swift` (`fullScanPage` `:347`,
-  `collectVisiblePageWindow` `:384`) and
-  `macos/EngramService/Core/EngramWebUIServer.swift` (413 mapping near `:544`).
+  `collectVisiblePageWindow` `:384`). The former HTTP Web UI consumer was
+  resolved by deletion in feature-cut item 1.
 - **What changed:** an unwindowed read (`options.limit == nil`) that exceeds
   `ParserLimits.maxMessages` (10,000) no longer throws
   `.messageLimitExceeded`; it logs a private `.notice` and returns only the
@@ -263,9 +263,8 @@ follow-up fix pass. Every behavior change here needs a matching Swift test.
   and the cached total disagree about how much content exists.
 - **Needs a decision:** silent truncation vs. surfacing it. Preferred direction:
   thread a `truncated`/`totalKnownComplete` signal out of the adapter window so
-  MCP totals, the resume primer, and the Web UI can report incompleteness
-  (e.g. keep the 413 or add an explicit "transcript truncated at N" marker)
-  instead of quietly capping. Confirm the intended UX before implementing.
+  MCP totals and the resume primer can report incompleteness instead of
+  quietly capping. Confirm the intended UX before implementing.
 
 #### P1 residuals after Codex fix pass (re-verified 2026-07-05, Claude Code)
 
@@ -276,39 +275,15 @@ capped window, `collectVisiblePageWindow` respects the cap via
 carry truncation metadata for the nine JSONL/cascade adapters that override
 `streamMessagesWithMetadata`. Verified by re-reading the working tree plus green
 focused suites (`AdapterWindowedReadTests`, `EngramMCPExecutableTests`,
-`EngramWebUIServerTests`, `EngramServiceIPCTests`, `StartupBackfillTests`,
-`DatabaseManagerTests`). The two residuals below were resolved on 2026-07-05 by
-Codex:
+`EngramServiceIPCTests`, `StartupBackfillTests`, `DatabaseManagerTests`). The
+former HTTP Web UI suite and line anchors were resolved by feature-cut item 1
+deletion. The two residuals below were resolved on 2026-07-05 by Codex:
 
-- **Web UI oversized-transcript banner/clamp is dead code for indexed JSONL
-  sessions, and its tests only exercise the pure helpers.** The banner/clamp
-  trigger `EngramWebUIServer.transcriptTruncationMarker` (`:569`) fires only when
-  `sessionMessageCount > transcriptMaxMessages` (10_000, `:35`) **or**
-  `readTruncatedAt != nil`. Neither is reachable on the normal indexed path:
-  (1) stored `message_count` is itself capped at ≤10_000 —
-  `JSONLAdapterSupport.readObjects` stops appending at `limits.maxMessages`
-  (`CodexAdapter.swift:93`, `ParserLimits.swift:19`) and `parseSessionInfo`
-  counts only that capped object set (`CodexAdapter.swift:421`), so
-  `count > 10_000` is never true; (2) the Web UI page read passes a non-nil
-  `limit` (`EngramWebUIServer.swift:518`), so the adapter takes
-  `shouldApplyMessageCap = options.limit == nil` = false
-  (`CodexAdapter.swift:498`) and returns `truncatedAt = nil` (`:534`). Net: the
-  banner never renders and the clamp never engages; because the same windowed
-  read is uncapped, the Web UI actually pages the *full* transcript via
-  `hasMore`/`nextOffset` (`:340`), so this is not data loss — it is inert
-  defensive code plus an MCP-vs-WebUI inconsistency (MCP reports "truncated at
-  10k", the Web UI serves everything). The three added tests
-  (`EngramWebUIServerTests.swift:187`–`:219`) inject synthetic post-cap values
-  (`sessionMessageCount: 10_001`, `truncatedAt: 10_000`) into the static helpers
-  and never drive `sessionPage`/`readMessages` against a seeded >10k session, so
-  they stay green while the production trigger is unreachable — false coverage.
-  **Resolution:** Option B is now the explicit product behavior: Web UI
-  transcript pages use raw-window pagination over the full transcript, while
-  MCP/export whole-transcript surfaces remain capped and marked. The dead
-  banner/clamp helpers and their helper-only tests were removed, and
-  `EngramWebUIServerTests.testSessionPagePaginatesPastTenThousandWithoutTruncationBanner`
-  now drives a real `/session/...` page over a seeded >10k-message Codex
-  transcript.
+- **Resolved by deletion:** the HTTP Web UI oversized-transcript
+  banner/clamp path, helper-only tests, and `EngramWebUIServer` line anchors no
+  longer exist after feature-cut item 1. MCP/export whole-transcript surfaces
+  remain capped and marked; there is no browser transcript page left to track in
+  this follow-up list.
 - **Residual silent export truncation on adapters that do not override
   `streamMessagesWithMetadata`.** `KimiAdapter` (`:105`) and `OpenCodeAdapter`
   (`:220`) override only `streamMessages`, so they inherit the default
@@ -334,19 +309,8 @@ Codex:
 
 ### P2 — Web UI session-page ETag omits DB-mutable display fields
 
-- **Where:** `macos/EngramService/Core/EngramWebUIServer.swift`
-  `sessionETag(id:locator:offset:limit:)` (`:365`); rendered fields read in
-  `sessionPage`/`readSession` and emitted at `:238`, `:245`, `:334`, `:338`,
-  `:343`.
-- **Problem:** the weak ETag hashes only session id + transcript file mtime/size
-  + offset/limit. The page also renders `displayTitle`
-  (`custom_name`/`generated_title`), `project`, and `messageCount`, all pulled
-  from the `sessions` DB row and mutable without touching the transcript file
-  (rename via `EngramServiceCommandHandler`, async title generation). A browser
-  that cached the page gets a stale `304 Not Modified` after a rename/retitle,
-  so the new title/project never appears.
-- **Fix direction:** fold the DB-mutable rendered fields (or a cheap hash of
-  them) into the ETag input so a rename/retitle changes the ETag.
+- **Resolved by deletion:** feature-cut item 1 removed the HTTP Web UI session
+  page and `EngramWebUIServer`, so this ETag path no longer exists.
 
 ### P2 — CursorAdapter parse cache keyed on shared WAL db mtime/size
 
@@ -354,8 +318,8 @@ Codex:
   (parse cache keyed via `ParsedTranscriptCache.Signature.forFile(dbPath)`).
 - **Problem:** `state.vscdb` is Cursor/VSCode's live SQLite store, commonly in
   WAL mode; committed writes land in `-wal` and the main file's mtime/size can
-  stay unchanged until a checkpoint. In the long-lived Web UI server, a composer
-  edited while Cursor is open can serve stale cached messages.
+  stay unchanged until a checkpoint. Long-lived adapter cache consumers can serve
+  stale cached messages while Cursor is open.
 - **Fix direction:** include the `-wal` (and `-shm`) sidecar mtime/size in the
   cache signature, or don't cache while the sidecar is non-empty.
 

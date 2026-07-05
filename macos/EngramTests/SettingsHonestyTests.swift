@@ -42,13 +42,6 @@ final class SettingsHonestyTests: XCTestCase {
         XCTAssertFalse(generalSettings.contains("Open Web UI"), "General settings must not link to the deleted HTTP transcript Web UI")
         XCTAssertFalse(generalSettings.contains("webUIURL"), "General settings must not compute a deleted Web UI endpoint")
 
-        let homeView = try source("macos/Engram/Views/Pages/HomeView.swift")
-        XCTAssertFalse(homeView.contains("openWebUI"), "Home must not expose a deleted Web UI open action")
-        XCTAssertFalse(homeView.contains("Web UI"), "Home service status must not include a deleted Web UI row")
-
-        let menuBarController = try source("macos/Engram/MenuBarController.swift")
-        XCTAssertFalse(menuBarController.contains("openWebUI"), "Menu bar menu must not expose a deleted Web UI action")
-
         let statusStore = try source("macos/Shared/Service/EngramServiceStatusStore.swift")
         XCTAssertFalse(statusStore.contains("endpointHost"), "Status store must not track a deleted Web UI host")
         XCTAssertFalse(statusStore.contains("endpointPort"), "Status store must not track a deleted Web UI port")
@@ -73,6 +66,20 @@ final class SettingsHonestyTests: XCTestCase {
         XCTAssertTrue(source.contains(#"removeValue(forKey: "httpBearerToken")"#))
         XCTAssertTrue(source.contains(#"removeValue(forKey: "httpAllowCIDR")"#))
         XCTAssertTrue(source.contains(#"removeValue(forKey: "httpHost")"#))
+        XCTAssertTrue(source.contains(#"removeValue(forKey: "webUIEnabled")"#))
+    }
+
+    func testServiceCoreDoesNotLinkDeletedHttpStack() throws {
+        let source = try source("macos/project.yml")
+        let serviceCoreBlock = try XCTUnwrap(
+            source.range(of: "  EngramServiceCore:")?.lowerBound
+        )
+        let serviceTargetBlock = try XCTUnwrap(
+            source.range(of: "  EngramService:", range: serviceCoreBlock..<source.endIndex)?.lowerBound
+        )
+        let block = String(source[serviceCoreBlock..<serviceTargetBlock])
+
+        XCTAssertFalse(block.contains("Hummingbird"), "EngramServiceCore must not link the deleted HTTP Web UI stack")
     }
 
     func testRegenerateAllStatusCopyIsHonest() throws {

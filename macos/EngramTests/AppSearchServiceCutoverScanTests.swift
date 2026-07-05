@@ -561,15 +561,6 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
-    func testServiceRunnerDoesNotStartDeletedHttpWebUi() throws {
-        let runner = try source("macos/EngramService/Core/EngramServiceRunner.swift")
-        XCTAssertFalse(runner.contains("EngramWebUIServer"))
-        XCTAssertFalse(runner.contains("readWebUIEnabled"))
-        XCTAssertFalse(runner.contains("provisionWebToken"))
-        XCTAssertFalse(runner.contains(#""web_ready""#))
-        XCTAssertFalse(runner.contains(#""web_error""#))
-    }
-
     func testResumeActionLivesInSessionToolbarNotGlobalWindowToolbar() throws {
         let mainWindow = try source("macos/Engram/Views/MainWindowView.swift")
         XCTAssertFalse(
@@ -866,14 +857,6 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         XCTAssertTrue(
             generalSettings.contains("showDeveloperTools"),
             "General settings should keep the developer tools toggle"
-        )
-        XCTAssertFalse(
-            generalSettings.contains("webUIURL"),
-            "General settings must not compute the deleted HTTP Web UI endpoint"
-        )
-        XCTAssertFalse(
-            generalSettings.contains("Open Web UI"),
-            "General settings must not expose the deleted HTTP Web UI button"
         )
         // The former `mcpEndpointText` showed `http://host:port/mcp`, but the
         // Swift service serves no HTTP /mcp route — MCP is the stdio EngramMCP

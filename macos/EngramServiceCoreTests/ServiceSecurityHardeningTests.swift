@@ -313,6 +313,16 @@ final class ServiceSecurityHardeningTests: XCTestCase {
         XCTAssertEqual(perms, 0o600)
     }
 
+    func testRunnerRemovesLegacyWebUIToken() throws {
+        let paths = try makePaths()
+        let tokenURL = paths.runtime.appendingPathComponent("webui.token")
+        try "legacy-secret".write(to: tokenURL, atomically: true, encoding: .utf8)
+
+        try EngramServiceRunner.removeLegacyWebUIToken(runtimeDirectory: paths.runtime)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tokenURL.path))
+    }
+
     func testClientAutoAttachedTokenAuthorizesDestructiveCommand() async throws {
         let paths = try makePaths()
         try seedProjectFixture(at: paths.database.path, src: "/tmp")

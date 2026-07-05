@@ -661,9 +661,6 @@
     "USD" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "美元" } } }
     },
-    "Unavailable" : {
-      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "不可用" } } }
-    },
     "Version" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "版本" } } }
     },

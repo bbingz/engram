@@ -43,6 +43,11 @@ public enum EngramServiceRunner {
             at: URL(fileURLWithPath: databasePath).deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        do {
+            try removeLegacyWebUIToken(runtimeDirectory: runtimeDirectory)
+        } catch {
+            ServiceLogger.warn("failed to remove legacy web UI token: \(error.localizedDescription)", category: .runner)
+        }
 
         let socketBasename = URL(fileURLWithPath: socketPath).lastPathComponent
         let databaseBasename = URL(fileURLWithPath: databasePath).lastPathComponent
@@ -1212,6 +1217,12 @@ public enum EngramServiceRunner {
             return URL(fileURLWithPath: override)
         }
         return defaultEngramSettingsURL()
+    }
+
+    static func removeLegacyWebUIToken(runtimeDirectory: URL) throws {
+        let tokenURL = runtimeDirectory.appendingPathComponent("webui.token")
+        guard FileManager.default.fileExists(atPath: tokenURL.path) else { return }
+        try FileManager.default.removeItem(at: tokenURL)
     }
 
     private static func parseUsageTokenLimitsJSON(_ value: String) -> [String: StartupUsageTokenLimits]? {

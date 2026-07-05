@@ -450,11 +450,12 @@ private struct AdvancedSettingsSection: View {
     private func saveAdvancedSettings(refreshUsage: Bool = false) {
         guard !isLoadingSettings else { return }
         mutateEngramSettings { settings in
-            // No Swift runtime reads these legacy HTTP/security keys. Scrub
+            // No Swift runtime reads these legacy HTTP/Web UI/security keys. Scrub
             // any stale persisted values on next save.
             settings.removeValue(forKey: "httpHost")
             settings.removeValue(forKey: "httpAllowCIDR")
             settings.removeValue(forKey: "httpBearerToken")
+            settings.removeValue(forKey: "webUIEnabled")
 
             settings["noiseFilter"] = noiseFilter
             settings["hideUsageSessions"] = hideUsageSessions

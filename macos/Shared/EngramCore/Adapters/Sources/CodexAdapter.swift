@@ -219,7 +219,7 @@ enum JSONLAdapterSupport {
     /// When `options.limit` is set, this reads line by line and STOPS as soon as
     /// it has skipped `offset` produced messages and collected `limit` of them —
     /// so a paged read costs O(offset + limit) parsed lines, not O(file). This is
-    /// what makes the Web UI pager O(N) per page instead of O(N) re-parses per
+    /// what makes transcript paging O(N) per page instead of O(N) re-parses per
     /// page (O(N²) overall). When `limit` is nil (whole-transcript request) it
     /// falls back to `readObjects` (preserving the message-cap and during-parse
     /// file-identity failure semantics) and windows in memory.
