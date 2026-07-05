@@ -31,32 +31,23 @@ describe('dispatchCli', () => {
     expect(calls).toEqual([['diagnose', ['--since', '1h']]]);
   });
 
-  it('loads resume module without loading the MCP server', async () => {
+  it('reports the removed TypeScript resume entrypoint without importing it', async () => {
     const imported: string[] = [];
-    const calls: unknown[][] = [];
 
-    await dispatchCli(['--resume', 'abc123'], async (specifier) => {
-      imported.push(specifier);
-      return {
-        main: (...args: unknown[]) => {
-          calls.push(args);
-        },
-      };
-    });
+    await expect(
+      dispatchCli(['--resume', 'abc123'], async (specifier) => {
+        imported.push(specifier);
+        return {};
+      }),
+    ).rejects.toThrow('The TypeScript MCP entrypoint was removed');
 
-    expect(imported).toEqual(['./resume.js']);
-    expect(calls).toEqual([[['--resume', 'abc123']]]);
+    expect(imported).toEqual([]);
   });
 
-  it('loads MCP server by default', async () => {
-    const imported: string[] = [];
-
-    await dispatchCli([], async (specifier) => {
-      imported.push(specifier);
-      return {};
-    });
-
-    expect(imported).toEqual(['../index.js']);
+  it('reports the removed TypeScript MCP entrypoint by default', async () => {
+    await expect(dispatchCli([], async () => ({}))).rejects.toThrow(
+      'The TypeScript MCP entrypoint was removed',
+    );
   });
 
   it('propagates dynamic import failures to the top-level catch', async () => {

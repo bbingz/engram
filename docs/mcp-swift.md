@@ -1,12 +1,13 @@
 # Switching to the Swift MCP Helper
 
 Engram's product MCP path is the Swift helper bundled inside the macOS app.
-The older Node MCP entrypoint remains only as development/reference material.
+The older Node MCP entrypoint was deleted; TypeScript remains retained
+development/reference tooling but no longer provides MCP startup.
 
 | Impl | Path | Runtime |
 |------|------|---------|
 | Swift helper (product) | `Engram.app/Contents/Helpers/EngramMCP` | native macOS binary |
-| Node reference | `dist/index.js` | Node.js dev/reference tooling |
+| Node reference | deleted | no TypeScript MCP startup path |
 
 The Swift helper exposes the MCP tools over stdio. Reads use the Swift
 GRDB read layer, and mutating tools route through the local `EngramService`
@@ -19,8 +20,7 @@ Unix socket instead of a daemon HTTP API.
 - **Code-signed, sandbox-friendly**: the helper lives inside the
   notarized `Engram.app` bundle and inherits its signature.
 
-The Node entrypoint is retained for development/reference workflows, not as
-the default product runtime.
+The Node entrypoint is not retained. Use the Swift helper for MCP startup.
 
 ## Prerequisites
 
@@ -90,24 +90,6 @@ Existing Codex sessions still need a restart after changing MCP configuration.
 
 Any client that accepts a `command` + `args` config works. Point
 `command` at the absolute path to the helper; no args are required.
-
-## Legacy Node reference
-
-Development workflows can still point a client at the retained Node reference
-entrypoint:
-
-```jsonc
-{
-  "mcpServers": {
-    "engram": {
-      "command": "node",
-      "args": ["/absolute/path/to/engram/dist/index.js"]
-    }
-  }
-}
-```
-
-Restart the client. This path is not the shipped macOS product runtime.
 
 ## Sanity check from the terminal
 

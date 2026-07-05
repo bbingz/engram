@@ -10,25 +10,6 @@ import type { Database } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
 import { toLocalDate, toLocalDateTime } from '../utils/time.js';
 
-export const exportTool = {
-  name: 'export',
-  description:
-    '将单个会话导出为 Markdown 或 JSON 文件，保存到 ~/.engram/exports/ 目录。',
-  inputSchema: {
-    type: 'object' as const,
-    required: ['id'],
-    properties: {
-      id: { type: 'string', description: '会话 ID' },
-      format: {
-        type: 'string',
-        enum: ['markdown', 'json'],
-        description: '默认 markdown',
-      },
-    },
-    additionalProperties: false,
-  },
-};
-
 export async function handleExport(
   db: Database,
   adapter: SessionAdapter,

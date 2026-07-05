@@ -37,17 +37,19 @@ const repoRoot = resolve(__dirname, '..');
 const fixtureDbPath = resolve(repoRoot, 'tests/fixtures/mcp-contract.sqlite');
 const goldenDir = resolve(repoRoot, 'tests/fixtures/mcp-golden');
 const runtimeDir = resolve(repoRoot, 'tests/fixtures/mcp-runtime');
+const swiftRegistryPath = resolve(
+  repoRoot,
+  'macos/EngramMCP/Core/MCPToolRegistry.swift',
+);
+const swiftStdioServerPath = resolve(
+  repoRoot,
+  'macos/EngramMCP/Core/MCPStdioServer.swift',
+);
 const lintProjectDir = resolve(runtimeDir, 'lint-project');
 const linkTargetDir = resolve(runtimeDir, 'engram');
 const reviewHomeDir = resolve(runtimeDir, 'review-home');
 const transcriptDir = resolve(runtimeDir, 'transcripts');
 const exportHomeDir = resolve(runtimeDir, 'export-home');
-const swiftUnavailableProjectOperationTools = new Set([
-  'project_move',
-  'project_archive',
-  'project_undo',
-  'project_move_batch',
-]);
 
 rmSync(fixtureDbPath, { force: true });
 rmSync(`${fixtureDbPath}-wal`, { force: true });
@@ -448,7 +450,9 @@ writeFileSync(
       payload: {
         type: 'message',
         role: 'user',
-        content: [{ text: 'Keep src/index.ts as the fallback entry point.' }],
+        content: [
+          { text: 'Use the Swift EngramMCP helper as the MCP entry point.' },
+        ],
       },
     }),
     '',
@@ -563,7 +567,7 @@ async function withMockedNow<T>(isoTimestamp: string, run: () => Promise<T>) {
 }
 
 const goldens: Record<string, unknown> = {
-  'initialize.result': extractInitializeResultFromIndex(),
+  'initialize.result': extractInitializeResultFromSwiftServer(),
   'stats.source': success(
     await handleStats(db, {
       group_by: 'source',
@@ -793,7 +797,7 @@ for (const [name, payload] of Object.entries(goldens)) {
 
 writeFileSync(
   resolve(goldenDir, 'tools.json'),
-  `${JSON.stringify(extractToolNamesFromIndex(), null, 2)}\n`,
+  `${JSON.stringify(extractToolNamesFromSwiftRegistry(), null, 2)}\n`,
 );
 
 writeFileSync(
@@ -816,158 +820,52 @@ db.close();
 console.log(`Generated ${fixtureDbPath}`);
 console.log(`Generated goldens in ${goldenDir}`);
 
-function extractToolNamesFromIndex(): string[] {
-  const indexPath = resolve(repoRoot, 'src/index.ts');
-  const indexSource = readFileSync(indexPath, 'utf8');
-  const importMap = new Map<string, string>();
-  for (const match of indexSource.matchAll(
-    /import\s*\{([\s\S]*?)\}\s*from\s*'([^']+)'/g,
-  )) {
-    const names = match[1]
-      .split(',')
-      .map((part) => part.trim())
-      .filter(Boolean);
-    for (const name of names) {
-      const [imported, local] = name.split(/\s+as\s+/);
-      importMap.set((local ?? imported).trim(), match[2]);
-    }
-  }
-
-  const blockMatch = indexSource.match(/const allTools = \[([\s\S]*?)\n\];/);
-  if (!blockMatch) {
-    throw new Error('Unable to locate allTools block in src/index.ts');
-  }
-
-  const blockWithoutComments = blockMatch[1].replace(/^\s*\/\/.*$/gm, '');
-  const entries = splitTopLevelEntries(blockWithoutComments);
-  return entries
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0)
-    .map((entry) => resolveToolName(entry, importMap))
-    .filter((toolName) => !swiftUnavailableProjectOperationTools.has(toolName));
+function extractToolNamesFromSwiftRegistry(): string[] {
+  const registrySource = readFileSync(swiftRegistryPath, 'utf8');
+  const unavailableTools = extractSwiftStringSet(
+    registrySource,
+    'unavailableNativeProjectOperationTools',
+  );
+  return [
+    ...registrySource.matchAll(/MCPToolDefinition\(\s*name:\s*"([^"]+)"/g),
+  ]
+    .map((match) => match[1])
+    .filter((toolName) => !unavailableTools.has(toolName));
 }
 
-function extractInitializeResultFromIndex(): Record<string, unknown> {
-  const indexPath = resolve(repoRoot, 'src/index.ts');
-  const indexSource = readFileSync(indexPath, 'utf8');
-  const instructionsMatch = indexSource.match(
-    /const ENGRAM_INSTRUCTIONS = `([\s\S]*?)`;/,
+function extractInitializeResultFromSwiftServer(): Record<string, unknown> {
+  const serverSource = readFileSync(swiftStdioServerPath, 'utf8');
+  const instructionsMatch = serverSource.match(
+    /private static let instructions = """\n([\s\S]*?)\n {4}"""/,
   );
 
   if (!instructionsMatch) {
     throw new Error(
-      'Unable to locate ENGRAM_INSTRUCTIONS template literal in src/index.ts',
+      `Unable to locate instructions multiline string in ${swiftStdioServerPath}`,
     );
   }
 
   return {
     protocolVersion: '2025-03-26',
-    capabilities: { tools: {} },
+    capabilities: { tools: {}, resources: {}, prompts: {} },
     serverInfo: { name: 'engram', version: '0.1.0' },
-    instructions: instructionsMatch[1],
+    instructions: normalizeSwiftMultilineString(instructionsMatch[1]),
   };
 }
 
-function splitTopLevelEntries(block: string): string[] {
-  const entries: string[] = [];
-  let current = '';
-  let braceDepth = 0;
-  let bracketDepth = 0;
-  let parenDepth = 0;
-  let inString = false;
-  let stringQuote = '';
-  let escaped = false;
-
-  for (const char of block) {
-    current += char;
-
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (char === '\\') {
-        escaped = true;
-        continue;
-      }
-      if (char === stringQuote) {
-        inString = false;
-        stringQuote = '';
-      }
-      continue;
-    }
-
-    if (char === "'" || char === '"' || char === '`') {
-      inString = true;
-      stringQuote = char;
-      continue;
-    }
-    if (char === '{') braceDepth += 1;
-    else if (char === '}') braceDepth -= 1;
-    else if (char === '[') bracketDepth += 1;
-    else if (char === ']') bracketDepth -= 1;
-    else if (char === '(') parenDepth += 1;
-    else if (char === ')') parenDepth -= 1;
-    else if (
-      char === ',' &&
-      braceDepth === 0 &&
-      bracketDepth === 0 &&
-      parenDepth === 0
-    ) {
-      entries.push(current.slice(0, -1));
-      current = '';
-    }
-  }
-
-  if (current.trim()) {
-    entries.push(current);
-  }
-  return entries.filter((entry) => entry.trim().length > 0);
-}
-
-function resolveToolName(
-  entry: string,
-  importMap: Map<string, string>,
-): string {
-  entry = entry.replace(/^\s*\/\/.*$/gm, '').trim();
-  if (entry.startsWith('{')) {
-    const match = entry.match(/name:\s*'([^']+)'/);
-    if (!match) {
-      throw new Error(`Unable to extract inline tool name from: ${entry}`);
-    }
-    return match[1];
-  }
-
-  const identifier = entry.replace(/,$/, '').trim();
-  const relativeImport = importMap.get(identifier);
-  if (!relativeImport) {
-    const indexSource = readFileSync(resolve(repoRoot, 'src/index.ts'), 'utf8');
-    const localMatch = indexSource.match(
-      new RegExp(
-        String.raw`const ${identifier}\s*=\s*\{[\s\S]*?name:\s*'([^']+)'`,
-      ),
-    );
-    if (localMatch) {
-      return localMatch[1];
-    }
-    throw new Error(`Missing import for allTools entry: ${identifier}`);
-  }
-
-  const sourcePath = resolve(
-    repoRoot,
-    'src',
-    relativeImport.replace(/^\.\//, '').replace(/\.js$/, '.ts'),
-  );
-  const source = readFileSync(sourcePath, 'utf8');
+function extractSwiftStringSet(source: string, name: string): Set<string> {
   const match = source.match(
     new RegExp(
-      String.raw`export const ${identifier}\s*=\s*\{[\s\S]*?name:\s*'([^']+)'`,
+      String.raw`private static let ${name}:\s*Set<String>\s*=\s*\[([\s\S]*?)\]`,
     ),
   );
-  if (!match) {
-    throw new Error(
-      `Unable to resolve tool name for ${identifier} from ${sourcePath}`,
-    );
-  }
-  return match[1];
+  if (!match) return new Set();
+  return new Set([...match[1].matchAll(/"([^"]+)"/g)].map((item) => item[1]));
+}
+
+function normalizeSwiftMultilineString(value: string): string {
+  return value
+    .split('\n')
+    .map((line) => line.replace(/^ {4}/, ''))
+    .join('\n');
 }

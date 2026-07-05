@@ -15,7 +15,7 @@ This table records the Stage 4 decision for the Node `engram` CLI surface before
 
 | Command | Node implementation | Writes? | Swift replacement or deprecation | Verification status |
 |---|---|---:|---|---|
-| `engram` with no subcommand | `src/cli/index.ts` imports `src/index.ts` MCP stdio server | Mixed through MCP tools | Replaced by Swift `EngramMCP` helper, not by `EngramCLI` | Swift MCP golden tests cover public tools |
+| `engram` with no subcommand | Deleted TypeScript MCP stdio server | Mixed through MCP tools | Replaced by Swift `EngramMCP` helper, not by `EngramCLI` | Swift MCP golden tests cover public tools |
 | `engram logs` | `src/cli/logs.ts` reads observability DB | No | Deprecated for Stage 4; no Swift replacement yet | No Swift CLI test |
 | `engram traces` | `src/cli/traces.ts` reads observability DB | No | Deprecated for Stage 4; no Swift replacement yet | No Swift CLI test |
 | `engram health` | `src/cli/health.ts` reads DB health tables | No | Deprecated for Stage 4; service/app health surfaces remain separate | No Swift CLI test |
@@ -27,7 +27,7 @@ This table records the Stage 4 decision for the Node `engram` CLI surface before
 | `engram project list` | `src/cli/project.ts` reads migration log | No | Replaced by Swift MCP `project_list_migrations` | MCP golden coverage |
 | `engram project recover` | `src/cli/project.ts` diagnoses migration state | Filesystem read | Replaced by Swift MCP `project_recover` | MCP golden coverage |
 | `engram project move-batch` | `src/cli/project.ts` calls batch orchestrator directly | Yes | Not replaced in Swift; Swift MCP/UI explicitly hide or reject this operation until a native migration pipeline is ported | MCP unavailable tests cover fail-closed behavior |
-| `engram --resume` / `engram -r` | `src/cli/resume.ts` interactive resume flow | Launches external CLI/app | Deprecated for Stage 4; app resume UI uses service-backed `resumeCommand` | App service-client tests cover payload/response, not CLI |
+| `engram --resume` / `engram -r` | Deleted TypeScript interactive resume flow | Launches external CLI/app | Removed; app resume UI uses service-backed `resumeCommand` | App service-client tests cover payload/response, not CLI |
 
 ## Gate Interpretation
 

@@ -1,17 +1,6 @@
 import type { LiveSessionMonitor } from '../core/live-sessions.js';
 import type { Logger } from '../core/logger.js';
 
-export const liveSessionsTool = {
-  name: 'live_sessions',
-  description:
-    'List currently active coding sessions detected by file activity.',
-  inputSchema: {
-    type: 'object' as const,
-    properties: {},
-    additionalProperties: false,
-  },
-};
-
 export function handleLiveSessions(
   monitor: LiveSessionMonitor | null,
   opts?: { log?: Logger },

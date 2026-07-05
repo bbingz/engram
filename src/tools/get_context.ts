@@ -7,48 +7,9 @@ import type { VectorStore } from '../core/vector-store.js';
 import { toLocalDate } from '../utils/time.js';
 import { handleLintConfig } from './lint_config.js';
 
-export const getContextTool = {
-  name: 'get_context',
-  description:
-    '为当前工作目录自动提取相关的历史会话上下文。在开始新任务时调用，获取该项目的历史记录。',
-  inputSchema: {
-    type: 'object' as const,
-    required: ['cwd'],
-    properties: {
-      cwd: { type: 'string', description: '当前工作目录（绝对路径）' },
-      task: {
-        type: 'string',
-        description: '当前任务描述（可选，用于语义搜索）',
-      },
-      max_tokens: {
-        type: 'number',
-        description: 'token 预算，默认 4000（约 16000 字符）',
-      },
-      detail: {
-        type: 'string',
-        enum: ['abstract', 'overview', 'full'],
-        description:
-          '详情级别: abstract (~100 tokens, cost+alerts only), overview (~2K tokens), full (default)',
-      },
-      sort_by: {
-        type: 'string',
-        enum: ['recency', 'score'],
-        description:
-          '排序方式: recency (默认按时间倒序) 或 score (按质量分数倒序)',
-      },
-      include_environment: {
-        type: 'boolean',
-        description:
-          '包含实时环境数据（活跃会话、今日成本、工具使用、告警），默认 true',
-      },
-    },
-    additionalProperties: false,
-  },
-};
-
 const CHARS_PER_TOKEN = 4;
 
-export interface GetContextDeps {
+interface GetContextDeps {
   vectorStore?: VectorStore;
   embed?: (text: string) => Promise<Float32Array | null>;
   liveMonitor?: { getSessions(): LiveSession[] };

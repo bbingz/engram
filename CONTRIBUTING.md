@@ -12,7 +12,6 @@ npm install && npm run build
 
 ## Development
 ```bash
-npm run dev          # run without compile (tsx)
 npm test             # vitest (909 tests)
 npm run lint         # biome check
 npm run lint:fix     # biome auto-fix

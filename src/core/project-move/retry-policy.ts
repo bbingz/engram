@@ -1,12 +1,11 @@
 // src/core/project-move/retry-policy.ts
 //
-// Single source of truth for error → retry_policy classification + HTTP
-// status mapping + message humanization. Previously lived duplicated in
-// src/index.ts (MCP) and src/web.ts (HTTP), which drifted: unknown errors
-// got 'never' from MCP but 'safe' from HTTP, and DirCollisionError's
-// structured fields (sourceId/oldDir/newDir) were silently dropped by
-// both layers. Round 4 extracted this so every caller — MCP, HTTP, and
-// any future CLI/batch consumer — shares the same contract.
+// Single source of truth for error → retry_policy classification, status
+// mapping, and message humanization. This was extracted after the historical
+// TypeScript MCP and HTTP dispatch layers drifted: unknown errors got
+// different retry policies, and DirCollisionError's structured fields
+// (sourceId/oldDir/newDir) were silently dropped. Retained project-move callers
+// share this contract.
 
 import type { SourceId } from './sources.js';
 

@@ -7,26 +7,6 @@ import { isDefaultVisibleTranscriptMessage } from '../core/transcript-visibility
 
 const PAGE_SIZE = 50;
 
-export const getSessionTool = {
-  name: 'get_session',
-  description: '读取单个会话的完整对话内容。大会话支持分页（每页 50 条消息）。',
-  inputSchema: {
-    type: 'object' as const,
-    required: ['id'],
-    properties: {
-      id: { type: 'string', description: '会话 ID' },
-      page: { type: 'number', description: '页码，从 1 开始，默认 1' },
-      roles: {
-        type: 'array',
-        items: { type: 'string', enum: ['user', 'assistant'] },
-        description:
-          '只返回指定角色的可见消息；默认返回非空 user/assistant，隐藏 tool/system/agent communication',
-      },
-    },
-    additionalProperties: false,
-  },
-};
-
 export async function handleGetSession(
   db: Database,
   adapter: SessionAdapter,

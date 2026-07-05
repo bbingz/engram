@@ -62,6 +62,11 @@ async function* throwingMessages() {
   throw new Error('read failed');
 }
 
+async function* throwingSecretPathMessages() {
+  yield* [];
+  throw new Error('failed to read secret path /Users/bing/.ssh/id_ed25519');
+}
+
 describe('handleGenerateSummary status results', () => {
   it('returns a structured not_found status without MCP isError', async () => {
     mockReadFileSettings.mockReturnValue({ aiApiKey: 'sk-test' });
@@ -161,6 +166,26 @@ describe('handleGenerateSummary status results', () => {
         error: { message: expect.stringContaining('Failed to read') },
       },
     });
+  });
+
+  it('does not expose adapter read error details in user-visible output', async () => {
+    mockReadFileSettings.mockReturnValue({ aiApiKey: 'sk-test' });
+    mockGetAdapter.mockReturnValue({
+      streamMessages: throwingSecretPathMessages,
+    });
+    const db = dbWithSession(session());
+
+    const result = await handleGenerateSummary(db, { sessionId: SESSION_ID });
+    const rendered = JSON.stringify(result);
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: { message: 'Failed to read session messages.' },
+      },
+    });
+    expect(rendered).not.toContain('/Users/bing/.ssh');
+    expect(rendered).not.toContain('id_ed25519');
   });
 });
 

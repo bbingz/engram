@@ -1,11 +1,8 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
-    "src/index.ts",
-    "src/daemon.ts",
     "src/cli/index.ts",
     "src/cli/project.ts",
-    "src/cli/resume.ts",
     "scripts/**/*.ts",
     "tests/**/*.test.ts"
   ],
@@ -22,7 +19,6 @@
   ],
   "ignoreIssues": {
     "tests/fixtures/mcp-runtime/lint-project/src/existing.ts": ["files"],
-    "src/core/daemon-client.ts": ["types"],
     "src/core/db/maintenance.ts": ["types"],
     "src/cli/health.ts": ["exports"],
     "src/cli/logs.ts": ["exports"],

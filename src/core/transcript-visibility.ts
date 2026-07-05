@@ -7,7 +7,7 @@ interface VisibleTranscriptMessageInput {
   content: string;
 }
 
-export function classifySystemContent(
+function classifySystemContent(
   content: string,
   source?: SourceName | string,
 ): SystemCategory {
