@@ -412,19 +412,23 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
-    func testPopoverStatusLabelsServiceInsteadOfMcpWhenUsingServiceStatus() throws {
+    func testPopoverDropsLegacyServiceStatusLabelsInsteadOfMcpHealth() throws {
         let popover = try source("macos/Engram/Views/PopoverView.swift")
         XCTAssertFalse(
             popover.contains("label: \"MCP\""),
             "Popover must not label serviceStatusStore.isRunning as MCP helper health"
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             popover.contains("label: \"Service\""),
-            "Popover should label serviceStatusStore.isRunning as Service unless a real MCP helper health check exists"
+            "Simplified popover no longer renders the legacy Service status chip"
         )
         XCTAssertFalse(
             popover.contains("popover_status_mcp"),
             "Popover accessibility id should not imply an MCP helper health check"
+        )
+        XCTAssertFalse(
+            popover.contains("popover_status_service"),
+            "Simplified popover no longer renders the legacy Service status chip"
         )
     }
 
@@ -549,27 +553,15 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
-    func testAppLaunchDoesNotMarkWebEndpointReadyBeforeServiceEvent() throws {
+    func testAppLaunchDoesNotSeedDeletedHttpWebEndpoint() throws {
         let app = try source("macos/Engram/App.swift")
         XCTAssertFalse(
             app.contains("serviceStatusStore.endpointHost = \"127.0.0.1\""),
-            "App launch must not mark the Web endpoint ready before the service emits a verified web_ready event"
+            "App launch must not seed the deleted HTTP Web UI endpoint host"
         )
         XCTAssertFalse(
             app.contains("serviceStatusStore.endpointPort = 3457"),
-            "App launch must not enable Web UI before service readiness is verified"
-        )
-    }
-
-    func testServiceRunnerDoesNotEmitWebReadyBeforeServerRun() throws {
-        let runner = try source("macos/EngramService/Core/EngramServiceRunner.swift")
-        let runRange = try XCTUnwrap(runner.range(of: "try await webServer.run()"))
-        let readyRange = try XCTUnwrap(runner.range(of: #"{"event":"web_ready""#))
-
-        XCTAssertLessThan(
-            runRange.lowerBound,
-            readyRange.lowerBound,
-            "Service must not emit web_ready before starting the Web server run loop"
+            "App launch must not seed the deleted HTTP Web UI endpoint port"
         )
     }
 
@@ -867,8 +859,8 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
             )
         }
         XCTAssertTrue(
-            generalSettings.contains("webUIURL"),
-            "General settings should keep live Swift service Web UI discovery"
+            generalSettings.contains("showDeveloperTools"),
+            "General settings should keep the developer tools toggle"
         )
         // The former `mcpEndpointText` showed `http://host:port/mcp`, but the
         // Swift service serves no HTTP /mcp route — MCP is the stdio EngramMCP

@@ -24,7 +24,7 @@ is not the shipped macOS product runtime.
 | Vectors/embeddings | `core/vector-store.ts`, `core/embeddings.ts` | Reference semantic design; not product Swift search. |
 | MCP-compatible handlers | `tools/` | JSON handlers and retained contract coverage. |
 | CLI entrypoints | `cli/project.ts`, `cli/resume.ts` | Developer/reference commands. |
-| Web reference | `web.ts`, `web/` | Historical/dev surface; native Swift web UI is product path. |
+| Web reference | `web.ts`, `web/` | Historical/dev-only surface; the Swift product no longer serves the HTTP transcript Web UI. |
 
 ## CONVENTIONS
 - Use strict ES2022/Node16 modules and `node:` prefixes for Node built-ins.

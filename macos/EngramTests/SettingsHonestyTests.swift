@@ -3,8 +3,8 @@ import XCTest
 @testable import Engram
 
 /// Source-honesty + behavior tests for WP12: the Settings surface must not
-/// advertise persisted-but-unread controls, must surface the real Web UI gate
-/// and Developer Tools toggle, and must report title regeneration honestly.
+/// advertise persisted-but-unread controls, must not surface the deleted HTTP
+/// transcript Web UI, and must report title regeneration honestly.
 final class SettingsHonestyTests: XCTestCase {
     private var repoRoot: URL {
         URL(fileURLWithPath: #filePath)
@@ -19,10 +19,8 @@ final class SettingsHonestyTests: XCTestCase {
 
     // MARK: - Source honesty
 
-    func testNetworkSettingsHasWebUIToggleAndDropsStrictSingleWriter() throws {
+    func testNetworkSettingsDropsStrictSingleWriter() throws {
         let source = try source("macos/Engram/Views/Settings/NetworkSettingsSection.swift")
-        XCTAssertTrue(source.contains("webUIEnabled"), "Web UI toggle must read/write the webUIEnabled gate the runner reads")
-        XCTAssertTrue(source.contains("Enable Web UI"))
         XCTAssertFalse(source.contains("mcpStrictSingleWriter"), "No-op strict-single-writer state must be removed")
         XCTAssertFalse(source.contains("Strict single writer"), "No-op strict-single-writer toggle must be removed")
     }
@@ -31,9 +29,31 @@ final class SettingsHonestyTests: XCTestCase {
         let source = try source("macos/Engram/Views/Settings/GeneralSettingsSection.swift")
         XCTAssertFalse(source.contains("/mcp"), "MCP is stdio-only; the misleading /mcp endpoint row must be removed")
         XCTAssertFalse(source.contains("mcpEndpointText"), "Orphaned mcpEndpointText property must be removed")
-        XCTAssertTrue(source.contains("webUIURL"), "The Open Web UI button's webUIURL property must survive")
         XCTAssertTrue(source.contains("showDeveloperTools"), "Developer Tools toggle must write the showDeveloperTools key B1's Observability gate reads")
         XCTAssertTrue(source.contains("Show Developer Tools"))
+    }
+
+    func testHttpTranscriptWebUiSurfaceIsDeleted() throws {
+        let networkSettings = try source("macos/Engram/Views/Settings/NetworkSettingsSection.swift")
+        XCTAssertFalse(networkSettings.contains("webUIEnabled"), "Network settings must not expose the deleted HTTP transcript Web UI gate")
+        XCTAssertFalse(networkSettings.contains("Enable Web UI"), "Network settings must not offer a deleted Web UI toggle")
+
+        let generalSettings = try source("macos/Engram/Views/Settings/GeneralSettingsSection.swift")
+        XCTAssertFalse(generalSettings.contains("Open Web UI"), "General settings must not link to the deleted HTTP transcript Web UI")
+        XCTAssertFalse(generalSettings.contains("webUIURL"), "General settings must not compute a deleted Web UI endpoint")
+
+        let statusStore = try source("macos/Shared/Service/EngramServiceStatusStore.swift")
+        XCTAssertFalse(statusStore.contains("endpointHost"), "Status store must not track a deleted Web UI host")
+        XCTAssertFalse(statusStore.contains("endpointPort"), "Status store must not track a deleted Web UI port")
+        XCTAssertFalse(statusStore.contains(#""web_ready""#), "Status store must not decode deleted web_ready events")
+        XCTAssertFalse(statusStore.contains(#""web_error""#), "Status store must not decode deleted web_error events")
+
+        let runner = try source("macos/EngramService/Core/EngramServiceRunner.swift")
+        XCTAssertFalse(runner.contains("EngramWebUIServer"), "Service runner must not start the deleted HTTP transcript Web UI")
+        XCTAssertFalse(runner.contains("readWebUIEnabled"), "Service runner must not read the deleted Web UI gate")
+        XCTAssertFalse(runner.contains("provisionWebToken"), "Service runner must not provision deleted Web UI tokens")
+        XCTAssertFalse(runner.contains(#""web_ready""#), "Service runner must not emit deleted web_ready events")
+        XCTAssertFalse(runner.contains(#""web_error""#), "Service runner must not emit deleted web_error events")
     }
 
     func testAdvancedSettingsHasNoWebApiSecurityControls() throws {
@@ -46,6 +66,20 @@ final class SettingsHonestyTests: XCTestCase {
         XCTAssertTrue(source.contains(#"removeValue(forKey: "httpBearerToken")"#))
         XCTAssertTrue(source.contains(#"removeValue(forKey: "httpAllowCIDR")"#))
         XCTAssertTrue(source.contains(#"removeValue(forKey: "httpHost")"#))
+        XCTAssertTrue(source.contains(#"removeValue(forKey: "webUIEnabled")"#))
+    }
+
+    func testServiceCoreDoesNotLinkDeletedHttpStack() throws {
+        let source = try source("macos/project.yml")
+        let serviceCoreBlock = try XCTUnwrap(
+            source.range(of: "  EngramServiceCore:")?.lowerBound
+        )
+        let serviceTargetBlock = try XCTUnwrap(
+            source.range(of: "  EngramService:", range: serviceCoreBlock..<source.endIndex)?.lowerBound
+        )
+        let block = String(source[serviceCoreBlock..<serviceTargetBlock])
+
+        XCTAssertFalse(block.contains("Hummingbird"), "EngramServiceCore must not link the deleted HTTP Web UI stack")
     }
 
     func testRegenerateAllStatusCopyIsHonest() throws {

@@ -264,13 +264,6 @@ struct HomeView: View {
                     ),
                     tint: Theme.accent
                 )
-                ServiceStateRow(
-                    icon: "network",
-                    title: "Web UI",
-                    value: webEndpointLabel,
-                    tint: serviceStatusStore.endpointPort == nil ? Theme.orange : Theme.green,
-                    onTap: serviceStatusStore.endpointPort == nil ? nil : openWebUI
-                )
             }
         }
         .accessibilityIdentifier("home_serviceState")
@@ -278,21 +271,6 @@ struct HomeView: View {
 
     private var serviceStateValue: String {
         serviceStatusStore.isRunning ? String(localized: "Running") : String(localized: "Check")
-    }
-
-    private var webEndpointLabel: String {
-        guard let port = serviceStatusStore.endpointPort else {
-            return String(localized: "Unavailable")
-        }
-        return "\(serviceStatusStore.endpointHost ?? "127.0.0.1"):\(port)"
-    }
-
-    private func openWebUI() {
-        guard let port = serviceStatusStore.endpointPort else { return }
-        let host = serviceStatusStore.endpointHost ?? "127.0.0.1"
-        if let url = URL(string: "http://\(host):\(port)/") {
-            NSWorkspace.shared.open(url)
-        }
     }
 
     private func loadData() async {
@@ -646,19 +624,8 @@ private struct ServiceStateRow: View {
     let title: String
     let value: String
     let tint: Color
-    var onTap: (() -> Void)? = nil
 
     var body: some View {
-        if let onTap {
-            Button(action: onTap) { rowBody }
-                .buttonStyle(.plain)
-                .help("Open Web UI")
-        } else {
-            rowBody
-        }
-    }
-
-    private var rowBody: some View {
         HStack(spacing: 10) {
             Image(systemName: icon)
                 .foregroundStyle(tint)

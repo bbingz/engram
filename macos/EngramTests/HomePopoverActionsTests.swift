@@ -4,7 +4,7 @@ import XCTest
 /// Source-inspection guards (mirroring ViewMainThreadReadTests) for WP09: the
 /// Home/Today dashboard and menu-bar popover wire-ups. SwiftUI bodies aren't
 /// unit-instantiable here, so these lock the view wiring at the source level —
-/// KPI/See-all/warning navigation, the Web UI open action, the removed dead
+/// KPI/See-all/warning navigation, deleted Web UI affordances, the removed dead
 /// embedding bindings, the indexing vs empty states, and the popover Live
 /// section that must reuse the badge's exact active-session predicate.
 final class HomePopoverActionsTests: XCTestCase {
@@ -66,13 +66,12 @@ final class HomePopoverActionsTests: XCTestCase {
         )
     }
 
-    func testHomeWebUiRowOpensBrowser() throws {
+    func testHomeServiceStateDropsDeletedWebUiRow() throws {
         let s = try homeView()
-        XCTAssertTrue(s.contains("NSWorkspace.shared.open"), "Web UI row must open the browser")
-        XCTAssertTrue(
-            s.contains("onTap: serviceStatusStore.endpointPort == nil ? nil : openWebUI"),
-            "Web UI row tap must be gated on an available endpoint port"
-        )
+        XCTAssertFalse(s.contains("openWebUI"), "Home must not expose the deleted Web UI action")
+        XCTAssertFalse(s.contains("webEndpointLabel"), "Home must not format a deleted Web UI endpoint")
+        XCTAssertFalse(s.contains("endpointPort"), "Home must not read deleted Web UI endpoint state")
+        XCTAssertFalse(s.contains("\"Web UI\""), "Home service state must not render a deleted Web UI row")
     }
 
     // MARK: - HomeView dead-embedding removal + indexing state
@@ -191,6 +190,11 @@ final class HomePopoverActionsTests: XCTestCase {
             s.contains("Timer.scheduledTimer(withTimeInterval: NSEvent.doubleClickInterval"),
             "Click handling must not use a timer to delay single-click popover opening"
         )
+    }
+
+    func testMenuBarDropsDeletedWebUiAction() throws {
+        let s = try menuBarController()
+        XCTAssertFalse(s.contains("openWebUI"), "Menu bar menu must not expose a deleted Web UI action")
     }
 
     func testPopoverHoverStateIsTimelineRowLocal() throws {

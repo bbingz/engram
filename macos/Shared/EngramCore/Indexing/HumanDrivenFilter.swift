@@ -3,8 +3,8 @@ import Foundation
 /// Single source of truth for the "human-driven" default-visibility filter — the
 /// sessions a human actually drove with substantive instructions. Used by every
 /// default browse surface (app session list, Home, Timeline, menu-bar popover,
-/// native web UI, MCP `list_sessions`). Keyword search is intentionally NOT
-/// filtered, so single-shot sessions stay recall-able.
+/// MCP `list_sessions`). Keyword search is intentionally NOT filtered, so
+/// single-shot sessions stay recall-able.
 ///
 /// Tunable: change the two thresholds here (re-index-free) to retune visibility.
 public enum HumanDrivenFilter {

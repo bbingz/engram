@@ -72,16 +72,6 @@ struct GeneralSettingsSection: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
-                    HStack {
-                        Text("Web UI")
-                        Spacer()
-                        Button("Open Web UI") {
-                            if let url = webUIURL {
-                                NSWorkspace.shared.open(url)
-                            }
-                        }
-                        .disabled(webUIURL == nil)
-                    }
                 }
                 .padding(.vertical, 4)
             }
@@ -126,12 +116,6 @@ struct GeneralSettingsSection: View {
         case .error(let message):
             Text("Error: \(message)")
         }
-    }
-
-    private var webUIURL: URL? {
-        guard let port = serviceStatusStore.endpointPort else { return nil }
-        let host = serviceStatusStore.endpointHost ?? "127.0.0.1"
-        return URL(string: "http://\(host):\(port)/")
     }
 
 }

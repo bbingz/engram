@@ -82,7 +82,7 @@ xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests -destina
 xcodebuild test -project macos/Engram.xcodeproj -scheme Engram -destination 'platform=macOS' -only-testing:EngramTests/MessageParserTests
 ```
 
-当前 fixture/parity gate 覆盖 15 个独立产品适配器：Antigravity CLI、Claude Code、Cline、Codex CLI、Command Code、GitHub Copilot、Cursor、Gemini CLI、iflow、Kimi、OpenCode、Qoder、Qwen Code、VS Code Copilot、Windsurf。MiniMax 和 Lobster AI 作为 Claude-compatible derived sources 走 Claude Code parser，但会以独立 source 写入索引；Swift/Node 回归测试覆盖该派生分类。Swift App、Swift MCP、Swift Service export、Swift HTTP transcript endpoint 都只展示非空 `user` / `assistant` 可见正文；tool/system/event-like 行保留给索引、工具统计和诊断，不混入普通对话气泡。provider parser parity 由 `tests/fixtures/adapter-parity/**` 约束；HTTP/Swift/MCP/export 的可见消息一致性由 Swift service/core 测试覆盖。如果出现同一会话在两端解析或显示不同，先补对应 fixture，再改 adapter 或可见消息过滤逻辑。
+当前 fixture/parity gate 覆盖 15 个独立产品适配器：Antigravity CLI、Claude Code、Cline、Codex CLI、Command Code、GitHub Copilot、Cursor、Gemini CLI、iflow、Kimi、OpenCode、Qoder、Qwen Code、VS Code Copilot、Windsurf。MiniMax 和 Lobster AI 作为 Claude-compatible derived sources 走 Claude Code parser，但会以独立 source 写入索引；Swift/Node 回归测试覆盖该派生分类。Swift App、Swift MCP、Swift Service export 都只展示非空 `user` / `assistant` 可见正文；tool/system/event-like 行保留给索引、工具统计和诊断，不混入普通对话气泡。provider parser parity 由 `tests/fixtures/adapter-parity/**` 约束；Swift/MCP/export 的可见消息一致性由 Swift service/core 测试覆盖。如果出现同一会话在两端解析或显示不同，先补对应 fixture，再改 adapter 或可见消息过滤逻辑。
 
 最近一次完整 provider/parser ship 记录见 [`docs/verification/provider-parser-parity-2026-05-20.md`](docs/verification/provider-parser-parity-2026-05-20.md)，其中包含两轮 Polycli review 与最终验证命令。
 

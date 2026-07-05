@@ -11,7 +11,7 @@ Every high/medium issue is fixed; lows are fixed or explicitly justified.
 | # | Sev | Issue | Resolution |
 |---|-----|-------|------------|
 | 1 | high | Rule 4 (`len<8 && no-whitespace`) drops short CJK asks → undercounts → hides Chinese sessions | **Script-aware rule 4**: skip the length/whitespace gate when the first line contains any non-Latin (CJK/Hangul/Kana/etc.) character; gate only ASCII-ish short tokens. CJK fixture added (§3.1, §9). |
-| 2 | med | Missed native web UI browse list (`EngramWebUIServer.readSessions`) | Added as the 6th surface; predicate + `?all=1` escape hatch (§5). |
+| 2 | med | Missed HTTP transcript browse list (`EngramWebUIServer.readSessions`) | Historical design note; later resolved by deleting that surface. |
 | 3 | med | Default filters only 2/17 sources at launch (allowlist) | Stated as explicit expected outcome in §1/§11; graduation order + adapter-role audit defined (§3.2, §11). |
 | 4 | med | Predicate reuses rejected `user_message_count` via a 2nd counting path | **Replaced** with `human_turn_count`, computed in the *same* `streamStats` pass as instruction extraction (one "human turn" definition). 3rd nullable column (§3, §4, §7). |
 | 5 | med | `instruction_count` ON CONFLICT guard keyed on `message_count` (different pass) | Guard re-keyed on `summary_message_count` — itself the streamStats-derived sentinel (`indexedMessageCount`, SwiftIndexer.swift:357), so guard co-varies with the extraction pass (§4). |
@@ -282,11 +282,9 @@ that appends the human-driven predicate to `noiseConditions` (:319-327); keep
 `all`/`hide-noise`/`hide-skip` as the escape hatch. `readNoiseFilter()` already centralizes
 the mode.
 
-**Native web UI — `macos/EngramService/Core/EngramWebUIServer.swift`** (critique #2, MISSED
-SURFACE). `readSessions(limit:)` (:325-343) is a browse list (the `/` route), not search, and
-its WHERE (`hidden_at IS NULL AND COALESCE(tier,'normal') NOT IN ('skip','lite') AND
-parent/suggested NULL AND orphan_status IS NULL`) would still show single-ask
-claude-code/codex sessions. Per CLAUDE.md `EngramWebUIServer` is in the product path.
+**Deleted HTTP transcript browse list — `macos/EngramService/Core/EngramWebUIServer.swift`**
+(critique #2, historical). This surface no longer exists after the feature cut, so no
+human-driven filter implementation remains here. The old design called for:
 - Add `humanDriven: Bool` param to `readSessions`; when true append the predicate to the
   WHERE.
 - Route handler: default `humanDriven: true`; escape hatch via `?all=1` query param mirroring
@@ -551,7 +549,7 @@ Open work (audits, not blockers):
 4. Do NOT relabel SessionDetailView's Summary section. Add a separate read-only 'What you asked' section rendered only when instructionSummary != nil, leaving the existing Summary section and its Generate/Regenerate button (which correctly writes the summary column) untouched. This kills the mislabeled-button and garbled-list defects without touching the LLM path.
 5. Add tier='premium' to the visibility predicate so substantial sessions (>=20 msgs / >30 min) with a single instruction stay visible by default.
 6. Use one global @AppStorage('sessions.showAll') flag threaded into recentSessions and sessionTimeline (HomeView.swift:294, TimelinePageView.swift:259), making the escape hatch govern all App browse surfaces, not just the Sessions page.
-7. Add the native web UI browse list (EngramWebUIServer.readSessions, :325-343) as the 6th filtered surface with a ?all=1 query-param escape hatch.
+7. No current Web UI browse-list work remains; the former EngramWebUIServer surface was resolved by deletion.
 8. Trim corpus population to lazy natural re-index (NULL-tolerant, safe) plus an OPTIONAL idempotent one-time backfill keyed on instruction_count IS NULL; remove the InstructionExtractionVersion constant and file_index_state clearing.
 9. Cut LLM instruction-first refinement from shipped scope (deferred). The deterministic baseline satisfies the instruction-first requirement with no model.
 10. State partial launch coverage explicitly: only claude-code and codex are allowlisted at launch; the other 15 sources degrade to agent_role IS NULL via NULL-tolerance, graduating after a per-adapter .user-role audit.

@@ -69,6 +69,25 @@ final class EngramServiceStatusStoreTests: XCTestCase {
         )
     }
 
+    func testIgnoresLegacyWebStatusEventsFromOlderServiceBinary() throws {
+        let store = EngramServiceStatusStore()
+        store.apply(try decode(#"{"event":"ready","total":12,"todayParents":3}"#))
+
+        let baselineStatus = store.status
+        let baselineTotal = store.totalSessions
+        let baselineToday = store.todayParentSessions
+
+        store.apply(try decode(#"{"event":"web_ready","host":"127.0.0.1","port":3457}"#))
+        XCTAssertEqual(store.status, baselineStatus)
+        XCTAssertEqual(store.totalSessions, baselineTotal)
+        XCTAssertEqual(store.todayParentSessions, baselineToday)
+
+        store.apply(try decode(#"{"event":"web_error","message":"legacy web startup failed"}"#))
+        XCTAssertEqual(store.status, baselineStatus)
+        XCTAssertEqual(store.totalSessions, baselineTotal)
+        XCTAssertEqual(store.todayParentSessions, baselineToday)
+    }
+
     func testDecodesLegacyUsageDataAlias() throws {
         let event = try decode("""
         {
@@ -313,26 +332,6 @@ final class EngramServiceStatusStoreTests: XCTestCase {
                 "codex:5h token pressure:72.0",
             ]
         )
-    }
-
-    func testWebReadyMapsEndpointHealth() throws {
-        let store = EngramServiceStatusStore()
-
-        store.apply(try decode(#"{"event":"web_ready","port":3457,"host":"127.0.0.1"}"#))
-
-        XCTAssertEqual(store.endpointHost, "127.0.0.1")
-        XCTAssertEqual(store.endpointPort, 3457)
-    }
-
-    func testWebErrorClearsEndpointHealth() throws {
-        let store = EngramServiceStatusStore()
-
-        store.apply(try decode(#"{"event":"web_ready","port":3457,"host":"127.0.0.1"}"#))
-        store.apply(try decode(#"{"event":"web_error","message":"Address already in use"}"#))
-
-        XCTAssertNil(store.endpointHost)
-        XCTAssertNil(store.endpointPort)
-        XCTAssertEqual(store.status, .degraded(message: "Web UI unavailable: Address already in use"))
     }
 
     private func decode(_ json: String) throws -> EngramServiceEvent {

@@ -1,26 +1,24 @@
 # ENGRAM SERVICE KNOWLEDGE BASE
 
 ## OVERVIEW
-`EngramService` is the native helper process. It owns the socket-facing service runtime, command dispatch, write gate, indexing coordination, observability events, and native Hummingbird transcript web UI.
+`EngramService` is the native helper process. It owns the socket-facing service runtime, command dispatch, write gate, indexing coordination, and observability events.
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
 | Process entry | `main.swift` | Installs signal handling and runs `EngramServiceRunner`. |
-| Startup/indexing/web readiness | `Core/EngramServiceRunner.swift` | Service lifecycle, initial scan phases, indexing loop, usage/web events. |
+| Startup/indexing readiness | `Core/EngramServiceRunner.swift` | Service lifecycle, initial scan phases, indexing loop, and usage events. |
 | Command dispatch | `Core/EngramServiceCommandHandler*.swift` | Native command implementations and compatibility behavior. |
 | Write serialization | `Core/ServiceWriterGate.swift` | Single service-owned writer path and IPC write protection. |
 | Read DTO provider | `Core/EngramServiceReadProvider.swift` | Search, stats, timeline, exports, settings reads. |
-| Native web UI | `Core/EngramWebUIServer.swift` | Hummingbird transcript/app web server. |
 | IPC listener | `IPC/UnixSocketServiceServer.swift` | Framed JSON socket handling and peer/token checks. |
-| Tests | `../EngramServiceCoreTests/` | IPC, writer gate, telemetry, web, replay, security coverage. |
+| Tests | `../EngramServiceCoreTests/` | IPC, writer gate, telemetry, replay, and security coverage. |
 
 ## CONVENTIONS
 - Mutating app/MCP-facing operations go through `ServiceWriterGate`; do not bypass it with local GRDB writes.
 - Service errors should remain structured and observable; do not silently swallow DB or command failures.
 - Keyword search is the product search path. Unsupported semantic/hybrid/both requests must degrade explicitly with a warning.
-- The native web UI is part of the Swift product path; do not confuse it with historical `src/web.ts`.
-- IPC and web code should fail closed when capability tokens, peer identity, Host/CORS, or body limits matter.
+- IPC code should fail closed when capability tokens or peer identity matter.
 - Long service loops emit status/usage events; keep event shapes compatible with app and MCP consumers.
 
 ## ANTI-PATTERNS

@@ -306,11 +306,11 @@ final class ViewMainThreadReadTests: XCTestCase {
 
         let network = try source("macos/Engram/Views/Settings/NetworkSettingsSection.swift")
         XCTAssertFalse(
-            network.contains("defer { isLoadingSettings = false }"),
-            "Network/MCP settings must keep the loading guard active through the post-load SwiftUI onChange pass"
+            network.contains("mutateEngramSettings"),
+            "Network settings are informational after deleting the HTTP Web UI toggle; reintroducing writes must restore the loading guard"
         )
-        XCTAssertTrue(network.contains("Task { @MainActor in"))
-        XCTAssertTrue(network.contains("await Task.yield()"))
+        XCTAssertFalse(network.contains("readEngramSettings()"))
+        XCTAssertFalse(network.contains(".onChange("))
 
         let sources = try source("macos/Engram/Views/Settings/SourcesSettingsSection.swift")
         XCTAssertFalse(

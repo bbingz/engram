@@ -313,15 +313,14 @@ final class ServiceSecurityHardeningTests: XCTestCase {
         XCTAssertEqual(perms, 0o600)
     }
 
-    func testWebUITokenFileIsWrittenWithOwnerOnlyPermissions() throws {
+    func testRunnerRemovesLegacyWebUIToken() throws {
         let paths = try makePaths()
-        let token = try XCTUnwrap(EngramServiceRunner.provisionWebToken(runtimeDirectory: paths.runtime))
-        let tokenPath = paths.runtime.appendingPathComponent("webui.token").path
+        let tokenURL = paths.runtime.appendingPathComponent("webui.token")
+        try "legacy-secret".write(to: tokenURL, atomically: true, encoding: .utf8)
 
-        XCTAssertEqual(try String(contentsOfFile: tokenPath, encoding: .utf8), token)
-        let attrs = try FileManager.default.attributesOfItem(atPath: tokenPath)
-        let perms = (attrs[.posixPermissions] as? NSNumber)?.intValue ?? -1
-        XCTAssertEqual(perms, 0o600)
+        try EngramServiceRunner.removeLegacyWebUIToken(runtimeDirectory: paths.runtime)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tokenURL.path))
     }
 
     func testClientAutoAttachedTokenAuthorizesDestructiveCommand() async throws {

@@ -110,8 +110,6 @@ targets:
       - target: EngramCoreWrite
       - package: GRDB
         product: GRDB-dynamic
-      - package: Hummingbird
-        product: Hummingbird
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.engram.service-core
       SWIFT_VERSION: "5.9"
