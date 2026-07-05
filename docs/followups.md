@@ -81,7 +81,7 @@ coherent with the 2026-07-05 popover perf work, commit as a perf follow-up;
 if not coherent, stash with a dated note here and continue. Then rebase
 PR #103 if needed.
 
-ITEM 0 — finish PR #103 (Delete HTTP transcript web UI). Apply the review at
+ITEM 0 — DONE in PR #103: finish PR #103 (Delete HTTP transcript web UI). Apply the review at
 https://github.com/bbingz/engram/pull/103#issuecomment-4886389830 —
 4 REQUIRED: (1) port `testRedactionCoversCommonTokenFamilies` +
 `testRedactionStaticPatternsProduceByteIdenticalOutput` from deleted
@@ -94,12 +94,11 @@ orphaned Hummingbird dep from EngramServiceCore in macos/project.yml
 pre-existing dead — optional bonus); (4) one-time startup cleanup
 `try? FileManager.default.removeItem(at: runtimeDirectory
 .appendingPathComponent("webui.token"))`. 4 RECOMMENDED: consolidate the
-tombstone scans to one owner per source file; reword the two "Web UI pager"
-comments (TranscriptExportService.swift:216-219, CodexAdapter.swift:218-224)
-to name live consumers; delete orphaned `"Unavailable"` key from
-Localizable.xcstrings (~:664); annotate the perf-section EngramWebUIServer
-anchors in this file as resolved-by-deletion (PR #103). Then self-review,
-merge, and proceed to item 2 (item 1 == this PR).
+tombstone scans to one owner per source file; legacy transcript-pager comments
+now name live consumers; the orphaned unavailable localization key was removed;
+the perf-section EngramWebUIServer anchors in this file are annotated as
+resolved-by-deletion (PR #103). Then self-review, merge, and proceed to item 2
+(item 1 == this PR).
 
 Ground rules:
 
@@ -118,7 +117,7 @@ Ground rules:
 - Each cut carries its own doc trim (README/CLAUDE.md/docs/mcp-tools.md:
   MCP tool count, "Local Service Security" web-UI section, sources count).
 
-1. **DELETE EngramWebUIServer (HTTP transcript web UI).** Remove
+1. **DONE in PR #103 — DELETE EngramWebUIServer (HTTP transcript web UI).** Remove
    `macos/EngramService/Core/EngramWebUIServer.swift` (761 LOC) +
    `EngramWebUIServerTests.swift` (629 LOC); strip
    `readWebUIEnabled`/`provisionWebToken`/`webTask`/`emitWebReady`/

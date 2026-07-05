@@ -7,6 +7,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: removed native HTTP transcript Web UI (2026-07-05, Codex)
+
+- Feature-cut item 1 removes `EngramWebUIServer`, the app settings/menu/home
+  controls for the transcript HTTP UI, service `web_ready`/`web_error` status
+  plumbing, and the legacy `webUIEnabled` setting/token leftovers. Retained
+  MCP/export transcript redaction coverage now lives in
+  `EngramServiceCoreTests/TranscriptExportServiceTests.swift`.
+
 ### Decided: feature-cut Top 10 adjudicated and filed for Codex execution (2026-07-05, Claude)
 
 - A 38-agent opus+sonnet workflow (4-area feature inventory → 4-lens cut
