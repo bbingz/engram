@@ -6,13 +6,7 @@ struct PopoverScreen {
     // MARK: - Elements
 
     var container: XCUIElement { app.element(id: "popover_container") }
-    var statsGrid: XCUIElement { app.element(id: "popover_statsGrid") }
     var recentActivity: XCUIElement { app.element(id: "popover_recentActivity") }
-
-    // MARK: - Status Indicators
-
-    var statusWeb: XCUIElement { app.element(id: "popover_status_web") }
-    var statusService: XCUIElement { app.element(id: "popover_status_service") }
 
     // MARK: - Waits
 

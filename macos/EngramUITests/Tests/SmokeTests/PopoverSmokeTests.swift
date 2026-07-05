@@ -14,10 +14,10 @@ final class PopoverSmokeTests: XCTestCase {
         app.terminate()
     }
 
-    func testPopoverStatsGrid() {
+    func testPopoverRecentActivity() {
         let popover = PopoverScreen(app: app)
         popover.waitForLoad()
-        XCTAssertTrue(popover.statsGrid.waitForExistence(timeout: 5),
-                      "Popover stats grid should be visible")
+        XCTAssertTrue(popover.recentActivity.waitForExistence(timeout: 5),
+                      "Popover recent-activity timeline should be visible")
     }
 }

@@ -102,6 +102,26 @@ final class HomePopoverActionsTests: XCTestCase {
         )
     }
 
+    func testPopoverLiveSectionCapsAndFiltersCards() throws {
+        let s = try popoverView()
+        XCTAssertFalse(
+            s.contains("ForEach(liveSessions)"),
+            "Popover Live section must not render every live session unbounded"
+        )
+        XCTAssertTrue(
+            s.contains("prefix(Self.liveSectionLimit)"),
+            "Popover Live section must cap the rendered cards"
+        )
+        XCTAssertTrue(
+            s.contains("$0.activityLevel == \"idle\""),
+            "Popover Live section must keep only active/idle sessions (drop 24h 'recent' churn)"
+        )
+        XCTAssertTrue(
+            s.contains("popover_liveOverflow"),
+            "Popover Live section must surface overflow as a single affordance"
+        )
+    }
+
     func testPopoverLiveCardOpensSessionOffMainThread() throws {
         let s = try popoverView()
         XCTAssertTrue(s.contains("Task.detached"), "Popover live-card open must resolve getSession off the main thread")
@@ -122,6 +142,18 @@ final class HomePopoverActionsTests: XCTestCase {
         XCTAssertTrue(s.contains(".help(\"Open session\")"), "Popover timeline rows must expose an Open session tooltip")
         XCTAssertTrue(s.contains("Indexing your sessions…"), "Popover timeline must show an indexing placeholder")
         XCTAssertTrue(s.contains("No sessions yet"), "Popover timeline must show a distinct zero-data placeholder")
+    }
+
+    func testPopoverPinsStableMinHeight() throws {
+        let s = try popoverView()
+        XCTAssertTrue(
+            s.contains("minHeight: 420"),
+            "Popover must pin a stable min height so sections swap in place instead of resizing the window"
+        )
+        XCTAssertTrue(
+            s.contains("Spacer(minLength: 0)"),
+            "Popover must anchor the footer to the bottom of the pinned min-box with a Spacer"
+        )
     }
 
     func testPopoverUsageEmptyRowOpensSettings() throws {
@@ -190,15 +222,31 @@ final class HomePopoverActionsTests: XCTestCase {
         XCTAssertFalse(s.contains("@State private var recentSessions"), "recentSessions must move into the snapshot")
     }
 
-    func testPopoverSourceCountIsDerivedFromSourceStats() throws {
+    func testPopoverDropsTechnicalChromeKeepsSessionContent() throws {
         let s = try popoverView()
-        XCTAssertFalse(
-            s.contains("COUNT(DISTINCT source)"),
-            "sourceCount must be derived from sourceStats instead of issuing a redundant source-count query"
+        // The simplified popover drops the low-signal technical blocks…
+        XCTAssertFalse(s.contains("popover_statsGrid"), "Popover must drop the Today/Sources/Projects/DB Size stats grid")
+        XCTAssertFalse(s.contains("popover_status_web"), "Popover must drop the Web/Service status dots")
+        XCTAssertFalse(s.contains("sources active"), "Popover must drop the source-health summary line")
+        XCTAssertFalse(s.contains("DB Size"), "Popover must drop the DB size stat")
+        // …and keeps the useful session content.
+        XCTAssertTrue(s.contains("LiveSessionCard"), "Popover must keep the Live section")
+        XCTAssertTrue(s.contains("struct PopoverTimelineRow"), "Popover must keep the recent-session timeline")
+    }
+
+    func testMenuBarActivityIsGatedOnSetting() throws {
+        let s = try menuBarController()
+        XCTAssertTrue(
+            s.contains("register(defaults: [\"showMenuBarActivity\": true])"),
+            "Menu-bar activity must default to on so existing behavior is preserved"
         )
         XCTAssertTrue(
-            s.contains("sourceCount: stats.count"),
-            "sourceCount and totalSourceCount must share the sourceStats result"
+            s.contains("guard showMenuBarActivity else"),
+            "updateBadge must clear the badge when activity display is disabled"
+        )
+        XCTAssertTrue(
+            s.contains("if showMenuBarActivity, let usage = serviceStatusStore.usagePressureSummary"),
+            "The usage gauge must be suppressed when activity display is disabled"
         )
     }
 

@@ -471,6 +471,10 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
         candidates: inout [LiveSessionCandidate]
     ) throws {
         guard root.extensions.contains(file.pathExtension.lowercased()) else { return }
+        // Claude Code subagent transcripts live under a `/subagents/` directory
+        // and are churn accessed through their parent session, not independent
+        // live sessions — keep them out of the live scan.
+        guard !file.pathComponents.contains("subagents") else { return }
         let values = try file.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
         guard values.isRegularFile == true, let modifiedAt = values.contentModificationDate else { return }
         let age = now.timeIntervalSince(modifiedAt)

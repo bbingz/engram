@@ -31,7 +31,15 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private static let badgeScanMinInterval: TimeInterval = 5
     private var dockIconObserver: NSObjectProtocol?
     private var lastShowDockIcon: Bool?
+    private var lastShowMenuBarActivity: Bool?
     private let windowSize: NSSize
+
+    /// When off, the menu bar shows only the static icon (no today/live counts,
+    /// no usage gauge). Defaults ON via `register(defaults:)` in `init` so the
+    /// current behavior is preserved for existing installs.
+    private var showMenuBarActivity: Bool {
+        UserDefaults.standard.bool(forKey: "showMenuBarActivity")
+    }
 
     init(
         db: DatabaseManager,
@@ -72,6 +80,12 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             btn.action = #selector(handleClick)
             btn.target = self
         }
+
+        // Menu-bar activity (today/live counts + usage gauge) defaults ON to
+        // preserve current behavior; users can silence the constantly-changing
+        // badge from Settings ▸ General ▸ Menu Bar.
+        UserDefaults.standard.register(defaults: ["showMenuBarActivity": true])
+        lastShowMenuBarActivity = showMenuBarActivity
 
         // Update badge: total sessions + live count (consolidated, 30s poll)
         self.updateBadge()
@@ -116,6 +130,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.applyDockIconPreference()
+                self?.applyMenuBarActivityPreference()
             }
         }
     }
@@ -378,7 +393,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
             btn.image = warn
             btn.toolTip = message
         default:
-            if let usage = serviceStatusStore.usagePressureSummary {
+            if showMenuBarActivity, let usage = serviceStatusStore.usagePressureSummary {
                 let symbolName = usage.severity == .critical ? "exclamationmark.triangle.fill" : "gauge.with.dots.needle.67percent"
                 let warn = NSImage(systemSymbolName: symbolName,
                                    accessibilityDescription: usage.message)
@@ -409,6 +424,10 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     }
 
     private func updateBadge() {
+        guard showMenuBarActivity else {
+            statusItem.button?.title = ""
+            return
+        }
         let today = serviceStatusStore.todayParentSessions
         // Coalesce: if we scanned live sessions recently, just refresh the cheap
         // today-count label and skip the recursive FS scan. The badge timer
@@ -476,6 +495,16 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         } else if window == nil && settingsWindow == nil {
             NSApp.setActivationPolicy(.accessory)
         }
+    }
+
+    /// Re-apply the badge + status glyph when the menu-bar activity toggle flips.
+    /// Guarded on the last-applied value so unrelated UserDefaults churn is a no-op.
+    private func applyMenuBarActivityPreference() {
+        let show = showMenuBarActivity
+        guard show != lastShowMenuBarActivity else { return }
+        lastShowMenuBarActivity = show
+        updateStatusIndicator()
+        updateBadge()
     }
 
     @objc private func navigateToScreenAction(_ sender: NSMenuItem) {

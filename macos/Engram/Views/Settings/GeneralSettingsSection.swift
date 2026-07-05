@@ -6,6 +6,7 @@ struct GeneralSettingsSection: View {
     @AppStorage("contentFontSize") var contentFontSize: Double = 14
     @AppStorage("showDockIcon") var showDockIcon: Bool = false
     @AppStorage("showDeveloperTools") var showDeveloperTools: Bool = false
+    @AppStorage("showMenuBarActivity") var showMenuBarActivity: Bool = true
 
     @Environment(EngramServiceStatusStore.self) var serviceStatusStore
 
@@ -42,6 +43,18 @@ struct GeneralSettingsSection: View {
                         .font(.system(size: contentFontSize))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                }
+                .padding(.vertical, 4)
+            }
+
+            // Menu Bar
+            GroupBox("Menu Bar") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Show Activity in Menu Bar", isOn: $showMenuBarActivity)
+                    Text("Show today's session count, live activity, and usage indicators next to the menu bar icon. Turn off to keep the icon static — a service failure still surfaces a warning.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.vertical, 4)
             }

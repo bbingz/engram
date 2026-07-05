@@ -3092,6 +3092,48 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse(response.sessions.contains { $0.sessionId == "old-000" })
     }
 
+    func testFileSystemProviderExcludesSubagentChurnFromLiveScan() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("engram-live-home-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root
+            .appendingPathComponent(".claude/projects/-tmp-engram", isDirectory: true)
+        let subagentDir = projectDir
+            .appendingPathComponent("subagents/workflows", isDirectory: true)
+        try FileManager.default.createDirectory(at: subagentDir, withIntermediateDirectories: true)
+
+        // A real session directly under the project dir must be reported.
+        let realSession = projectDir.appendingPathComponent("real.jsonl")
+        try """
+        {"type":"user","sessionId":"real-session","cwd":"/tmp/engram"}
+        """.write(to: realSession, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: realSession.path)
+
+        // A subagent transcript under /subagents/ is churn — it must be excluded.
+        let subagentSession = subagentDir.appendingPathComponent("workflow-abc.jsonl")
+        try """
+        {"type":"user","sessionId":"subagent-session","cwd":"/tmp/engram"}
+        """.write(to: subagentSession, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: subagentSession.path)
+
+        let provider = FileSystemEngramServiceReadProvider(homeDirectory: root)
+        let response = try await provider.liveSessions()
+
+        let sessionIds = response.sessions.compactMap(\.sessionId)
+        XCTAssertTrue(
+            sessionIds.contains("real-session"),
+            "A normal recent claude-code session must be reported as live"
+        )
+        XCTAssertFalse(
+            sessionIds.contains("subagent-session"),
+            "Subagent transcripts under /subagents/ must be excluded from the live scan"
+        )
+        XCTAssertFalse(
+            response.sessions.contains { $0.filePath.contains("/subagents/") },
+            "No reported live session may originate from a /subagents/ path"
+        )
+    }
+
     func testPeriodicRepoDiscoveryIsGatedBehindIndexedSessions() throws {
         // Repo discovery spawns several `git` subprocesses per cwd (up to 200).
         // It must NOT run on every idle 5-min indexing tick — only when the scan
