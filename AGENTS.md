@@ -53,7 +53,7 @@ historical surfaces.
 | `Session` | Swift model | `macos/Engram/Models/Session.swift` | 40 callers | App-facing session model used across UI and tests. |
 
 ## CONVENTIONS
-- Swift product behavior is authoritative. `src/index.ts`, `src/daemon.ts`, and `src/web.ts` are historical/dev/reference entrypoints, not shipped runtime.
+- Swift product behavior is authoritative. The old TypeScript MCP, daemon, and HTTP/Web entrypoints were deleted; do not recreate product startup paths through Node.
 - App and MCP write paths go through `EngramServiceClient` / `ServiceWriterGate`; do not add direct SQLite writers in app or MCP code.
 - Swift product search is keyword-only through FTS5/LIKE. Semantic/hybrid/vector search in TypeScript is reference design only.
 - Product adapters are Swift-first. Update TypeScript adapters only when retained fixture tooling or regression coverage requires it.

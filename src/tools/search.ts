@@ -11,7 +11,7 @@ import type { MetricsCollector } from '../core/metrics.js';
 import type { Tracer } from '../core/tracer.js';
 import type { VectorStore } from '../core/vector-store.js';
 
-export interface SearchDeps {
+interface SearchDeps {
   vectorStore?: VectorStore;
   embed?: (text: string) => Promise<Float32Array | null>;
   log?: Logger;

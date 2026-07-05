@@ -11,7 +11,6 @@ runtime.
 # TypeScript dev/reference tooling
 npm run build          # tsc → dist/ (ES modules)
 npm test               # vitest regression suite
-npm run dev            # tsx dev/reference entrypoint; not shipped app runtime
 npm run lint           # biome check (must pass — pre-commit enforced)
 npm run lint:fix       # biome auto-fix
 npm run knip           # dead code detection
@@ -31,9 +30,7 @@ src/
   adapters/    # TypeScript reference parsers and fixture generators
   core/        # TypeScript reference DB/search/project-move logic and tests
   tools/       # TypeScript reference MCP tool handlers
-  web.ts       # Historical/dev HTTP API surface
-  index.ts     # Historical/dev MCP entrypoint
-  daemon.ts    # Historical/dev daemon entrypoint
+  cli/         # Retained developer/reference subcommands
 
 macos/
   Engram/      # SwiftUI app (menu bar + main window)
@@ -105,8 +102,8 @@ secure Unix socket. `EngramMCP` is the native stdio helper used by MCP clients.
   `com.engram.service`.
 - Do not add product startup paths that shell out to `node`, run `npm`, or copy
   `dist`/`node_modules` into the app bundle.
-- Historical TypeScript MCP lifecycle rules still matter only for dev/reference
-  tests that intentionally exercise `src/index.ts`.
+- Historical TypeScript MCP, daemon, and HTTP/Web entrypoints were deleted; do
+  not recreate product startup paths through Node.
 
 ### Session Tiering
 Product tiering is computed in

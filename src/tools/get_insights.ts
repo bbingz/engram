@@ -7,23 +7,6 @@ import {
 } from '../core/cost-advisor.js';
 import type { Database } from '../core/db.js';
 
-export const getInsightsDefinition = {
-  name: 'get_insights',
-  description:
-    'Get actionable cost optimization suggestions with savings estimates',
-  inputSchema: {
-    type: 'object' as const,
-    properties: {
-      since: {
-        type: 'string',
-        description:
-          'ISO timestamp for start of analysis window (default: 7 days ago)',
-      },
-    },
-    additionalProperties: false,
-  },
-};
-
 const SEVERITY_ICON: Record<CostSuggestion['severity'], string> = {
   high: '🔴',
   medium: '🟡',

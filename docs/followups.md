@@ -150,7 +150,7 @@ Ground rules:
    get_session/export) and the Hummingbird SPM dependency
    (EngramRemoteServer uses it). Trim the CLAUDE.md "Local Service
    Security" web-UI paragraphs.
-2. **DELETE legacy TS dev-server/entrypoint surface (own PR).** Remove
+2. **DONE in PR #104 — DELETE legacy TS dev-server/entrypoint surface.** Remove
    `src/web.ts`, `src/web/routes/*`, `src/web/views.ts`, `src/index.ts`,
    `src/daemon.ts`, `src/core/lifecycle.ts`, `src/core/daemon-startup.ts`,
    plus daemon-exclusive orphans (candidates: `auto-summary`, `alert-rules`,

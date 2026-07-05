@@ -3,29 +3,6 @@ import type { SessionAdapter } from '../adapters/types.js';
 import type { Database } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
 
-export const handoffTool = {
-  name: 'handoff',
-  description:
-    'Generate a handoff brief for a project — summarizes recent sessions to help resume work.',
-  inputSchema: {
-    type: 'object' as const,
-    required: ['cwd'],
-    properties: {
-      cwd: { type: 'string', description: 'Project directory (absolute path)' },
-      sessionId: {
-        type: 'string',
-        description: 'Specific session to handoff (optional)',
-      },
-      format: {
-        type: 'string',
-        enum: ['markdown', 'plain'],
-        description: 'Output format (default: markdown)',
-      },
-    },
-    additionalProperties: false,
-  },
-};
-
 interface HandoffParams {
   cwd: string;
   sessionId?: string;

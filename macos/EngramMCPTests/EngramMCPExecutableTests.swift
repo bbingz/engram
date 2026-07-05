@@ -1228,6 +1228,31 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testSearchDatabaseFailureDoesNotExposeSQLiteDetailsOrPaths() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("secret-id_ed25519.sqlite")
+        try "not a sqlite database".write(to: dbURL, atomically: true, encoding: .utf8)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"Swift MCP shim","mode":"keyword","limit":5}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+            ]
+        )
+
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["isError"]?.boolValue, true)
+        XCTAssertEqual(result["structuredContent"]?["code"]?.stringValue, "searchFailed")
+        let text = result["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+        XCTAssertEqual(text, "Search failed. Check the Engram database and retry.")
+        XCTAssertFalse(capture.rawLine.contains("SQLite"), capture.rawLine)
+        XCTAssertFalse(capture.rawLine.contains("secret-id_ed25519"), capture.rawLine)
+        XCTAssertFalse(capture.rawLine.contains(dbURL.path), capture.rawLine)
+    }
+
     private func encodeVector(_ values: [Float]) -> Data {
         var data = Data()
         for value in values {

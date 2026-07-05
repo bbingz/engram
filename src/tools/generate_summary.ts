@@ -8,22 +8,6 @@ import type { Database } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
 import { loadBoundedMessages } from './message-loader.js';
 
-export const generateSummaryTool = {
-  name: 'generate_summary',
-  description: 'Generate an AI summary for a conversation session',
-  inputSchema: {
-    type: 'object' as const,
-    properties: {
-      sessionId: {
-        type: 'string',
-        description: 'The session ID to summarize',
-      },
-    },
-    required: ['sessionId'],
-    additionalProperties: false,
-  },
-};
-
 type GenerateSummaryStatus =
   | 'not_found'
   | 'not_configured'
@@ -142,7 +126,8 @@ export async function handleGenerateSummary(
     messages = loaded.messages;
     totalSeen = loaded.totalSeen;
   } catch (error) {
-    return errorResult(`Failed to read session messages: ${error}`);
+    opts?.log?.error('generate_summary read failed', { sessionId }, error);
+    return errorResult('Failed to read session messages.');
   }
 
   if (messages.length === 0) {

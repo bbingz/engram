@@ -7,6 +7,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: removed legacy TypeScript web/MCP/daemon entrypoints (2026-07-06, Codex)
+
+- Feature-cut item 2 deletes the retained TypeScript HTTP/Web surface, Node MCP
+  entrypoint, Node daemon entrypoint, daemon-only helper modules, and their
+  tests. Retained TypeScript code is now limited to dev/reference tooling,
+  CLIs, fixtures, and handler-level regression coverage.
+- Repointed MCP contract fixture metadata extraction from deleted
+  `src/index.ts` to the Swift MCP registry/server sources, and removed the
+  obsolete Hono/MCP SDK/chokidar package dependencies.
+
 ### Fixed: PR #103 CI blocker — stale settings_dark screenshot baseline (2026-07-06, Claude)
 
 - Root cause: `macos/EngramUITests/baselines/settings_dark.png` was a stale

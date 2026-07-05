@@ -11,8 +11,6 @@ export default defineConfig({
       include: ['src/**'],
       exclude: [
         'src/cli/index.ts',
-        'src/cli/resume.ts',
-        'src/index.ts',
         'src/types/**',
       ],
       thresholds: {

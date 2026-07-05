@@ -2,24 +2,6 @@
 import type { Database } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
 
-export const statsTool = {
-  name: 'stats',
-  description: '统计各工具的会话数量、消息数等用量数据。',
-  inputSchema: {
-    type: 'object' as const,
-    properties: {
-      since: { type: 'string' },
-      until: { type: 'string' },
-      group_by: {
-        type: 'string',
-        enum: ['source', 'project', 'day', 'week'],
-        description: '按维度分组，默认 source',
-      },
-    },
-    additionalProperties: false,
-  },
-};
-
 export async function handleStats(
   db: Database,
   params: {

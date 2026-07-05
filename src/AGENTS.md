@@ -2,18 +2,15 @@
 
 ## OVERVIEW
 `src/` is retained TypeScript dev/reference tooling. It supports fixtures,
-regression tests, historical MCP/web/daemon entrypoints, and parity mirrors; it
-is not the shipped macOS product runtime.
+regression tests, retained CLIs, and parity mirrors; it is not the shipped macOS
+product runtime.
 
 ## STRUCTURE
 ```
 - adapters/          # TS reference parsers and fixture support
 - core/              # TS reference DB/search/project-move/indexer logic
 - tools/             # TS MCP tool handlers retained for compatibility/tests
-- cli/               # retained project/resume command entrypoints
-- web.ts             # historical/dev HTTP surface
-- index.ts           # historical/dev MCP entrypoint
-- daemon.ts          # historical/dev daemon entrypoint
+- cli/               # retained developer/reference subcommands
 ```
 
 ## WHERE TO LOOK
@@ -23,8 +20,7 @@ is not the shipped macOS product runtime.
 | DB/reference logic | `core/db/`, `core/database.ts` | Dev/reference path; Swift owns product schema/writes. |
 | Vectors/embeddings | `core/vector-store.ts`, `core/embeddings.ts` | Reference semantic design; not product Swift search. |
 | MCP-compatible handlers | `tools/` | JSON handlers and retained contract coverage. |
-| CLI entrypoints | `cli/project.ts`, `cli/resume.ts` | Developer/reference commands. |
-| Web reference | `web.ts`, `web/` | Historical/dev-only surface; the Swift product no longer serves the HTTP transcript Web UI. |
+| CLI entrypoints | `cli/project.ts` | Developer/reference project commands. |
 
 ## CONVENTIONS
 - Use strict ES2022/Node16 modules and `node:` prefixes for Node built-ins.
@@ -36,9 +32,8 @@ is not the shipped macOS product runtime.
 - Keep TS changes tied to retained tooling, fixture generators, regression tests, or compatibility contracts.
 
 ## ANTI-PATTERNS
-- Do not treat `src/index.ts`, `src/daemon.ts`, or `src/web.ts` as shipped runtime.
+- Do not reintroduce TypeScript MCP, daemon, or HTTP/Web entrypoints under `src/`.
 - Do not use TS DB code as source of truth for Swift-only schema defaults.
-- Do not re-enable MCP idle timeout in `src/index.ts`.
 - Do not set project move/archive `force: true` unless the user explicitly asked for force/override.
 - Do not add Viking/OpenViking code paths; that path was removed.
 

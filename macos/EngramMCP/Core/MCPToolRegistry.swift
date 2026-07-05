@@ -878,16 +878,24 @@ enum MCPToolRegistry {
             )
             return .toolSuccess(structured)
         case "search":
-            let database = try MCPDatabase(path: config.dbPath)
-            let structured = try database.searchSessions(
-                query: try requiredString("query", in: arguments),
-                source: arguments["source"]?.stringValue,
-                project: arguments["project"]?.stringValue,
-                since: arguments["since"]?.stringValue,
-                limit: min(arguments["limit"]?.intValue ?? 10, 50),
-                mode: arguments["mode"]?.stringValue ?? "keyword"
-            )
-            return .toolSuccess(structured)
+            let query = try requiredString("query", in: arguments)
+            do {
+                let database = try MCPDatabase(path: config.dbPath)
+                let structured = try database.searchSessions(
+                    query: query,
+                    source: arguments["source"]?.stringValue,
+                    project: arguments["project"]?.stringValue,
+                    since: arguments["since"]?.stringValue,
+                    limit: min(arguments["limit"]?.intValue ?? 10, 50),
+                    mode: arguments["mode"]?.stringValue ?? "keyword"
+                )
+                return .toolSuccess(structured)
+            } catch {
+                return .toolError(
+                    message: "Search failed. Check the Engram database and retry.",
+                    code: "searchFailed"
+                )
+            }
         case "get_context":
             let database = try MCPDatabase(path: config.dbPath)
             let text = try database.getContext(

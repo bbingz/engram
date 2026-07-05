@@ -8,24 +8,7 @@ import {
   join,
   resolve,
 } from 'node:path';
-import { runAllHealthChecks } from '../core/health-rules.js';
 import type { Logger } from '../core/logger.js';
-
-export { runAllHealthChecks };
-
-export const lintConfigTool = {
-  name: 'lint_config',
-  description:
-    'Lint CLAUDE.md and similar config files: verify file references exist, npm scripts are valid, and detect stale instructions.',
-  inputSchema: {
-    type: 'object' as const,
-    required: ['cwd'],
-    properties: {
-      cwd: { type: 'string', description: 'Project root directory' },
-    },
-    additionalProperties: false,
-  },
-};
 
 interface LintIssue {
   file: string;

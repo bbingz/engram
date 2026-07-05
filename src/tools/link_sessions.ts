@@ -12,24 +12,6 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Database } from '../core/db.js';
 import type { Logger } from '../core/logger.js';
 
-export const linkSessionsTool = {
-  name: 'link_sessions',
-  description:
-    'Create symlinks to all AI session files for a project in <targetDir>/conversation_log/<source>/',
-  inputSchema: {
-    type: 'object' as const,
-    required: ['targetDir'],
-    properties: {
-      targetDir: {
-        type: 'string',
-        description:
-          'Project directory (absolute path). Project name is derived from basename.',
-      },
-    },
-    additionalProperties: false,
-  },
-};
-
 interface LinkResult {
   created: number;
   skipped: number;

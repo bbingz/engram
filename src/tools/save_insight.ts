@@ -5,64 +5,6 @@ import type { EmbeddingClient } from '../core/embeddings.js';
 import type { Logger } from '../core/logger.js';
 import type { VectorStore } from '../core/vector-store.js';
 
-export const saveInsightTool = {
-  name: 'save_insight',
-  description:
-    'Save an important insight, decision, or lesson learned for future retrieval. ' +
-    'Use this to preserve knowledge that should persist across sessions.',
-  inputSchema: {
-    type: 'object' as const,
-    required: ['content'],
-    properties: {
-      content: {
-        type: 'string',
-        description: 'The insight or knowledge to save',
-      },
-      wing: {
-        type: 'string',
-        description: 'Project or domain name (optional)',
-      },
-      room: {
-        type: 'string',
-        description: 'Sub-area within the project (optional)',
-      },
-      importance: {
-        type: 'number',
-        description: 'Importance level 0-5 (default: 5)',
-        minimum: 0,
-        maximum: 5,
-      },
-      source_session_id: {
-        type: 'string',
-        description: 'Session ID that generated this insight (optional)',
-      },
-    },
-    additionalProperties: false,
-  },
-};
-
-export const deleteInsightTool = {
-  name: 'delete_insight',
-  description:
-    'Delete a saved insight by id. Normal calls delete from the local text/vector stores; dry_run only validates input.',
-  inputSchema: {
-    type: 'object' as const,
-    required: ['id'],
-    properties: {
-      id: {
-        type: 'string',
-        description: 'Insight id to delete',
-      },
-      dry_run: {
-        type: 'boolean',
-        description: 'Validate and show intent without deleting',
-        default: false,
-      },
-    },
-    additionalProperties: false,
-  },
-};
-
 interface SaveInsightDeps {
   vecStore?: VectorStore | null;
   embedder?: EmbeddingClient | null;

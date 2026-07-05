@@ -3,23 +3,6 @@ import type { EmbeddingClient } from '../core/embeddings.js';
 import type { Logger } from '../core/logger.js';
 import type { InsightSearchResult, VectorStore } from '../core/vector-store.js';
 
-export const getMemoryTool = {
-  name: 'get_memory',
-  description:
-    'Retrieve curated insights and memories from past sessions. Use save_insight to add new memories.',
-  inputSchema: {
-    type: 'object' as const,
-    required: ['query'],
-    properties: {
-      query: {
-        type: 'string',
-        description: 'What to remember (e.g. "user\'s coding preferences")',
-      },
-    },
-    additionalProperties: false,
-  },
-};
-
 interface MemoryInsight {
   id: string;
   content: string;

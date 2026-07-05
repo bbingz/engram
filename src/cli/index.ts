@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // src/cli/index.ts
-// CLI dispatcher: routes to MCP server, resume, or diagnostic subcommands
+// CLI dispatcher: routes retained reference subcommands.
 
 import { pathToFileURL } from 'node:url';
 
@@ -28,13 +28,10 @@ export async function dispatchCli(
   } else if (subcommand === 'project') {
     const module = await importer('./project.js');
     await module.main?.(args.slice(1));
-  } else if (args.includes('--resume') || args.includes('-r')) {
-    // Dynamic import to avoid loading MCP server code
-    const module = await importer('./resume.js');
-    await module.main?.(args);
   } else {
-    // Default: run MCP server
-    await importer('../index.js');
+    throw new Error(
+      'The TypeScript MCP entrypoint was removed. Use the bundled Swift EngramMCP helper for MCP startup.',
+    );
   }
 }
 
