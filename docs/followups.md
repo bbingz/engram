@@ -31,6 +31,14 @@ Open workspace-hygiene follow-ups as of 2026-07-04:
 
 ## Open — feature-cut execution plan, adjudicated Top 10 (2026-07-05)
 
+BLOCKER (2026-07-05): stopped at ITEM 0 / PR #103 after the protocol's "CI
+stays red after 2 fix attempts" gate fired. PR head `e903a06e` passed
+`swift-unit`, `ui-test-smoke`, lint/typecheck/dead-code/fixture/security checks
+after two targeted CI fix attempts, but `ui-test-full` failed in GitHub Actions
+run `28745689659`, job `85236519360`, during `scripts/screenshot-compare.ts`.
+The only failed screenshot was `settings_dark` (`SSIM=0.8982`, `pHash=6`,
+`diff=4.7001%`). No third fix attempt was made; ITEM 0 remains unmerged.
+
 GOAL for Codex: execute the cuts below. Provenance: a 38-agent opus+sonnet
 workflow (4-area inventory → 4-lens propose → dedup → adversarial verify per
 candidate: refuter + blast-radius → opus final ranking), merged with Codex's
