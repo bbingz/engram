@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-05): 82 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-06): 92 dated entries; regenerate after adding sections -->
+- [2026-07-06 - Stale screenshot baselines: check provenance before trusting SSIM failures (Fable/Claude)](#2026-07-06---stale-screenshot-baselines-check-provenance-before-trusting-ssim-failures-fableclaude)
 - [2026-07-05 - Preference: route fan-out subagents to sonnet/opus, not Fable (Fable/Claude)](#2026-07-05---preference-route-fan-out-subagents-to-sonnetopus-not-fable-fableclaude)
 - [2026-07-05 - Menu-bar popover root cause: unbounded Live section and subagent churn (Fable/Claude)](#2026-07-05---menu-bar-popover-root-cause-unbounded-live-section-and-subagent-churn-fableclaude)
 - [2026-07-03 - Perf audit implemented as 8 reviewed PRs #95-#102 (Claude)](#2026-07-03---perf-audit-implemented-as-8-reviewed-prs-95-102-claude)
@@ -95,6 +96,28 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-06 - Stale screenshot baselines: check provenance before trusting SSIM failures (Fable/Claude)
+
+- PR #103 (feature-cut ITEM 0) blocked on `settings_dark` SSIM=0.8982 vs the
+  0.91 threshold. Root cause was NOT a regression: the checked-in baseline
+  (`macos/EngramUITests/baselines/settings_dark.png`, git-LFS) dated from
+  322f5095 — a Chinese-locale capture predating the forced
+  `-AppleLanguages (en)` in `TestLaunchConfig`, still showing deleted Web UI
+  rows. It only ever passed marginally (0.9157 on the last green main run);
+  a legitimate UI change tipped it over. Fixed in 12c70690 by refreshing the
+  baseline from the CI `screenshot-diffs-full` artifact (top-level PNGs are
+  the actual captures; `diffs/` holds the diff overlays).
+- How to apply: before treating a screenshot-compare failure as a product
+  regression, `git log` + view the baseline — if it predates en-localization
+  or shows deleted UI, refresh it from the CI artifact instead of patching
+  the UI. `settings_page`/`settings_general`/`settings_network` still pass
+  ~0.958 and are likely the same stale batch (follow-up: refresh together).
+- Related flake: `ui-test-smoke` has job `timeout-minutes: 10`
+  (.github/workflows/test.yml:178); a cold-cache build (~6 min) plus tests
+  (~4 min) can blow it — the canceled step still shows 0 test failures and
+  screenshot compare passes afterwards. Rerun before diagnosing; consider
+  bumping to 15 if it recurs.
 
 ## 2026-07-05 - Preference: route fan-out subagents to sonnet/opus, not Fable (Fable/Claude)
 
