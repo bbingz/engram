@@ -96,6 +96,17 @@ final class ServiceSecurityHardeningTests: XCTestCase {
         }
     }
 
+    func testProjectPathConfinementRejectsHomeDirectoryItself() async throws {
+        try await withTemporaryHome { home in
+            XCTAssertThrowsError(
+                try EngramServiceCommandHandler.validateProjectPathConfined(home.path, label: "source"),
+                "Project path confinement must reject the home directory itself"
+            ) { error in
+                XCTAssertTrue("\(error)".contains("home directory root"), "\(error)")
+            }
+        }
+    }
+
     func testProjectMoveAcceptsInRootPaths(
     ) async throws {
         try await withTemporaryHome { home in

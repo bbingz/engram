@@ -1471,14 +1471,21 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
     private func sourceFailedIndexJobCounts(_ db: GRDB.Database) throws -> [String: Int] {
         guard try tableExists("session_index_jobs", db: db) else { return [:] }
+        let failedStatuses = [
+            IndexJobStatus.failedRetryable.rawValue,
+            IndexJobStatus.failedPermanent.rawValue,
+            IndexJobStatus.failedTerminal.rawValue,
+            IndexJobStatus.failed.rawValue
+        ]
+        let placeholders = Array(repeating: "?", count: failedStatuses.count).joined(separator: ", ")
         let rows = try Row.fetchAll(db, sql: """
             SELECT s.source AS source, COUNT(*) AS count
             FROM session_index_jobs j
             JOIN sessions s ON s.id = j.session_id
             WHERE s.hidden_at IS NULL
-              AND j.status IN ('failed_retryable', 'failed_terminal', 'failed')
+              AND j.status IN (\(placeholders))
             GROUP BY s.source
-        """)
+        """, arguments: StatementArguments(failedStatuses))
         return sourceCountDictionary(rows)
     }
 

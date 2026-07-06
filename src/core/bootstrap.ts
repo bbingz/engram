@@ -142,7 +142,7 @@ export function createMCPDeps(opts?: { dbPath?: string }): MCPDeps {
   const settings = readFileSettings();
   const auditConfig = { ...DEFAULT_AI_AUDIT_CONFIG, ...settings.aiAudit };
   const audit = new AiAuditWriter(db.raw, auditConfig);
-  const authoritativeNode = settings.syncNodeName || 'local';
+  const authoritativeNode = 'local';
 
   // Apply tier-based noise filter
   db.noiseFilter = settings.noiseFilter ?? 'hide-skip';
@@ -153,10 +153,8 @@ export function createMCPDeps(opts?: { dbPath?: string }): MCPDeps {
   const vecDeps = initVectorDeps(db, {
     openaiApiKey: settings.openaiApiKey,
     ollamaUrl: settings.ollamaUrl,
-    ollamaModel: settings.embedding?.model ?? settings.ollamaModel,
-    embeddingDimension:
-      settings.embedding?.dimension ?? settings.embeddingDimension,
-    embeddingProvider: settings.embedding?.provider,
+    ollamaModel: settings.ollamaModel,
+    embeddingDimension: settings.embeddingDimension,
     audit,
   });
 

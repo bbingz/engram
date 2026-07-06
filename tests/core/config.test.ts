@@ -357,6 +357,44 @@ describe('settings file permissions', () => {
     }
   });
 
+  it('scrubs dead sync and nested embedding settings when reading', () => {
+    const home = mkdtempSync(join(tmpdir(), 'engram-config-'));
+    vi.stubEnv('HOME', home);
+    try {
+      const dir = join(home, '.engram');
+      const file = join(dir, 'settings.json');
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      writeFileSync(
+        file,
+        JSON.stringify({
+          aiProtocol: 'openai',
+          syncNodeName: 'legacy-node',
+          syncEnabled: true,
+          embedding: {
+            provider: 'ollama',
+            model: 'nomic-embed-text',
+            dimension: 768,
+          },
+        }),
+        { mode: 0o600 },
+      );
+
+      const settings = readFileSettings() as Record<string, unknown>;
+
+      expect(settings.aiProtocol).toBe('openai');
+      expect(settings.syncNodeName).toBeUndefined();
+      expect(settings.syncEnabled).toBeUndefined();
+      expect(settings.embedding).toBeUndefined();
+
+      const onDisk = JSON.parse(readFileSync(file, 'utf-8'));
+      expect(onDisk.syncNodeName).toBeUndefined();
+      expect(onDisk.syncEnabled).toBeUndefined();
+      expect(onDisk.embedding).toBeUndefined();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('warns to stderr when settings JSON cannot be parsed', () => {
     const home = mkdtempSync(join(tmpdir(), 'engram-config-'));
     vi.stubEnv('HOME', home);

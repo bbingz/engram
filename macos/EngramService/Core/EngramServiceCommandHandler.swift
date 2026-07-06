@@ -1964,6 +1964,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 message: "\(label) path resolves outside the home directory and is refused"
             )
         }
+        guard standardized != home else {
+            throw EngramServiceError.invalidRequest(
+                message: "\(label) path targets the home directory root and is refused"
+            )
+        }
         let resolved = URL(fileURLWithPath: standardized)
             .resolvingSymlinksInPath()
             .standardizedFileURL
@@ -1971,6 +1976,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         guard resolved == resolvedHome || resolved.hasPrefix(resolvedHome + "/") else {
             throw EngramServiceError.invalidRequest(
                 message: "\(label) path resolves outside the home directory and is refused"
+            )
+        }
+        guard resolved != resolvedHome else {
+            throw EngramServiceError.invalidRequest(
+                message: "\(label) path targets the home directory root and is refused"
             )
         }
         if containsSensitivePathComponent(standardized, home: home)
@@ -2770,7 +2780,19 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     category: .ai,
                     error: error
                 )
-                throw error
+                let nsError = error as NSError
+                throw EngramServiceError.commandFailed(
+                    name: "AIRequestTransportFailed",
+                    message: "AI request transport failed: \(error.localizedDescription)",
+                    retryPolicy: "safe",
+                    details: [
+                        "provider": .string(config.provider),
+                        "model": .string(config.model),
+                        "url": .string(redactedHost(config.baseURL)),
+                        "errorDomain": .string(nsError.domain),
+                        "errorCode": .number(Double(nsError.code))
+                    ]
+                )
             }
             let durationMs = Int(Date().timeIntervalSince(started) * 1000)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
