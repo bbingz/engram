@@ -11,7 +11,6 @@
   "search",
   "get_context",
   "get_insights",
-  "lint_config",
   "link_sessions",
   "project_review",
   "get_session",

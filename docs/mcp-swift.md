@@ -52,7 +52,7 @@ For manual user-scope edits, use `~/.claude/settings.json`:
 ```
 
 Restart Claude Code. Verify with `/mcp` — the `engram` entry should
-show the 28 tools.
+show the 27 tools.
 
 ## Switching Codex
 
@@ -117,7 +117,7 @@ contract behaviour is covered by `macos/EngramMCPTests/`.
 | `spawn EACCES` from client | Binary not executable | `chmod +x` the Helpers/EngramMCP path |
 | `Transport closed` after deploying a new app build | Client session still holds an old stdio process/config | Use the stable Codex shim above, then restart the client session |
 | Write tool returns service unreachable | EngramService not running or socket missing | Start Engram.app and check Console.app `com.engram.app` logs |
-| Stale tool count (< 28) | Client cached old spec | Restart the client |
+| Stale tool count (< 27) | Client cached old spec | Restart the client |
 
 Logs: helper stderr flows to the client; service logs are in Console.app
 subsystem `com.engram.app`.

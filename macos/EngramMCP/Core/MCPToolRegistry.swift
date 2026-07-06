@@ -346,21 +346,6 @@ enum MCPToolRegistry {
             ])
         ),
         MCPToolDefinition(
-            name: "lint_config",
-            description: "Lint CLAUDE.md and similar config files: verify file references exist, npm scripts are valid, and detect stale instructions.",
-            inputSchema: .object([
-                "type": .string("object"),
-                "required": .array([.string("cwd")]),
-                "properties": .object([
-                    "cwd": .object([
-                        "type": .string("string"),
-                        "description": .string("Project root directory"),
-                    ]),
-                ]),
-                "additionalProperties": .bool(false),
-            ])
-        ),
-        MCPToolDefinition(
             name: "link_sessions",
             description: "Create symlinks to all AI session files for a project in <targetDir>/conversation_log/<source>/",
             inputSchema: .object([
@@ -884,8 +869,6 @@ enum MCPToolRegistry {
                 since: arguments["since"]?.stringValue
             )
             return .toolSuccess(structured)
-        case "lint_config":
-            return .toolSuccess(MCPFileTools.lintConfig(cwd: try requiredString("cwd", in: arguments)))
         case "link_sessions":
             let serviceClient = makeServiceClient(config: config)
             defer { serviceClient.close() }
@@ -1112,7 +1095,6 @@ enum MCPToolRegistry {
              "search",
              "get_context",
              "get_insights",
-             "lint_config",
              "project_review",
              "get_session",
              "handoff",
