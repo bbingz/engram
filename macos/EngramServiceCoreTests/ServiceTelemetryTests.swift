@@ -65,24 +65,24 @@ final class ServiceTelemetryTests: XCTestCase {
         try seedSessionsFixture(at: paths.database.path)
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let collector = ServiceTelemetryCollector()
-        // Default Empty read provider: `hooks` returns [] without touching the
+        // Default Empty read provider: `sources` returns [] without touching the
         // SQLite read provider, so this exercises span recording/exclusion
         // without the EngramCoreRead/Write duplicate-GRDB host crash.
         let handler = EngramServiceCommandHandler(writerGate: gate, telemetry: collector)
 
-        _ = await handler.handle(request("hooks"))
+        _ = await handler.handle(request("sources"))
         _ = await handler.handle(request("status"))
         _ = await handler.handle(request("telemetry"))
         _ = await handler.handle(request("costs"))
 
         let snapshot = await collector.snapshot()
-        // hooks recorded; status (poll noise) + telemetry (self) + costs (budget
+        // sources recorded; status (poll noise) + telemetry (self) + costs (budget
         // poll noise) excluded.
-        XCTAssertTrue(snapshot.spans.contains(where: { $0.command == "hooks" }))
+        XCTAssertTrue(snapshot.spans.contains(where: { $0.command == "sources" }))
         XCTAssertFalse(snapshot.spans.contains(where: { $0.command == "status" }))
         XCTAssertFalse(snapshot.spans.contains(where: { $0.command == "telemetry" }))
         XCTAssertFalse(snapshot.spans.contains(where: { $0.command == "costs" }))
-        XCTAssertTrue(snapshot.commands.contains(where: { $0.command == "hooks" }))
+        XCTAssertTrue(snapshot.commands.contains(where: { $0.command == "sources" }))
     }
 
     func testHandlerRecordsErrorSpanForFailedCommand() async throws {

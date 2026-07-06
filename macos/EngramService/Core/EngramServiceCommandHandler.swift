@@ -122,11 +122,6 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     requestId: request.requestId,
                     result: try Self.encode(try await readProvider.sources())
                 )
-            case "skills":
-                return .success(
-                    requestId: request.requestId,
-                    result: try Self.encode(try await readProvider.skills())
-                )
             case "memoryFiles":
                 return .success(
                     requestId: request.requestId,
@@ -137,11 +132,6 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(try await readProvider.memoryFileContent(payload))
-                )
-            case "hooks":
-                return .success(
-                    requestId: request.requestId,
-                    result: try Self.encode(try await readProvider.hooks())
                 )
             case "insights":
                 return .success(

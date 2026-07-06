@@ -9,10 +9,8 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let healthResult: Result<EngramServiceHealthResponse, Error>
     let liveSessionsResult: Result<EngramServiceLiveSessionsResponse, Error>
     let sourcesResult: Result<[EngramServiceSourceInfo], Error>
-    let skillsResult: Result<[EngramServiceSkillInfo], Error>
     let memoryFilesResult: Result<[EngramServiceMemoryFile], Error>
     let memoryFileContentResult: Result<EngramServiceMemoryFileContentResponse, Error>
-    let hooksResult: Result<[EngramServiceHookInfo], Error>
     let insightsResult: Result<[EngramServiceInsightInfo], Error>
     let insightDetailResult: Result<EngramServiceInsightInfo?, Error>
     let costsResult: Result<EngramServiceCostsResponse, Error>
@@ -60,10 +58,8 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         health: EngramServiceHealthResponse = EngramServiceHealthResponse(ok: true, status: "healthy", message: "mock"),
         liveSessions: EngramServiceLiveSessionsResponse = EngramServiceLiveSessionsResponse(sessions: [], count: 0),
         sources: [EngramServiceSourceInfo] = [],
-        skills: [EngramServiceSkillInfo] = [],
         memoryFiles: [EngramServiceMemoryFile] = [],
         memoryFileContent: EngramServiceMemoryFileContentResponse = EngramServiceMemoryFileContentResponse(path: "", content: "", truncated: false),
-        hooks: [EngramServiceHookInfo] = [],
         insights: [EngramServiceInsightInfo] = [],
         insightDetail: EngramServiceInsightInfo? = nil,
         costs: EngramServiceCostsResponse = EngramServiceCostsResponse(totalUsd: 0, perSource: [], perDay: [], monthToDateUsd: 0, todayUsd: 0),
@@ -115,10 +111,8 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.healthResult = .success(health)
         self.liveSessionsResult = .success(liveSessions)
         self.sourcesResult = .success(sources)
-        self.skillsResult = .success(skills)
         self.memoryFilesResult = .success(memoryFiles)
         self.memoryFileContentResult = .success(memoryFileContent)
-        self.hooksResult = .success(hooks)
         self.insightsResult = .success(insights)
         self.insightDetailResult = .success(insightDetail)
         self.costsResult = .success(costs)
@@ -172,15 +166,11 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func sources() async throws -> [EngramServiceSourceInfo] { try sourcesResult.get() }
 
-    func skills() async throws -> [EngramServiceSkillInfo] { try skillsResult.get() }
-
     func memoryFiles() async throws -> [EngramServiceMemoryFile] { try memoryFilesResult.get() }
 
     func memoryFileContent(path: String) async throws -> EngramServiceMemoryFileContentResponse {
         try memoryFileContentResult.get()
     }
-
-    func hooks() async throws -> [EngramServiceHookInfo] { try hooksResult.get() }
 
     func insights() async throws -> [EngramServiceInsightInfo] { try insightsResult.get() }
 

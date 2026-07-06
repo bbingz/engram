@@ -1324,17 +1324,13 @@ final class EngramServiceIPCTests: XCTestCase {
         let health = try await client.health()
         let live = try await client.liveSessions()
         let sources = try await client.sources()
-        let skills = try await client.skills()
         let memory = try await client.memoryFiles()
-        let hooks = try await client.hooks()
         let replay = try await client.replayTimeline(sessionId: "session-1", limit: 25)
 
         XCTAssertEqual(health.status, "healthy")
         XCTAssertEqual(live.count, 0)
         XCTAssertEqual(sources, [])
-        XCTAssertEqual(skills, [])
         XCTAssertEqual(memory, [])
-        XCTAssertEqual(hooks, [])
         XCTAssertEqual(replay.sessionId, "session-1")
     }
 

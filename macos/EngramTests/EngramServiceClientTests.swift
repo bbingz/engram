@@ -63,12 +63,8 @@ final class EngramServiceClientTests: XCTestCase {
                 return .success(requestId: request.requestId, result: #"{"sessions":[{"source":"codex","sessionId":"s-live","project":"engram","title":"Live","cwd":"/tmp/engram","filePath":"/tmp/s-live.jsonl","startedAt":"2026-04-23T01:00:00Z","model":"gpt-5","currentActivity":"coding","lastModifiedAt":"2026-04-23T01:01:00Z","activityLevel":"active"}],"count":1}"#.data(using: .utf8)!)
             case "sources":
                 return .success(requestId: request.requestId, result: #"[{"name":"codex","sessionCount":2,"latestIndexed":"2026-04-23T01:02:00Z"}]"#.data(using: .utf8)!)
-            case "skills":
-                return .success(requestId: request.requestId, result: #"[{"name":"test-driven-development","description":"TDD","path":"~/.codex/skills/tdd/SKILL.md","scope":"global"}]"#.data(using: .utf8)!)
             case "memoryFiles":
                 return .success(requestId: request.requestId, result: #"[{"name":"AGENTS.md","project":"engram","path":"~/project/AGENTS.md","sizeBytes":123,"preview":"rules"}]"#.data(using: .utf8)!)
-            case "hooks":
-                return .success(requestId: request.requestId, result: #"[{"event":"PostToolUse","command":"rtk test","scope":"project"}]"#.data(using: .utf8)!)
             case "hygiene":
                 XCTAssertEqual(try Self.payload(request.payload, as: EngramServiceHygieneRequest.self), EngramServiceHygieneRequest(force: true))
                 return .success(requestId: request.requestId, result: #"{"issues":[{"kind":"config","severity":"warning","message":"stale","detail":"fix","repo":"engram","action":"update"}],"score":91,"checkedAt":"2026-04-23T01:03:00Z"}"#.data(using: .utf8)!)
@@ -140,9 +136,7 @@ final class EngramServiceClientTests: XCTestCase {
         let health = try await client.health()
         let liveSessions = try await client.liveSessions()
         let sources = try await client.sources()
-        let skills = try await client.skills()
         let memoryFiles = try await client.memoryFiles()
-        let hooks = try await client.hooks()
         let hygiene = try await client.hygiene(force: true)
         let handoff = try await client.handoff(EngramServiceHandoffRequest(cwd: "/tmp/engram", sessionId: "s1", format: "markdown"))
         let timeline = try await client.replayTimeline(sessionId: "s1", limit: 500)
@@ -162,9 +156,7 @@ final class EngramServiceClientTests: XCTestCase {
         XCTAssertEqual(health.status, "healthy")
         XCTAssertEqual(liveSessions.sessions.first?.sessionId, "s-live")
         XCTAssertEqual(sources.first?.name, "codex")
-        XCTAssertEqual(skills.first?.name, "test-driven-development")
         XCTAssertEqual(memoryFiles.first?.sizeBytes, 123)
-        XCTAssertEqual(hooks.first?.event, "PostToolUse")
         XCTAssertEqual(hygiene.issues.first?.kind, "config")
         XCTAssertEqual(handoff.sessionCount, 3)
         XCTAssertEqual(timeline.entries.first?.tokens?.input, 4)

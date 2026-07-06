@@ -13,8 +13,6 @@ MIGRATED_STAGE3_FILES=(
   "macos/Engram/Views/CommandPaletteView.swift"
   "macos/Engram/Views/Pages/SourcePulseView.swift"
   "macos/Engram/Views/Pages/MemoryView.swift"
-  "macos/Engram/Views/Pages/SkillsView.swift"
-  "macos/Engram/Views/Pages/HooksView.swift"
   "macos/Engram/Views/Replay/SessionReplayView.swift"
 )
 

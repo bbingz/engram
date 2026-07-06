@@ -328,9 +328,6 @@
     "Home" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "首页" } } }
     },
-    "Hooks" : {
-      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "钩子" } } }
-    },
     "HTTP Host" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "HTTP 主机" } } }
     },
@@ -504,9 +501,6 @@
     },
     "Simplified Chinese" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "简体中文" } } }
-    },
-    "Skills" : {
-      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "技能" } } }
     },
     "Sources" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "来源" } } }
