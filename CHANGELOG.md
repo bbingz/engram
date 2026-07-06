@@ -7,6 +7,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: cleanup low-risk feature-cut residuals (2026-07-06, Codex)
+
+- Removed the dead Hummingbird link from the macOS app target while keeping the
+  retained remote-server target dependencies intact.
+- Refreshed the live `settings_page` and `settings_general` screenshot
+  baselines from CI run `28745689659` actual captures; `settings_network` is no
+  longer a tracked baseline or active screenshot capture in current main.
+
 ### Changed: archived dormant sources default off (2026-07-06, Codex)
 
 - Feature-cut item 10 moves `cline`, `iflow`, and `lobsterai` into a

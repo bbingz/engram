@@ -161,7 +161,6 @@
 		453D95220109B64CC69CCB06 /* AdapterRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B9F654F382E1F1DA027FD9A /* AdapterRegistry.swift */; };
 		455BEF99CA01D833675FE575 /* TimelineScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0999DAC2E2CF997BD70EEC8 /* TimelineScreen.swift */; };
 		45A6E165E57DC474359F0534 /* ReviewScanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BD08016D4FD2B4AB1B037BE /* ReviewScanTests.swift */; };
-		45B79E7DB6DACCAADE576BD4 /* Hummingbird in Frameworks */ = {isa = PBXBuildFile; productRef = 91F12205EB58C99D35D3D355 /* Hummingbird */; };
 		469C8266EE09DBF67FB34D9E /* StreamingJSONLReaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC869ACC9B19CDCFAFC2428A /* StreamingJSONLReaderTests.swift */; };
 		46AB20913927CBD49CDC5380 /* SessionChunker.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6F2E6257D36992F93242449 /* SessionChunker.swift */; };
 		46B22E80FCC71F53FF8A4A5C /* MCPTranscriptTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72212C1765EA46875DAFAF93 /* MCPTranscriptTools.swift */; };
@@ -1275,7 +1274,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				28302B57A3C158B19A1E105F /* GRDB-dynamic in Frameworks */,
-				45B79E7DB6DACCAADE576BD4 /* Hummingbird in Frameworks */,
 				BFD578D90D50FDC3E4549C36 /* AppIntents.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -2528,7 +2526,6 @@
 			name = Engram;
 			packageProductDependencies = (
 				23836612C4AC99F5B62FBED7 /* GRDB-dynamic */,
-				91F12205EB58C99D35D3D355 /* Hummingbird */,
 			);
 			productName = Engram;
 			productReference = 9A0551A8DFF54710CD9C3423 /* Engram.app */;
@@ -4482,11 +4479,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B3050831A7EC711E05A4F422 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
 			productName = "GRDB-dynamic";
-		};
-		91F12205EB58C99D35D3D355 /* Hummingbird */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 355F6E49115EED477FC7FAB2 /* XCRemoteSwiftPackageReference "hummingbird" */;
-			productName = Hummingbird;
 		};
 		AAFBFF6743EBD53BB94AC4EA /* Hummingbird */ = {
 			isa = XCSwiftPackageProductDependency;
