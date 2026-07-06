@@ -379,7 +379,6 @@
 		A80899F0067D7DF9A44D0A49 /* IflowAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C3EDC9B5E51D7E64F27A70F /* IflowAdapter.swift */; };
 		AA8572FBA751E232208CA55D /* ToolCallParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C8EEF20FCD6677E183F5AE0 /* ToolCallParser.swift */; };
 		AA949F60693AC77213DD0709 /* Sources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44598B816D303E452EAF5009 /* Sources.swift */; };
-		AA9733AE9378F5BB8B68207F /* FavoritesPageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 622D420976852766741F6223 /* FavoritesPageView.swift */; };
 		AAD772B04826F4344896A2FE /* DarkModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 385F19B9C0D48C1265DF591F /* DarkModeTests.swift */; };
 		AB0D3162C84E53901AFFC384 /* UsagePressureNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 588D02060B46B65BB11B8BFE /* UsagePressureNotifier.swift */; };
 		AB2B1C9CE3ACE02AEEE9E34B /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = CBDF29785DFFE67D4E31B6B0 /* GRDB-dynamic */; };
@@ -903,7 +902,6 @@
 		60DEC330A7DE9C3C55D1649C /* ArchiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveTests.swift; sourceTree = "<group>"; };
 		6114E359808618C36CC25ECA /* ServiceStatusMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceStatusMonitor.swift; sourceTree = "<group>"; };
 		61316EC32A6D20D7F9B78AAA /* UnixSocketServiceServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnixSocketServiceServer.swift; sourceTree = "<group>"; };
-		622D420976852766741F6223 /* FavoritesPageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesPageView.swift; sourceTree = "<group>"; };
 		62F47966A5E1F2ABF9B12170 /* SettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTests.swift; sourceTree = "<group>"; };
 		646CADEA017A524549A87802 /* StartupBackfillTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartupBackfillTests.swift; sourceTree = "<group>"; };
 		64F4C75BEAFCC55495138AA2 /* AdapterParityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdapterParityTests.swift; sourceTree = "<group>"; };
@@ -2030,7 +2028,6 @@
 			children = (
 				6893032E186098253529B5FF /* ActivityView.swift */,
 				8603FBC43E9F318E648495C1 /* AgentsView.swift */,
-				622D420976852766741F6223 /* FavoritesPageView.swift */,
 				8C6B3E423E877B30FE596333 /* HomeView.swift */,
 				0F751704304A7A754E040F47 /* HygieneView.swift */,
 				3A6934883F536C5C6E9E7FDD /* InsightDetailView.swift */,
@@ -3254,7 +3251,6 @@
 				FFFE42DD9BA21BCF5137463F /* EngramTimestampParser.swift in Sources */,
 				D65525BA91CEC2DBB12AAA6E /* ErrorDashboardView.swift in Sources */,
 				81420BC730F6E83743685AAA /* ExpandableSessionCard.swift in Sources */,
-				AA9733AE9378F5BB8B68207F /* FavoritesPageView.swift in Sources */,
 				D5A8B366292E66360A5ABA72 /* FilterPills.swift in Sources */,
 				9E771A23534B55B8C8BAC279 /* GeminiCliAdapter.swift in Sources */,
 				D292E697C777DE95C041564F /* GeneralSettingsSection.swift in Sources */,

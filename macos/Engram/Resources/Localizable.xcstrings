@@ -992,17 +992,6 @@
         }
       }
     },
-    "Favorites" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "收藏"
-          }
-        }
-      }
-    },
     "Filter by project..." : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1147,17 +1136,6 @@
     },
     "Name" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "名称" } } }
-    },
-    "No favorites yet" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "暂无收藏"
-          }
-        }
-      }
     },
     "No items" : {
       "localizations" : {
@@ -1498,16 +1476,12 @@
     "Standard" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "标准" } } }
     },
-    "Star sessions in the Sessions tab to see them here." : {
-      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "在「会话」页中收藏会话后会显示在这里。" } } }
-    },
-    "Star sessions in the Sessions tab." : {
-      "extractionState" : "stale",
+    "Starred" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在「会话」页中收藏会话。"
+            "value" : "星标"
           }
         }
       }

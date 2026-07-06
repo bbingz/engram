@@ -142,10 +142,14 @@ final class DatabaseManager: @unchecked Sendable {
         includeHidden: Bool,
         subAgent: Bool?,
         topLevelOnly: Bool,
-        humanDriven: Bool
+        humanDriven: Bool,
+        favoritesOnly: Bool
     ) {
         if !includeHidden {
             parts.append("AND hidden_at IS NULL")
+        }
+        if favoritesOnly {
+            parts.append("AND id IN (SELECT session_id FROM favorites)")
         }
         if topLevelOnly {
             parts.append("AND parent_session_id IS NULL AND suggested_parent_id IS NULL")
@@ -189,11 +193,15 @@ final class DatabaseManager: @unchecked Sendable {
         subAgent: Bool? = nil,       // nil=all, true=only sub-agents, false=hide sub-agents
         topLevelOnly: Bool = false,
         humanDriven: Bool = false,
+        favoritesOnly: Bool = false,
         sort: SessionSort = .accessedDesc,
         limit: Int = 200,
         offset: Int = 0
     ) throws -> [Session] {
         try readInBackground { db in
+            if favoritesOnly {
+                guard try Self.tableExists("favorites", db: db) else { return [] }
+            }
             var parts = ["SELECT * FROM sessions WHERE 1=1"]
             var args: [DatabaseValueConvertible] = []
             Self.appendSessionFilters(
@@ -205,7 +213,8 @@ final class DatabaseManager: @unchecked Sendable {
                 includeHidden: includeHidden,
                 subAgent: subAgent,
                 topLevelOnly: topLevelOnly,
-                humanDriven: humanDriven
+                humanDriven: humanDriven,
+                favoritesOnly: favoritesOnly
             )
             let orderSQL = sort.orderSQL(hasAccessMetadata: try Self.hasSessionAccessMetadata(in: db))
             parts.append("ORDER BY \(orderSQL) LIMIT ? OFFSET ?")
@@ -222,9 +231,15 @@ final class DatabaseManager: @unchecked Sendable {
         includeHidden: Bool = false,
         subAgent: Bool? = nil,
         topLevelOnly: Bool = false,
-        humanDriven: Bool = false
+        humanDriven: Bool = false,
+        favoritesOnly: Bool = false
     ) throws -> SessionListStats {
         try readInBackground { db in
+            if favoritesOnly {
+                guard try Self.tableExists("favorites", db: db) else {
+                    return SessionListStats(totalSessions: 0, totalMessages: 0, avgDurationSeconds: nil, sources: [])
+                }
+            }
             var parts = ["FROM sessions WHERE 1=1"]
             var args: [DatabaseValueConvertible] = []
             Self.appendSessionFilters(
@@ -236,7 +251,8 @@ final class DatabaseManager: @unchecked Sendable {
                 includeHidden: includeHidden,
                 subAgent: subAgent,
                 topLevelOnly: topLevelOnly,
-                humanDriven: humanDriven
+                humanDriven: humanDriven,
+                favoritesOnly: favoritesOnly
             )
             let fromWhere = parts.joined(separator: " ")
             let row = try Row.fetchOne(db, sql: """
