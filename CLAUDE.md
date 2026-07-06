@@ -37,7 +37,7 @@ macos/
     Core/      # App lifecycle, read models, GRDB read facades, service launcher/status
     Views/     # MainWindowView, SidebarView, PopoverView, SessionListView, SessionDetailView, SettingsView
       Pages/   # HomeView, SessionsPageView, SearchPageView, ActivityView, ProjectsView, TimelinePageView, etc.
-      Settings/  # GeneralSettingsSection, AISettingsSection, NetworkSettingsSection, SourcesSettingsSection
+      Settings/  # GeneralSettingsSection, AISettingsSection, SourcesSettingsSection
       Transcript/  # ColorBarMessageView, TranscriptToolbar, TranscriptFindBar
       Workspace/   # ReposView, RepoDetailView, SparklineView, WorkGraphView
     Components/  # Theme, SourceColors, SessionCard, ExpandableSessionCard, FilterPills, KPICard, HeatmapGrid, etc.

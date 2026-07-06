@@ -44,19 +44,16 @@ final class SettingsTests: XCTestCase {
         ScreenshotCapture.capture(name: "settings_general", app: app, screen: "settings", test: #function)
     }
 
-    func testNetworkSettings() {
+    func testNetworkSettingsIsRemoved() {
         openSettings()
 
         let settings = SettingsScreen(app: app)
         settings.waitForLoad()
 
-        settings.navigateToSection(named: "network")
-
-        let networkSection = settings.networkSection
-        XCTAssertTrue(networkSection.waitForExistence(timeout: 3),
-                      "Network settings section should exist")
-
-        ScreenshotCapture.capture(name: "settings_network", app: app, screen: "settings", test: #function)
+        XCTAssertFalse(settings.navItem(named: "network").exists,
+                       "Network settings nav item should be removed with the dead peer-sync surface")
+        XCTAssertFalse(settings.section(named: "network").exists,
+                       "Network settings section should be removed with the dead peer-sync surface")
     }
 
     func testAboutSection() {

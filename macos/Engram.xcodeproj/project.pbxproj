@@ -28,7 +28,6 @@
 		07506A72516C1330D7EF9B9E /* EngramServiceRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCDC3A01172C6C8CC0250ADD /* EngramServiceRunner.swift */; };
 		075BFB2F3911F083F6D807D0 /* SessionAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0057C273F6977C308D9D2391 /* SessionAdapter.swift */; };
 		0797B89257DFC1EB3A8C2A26 /* FTSIncrementalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECABA795B075ADB7B0CB0304 /* FTSIncrementalTests.swift */; };
-		07FB68B83B4C829D55411E86 /* NetworkSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 222AD926D3B392C205DB0EAE /* NetworkSettingsSection.swift */; };
 		08186830BD74FFA894BA011D /* ServiceTelemetryCollector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D57BA2A64C3E12E1CB14901 /* ServiceTelemetryCollector.swift */; };
 		081E0A15BD0257F18505DBEC /* AntigravityAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BB1C3D2DCAAB6F0FC5705EA /* AntigravityAdapter.swift */; };
 		0850F1F77DFD06E476AEB5CE /* TranscriptExportServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9EA0FC1FBCAE6B2E1982FFF /* TranscriptExportServiceTests.swift */; };
@@ -825,7 +824,6 @@
 		1D0235E45DAAFCBA57B29A6E /* ToolResultView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolResultView.swift; sourceTree = "<group>"; };
 		1D1BB361D9AC2D5B6AEB8F36 /* ServiceCapabilityToken.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceCapabilityToken.swift; sourceTree = "<group>"; };
 		1DB524C7D024C84A86B5E826 /* SessionSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSyncTests.swift; sourceTree = "<group>"; };
-		222AD926D3B392C205DB0EAE /* NetworkSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkSettingsSection.swift; sourceTree = "<group>"; };
 		22AACDDFF337D230DBDEB48F /* EngramServiceCostsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramServiceCostsTests.swift; sourceTree = "<group>"; };
 		23A437C54690A237C96DEEF2 /* SemanticMemoryUnitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticMemoryUnitTests.swift; sourceTree = "<group>"; };
 		2509C82AB14EA248EFB72E8A /* TestHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestHelpers.swift; sourceTree = "<group>"; };
@@ -1832,7 +1830,6 @@
 				F5304C92DF9D1BD43029D4FC /* AIGenerationSettings.swift */,
 				6517DA2EA76B3A5C369919FF /* AISettingsSection.swift */,
 				36006D527ADCA5DD8673D6E3 /* GeneralSettingsSection.swift */,
-				222AD926D3B392C205DB0EAE /* NetworkSettingsSection.swift */,
 				E8A3841D86B13AA2C3546896 /* SettingsIO.swift */,
 				2A268471FEFDB447DFA7782D /* SourcesSettingsSection.swift */,
 			);
@@ -3361,7 +3358,6 @@
 				493D1B9ABEA637823ED12716 /* MessageTypeClassifier.swift in Sources */,
 				D7AFEC01243917E24FDA94FB /* MigrationHistoryView.swift in Sources */,
 				96BB3F17AA6B8149733CA287 /* MockEngramServiceClient.swift in Sources */,
-				07FB68B83B4C829D55411E86 /* NetworkSettingsSection.swift in Sources */,
 				A7B395C3E2C1D1248D8A33F4 /* OSLogReader.swift in Sources */,
 				30D5FB735DE8EEBA293E0E97 /* ObservabilityView.swift in Sources */,
 				B73EA5481CED6E7F3E239655 /* OnboardingView.swift in Sources */,

@@ -304,13 +304,10 @@ final class ViewMainThreadReadTests: XCTestCase {
         XCTAssertTrue(advanced.contains("Task { @MainActor in"))
         XCTAssertTrue(advanced.contains("await Task.yield()"))
 
-        let network = try source("macos/Engram/Views/Settings/NetworkSettingsSection.swift")
         XCTAssertFalse(
-            network.contains("mutateEngramSettings"),
-            "Network settings are informational after deleting the HTTP Web UI toggle; reintroducing writes must restore the loading guard"
+            advanced.contains("NetworkSettingsSection"),
+            "Network settings had no remaining implemented controls after peer-sync deletion"
         )
-        XCTAssertFalse(network.contains("readEngramSettings()"))
-        XCTAssertFalse(network.contains(".onChange("))
 
         let sources = try source("macos/Engram/Views/Settings/SourcesSettingsSection.swift")
         XCTAssertFalse(

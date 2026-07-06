@@ -199,7 +199,7 @@ Ground rules:
    `README.md:237`, `macos/EngramMCP/AGENTS.md:13`. LEAVE
    `src/tools/lint_config.ts` alone (reference-only). Evidence: 0 calls in
    ~995K tracked tool-call telemetry.
-6. **DELETE dead peer-sync settings surface.** Remove the "Sync" GroupBox in
+6. **DONE in PR #108 — DELETE dead peer-sync settings surface.** Remove the "Sync" GroupBox in
    `NetworkSettingsSection.swift:25` (it literally states "Sync is not
    implemented in the Swift service") and demote the README peer-sync
    section (~README.md:321) to a one-line historical note. Keep
