@@ -1612,13 +1612,6 @@
 			path = Service;
 			sourceTree = "<group>";
 		};
-		5BE71DE6073452EDA4F77805 /* Cascade */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = Cascade;
-			sourceTree = "<group>";
-		};
 		6DE30C3FF2B7F183CD956C7D /* AI */ = {
 			isa = PBXGroup;
 			children = (
@@ -2117,7 +2110,6 @@
 				0057C273F6977C308D9D2391 /* SessionAdapter.swift */,
 				7164B497B5E7F41DEEFDA7CB /* SessionAdapterFactory.swift */,
 				77FFA09BE349ACCD2B2C4E73 /* StreamingLineReader.swift */,
-				5BE71DE6073452EDA4F77805 /* Cascade */,
 				2D0819B8A8716BED255C3C8B /* Sources */,
 			);
 			path = Adapters;
