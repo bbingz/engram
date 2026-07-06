@@ -5,33 +5,38 @@ real data, UI exercise, or product confirmation before becoming TODOs.
 
 ## Open
 
-Open workspace-hygiene follow-ups as of 2026-07-04:
+Open follow-ups as of 2026-07-06:
 
-- **Commit the documentation archive cleanup.** Current working tree contains
-  root review/audit document moves into `docs/reviews/`, old-path reference
-  updates, `MEMO.md`, and this backlog backfill. Before committing, verify with
-  `git status --short --branch`, `git diff --check`, and a targeted `rg` for the
-  old root review filenames / `audit/...` paths.
 - **Resolve the preserved audit-remediation branch.**
   `codex-provider-audit-remediation` still tracks
-  `origin/codex-provider-audit-remediation`; as of 2026-07-04,
+  `origin/codex-provider-audit-remediation`; as of 2026-07-06 on
+  `main@24cc4562`,
   `git rev-list --left-right --cherry-pick --count main...codex-provider-audit-remediation`
-  returned `28 4`, so it has four commits not on `main`. Review/merge it or
+  returned `61 4`, so it has four commits not on `main`. Review/merge it or
   explicitly close and delete it later; do not include it in stale-branch
   cleanup.
-- **Decide whether to reclaim Time Machine snapshot space immediately.** Claude
-  removed `macos/build` and `.claude/worktrees`, but `df -h .` still showed only
-  about `64Gi` available because local Time Machine snapshots still reference
-  deleted blocks. Let macOS purge them automatically, or explicitly thin/delete
-  local snapshots if immediate disk space is required.
 - **Normalize local ignore rules.** `.git/info/exclude` still contains local
   duplicates (`node_modules`, `.husky/_/`, `dist/`) and repo-specific entries
   such as `audit/` and `.github/copilot-instructions.md`. Decide which belong in
   shared `.gitignore` and which should remain local-only.
+- **Fix remaining perf-integration residuals.** Active items are in the
+  perf-integration section below: Cursor WAL-aware parse-cache signatures and
+  the three P3 latent issues. P1 truncation, Web UI ETag, and Web UI line-anchor
+  items are already resolved.
 
-## Open — feature-cut execution plan, adjudicated Top 10 (2026-07-05)
+Closed during the 2026-07-06 sync: documentation archive cleanup was already
+committed; immediate Time Machine snapshot reclamation is no longer needed
+(`df -h .` shows 241Gi available on 2026-07-06, so macOS can manage snapshots
+normally).
 
-BLOCKER (2026-07-05, RESOLVED 2026-07-06 by Claude): stopped at ITEM 0 /
+## Completed — feature-cut execution plan, adjudicated Top 10 (2026-07-05)
+
+CLOSEOUT (2026-07-06): items 0-10 completed in PR #103-#112, then LOW residual
+cleanup completed in PR #113 (`24cc4562`). PR #113 and main `24cc4562` both had
+Tests + CodeQL green. This section is retained as the historical execution
+protocol and evidence trail; it is no longer active backlog.
+
+Historical blocker (2026-07-05, RESOLVED 2026-07-06 by Claude): stopped at ITEM 0 /
 PR #103 after the protocol's "CI stays red after 2 fix attempts" gate fired.
 PR head `e903a06e` passed everything except `ui-test-full`, where only
 `settings_dark` failed (`SSIM=0.8982` vs 0.91 threshold; `pHash=6` and
@@ -49,14 +54,14 @@ the popover Service chip that `30e3a4af` removed); this PR already carries
 the aligned scan test (`d77e1ffa`), so merging ITEM 0 also restores main to
 green.
 
-GOAL for Codex: execute the cuts below. Provenance: a 38-agent opus+sonnet
+Original goal for Codex: execute the cuts below. Provenance: a 38-agent opus+sonnet
 workflow (4-area inventory → 4-lens propose → dedup → adversarial verify per
 candidate: refuter + blast-radius → opus final ranking), merged with Codex's
 own 2026-07-05 "hide/downgrade defaults" round. Every DELETE item survived
 double adversarial verification; items 9-10 are product-default demotions the
 owner explicitly approved in-session (2026-07-05).
 
-EXECUTION PROTOCOL (updated 2026-07-05, owner-approved AUTONOMOUS mode —
+Historical execution protocol (updated 2026-07-05, owner-approved AUTONOMOUS mode —
 supersedes the earlier "Claude reviews before merge" gate):
 
 - Run fully autonomously through STEP 0 and items 0-10 IN ORDER, one PR at a
@@ -245,6 +250,11 @@ demoting the Popover usage section (active UX work stream, owner decides
 there, not a maintenance cut).
 
 ## Open — perf-integration review findings (2026-07-04)
+
+Current active items in this section as of 2026-07-06: CursorAdapter WAL-aware
+parse-cache signatures plus the three P3 latent issues. The original P1
+oversized-transcript path, Web UI ETag path, and Web UI line anchors were
+resolved by later fixes/deletions and remain below only as closeout evidence.
 
 From the 18-agent adversarial review of the Codex-integrated 8-PR perf batch
 (base `f9a236dc..main`). The one blocking item (fts_map self-heal ownership) was

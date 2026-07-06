@@ -4,11 +4,13 @@
 
 在 Codex 里做了半天，切到 Claude Code 继续时，AI 不需要你手动解释之前做了什么——它可以直接调用 `get_context` 查询你的历史。
 
-**Current product state (2026-06-12):** shipped runtime is the native Swift
+**Current product state (2026-07-06):** shipped runtime is the native Swift
 macOS app + bundled Swift MCP helper. The active MCP surface has 27 tools,
-search is keyword-only in the Swift product path, and the canonical backlog
-files (`docs/TODO.md`, `docs/followups.md`, `docs/roadmap.md`) have no open
-items. Latest locally verified release/deploy: `0.1.0 (20260612060821)`.
+search is keyword-only in the Swift product path, and session ingestion defaults
+to 14 active sources plus 3 archived default-off sources. `docs/TODO.md` and
+`docs/roadmap.md` have no open engineering/product items; low-priority
+verification and cleanup follow-ups live in `docs/followups.md`. Latest
+CI-verified main: `24cc4562` (Tests + CodeQL success after PR #113).
 
 ```
 ┌─────────┐ ┌───────────┐ ┌──────────┐ ┌──────────┐ ┌─────────┐

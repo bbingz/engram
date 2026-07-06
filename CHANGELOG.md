@@ -14,6 +14,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Refreshed the live `settings_page` and `settings_general` screenshot
   baselines from CI run `28745689659` actual captures; `settings_network` is no
   longer a tracked baseline or active screenshot capture in current main.
+- PR #113 merged as `24cc4562`; both PR checks and main `24cc4562` Tests +
+  CodeQL runs passed.
 
 ### Changed: archived dormant sources default off (2026-07-06, Codex)
 
@@ -111,12 +113,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   live_sessions-hide proposal was rejected (contradicts the verified
   honest-unavailable stub contract and its regression tests).
 - Execution list with scope guards, keep-lists, sequencing rules, and
-  rejected-candidates record: `docs/followups.md` § "Open — feature-cut
-  execution plan, adjudicated Top 10 (2026-07-05)". Codex implements;
-  process updated same day to owner-approved AUTONOMOUS mode: Codex
-  self-reviews each PR with its own sub-agents (protocol + merge gates +
+  rejected-candidates record: `docs/followups.md` § "Completed — feature-cut
+  execution plan, adjudicated Top 10 (2026-07-05)". Codex completed the plan in
+  PR #103-#112, then closed the non-blocking low residuals in PR #113.
+  Process was updated same day to owner-approved AUTONOMOUS mode: Codex
+  self-reviewed each PR with its own sub-agents (protocol + merge gates +
   stop conditions encoded in the followups section; seeded with the 8
-  confirmed findings from Claude's PR #103 review) and self-merges.
+  confirmed findings from Claude's PR #103 review) and self-merged.
   Evidence spot-checked locally: migration_log
   = 2 e2e-test rows only; cline/iflow/lobsterai = 3/2/1 sessions (dormant
   since Feb-Mar); lint_config = 0 calls in ~995K telemetry rows;
@@ -432,6 +435,9 @@ for follow-up.
   archive cleanup, resolve `codex-provider-audit-remediation`, decide whether to
   reclaim Time Machine snapshot space immediately, and normalize local ignore
   rules.
+- 2026-07-06 documentation sync later closed the archive-cleanup and immediate
+  Time Machine-reclaim items; the preserved branch, local ignore normalization,
+  and perf residuals remain tracked in `docs/followups.md`.
 
 ### Performance: full audit + 8 optimization PRs, all adversarially reviewed (2026-07-03, Claude Code, ultracode workflows)
 

@@ -2,9 +2,16 @@
 
 ## Changelog Memo
 
+### 2026-07-06
+
+- [完成] Feature-cut Top 10 已按 `docs/followups.md` 的自主执行协议完成：PR #103-#112 连续合并，ITEM 0-10 均落地；后续验收确认 keep-list、孤儿清扫、墓碑测试、默认关闭归档来源等关键约束均通过。
+- [修复] 追加清理 LOW 残留并合并 PR #113：App target 移除死 Hummingbird 依赖但保留 EngramRemoteServer 依赖；`SettingsHonestyTests` 增加防回归 guard；`settings_page` / `settings_general` baseline 从 CI run `28745689659` 实拍刷新；`settings_network` 当前已无 tracked baseline 或 active capture。
+- [验证] PR #113 本地验证包括 `xcodegen generate`、目标 `SettingsHonestyTests/testAppTargetDoesNotLinkDeletedHttpStack`、`SCREENSHOTS_DIR=/tmp/engram-settings-compare npm run screenshots:compare`、`git diff --check`；PR CI 全绿，main `24cc4562` 的 Tests run `28793745657` 与 CodeQL run `28793745640` 均 success。
+- [后续] 当前 durable backlog 口径：`docs/TODO.md` 和 `docs/roadmap.md` 无 open 项；`docs/followups.md` 仍保留低优先级 open follow-up（`codex-provider-audit-remediation` 分支、`.git/info/exclude` 规范化、perf residuals 中的 Cursor WAL cache/P3 latent 项）。Time Machine 空间 follow-up 已因当前 `df -h .` 显示 241Gi 可用而关闭为“不需立即手动清理”。
+
 ### 2026-07-05
 
-- [新增] Fable/Claude 用 38-agent opus+sonnet workflow 完成砍功能审计（4 区域清单 → 4 视角提案 → 去重 → 每候选对抗验证 → opus 终审），与 Codex 同日的“隐藏/降级默认入口”轮合并为 Top 10 执行清单，落盘在 `docs/followups.md` § "feature-cut execution plan (2026-07-05)"；Codex 按清单开工，Claude 合并前复审。Codex 的 live_sessions 隐藏提案被验证否决。
+- [新增] Fable/Claude 用 38-agent opus+sonnet workflow 完成砍功能审计（4 区域清单 → 4 视角提案 → 去重 → 每候选对抗验证 → opus 终审），与 Codex 同日的“隐藏/降级默认入口”轮合并为 Top 10 执行清单，现归档在 `docs/followups.md` § "Completed — feature-cut execution plan, adjudicated Top 10 (2026-07-05)"；Codex 的 live_sessions 隐藏提案被验证否决。该执行计划已在 2026-07-06 完成并归档为 closed follow-up。
 - [修复] Fable/Claude 找到菜单栏弹窗“过长 / 低信号”的最终根因：不是首开查询慢，而是 `PopoverView` 的 Live 区域无上限渲染 `liveSessions`，service 又把 `/subagents/workflows/` churn 和 24h `recent` 会话混进来，导致最多 100 张 Live card 把弹窗撑到屏幕高度。
 - [变更] 最终修复组合：`PopoverView` 固定 400x420 最小盒并用 `Spacer` 稳住 footer；Live 区域只显示 active/idle、最多 5 条，溢出用 `popover_liveOverflow`；`EngramServiceReadProvider.considerLiveSessionCandidate` 排除路径组件含 `subagents` 的 Claude Code 子代理 transcript；菜单栏活动显示可用 `showMenuBarActivity` 关闭。
 - [验证] Fable/Claude 在 `CHANGELOG.md` 记录了 `HomePopoverActionsTests`、新增 `EngramServiceIPCTests.testFileSystemProviderExcludesSubagentChurnFromLiveScan`、Debug/Release build 与本地 `/Applications` 部署；本轮 Codex 文档同步另确认当前安装包含 `popover_liveOverflow` marker。用户已确认现在满意。
@@ -17,7 +24,7 @@
 - [清理] Claude 已清掉 13 个 stale `.claude/worktrees`、26 个已合入/远端 gone 的本地分支，并删除 `macos/build`；`git worktree list --porcelain` 只剩主工作树。
 - [排查] `codex-provider-audit-remediation` 分支保留：仍有 `origin/codex-provider-audit-remediation`，且 `git rev-list --left-right --cherry-pick --count main...codex-provider-audit-remediation` 显示右侧 4 个独有提交。
 - [验证] 本轮文档归档后，根目录 Markdown 只剩 `AGENTS.md`、`CHANGELOG.md`、`CLAUDE.md`、`CONTRIBUTING.md`、`README.md`；旧根目录 review/audit 文件名和旧 `audit/...` 引用用 `rg` 已搜不到，`git diff --check` 通过。
-- [后续] 当前剩余 follow-up 已回填到 `docs/followups.md`：提交本轮文档整理、处理保留分支、决定是否手动释放 Time Machine 本地快照、整理本地 `.git/info/exclude` 规则。
+- [后续] 当时剩余 follow-up 已回填到 `docs/followups.md`：提交本轮文档整理、处理保留分支、决定是否手动释放 Time Machine 本地快照、整理本地 `.git/info/exclude` 规则；2026-07-06 已关闭文档提交与 Time Machine 立即清理项。
 
 ### 2026-07-03
 
@@ -52,7 +59,7 @@
 - [文档] `docs/session-formats/` 扩展到 17 个 source adapters 的 EN/ZH 双语参考，VS Code 官方源码确认补齐，EN/ZH heading/fence/code-block parity 通过。
 - [修复] Codex 按 17-source format audit 修复 Gemini CLI current JSONL、VS Code mutation log、Kimi rotation shards、Qwen thought skip、Cline legacy discovery、Copilot quote stripping、Gemini project move 等 Swift/TS drift。
 - [同步] Multi-Mac sync L1 Unison live，L2 client/server catalog 完成并部署验证；远端 offload 相关基础设施继续作为后续能力使用。
-- [Backlog] `docs/TODO.md` 记录 2026-06-21 后无 open TODO；open follow-up 当前仅限本轮 2026-07-04 workspace hygiene。
+- [Backlog] `docs/TODO.md` 记录 2026-06-21 后无 open TODO；当时 open follow-up 主要是 2026-07-04 workspace hygiene，后续状态以 `docs/followups.md` 当前 Open 区为准。
 
 ### 2026-06-20
 

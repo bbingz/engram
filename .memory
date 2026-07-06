@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-06): 92 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-06): 93 dated entries; regenerate after adding sections -->
+- [2026-07-06 - Feature-cut Top 10 completed + low residual cleanup merged (Codex)](#2026-07-06---feature-cut-top-10-completed--low-residual-cleanup-merged-codex)
 - [2026-07-06 - Stale screenshot baselines: check provenance before trusting SSIM failures (Fable/Claude)](#2026-07-06---stale-screenshot-baselines-check-provenance-before-trusting-ssim-failures-fableclaude)
 - [2026-07-05 - Preference: route fan-out subagents to sonnet/opus, not Fable (Fable/Claude)](#2026-07-05---preference-route-fan-out-subagents-to-sonnetopus-not-fable-fableclaude)
 - [2026-07-05 - Menu-bar popover root cause: unbounded Live section and subagent churn (Fable/Claude)](#2026-07-05---menu-bar-popover-root-cause-unbounded-live-section-and-subagent-churn-fableclaude)
@@ -97,6 +98,38 @@
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
 
+## 2026-07-06 - Feature-cut Top 10 completed + low residual cleanup merged (Codex)
+
+- Feature-cut execution from `docs/followups.md` completed: PR #103-#112 merged
+  in order for items 0-10, with self-review/CI gates and item DONE markers.
+  Keep-list outcomes verified after the run: transcript redaction coverage moved
+  to `TranscriptExportServiceTests`, Hummingbird stays on retained remote-server
+  targets, DTO symmetry survived the HTTP Web UI removal, `live_sessions` keeps
+  the honest unavailable MCP contract, Favorites behavior moved to a Sessions
+  `Starred` filter, and `minimax` remains active while only
+  `cline`/`iflow`/`lobsterai` are archived default-off.
+- Low residual cleanup PR #113 merged as `24cc4562` on 2026-07-06. It removed
+  the dead Hummingbird link from the macOS App target, kept remote-server
+  Hummingbird dependencies, added
+  `SettingsHonestyTests.testAppTargetDoesNotLinkDeletedHttpStack`, refreshed
+  `settings_page` and `settings_general` baselines from GitHub Actions run
+  `28745689659` actual captures, and confirmed `settings_network` is no longer a
+  tracked baseline or active capture.
+- Verification evidence for PR #113: local `xcodegen generate`, targeted
+  `xcodebuild ... -only-testing:EngramTests/SettingsHonestyTests/testAppTargetDoesNotLinkDeletedHttpStack`,
+  `SCREENSHOTS_DIR=/tmp/engram-settings-compare npm run screenshots:compare`,
+  and `git diff --check`; PR #113 CI all green; main `24cc4562` Tests run
+  `28793745657` and CodeQL run `28793745640` both succeeded.
+- Current backlog routing after this closeout: `docs/TODO.md` and
+  `docs/roadmap.md` have no open items; `docs/followups.md` remains canonical
+  for low-priority open follow-ups. As of `main@24cc4562`, active follow-ups are
+  the preserved `codex-provider-audit-remediation` branch (`61 4` from
+  `git rev-list --left-right --cherry-pick --count main...codex-provider-audit-remediation`),
+  local `.git/info/exclude` normalization, and perf residuals
+  (Cursor WAL cache signature plus P3 latent issues). The old immediate
+  Time Machine-space follow-up is closed by current `df -h .` evidence
+  (241Gi available).
+
 ## 2026-07-06 - Stale screenshot baselines: check provenance before trusting SSIM failures (Fable/Claude)
 
 - PR #103 (feature-cut ITEM 0) blocked on `settings_dark` SSIM=0.8982 vs the
@@ -111,8 +144,10 @@
 - How to apply: before treating a screenshot-compare failure as a product
   regression, `git log` + view the baseline — if it predates en-localization
   or shows deleted UI, refresh it from the CI artifact instead of patching
-  the UI. `settings_page`/`settings_general`/`settings_network` still pass
-  ~0.958 and are likely the same stale batch (follow-up: refresh together).
+  the UI. Follow-up resolved in PR #113: `settings_page` and
+  `settings_general` were refreshed from the same CI actual-capture source, and
+  `settings_network` is no longer a tracked baseline or active screenshot
+  capture in current main.
 - Related flake: `ui-test-smoke` has job `timeout-minutes: 10`
   (.github/workflows/test.yml:178); a cold-cache build (~6 min) plus tests
   (~4 min) can blow it — the canceled step still shows 0 test failures and
