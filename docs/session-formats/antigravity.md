@@ -11,7 +11,8 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 > - Aggregate CLI records scanned: **8 673** lines across all 143 transcripts
 > - Aggregate cache message lines scanned: **2 303**
 > - Fixtures: `tests/fixtures/antigravity/cache/conv-001.jsonl` (3 lines), `tests/fixtures/antigravity-cli/transcript.jsonl` (4 lines)
-> - Schema: `macos/Shared/EngramCore/Adapters/Cascade/cascade.proto`, gRPC client `CascadeClient.swift`
+> - Reference/dev RPC schema/client: `src/adapters/grpc/cascade-client.ts`; the Swift product reads
+>   existing cache files and CLI transcripts only
 >
 > On conflict, **REAL data wins**; discrepancies are flagged inline. Cross-checked against three
 > dimension reports (storage-lifecycle, record-schema, engram-mapping); their conflicting claims were
@@ -35,21 +36,19 @@ single `AntigravityAdapter` reads two completely different on-disk shapes:
 
 | Branch | Product | On-disk root | Storage tech | Who writes it | Engram reads |
 |---|---|---|---|---|---|
-| **A. Cascade IDE** | Antigravity IDE (VS Code fork on Codeium's "Cascade" engine) | source `~/.gemini/antigravity/conversations/<uuid>.pb`; Engram cache `~/.engram/cache/antigravity/<uuid>.jsonl` | IDE writes the encrypted `.pb`; **Engram's own sync** writes the `.jsonl` cache by talking to the IDE over gRPC | meta line + `{role,content}` message lines from the **cache** (never the `.pb`) |
+| **A. Cascade IDE** | Antigravity IDE (VS Code fork on Codeium's "Cascade" engine) | source `~/.gemini/antigravity/conversations/<uuid>.pb`; Engram cache `~/.engram/cache/antigravity/<uuid>.jsonl` | IDE writes the encrypted `.pb`; retained reference/dev tooling can write the `.jsonl` cache by talking to the IDE over gRPC | meta line + `{role,content}` message lines from the **cache** (never the `.pb`) |
 | **B. Antigravity CLI** | `antigravity-cli` (the agentic "brain") | `~/.gemini/antigravity-cli/brain/<uuid>/.system_generated/logs/transcript.jsonl` | the CLI agent, directly | `type`-tagged append-only JSONL event log, read **directly** |
 
-**Mental model.** Branch A is an *Engram-derived text projection* of an opaque encrypted IDE store
-(Engram fetches conversations over gRPC and writes a lossy `{role,content}` JSONL cache; the `.pb` is
-never decoded). Branch B is a *native rich agentic event log* (steps, tools, reasoning, timestamps)
-that Engram reads as-is but then heavily filters.
+**Mental model.** Branch A is an *Engram-owned text projection* of an opaque encrypted IDE store.
+Retained reference/dev tooling can fetch conversations over gRPC and write a lossy `{role,content}`
+JSONL cache; the Swift product no longer contains that live-sync path and never decodes the `.pb`.
+Branch B is a *native rich agentic event log* (steps, tools, reasoning, timestamps) that Engram reads
+as-is but then heavily filters.
 
-**The single most important lineage fact:** in the shipped Swift product, `AntigravityAdapter` is
-constructed with **`enableLiveSync: false`** at **all three** product construction sites
-(`SessionAdapterFactory.swift:26`, `:71`, and `MessageParser.swift:129`). So the product
-**never runs gRPC sync** and **never decodes the `.pb` files**. Branch A surfaces *only* cache JSONL
-written earlier (by a legacy TS run); Branch B is read live (it is already JSONL on disk). On a fresh
-Swift-only machine with no prior TS sync, Branch A yields **nothing** and only CLI brain transcripts
-appear.
+**The single most important lineage fact:** the shipped Swift product is cache/transcript-only.
+Branch A surfaces *only* cache JSONL written earlier by reference/dev tooling; Branch B is read live
+(it is already JSONL on disk). On a fresh Swift-only machine with no prior cache-producing run,
+Branch A yields **nothing** and only CLI brain transcripts appear.
 
 ```
                           ANTIGRAVITY  (two products, one adapter)
@@ -61,8 +60,8 @@ appear.
   │            │  IDE writes                      │   │       ├─ implementation_plan.md (artifact) │
   │            ▼                                  │   │       ├─ review_report.md       (artifact) │
   │  [ local gRPC language server ]              │   │       ├─ *.md.metadata.json     (sidecar)  │
-  │            │  Engram sync (DISABLED in        │   │       └─ .system_generated/                │
-  │            │  product: enableLiveSync=false)  │   │            ├─ logs/transcript.jsonl  ◄──────┼── Engram reads (direct)
+  │            │  reference/dev cache sync        │   │       └─ .system_generated/                │
+  │            │  (absent from Swift product)     │   │            ├─ logs/transcript.jsonl  ◄──────┼── Engram reads (direct)
   │            ▼                                  │   │            │   transcript_full.jsonl (IGN.)│
   │  ~/.engram/cache/antigravity/<uuid>.jsonl ◄──┼── │            ├─ messages/<uuid>.json (IGNORED)│
   │     line1 = meta ; line2..N = {role,content} │   │            └─ tasks/task-<n>.log   (IGNORED)│
@@ -140,27 +139,24 @@ appear.
 
 ## 3. File lifecycle & generation
 
-### Branch A — IDE cache: derived, whole-file rewrite-per-conversation (live-sync DISABLED in product)
+### Branch A — IDE cache: derived, whole-file rewrite-per-conversation (no Swift product live-sync)
 
 - **Source of truth** = the encrypted `<uuid>.pb`, owned by the IDE; it grows/rewrites as the user chats.
-- **Engram `sync()`** (`AntigravityAdapter.swift:130-211`) is *intended* to: discover the running language
-  server → `listConversations()` → for each, **whole-file rewrite** the cache JSONL (`CascadeCacheSupport.writeCache`
-  writes meta + all messages atomically, `WindsurfAdapter.swift:62-80` — it is **not** append).
-  - **Freshness gate** (`isFresh`, `:213-231`): skip when `cache.mtime >= pb.mtime` **AND** `cache.size > 200`
+- **Retained reference/dev sync** (`src/adapters/antigravity.ts`) can discover the running language
+  server → `listConversations()` → for each conversation, **whole-file rewrite** the cache JSONL. It is
+  not append.
+  - **Freshness gate:** skip when `cache.mtime >= pb.mtime` **AND** `cache.size > 200`
     (size ≤ 200 = "meta-only / no content").
-  - **`.pb`-scan backfill** (`syncFromPbFiles`, `:179-211`): the gRPC list returns only ~10 recent
-    conversations, so a second pass scans `conversations/*.pb` for ids the API didn't return and writes
-    cache entries with file-mtime-derived `createdAt`/`updatedAt` and `title:""`.
-- ⚠ **In the shipped product, sync is OFF** (`AntigravityAdapter(enableLiveSync: false)` at all three
-  product construction sites — `SessionAdapterFactory.swift:26,71` **and** `MessageParser.swift:129`;
-  any edit to the live-sync flag must touch all three). `sync()` early-returns (`:131`), so Engram reads only the
-  **pre-existing** `~/.engram/cache/antigravity/*.jsonl`. New IDE conversations after the last legacy
-  sync are **not** picked up. The TS reference adapter (`antigravity.ts`) has no such gate and *would*
-  sync live.
-- **Discovery (when enabled):** process-based first (`CascadeGrpcClient.fromProcess()` / Swift
-  `CascadeDiscovery`) — find `language_server` process, extract `--csrf_token`, `lsof` the LISTEN port;
-  fallback to a `<name>.json` in `daemon/` with `httpPort`+`csrfToken`. No daemon `.json` exists here,
-  confirming process-based discovery is the live mechanism.
+  - **`.pb`-scan backfill:** the gRPC list returns only ~10 recent conversations, so the reference/dev
+    path scans `conversations/*.pb` for ids the API did not return and writes cache entries with
+    file-mtime-derived `createdAt`/`updatedAt` and `title:""`.
+- **In the shipped Swift product, live sync is absent.** Engram reads only the **pre-existing**
+  `~/.engram/cache/antigravity/*.jsonl`. New IDE conversations after the last reference/dev sync are
+  **not** picked up by the product.
+- **Discovery (reference/dev sync only):** process-based first (`CascadeGrpcClient.fromProcess()`) —
+  find `language_server` process, extract `--csrf_token`, `lsof` the LISTEN port; fallback to a
+  `<name>.json` in `daemon/` with `httpPort`+`csrfToken`. No daemon `.json` exists here, confirming
+  process-based discovery is the live mechanism.
 - **Resume / rollover:** none at the cache layer — flat 1-file-per-conversation rewrite. Conversation
   continuation just grows the same `.pb`/`.jsonl`. No archive/rotation; stale cache entries persist
   until overwritten.
@@ -271,11 +267,10 @@ adapter assigns:
 | `content` | string | flattened message text | **required** | `"<text>"` |
 | `timestamp` | string | per-message time | **NEVER present in live cache** — fixture only | — |
 
-**Verified:** all 2 303 live message lines have **exactly** `{content, role}`. The Swift writer
-(`CascadeCacheSupport.writeCache`, `WindsurfAdapter.swift:73-77`) emits only `role`+`content` with sorted
-keys, so cache timestamps are structurally impossible. The reader (`normalizedMessages`, `:19-35`) and TS
-`streamMessages` (`:368-396`) *tolerate* an optional `timestamp`, but the writer never produces one →
-Branch-A per-message timestamps are always `nil`.
+**Verified:** all 2 303 live message lines have **exactly** `{content, role}`. Current Swift product code
+reads these cache records but no longer writes Branch-A cache files. Swift `normalizedMessages` and TS
+`streamMessages` *tolerate* an optional `timestamp`, so legacy/reference cache files may carry it, but the
+sampled live cache set has no Branch-A per-message timestamps.
 
 ```json
 {"id":"<uuid>","title":"","createdAt":"2026-02-19T15:47:16.862Z","updatedAt":"2026-02-19T15:47:16.862Z","pbSizeBytes":1113514}
@@ -449,9 +444,10 @@ high-entropy bytes with no protobuf field tags:
 > `state.vscdb` (see §2.1)
 > ([decryptor](https://github.com/arashz/antigravity_decryptor)).
 
-Engram never decodes them; it only reads the **byte size** (→ `pbSizeBytes`) and otherwise talks to the
-running language server over gRPC. The actual `cascade.proto`
-(`macos/Shared/EngramCore/Adapters/Cascade/cascade.proto`) is **minimal** — it declares only:
+The Swift product never decodes them; for legacy cache records it may read the **byte size**
+(→ `pbSizeBytes` fallback), while the retained reference/dev sync path talks to the running language
+server over gRPC. The reference schema embedded in `src/adapters/grpc/cascade-client.ts` is
+**minimal** — it declares only:
 
 ```protobuf
 service LanguageServerService {
@@ -468,10 +464,10 @@ message GetAllCascadeTrajectoriesResponse { map<string, CascadeTrajectorySummary
 
 > **Correction vs. dimension reports:** DIM 1 and DIM 2 attributed `GetCascadeTrajectory`,
 > `Trajectory.steps[]`, `userInput`/`plannerResponse`/`notifyUser` step types, `workspaces[]`/`cwd`, and
-> `pbSizeBytes` to `cascade.proto`. The **proto does not contain those**. They live in the Swift gRPC
-> client `CascadeClient.swift`, which issues `GetCascadeTrajectory` over HTTP/JSON (not declared in the
-> trimmed proto) and maps the JSON response:
-> - `getTrajectoryMessages` (`CascadeClient.swift:55-90`) reads `trajectory.steps[]`, matching step
+> `pbSizeBytes` to `cascade.proto`. The **proto does not contain those**. They are client-side
+> implementation details in the retained TS reference client, which issues `GetCascadeTrajectory` over
+> HTTP/JSON (not declared in the trimmed proto) and maps the JSON response:
+> - `getTrajectoryMessages` reads `trajectory.steps[]`, matching step
 >   `type` via `.contains("USER_INPUT")` → user, `.contains("PLANNER_RESPONSE")` → assistant,
 >   `.contains("NOTIFY_USER")` → assistant. **Only those three** step types become messages; all
 >   tool/file steps inside the trajectory are dropped at the gRPC boundary.
@@ -530,10 +526,9 @@ message GetAllCascadeTrajectoriesResponse { map<string, CascadeTrajectorySummary
 | `agentRole`/`originator`/`origin`/`parentSessionId`/`suggestedParentId`/`tier`/`qualityScore`/`indexedAt`/`summaryMessageCount` | both | `:89-97,327-335` all `nil` | (absent) | left to indexer / parent-detection / tiering |
 
 **Discovery & routing helpers:**
-- `detect()` (`:36-40`; TS `:51-68`): true if any of `daemonDir`, `cacheDir`, `cliBrainDir` exists.
-- `listSessionLocators()` (`:42-45`): `sync()` then sorted union of cache `.jsonl` locators
-  (`CascadeCacheSupport.jsonlLocators`, `WindsurfAdapter.swift:6-11`) + CLI transcript locators
-  (`cliTranscriptLocators`, `:247-260`).
+- `detect()`: current Swift product returns true if the legacy cache dir or CLI brain dir exists.
+- `listSessionLocators()`: sorted union of cache `.jsonl` locators (`CascadeCacheSupport.jsonlLocators`) +
+  CLI transcript locators (`cliTranscriptLocators`), with no live sync step.
 - `isCLITranscript()` (`:262-270`; TS `:424-433`): path under `brain/` root, OR matches
   `…/.gemini/antigravity-cli/brain/…/.system_generated/logs/transcript.jsonl`.
 
@@ -545,20 +540,18 @@ message GetAllCascadeTrajectoriesResponse { map<string, CascadeTrajectorySummary
 
 **Branch A ↔ Windsurf — the Cascade/Codeium twins (strongest lineage).** Both Antigravity Branch A and
 **Windsurf** are built on Codeium's **Cascade** engine and share:
-- The **same gRPC service** `exa.language_server_pb.LanguageServerService` (`cascade.proto`,
-  `CascadeClient.swift`), same RPCs `GetAllCascadeTrajectories` / `ConvertTrajectoryToMarkdown` (+ the
+- The **same upstream gRPC service** `exa.language_server_pb.LanguageServerService` in retained
+  reference/dev tooling, same RPCs `GetAllCascadeTrajectories` / `ConvertTrajectoryToMarkdown` (+ the
   client's `GetCascadeTrajectory`).
-- The **identical cache JSONL format** (meta line + `{role,content}` lines), produced/read by the
-  **shared** `CascadeCacheSupport` enum (`WindsurfAdapter.swift:3-95`, used by both `AntigravityAdapter`
-  and `WindsurfAdapter`) and the shared markdown parser (`## User` / `## Cascade` headers,
-  `parseMarkdownToMessages`).
+- The **identical cache JSONL format** (meta line + `{role,content}` lines), read by the shared Swift
+  `CascadeCacheSupport` cache helpers (`WindsurfAdapter.swift`) used by both `AntigravityAdapter` and
+  `WindsurfAdapter`.
 - The same `.pb`-in-`conversations/` + `.jsonl`-in-`~/.engram/cache/` mirror pattern and the "Cascade"
   assistant label.
 - **Differences:** Antigravity lives under `~/.gemini/antigravity/`, Windsurf under `~/.codeium/windsurf/`.
-  Antigravity adds the `getTrajectoryMessages`/`GetCascadeTrajectory` primary path, the `pbSizeBytes`
-  field, and the `.pb`-scan backfill (`syncFromPbFiles`); Windsurf is markdown-only. Both are
-  `enableLiveSync:false` and cache-only in the product. **Any fix to the cache format / Cascade RPC must
-  be mirrored across both adapters.**
+  Antigravity cache metadata carries `pbSizeBytes`; Windsurf cache does not. Both are cache-only in the
+  Swift product. Cache-format fixes must be mirrored across both Swift parsers; reference/dev RPC fixes
+  live in the retained TS tooling.
 
 **Branch B ↔ Gemini-CLI family (home-dir lineage only).** Branch B lives under `~/.gemini/antigravity-cli/`,
 sharing the `~/.gemini/` home with Gemini CLI (and its forks Qwen Code, iFlow, Kimi, MiniMax). But the
@@ -581,9 +574,9 @@ back to `.antigravity` (`EngramServiceReadProvider.swift:1017`; also `Transcript
 
 ### 15.2 Gotchas, drift, edge cases
 
-1. **Product = cache-only (Branch A) / live (Branch B).** With `enableLiveSync:false`, Branch A surfaces
-   only cache files written earlier by the non-product TS path. A clean Swift-only install with no prior
-   TS run → **no IDE Cascade sessions**, only CLI brain transcripts; the `.pb` files sit untouched.
+1. **Product = cache-only (Branch A) / live (Branch B).** Branch A surfaces only cache files written
+   earlier by the non-product TS path. A clean Swift-only install with no prior TS run → **no IDE
+   Cascade sessions**, only CLI brain transcripts; the `.pb` files sit untouched.
 2. **Swift↔TS Branch-B divergence (live, uncovered by CI).** §7 — TS counts every content-bearing
    non-USER/non-PLANNER record as a tool message; Swift maps only `VIEW_FILE` (plus 3 dead types). Tool
    counts and streamed content differ for the same file; the parity fixture contains none of the
@@ -603,13 +596,13 @@ back to `.antigravity` (`EngramServiceReadProvider.swift:1017`; also `Transcript
    conversation, not the stored text. Cache files ≤ 200 bytes are treated as "no content" by the freshness
    gate (`:188,220-223`; TS `:95,174`).
 7. **gRPC list returns only ~10 recent** (TS comment `:140,148`); `syncFromPbFiles` backfills the rest —
-   but only in the live-sync (non-product) path.
-8. **`getTrajectoryMessages` flattens to user/assistant text only** (`CascadeClient.swift:55-90`): only
+   but only in the reference/dev (non-product) path.
+8. **`getTrajectoryMessages` flattens to user/assistant text only** (retained TS reference client): only
    `USER_INPUT`/`PLANNER_RESPONSE`/`NOTIFY_USER` steps → messages; all tool/file steps in the trajectory
    are dropped at the gRPC boundary. So even live sync loses Branch-A tool calls.
 9. **Three-tier content fallback (Branch A sync):** trajectory messages → markdown (`## User`/`## Cascade`)
-   → conversation summary as a single assistant message (Swift `:153-161`; TS `:103-112`). A cache file
-   may therefore contain only one synthetic assistant line.
+   → conversation summary as a single assistant message (TS `:103-112`). A cache file may therefore
+   contain only one synthetic assistant line.
 10. **Zero token/cost contribution** (§9) — Antigravity sessions show as zero-cost in any cost dashboard.
 11. **Richer per-message JSON ignored.** `.system_generated/messages/*.json` (base keys
     `{id, sender, recipient, content, priority, renderDetails, timestamp}` plus optional `hideFromUser`
@@ -633,8 +626,8 @@ back to `.antigravity` (`EngramServiceReadProvider.swift:1017`; also `Transcript
   [DB recovery tool](https://github.com/ag-donald/Antigravity-Database-Manager)).
 - **Full step-level field semantics** (model, tokens, tool I/O inside the binary trajectory) — **Confirmed
   partial (community):** the gRPC trajectory surface is real — the live RPC is
-  `exa.language_server_pb.LanguageServerService/ConvertTrajectoryToMarkdown` (matches `cascade.proto` and
-  the `CascadeClient` claims). The decrypted `.pb` is protobuf, but no public source publishes a complete
+  `exa.language_server_pb.LanguageServerService/ConvertTrajectoryToMarkdown` (matching the retained
+  reference/dev RPC names). The decrypted `.pb` is protobuf, but no public source publishes a complete
   field-level schema with model/token semantics; reverse-engineers extracted only message
   content/length/metadata via wire-walking. Inner per-step semantics remain largely un-enumerated
   publicly, consistent with "cannot be enumerated from this repo alone"
@@ -649,11 +642,11 @@ back to `.antigravity` (`EngramServiceReadProvider.swift:1017`; also `Transcript
 - **Intended Swift↔TS Branch-B behavior** — should Swift adopt TS's generic tool fallback, or is dropping
   correct? Ambiguous; not exercised by the parity fixture. **(Engram-internal design — not
   web-verifiable.)**
-- **Fixture `timestamp`** on cache message lines (`conv-001.jsonl`) — no live cache file has it and
-  `writeCache` cannot produce it; whether the fixture is stale/aspirational or reflects an older cache
-  format is unconfirmed. **(Engram-internal design — not web-verifiable: this is an Engram-owned cache file
-  produced by Engram's own `CascadeCacheSupport` writer, not by Antigravity, so no official Antigravity
-  source applies.)**
+- **Fixture `timestamp`** on cache message lines (`conv-001.jsonl`) — no live cache file has it and the
+  current Swift product no longer writes Branch-A cache files; whether the fixture is stale/aspirational,
+  reference-tool output, or an older cache format is unconfirmed. **(Engram-internal design — not
+  web-verifiable: this is an Engram-owned cache file, not an Antigravity-owned source file, so no official
+  Antigravity source applies.)**
 - **`transcript_full.jsonl` vs `transcript.jsonl`** — **Confirmed (official):** same record schema; the
   precise superset difference is **large-output truncation**. `transcript.jsonl` is a token-efficient log
   that *truncates* large text / tool outputs to save space, while `transcript_full.jsonl` is the full,
@@ -693,11 +686,11 @@ back to `.antigravity` (`EngramServiceReadProvider.swift:1017`; also `Transcript
   variants (see §13 update)
   ([unofficial CLI](https://github.com/michaelw9999/antigravity-cli),
   [hands-on codelab](https://codelabs.developers.google.com/antigravity-cli-hands-on)).
-- **`cascade.proto` / gRPC RPC names** (`GetAllCascadeTrajectories`, `ConvertTrajectoryToMarkdown`) —
+- **gRPC RPC names** (`GetAllCascadeTrajectories`, `ConvertTrajectoryToMarkdown`) —
   **Confirmed (community):** independent reverse-engineering identified the live endpoint
   `exa.language_server_pb.LanguageServerService/ConvertTrajectoryToMarkdown` (a gRPC-over-HTTP service
-  returning markdown of a coding session), exactly matching the service/RPC names in §12's `cascade.proto`
-  and the Windsurf/Cascade lineage claim in §15.1
+  returning markdown of a coding session), matching the service/RPC names documented in §12 and the
+  Windsurf/Cascade lineage claim in §15.1
   ([reverse-engineering writeup](https://ericxliu.me/posts/reverse-engineering-antigravity-ide/)).
 
 ---

@@ -412,11 +412,9 @@ final class AdapterParityTests: XCTestCase {
             .write(to: locator)
 
         let adapter = AntigravityAdapter(
-            daemonDir: root.appendingPathComponent("missing-daemon").path,
             cacheDir: root.appendingPathComponent("missing-cache").path,
             conversationsDir: root.appendingPathComponent("missing-conversations").path,
-            cliBrainDir: root.appendingPathComponent("brain").path,
-            enableLiveSync: false
+            cliBrainDir: root.appendingPathComponent("brain").path
         )
 
         let locators = try await adapter.listSessionLocators().map(standardizedPath)
@@ -455,11 +453,9 @@ final class AdapterParityTests: XCTestCase {
         """.write(to: locator, atomically: true, encoding: .utf8)
 
         let adapter = AntigravityAdapter(
-            daemonDir: root.appendingPathComponent("missing-daemon").path,
             cacheDir: root.appendingPathComponent("missing-cache").path,
             conversationsDir: root.appendingPathComponent("missing-conversations").path,
-            cliBrainDir: root.appendingPathComponent("brain").path,
-            enableLiveSync: false
+            cliBrainDir: root.appendingPathComponent("brain").path
         )
 
         var messages: [NormalizedMessage] = []
@@ -485,11 +481,9 @@ final class AdapterParityTests: XCTestCase {
         """.write(to: locator, atomically: true, encoding: .utf8)
 
         let adapter = AntigravityAdapter(
-            daemonDir: root.appendingPathComponent("missing-daemon").path,
             cacheDir: root.appendingPathComponent("missing-cache").path,
             conversationsDir: root.appendingPathComponent("missing-conversations").path,
-            cliBrainDir: root.appendingPathComponent("different-brain-root").path,
-            enableLiveSync: false
+            cliBrainDir: root.appendingPathComponent("different-brain-root").path
         )
         guard case .success(let info) = try await adapter.parseSessionInfo(locator: locator.path) else {
             return XCTFail("external antigravity cli fixture did not parse")
@@ -768,8 +762,7 @@ final class AdapterParityTests: XCTestCase {
             registry: AdapterRegistry(adapters: [
                 AntigravityAdapter(
                     cacheDir: testFixtureRoot.appendingPathComponent("antigravity/input/cache").path,
-                    conversationsDir: testFixtureRoot.appendingPathComponent("antigravity/input/conversations").path,
-                    enableLiveSync: false
+                    conversationsDir: testFixtureRoot.appendingPathComponent("antigravity/input/conversations").path
                 ),
                 CodexAdapter(sessionsRoot: testFixtureRoot.appendingPathComponent("codex/input").path),
                 ClaudeCodeAdapter(projectsRoot: testFixtureRoot.appendingPathComponent("claude-code/input").path),
@@ -792,8 +785,7 @@ final class AdapterParityTests: XCTestCase {
                 VsCodeAdapter(workspaceStorageDir: testFixtureRoot.appendingPathComponent("vscode/input").path),
                 WindsurfAdapter(
                     cacheDir: testFixtureRoot.appendingPathComponent("windsurf/input/cache").path,
-                    conversationsDir: testFixtureRoot.appendingPathComponent("windsurf/input/cascade").path,
-                    enableLiveSync: false
+                    limits: .default
                 )
             ]),
             enabledSources: enabledSources

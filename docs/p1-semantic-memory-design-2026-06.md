@@ -47,9 +47,9 @@ completed the remaining live P1 runtime surface:
 - Insights schema (`EngramMigrations.swift:350`): `insights` (+`insights_fts`),
   `memory_insights` (vector), columns incl. `importance INTEGER DEFAULT 5`,
   `has_embedding`, `source_session_id`, `wing`, `room`, `created_at`.
-- `SQLiteVecSupport.probe()` (`SQLiteVecSupport.swift:30`): "not implemented yet";
-  `probe(db)` already checks `vec_version()`. `VectorRebuildPolicy.swift` exists
-  (rebuild-on-model-change scaffolding).
+- Swift product sqlite-vec probe / rebuild policy scaffolding has been removed;
+  future sqlite-vec work needs a fresh runtime implementation with callers and
+  tests.
 - MCP capabilities advertise **tools only** (`MCPStdioServer.swift:121-123`);
   `MCPToolDefinition` (`MCPToolRegistry.swift:3`) has name/description/inputSchema
   only. `ToolCategory{readOnly,mutating,operational,longRunningRead}`
@@ -84,8 +84,9 @@ BLOBs. No sqlite-vec target, C amalgamation, `sqlite3_auto_extension`, dylib, or
 required for the shipped P1 semantic-memory slice.
 
 ### F3 — One idempotent migration (`EngramMigrations.swift`, next version)
-- `embedding_meta(provider, model, dimension, updated_at)` — drives
-  `VectorRebuildPolicy` (wipe+rebuild vec tables when model/dim changes).
+- `embedding_meta(provider, model, dimension, updated_at)` — drives a future
+  vector rebuild implementation (wipe+rebuild vec tables when model/dim
+  changes).
 - `session_chunks(id, session_id, chunk_index, text, token_estimate, created_at)`
   `+ session_chunks_fts` `+ vec_session_chunks` (vec0, `embedding float[dim]`).
 - `vec_insights` (vec0) paired with existing `memory_insights`.

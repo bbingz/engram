@@ -69,7 +69,7 @@ final class SourceCatalogTests: XCTestCase {
         guard case let .catalogOnly(entry)? = rows.first(where: { $0.id == "windsurf" }) else {
             return XCTFail("windsurf should be catalog-only when no live row exists")
         }
-        XCTAssertEqual(entry.defaultPath, "~/.codeium/windsurf/daemon")
+        XCTAssertEqual(entry.defaultPath, "~/.engram/cache/windsurf")
         XCTAssertTrue(entry.cacheOnly)
     }
 

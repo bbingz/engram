@@ -1,11 +1,10 @@
 import Foundation
 
-/// Canonical set of source ids whose adapters are constructed with
-/// `enableLiveSync: false` in `SessionAdapterFactory.defaultAdapters()`
-/// (Windsurf is cache-only; Antigravity reads brain transcripts / legacy cache
-/// but does not run live gRPC sync). These surface a "Cache only" badge in the
-/// app so the intentional live-sync-off state is honest rather than implied as
-/// a broken/active sync.
+/// Canonical set of source ids whose Swift adapters are cache/transcript-only.
+/// Windsurf reads existing Cascade JSONL cache files; Antigravity reads those
+/// legacy cache files plus CLI brain transcripts. These surface a "Cache only"
+/// badge in the app so the intentional no-live-sync state is honest rather than
+/// implied as a broken/active sync.
 ///
 /// The ids are the `SourceName` raw values `"windsurf"` / `"antigravity"`.
 /// `"antigravity-legacy"` is intentionally excluded: it is never a real

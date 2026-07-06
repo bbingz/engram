@@ -26,8 +26,8 @@ public enum SessionAdapterFactory {
             ClineAdapter(),
             CursorAdapter(),
             VsCodeAdapter(),
-            WindsurfAdapter(enableLiveSync: false),
-            AntigravityAdapter(enableLiveSync: false),
+            WindsurfAdapter(),
+            AntigravityAdapter(),
             CopilotAdapter()
         ]
     }
@@ -71,8 +71,8 @@ public enum SessionAdapterFactory {
             ClineAdapter(),
             CursorAdapter(),
             VsCodeAdapter(),
-            WindsurfAdapter(enableLiveSync: false),
-            AntigravityAdapter(enableLiveSync: false),
+            WindsurfAdapter(),
+            AntigravityAdapter(),
             CopilotAdapter()
         ]
         return recentCodexAdapters(now: now, days: days) +

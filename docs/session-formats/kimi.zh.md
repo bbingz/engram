@@ -583,8 +583,7 @@ base_url = "https://api.kimi.com/coding/v1"
 Gemini-CLI ↔ Qwen ↔ iFlow（chat-JSON 血统），也不是
 Cursor ↔ VS Code ↔ Copilot ↔ Cline（`.vscdb`/leveldb）。可交叉参考那些
 文档作对比，但没有任何共享。Kimi 是一个纯 JSONL 适配器（无 gRPC），
-所以它不在 `enableLiveSync:false` 仅缓存集合
-（Windsurf/Antigravity）中。**Confirmed（官方）：** 三件套和带
+所以它不在 Windsurf/Antigravity 的 cache-only 集合中。**Confirmed（官方）：** 三件套和带
 `protocol_version` 的 wire 信封是定义在 MoonshotAI/kimi-cli 自家源码
 （`wire/protocol.py`、`metadata.py`、`soul/context.py`）中的 Kimi 特有构造；
 没有任何 schema 与 Gemini-CLI 或 OpenAI/Codex 共享。

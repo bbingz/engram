@@ -130,7 +130,7 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         }
     }
 
-    func testAppSearchSurfacesRequestKeywordModeOnly() throws {
+    func testAppSearchSurfacesDoNotHardCodeSemanticModes() throws {
         let files = [
             "macos/Engram/Views/Pages/SearchPageView.swift",
             "macos/Engram/Views/CommandPaletteView.swift",
@@ -140,11 +140,11 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
             let text = try source(relativePath)
             XCTAssertFalse(
                 text.contains("mode: \"hybrid\""),
-                "\(relativePath) must not request hybrid search while the Swift service search path is keyword-only"
+                "\(relativePath) must not hard-code hybrid search without an availability-aware UI selector"
             )
             XCTAssertFalse(
                 text.contains("mode: \"semantic\""),
-                "\(relativePath) must not request semantic search while the Swift service search path is keyword-only"
+                "\(relativePath) must not hard-code semantic search without an availability-aware UI selector"
             )
         }
     }
@@ -591,6 +591,56 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
+    func testVerifiedDeadScaffoldingBundleIsRemovedButRetainedPathsRemain() throws {
+        for relativePath in [
+            "macos/EngramCoreWrite/Database/SQLiteVecSupport.swift",
+            "macos/EngramCoreWrite/Database/VectorRebuildPolicy.swift",
+            "macos/EngramCoreTests/Database/VectorRebuildPolicyTests.swift",
+            "macos/Shared/EngramCore/Adapters/Cascade/CascadeClient.swift",
+            "macos/Shared/EngramCore/Adapters/Cascade/CascadeDiscovery.swift",
+            "macos/Shared/EngramCore/Adapters/Cascade/Generated/README.md",
+            "macos/Shared/EngramCore/Adapters/Cascade/cascade.proto",
+            "macos/EngramTests/CascadeClientTests.swift",
+        ] {
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: repoRoot.appendingPathComponent(relativePath).path),
+                "\(relativePath) belongs to the removed sqlite-vec/Cascade live-sync scaffolding bundle"
+            )
+        }
+
+        for relativePath in [
+            "macos/Engram/Core/MessageParser.swift",
+            "macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift",
+            "macos/Shared/EngramCore/Adapters/Sources/WindsurfAdapter.swift",
+            "macos/Shared/EngramCore/Adapters/Sources/AntigravityAdapter.swift",
+            "macos/Shared/Service/LiveSyncDisabledSources.swift",
+        ] {
+            let text = try source(relativePath)
+            for forbidden in [
+                "enableLiveSync",
+                "CascadeClient",
+                "CascadeDiscovery",
+                "syncConversation",
+                "syncFromPbFiles",
+                "GetAllCascadeTrajectories",
+                "ConvertTrajectoryToMarkdown",
+                "vec_version()",
+                "SQLiteVecSupport",
+                "VectorRebuildPolicy",
+            ] {
+                XCTAssertFalse(text.contains(forbidden), "\(relativePath) should not retain \(forbidden)")
+            }
+        }
+
+        let windsurf = try source("macos/Shared/EngramCore/Adapters/Sources/WindsurfAdapter.swift")
+        XCTAssertTrue(windsurf.contains("CascadeCacheSupport.readCache"), "Windsurf cache reading must remain")
+        XCTAssertTrue(windsurf.contains("CascadeCacheSupport.jsonlLocators"), "Windsurf cache locators must remain")
+
+        let antigravity = try source("macos/Shared/EngramCore/Adapters/Sources/AntigravityAdapter.swift")
+        XCTAssertTrue(antigravity.contains("CascadeCacheSupport.readCache"), "Antigravity legacy cache reading must remain")
+        XCTAssertTrue(antigravity.contains("cliTranscriptLocators()"), "Antigravity CLI transcript parsing must remain")
+    }
+
     func testDaemonClientMapMarksSyncUnsupportedInSwiftService() throws {
         let daemonMap = try source("docs/swift-single-stack/daemon-client-map.md")
         XCTAssertTrue(
@@ -931,8 +981,8 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
             "Antigravity and Windsurf can still ingest existing caches, and Antigravity also reads CLI brain transcripts."
         )
         XCTAssertTrue(
-            claude.contains("live gRPC sync is disabled"),
-            "Docs should name that only the live sync path is disabled."
+            claude.contains("cache/transcript-only in Swift"),
+            "Docs should name that Swift no longer ships the live sync path."
         )
         XCTAssertTrue(
             claude.contains("cache-only") && claude.contains("Antigravity CLI brain"),

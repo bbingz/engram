@@ -429,8 +429,8 @@ enum EngramMigrations {
 
             -- Local semantic memory (brute-force cosine KNN; embeddings stored as
             -- little-endian Float32 BLOBs). Opt-in: populated only when an online
-            -- embedding provider is configured. embedding_meta drives a wipe +
-            -- re-embed when the model/dimension changes.
+            -- embedding provider is configured. embedding_meta records the current
+            -- provider/model/dimension; backfills only add missing compatible rows.
             CREATE TABLE IF NOT EXISTS insight_embeddings (
               insight_id TEXT PRIMARY KEY REFERENCES insights(id) ON DELETE CASCADE,
               embedding BLOB NOT NULL,

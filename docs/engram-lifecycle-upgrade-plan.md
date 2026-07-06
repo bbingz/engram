@@ -7,7 +7,7 @@
 > **✅ 已坐实（实测/读码确认）**
 > - "AI 能搜、人不能"是真的：`EngramMCP/Core/MCPDatabase.swift:627` 确有 `quality_score AS qualityScore`，`:696/:702/…` 多处 `ORDER BY quality_score DESC`，`:977` 一字不差是 `snippet(sessions_fts, 1, '<mark>', '</mark>', '...', 32) AS snippet`。AI/MCP 路径已用价值分排序 + 匹配高亮。
 > - Command Palette 是死 UI：`MainWindowView.swift:7` 仅声明 `showPalette=false`，全文件只有两处 `=false`（关闭），无任何 `=true`、无快捷键、无按钮。
-> - sqlite-vec 未实现：`EngramCoreWrite/Database/SQLiteVecSupport.swift:30` "not implemented yet"。**但注意 DB 里 `vec_sessions`/`vec_chunks`/`vec_insights` 表已存在**（schema 建了空表，只是扩展未加载）。
+> - sqlite-vec 未实现：Swift 产品侧已删除无调用的 sqlite-vec probe / rebuild policy scaffold。**但注意 DB 里 `vec_sessions`/`vec_chunks`/`vec_insights` 表已存在**（schema 建了空表，只是扩展未加载）。
 > - `IndexJobKind` 仅 `.fts`/`.embedding`（`IndexingEventTypes.swift:114-116`），无 summary job。（但 `EngramServiceModels.swift:138` 另有一个无关的 `case summary`。）
 >
 > **❌ 计划的硬伤（实施前必修）**
@@ -63,7 +63,7 @@
 - **唯一全局搜索面板不可达**：`MainWindowView.swift` 声明 `@State showPalette = false` 并接了 sheet，但**全代码库无任何 `showPalette = true`**（无快捷键、无按钮、无 `CommandMenu`）。`CommandPaletteView.swift`（支持 `>` 命令、方向键导航）无法被用户打开。注意它当前发 `mode:"hybrid"`（`CommandPaletteView.swift:190`），而服务把 hybrid 降级为 keyword 并返回 warning，所以激活后语义上仍是关键词结果。
 - **片段无高亮、给人的路径返回整段正文**：**关键修正**——`MCPDatabase.swift:977` 已用 `snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32)`，即**给 AI 的 MCP 路径已有匹配处高亮片段**；而给人的 Service 读路径 `SELECT s.*, f.content AS snippet`（`EngramServiceReadProvider.swift:448,479`；`Database.swift:423`）**返回整段 FTS content 全文**——截断（`.prefix`）发生在 DTO/IPC 层而非该 SQL 层（已确认 `EngramServiceReadProvider.swift:756` 注释 "Upper bound on the search snippet length returned over IPC"；草案"截前 600 字符"是臆测，落地前需确认截断到底在哪一层，否则 diff 会打偏）。`SearchPageView.cleanSnippet` 用正则 `<[^>]+>` 剥标签——若服务端改用 `snippet()`，**现有 cleanSnippet 会把 `<mark>` 一起剥掉**，必须同 PR 改 UI（强耦合）。
 - **排序弱到几乎没有**：拉丁路径 `ORDER BY rank`（`EngramServiceReadProvider.swift:489`；`Database.swift:439`），因 `SELECT s.* … GROUP BY s.id`，rank 是被聚合掉的粗排，无字段权重/无时间/无 quality 加权；CJK 路径 `ORDER BY s.start_time DESC`（`EngramServiceReadProvider.swift:458`）纯按时间——**对中文用户，CJK 路径完全无相关性排序**。
-- **无语义/混合检索 + 静默失败**：`SQLiteVecSupport.probe()` 硬返回 "not implemented yet"（`SQLiteVecSupport.swift:30`），服务把 `semantic/hybrid/both` 降级为关键词 + warning；2 字符拉丁查询静默返回空（trigram 最少 3 字符）；FTS 特殊字符无 `try/catch` 重试（TS 有 `isFtsSyntaxError`，Swift 没有）；CJK 正则漏掉日文假名、韩文 Hangul、CJK Ext-B。
+- **无语义/混合检索 + 静默失败**：Swift 产品侧没有 sqlite-vec runtime，服务把 `semantic/hybrid/both` 降级为关键词 + warning；2 字符拉丁查询静默返回空（trigram 最少 3 字符）；FTS 特殊字符无 `try/catch` 重试（TS 有 `isFtsSyntaxError`，Swift 没有）；CJK 正则漏掉日文假名、韩文 Hangul、CJK Ext-B。
 
 ### 1.2 对话解析/清洗/AI利用
 
@@ -192,9 +192,9 @@
 - **P1 BM25 排序**：拉丁路径改 `ORDER BY bm25(sessions_fts, w_title, w_content)` 加字段权重；**修掉聚合掉 rank 的 `GROUP BY` 粗排问题**。CJK 路径从纯 `start_time DESC` 改为 `bm25 + 时间加权`，给中文用户真相关性。可叠加 recency/quality boost：`final = bm25 + boost·exp(−λ·age) + boost2·quality_score/100`。
 - **P1 faceting**：按 source/project/date/value band/lifecycle 过滤（复用现有 `FilterPills`）。
 - **P1 鲁棒性**：移植 TS `isFtsSyntaxError` 重试；2 字符查询回退 LIKE；CJK 正则补假名/Hangul/Ext-B。
-- **P2 语义/混合**：实现 `SQLiteVecSupport` + 嵌入 → hybrid 用 RRF 融合（`k=60`）。**硬前置：sqlite-vec 落地**。
+- **P2 语义/混合**：重新引入有运行时调用与测试覆盖的 sqlite-vec 支持 + 嵌入 → hybrid 用 RRF 融合（`k=60`）。**硬前置：sqlite-vec 落地**。
 
-**落地点**：`EngramServiceReadProvider.swift`、`Database.swift`、`MainWindowView.swift`、`SearchPageView.swift`、`CommandPaletteView.swift`、`SQLiteVecSupport.swift`(P2)。
+**落地点**：`EngramServiceReadProvider.swift`、`Database.swift`、`MainWindowView.swift`、`SearchPageView.swift`、`CommandPaletteView.swift`、新增 sqlite-vec runtime 支持(P2)。
 **验证**：Swift 测试——snippet 含 mark、bm25 排序、CJK 排序非纯时间、facet 过滤、特殊字符不崩。
 **优先级**：P0（高亮+palette）→ P1（BM25+facet+鲁棒）→ P2（向量）。**工作量**：P0 1d；P1 3-4d；P2 5d+。**风险**：cleanSnippet 漏改（同 PR）、bm25 权重需调。
 

@@ -125,8 +125,8 @@ struct MessageParser {
                 ClineAdapter(),
                 CursorAdapter(),
                 VsCodeAdapter(),
-                WindsurfAdapter(enableLiveSync: false),
-                AntigravityAdapter(enableLiveSync: false),
+                WindsurfAdapter(),
+                AntigravityAdapter(),
                 CommandCodeAdapter(),
                 CopilotAdapter()
             ]
