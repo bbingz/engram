@@ -17,7 +17,7 @@
 ## CONVENTIONS
 - Mutating app/MCP-facing operations go through `ServiceWriterGate`; do not bypass it with local GRDB writes.
 - Service errors should remain structured and observable; do not silently swallow DB or command failures.
-- Keyword search is the product search path. Unsupported semantic/hybrid/both requests must degrade explicitly with a warning.
+- Keyword search is always available. Semantic/hybrid requests use the Swift embedding path when an embedding provider is configured; otherwise they must degrade explicitly with a warning.
 - IPC code should fail closed when capability tokens or peer identity matter.
 - Long service loops emit status/usage events; keep event shapes compatible with app and MCP consumers.
 

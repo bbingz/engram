@@ -27,7 +27,7 @@ reads.
 - Add new product adapters in Swift first.
 - Parser failures for malformed/unreadable inputs generally produce skip/failure results rather than crashing the whole scan.
 - Visible transcript content normalizes to non-empty user/assistant bubbles; system/tool/event rows are for indexing, diagnostics, and stats.
-- Windsurf and Antigravity are constructed with `enableLiveSync: false`; do not count them as live gRPC sources.
+- Windsurf and Antigravity are cache/transcript-only in Swift; do not count them as live gRPC sources.
 - For parser output changes, update or regenerate fixture/parity data in the same change.
 - Derived Claude Code sources should avoid re-reading identical file heads; preserve hint/cache behavior.
 

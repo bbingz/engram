@@ -2,17 +2,12 @@ import Foundation
 
 final class AntigravityAdapter: SessionAdapter, Sendable {
     let source: SourceName = .antigravity
-    private let daemonDir: URL
     private let cacheDir: URL
     private let conversationsDir: URL
     private let cliBrainDir: URL
     private let limits: ParserLimits
-    private let enableLiveSync: Bool
 
     init(
-        daemonDir: String = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".gemini/antigravity/daemon")
-            .path,
         cacheDir: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".engram/cache/antigravity")
             .path,
@@ -22,25 +17,20 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
         cliBrainDir: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".gemini/antigravity-cli/brain")
             .path,
-        limits: ParserLimits = .default,
-        enableLiveSync: Bool = true
+        limits: ParserLimits = .default
     ) {
-        self.daemonDir = URL(fileURLWithPath: daemonDir)
         self.cacheDir = URL(fileURLWithPath: cacheDir)
         self.conversationsDir = URL(fileURLWithPath: conversationsDir)
         self.cliBrainDir = URL(fileURLWithPath: cliBrainDir)
         self.limits = limits
-        self.enableLiveSync = enableLiveSync
     }
 
     func detect() async -> Bool {
-        JSONLAdapterSupport.isDirectory(daemonDir) ||
-            JSONLAdapterSupport.isDirectory(cacheDir) ||
+        JSONLAdapterSupport.isDirectory(cacheDir) ||
             JSONLAdapterSupport.isDirectory(cliBrainDir)
     }
 
     func listSessionLocators() async throws -> [String] {
-        await sync()
         return (CascadeCacheSupport.jsonlLocators(cacheDir: cacheDir) + cliTranscriptLocators()).sorted()
     }
 
@@ -151,109 +141,6 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
 
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
-    }
-
-    private func sync() async {
-        guard enableLiveSync,
-              let client = await CascadeDiscovery.discoverAntigravityClient(daemonDir: daemonDir.path),
-              let conversations = try? await client.listConversations()
-        else {
-            return
-        }
-
-        var syncedIds = Set<String>()
-        for conversation in conversations where !conversation.cascadeId.isEmpty {
-            syncedIds.insert(conversation.cascadeId)
-            await syncConversation(conversation, client: client)
-        }
-        await syncFromPbFiles(client: client, syncedIds: syncedIds)
-    }
-
-    private func syncConversation(_ conversation: CascadeConversationSummary, client: CascadeClient) async {
-        let cacheURL = cacheDir.appendingPathComponent("\(conversation.cascadeId).jsonl")
-        let pbURL = conversationsDir.appendingPathComponent("\(conversation.cascadeId).pb")
-        if isFresh(cacheURL: cacheURL, pbURL: pbURL, requireContent: true) {
-            return
-        }
-
-        var messages = (try? await client.getTrajectoryMessages(cascadeId: conversation.cascadeId)) ?? []
-        if messages.isEmpty,
-           let markdown = try? await client.getMarkdown(cascadeId: conversation.cascadeId)
-        {
-            messages = CascadeCacheSupport.parseMarkdownToMessages(markdown)
-        }
-        if messages.isEmpty, !conversation.summary.isEmpty {
-            messages = [CascadeTrajectoryMessage(role: .assistant, content: conversation.summary)]
-        }
-
-        var metadata: CascadeCacheSupport.JSONObject = [
-            "id": conversation.cascadeId,
-            "title": conversation.title,
-            "summary": conversation.summary,
-            "createdAt": conversation.createdAt,
-            "updatedAt": conversation.updatedAt
-        ]
-        if !conversation.cwd.isEmpty {
-            metadata["cwd"] = conversation.cwd
-        }
-        if let pbSize = CascadeCacheSupport.fileSize(pbURL), pbSize > 0 {
-            metadata["pbSizeBytes"] = pbSize
-        }
-        try? CascadeCacheSupport.writeCache(cacheURL: cacheURL, metadata: metadata, messages: messages)
-    }
-
-    private func syncFromPbFiles(client: CascadeClient, syncedIds: Set<String>) async {
-        let pbFiles = JSONLAdapterSupport.directChildren(of: conversationsDir)
-            .filter { $0.pathExtension == "pb" }
-            .sorted { $0.path < $1.path }
-        for pbURL in pbFiles {
-            let cascadeId = pbURL.deletingPathExtension().lastPathComponent
-            guard !syncedIds.contains(cascadeId) else { continue }
-
-            let cacheURL = cacheDir.appendingPathComponent("\(cascadeId).jsonl")
-            if let cacheSize = CascadeCacheSupport.fileSize(cacheURL), cacheSize > 200 {
-                continue
-            }
-
-            var messages = (try? await client.getTrajectoryMessages(cascadeId: cascadeId)) ?? []
-            if messages.isEmpty,
-               let markdown = try? await client.getMarkdown(cascadeId: cascadeId)
-            {
-                messages = CascadeCacheSupport.parseMarkdownToMessages(markdown)
-            }
-
-            let attributes = try? FileManager.default.attributesOfItem(atPath: pbURL.path)
-            let createdAt = (attributes?[.creationDate] as? Date).map(Self.isoString) ?? ""
-            let updatedAt = (attributes?[.modificationDate] as? Date).map(Self.isoString) ?? createdAt
-            let metadata: CascadeCacheSupport.JSONObject = [
-                "id": cascadeId,
-                "title": "",
-                "createdAt": createdAt,
-                "updatedAt": updatedAt,
-                "pbSizeBytes": CascadeCacheSupport.fileSize(pbURL) ?? 0
-            ]
-            try? CascadeCacheSupport.writeCache(cacheURL: cacheURL, metadata: metadata, messages: messages)
-        }
-    }
-
-    private func isFresh(cacheURL: URL, pbURL: URL, requireContent: Bool) -> Bool {
-        guard let cacheAttributes = try? FileManager.default.attributesOfItem(atPath: cacheURL.path),
-              let cacheModified = cacheAttributes[.modificationDate] as? Date
-        else {
-            return false
-        }
-        if requireContent,
-           let size = (cacheAttributes[.size] as? NSNumber)?.int64Value,
-           size <= 200
-        {
-            return false
-        }
-        guard let pbAttributes = try? FileManager.default.attributesOfItem(atPath: pbURL.path),
-              let pbModified = pbAttributes[.modificationDate] as? Date
-        else {
-            return false
-        }
-        return cacheModified >= pbModified
     }
 
     private func sizeBytes(metadata: CascadeCacheSupport.JSONObject, id: String, locator: String) -> Int64 {
@@ -478,13 +365,5 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
             return ""
         }
         return top.key
-    }
-
-    private static func isoString(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
-        return formatter.string(from: date)
     }
 }

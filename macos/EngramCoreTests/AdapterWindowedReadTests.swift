@@ -206,7 +206,7 @@ final class AdapterWindowedReadTests: XCTestCase {
         }
         try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
 
-        let adapter = WindsurfAdapter(limits: ParserLimits(maxMessages: 4), enableLiveSync: false)
+        let adapter = WindsurfAdapter(limits: ParserLimits(maxMessages: 4))
         let result = try await adapter.streamMessagesWithMetadata(
             locator: file.path,
             options: StreamMessagesOptions()

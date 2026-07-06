@@ -1,7 +1,7 @@
 # ENGRAM CORE WRITE KNOWLEDGE BASE
 
 ## OVERVIEW
-`EngramCoreWrite` is the product write core. It owns GRDB schema/migrations, indexing writes, startup backfills, repo discovery, session snapshot persistence, vector policy placeholders, and project migration support.
+`EngramCoreWrite` is the product write core. It owns GRDB schema/migrations, indexing writes, startup backfills, repo discovery, session snapshot persistence, embedding backfill tables/jobs, and project migration support.
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
@@ -19,7 +19,7 @@
 - Write paths should be reachable through service-owned writers, not app/MCP local writers.
 - `SessionSnapshotWriter` and indexer behavior should preserve tiering and parent/child invariants.
 - Startup/backfill code must not surface provider health probes or review probes as normal sessions.
-- `SQLiteVecSupport` and vector rebuild policy are placeholders until product sqlite-vec is implemented; do not wire speculative vector behavior.
+- Product sqlite-vec scaffolding has been removed; future vector work should introduce a fresh implementation with runtime callers and tests instead of wiring speculative placeholders.
 
 ## ANTI-PATTERNS
 - Do not use TypeScript schema code as source of truth for Swift-only defaults.

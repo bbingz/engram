@@ -634,7 +634,7 @@ OpenCode 在**架构上不同于**每一个其他 Engram 来源,是"共享 SQLit
 
 - **不属于 JSONL 家族。** Gemini-CLI ↔ Qwen ↔ iFlow 谱系使用按 project 的 JSONL transcript 以及共享的 `Phase4AdapterSupport` JSON 辅助函数(`isoFromMilliseconds`、`double`、`jsonObject`,定义于 `GeminiCliAdapter.swift:3-58`)。OpenCode **复用了这些辅助函数**,但在其上叠加了自己的 `Phase4SQLiteDatabase` 读取器(`OpenCodeAdapter.swift:4-59`)——它共享辅助函数,而非磁盘格式。
 - **不属于 `.vscdb` 家族。** Cursor / VS Code / Copilot / Cline 使用带 VS Code 键值 `ItemTable`(leveldb 风格 blob 存储)的 SQLite `.vscdb`。OpenCode **只共享 SQLite 容器**,而非 schema——OpenCode 是规范化的 Drizzle 关系型 schema。最近的表亲是 Cursor,但仅在"碰巧用 SQLite"这一层面。
-- **显示分组。** 一等的独立来源:`SourceCatalog.swift:29`(`opencode` → `~/.local/share/opencode/opencode.db`)、`SourceColors.swift:19`(颜色 `Color.primary`)、`:49`、`:63`(显示 "OpenCode")。在 `SessionAdapterFactory.swift` 中注册(default + alt 集),且**启用了 live sync**(与 Windsurf/Antigravity 的 `enableLiveSync:false` 不同)。无家族/父级分组。
+- **显示分组。** 一等的独立来源:`SourceCatalog.swift:29`(`opencode` → `~/.local/share/opencode/opencode.db`)、`SourceColors.swift:19`(颜色 `Color.primary`)、`:49`、`:63`(显示 "OpenCode")。在 `SessionAdapterFactory.swift` 中注册(default + alt 集),且不属于 Windsurf/Antigravity 的 cache-only 集合。无家族/父级分组。
 
 ### 注意点与边界情况
 

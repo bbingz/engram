@@ -117,11 +117,12 @@ Product tiering is computed in
 UI/read-path filters hide `skip` sessions consistently; `lite` remains visible in list surfaces but is intentionally excluded from keyword search.
 
 ### Local Semantic Search
-NOTE: the hybrid/semantic search below describes the TypeScript REFERENCE design.
-It is NOT implemented in the shipped Swift product. The Swift product search is
-keyword-only (FTS5 / LIKE). `EngramCoreWrite/Database/SQLiteVecSupport.swift`
-reports sqlite-vec as "not implemented yet", so there is no product-side vector
-search or RRF fusion yet. Treat the rest of this section as TS reference only.
+The shipped Swift service supports keyword search by default and opt-in
+semantic/hybrid search when an embedding provider is configured. Semantic search
+uses product-side stored embedding BLOBs with brute-force cosine KNN; hybrid
+requests fuse keyword and semantic results with RRF. The old product-side
+sqlite-vec probe/rebuild-policy scaffolding has been removed because it had no
+runtime callers and did not drive the active Swift embedding path.
 
 Hybrid search (TS reference): FTS5 (trigram) + sqlite-vec (vector embeddings) + RRF fusion. All local, no external services.
 - `src/core/vector-store.ts`: session-level + chunk-level + insight vectors via sqlite-vec
@@ -220,10 +221,10 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 - Settings: `~/.engram/settings.json`
 - Session sources: `~/.claude/projects/`, `~/.codex/sessions/`, `~/.gemini/`, etc.
 - `SessionAdapterFactory.defaultAdapters()` registers 17 source adapters. Windsurf
-  and Antigravity are constructed with `enableLiveSync: false`, so live gRPC sync is disabled for both. Windsurf is cache-only (`~/.engram/cache/windsurf`);
-  Antigravity still reads Antigravity CLI brain transcripts and any legacy cache
-  already present. "17 sources" is the adapter count, not a live-gRPC source
-  count.
+  is cache-only in Swift; Antigravity is cache/transcript-only in Swift. Windsurf
+  reads existing cache files under `~/.engram/cache/windsurf`; Antigravity reads
+  Antigravity CLI brain transcripts and any legacy cache already present. "17
+  sources" is the adapter count, not a live-gRPC source count.
 
 ## What NOT To Do
 

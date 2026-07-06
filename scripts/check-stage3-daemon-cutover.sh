@@ -63,9 +63,8 @@ is_external_provider_hit() {
   local path="$1"
   local text="$2"
 
-  # Cascade and Ollama own their localhost/API paths; they are not Node daemon
-  # regressions and should not hide true Engram /api/* callsites.
-  [[ "$path" == "macos/Shared/EngramCore/Adapters/Cascade/CascadeClient.swift" ]] && return 0
+  # Ollama owns its localhost/API paths; they are not Node daemon regressions
+  # and should not hide true Engram /api/* callsites.
   [[ "$path" == "macos/Engram/Views/Settings/AISettingsSection.swift" && "$text" == *"localhost:11434"* ]] && return 0
   [[ "$path" == "macos/Engram/Views/Settings/AISettingsSection.swift" && "$text" == *"/api/tags"* ]] && return 0
 

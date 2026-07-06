@@ -594,8 +594,7 @@ Engram leaves `model = nil` for Kimi despite this being available (see §15).
 sibling families: NOT Gemini-CLI ↔ Qwen ↔ iFlow (chat-JSON lineage), NOT
 Cursor ↔ VS Code ↔ Copilot ↔ Cline (`.vscdb`/leveldb). Cross-reference those
 docs for contrast, but nothing is shared. Kimi is a plain JSONL adapter (no
-gRPC), so it is NOT in the `enableLiveSync:false` cache-only set
-(Windsurf/Antigravity). **Confirmed (official):** the triad and the
+gRPC), so it is NOT in the cache-only Windsurf/Antigravity set. **Confirmed (official):** the triad and the
 `protocol_version`'d wire envelope are Kimi-specific constructs defined in
 MoonshotAI/kimi-cli's own source (`wire/protocol.py`, `metadata.py`,
 `soul/context.py`); no schema is shared with Gemini-CLI or OpenAI/Codex.

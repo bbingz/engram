@@ -35,7 +35,7 @@ enum SourceCatalog {
         .init(source: "cline",       defaultPath: "~/.cline/data/tasks"),
         .init(source: "cursor",      defaultPath: "~/Library/Application Support/Cursor/User/globalStorage/state.vscdb"),
         .init(source: "vscode",      defaultPath: "~/Library/Application Support/Code/User/workspaceStorage"),
-        .init(source: "windsurf",    defaultPath: "~/.codeium/windsurf/daemon"),
+        .init(source: "windsurf",    defaultPath: "~/.engram/cache/windsurf"),
         .init(source: "antigravity", defaultPath: "~/.gemini/antigravity-cli/brain"),
         .init(source: "copilot",     defaultPath: "~/.copilot/session-state"),
     ]

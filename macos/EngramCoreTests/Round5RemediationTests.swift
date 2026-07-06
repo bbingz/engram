@@ -513,7 +513,7 @@ final class Round5RemediationTests: XCTestCase {
         try (lines.joined(separator: "\n") + "\n")
             .write(to: cacheDir.appendingPathComponent("conv-1.jsonl"), atomically: true, encoding: .utf8)
 
-        let adapter = WindsurfAdapter(cacheDir: cacheDir.path, enableLiveSync: false)
+        let adapter = WindsurfAdapter(cacheDir: cacheDir.path)
         let locator = try await adapter.listSessionLocators().first!
         guard case let .success(info) = try await adapter.parseSessionInfo(locator: locator) else {
             XCTFail("Windsurf fixture should parse")
@@ -533,7 +533,7 @@ final class Round5RemediationTests: XCTestCase {
         try (lines.joined(separator: "\n") + "\n")
             .write(to: cacheDir.appendingPathComponent("conv-2.jsonl"), atomically: true, encoding: .utf8)
 
-        let adapter = WindsurfAdapter(cacheDir: cacheDir.path, enableLiveSync: false)
+        let adapter = WindsurfAdapter(cacheDir: cacheDir.path)
         let locator = try await adapter.listSessionLocators().first!
         guard case let .success(info) = try await adapter.parseSessionInfo(locator: locator) else {
             XCTFail("Windsurf fixture should parse")

@@ -136,8 +136,7 @@ final class AdapterParityTests: XCTestCase {
         }
         let registry = AdapterRegistry(adapters: [
             AntigravityAdapter(
-                cacheDir: fixtureRoot.appendingPathComponent("antigravity/input/cache").path,
-                enableLiveSync: false
+                cacheDir: fixtureRoot.appendingPathComponent("antigravity/input/cache").path
             ),
             ClaudeCodeAdapter(projectsRoot: fixtureRoot.appendingPathComponent("claude-code/input").path),
             ClineAdapter(tasksRoot: fixtureRoot.appendingPathComponent("cline/input/tasks").path),
@@ -159,8 +158,7 @@ final class AdapterParityTests: XCTestCase {
             QwenAdapter(projectsRoot: fixtureRoot.appendingPathComponent("qwen/input").path),
             VsCodeAdapter(workspaceStorageDir: fixtureRoot.appendingPathComponent("vscode/input").path),
             WindsurfAdapter(
-                cacheDir: fixtureRoot.appendingPathComponent("windsurf/input/cache").path,
-                enableLiveSync: false
+                cacheDir: fixtureRoot.appendingPathComponent("windsurf/input/cache").path
             )
         ])
         let enabledSources: Set<SourceName> = [

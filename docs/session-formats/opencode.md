@@ -632,7 +632,7 @@ OpenCode is **architecturally distinct** from every other Engram source and is t
 
 - **NOT in the JSONL families.** The Gemini-CLI ↔ Qwen ↔ iFlow lineage uses per-project JSONL transcripts and the shared `Phase4AdapterSupport` JSON helpers (`isoFromMilliseconds`, `double`, `jsonObject`, defined in `GeminiCliAdapter.swift:3-58`). OpenCode **reuses those helper functions** but layers its own `Phase4SQLiteDatabase` reader on top (`OpenCodeAdapter.swift:4-59`) — it shares helpers, not on-disk format.
 - **NOT in the `.vscdb` family.** Cursor / VS Code / Copilot / Cline use SQLite `.vscdb` with a VS Code key-value `ItemTable` (leveldb-style blob store). OpenCode shares **only the SQLite container**, not the schema — OpenCode is a normalized Drizzle relational schema. Closest cousin is Cursor at the "happens to use SQLite" level only.
-- **Display grouping.** First-class standalone source: `SourceCatalog.swift:29` (`opencode` → `~/.local/share/opencode/opencode.db`), `SourceColors.swift:19` (color `Color.primary`), `:49`,`:63` (display "OpenCode"). Registered in `SessionAdapterFactory.swift` (default + alt sets) with **live sync ENABLED** (unlike Windsurf/Antigravity, `enableLiveSync:false`). No family/parent grouping.
+- **Display grouping.** First-class standalone source: `SourceCatalog.swift:29` (`opencode` → `~/.local/share/opencode/opencode.db`), `SourceColors.swift:19` (color `Color.primary`), `:49`,`:63` (display "OpenCode"). Registered in `SessionAdapterFactory.swift` (default + alt sets) and not part of the cache-only Windsurf/Antigravity set. No family/parent grouping.
 
 ### Gotchas & edge cases
 
