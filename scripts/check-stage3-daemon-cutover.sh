@@ -33,7 +33,6 @@ LEGACY_COMPAT_FILES=(
   "macos/Engram/Views/SessionListView.swift"
   "macos/Engram/Views/Settings/AISettingsSection.swift"
   "macos/Engram/Views/Settings/GeneralSettingsSection.swift"
-  "macos/Engram/Views/Settings/NetworkSettingsSection.swift"
   "macos/Engram/Views/PopoverView.swift"
   "macos/Shared/Networking/DaemonHTTPClientCore.swift"
 )

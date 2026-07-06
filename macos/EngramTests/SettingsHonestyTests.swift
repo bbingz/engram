@@ -19,10 +19,16 @@ final class SettingsHonestyTests: XCTestCase {
 
     // MARK: - Source honesty
 
-    func testNetworkSettingsDropsStrictSingleWriter() throws {
-        let source = try source("macos/Engram/Views/Settings/NetworkSettingsSection.swift")
-        XCTAssertFalse(source.contains("mcpStrictSingleWriter"), "No-op strict-single-writer state must be removed")
-        XCTAssertFalse(source.contains("Strict single writer"), "No-op strict-single-writer toggle must be removed")
+    func testNetworkSettingsSectionIsDeleted() throws {
+        let settingsView = try source("macos/Engram/Views/SettingsView.swift")
+        XCTAssertFalse(settingsView.contains("case network"), "Network settings only hosted deleted peer-sync controls")
+        XCTAssertFalse(settingsView.contains("NetworkSettingsSection"), "Deleted peer-sync settings must not leave an empty Network tab")
+
+        let networkSettings = repoRoot.appendingPathComponent("macos/Engram/Views/Settings/NetworkSettingsSection.swift")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: networkSettings.path),
+            "NetworkSettingsSection should be deleted with the dead peer-sync settings surface"
+        )
     }
 
     func testGeneralSettingsDropsMcpEndpointAndHasDeveloperToolsToggle() throws {
@@ -34,9 +40,9 @@ final class SettingsHonestyTests: XCTestCase {
     }
 
     func testHttpTranscriptWebUiSurfaceIsDeleted() throws {
-        let networkSettings = try source("macos/Engram/Views/Settings/NetworkSettingsSection.swift")
-        XCTAssertFalse(networkSettings.contains("webUIEnabled"), "Network settings must not expose the deleted HTTP transcript Web UI gate")
-        XCTAssertFalse(networkSettings.contains("Enable Web UI"), "Network settings must not offer a deleted Web UI toggle")
+        let settingsView = try source("macos/Engram/Views/SettingsView.swift")
+        XCTAssertFalse(settingsView.contains("Toggle(\"Enable Web UI\""), "Settings must not expose the deleted HTTP transcript Web UI gate")
+        XCTAssertFalse(settingsView.contains("Enable Web UI"), "Settings must not offer a deleted Web UI toggle")
 
         let generalSettings = try source("macos/Engram/Views/Settings/GeneralSettingsSection.swift")
         XCTAssertFalse(generalSettings.contains("Open Web UI"), "General settings must not link to the deleted HTTP transcript Web UI")

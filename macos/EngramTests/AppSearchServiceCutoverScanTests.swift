@@ -520,17 +520,21 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
     }
 
     func testUnsupportedSyncIsNotPresentedAsWorkingSettingsAction() throws {
-        let networkSettings = try source("macos/Engram/Views/Settings/NetworkSettingsSection.swift")
-        XCTAssertTrue(
-            networkSettings.contains("Sync is not implemented in the Swift service"),
-            "Network settings should state that peer sync is currently unsupported"
+        let settingsView = try source("macos/Engram/Views/SettingsView.swift")
+        XCTAssertFalse(
+            settingsView.contains("NetworkSettingsSection"),
+            "Settings must not retain an empty Network settings surface after deleting peer sync"
         )
         XCTAssertFalse(
-            networkSettings.contains("triggerSync()"),
+            settingsView.contains("Sync is not implemented in the Swift service"),
+            "Settings must not advertise deleted peer-sync status copy"
+        )
+        XCTAssertFalse(
+            settingsView.contains("triggerSync()"),
             "Settings must not expose a Sync Now action while the Swift service returns an unsupported stub"
         )
         XCTAssertFalse(
-            networkSettings.contains("syncStatus = \"Synced!\""),
+            settingsView.contains("syncStatus = \"Synced!\""),
             "Settings must not present a success state for unsupported sync"
         )
     }
@@ -540,6 +544,22 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         XCTAssertFalse(
             readme.contains("多机同步"),
             "README should not advertise peer sync while the Swift service returns an unsupported stub"
+        )
+        XCTAssertFalse(
+            readme.contains("网络设置"),
+            "README should not advertise a Network settings surface after deleting the tab"
+        )
+        XCTAssertFalse(
+            readme.contains("## Peer Sync 状态"),
+            "README peer-sync content should be demoted from a standalone product section"
+        )
+        XCTAssertFalse(
+            readme.contains(#""syncPeers":"#),
+            "README should not show legacy peer-sync keys in active settings examples"
+        )
+        XCTAssertTrue(
+            readme.contains("旧版 peer-sync settings keys"),
+            "README should retain a one-line historical note for legacy settings compatibility"
         )
         XCTAssertFalse(
             readme.contains("Settings 页面 → Project Aliases"),
