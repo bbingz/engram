@@ -190,7 +190,7 @@ Ground rules:
    one `hooks` example command to another empty-provider command (e.g.
    `sources`). CONFIG sidebar shrinks 4→2 (Agents, Memory) — relabel if it
    reads oddly.
-5. **DELETE lint_config MCP tool (Swift product side only).** Remove
+5. **DONE in PR #107 — DELETE lint_config MCP tool (Swift product side only).** Remove
    `lintConfig`/`lintIssues` + the 8 lint-only private helpers from
    `MCPFileTools.swift` (KEEP `projectReview` helpers and shared
    `trimTrailingSlash`); registry def/dispatch/category in

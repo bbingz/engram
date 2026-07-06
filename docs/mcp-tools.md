@@ -2,7 +2,7 @@
 
 > Current product runtime is Swift `EngramMCP`; TypeScript tool definitions are retained as development/reference material.
 >
-> **Total tools: 28** | Protocol: MCP (Model Context Protocol) | Server name: `engram`
+> **Total tools: 27** | Protocol: MCP (Model Context Protocol) | Server name: `engram`
 >
 > Removed: the former corpus rule-mining surface (`get_rules` and `engram://rule/{id}` resources) is no longer exposed. Existing `mined_rules` rows in installed databases are left inert; fresh Swift product databases no longer create the mined-rule tables.
 
@@ -293,20 +293,6 @@ Report MCP-mode live session monitoring status.
 | *(none)* | | | This tool takes no parameters |
 
 **Notes:** In MCP server mode, this tool intentionally returns an explicit unavailable result with an empty list and note. The macOS app/service IPC path has its own local live-session scanner for UI/service use; that scanner is not exposed through this MCP tool.
-
----
-
-## lint_config
-
-Lint CLAUDE.md and similar config files: verify file references exist, npm scripts are valid, and detect stale instructions.
-
-**Parameters:**
-
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| cwd | string | **yes** | Project root directory |
-
-**Notes:** Scans `CLAUDE.md`, `.claude/CLAUDE.md`, `AGENTS.md`, `.cursorrules`, and `.github/copilot-instructions.md`. Checks that backtick-wrapped file references actually exist on disk. Validates npm script references against `package.json`. Suggests similar filenames for missing references. Score: 100 - (errors x 10) - (warnings x 3) - (info x 1), minimum 0. Skips references inside fenced code blocks.
 
 ---
 

@@ -18,7 +18,6 @@ import { handleGetMemory } from '../src/tools/get_memory.js';
 import { handleGetSession } from '../src/tools/get_session.js';
 import { handleHandoff } from '../src/tools/handoff.js';
 import { handleLinkSessions } from '../src/tools/link_sessions.js';
-import { handleLintConfig } from '../src/tools/lint_config.js';
 import { handleListSessions } from '../src/tools/list_sessions.js';
 import { handleLiveSessions } from '../src/tools/live_sessions.js';
 import {
@@ -45,7 +44,6 @@ const swiftStdioServerPath = resolve(
   repoRoot,
   'macos/EngramMCP/Core/MCPStdioServer.swift',
 );
-const lintProjectDir = resolve(runtimeDir, 'lint-project');
 const linkTargetDir = resolve(runtimeDir, 'engram');
 const reviewHomeDir = resolve(runtimeDir, 'review-home');
 const transcriptDir = resolve(runtimeDir, 'transcripts');
@@ -343,35 +341,6 @@ for (const row of [
 ]) {
   insertMigration.run(row);
 }
-
-mkdirSync(resolve(lintProjectDir, 'src'), { recursive: true });
-writeFileSync(
-  resolve(lintProjectDir, 'CLAUDE.md'),
-  [
-    '# Fixture Lint Project',
-    '',
-    'Run `npm run build` before release.',
-    'Document `src/present.ts` and `npm run verify` in the onboarding guide.',
-  ].join('\n'),
-);
-writeFileSync(
-  resolve(lintProjectDir, 'package.json'),
-  JSON.stringify(
-    {
-      name: 'mcp-lint-fixture',
-      private: true,
-      scripts: {
-        build: 'echo build',
-      },
-    },
-    null,
-    2,
-  ),
-);
-writeFileSync(
-  resolve(lintProjectDir, 'src/existing.ts'),
-  'export const fixture = true;\n',
-);
 
 mkdirSync(linkTargetDir, { recursive: true });
 
@@ -696,11 +665,6 @@ const goldens: Record<string, unknown> = {
   'live_sessions.unavailable': success(handleLiveSessions(null)),
   'get_memory.keyword': success(
     await handleGetMemory({ query: 'single writer daemon HTTP' }, { db }),
-  ),
-  'lint_config.fixture': success(
-    await handleLintConfig({
-      cwd: lintProjectDir,
-    }),
   ),
   'export.transcript': success(
     await (async () => {

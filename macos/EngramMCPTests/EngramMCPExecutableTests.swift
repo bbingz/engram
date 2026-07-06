@@ -67,8 +67,9 @@ final class EngramMCPExecutableTests: XCTestCase {
             return
         }
         let names = tools.compactMap { $0["name"]?.stringValue }
-        XCTAssertEqual(tools.count, 28)
+        XCTAssertEqual(tools.count, 27)
         XCTAssertFalse(names.contains("get_rules"), "\(names)")
+        XCTAssertFalse(names.contains("lint_config"), "\(names)")
     }
 
     func testPingReturnsEmptyResult() throws {
@@ -393,6 +394,37 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
         XCTAssertEqual(read.response.error?.code, -32602)
         XCTAssertTrue(read.response.error?.message.contains("Unsupported resource uri") ?? false)
+    }
+
+    func testRemovedLintConfigToolIsUnavailable() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lint_config","arguments":{"cwd":"\(fixturePath("mcp-runtime/lint-project"))"}}}
+            """
+        )
+        XCTAssertNil(capture.response.error)
+        XCTAssertEqual(capture.ordered["result"]?["isError"]?.boolValue, true)
+        let toolText = capture.ordered["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+        XCTAssertTrue(toolText.contains("Unknown tool: lint_config"), toolText)
+
+        let fixtureURL = repoRoot.appendingPathComponent("tests/fixtures/mcp-golden/lint_config.fixture.json")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: fixtureURL.path),
+            "lint_config golden fixture belongs to the removed Swift MCP tool"
+        )
+
+        for (relativePath, forbidden) in [
+            ("macos/EngramMCP/Core/MCPToolRegistry.swift", ["\"lint_config\"", "MCPFileTools.lintConfig", "case \"lint_config\""]),
+            ("macos/EngramMCP/Core/MCPFileTools.swift", ["lintConfig", "lintIssues", "MCPLintIssue", "severityPenalty", "extractBacktickRefs", "looksLikeFilePath", "looksLikeNPMScript", "readPackageScripts", "findSimilarFile"]),
+            ("docs/mcp-tools.md", ["## lint_config"]),
+            ("README.md", ["`lint_config`"]),
+            ("macos/EngramMCP/AGENTS.md", ["`lint_config`"]),
+        ] {
+            let text = try source(relativePath)
+            for token in forbidden {
+                XCTAssertFalse(text.contains(token), "\(relativePath) should not retain \(token)")
+            }
+        }
     }
 
     func testGetContextIgnoresLegacyMinedRulesRows() throws {
@@ -1757,16 +1789,6 @@ final class EngramMCPExecutableTests: XCTestCase {
             {"since":"2026-02-15T00:00:00.000Z"}
             """,
             goldenFixture: "mcp-golden/get_insights.empty.json"
-        )
-    }
-
-    func testLintConfigMatchesGolden() throws {
-        try assertToolCallMatchesGolden(
-            tool: "lint_config",
-            arguments: """
-            {"cwd":"\(fixturePath("mcp-runtime/lint-project"))"}
-            """,
-            goldenFixture: "mcp-golden/lint_config.fixture.json"
         )
     }
 

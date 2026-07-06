@@ -7,6 +7,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: removed Swift MCP lint_config tool (2026-07-06, Codex)
+
+- Feature-cut item 5 deletes the Swift product-side `lint_config` MCP tool,
+  its registry/dispatch/category entries, golden fixture, contract test, and
+  lint-only helper code from `MCPFileTools.swift`. The TypeScript reference
+  `src/tools/lint_config.ts` remains.
+
 ### Changed: removed Skills/Hooks config-browser pages (2026-07-06, Codex)
 
 - Feature-cut item 4 deletes the macOS Skills and Hooks settings-browser pages,

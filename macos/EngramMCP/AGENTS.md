@@ -10,7 +10,7 @@
 | Tool registry | `Core/MCPToolRegistry.swift` | Tool schemas, service requirements, handler routing. |
 | DB/read helpers | `Core/MCPDatabase.swift` | Read-oriented query/tool backing. |
 | Transcript reads | `Core/MCPTranscriptReader.swift` | Streams source transcript content through Swift adapters. |
-| File tools | `Core/MCPFileTools.swift` | `lint_config`, project review, file-oriented helpers. |
+| File tools | `Core/MCPFileTools.swift` | Project review and file-oriented helpers. |
 | Tests | `../EngramMCPTests/` | Executable and contract behavior. |
 | Golden fixtures | `../../tests/fixtures/mcp-golden/` | Expected JSON tool outputs. |
 
