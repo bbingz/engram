@@ -206,16 +206,13 @@ Ground rules:
    `settings.json` legacy keys (`syncEnabled`/`syncPeers`/...) parse-tolerant
    — do not crash on their presence; grep `macos/` for sync DTO/field
    consumers to size the full removal before deleting beyond the UI.
-7. **DELETE verified-dead scaffolding bundle.** (a)
-   `SQLiteVecSupport.swift` probe (always reports unavailable) +
-   `VectorRebuildPolicy.swift` + `VectorRebuildPolicyTests` (~120 LOC; its
-   only caller is its own test — verify then delete). (b) The Cascade gRPC
-   live-sync subsystem (~335 LOC; both constructors pass
-   `enableLiveSync: false`). KEEP Antigravity file-based parsing (219
-   indexed sessions locally, active 2026-07-03), Windsurf cache reading, and
-   the embedding backfill + hybrid retrieval backing get_memory (live,
-   tested — do NOT bundle it into this cut; a prior proposal died for
-   exactly that over-bundling).
+7. **DONE in PR #109 — DELETE verified-dead scaffolding bundle.** Deleted
+   `SQLiteVecSupport.swift`, `VectorRebuildPolicy.swift`, their self-only test,
+   and the unused Swift Cascade gRPC live-sync client/discovery/proto bundle.
+   Kept Antigravity legacy cache + CLI transcript parsing, Windsurf cache
+   reading, TS reference/dev Cascade tooling, and active Swift semantic/hybrid
+   retrieval. Added a deletion-guard scan test, updated active docs, and moved
+   Windsurf SourceCatalog to the actual cache root `~/.engram/cache/windsurf`.
 8. **FOLD Favorites page into a Sessions FilterPill.** Delete the 63-LOC
    Favorites page clone + its Screen case; add a "Starred" FilterPill on
    SessionsPageView. KEEP star toggle, favorites table, `setFavorite` IPC,
