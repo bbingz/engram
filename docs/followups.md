@@ -218,7 +218,7 @@ Ground rules:
    SessionsPageView. KEEP star toggle, favorites table, `setFavorite` IPC,
    and `listFavorites()` (2 callers — repoint to the pill's query path).
    Both verifiers passed this at confidence 5.
-9. **DEMOTE project-migration batch/undo/history UI (no deletion).** In
+9. **DONE in PR #111 — DEMOTE project-migration batch/undo/history UI (no deletion).** In
    `Views/Pages/ProjectsView.swift` (~:87) move Select / Move Selected /
    Undo Recent Move / History behind an Advanced (or Developer Tools)
    affordance; keep single-project move and ALL project_* MCP tools intact.

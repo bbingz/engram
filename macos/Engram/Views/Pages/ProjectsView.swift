@@ -19,6 +19,7 @@ struct ProjectsView: View {
     @State private var showBatchSheet = false
     @State private var isSelecting = false
     @State private var selectedProjects: Set<String> = []
+    @State private var showAdvancedMigrationTools = false
     /// Three-state: nil = haven't fetched yet / last fetch failed (unknown),
     /// true = ≥1 committed migration exists, false = none.
     /// Reviewer: silently preserving the last-known true value when the
@@ -84,49 +85,9 @@ struct ProjectsView: View {
                     HStack {
                         SectionHeader(icon: "folder", title: "Projects")
                         Spacer()
-                        if nativeProjectMigrationCommandsEnabled {
-                            if isSelecting && !selectedProjects.isEmpty {
-                                Button {
-                                    showBatchSheet = true
-                                } label: {
-                                    Label("Move Selected (\(selectedProjects.count))…", systemImage: "arrow.right.doc.on.clipboard")
-                                        .font(.caption)
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .accessibilityIdentifier("projects_batchMoveButton")
-                            }
-                            Button {
-                                isSelecting.toggle()
-                                if !isSelecting { selectedProjects.removeAll() }
-                            } label: {
-                                Label(isSelecting ? "Done" : "Select", systemImage: "checklist")
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .accessibilityIdentifier("projects_selectToggle")
-                            Button {
-                                showHistorySheet = true
-                            } label: {
-                                Label("History…", systemImage: "clock.arrow.circlepath")
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .accessibilityIdentifier("projects_historyButton")
-                            Button {
-                                showUndoSheet = true
-                            } label: {
-                                Label("Undo Recent Move…", systemImage: "arrow.uturn.backward")
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .disabled(hasRecentMigrations != true)
-                            .help(undoButtonHelp)
-                            .accessibilityIdentifier("projects_undoButton")
-                        }
+                    }
+                    if nativeProjectMigrationCommandsEnabled {
+                        advancedMigrationTools
                     }
                     if projectGroups.isEmpty && !isLoading {
                         EmptyState(icon: "folder", title: "No projects", message: "Sessions without project associations won't appear here")
@@ -224,6 +185,7 @@ struct ProjectsView: View {
                                 .background(Theme.surface)
                                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .accessibilityElement(children: .contain)
                                 .accessibilityIdentifier("projects_group_\(index)")
                                 // Round 4 Gemini Minor: right-click menu
                                 // mirrors the ⋯ button for discoverability.
@@ -298,6 +260,85 @@ struct ProjectsView: View {
             isSelecting = false
             selectedProjects.removeAll()
             Task { await loadData() }
+        }
+    }
+
+    private var advancedMigrationTools: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                showAdvancedMigrationTools.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: showAdvancedMigrationTools ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.tertiaryText)
+                    Label("Advanced", systemImage: "slider.horizontal.3")
+                        .font(.caption)
+                        .foregroundStyle(Theme.secondaryText)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("projects_advancedMigrationTools")
+
+            if showAdvancedMigrationTools {
+                HStack(spacing: 8) {
+                    if isSelecting && !selectedProjects.isEmpty {
+                        Button {
+                            showBatchSheet = true
+                        } label: {
+                            Label("Move Selected (\(selectedProjects.count))…", systemImage: "arrow.right.doc.on.clipboard")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityIdentifier("projects_batchMoveButton")
+                    }
+                    Button {
+                        isSelecting.toggle()
+                        if !isSelecting { selectedProjects.removeAll() }
+                    } label: {
+                        Label(isSelecting ? "Done" : "Select", systemImage: "checklist")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("projects_selectToggle")
+                    Button {
+                        showHistorySheet = true
+                    } label: {
+                        Label("History…", systemImage: "clock.arrow.circlepath")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("projects_historyButton")
+                    Button {
+                        showUndoSheet = true
+                    } label: {
+                        Label("Undo Recent Move…", systemImage: "arrow.uturn.backward")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(hasRecentMigrations != true)
+                    .help(undoButtonHelp)
+                    .accessibilityIdentifier("projects_undoButton")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Theme.surface)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .onChange(of: showAdvancedMigrationTools) { _, isExpanded in
+            if !isExpanded {
+                isSelecting = false
+                selectedProjects.removeAll()
+            }
         }
     }
 
