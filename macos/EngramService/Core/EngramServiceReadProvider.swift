@@ -7,10 +7,8 @@ protocol EngramServiceReadProvider: Sendable {
     func health() async throws -> EngramServiceHealthResponse
     func liveSessions() async throws -> EngramServiceLiveSessionsResponse
     func sources() async throws -> [EngramServiceSourceInfo]
-    func skills() async throws -> [EngramServiceSkillInfo]
     func memoryFiles() async throws -> [EngramServiceMemoryFile]
     func memoryFileContent(_ request: EngramServiceMemoryFileContentRequest) async throws -> EngramServiceMemoryFileContentResponse
-    func hooks() async throws -> [EngramServiceHookInfo]
     func insights() async throws -> [EngramServiceInsightInfo]
     func insightDetail(_ request: EngramServiceInsightDetailRequest) async throws -> EngramServiceInsightInfo?
     func costs() async throws -> EngramServiceCostsResponse
@@ -41,20 +39,12 @@ struct EmptyEngramServiceReadProvider: EngramServiceReadProvider {
         []
     }
 
-    func skills() async throws -> [EngramServiceSkillInfo] {
-        []
-    }
-
     func memoryFiles() async throws -> [EngramServiceMemoryFile] {
         []
     }
 
     func memoryFileContent(_ request: EngramServiceMemoryFileContentRequest) async throws -> EngramServiceMemoryFileContentResponse {
         EngramServiceMemoryFileContentResponse(path: request.path, content: "", truncated: false)
-    }
-
-    func hooks() async throws -> [EngramServiceHookInfo] {
-        []
     }
 
     func insights() async throws -> [EngramServiceInsightInfo] {
@@ -134,49 +124,6 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
         []
     }
 
-    func skills() async throws -> [EngramServiceSkillInfo] {
-        var results: [EngramServiceSkillInfo] = []
-        let settingsURL = homeDirectory.appendingPathComponent(".claude/settings.json")
-        if let settings = dictionary(at: settingsURL),
-           let customCommands = settings["customCommands"] as? [String: Any] {
-            for (name, command) in customCommands.sorted(by: { $0.key < $1.key }) {
-                results.append(
-                    EngramServiceSkillInfo(
-                        name: name,
-                        description: String(describing: command).prefixString(100),
-                        path: displayPath(settingsURL),
-                        scope: "global"
-                    )
-                )
-            }
-        }
-
-        let pluginsURL = homeDirectory.appendingPathComponent(".claude/plugins/cache", isDirectory: true)
-        guard let enumerator = FileManager.default.enumerator(
-            at: pluginsURL,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return results
-        }
-
-        while let url = enumerator.nextObject() as? URL {
-            guard url.pathExtension == "md", !url.path.contains("node_modules") else { continue }
-            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
-            guard let content = try? String(contentsOf: url, encoding: .utf8),
-                  let name = yamlFrontMatterValue("name", in: content) else { continue }
-            results.append(
-                EngramServiceSkillInfo(
-                    name: name,
-                    description: yamlFrontMatterValue("description", in: content) ?? "",
-                    path: displayPath(url),
-                    scope: "plugin"
-                )
-            )
-        }
-        return results
-    }
-
     func memoryFiles() async throws -> [EngramServiceMemoryFile] {
         var results: [EngramServiceMemoryFile] = []
         let projectsURL = homeDirectory.appendingPathComponent(".claude/projects", isDirectory: true)
@@ -254,23 +201,6 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
         return path
     }
 
-    func hooks() async throws -> [EngramServiceHookInfo] {
-        var results: [EngramServiceHookInfo] = []
-        for (scope, url) in [
-            ("global", homeDirectory.appendingPathComponent(".claude/settings.json")),
-            ("project", homeDirectory.appendingPathComponent(".claude/settings.local.json"))
-        ] {
-            guard let settings = dictionary(at: url),
-                  let hooks = settings["hooks"] as? [String: Any] else { continue }
-            for (event, handlers) in hooks.sorted(by: { $0.key < $1.key }) {
-                for command in hookCommands(from: handlers) {
-                    results.append(EngramServiceHookInfo(event: event, command: command, scope: scope, path: displayPath(url)))
-                }
-            }
-        }
-        return results
-    }
-
     func insights() async throws -> [EngramServiceInsightInfo] {
         []
     }
@@ -308,41 +238,6 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
 
     func projectCwds(_ request: EngramServiceProjectCwdsRequest) async throws -> EngramServiceProjectCwdsResponse {
         EngramServiceProjectCwdsResponse(project: request.project, cwds: [])
-    }
-
-    private func dictionary(at url: URL) -> [String: Any]? {
-        guard let data = try? Data(contentsOf: url),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-        return json
-    }
-
-    private func yamlFrontMatterValue(_ key: String, in content: String) -> String? {
-        for line in content.split(whereSeparator: \.isNewline) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("\(key):") else { continue }
-            return String(trimmed.dropFirst(key.count + 1)).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return nil
-    }
-
-    private func hookCommands(from value: Any) -> [String] {
-        guard let handlers = value as? [Any] else { return [] }
-        return handlers.map { handler in
-            if let command = handler as? String {
-                return command
-            }
-            if let object = handler as? [String: Any],
-               let command = object["command"] as? String {
-                return command
-            }
-            if let data = try? JSONSerialization.data(withJSONObject: handler),
-               let string = String(data: data, encoding: .utf8) {
-                return string
-            }
-            return String(describing: handler)
-        }
     }
 
     private func displayPath(_ url: URL) -> String {
@@ -932,20 +827,12 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         }
     }
 
-    func skills() async throws -> [EngramServiceSkillInfo] {
-        try await fileSystemProvider.skills()
-    }
-
     func memoryFiles() async throws -> [EngramServiceMemoryFile] {
         try await fileSystemProvider.memoryFiles()
     }
 
     func memoryFileContent(_ request: EngramServiceMemoryFileContentRequest) async throws -> EngramServiceMemoryFileContentResponse {
         try await fileSystemProvider.memoryFileContent(request)
-    }
-
-    func hooks() async throws -> [EngramServiceHookInfo] {
-        try await fileSystemProvider.hooks()
     }
 
     /// Preview length for an insight LIST row. Full content is fetched on demand

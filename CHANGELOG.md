@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: removed Skills/Hooks config-browser pages (2026-07-06, Codex)
+
+- Feature-cut item 4 deletes the macOS Skills and Hooks settings-browser pages,
+  their sidebar routes, service DTO/client/provider commands, UI tests, and
+  screenshot baselines. The CONFIG sidebar now contains Agents and Memory.
+
 ### Changed: removed corpus rule mining from product runtime (2026-07-06, Codex)
 
 - Feature-cut item 3 removes the background corpus rule miner, the `get_rules`

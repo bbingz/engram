@@ -18,10 +18,8 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
     case repos
     case workGraph
     // Config
-    case skills
     case agents
     case memory
-    case hooks
     // System
     case settings
 
@@ -41,10 +39,8 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
         case .sourcePulse: return "Sources"
         case .repos:       return "Repos"
         case .workGraph:   return "Work Graph"
-        case .skills:      return "Skills"
         case .agents:      return "Agents"
         case .memory:      return "Memory"
-        case .hooks:       return "Hooks"
         case .settings:    return "Settings"
         }
     }
@@ -63,10 +59,8 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
         case .sourcePulse: return String(localized: "Sources")
         case .repos:       return String(localized: "Repos")
         case .workGraph:   return String(localized: "Work Graph")
-        case .skills:      return String(localized: "Skills")
         case .agents:      return String(localized: "Agents")
         case .memory:      return String(localized: "Memory")
-        case .hooks:       return String(localized: "Hooks")
         case .settings:    return String(localized: "Settings")
         }
     }
@@ -85,10 +79,8 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
         case .sourcePulse: return "antenna.radiowaves.left.and.right"
         case .repos:       return "arrow.triangle.branch"
         case .workGraph:   return "point.3.connected.trianglepath.dotted"
-        case .skills:      return "sparkles"
         case .agents:      return "cpu"
         case .memory:      return "brain"
-        case .hooks:       return "link"
         case .settings:    return "gear"
         }
     }
@@ -105,7 +97,7 @@ enum Screen: String, CaseIterable, Identifiable, Hashable {
             case .overview:  return [.home, .search]
             case .monitor:   return [.sessions, .favorites, .timeline, .activity, .observability, .hygiene]
             case .workspace: return [.projects, .sourcePulse, .repos, .workGraph]
-            case .config:    return [.skills, .agents, .memory, .hooks]
+            case .config:    return [.agents, .memory]
             }
         }
     }

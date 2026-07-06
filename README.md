@@ -189,7 +189,7 @@ Engram 的产品 UI 是原生 macOS App。`Engram.app` 启动后会管理 `Engra
   - **Projects**：项目 rename / move / archive / undo，走 Swift service single-writer pipeline
   - **Sources / Repos / Work Graph**：来源状态、Git 仓库工作量、跨会话工作图
 - **CONFIG**
-  - **Skills / Agents / Memory / Hooks**：技能、子代理、记忆条目、`~/.claude` hooks 配置一览
+  - **Agents / Memory**：子代理与记忆条目配置一览
 
 其他贯穿全局的能力：
 - **会话详情**：完整对话内容、Markdown 渲染、收藏、导出，工具栏含 Handoff / Replay / Resume

@@ -66,6 +66,7 @@ targets:
       - path: ../tests/fixtures
         type: folder
         buildPhase: resources
+        createIntermediateGroups: false
     dependencies:
       - target: EngramCoreRead
       - target: EngramCoreWrite
@@ -340,6 +341,7 @@ targets:
       - path: ../tests/fixtures
         type: folder
         buildPhase: resources
+        createIntermediateGroups: false
     dependencies:
       - target: EngramMCP
       - package: GRDB

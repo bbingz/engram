@@ -6,10 +6,8 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func health() async throws -> EngramServiceHealthResponse
     func liveSessions() async throws -> EngramServiceLiveSessionsResponse
     func sources() async throws -> [EngramServiceSourceInfo]
-    func skills() async throws -> [EngramServiceSkillInfo]
     func memoryFiles() async throws -> [EngramServiceMemoryFile]
     func memoryFileContent(path: String) async throws -> EngramServiceMemoryFileContentResponse
-    func hooks() async throws -> [EngramServiceHookInfo]
     func insights() async throws -> [EngramServiceInsightInfo]
     func insightDetail(id: String) async throws -> EngramServiceInsightInfo?
     func costs() async throws -> EngramServiceCostsResponse

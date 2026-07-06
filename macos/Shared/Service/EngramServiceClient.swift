@@ -42,10 +42,6 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         try await command("sources")
     }
 
-    func skills() async throws -> [EngramServiceSkillInfo] {
-        try await command("skills")
-    }
-
     func memoryFiles() async throws -> [EngramServiceMemoryFile] {
         try await command("memoryFiles")
     }
@@ -55,10 +51,6 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
             "memoryFileContent",
             payload: EngramServiceMemoryFileContentRequest(path: path)
         )
-    }
-
-    func hooks() async throws -> [EngramServiceHookInfo] {
-        try await command("hooks")
     }
 
     func insights() async throws -> [EngramServiceInsightInfo] {

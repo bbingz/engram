@@ -18,7 +18,7 @@ struct SidebarScreen {
     static let pages = [
         "home", "search", "sessions", "timeline", "activity",
         "observability", "projects", "sourcePulse", "repos",
-        "workGraph", "skills", "agents", "memory", "hooks"
+        "workGraph", "agents", "memory"
     ]
 
     func item(for page: String) -> XCUIElement {

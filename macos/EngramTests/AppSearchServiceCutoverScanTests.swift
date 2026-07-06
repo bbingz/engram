@@ -77,6 +77,44 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
+    func testSkillsAndHooksConfigBrowserSurfacesAreRemoved() throws {
+        for relativePath in [
+            "macos/Engram/Views/Pages/SkillsView.swift",
+            "macos/Engram/Views/Pages/HooksView.swift",
+            "macos/EngramUITests/Screens/SkillsScreen.swift",
+            "macos/EngramUITests/Screens/HooksScreen.swift",
+            "macos/EngramUITests/Tests/FullTests/SkillsTests.swift",
+            "macos/EngramUITests/Tests/FullTests/HooksTests.swift",
+            "macos/EngramUITests/baselines/skills_list.png",
+            "macos/EngramUITests/baselines/hooks_list.png",
+            "macos/EngramTests/HooksSkillsTests.swift",
+        ] {
+            let url = repoRoot.appendingPathComponent(relativePath)
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: url.path),
+                "\(relativePath) belongs to the removed Skills/Hooks config-browser surface"
+            )
+        }
+
+        for (relativePath, forbidden) in [
+            ("macos/Engram/Models/Screen.swift", ["case skills", "case hooks", ".skills", ".hooks", "\"Skills\"", "\"Hooks\""]),
+            ("macos/Engram/Views/MainWindowView.swift", ["SkillsView()", "HooksView()", "case .skills", "case .hooks"]),
+            ("macos/Shared/Service/EngramServiceProtocol.swift", ["func skills()", "func hooks()", "EngramServiceSkillInfo", "EngramServiceHookInfo"]),
+            ("macos/Shared/Service/EngramServiceClient.swift", ["func skills()", "func hooks()", "command(\"skills\")", "command(\"hooks\")"]),
+            ("macos/Shared/Service/MockEngramServiceClient.swift", ["skillsResult", "hooksResult", "func skills()", "func hooks()", "EngramServiceSkillInfo", "EngramServiceHookInfo"]),
+            ("macos/Shared/Service/EngramServiceModels.swift", ["EngramServiceSkillInfo", "EngramServiceHookInfo"]),
+            ("macos/EngramService/Core/EngramServiceCommandHandler.swift", ["case \"skills\"", "case \"hooks\""]),
+            ("macos/EngramService/Core/EngramServiceReadProvider.swift", ["func skills()", "func hooks()", "yamlFrontMatterValue", "hookCommands(from"]),
+            ("macos/Engram/Resources/Localizable.xcstrings", ["\"Skills\"", "\"Hooks\""]),
+            ("scripts/check-stage3-daemon-cutover.sh", ["SkillsView.swift", "HooksView.swift"]),
+        ] {
+            let text = try source(relativePath)
+            for token in forbidden {
+                XCTAssertFalse(text.contains(token), "\(relativePath) should not retain \(token)")
+            }
+        }
+    }
+
     func testAppSearchSurfacesDoNotCallDaemonSearchHttpDirectly() throws {
         let files = [
             "macos/Engram/Views/Pages/SearchPageView.swift",
@@ -182,14 +220,6 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
             (
                 "macos/Engram/Views/Pages/MemoryView.swift",
                 ["DaemonClient", "/api/memory"]
-            ),
-            (
-                "macos/Engram/Views/Pages/SkillsView.swift",
-                ["DaemonClient", "/api/skills"]
-            ),
-            (
-                "macos/Engram/Views/Pages/HooksView.swift",
-                ["DaemonClient", "/api/hooks"]
             ),
             (
                 "macos/Engram/Views/Replay/SessionReplayView.swift",

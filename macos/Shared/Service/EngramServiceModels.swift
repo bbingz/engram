@@ -554,14 +554,6 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-struct EngramServiceSkillInfo: Codable, Equatable, Identifiable, Sendable {
-    var id: String { "\(scope)/\(name)" }
-    let name: String
-    let description: String
-    let path: String
-    let scope: String
-}
-
 struct EngramServiceMemoryFile: Codable, Equatable, Identifiable, Sendable {
     var id: String { path }
     let name: String
@@ -629,18 +621,6 @@ struct EngramServiceMemoryFileContentResponse: Codable, Equatable, Sendable {
     let path: String
     let content: String
     let truncated: Bool
-}
-
-struct EngramServiceHookInfo: Codable, Equatable, Identifiable, Sendable {
-    var id: String { "\(scope)/\(event)/\(command)" }
-    let event: String
-    let command: String
-    let scope: String
-    /// Source settings.json that defines the hook (~-expanded), so the UI can
-    /// reveal/open it. Populated by FileSystemEngramServiceReadProvider.hooks();
-    /// optional so payloads that predate the field (or omit a known source)
-    /// still decode rather than throwing keyNotFound.
-    let path: String?
 }
 
 struct EngramServiceHygieneRequest: Codable, Equatable, Sendable {

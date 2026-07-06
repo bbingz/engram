@@ -116,14 +116,10 @@ struct MainWindowView: View {
             ReposView()
         case .workGraph:
             WorkGraphView()
-        case .skills:
-            SkillsView()
         case .agents:
             AgentsView()
         case .memory:
             MemoryView()
-        case .hooks:
-            HooksView()
         case .settings:
             SettingsView()
         }
