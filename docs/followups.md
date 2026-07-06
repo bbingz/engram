@@ -179,7 +179,7 @@ Ground rules:
    MigrationRunnerTests. Existing `mined_rules` rows on installed DBs stay
    inert. Add get_rules removal note to `docs/mcp-tools.md` (it was never
    documented there — that omission was part of the cut rationale).
-4. **DELETE Skills + Hooks config-browser pages.** Remove
+4. **DONE in PR #106 — DELETE Skills + Hooks config-browser pages.** Remove
    `Views/Pages/SkillsView.swift` + `HooksView.swift` (92 LOC each), the two
    `Screen` enum cases + switch arms + `Section.config` entries,
    MainWindowView dispatch arms, `skills()`/`hooks()` across
