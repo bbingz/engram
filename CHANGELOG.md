@@ -7,6 +7,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: removed corpus rule mining from product runtime (2026-07-06, Codex)
+
+- Feature-cut item 3 removes the background corpus rule miner, the `get_rules`
+  MCP tool, `engram://rule/{id}` resources, and `get_context` rule folding.
+  Fresh Swift product databases no longer create `mined_rules` tables; existing
+  rows on installed databases are left inert rather than dropped.
+
 ### Changed: removed legacy TypeScript web/MCP/daemon entrypoints (2026-07-06, Codex)
 
 - Feature-cut item 2 deletes the retained TypeScript HTTP/Web surface, Node MCP

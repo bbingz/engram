@@ -13,6 +13,12 @@
 
 ## Status update (2026-06-26, Codex)
 
+> Superseded note (2026-07-06): feature-cut item 3 removed the corpus rule-mining
+> product surface (`get_rules`, `engram://rule/{id}`, `get_context` rule
+> folding, background miner, and fresh `mined_rules` schema). The sections below
+> remain historical design notes, not current product behavior, where they
+> describe corpus mining.
+
 Claude landed e, d read-side, and c.1/c.2/c.3 read/backfill foundation. Codex reviewed that work and
 completed the remaining live P1 runtime surface:
 
@@ -185,7 +191,7 @@ Land in verified increments (each builds + has Swift tests):
       backfills as gated background jobs (short read/write phases, embedding outside the gate);
       service `search` supports configured semantic/hybrid mode over `semantic_chunks`; d's deferred
       supersession/access writes are implemented.
-4. **f** — miner + `get_rules`. ✅ **DONE 2026-06-26** — `mined_rules`/FTS schema, MCP `get_rules`,
+4. **f** — miner + `get_rules`. ✅ **DONE 2026-06-26**, superseded by feature-cut item 3 on 2026-07-06 — `mined_rules`/FTS schema, MCP `get_rules`,
    rule resources, `get_context` rule folding, and opt-in service corpus mining. The miner filters
    high-quality edit sessions, runs completion outside the writer gate, merges evidence for same-title
    rule updates, and skips already-mined sessions.

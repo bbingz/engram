@@ -837,7 +837,6 @@ final class MCPDatabase {
         var totalChars = 0
         var selectedCount = 0
         var memoryCount = 0
-        var ruleCount = 0
 
         if let task, !task.isEmpty {
             let line = "当前任务：\(task)\n"
@@ -857,21 +856,6 @@ final class MCPDatabase {
             }
         }
 
-        let ruleRows = try minedRuleRows(
-            project: projectName,
-            query: task,
-            limit: 3
-        )
-        for row in ruleRows {
-            guard let title = stringValue(row["title"]), !title.isEmpty,
-                  let body = stringValue(row["body"]), !body.isEmpty else { continue }
-            let line = "[rule] \(title) — \(body)\n"
-            if totalChars + line.count > maxChars { break }
-            parts.append(line)
-            totalChars += line.count
-            ruleCount += 1
-        }
-
         for row in sessions {
             guard let summary = stringValue(row["summary"]), !summary.isEmpty else { continue }
             let source = stringValue(row["source"]) ?? "unknown"
@@ -884,8 +868,7 @@ final class MCPDatabase {
         }
 
         let memoryNote = memoryCount > 0 ? " + \(memoryCount) memories" : ""
-        let ruleNote = ruleCount > 0 ? " + \(ruleCount) rules" : ""
-        let footer = "\n— \(selectedCount) sessions\(memoryNote)\(ruleNote), ~\(Int(ceil(Double(totalChars) / 4.0))) tokens"
+        let footer = "\n— \(selectedCount) sessions\(memoryNote), ~\(Int(ceil(Double(totalChars) / 4.0))) tokens"
         parts.append(footer)
 
         if includeEnvironment {
@@ -893,14 +876,6 @@ final class MCPDatabase {
         }
 
         return parts.joined()
-    }
-
-    func getRules(project: String?, query: String?, limit: Int) throws -> OrderedJSONValue {
-        let rows = try minedRuleRows(project: project, query: query, limit: max(1, min(limit, 50)))
-        return .object([
-            ("rules", .array(rows.map(ruleObject(from:)))),
-            ("count", .int(rows.count)),
-        ])
     }
 
     func listProjectAliases() throws -> OrderedJSONValue {
@@ -1382,9 +1357,9 @@ final class MCPDatabase {
         let mimeType: String
     }
 
-    /// Recent sessions + saved insights + mined rules exposed as MCP resources so clients
+    /// Recent sessions + saved insights exposed as MCP resources so clients
     /// (e.g. Claude Code) can surface them in `@`-mention autocomplete.
-    func recentResourceCatalog(sessionLimit: Int, insightLimit: Int, ruleLimit: Int = 15) throws -> [ResourceEntry] {
+    func recentResourceCatalog(sessionLimit: Int, insightLimit: Int) throws -> [ResourceEntry] {
         var entries: [ResourceEntry] = []
         let sessions = try queue.read { db in
             try Row.fetchAll(
@@ -1425,20 +1400,6 @@ final class MCPDatabase {
                 mimeType: "text/plain"
             ))
         }
-        let rules = try minedRuleRows(project: nil, query: nil, limit: ruleLimit)
-        for row in rules {
-            guard let id = stringValue(row["id"]), !id.isEmpty else { continue }
-            let title = stringValue(row["title"]) ?? id
-            let descriptionParts = [stringValue(row["rule_type"]), stringValue(row["source_project"])]
-                .compactMap { $0 }
-                .filter { !$0.isEmpty }
-            entries.append(ResourceEntry(
-                uri: "engram://rule/\(id)",
-                name: String(title.prefix(100)),
-                description: descriptionParts.joined(separator: " · "),
-                mimeType: "text/markdown"
-            ))
-        }
         return entries
     }
 
@@ -1450,37 +1411,6 @@ final class MCPDatabase {
                 sql: "SELECT content FROM insights WHERE id = ? LIMIT 1",
                 arguments: [id]
             )
-        }
-    }
-
-    /// Markdown content of a mined rule, by id.
-    func ruleContent(id: String) throws -> String? {
-        guard try tableExists("mined_rules") else { return nil }
-        return try queue.read { db in
-            guard let row = try Row.fetchOne(
-                db,
-                sql: "SELECT * FROM mined_rules WHERE id = ? LIMIT 1",
-                arguments: [id]
-            ) else { return nil }
-            let title = stringValue(row["title"]) ?? id
-            let body = stringValue(row["body"]) ?? ""
-            let ruleType = stringValue(row["rule_type"]) ?? "rule"
-            let project = stringValue(row["source_project"])
-            let evidence = stringArrayFromJSON(stringValue(row["evidence_session_ids"]))
-            var lines = [
-                "# \(title)",
-                "",
-                "- Type: \(ruleType)",
-            ]
-            if let project, !project.isEmpty {
-                lines.append("- Project: \(project)")
-            }
-            if !evidence.isEmpty {
-                lines.append("- Evidence sessions: \(evidence.joined(separator: ", "))")
-            }
-            lines.append("")
-            lines.append(body)
-            return lines.joined(separator: "\n")
         }
     }
 
@@ -1583,73 +1513,6 @@ final class MCPDatabase {
         }
     }
 
-    private func minedRuleRows(project: String?, query: String?, limit: Int) throws -> [Row] {
-        guard try tableExists("mined_rules") else { return [] }
-        let expandedProjects = try project.map { try resolveProjectAliases([$0]) } ?? []
-        let normalizedQuery = query?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        if normalizedQuery.count >= 3, try tableExists("mined_rules_fts") {
-            return try readRetryingTransientMissingFTS { db in
-                var conditions = ["mined_rules_fts MATCH ?"]
-                var values: [DatabaseValueConvertible?] = [normalizedQuery]
-                if !expandedProjects.isEmpty {
-                    let placeholders = Array(repeating: "?", count: expandedProjects.count).joined(separator: ",")
-                    conditions.append("r.source_project IN (\(placeholders))")
-                    values.append(contentsOf: expandedProjects)
-                }
-                values.append(limit)
-
-                let sql = """
-                SELECT r.*, f.rank
-                FROM mined_rules_fts f
-                JOIN mined_rules r ON r.id = f.rule_id
-                WHERE \(conditions.joined(separator: " AND "))
-                ORDER BY f.rank, r.confidence DESC, r.created_at DESC
-                LIMIT ?
-                """
-                do {
-                    return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
-                } catch {
-                    values[0] = "\"\(normalizedQuery.replacingOccurrences(of: "\"", with: "\"\""))\""
-                    return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
-                }
-            }
-        }
-
-        return try queue.read { db in
-            var conditions: [String] = []
-            var values: [DatabaseValueConvertible?] = []
-            if !expandedProjects.isEmpty {
-                let placeholders = Array(repeating: "?", count: expandedProjects.count).joined(separator: ",")
-                conditions.append("source_project IN (\(placeholders))")
-                values.append(contentsOf: expandedProjects)
-            }
-            values.append(limit)
-            let whereClause = conditions.isEmpty ? "" : "WHERE \(conditions.joined(separator: " AND "))"
-            return try Row.fetchAll(
-                db,
-                sql: """
-                SELECT *
-                FROM mined_rules
-                \(whereClause)
-                ORDER BY confidence DESC, created_at DESC
-                LIMIT ?
-                """,
-                arguments: StatementArguments(values)
-            )
-        }
-    }
-
-    private func tableExists(_ table: String) throws -> Bool {
-        try queue.read { db in
-            try Int.fetchOne(
-                db,
-                sql: "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
-                arguments: [table]
-            ) != nil
-        }
-    }
-
     private func readRetryingTransientMissingFTS<T>(
         _ block: (Database) throws -> T
     ) throws -> T {
@@ -1666,7 +1529,6 @@ final class MCPDatabase {
         let message = String(describing: error)
         return message.contains("no such table: sessions_fts")
             || message.contains("no such table: insights_fts")
-            || message.contains("no such table: mined_rules_fts")
     }
 
     private func resolveProjectAliases(_ projects: [String]) throws -> [String] {
@@ -1781,27 +1643,6 @@ private func memoryObject(from row: Row, distance: Double) -> OrderedJSONValue {
         ("importance", .int(intValue(row["importance"]))),
         ("distance", .double(distance)),
     ])
-}
-
-private func ruleObject(from row: Row) -> OrderedJSONValue {
-    .object([
-        ("id", .string(stringValue(row["id"]) ?? "")),
-        ("ruleType", .string(stringValue(row["rule_type"]) ?? "rule")),
-        ("title", .string(stringValue(row["title"]) ?? "")),
-        ("body", .string(stringValue(row["body"]) ?? "")),
-        ("evidenceSessionIds", .array(stringArrayFromJSON(stringValue(row["evidence_session_ids"])).map { .string($0) })),
-        ("confidence", .double(doubleValue(row["confidence"]))),
-        ("sourceProject", valueOrNull(stringValue(row["source_project"]))),
-        ("model", valueOrNull(stringValue(row["model"]))),
-        ("createdAt", .string(stringValue(row["created_at"]) ?? "")),
-    ])
-}
-
-private func stringArrayFromJSON(_ raw: String?) -> [String] {
-    guard let raw,
-          let data = raw.data(using: .utf8),
-          let values = try? JSONSerialization.jsonObject(with: data) as? [String] else { return [] }
-    return values.filter { !$0.isEmpty }
 }
 
 private func detailJSONValue(from raw: DatabaseValueConvertible?) -> OrderedJSONValue {

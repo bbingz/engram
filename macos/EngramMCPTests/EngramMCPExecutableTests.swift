@@ -66,7 +66,9 @@ final class EngramMCPExecutableTests: XCTestCase {
             XCTFail("Expected tools/list result.tools array")
             return
         }
-        XCTAssertEqual(tools.count, 29)
+        let names = tools.compactMap { $0["name"]?.stringValue }
+        XCTAssertEqual(tools.count, 28)
+        XCTAssertFalse(names.contains("get_rules"), "\(names)")
     }
 
     func testPingReturnsEmptyResult() throws {
@@ -330,7 +332,34 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertFalse((contents.first?["text"]?.stringValue ?? "").isEmpty)
     }
 
-    func testGetRulesAndRuleResourceReturnMinedRules() throws {
+    func testResourceReadSessionReturnsTranscript() throws {
+        let listed = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"resources/list"}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        )
+        let resources = try XCTUnwrap(listed.ordered["result"]?["resources"]?.arrayValue)
+        let sessionURI = resources.compactMap { $0["uri"]?.stringValue }
+            .first { $0.hasPrefix("engram://session/") }
+        let uri = try XCTUnwrap(sessionURI, "fixture should contain at least one session resource")
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"\(uri)"}}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        )
+        XCTAssertNil(capture.response.error)
+        let contents = try XCTUnwrap(capture.ordered["result"]?["contents"]?.arrayValue)
+        XCTAssertEqual(contents.first?["uri"]?.stringValue, uri)
+        XCTAssertEqual(contents.first?["mimeType"]?.stringValue, "text/markdown")
+        let text = contents.first?["text"]?.stringValue ?? ""
+        XCTAssertTrue(text.contains("\"session\""), text)
+        XCTAssertTrue(text.contains("\"messages\""), text)
+    }
+
+    func testRemovedGetRulesToolAndRuleResourcesAreUnavailable() throws {
         let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-rules")
         defer { try? FileManager.default.removeItem(atPath: dbPath) }
         try seedMinedRuleFixture(at: dbPath)
@@ -342,11 +371,9 @@ final class EngramMCPExecutableTests: XCTestCase {
             environment: ["ENGRAM_MCP_DB_PATH": dbPath]
         )
         XCTAssertNil(rules.response.error)
-        let firstRule = try XCTUnwrap(
-            rules.ordered["result"]?["structuredContent"]?["rules"]?.arrayValue?.first
-        )
-        XCTAssertEqual(firstRule["id"]?.stringValue, "rule-writer-gate")
-        XCTAssertEqual(firstRule["evidenceSessionIds"]?.arrayValue?.first?.stringValue, "mcp-fixture-01")
+        XCTAssertEqual(rules.ordered["result"]?["isError"]?.boolValue, true)
+        let toolText = rules.ordered["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+        XCTAssertTrue(toolText.contains("Unknown tool: get_rules"), toolText)
 
         let listed = try rpc(
             """
@@ -354,25 +381,21 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             environment: ["ENGRAM_MCP_DB_PATH": dbPath]
         )
-        let uri = try XCTUnwrap(
-            listed.ordered["result"]?["resources"]?.arrayValue?
-                .compactMap { $0["uri"]?.stringValue }
-                .first { $0 == "engram://rule/rule-writer-gate" }
-        )
+        let uris = listed.ordered["result"]?["resources"]?.arrayValue?
+            .compactMap { $0["uri"]?.stringValue } ?? []
+        XCTAssertFalse(uris.contains { $0.hasPrefix("engram://rule/") }, "\(uris)")
 
         let read = try rpc(
             """
-            {"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"\(uri)"}}
+            {"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"engram://rule/rule-writer-gate"}}
             """,
             environment: ["ENGRAM_MCP_DB_PATH": dbPath]
         )
-        XCTAssertNil(read.response.error)
-        let text = read.ordered["result"]?["contents"]?.arrayValue?.first?["text"]?.stringValue ?? ""
-        XCTAssertTrue(text.contains("# Preserve the service writer gate"), text)
-        XCTAssertTrue(text.contains("mcp-fixture-01"), text)
+        XCTAssertEqual(read.response.error?.code, -32602)
+        XCTAssertTrue(read.response.error?.message.contains("Unsupported resource uri") ?? false)
     }
 
-    func testGetContextIncludesMinedRulesForProject() throws {
+    func testGetContextIgnoresLegacyMinedRulesRows() throws {
         let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-context-rules")
         defer { try? FileManager.default.removeItem(atPath: dbPath) }
         try seedMinedRuleFixture(at: dbPath)
@@ -385,7 +408,8 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
         XCTAssertNil(capture.response.error)
         let text = capture.ordered["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
-        XCTAssertTrue(text.contains("[rule] Preserve the service writer gate"), text)
+        XCTAssertFalse(text.contains("[rule]"), text)
+        XCTAssertFalse(text.contains("Preserve the service writer gate"), text)
     }
 
     func testGetContextRejectsHugeMaxTokensInsteadOfOverflowing() throws {

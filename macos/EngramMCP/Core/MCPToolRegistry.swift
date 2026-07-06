@@ -254,28 +254,6 @@ enum MCPToolRegistry {
             ])
         ),
         MCPToolDefinition(
-            name: "get_rules",
-            description: "Retrieve reusable rules and runbooks mined from high-value cross-tool sessions.",
-            inputSchema: .object([
-                "type": .string("object"),
-                "properties": .object([
-                    "project": .object([
-                        "type": .string("string"),
-                        "description": .string("Project name to filter mined rules"),
-                    ]),
-                    "query": .object([
-                        "type": .string("string"),
-                        "description": .string("Optional keyword query for rule title/body"),
-                    ]),
-                    "limit": .object([
-                        "type": .string("number"),
-                        "description": .string("Default 10, max 50"),
-                    ]),
-                ]),
-                "additionalProperties": .bool(false),
-            ])
-        ),
-        MCPToolDefinition(
             name: "search",
             description: "Full-text keyword search across all session content. Supports Chinese and English.",
             inputSchema: .object([
@@ -869,14 +847,6 @@ enum MCPToolRegistry {
             let structured = try await database.getMemory(query: try requiredString("query", in: arguments))
             await recordInsightAccessBestEffort(in: structured, config: config)
             return .toolSuccess(structured)
-        case "get_rules":
-            let database = try MCPDatabase(path: config.dbPath)
-            let structured = try database.getRules(
-                project: arguments["project"]?.stringValue,
-                query: arguments["query"]?.stringValue,
-                limit: min(arguments["limit"]?.intValue ?? 10, 50)
-            )
-            return .toolSuccess(structured)
         case "search":
             let query = try requiredString("query", in: arguments)
             do {
@@ -1139,7 +1109,6 @@ enum MCPToolRegistry {
              "project_list_migrations",
              "live_sessions",
              "get_memory",
-             "get_rules",
              "search",
              "get_context",
              "get_insights",
@@ -1243,7 +1212,7 @@ enum MCPToolRegistry {
 
     static func resourcesList(config: MCPConfig) async throws -> OrderedJSONValue {
         let database = try MCPDatabase(path: config.dbPath)
-        let catalog = (try? database.recentResourceCatalog(sessionLimit: 15, insightLimit: 15, ruleLimit: 15)) ?? []
+        let catalog = (try? database.recentResourceCatalog(sessionLimit: 15, insightLimit: 15)) ?? []
         let items = catalog.map { entry -> OrderedJSONValue in
             .object([
                 ("uri", .string(entry.uri)),
@@ -1277,13 +1246,6 @@ enum MCPToolRegistry {
             }
             text = content
             mimeType = "text/plain"
-        case "rule":
-            let database = try MCPDatabase(path: config.dbPath)
-            guard let content = try database.ruleContent(id: parsed.id) else {
-                throw MCPToolError.invalidArguments("Rule not found: \(parsed.id)")
-            }
-            text = content
-            mimeType = "text/markdown"
         default:
             throw MCPToolError.invalidArguments("Unsupported resource uri: \(uri)")
         }

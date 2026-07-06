@@ -504,7 +504,6 @@ enum EngramMigrations {
             );
             CREATE INDEX IF NOT EXISTS idx_sync_ledger_session ON sync_ledger(session_id, synced_at DESC);
         """)
-        try ensureMinedRulesTables(db)
         try addSessionIndexJobColumnsIfNeeded(db)
         try backfillFtsMapIfNeeded(db)
         try migrateAuxTablesToV2(db)
@@ -551,7 +550,6 @@ enum EngramMigrations {
 
     private static func migrateAuxTablesToV2(_ db: GRDB.Database) throws {
         try ensureMigrationLogIndexes(db)
-        try ensureMinedRulesTables(db)
         // Skip the per-table rebuilds once the stored version already matches the
         // current aux schema. The per-table guards are idempotent, but they run
         // PRAGMA table_info on ~10 tables every startup; gating on the version
@@ -581,30 +579,6 @@ enum EngramMigrations {
             """,
             arguments: [auxSchemaVersion]
         )
-    }
-
-    private static func ensureMinedRulesTables(_ db: GRDB.Database) throws {
-        try db.execute(sql: """
-            CREATE TABLE IF NOT EXISTS mined_rules (
-              id TEXT PRIMARY KEY,
-              rule_type TEXT NOT NULL,
-              title TEXT NOT NULL,
-              body TEXT NOT NULL,
-              evidence_session_ids TEXT NOT NULL DEFAULT '[]',
-              confidence REAL NOT NULL DEFAULT 0,
-              source_project TEXT,
-              model TEXT,
-              created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE INDEX IF NOT EXISTS idx_mined_rules_project ON mined_rules(source_project, confidence DESC);
-            CREATE INDEX IF NOT EXISTS idx_mined_rules_created ON mined_rules(created_at DESC);
-            CREATE VIRTUAL TABLE IF NOT EXISTS mined_rules_fts USING fts5(
-              rule_id UNINDEXED,
-              title,
-              body,
-              tokenize='trigram case_sensitive 0'
-            );
-        """)
     }
 
     private static func ensureMigrationLogIndexes(_ db: GRDB.Database) throws {
