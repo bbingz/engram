@@ -881,7 +881,7 @@ final class EngramMCPExecutableTests: XCTestCase {
         try DatabaseQueue(path: dbPath).write { db in
             try db.execute(sql: "DROP TABLE sessions_fts")
         }
-        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(5)) {
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(75)) {
             do {
                 try DatabaseQueue(path: dbPath).write { db in
                     try db.execute(sql: "CREATE VIRTUAL TABLE sessions_fts USING fts5(session_id UNINDEXED, content)")

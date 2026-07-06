@@ -1516,12 +1516,16 @@ final class MCPDatabase {
     private func readRetryingTransientMissingFTS<T>(
         _ block: (Database) throws -> T
     ) throws -> T {
-        do {
-            return try queue.read(block)
-        } catch {
-            guard isTransientMissingFTSTable(error) else { throw error }
+        let maxAttempts = 10
+        var attempt = 0
+        while true {
+            attempt += 1
+            do {
+                return try queue.read(block)
+            } catch {
+                guard isTransientMissingFTSTable(error), attempt < maxAttempts else { throw error }
+            }
             Thread.sleep(forTimeInterval: 0.02)
-            return try queue.read(block)
         }
     }
 
