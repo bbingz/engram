@@ -7,6 +7,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: demoted project migration bulk controls (2026-07-06, Codex)
+
+- Feature-cut item 9 moves the Projects page Select, Move Selected, History,
+  and Undo Recent Move controls behind an `Advanced` disclosure while keeping
+  single-project row actions visible.
+- Kept the native project migration service path and every `project_*` MCP tool
+  intact; this is a UI demotion only, not a contract removal.
+
 ### Changed: folded Favorites into Sessions filter (2026-07-06, Codex)
 
 - Feature-cut item 8 removes the standalone macOS Favorites sidebar screen and

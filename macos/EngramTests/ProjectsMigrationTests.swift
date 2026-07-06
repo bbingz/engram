@@ -157,6 +157,72 @@ final class ProjectsMigrationTests: XCTestCase {
         }
     }
 
+    func testBulkUndoHistoryControlsLiveBehindAdvancedProjectsAffordance() throws {
+        let projectsView = try Self.source("macos/Engram/Views/Pages/ProjectsView.swift")
+
+        XCTAssertTrue(
+            projectsView.contains("@State private var showAdvancedMigrationTools"),
+            "ProjectsView should keep bulk project migration controls collapsed behind an explicit Advanced affordance"
+        )
+        XCTAssertTrue(
+            projectsView.contains("Button {\n                showAdvancedMigrationTools.toggle()"),
+            "Project migration batch/undo/history controls should not be visible in the default Projects toolbar"
+        )
+        XCTAssertTrue(
+            projectsView.contains("if showAdvancedMigrationTools {"),
+            "Project migration batch/undo/history controls should render only after opening Advanced"
+        )
+        XCTAssertTrue(
+            projectsView.contains("Label(\"Advanced\", systemImage: \"slider.horizontal.3\")"),
+            "The collapsed project migration affordance should be labelled Advanced"
+        )
+
+        let advancedStart = try XCTUnwrap(projectsView.range(of: "private var advancedMigrationTools: some View"))
+        let defaultProjectsSurface = String(projectsView[..<advancedStart.lowerBound])
+        let advancedSurface = String(projectsView[advancedStart.lowerBound...])
+        for identifier in [
+            "projects_batchMoveButton",
+            "projects_selectToggle",
+            "projects_historyButton",
+            "projects_undoButton",
+        ] {
+            XCTAssertFalse(
+                defaultProjectsSurface.contains(identifier),
+                "\(identifier) should not live on the default Projects surface"
+            )
+            XCTAssertTrue(
+                advancedSurface.contains(identifier),
+                "\(identifier) should stay available behind Advanced"
+            )
+        }
+
+        XCTAssertTrue(
+            defaultProjectsSurface.contains("renameTarget = group.project"),
+            "Single-project rename/move entry points should remain on each project row"
+        )
+        XCTAssertTrue(
+            defaultProjectsSurface.contains("archiveTarget = group.project"),
+            "Single-project archive/move entry points should remain on each project row"
+        )
+
+        let registry = try Self.source("macos/EngramMCP/Core/MCPToolRegistry.swift")
+        for toolName in [
+            "project_timeline",
+            "project_list_migrations",
+            "project_review",
+            "project_move",
+            "project_archive",
+            "project_undo",
+            "project_move_batch",
+            "project_recover",
+        ] {
+            XCTAssertTrue(
+                registry.contains("name: \"\(toolName)\""),
+                "Demoting Projects UI must not remove MCP tool \(toolName)"
+            )
+        }
+    }
+
     // MARK: - Helpers
 
     private static func decode<T: Decodable>(_ data: Data?, as type: T.Type) throws -> T {
