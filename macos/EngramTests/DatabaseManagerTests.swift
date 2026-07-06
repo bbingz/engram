@@ -129,6 +129,33 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testListSessionsCanFilterFavoritesWithoutUsingFavoritesPageQuery() throws {
+        try insertTestSession(at: dbPath, id: "favorite-visible", source: "claude-code")
+        try insertTestSession(at: dbPath, id: "not-favorite", source: "cursor")
+        try insertTestSession(at: dbPath, id: "favorite-hidden", source: "codex", hiddenAt: "2026-05-09T00:00:00Z")
+        try insertFavorite(at: dbPath, sessionId: "favorite-visible")
+        try insertFavorite(at: dbPath, sessionId: "favorite-hidden")
+
+        let visibleFavorites = try db.listSessions(favoritesOnly: true, sort: .createdDesc)
+        XCTAssertEqual(visibleFavorites.map(\.id), ["favorite-visible"])
+
+        let allFavorites = try db.listSessions(includeHidden: true, favoritesOnly: true, sort: .createdDesc)
+        XCTAssertEqual(allFavorites.map(\.id), ["favorite-hidden", "favorite-visible"])
+    }
+
+    @MainActor
+    func testSessionListStatsCanFilterFavorites() throws {
+        try insertTestSession(at: dbPath, id: "favorite", source: "claude-code", messageCount: 5)
+        try insertTestSession(at: dbPath, id: "not-favorite", source: "cursor", messageCount: 7)
+        try insertFavorite(at: dbPath, sessionId: "favorite")
+
+        let stats = try db.sessionListStats(favoritesOnly: true)
+        XCTAssertEqual(stats.totalSessions, 1)
+        XCTAssertEqual(stats.totalMessages, 5)
+        XCTAssertEqual(stats.sources, ["claude-code"])
+    }
+
+    @MainActor
     func testIsFavoriteReturnsFalseForNonFavorite() throws {
         try insertTestSession(at: dbPath)
         XCTAssertFalse(try db.isFavorite(sessionId: "test-session-001"))

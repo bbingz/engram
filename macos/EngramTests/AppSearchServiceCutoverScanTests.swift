@@ -1083,6 +1083,49 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
+    func testFavoritesPageIsFoldedIntoSessionsFilterPill() throws {
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: repoRoot.appendingPathComponent("macos/Engram/Views/Pages/FavoritesPageView.swift").path),
+            "Favorites should be folded into SessionsPageView instead of staying as a standalone page"
+        )
+
+        let screen = try source("macos/Engram/Models/Screen.swift")
+        XCTAssertFalse(screen.contains("case favorites"), "Favorites should not remain a standalone Screen case")
+
+        let sidebar = try source("macos/Engram/Views/SidebarView.swift")
+        XCTAssertFalse(sidebar.contains("sidebar_item_favorites"), "Favorites should not remain a sidebar item")
+
+        let mainWindow = try source("macos/Engram/Views/MainWindowView.swift")
+        XCTAssertFalse(mainWindow.contains("FavoritesPageView()"), "MainWindowView should not route a standalone Favorites page")
+
+        let sessionsPage = try source("macos/Engram/Views/Pages/SessionsPageView.swift")
+        XCTAssertTrue(sessionsPage.contains("\"Starred\""), "SessionsPageView should expose a Starred filter pill")
+        XCTAssertTrue(
+            sessionsPage.contains("let favoritesOnly = self.favoritesOnly"),
+            "SessionsPageView should snapshot the Starred filter before detached database reads"
+        )
+        XCTAssertFalse(
+            sessionsPage.contains("favoritesOnly: sessionFilter == \"Starred\""),
+            "Detached database reads should use the snapshotted Starred filter"
+        )
+        XCTAssertTrue(
+            sessionsPage.contains("favoritesOnly: favoritesOnly"),
+            "SessionsPageView should query starred sessions through the regular list path"
+        )
+        XCTAssertTrue(
+            sessionsPage.contains("onToggleFavorite: favoritesOnly ? nil"),
+            "Starred rows should not offer an Add to Favorites browse-card action"
+        )
+
+        let strings = try source("macos/Engram/Resources/Localizable.xcstrings")
+        XCTAssertTrue(strings.contains("\"Starred\""), "The new Starred filter label should be localized")
+        XCTAssertFalse(strings.contains("\"No favorites yet\""), "Standalone Favorites empty-state strings should be removed")
+        XCTAssertFalse(
+            strings.contains("Star sessions in the Sessions tab"),
+            "Standalone Favorites guidance strings should be removed"
+        )
+    }
+
     func testMcpInsightsOutputDescribesComputedSuggestionsConservatively() throws {
         let insights = try source("macos/EngramMCP/Core/MCPInsightsTool.swift")
         XCTAssertFalse(

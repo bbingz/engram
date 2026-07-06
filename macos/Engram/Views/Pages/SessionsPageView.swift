@@ -16,6 +16,7 @@ struct SessionsPageView: View {
     @State private var totalCount = 0
     @State private var totalMessages = 0
     @State private var avgDurationSeconds: Double?
+    @State private var sessionFilter = "All"
     @State private var timeFilter = "All Time"
     @State private var sourceFilter: String? = nil
     @State private var availableSources: [String] = []
@@ -34,8 +35,13 @@ struct SessionsPageView: View {
     // pagination). See BrowseReloadCoalescer / #3.
     @State private var lastFilterKey: [AnyHashable]? = nil
 
+    private let sessionOptions = ["All", "Starred"]
     private let timeOptions = ["Today", "This Week", "This Month", "All Time"]
     private static let pageSize = 200
+
+    private var favoritesOnly: Bool {
+        sessionFilter == "Starred"
+    }
 
     private var handlers: SessionActionHandlers {
         SessionActionHandlers(
@@ -73,6 +79,8 @@ struct SessionsPageView: View {
                 }
 
                 HStack(spacing: 12) {
+                    FilterPills(options: sessionOptions, selected: $sessionFilter)
+                        .accessibilityIdentifier("sessions_sessionFilterPills")
                     FilterPills(options: timeOptions, selected: $timeFilter)
                         .accessibilityIdentifier("sessions_filterPills")
                     Spacer()
@@ -132,7 +140,9 @@ struct SessionsPageView: View {
                                 onRename: { beginRename($0) },
                                 onExportMarkdown: { handlers.export($0, format: "markdown") },
                                 onExportJSON: { handlers.export($0, format: "json") },
-                                onToggleFavorite: { handlers.setFavorite($0, favorite: true) },
+                                onToggleFavorite: favoritesOnly ? nil : { session in
+                                    handlers.setFavorite(session, favorite: true)
+                                },
                                 isHidden: session.hiddenAt != nil
                             )
                             .accessibilityIdentifier("sessions_row_\(index)")
@@ -185,6 +195,7 @@ struct SessionsPageView: View {
         // tick (filters unchanged) is debounced and preserves pagination so
         // scrolling doesn't jump back to page one while indexing runs (#3).
         .task(id: [
+            AnyHashable(sessionFilter),
             AnyHashable(timeFilter),
             AnyHashable(sourceFilter),
             AnyHashable(showHiddenSessions),
@@ -192,6 +203,7 @@ struct SessionsPageView: View {
             AnyHashable(serviceStatusStore.totalSessions),
         ]) {
             let filterKey: [AnyHashable] = [
+                AnyHashable(sessionFilter),
                 AnyHashable(timeFilter),
                 AnyHashable(sourceFilter),
                 AnyHashable(showHiddenSessions),
@@ -216,6 +228,7 @@ struct SessionsPageView: View {
             let since = sinceDate(for: timeFilter)
             let includeHidden = showHiddenSessions
             let humanDriven = !showAllSessions
+            let favoritesOnly = self.favoritesOnly
             // Preserve the loaded window on an index-tick refresh; otherwise a
             // fresh load starts at the first page.
             let pageSize = preservePagination
@@ -229,6 +242,7 @@ struct SessionsPageView: View {
                     subAgent: false,
                     topLevelOnly: true,
                     humanDriven: humanDriven,
+                    favoritesOnly: favoritesOnly,
                     sort: .updatedDesc,
                     limit: pageSize
                 )
@@ -238,12 +252,14 @@ struct SessionsPageView: View {
                     includeHidden: includeHidden,
                     subAgent: false,
                     topLevelOnly: true,
-                    humanDriven: humanDriven
+                    humanDriven: humanDriven,
+                    favoritesOnly: favoritesOnly
                 )
                 let sourceOptions = try db.sessionListStats(
                     since: since,
                     includeHidden: includeHidden,
-                    subAgent: false
+                    subAgent: false,
+                    favoritesOnly: favoritesOnly
                 ).sources
                 let parentIds = loaded.map(\.id)
                 let confirmed = try db.childCount(parentIds: parentIds, includeHidden: includeHidden)
@@ -307,6 +323,7 @@ struct SessionsPageView: View {
         guard !isLoading, !isLoadingMore else { return }
         guard sessions.count < totalCount else { return }
         isLoadingMore = true
+        let favoritesOnly = self.favoritesOnly
         Task {
             defer { isLoadingMore = false }
             do {
@@ -325,6 +342,7 @@ struct SessionsPageView: View {
                         subAgent: false,
                         topLevelOnly: true,
                         humanDriven: humanDriven,
+                        favoritesOnly: favoritesOnly,
                         sort: .updatedDesc,
                         limit: pageSize,
                         offset: offset

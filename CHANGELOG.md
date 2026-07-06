@@ -7,6 +7,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: folded Favorites into Sessions filter (2026-07-06, Codex)
+
+- Feature-cut item 8 removes the standalone macOS Favorites sidebar screen and
+  page. Starred sessions now use a `Starred` FilterPill on `SessionsPageView`,
+  backed by the same paginated session query path as the rest of the Sessions
+  browser.
+- Kept the favorite contract intact: the transcript star toggle, favorites
+  table, `setFavorite` IPC command, `isFavorite`, and `listFavorites()` remain
+  available.
+
 ### Changed: removed Swift MCP lint_config tool (2026-07-06, Codex)
 
 - Feature-cut item 5 deletes the Swift product-side `lint_config` MCP tool,

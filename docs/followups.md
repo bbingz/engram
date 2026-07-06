@@ -213,7 +213,7 @@ Ground rules:
    reading, TS reference/dev Cascade tooling, and active Swift semantic/hybrid
    retrieval. Added a deletion-guard scan test, updated active docs, and moved
    Windsurf SourceCatalog to the actual cache root `~/.engram/cache/windsurf`.
-8. **FOLD Favorites page into a Sessions FilterPill.** Delete the 63-LOC
+8. **DONE in PR #110 — FOLD Favorites page into a Sessions FilterPill.** Delete the 63-LOC
    Favorites page clone + its Screen case; add a "Starred" FilterPill on
    SessionsPageView. KEEP star toggle, favorites table, `setFavorite` IPC,
    and `listFavorites()` (2 callers — repoint to the pill's query path).

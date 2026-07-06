@@ -98,8 +98,6 @@ struct MainWindowView: View {
             SearchPageView()
         case .sessions:
             SessionsPageView()
-        case .favorites:
-            FavoritesPageView()
         case .timeline:
             TimelinePageView()
         case .activity:

@@ -21,16 +21,18 @@ final class ScreenSectionTests: XCTestCase {
         cleanupTempDatabase(at: dbPath)
     }
 
-    // MARK: - Favorites reachability (WP02)
+    // MARK: - Favorites folded into Sessions
 
-    func testFavoritesScreenIsReachable() {
+    func testFavoritesScreenIsFoldedIntoSessions() {
         let sidebarScreens = Screen.Section.allCases.flatMap { $0.screens }
-        XCTAssertEqual(
-            sidebarScreens.filter { $0 == .favorites }.count, 1,
-            "Favorites must appear exactly once in the sidebar sections"
+        XCTAssertFalse(
+            sidebarScreens.contains { $0.rawValue == "favorites" },
+            "Favorites should be a Sessions filter, not a standalone sidebar screen"
         )
-        XCTAssertFalse(Screen.favorites.title.isEmpty)
-        XCTAssertFalse(Screen.favorites.icon.isEmpty)
+        XCTAssertFalse(
+            Screen.allCases.contains { $0.rawValue == "favorites" },
+            "Favorites should not remain a command-palette/navigation screen"
+        )
     }
 
     // MARK: - Pagination contract (backs sessions-browse-2, wired by WP01)
