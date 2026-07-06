@@ -13,6 +13,7 @@
 		01614F658F840D99897A07CB /* SchemaIntrospection.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2A7E854FAAD8237569D3489 /* SchemaIntrospection.swift */; };
 		01F7D2BA6B52C8700E83F925 /* IndexedMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADF2EE99A3CE1AA9A41435CE /* IndexedMessage.swift */; };
 		0256569E8DEFAE124674D719 /* EncodeClaudeCodeDir.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9A73774E0563534240331DF /* EncodeClaudeCodeDir.swift */; };
+		026EA41C1C119F190EE14C40 /* ArchivedDefaultOffSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1336F5F7D0C748D8AA578FE /* ArchivedDefaultOffSources.swift */; };
 		02B7B7451875DE2A65FF5BD7 /* WindsurfAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EDCF96A3B2CE8B52F6153E /* WindsurfAdapter.swift */; };
 		042DE801408C45A3B4578D84 /* EngramCoreWrite.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */; };
 		043050B286F1A6BAC6435277 /* VsCodeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B771FAB5DA8D579D4BA2FAE5 /* VsCodeAdapter.swift */; };
@@ -133,6 +134,7 @@
 		3A1AF8130B056EF8AD3E19C5 /* TodayWorkbenchSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 878858A587504826B3D53D12 /* TodayWorkbenchSupport.swift */; };
 		3AC42849CCED91B6414A4173 /* StartupComposition.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAD748C6EC231047FF5EB447 /* StartupComposition.swift */; };
 		3AC989792108767490FFE1E4 /* EngramServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = F157FA0F7C17FA4398BCC146 /* EngramServiceProtocol.swift */; };
+		3B3879418AB3555A53BBA9E5 /* ArchivedDefaultOffSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1336F5F7D0C748D8AA578FE /* ArchivedDefaultOffSources.swift */; };
 		3BCC2AF2FEDD2599A04579CD /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CD332D35E2A1557C32B0E3D /* main.swift */; };
 		3C3A073EF9EE0CCC4340B613 /* ServiceWriterGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06E29A2603077A7C62850146 /* ServiceWriterGate.swift */; };
 		3C3AF94233312E0DA5E61DAF /* SourcePulseView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FE90809B9536D6ACEC06384 /* SourcePulseView.swift */; };
@@ -202,6 +204,7 @@
 		55A1E938C15DB4BE1A88AE36 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97B088996486F740E1114B97 /* App.swift */; };
 		569E89934A8FC8C0E1EBA95D /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = C58F20DECC1B3054048CBD6E /* GRDB-dynamic */; };
 		56C77E404EAD7E36C4C881DE /* SessionTierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C594594C972135EBA9F7358 /* SessionTierTests.swift */; };
+		57EB1DDE5899F480F43C766D /* ArchivedDefaultOffSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1336F5F7D0C748D8AA578FE /* ArchivedDefaultOffSources.swift */; };
 		58649012DCBBED0E28A065B4 /* QwenAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CC7EA7D95CA10EAD73E472D /* QwenAdapter.swift */; };
 		596A33F4AFCE759B65980126 /* ParentDetectionParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A5DF1AD88AF7076D2848BD4 /* ParentDetectionParityTests.swift */; };
 		5A4C2647119D0C5F10A5A5F5 /* CursorAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB7F18056590015EA9E85B5E /* CursorAdapter.swift */; };
@@ -557,6 +560,7 @@
 		F380173232EC1FF3BA73F312 /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = 6F29AB0988313132258C13D9 /* GRDB-dynamic */; };
 		F3DB03DAB3891B2D387EC958 /* EmbeddingClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D035ED2FDA0AB16B6FB9555 /* EmbeddingClient.swift */; };
 		F4894261C6A83364B2B94BFD /* HomeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32C1C618EFDED8A8F2398A12 /* HomeScreen.swift */; };
+		F4A70842CFB27FFB699F4CB8 /* ArchivedDefaultOffSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1336F5F7D0C748D8AA578FE /* ArchivedDefaultOffSources.swift */; };
 		F4D6E94AB825538A869C1362 /* EngramServiceStatusStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE7C13C1E701E692FE1174D5 /* EngramServiceStatusStore.swift */; };
 		F5AB459B060450EEC46F99FE /* ObservabilityRetentionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC0C3B223DC3637D7A299413 /* ObservabilityRetentionTests.swift */; };
 		F5EA0D9C097F4AEBEE358DF8 /* ReplayStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AB4FC9431C85E265FDC13A3 /* ReplayStateTests.swift */; };
@@ -1000,6 +1004,7 @@
 		9CD332D35E2A1557C32B0E3D /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		9CFFDA5C866D579174B8B396 /* DashboardDrillInTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardDrillInTests.swift; sourceTree = "<group>"; };
 		A073E57949C134DAB06B9732 /* UndoSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UndoSheet.swift; sourceTree = "<group>"; };
+		A1336F5F7D0C748D8AA578FE /* ArchivedDefaultOffSources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchivedDefaultOffSources.swift; sourceTree = "<group>"; };
 		A141030045556B1AF55E63B6 /* AdapterMessageCountTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdapterMessageCountTests.swift; sourceTree = "<group>"; };
 		A17FA103A775D3548BD09BBA /* OrderedJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrderedJSON.swift; sourceTree = "<group>"; };
 		A1980E982CA558FC94B9D15B /* OpenCodeAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenCodeAdapter.swift; sourceTree = "<group>"; };
@@ -1595,6 +1600,7 @@
 		5A1AD449E48C27276C020096 /* Service */ = {
 			isa = PBXGroup;
 			children = (
+				A1336F5F7D0C748D8AA578FE /* ArchivedDefaultOffSources.swift */,
 				945AA96DE6742404DD39E2FE /* EngramCLIResumeCommand.swift */,
 				5C84C0FDF22D13EE6ABD4D54 /* EngramServiceClient.swift */,
 				444892AADC54BE2BA5FD6F3C /* EngramServiceError.swift */,
@@ -2736,6 +2742,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				57EB1DDE5899F480F43C766D /* ArchivedDefaultOffSources.swift in Sources */,
 				8641694F9139C54C2BA20ACC /* EngramCLIResumeCommand.swift in Sources */,
 				E24985EAEB18CFBB418B0CC7 /* EngramServiceClient.swift in Sources */,
 				F05D2AECC0364106F4854500 /* EngramServiceCommandHandler+ProjectMigration.swift in Sources */,
@@ -2837,6 +2844,7 @@
 			files = (
 				996E1F3CD615AD807D2F1B5E /* AdapterRegistry.swift in Sources */,
 				376EB31C017C784BB634C4CC /* AntigravityAdapter.swift in Sources */,
+				F4A70842CFB27FFB699F4CB8 /* ArchivedDefaultOffSources.swift in Sources */,
 				D1390A1FDE5285A36B8140C4 /* CJKTextHelpers.swift in Sources */,
 				6A1792AE062D924C706F9641 /* ClaudeCodeAdapter.swift in Sources */,
 				D9BFBAB3AEE56FEC10A09CFD /* ClineAdapter.swift in Sources */,
@@ -2974,6 +2982,7 @@
 			files = (
 				453D95220109B64CC69CCB06 /* AdapterRegistry.swift in Sources */,
 				F6C1E29DCFD8CF0A72030347 /* AntigravityAdapter.swift in Sources */,
+				3B3879418AB3555A53BBA9E5 /* ArchivedDefaultOffSources.swift in Sources */,
 				66364C47FE579E8B9D088E76 /* CJKTextHelpers.swift in Sources */,
 				D5B821FF354D2B79934F0BD3 /* ClaudeCodeAdapter.swift in Sources */,
 				25F0FD53092E8F8347BA5D50 /* ClineAdapter.swift in Sources */,
@@ -3220,6 +3229,7 @@
 				F61A80E0A9B21151720C4AF6 /* AppEnvironment.swift in Sources */,
 				3073C3963B560DC0678803F8 /* AppNotifications.swift in Sources */,
 				808C980D6973E2094A9D119C /* ArchiveSheet.swift in Sources */,
+				026EA41C1C119F190EE14C40 /* ArchivedDefaultOffSources.swift in Sources */,
 				84FC451B5E95245BD82626DE /* BarChart.swift in Sources */,
 				657B6F1D3787E735D93BD2C2 /* BatchMoveSheet.swift in Sources */,
 				BBDABE0BC714CBAE6F6ED633 /* BrowseReloadCoalescer.swift in Sources */,

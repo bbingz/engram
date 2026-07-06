@@ -75,14 +75,14 @@ struct SourcePulseView: View {
                 SectionHeader(icon: "antenna.radiowaves.left.and.right", title: "Sources",
                              onRefresh: { Task { await loadData() } })
                     .help("Indexing runs automatically in the background; refresh re-reads current counts.")
-                let rows = Self.mergedSourceRows(catalog: SourceCatalog.all, live: sources)
-                if rows.isEmpty && !isLoading {
+                let groups = Self.groupedSourceRows(catalog: SourceCatalog.all, live: sources)
+                if groups.allSatisfy(\.rows.isEmpty) && !isLoading {
                     EmptyState(icon: "antenna.radiowaves.left.and.right", title: "No sources", message: "No adapter sources detected")
                         .accessibilityIdentifier("sourcePulse_emptyState")
                 } else {
-                    LazyVStack(spacing: 4) {
-                        ForEach(rows) { row in
-                            sourceRow(row)
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(groups) { group in
+                            sourceRowsGroup(group)
                         }
                     }
                 }
@@ -180,6 +180,31 @@ struct SourcePulseView: View {
 
     private func revealArchiveStore() {
         NSWorkspace.shared.selectFile(db.path, inFileViewerRootedAtPath: "")
+    }
+
+    @ViewBuilder
+    private func sourceRowsGroup(_ group: SourceGroup) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(group.title)
+                    .font(.caption.bold())
+                    .foregroundStyle(Theme.secondaryText)
+                if group.id == "archived" {
+                    factPill("Default off", color: Theme.gray)
+                }
+                Spacer()
+                Text("\(group.rows.count)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(Theme.tertiaryText)
+            }
+            .accessibilityIdentifier("sourcePulse_sourceGroup_\(group.id)")
+
+            LazyVStack(spacing: 4) {
+                ForEach(group.rows) { row in
+                    sourceRow(row)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -371,6 +396,12 @@ struct SourcePulseView: View {
         }
     }
 
+    struct SourceGroup: Identifiable {
+        let id: String
+        let title: String
+        let rows: [SourceRow]
+    }
+
     /// Overlay the static catalog with live service rows, keyed by source id.
     /// Catalog order is preserved; catalog sources with a live row render the
     /// detected (health) row, the rest render a "not detected" row. Any live
@@ -390,6 +421,20 @@ struct SourcePulseView: View {
         }
         rows.append(contentsOf: live.filter { !catalogIDs.contains($0.id) }.map(SourceRow.detected))
         return rows
+    }
+
+    static func groupedSourceRows(
+        catalog: [SourceCatalogEntry],
+        live: [EngramServiceSourceInfo]
+    ) -> [SourceGroup] {
+        let rows = mergedSourceRows(catalog: catalog, live: live)
+        let archivedIDs = Set(catalog.filter(\.archivedByDefault).map(\.id))
+        let active = rows.filter { !archivedIDs.contains($0.id) }
+        let archived = rows.filter { archivedIDs.contains($0.id) }
+        return [
+            SourceGroup(id: "active", title: "Active Sources", rows: active),
+            SourceGroup(id: "archived", title: "Archived", rows: archived),
+        ].filter { !$0.rows.isEmpty }
     }
 
     static func usagePillText(metric: String, value: Double, unit: String?, limit: Double? = nil) -> String {

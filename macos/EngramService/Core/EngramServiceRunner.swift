@@ -282,11 +282,20 @@ public enum EngramServiceRunner {
                 break
             }
 
+            let disabled = readDisabledSources(environment: environment)
+            let recentAdapters = adaptersExcludingDisabled(
+                SessionAdapterFactory.recentActiveAdapters(),
+                disabledSources: disabled
+            )
+            let enabledAdapters = adaptersExcludingDisabled(
+                SessionAdapterFactory.defaultAdapters(),
+                disabledSources: disabled
+            )
             let scanClock = ContinuousClock()
             let scanStarted = scanClock.now
             do {
                 let scan = try await gate.performWriteCommand(name: "indexRecent") { writer in
-                    try await writer.indexRecentSessions()
+                    try await writer.indexRecentSessions(adapters: recentAdapters)
                 }.value
                 // Run parent-link / dispatch detection on the freshly indexed
                 // sessions so agent children created mid-run are grouped under
@@ -301,7 +310,8 @@ public enum EngramServiceRunner {
                 var jobs = StartupIndexJobRecoveryResult(completed: 0, notApplicable: 0)
                 while !Task.isCancelled {
                     let drain = try await gate.performWriteCommand(name: "periodicFtsDrain") { writer in
-                        try await IndexJobRunner(writer: writer).runRecoverableJobsOnce()
+                        try await IndexJobRunner(writer: writer, adapters: enabledAdapters)
+                            .runRecoverableJobsOnce()
                     }.value
                     jobs.completed += drain.result.completed
                     jobs.notApplicable += drain.result.notApplicable
@@ -391,6 +401,13 @@ public enum EngramServiceRunner {
         }
     }
 
+    private static func adaptersExcludingDisabled(
+        _ adapters: [any SessionAdapter],
+        disabledSources: Set<String>
+    ) -> [any SessionAdapter] {
+        adapters.filter { !disabledSources.contains($0.source.rawValue) }
+    }
+
     /// V2 composition root: runs the startup scan once, draining the FTS
     /// backlog. Builds real conformers over the unit-tested static funcs and
     /// runs through the gate so writes serialize with command dispatch.
@@ -408,8 +425,10 @@ public enum EngramServiceRunner {
         // Read once at scan time, so toggling a source resumes/stops ingest on
         // the next scan. Their existing sessions are hidden by setSourceEnabled.
         let disabled = readDisabledSources(environment: environment)
-        let enabledAdapters = SessionAdapterFactory.defaultAdapters()
-            .filter { !disabled.contains($0.source.rawValue) }
+        let enabledAdapters = adaptersExcludingDisabled(
+            SessionAdapterFactory.defaultAdapters(),
+            disabledSources: disabled
+        )
         let emitBackfill: (StartupBackfillEvent) -> Void = { event in
             Self.emit(StartupBackfillEventEnvelope(event: event))
         }
@@ -832,7 +851,8 @@ public enum EngramServiceRunner {
     /// `setSourceEnabled`. An env override (`ENGRAM_DISABLED_SOURCES`,
     /// comma-separated source ids) is honored for tests/dev; otherwise the value
     /// comes from the `disabledSources` JSON string array in
-    /// `~/.engram/settings.json`. Default empty.
+    /// `~/.engram/settings.json`. Dormant archived sources default off until
+    /// the settings file has been rewritten with the migration marker.
     static func readDisabledSources(
         environment: [String: String],
         settingsURL: URL? = nil
@@ -847,12 +867,18 @@ public enum EngramServiceRunner {
             )
         }
         guard let data = try? Data(contentsOf: settingsURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let sources = object["disabledSources"] as? [Any]
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
-            return []
+            return ArchivedDefaultOffSources.ids
         }
-        return Set(sources.compactMap { $0 as? String }.filter { !$0.isEmpty })
+        guard let sources = object["disabledSources"] as? [Any] else {
+            return ArchivedDefaultOffSources.ids
+        }
+        let explicitSources = Set(sources.compactMap { $0 as? String }.filter { !$0.isEmpty })
+        guard object[ArchivedDefaultOffSources.settingsMigrationKey] as? Bool == true else {
+            return explicitSources.union(ArchivedDefaultOffSources.ids)
+        }
+        return explicitSources
     }
 
     /// Reads explicit per-source token limits for local pressure snapshots.

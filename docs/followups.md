@@ -226,9 +226,9 @@ Ground rules:
    `_engram_e2e_test_*` from 2026-04-20, and `BatchMoveSheet.swift:8`
    documents a dry_run-omission commit risk. `project_aliases` stays — it is
    load-bearing for list_sessions/search/get_context.
-10. **DEFAULT-OFF archived sources: cline / iflow / lobsterai.** Keep parser
+10. **DONE in PR #112 — DEFAULT-OFF archived sources: cline / iflow / lobsterai.** Keep parser
     code + fixtures; change defaults so these three are not scanned unless
-    the user enables them (Settings > Sources under an "Archived" group).
+    the user enables them (Workspace > Sources under an "Archived" group).
     Local evidence: 3/2/1 sessions, last activity 2026-02-27/2026-02-27/
     2026-03-08. Do NOT touch minimax (234 local sessions, active). Update
     the "17 sources" claims in README/CLAUDE.md to describe the

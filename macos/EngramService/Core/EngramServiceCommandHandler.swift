@@ -949,12 +949,18 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         }
         var disabled = (object["disabledSources"] as? [Any])?
             .compactMap { $0 as? String } ?? []
+        if object[ArchivedDefaultOffSources.settingsMigrationKey] as? Bool != true {
+            for sourceID in ArchivedDefaultOffSources.orderedIDs where !disabled.contains(sourceID) {
+                disabled.append(sourceID)
+            }
+        }
         if enabled {
             disabled.removeAll { $0 == source }
         } else if !disabled.contains(source) {
             disabled.append(source)
         }
         object["disabledSources"] = disabled
+        object[ArchivedDefaultOffSources.settingsMigrationKey] = true
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         try FileManager.default.createDirectory(
             at: settingsURL.deletingLastPathComponent(),

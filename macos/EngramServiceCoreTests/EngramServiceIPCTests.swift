@@ -747,7 +747,8 @@ final class EngramServiceIPCTests: XCTestCase {
         // Feature #2 slice B — startup ingests every adapter EXCEPT user-disabled
         // sources, which are filtered out of defaultAdapters() at scan time.
         XCTAssertTrue(source.contains("SessionAdapterFactory.defaultAdapters()"))
-        XCTAssertTrue(source.contains("!disabled.contains($0.source.rawValue)"))
+        XCTAssertTrue(source.contains("let enabledAdapters = adaptersExcludingDisabled("))
+        XCTAssertTrue(source.contains("disabledSources: disabled"))
         XCTAssertTrue(source.contains("let startupAdapters = enabledAdapters"))
         XCTAssertFalse(
             source.contains(": SessionAdapterFactory.recentActiveAdapters()"),
@@ -776,6 +777,28 @@ final class EngramServiceIPCTests: XCTestCase {
         let sleepRange = try XCTUnwrap(source.range(of: "try await Task.sleep(nanoseconds: intervalNanoseconds)"))
         let writeRange = try XCTUnwrap(source.range(of: #"gate.performWriteCommand(name: "indexRecent")"#))
         XCTAssertLessThan(sleepRange.lowerBound, writeRange.lowerBound)
+    }
+
+    func testRunnerPeriodicScanUsesEnabledAdapters() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let start = try XCTUnwrap(source.range(of: "private static func runIndexingLoop("))
+        let end = try XCTUnwrap(source.range(of: "private static func runInitialScan(", options: [], range: start.lowerBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains("let disabled = readDisabledSources(environment: environment)"))
+        XCTAssertTrue(body.contains("SessionAdapterFactory.recentActiveAdapters()"))
+        XCTAssertTrue(body.contains("let recentAdapters = adaptersExcludingDisabled("))
+        XCTAssertTrue(body.contains("try await writer.indexRecentSessions(adapters: recentAdapters)"))
+        XCTAssertTrue(body.contains("let enabledAdapters = adaptersExcludingDisabled("))
+        XCTAssertTrue(body.contains("IndexJobRunner(writer: writer, adapters: enabledAdapters)"))
+        XCTAssertFalse(
+            body.contains("try await writer.indexRecentSessions()"),
+            "periodic indexing must honor disabled/default-off archived sources"
+        )
+        XCTAssertFalse(
+            body.contains("IndexJobRunner(writer: writer).runRecoverableJobsOnce()"),
+            "periodic FTS drain must not process disabled/default-off archived sources"
+        )
     }
 
     func testRunnerInitialScanSplitsWriteGateAcrossPhases() throws {
@@ -3591,7 +3614,12 @@ final class EngramServiceIPCTests: XCTestCase {
         // points both the write (RMW) and read (disabledSources) paths at the temp file.
         let settingsURL = URL(fileURLWithPath: "/tmp")
             .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8)).json")
-        let seed: [String: Any] = ["customSetting": true, "aiModel": "gpt-4o-mini"]
+        let seed: [String: Any] = [
+            "customSetting": true,
+            "aiModel": "gpt-4o-mini",
+            "disabledSources": [],
+            ArchivedDefaultOffSources.settingsMigrationKey: true,
+        ]
         let seedData = try JSONSerialization.data(withJSONObject: seed)
         try seedData.write(to: settingsURL)
         setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
@@ -3629,6 +3657,7 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(preservedAfterDisable["customSetting"] as? Bool, true)
         XCTAssertEqual(preservedAfterDisable["aiModel"] as? String, "gpt-4o-mini")
         XCTAssertEqual(preservedAfterDisable["disabledSources"] as? [String], ["codex"])
+        XCTAssertEqual(preservedAfterDisable[ArchivedDefaultOffSources.settingsMigrationKey] as? Bool, true)
 
         // ENABLE codex: removed from disabledSources and sessions unhidden.
         try await client.setSourceEnabled(source: "codex", enabled: true)
@@ -3644,6 +3673,7 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(preservedAfterEnable["customSetting"] as? Bool, true)
         XCTAssertEqual(preservedAfterEnable["aiModel"] as? String, "gpt-4o-mini")
         XCTAssertEqual(preservedAfterEnable["disabledSources"] as? [String], [])
+        XCTAssertEqual(preservedAfterEnable[ArchivedDefaultOffSources.settingsMigrationKey] as? Bool, true)
     }
 
     func testReadDisabledSourcesFiltersAdapterListWithoutAffectingOthers() {
@@ -3662,6 +3692,105 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse(enabledIDs.contains("windsurf"))
         XCTAssertTrue(enabledIDs.contains("claude-code"), "non-disabled sources must survive the filter")
         XCTAssertTrue(enabledIDs.contains("gemini-cli"))
+    }
+
+    func testReadDisabledSourcesDefaultsArchivedSourcesOffWhenUnset() throws {
+        let settingsURL = URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("engram-missing-settings-\(UUID().uuidString.prefix(8)).json")
+        defer { try? FileManager.default.removeItem(at: settingsURL) }
+
+        let disabled = EngramServiceRunner.readDisabledSources(
+            environment: [:],
+            settingsURL: settingsURL
+        )
+
+        XCTAssertEqual(disabled, ArchivedDefaultOffSources.ids)
+        XCTAssertEqual(disabled, ["cline", "iflow", "lobsterai"])
+        XCTAssertFalse(disabled.contains("minimax"), "minimax must stay active by default")
+    }
+
+    func testReadDisabledSourcesTreatsLegacyEmptyListAsArchivedDefaults() throws {
+        let settingsURL = URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8)).json")
+        let data = try JSONSerialization.data(withJSONObject: ["disabledSources": []])
+        try data.write(to: settingsURL)
+        defer { try? FileManager.default.removeItem(at: settingsURL) }
+
+        let disabled = EngramServiceRunner.readDisabledSources(
+            environment: [:],
+            settingsURL: settingsURL
+        )
+
+        XCTAssertEqual(disabled, ArchivedDefaultOffSources.ids)
+    }
+
+    func testReadDisabledSourcesMergesArchivedDefaultsIntoLegacyList() throws {
+        let settingsURL = URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8)).json")
+        let data = try JSONSerialization.data(withJSONObject: ["disabledSources": ["codex"]])
+        try data.write(to: settingsURL)
+        defer { try? FileManager.default.removeItem(at: settingsURL) }
+
+        let disabled = EngramServiceRunner.readDisabledSources(
+            environment: [:],
+            settingsURL: settingsURL
+        )
+
+        XCTAssertEqual(disabled, ArchivedDefaultOffSources.ids.union(["codex"]))
+    }
+
+    func testReadDisabledSourcesHonorsMigratedExplicitEmptyList() throws {
+        let settingsURL = URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8)).json")
+        let data = try JSONSerialization.data(
+            withJSONObject: [
+                "disabledSources": [],
+                ArchivedDefaultOffSources.settingsMigrationKey: true,
+            ]
+        )
+        try data.write(to: settingsURL)
+        defer { try? FileManager.default.removeItem(at: settingsURL) }
+
+        let disabled = EngramServiceRunner.readDisabledSources(
+            environment: [:],
+            settingsURL: settingsURL
+        )
+
+        XCTAssertEqual(disabled, [], "a migrated explicit empty list means the user enabled every source")
+    }
+
+    func testSetSourceEnabledStartsFromImplicitArchivedDefaults() async throws {
+        let settingsURL = URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8)).json")
+        let seedData = try JSONSerialization.data(withJSONObject: ["customSetting": true])
+        try seedData.write(to: settingsURL)
+        setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
+        defer {
+            unsetenv("ENGRAM_SETTINGS_PATH")
+            try? FileManager.default.removeItem(at: settingsURL)
+        }
+
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+
+        try await client.setSourceEnabled(source: "cline", enabled: true)
+
+        let disabled = try await client.disabledSources()
+        XCTAssertEqual(Set(disabled), ["iflow", "lobsterai"])
+        XCTAssertFalse(disabled.contains("cline"), "enabling cline must not enable every archived source")
+        let persisted = try loadSettings(settingsURL)
+        XCTAssertEqual(persisted["customSetting"] as? Bool, true)
+        XCTAssertEqual(Set((persisted["disabledSources"] as? [String]) ?? []), ["iflow", "lobsterai"])
+        XCTAssertEqual(persisted[ArchivedDefaultOffSources.settingsMigrationKey] as? Bool, true)
     }
 
     func testInsightAndProjectAliasMutationsAreOwnedByServiceWriterGate() async throws {
