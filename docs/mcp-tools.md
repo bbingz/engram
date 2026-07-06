@@ -3,6 +3,8 @@
 > Current product runtime is Swift `EngramMCP`; TypeScript tool definitions are retained as development/reference material.
 >
 > **Total tools: 28** | Protocol: MCP (Model Context Protocol) | Server name: `engram`
+>
+> Removed: the former corpus rule-mining surface (`get_rules` and `engram://rule/{id}` resources) is no longer exposed. Existing `mined_rules` rows in installed databases are left inert; fresh Swift product databases no longer create the mined-rule tables.
 
 ---
 

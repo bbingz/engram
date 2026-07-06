@@ -298,17 +298,17 @@ final class MigrationRunnerTests: XCTestCase {
         }
     }
 
-    func testMinedRulesTablesCreated() throws {
+    func testMinedRulesTablesAreNotCreatedForNewDatabases() throws {
         let writer = try EngramDatabaseWriter(path: databasePath("mined-rules.sqlite"))
         try writer.migrate()
         try writer.read { db in
-            XCTAssertNotNil(
+            XCTAssertNil(
                 try Int.fetchOne(db, sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mined_rules'")
             )
-            XCTAssertNotNil(
+            XCTAssertNil(
                 try Int.fetchOne(db, sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mined_rules_fts'")
             )
-            XCTAssertNotNil(
+            XCTAssertNil(
                 try Int.fetchOne(db, sql: "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_mined_rules_project'")
             )
         }

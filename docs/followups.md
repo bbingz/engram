@@ -167,7 +167,7 @@ Ground rules:
    trim `bootstrap.ts` (`createMCPDeps`/`createDaemonDeps`), `knip.json`
    entry points, `package.json` `dev` script, `src/cli` dispatch fallback,
    README HTTP/API section.
-3. **DELETE corpus rule mining (get_rules + background miner + schema).**
+3. **DONE in PR #105 — DELETE corpus rule mining (get_rules + background miner + schema).**
    Remove `mineCorpusRulesOnce`/`mineRulesWithLLM`/`corpusMiningCandidates`/
    `writeMinedRules` + 2 scheduling call sites in
    `EngramServiceRunner.swift` (~:799-1113); `get_rules` def/dispatch in
