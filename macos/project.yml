@@ -164,8 +164,6 @@ targets:
     dependencies:
       - package: GRDB
         product: GRDB-dynamic
-      - package: Hummingbird
-        product: Hummingbird
       - sdk: AppIntents.framework
       - target: EngramMCP
         link: false

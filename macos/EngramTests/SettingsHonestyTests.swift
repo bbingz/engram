@@ -88,6 +88,19 @@ final class SettingsHonestyTests: XCTestCase {
         XCTAssertFalse(block.contains("Hummingbird"), "EngramServiceCore must not link the deleted HTTP Web UI stack")
     }
 
+    func testAppTargetDoesNotLinkDeletedHttpStack() throws {
+        let source = try source("macos/project.yml")
+        let appTargetBlock = try XCTUnwrap(
+            source.range(of: "  Engram:")?.lowerBound
+        )
+        let cliTargetBlock = try XCTUnwrap(
+            source.range(of: "  EngramCLI:", range: appTargetBlock..<source.endIndex)?.lowerBound
+        )
+        let block = String(source[appTargetBlock..<cliTargetBlock])
+
+        XCTAssertFalse(block.contains("Hummingbird"), "Engram.app must not link the deleted HTTP Web UI stack")
+    }
+
     func testRegenerateAllStatusCopyIsHonest() throws {
         let source = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
         XCTAssertFalse(source.contains("Service status: "), "Status must not freeze on the raw service status string")
