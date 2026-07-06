@@ -1,6 +1,6 @@
 # Engram
 
-> Native Swift MCP helper + macOS App：聚合 17 种 AI 编程助手的历史会话，实现跨工具上下文共享、关键词搜索和项目迁移。
+> Native Swift MCP helper + macOS App：聚合 14 个默认启用来源 + 3 个归档默认关闭来源的 AI 编程助手历史会话，实现跨工具上下文共享、关键词搜索和项目迁移。
 
 在 Codex 里做了半天，切到 Claude Code 继续时，AI 不需要你手动解释之前做了什么——它可以直接调用 `get_context` 查询你的历史。
 
@@ -56,15 +56,15 @@ items. Latest locally verified release/deploy: `0.1.0 (20260612060821)`.
 | [Cursor](https://cursor.sh) | `~/Library/Application Support/Cursor/…/state.vscdb` | ✅ 完整支持 |
 | [VS Code Copilot](https://code.visualstudio.com) | `~/Library/Application Support/Code/…/chatSessions/` | ✅ 完整支持 |
 | [GitHub Copilot](https://github.com/features/copilot) | `~/.copilot/session-state/<uuid>/events.jsonl` | ✅ 完整支持 |
-| [iflow](https://iflow.ai) | `~/.iflow/projects/` | ✅ 完整支持 |
+| [iflow](https://iflow.ai) | `~/.iflow/projects/` | 归档默认关闭，可在 Sources > Archived 启用 |
 | [Qwen Code](https://qwen.ai) | `~/.qwen/projects/` | ✅ 完整支持 |
 | Qoder | `~/.qoder/projects/` | ✅ 完整支持 |
 | [OpenCode](https://opencode.ai) | `~/.local/share/opencode/opencode.db` | ✅ 完整支持 |
 | [Kimi](https://kimi.moonshot.cn) | `~/.kimi/sessions/` | ✅ 完整支持 |
 | [MiniMax](https://minimax.chat) | Claude Code-derived sessions under `~/.claude/projects/` | ✅ 完整支持 |
-| [Lobster AI](https://lobster.ai) | Claude Code-derived sessions under `~/.claude/projects/` | ✅ 完整支持 |
+| [Lobster AI](https://lobster.ai) | Claude Code-derived sessions under `~/.claude/projects/` | 归档默认关闭，可在 Sources > Archived 启用 |
 | Command Code | `~/.commandcode/projects/` | ✅ 完整支持 |
-| [Cline](https://github.com/cline/cline) | `~/.cline/data/tasks/` | ✅ 完整支持 |
+| [Cline](https://github.com/cline/cline) | `~/.cline/data/tasks/` | 归档默认关闭，可在 Sources > Archived 启用 |
 
 ## 适配器与显示一致性
 
@@ -81,7 +81,7 @@ xcodebuild test -project macos/Engram.xcodeproj -scheme EngramCoreTests -destina
 xcodebuild test -project macos/Engram.xcodeproj -scheme Engram -destination 'platform=macOS' -only-testing:EngramTests/MessageParserTests
 ```
 
-当前 fixture/parity gate 覆盖 15 个独立产品适配器：Antigravity CLI、Claude Code、Cline、Codex CLI、Command Code、GitHub Copilot、Cursor、Gemini CLI、iflow、Kimi、OpenCode、Qoder、Qwen Code、VS Code Copilot、Windsurf。MiniMax 和 Lobster AI 作为 Claude-compatible derived sources 走 Claude Code parser，但会以独立 source 写入索引；Swift/Node 回归测试覆盖该派生分类。Swift App、Swift MCP、Swift Service export 都只展示非空 `user` / `assistant` 可见正文；tool/system/event-like 行保留给索引、工具统计和诊断，不混入普通对话气泡。provider parser parity 由 `tests/fixtures/adapter-parity/**` 约束；Swift/MCP/export 的可见消息一致性由 Swift service/core 测试覆盖。如果出现同一会话在两端解析或显示不同，先补对应 fixture，再改 adapter 或可见消息过滤逻辑。
+当前 fixture/parity gate 覆盖 15 个独立产品适配器：Antigravity CLI、Claude Code、Cline、Codex CLI、Command Code、GitHub Copilot、Cursor、Gemini CLI、iflow、Kimi、OpenCode、Qoder、Qwen Code、VS Code Copilot、Windsurf。其中 Cline 和 iflow parser/fixture 继续保留，但作为归档来源默认不扫描，需在 Sources > Archived 手动启用；MiniMax 保持默认启用。MiniMax 和 Lobster AI 作为 Claude-compatible derived sources 走 Claude Code parser，但会以独立 source 写入索引；Lobster AI 同样保留 parser/fixture 并默认归档关闭。Swift/Node 回归测试覆盖该派生分类。Swift App、Swift MCP、Swift Service export 都只展示非空 `user` / `assistant` 可见正文；tool/system/event-like 行保留给索引、工具统计和诊断，不混入普通对话气泡。provider parser parity 由 `tests/fixtures/adapter-parity/**` 约束；Swift/MCP/export 的可见消息一致性由 Swift service/core 测试覆盖。如果出现同一会话在两端解析或显示不同，先补对应 fixture，再改 adapter 或可见消息过滤逻辑。
 
 最近一次完整 provider/parser ship 记录见 [`docs/verification/provider-parser-parity-2026-05-20.md`](docs/verification/provider-parser-parity-2026-05-20.md)，其中包含两轮 Polycli review 与最终验证命令。
 

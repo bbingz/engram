@@ -7,6 +7,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: archived dormant sources default off (2026-07-06, Codex)
+
+- Feature-cut item 10 moves `cline`, `iflow`, and `lobsterai` into a
+  default-off archived source set: parser code and fixtures stay, but startup
+  scans skip them until the user enables the source from Sources > Archived.
+  `minimax` remains active by default.
+- Updated Sources UI grouping, service disabled-source defaults, README/CLAUDE
+  active-vs-archived wording, and focused Swift coverage for explicit-empty
+  settings, implicit archived defaults, and SourcePulse grouping.
+
 ### Changed: demoted project migration bulk controls (2026-07-06, Codex)
 
 - Feature-cut item 9 moves the Projects page Select, Move Selected, History,

@@ -17,7 +17,7 @@ final class MCPStdioServer {
         supportedProtocolVersions.max() ?? "2025-11-25"
     private static let instructions = """
     Engram is a cross-tool AI session aggregator. Key tools:
-    - search: Full-text keyword search across all AI coding sessions (17 sources)
+    - search: Full-text keyword search across all AI coding sessions (17 adapters; 14 default-on + 3 archived default-off)
     - get_context: Auto-extract relevant project history for your current task
     - save_insight: Save important decisions, lessons, and knowledge for future sessions
     - get_memory: Retrieve previously saved insights and cross-session knowledge

@@ -240,7 +240,7 @@ private func scanSources() -> [SourceCheck] {
         ("antigravity",  "Antigravity",   ".gemini/antigravity-cli/brain"),
     ]
 
-    return specs.map { spec in
+    return specs.filter { !ArchivedDefaultOffSources.contains($0.id) }.map { spec in
         let fullPath = (home as NSString).appendingPathComponent(spec.relativePath)
         return SourceCheck(
             id: spec.id,

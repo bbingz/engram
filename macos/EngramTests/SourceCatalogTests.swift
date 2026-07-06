@@ -8,6 +8,14 @@ final class SourceCatalogTests: XCTestCase {
         XCTAssertEqual(SourceCatalog.all.count, 17)
     }
 
+    func testArchivedDefaultOffCatalogEntriesAreExplicit() {
+        let archived = Set(SourceCatalog.all.filter(\.archivedByDefault).map(\.id))
+
+        XCTAssertEqual(archived, ArchivedDefaultOffSources.ids)
+        XCTAssertEqual(archived, ["cline", "iflow", "lobsterai"])
+        XCTAssertFalse(archived.contains("minimax"), "minimax is active and must not be default-off archived")
+    }
+
     func testCatalogIDsAreUnique() {
         let ids = SourceCatalog.all.map(\.id)
         XCTAssertEqual(Set(ids).count, ids.count)
@@ -79,5 +87,21 @@ final class SourceCatalogTests: XCTestCase {
 
         XCTAssertEqual(rows.count, SourceCatalog.all.count + 1)
         XCTAssertEqual(rows.last?.id, "ghost-source")
+    }
+
+    func testSourceRowsSplitActiveAndArchivedDefaultOffGroups() {
+        let live = [
+            liveSource("minimax", sessions: 234, health: "healthy"),
+            liveSource("cline", sessions: 3, health: "healthy"),
+        ]
+
+        let groups = SourcePulseView.groupedSourceRows(catalog: SourceCatalog.all, live: live)
+
+        XCTAssertEqual(groups.map(\.id), ["active", "archived"])
+        let activeIDs = groups.first(where: { $0.id == "active" })?.rows.map(\.id) ?? []
+        let archivedIDs = groups.first(where: { $0.id == "archived" })?.rows.map(\.id) ?? []
+        XCTAssertTrue(activeIDs.contains("minimax"))
+        XCTAssertFalse(activeIDs.contains("cline"))
+        XCTAssertEqual(Set(archivedIDs), ["cline", "iflow", "lobsterai"])
     }
 }

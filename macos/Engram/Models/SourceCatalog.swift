@@ -6,17 +6,20 @@ import Foundation
 /// `id` is the canonical `sessions.source` value (e.g. `"claude-code"`); it
 /// resolves to a display name through `SourceColors.longLabel`. `defaultPath`
 /// is where the adapter looks for transcripts. `cacheOnly` is true only for
-/// sources whose adapters run with live gRPC sync disabled.
+/// sources whose adapters run with live gRPC sync disabled. `archivedByDefault`
+/// marks sources that ship as retained parsers but are not indexed until enabled.
 struct SourceCatalogEntry {
     let id: String
     let defaultPath: String
     let cacheOnly: Bool
+    let archivedByDefault: Bool
 }
 
 /// Single canonical catalog of the source adapters Engram ships with.
 ///
-/// Mirrors `SessionAdapterFactory.defaultAdapters()` (17 registered adapters).
-/// Used by `SourcePulseView` to surface configured-but-empty/undetected
+/// Mirrors `SessionAdapterFactory.defaultAdapters()` (17 registered adapters:
+/// active by default plus archived default-off sources). Used by
+/// `SourcePulseView` to surface configured-but-empty/undetected
 /// sources that the live service query (`GROUP BY source`) cannot return
 /// because they have no indexed sessions yet.
 enum SourceCatalog {
@@ -48,5 +51,6 @@ private extension SourceCatalogEntry {
         self.id = source
         self.defaultPath = defaultPath
         self.cacheOnly = LiveSyncDisabledSources.isLiveSyncDisabled(source)
+        self.archivedByDefault = ArchivedDefaultOffSources.contains(source)
     }
 }

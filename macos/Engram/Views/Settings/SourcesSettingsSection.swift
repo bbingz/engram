@@ -7,7 +7,7 @@ struct SourcesSettingsSection: View {
             SectionHeader(icon: "folder", title: "Data Sources")
 
             GroupBox("Data sources (read-only)") {
-                Text("Sources are auto-detected and indexed automatically. The full source catalog — live health, search and token coverage, and undetected sources — lives in Workspace > Sources.")
+                Text("Default-on sources are auto-detected and indexed automatically. Archived sources stay off until enabled from Workspace > Sources > Archived; the full source catalog, live health, search and token coverage, and undetected sources live there.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

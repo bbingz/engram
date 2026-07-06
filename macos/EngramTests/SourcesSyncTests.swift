@@ -65,6 +65,9 @@ final class SourcesSyncTests: XCTestCase {
         let text = try source("macos/Engram/Views/Settings/SourcesSettingsSection.swift")
         XCTAssertFalse(text.contains("\"path."))
         XCTAssertTrue(text.contains("read-only"))
+        XCTAssertTrue(text.contains("Archived"))
+        XCTAssertTrue(text.contains("stay off until enabled"))
+        XCTAssertTrue(text.contains("Workspace > Sources > Archived"))
     }
 
     func testSourceCatalogMatchesRegisteredAdapters() throws {
@@ -79,5 +82,11 @@ final class SourcesSyncTests: XCTestCase {
         XCTAssertFalse(text.contains("Hermes"))
         XCTAssertFalse(text.contains("openclaw"))
         XCTAssertFalse(text.contains("hermes"))
+    }
+
+    func testOnboardingDoesNotPresentArchivedSourcesAsReadyToIndex() throws {
+        let text = try source("macos/Engram/Onboarding/OnboardingView.swift")
+        XCTAssertTrue(text.contains("!ArchivedDefaultOffSources.contains($0.id)"))
+        XCTAssertFalse(text.contains("(\"lobsterai\""))
     }
 }

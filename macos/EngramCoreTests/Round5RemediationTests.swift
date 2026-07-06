@@ -673,12 +673,15 @@ final class Round5RemediationTests: XCTestCase {
 
         let limits = ParserLimits(maxFileBytes: 16 * 1024 * 1024)
         let baseline = currentResidentMemoryBytes()
+        XCTAssertGreaterThan(baseline, 0, "RSS probe should succeed before measuring JSONL parser growth")
         for _ in 0..<60 {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: file.path, limits: limits)
             XCTAssertNil(failure)
             XCTAssertEqual(objects.count, 1_000)
         }
-        let growth = currentResidentMemoryBytes() - baseline
+        let finalResidentMemory = currentResidentMemoryBytes()
+        XCTAssertGreaterThan(finalResidentMemory, 0, "RSS probe should succeed after measuring JSONL parser growth")
+        let growth = finalResidentMemory > baseline ? finalResidentMemory - baseline : 0
         XCTAssertLessThan(
             growth,
             128 * 1024 * 1024,

@@ -220,11 +220,15 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 - SQLite DB: `~/.engram/index.sqlite` (WAL mode)
 - Settings: `~/.engram/settings.json`
 - Session sources: `~/.claude/projects/`, `~/.codex/sessions/`, `~/.gemini/`, etc.
-- `SessionAdapterFactory.defaultAdapters()` registers 17 source adapters. Windsurf
-  is cache-only in Swift; Antigravity is cache/transcript-only in Swift. Windsurf
-  reads existing cache files under `~/.engram/cache/windsurf`; Antigravity reads
-  Antigravity CLI brain transcripts and any legacy cache already present. "17
-  sources" is the adapter count, not a live-gRPC source count.
+- `SessionAdapterFactory.defaultAdapters()` registers 17 source adapters: 14 are
+  active by default and 3 (`cline`, `iflow`, `lobsterai`) are archived
+  default-off sources that keep parser/fixture coverage but are not scanned until
+  enabled from Sources > Archived. `minimax` remains active by default.
+  Windsurf is cache-only in Swift; Antigravity is cache/transcript-only in Swift.
+  Windsurf reads existing cache files under `~/.engram/cache/windsurf`;
+  Antigravity reads Antigravity CLI brain transcripts and any legacy cache
+  already present. "17 sources" is the adapter count, not the default-on source
+  count or a live-gRPC source count.
 
 ## What NOT To Do
 
