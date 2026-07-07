@@ -9,7 +9,7 @@ internal struct SessionModelPrice {
 }
 
 internal enum SessionCostPricing {
-    static let tableVersion = "2"
+    static let tableVersion = "3"
     static let metadataKey = "session_cost_pricing_version"
 
     private static let codexLongContextThreshold = 272_000
@@ -21,6 +21,7 @@ internal enum SessionCostPricing {
     private static let haikuCurrent = SessionModelPrice(input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25)
     private static let haiku35 = SessionModelPrice(input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1)
     private static let haiku3 = SessionModelPrice(input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3)
+    private static let claudePremium5 = SessionModelPrice(input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5)
 
     private static let claudeExactPricing: [String: ResolvedPrice] = [
         "claude-opus-4-8": ResolvedPrice(price: opusCurrent),
@@ -29,6 +30,9 @@ internal enum SessionCostPricing {
         "claude-opus-4-5": ResolvedPrice(price: opusCurrent),
         "claude-opus-4-1": ResolvedPrice(price: opusLegacy),
         "claude-opus-4": ResolvedPrice(price: opusLegacy),
+        "claude-sonnet-5": ResolvedPrice(price: claudeBase),
+        "claude-fable-5": ResolvedPrice(price: claudePremium5),
+        "claude-mythos-5": ResolvedPrice(price: claudePremium5),
         "claude-sonnet-4-6": ResolvedPrice(price: claudeBase),
         "claude-sonnet-4-5": ResolvedPrice(price: claudeBase),
         "claude-sonnet-4": ResolvedPrice(price: claudeBase),
@@ -39,6 +43,10 @@ internal enum SessionCostPricing {
         "claude-haiku-3": ResolvedPrice(price: haiku3),
     ]
 
+    // Deliberate asymmetry: GPT/Codex prices carry 272K cumulative long-context
+    // tiers because `session_costs` stores session-cumulative tokens. Claude's
+    // public long-context cutover is per request, so applying it to cumulative
+    // session totals would overprice ordinary long sessions.
     private static let gptPricing: [String: ResolvedPrice] = [
         "gpt-5.1-codex-max": ResolvedPrice(price: SessionModelPrice(input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0)),
         "gpt-5.1-codex": ResolvedPrice(price: SessionModelPrice(input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0)),
@@ -79,6 +87,23 @@ internal enum SessionCostPricing {
         "gemini-2.5-pro": ResolvedPrice(price: SessionModelPrice(input: 1.25, output: 10, cacheRead: 0.31, cacheWrite: 1.25)),
     ]
 
+    private static let chineseVendorPricing: [String: ResolvedPrice] = [
+        "glm-5.2": ResolvedPrice(price: SessionModelPrice(input: 0.909, output: 2.856, cacheRead: 0.169, cacheWrite: 0)),
+        "glm-5": ResolvedPrice(price: SessionModelPrice(input: 0.60, output: 1.92, cacheRead: 0.12, cacheWrite: 0)),
+        "kimi-k2.7-code": ResolvedPrice(price: SessionModelPrice(input: 0.74, output: 3.50, cacheRead: 0.15, cacheWrite: 0)),
+        // Same-generation approximations for non-catalogue Kimi product labels.
+        "kimi-k2.7": ResolvedPrice(price: SessionModelPrice(input: 0.74, output: 3.50, cacheRead: 0.15, cacheWrite: 0)),
+        "kimi-for-coding": ResolvedPrice(price: SessionModelPrice(input: 0.74, output: 3.50, cacheRead: 0.15, cacheWrite: 0)),
+        "qwen3.7-plus": ResolvedPrice(price: SessionModelPrice(input: 0.32, output: 1.28, cacheRead: 0.064, cacheWrite: 0.40)),
+        "qwen3.6-plus": ResolvedPrice(price: SessionModelPrice(input: 0.325, output: 1.95, cacheRead: 0, cacheWrite: 0.406)),
+        "qwen3.5-plus": ResolvedPrice(price: SessionModelPrice(input: 0.30, output: 1.80, cacheRead: 0, cacheWrite: 0.375)),
+        "deepseek-v4-pro": ResolvedPrice(price: SessionModelPrice(input: 0.435, output: 0.87, cacheRead: 0.004, cacheWrite: 0)),
+        "minimax-m3": ResolvedPrice(price: SessionModelPrice(input: 0.30, output: 1.20, cacheRead: 0.06, cacheWrite: 0)),
+        "minimax-m2.7": ResolvedPrice(price: SessionModelPrice(input: 0.18, output: 0.72, cacheRead: 0, cacheWrite: 0)),
+        "minimax-m2.5": ResolvedPrice(price: SessionModelPrice(input: 0.12, output: 0.48, cacheRead: 0, cacheWrite: 0)),
+        "mimo-v2.5-pro": ResolvedPrice(price: SessionModelPrice(input: 0.435, output: 0.87, cacheRead: 0.004, cacheWrite: 0)),
+    ]
+
     private static let reasoningTiers: Set<String> = ["minimal", "low", "medium", "high", "xhigh", "auto", "none"]
 
     static func price(for model: String?) -> SessionModelPrice? {
@@ -98,6 +123,7 @@ internal enum SessionCostPricing {
         if let claude = resolveClaude(model) { return claude }
         if let openAI = resolveOpenAI(model) { return openAI }
         if isOpenAIModel(model) { return nil }
+        if let chineseVendor = resolveChineseVendor(model) { return chineseVendor }
         return longestDelimitedMatch(model, in: legacyOpenAIAndGeminiPricing)
     }
 
@@ -131,6 +157,12 @@ internal enum SessionCostPricing {
         }
 
         switch normalized {
+        case "opus":
+            return claudeExactPricing["claude-opus-4-8"]
+        case "sonnet":
+            return claudeExactPricing["claude-sonnet-5"]
+        case "haiku":
+            return claudeExactPricing["claude-haiku-4-5"]
         case "opus-4":
             return claudeExactPricing["claude-opus-4-8"]
         case "sonnet-4":
@@ -144,6 +176,9 @@ internal enum SessionCostPricing {
         if hasClaudeFamilyPrefix(normalized, family: "opus", major: "4") {
             return claudeExactPricing["claude-opus-4-8"]
         }
+        if hasClaudeFamilyPrefix(normalized, family: "sonnet", major: "5") {
+            return claudeExactPricing["claude-sonnet-5"]
+        }
         if hasClaudeFamilyPrefix(normalized, family: "sonnet", major: "4") {
             return claudeExactPricing["claude-sonnet-4-6"]
         }
@@ -152,6 +187,17 @@ internal enum SessionCostPricing {
         }
 
         return longestDelimitedMatch(normalized, in: claudeExactPricing)
+    }
+
+    private static func resolveChineseVendor(_ model: String) -> ResolvedPrice? {
+        var normalized = model
+        if let slash = normalized.lastIndex(of: "/") {
+            normalized = String(normalized[normalized.index(after: slash)...])
+        }
+        if let snapshotBase = stripSnapshotSuffix(normalized) {
+            normalized = snapshotBase
+        }
+        return longestDelimitedMatch(normalized, in: chineseVendorPricing)
     }
 
     private static func resolveOpenAI(_ model: String) -> ResolvedPrice? {
