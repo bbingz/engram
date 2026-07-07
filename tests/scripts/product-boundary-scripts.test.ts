@@ -4,9 +4,11 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = resolve(import.meta.dirname, '../..');
+const rgPath = `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ''}`;
 const hasRg = (() => {
   try {
     execFileSync('bash', ['-c', 'command -v rg'], {
+      env: { ...process.env, PATH: rgPath },
       stdio: 'ignore',
     });
     return true;
@@ -19,6 +21,7 @@ function runScript(path: string): string {
   return execFileSync('bash', [path], {
     cwd: repoRoot,
     encoding: 'utf8',
+    env: { ...process.env, PATH: rgPath },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 }
