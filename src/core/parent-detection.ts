@@ -4,11 +4,11 @@
 
 /** Bump this when detection logic changes to trigger re-evaluation of unlinked sessions. */
 export const DETECTION_VERSION = 5;
-export const AMBIGUITY_THRESHOLD_RATIO = 0.9;
-export const MAX_AMBIGUOUS_CANDIDATES = 3;
+const AMBIGUITY_THRESHOLD_RATIO = 0.9;
+const MAX_AMBIGUOUS_CANDIDATES = 3;
 
-export type ScoredParent = { parentId: string; score: number };
-export type ParentCandidateDecision =
+type ScoredParent = { parentId: string; score: number };
+type ParentCandidateDecision =
   | { type: 'none' }
   | { type: 'suggest'; parentId: string }
   | { type: 'ambiguous'; candidates: ScoredParent[] };
