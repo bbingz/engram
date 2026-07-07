@@ -125,7 +125,7 @@ final class IndexerParityTests: XCTestCase {
             XCTAssertEqual(costRow?["output_tokens"] as Int?, 30)
             XCTAssertEqual(costRow?["cache_read_tokens"] as Int?, 40)
             XCTAssertEqual(costRow?["cache_creation_tokens"] as Int?, 10)
-            XCTAssertEqual(costRow?["cost_usd"] as Double?, 0)
+            XCTAssertNil(costRow?["cost_usd"] as Double?)
             XCTAssertEqual(
                 try String.fetchAll(db, sql: "SELECT job_kind FROM session_index_jobs WHERE session_id = 'sess-1' ORDER BY job_kind"),
                 ["embedding", "fts"]

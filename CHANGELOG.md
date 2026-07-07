@@ -7,6 +7,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: hardened session cost pricing (2026-07-07, Codex)
+
+- Rebuilt Swift session cost pricing around normalized Claude/OpenAI model IDs,
+  refreshed stale Opus 4.6 and Haiku 4.5 rates, added GPT 5.x/Codex pricing and
+  cumulative Codex long-context bands, and kept Gemini rates unchanged.
+- Unpriced token rows now store `cost_usd = NULL`; startup cost backfill tracks
+  pricing-table version `2` and recomputes token rows when the pricing policy
+  changes.
+- Preserved existing aggregate Claude base-rate behavior for session totals while
+  pricing dated Claude IDs such as `claude-sonnet-4-20250514`.
+
 ### Fixed: cleanup low-risk feature-cut residuals (2026-07-06, Codex)
 
 - Removed the dead Hummingbird link from the macOS app target while keeping the

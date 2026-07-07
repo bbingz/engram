@@ -123,6 +123,27 @@ final class EngramServiceCostsTests: XCTestCase {
         XCTAssertEqual(costs.todayUsd, 0)
     }
 
+    func testCostsTreatNullCostRowsAsZero() async throws {
+        let todayInstant = Calendar.current.date(
+            bySettingHour: 12, minute: 0, second: 0, of: Date()
+        ) ?? Date()
+        let path = try seedCostsFixture { db in
+            try insertSession(db, id: "priced", source: "codex", startTime: isoInstant(todayInstant))
+            try insertSession(db, id: "unpriced", source: "codex", startTime: isoInstant(todayInstant.addingTimeInterval(60)))
+            try insertCost(db, sessionId: "priced", costUsd: 1.25)
+            try insertCost(db, sessionId: "unpriced", costUsd: nil)
+        }
+
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: path)
+        let costs = try await provider.costs()
+
+        XCTAssertEqual(costs.totalUsd, 1.25, accuracy: 0.001)
+        XCTAssertEqual(costs.todayUsd, 1.25, accuracy: 0.001)
+        let codex = try XCTUnwrap(costs.perSource.first(where: { $0.key == "codex" }))
+        XCTAssertEqual(codex.costUsd, 1.25, accuracy: 0.001)
+        XCTAssertEqual(codex.sessionCount, 2)
+    }
+
     // MARK: - Helpers
 
     /// Full UTC ISO instant (what adapters store in `start_time`).
@@ -200,7 +221,7 @@ final class EngramServiceCostsTests: XCTestCase {
         )
     }
 
-    private func insertCost(_ db: GRDB.Database, sessionId: String, costUsd: Double) throws {
+    private func insertCost(_ db: GRDB.Database, sessionId: String, costUsd: Double?) throws {
         try db.execute(
             sql: "INSERT INTO session_costs (session_id, cost_usd) VALUES (?, ?)",
             arguments: [sessionId, costUsd]
