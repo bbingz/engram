@@ -82,9 +82,16 @@ struct PopoverView: View {
 
     // MARK: - Header
 
+    @ViewBuilder
     private var headerSection: some View {
+        let freshness = serviceStatusStore.dataFreshness(now: Date())
         HStack {
             Text("Engram").font(.headline)
+            if let detail = serviceFreshnessDetail(freshness) {
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
             Button {
                 NotificationCenter.default.post(name: .openSettings, object: nil)
@@ -134,7 +141,8 @@ struct PopoverView: View {
     @ViewBuilder
     private var timelineSection: some View {
         if data.recentSessions.isEmpty {
-            Text(serviceStatusStore.status == .starting ? "Indexing your sessions…" : "No sessions yet")
+            let freshness = serviceStatusStore.dataFreshness(now: Date())
+            Text(timelineEmptyText(freshness))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -262,6 +270,38 @@ struct PopoverView: View {
     private static func loadLiveSessions(_ serviceClient: EngramServiceClient) async -> [EngramServiceLiveSessionInfo] {
         (try? await serviceClient.liveSessions().sessions) ?? []
     }
+
+    private func timelineEmptyText(_ freshness: ServiceDataFreshness) -> String {
+        switch freshness {
+        case .live:
+            return serviceStatusStore.status == .starting ? "Indexing your sessions…" : "No sessions yet"
+        case .stale(let asOf):
+            let base = serviceStatusStore.status == .starting ? "Indexing your sessions…" : "No sessions yet"
+            return "\(base) \(Self.asOfText(asOf))"
+        case .expired:
+            return "No sessions yet"
+        }
+    }
+
+    private func serviceFreshnessDetail(_ freshness: ServiceDataFreshness) -> String? {
+        switch freshness {
+        case .stale(let asOf):
+            return Self.asOfText(asOf)
+        case .live, .expired:
+            return nil
+        }
+    }
+
+    private static func asOfText(_ date: Date) -> String {
+        "as of \(serviceFreshnessTimeFormatter.string(from: date))"
+    }
+
+    private static let serviceFreshnessTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
 
     private static let dateOnlyFormatter: DateFormatter = {
         let f = DateFormatter()

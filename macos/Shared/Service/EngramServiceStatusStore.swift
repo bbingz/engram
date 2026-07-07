@@ -18,6 +18,12 @@ struct UsagePressureSummary: Equatable, Sendable {
     }
 }
 
+enum ServiceDataFreshness: Equatable, Sendable {
+    case live
+    case stale(asOf: Date)
+    case expired
+}
+
 private struct UsagePressureCandidate: Sendable {
     let summary: UsagePressureSummary
     let score: Double
@@ -27,6 +33,8 @@ private struct UsagePressureCandidate: Sendable {
 @MainActor
 @Observable
 final class EngramServiceStatusStore {
+    private static let staleUsefulInterval: TimeInterval = 30 * 60
+
     var status: EngramServiceStatus = .stopped
     var totalSessions = 0
     var todayParentSessions = 0
@@ -56,6 +64,13 @@ final class EngramServiceStatusStore {
 
     var usagePressureSummary: UsagePressureSummary? {
         usageData.compactMap(Self.pressureSummaryCandidate).max(by: Self.isLowerPriorityUsage)?.summary
+    }
+
+    func dataFreshness(now: Date = Date()) -> ServiceDataFreshness {
+        if isRunning { return .live }
+        guard let lastEventAt else { return .expired }
+        let age = max(0, now.timeIntervalSince(lastEventAt))
+        return age <= Self.staleUsefulInterval ? .stale(asOf: lastEventAt) : .expired
     }
 
     func apply(_ newStatus: EngramServiceStatus) {
