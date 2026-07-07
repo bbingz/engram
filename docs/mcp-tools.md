@@ -8,6 +8,33 @@
 
 ---
 
+## Choosing a read tool
+
+| Goal | Use | Notes |
+|------|-----|-------|
+| Find sessions by words or phrases | `search` | Keyword-only SQLite FTS. Queries shorter than 3 characters return no keyword results with a warning. UUID-shaped queries do direct session ID lookup before keyword filters. Keyword results exclude hidden, orphaned, `skip`, and `lite` rows. Unsupported `mode` values are accepted for legacy clients but return keyword-only results with a warning. |
+| Start work in a repo and recover relevant history | `get_context` | Best first call for a current working directory. It combines recent project sessions, saved insights, and optional environment data within the requested token budget. |
+| Retrieve durable memories or preferences | `get_memory` | Uses insight lookup. When no embedding provider is available, it falls back to keyword/recency ranking and says so in the response warning. |
+| Read one transcript | `get_session` | Use when you already have a session id. It paginates at 50 messages per page; increment `page` to read later messages. A `transcriptTooLarge` error means the source hit the full-JSON size guard, and pagination may not bypass that guard. |
+| Browse metadata without transcript bodies | `list_sessions` | Use filters for source, project, and date windows. Returns session metadata only and is cheaper than transcript reads. |
+| Count usage or inspect aggregate activity | `stats` | Use for session/message counts by source, project, day, or week. For spend, use `get_costs`; for tool calls, use `tool_analytics`. |
+
+---
+
+## Error codes and recovery
+
+| Code | Emitted by | Meaning | Recovery action |
+|------|------------|---------|-----------------|
+| `searchFailed` | `search` | Keyword lookup failed behind a deliberately generic message; database details are not leaked to the MCP client. | Retry once. If it persists, check Engram database/service health and retry with a smaller or simpler query. |
+| `transcriptTooLarge` | `get_session` | The transcript file exceeds `ENGRAM_MAX_FULL_JSON_TRANSCRIPT_BYTES`, or 10 MiB by default; guarded sources can fail before pagination can help. | Reduce the source transcript below the configured limit or restart MCP with a higher `ENGRAM_MAX_FULL_JSON_TRANSCRIPT_BYTES`, then retry. |
+| `serviceUnavailable` | `save_insight`, `delete_insight`, `hide_session`, `export`, `generate_summary`, `link_sessions`, mutating `manage_project_alias`, `project_move`, `project_archive`, `project_undo`, and `project_move_batch` | Mutating, operational, and long-running read tools fail closed when the EngramService socket is unavailable. Read-only tools continue to work. | Launch Engram.app or otherwise start EngramService, then retry. For `delete_insight` and `hide_session`, `dry_run: true` remains read-only. For `manage_project_alias`, `action: "list"` remains read-only. For project move/archive/undo/batch, even dry-runs require the service. |
+| `cancelled` | Any in-flight `tools/call` cancelled by the MCP client | The client sent `notifications/cancelled` for that request id. | Re-run the tool only if the work is still needed; for operational tools, inspect state first with `project_list_migrations` or `project_recover`. |
+| No structured code (`invalidArguments`) | Schema validation and required-argument checks | Invalid or missing parameter. The MCP result is an error but `structuredContent.code` is omitted. | Fix the parameter name, type, enum value, range, or required field from the message and retry. |
+| No structured code (service error flattening) | Any uncaught `EngramServiceError` escaping a handler | The stdio bridge flattens the service error message; service error name, code, and retry policy do not reach the MCP wire. | Treat the text as authoritative, check service status/logs if needed, and retry only when the underlying condition is resolved. |
+| No structured code on export size drift | `export` | `export` uses the same transcript size guard as `get_session`, but currently rethrows size failures as a service `invalidRequest`, so no `transcriptTooLarge` code reaches the client. | Retry `export` only after the source transcript is below the configured size limit or MCP is restarted with a higher limit. |
+
+---
+
 ## list_sessions
 
 List historical AI coding assistant sessions. Supports filtering by tool source, project, and time range.
@@ -154,7 +181,7 @@ Link two project names so sessions from one appear in queries for the other. Use
 | old_project | string | no | Old project name (required for `add`/`remove`) |
 | new_project | string | no | New project name (required for `add`/`remove`) |
 
-**Notes:** The `list` action requires no additional parameters. For `add` and `remove`, both `old_project` and `new_project` are required. Aliases are bidirectional for query resolution -- searching for either name returns sessions from both.
+**Notes:** The `list` action requires no additional parameters. For `add` and `remove`, both `old_project` and `new_project` are required. Aliases are bidirectional for query resolution -- searching for either name returns sessions from both. Use this only for directories moved manually outside Engram. Do not call it after `project_move`; that tool already creates the alias automatically.
 
 ---
 
@@ -198,8 +225,10 @@ Save an important insight, decision, or lesson learned for future retrieval. Use
 | wing | string | no | Project or domain name |
 | room | string | no | Sub-area within the project |
 | importance | number | no | Importance level 0-5. Default 5 |
+| type | string | no | Memory type. Enum: `semantic`, `episodic`, `procedural`. Default `semantic` |
+| source_session_id | string | no | Session ID that generated this insight |
 
-**Notes:** Performs normalized text duplicate detection within the insight store, then saves the insight text and FTS row. Current Swift product saves text-only and returns a warning that keyword search is available immediately. Importance is clamped to the 0-5 range by schema validation.
+**Notes:** Trims `content`; it must be 10-50,000 characters after trimming. `wing` and `room` are trimmed and capped at 200 characters; `source_session_id` is capped at 500 characters. `importance` defaults to 5, must be finite, is rounded to an integer, and must be within 0-5. `type` defaults to `semantic` and must be one of `episodic`, `semantic`, or `procedural`. Duplicate detection lowercases and whitespace-collapses content, then compares against up to 200 recent non-superseded insights in the same wing/room. A duplicate is not rejected: the new row is inserted, the older row is marked `superseded_by`, and the MCP response includes a duplicate warning but not the superseded row id. Current Swift product saves text-only and returns a warning that keyword search is available immediately.
 
 ---
 
@@ -340,7 +369,7 @@ Move a project directory while keeping AI session history reachable.
 | force | boolean | no | Bypass git-dirty warning on source |
 | note | string | no | Audit note stored in migration log |
 
-**Notes:** Native Swift service pipeline. It moves the directory, patches known AI session path references, updates Engram DB state, and creates a project alias. The operation is compensating/transactional and records migration-log state.
+**Notes:** Cannot run concurrently with other `project_*` tools; execute project operations sequentially. Native Swift service pipeline. It moves the directory, patches known AI session path references, updates Engram DB state, and creates a project alias. The operation is compensating/transactional and records migration-log state.
 
 ---
 
@@ -358,7 +387,7 @@ Archive a project by moving it under `_archive/` with an inferred or specified c
 | force | boolean | no | Bypass git-dirty warning |
 | note | string | no | Audit note stored in migration log |
 
-**Notes:** Uses the same native Swift migration pipeline as `project_move`.
+**Notes:** Cannot run concurrently with other `project_*` tools; execute project operations sequentially. Uses the same native Swift migration pipeline as `project_move`.
 
 ---
 
@@ -373,7 +402,7 @@ Reverse a committed project-move migration.
 | migration_id | string | **yes** | Migration id returned by a previous project move/archive |
 | force | boolean | no | Bypass git-dirty warning on the current destination |
 
-**Notes:** Prepares a reverse request from the migration log, then runs the native Swift migration pipeline.
+**Notes:** Cannot run concurrently with other `project_*` tools; execute project operations sequentially. Prepares a reverse request from the migration log, then runs the native Swift migration pipeline.
 
 ---
 
@@ -389,7 +418,7 @@ Run multiple project move/archive operations sequentially from an inline JSON do
 | dry_run | boolean | no | Force all operations to run as dry-run |
 | force | boolean | no | Bypass git-dirty warning on every operation |
 
-**Notes:** JSON-only batch runner. `stopOnError` defaults to true in the batch document.
+**Notes:** Cannot run concurrently with other `project_*` tools; execute project operations sequentially. JSON-only batch runner. `stopOnError` defaults to true in the batch document.
 
 ---
 

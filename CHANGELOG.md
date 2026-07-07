@@ -7,6 +7,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: documented MCP recovery guidance (2026-07-07, Codex)
+
+- Added MCP read-tool selection guidance plus error-code notes and recovery limits for
+  `searchFailed`, `transcriptTooLarge`, `serviceUnavailable`, `cancelled`, and
+  known no-code error paths.
+- Synced `docs/mcp-tools.md` notes with the Swift project-migration sequencing
+  warnings, manual-alias anti-pattern, and MCP-visible `save_insight`
+  validation/dedup behavior.
+
 ### Changed: hardened session cost pricing (2026-07-07, Codex)
 
 - Rebuilt Swift session cost pricing around normalized Claude/OpenAI model IDs,
