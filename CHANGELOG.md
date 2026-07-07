@@ -7,6 +7,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: aligned release version with v1.0.x tags (2026-07-07, Codex)
+
+- Bumped package metadata and macOS MARKETING_VERSION to 1.0.4 so the next
+  release tag can match the app bundle version checked by release verification.
+
 ### Changed: expanded session cost pricing coverage (2026-07-07, Codex)
 
 - Added Claude 5-family and CN-vendor pricing coverage for high-volume model

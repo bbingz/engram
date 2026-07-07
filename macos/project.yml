@@ -212,7 +212,7 @@ targets:
       ENABLE_HARDENED_RUNTIME: YES
       # Single-sourced version. project.yml is the source of truth; build-release.sh
       # reads MARKETING_VERSION from here and auto-injects a non-default CURRENT_PROJECT_VERSION.
-      MARKETING_VERSION: "0.1.0"
+      MARKETING_VERSION: "1.0.4"
       CURRENT_PROJECT_VERSION: "1"
 
   EngramCLI:
