@@ -10,6 +10,7 @@ struct AgentsView: View {
     @State private var confirmedCounts: [String: Int] = [:]
     @State private var suggestedCounts: [String: Int] = [:]
     @State private var pendingSuggestions: [Session] = []
+    @State private var ambiguousSuggestions: [DatabaseManager.AmbiguousSuggestionSession] = []
     @State private var subAgentCount = 0
     @State private var activeCount = 0
     @State private var inFlightRows: Set<String> = []
@@ -28,10 +29,10 @@ struct AgentsView: View {
                     KPICard(value: "\(activeCount)", label: "Active (7d)")
                 }
 
-                if isLoading && parents.isEmpty && pendingSuggestions.isEmpty {
+                if isLoading && parents.isEmpty && pendingSuggestions.isEmpty && ambiguousSuggestions.isEmpty {
                     HStack { Spacer(); ProgressView().scaleEffect(0.7); Spacer() }
                         .padding(.vertical, 24)
-                } else if parents.isEmpty && pendingSuggestions.isEmpty {
+                } else if parents.isEmpty && pendingSuggestions.isEmpty && ambiguousSuggestions.isEmpty {
                     EmptyState(icon: "cpu", title: "No agent sessions", message: "Agent sessions (subagents, dispatched tasks) will appear here")
                         .accessibilityIdentifier("agents_emptyState")
                 } else {
@@ -50,6 +51,23 @@ struct AgentsView: View {
                             }
                         }
                         .accessibilityIdentifier("agents_pendingList")
+                    }
+
+                    if !ambiguousSuggestions.isEmpty {
+                        SectionHeader(icon: "questionmark.diamond", title: "Ambiguous", badge: "\(ambiguousSuggestions.count)")
+                        LazyVStack(spacing: 4) {
+                            ForEach(ambiguousSuggestions) { item in
+                                AmbiguousSuggestionRow(
+                                    item: item,
+                                    isBusy: inFlightRows.contains(item.session.id),
+                                    onSelectCandidate: { candidate in
+                                        resolveAmbiguousSuggestion(item, candidate: candidate)
+                                    },
+                                    onDismiss: { dismissAmbiguousSuggestion(item) }
+                                )
+                            }
+                        }
+                        .accessibilityIdentifier("agents_ambiguousList")
                     }
 
                     SectionHeader(icon: "cpu", title: "Agent Sessions")
@@ -87,7 +105,14 @@ struct AgentsView: View {
         defer { isLoading = false }
         let db = self.db
         do {
-            let data = try await Task.detached { () -> (parents: [Session], confirmed: [String: Int], suggested: [String: Int], pending: [Session], subAgents: [Session]) in
+            let data = try await Task.detached { () -> (
+                parents: [Session],
+                confirmed: [String: Int],
+                suggested: [String: Int],
+                pending: [Session],
+                ambiguous: [DatabaseManager.AmbiguousSuggestionSession],
+                subAgents: [Session]
+            ) in
                 let topLevel = try db.listSessions(subAgent: false, topLevelOnly: true, limit: 200)
                 let parentIds = topLevel.map(\.id)
                 let confirmed = try db.childCount(parentIds: parentIds)
@@ -95,14 +120,16 @@ struct AgentsView: View {
                 // Keep only top-level sessions that actually own a group.
                 let groups = topLevel.filter { (confirmed[$0.id] ?? 0) + (suggested[$0.id] ?? 0) > 0 }
                 let pending = try db.pendingSuggestionSessions(limit: 200)
+                let ambiguous = try db.ambiguousSuggestionSessions(limit: 200)
                 // KPI source: the subagent population (NOT rendered as the list).
                 let subAgents = try db.listSessions(subAgent: true, limit: 200)
-                return (groups, confirmed, suggested, pending, subAgents)
+                return (groups, confirmed, suggested, pending, ambiguous, subAgents)
             }.value
             parents = data.parents
             confirmedCounts = data.confirmed
             suggestedCounts = data.suggested
             pendingSuggestions = data.pending
+            ambiguousSuggestions = data.ambiguous
             subAgentCount = data.subAgents.count
             activeCount = Self.activeRoleCount(among: data.subAgents)
             loadError = nil
@@ -166,6 +193,49 @@ struct AgentsView: View {
             }
         }
     }
+
+    private func resolveAmbiguousSuggestion(
+        _ item: DatabaseManager.AmbiguousSuggestionSession,
+        candidate: DatabaseManager.AmbiguousSuggestionCandidate
+    ) {
+        let sessionId = item.session.id
+        guard !inFlightRows.contains(sessionId) else { return }
+        inFlightRows.insert(sessionId)
+        Task {
+            defer { inFlightRows.remove(sessionId) }
+            do {
+                let response = try await serviceClient.setParentSession(sessionId: sessionId, parentId: candidate.id)
+                guard response.ok else {
+                    loadError = response.error ?? "Failed to set parent"
+                    return
+                }
+                await loadData()
+            } catch {
+                EngramLogger.error("AgentsView resolve ambiguous suggestion failed", module: .ui, error: error)
+                loadError = error.localizedDescription
+            }
+        }
+    }
+
+    private func dismissAmbiguousSuggestion(_ item: DatabaseManager.AmbiguousSuggestionSession) {
+        let sessionId = item.session.id
+        guard !inFlightRows.contains(sessionId) else { return }
+        inFlightRows.insert(sessionId)
+        Task {
+            defer { inFlightRows.remove(sessionId) }
+            do {
+                let response = try await serviceClient.dismissAmbiguousSuggestion(sessionId: sessionId)
+                guard response.ok else {
+                    loadError = response.error ?? "Failed to dismiss suggestion"
+                    return
+                }
+                await loadData()
+            } catch {
+                EngramLogger.error("AgentsView dismiss ambiguous suggestion failed", module: .ui, error: error)
+                loadError = error.localizedDescription
+            }
+        }
+    }
 }
 
 // MARK: - Pending suggestion inbox row
@@ -215,6 +285,57 @@ private struct PendingSuggestionRow: View {
                 .menuStyle(.borderlessButton)
                 .frame(width: 24)
                 .accessibilityIdentifier("agents_setParent")
+            }
+        }
+        .disabled(isBusy)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Theme.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                .stroke(Theme.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
+    }
+}
+
+private struct AmbiguousSuggestionRow: View {
+    let item: DatabaseManager.AmbiguousSuggestionSession
+    let isBusy: Bool
+    let onSelectCandidate: (DatabaseManager.AmbiguousSuggestionCandidate) -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            SourcePill(source: item.session.source)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.session.displayTitle)
+                    .font(.callout)
+                    .foregroundStyle(Theme.primaryText)
+                    .lineLimit(1)
+                Text(item.session.displayDate)
+                    .font(.caption2)
+                    .foregroundStyle(Theme.tertiaryText)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if isBusy {
+                ProgressView().scaleEffect(0.6)
+            } else {
+                HStack(spacing: 6) {
+                    ForEach(item.candidates.prefix(3)) { candidate in
+                        Button(candidate.displayTitle) { onSelectCandidate(candidate) }
+                            .font(.caption2)
+                            .foregroundStyle(Theme.accent)
+                            .buttonStyle(.plain)
+                            .lineLimit(1)
+                            .frame(maxWidth: 120, alignment: .trailing)
+                    }
+                }
+                Button("Dismiss") { onDismiss() }
+                    .font(.caption2)
+                    .foregroundStyle(Theme.tertiaryText)
+                    .buttonStyle(.plain)
             }
         }
         .disabled(isBusy)

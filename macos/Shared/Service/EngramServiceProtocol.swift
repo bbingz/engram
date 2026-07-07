@@ -26,6 +26,7 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func clearParentSession(sessionId: String) async throws -> EngramServiceLinkResponse
     func confirmSuggestion(sessionId: String) async throws -> EngramServiceLinkResponse
     func dismissSuggestion(sessionId: String, suggestedParentId: String) async throws
+    func dismissAmbiguousSuggestion(sessionId: String) async throws -> EngramServiceLinkResponse
     func addSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse
     func removeSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse
     func relatedSessions(sessionId: String) async throws -> [String]

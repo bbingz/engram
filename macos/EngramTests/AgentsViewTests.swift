@@ -37,6 +37,23 @@ final class AgentsViewTests: XCTestCase {
         }
     }
 
+    private func setAmbiguousSuggestion(sessionId: String, candidatesJSON: String) throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE sessions
+                    SET suggestion_status = 'ambiguous',
+                        suggestion_candidates = ?,
+                        suggested_parent_id = NULL,
+                        parent_session_id = NULL
+                    WHERE id = ?
+                """,
+                arguments: [candidatesJSON, sessionId]
+            )
+        }
+    }
+
     // MARK: - pendingSuggestionSessions read query
 
     func testPendingSuggestionsReturnsOnlyUnconfirmedTopLevel() throws {
@@ -68,6 +85,25 @@ final class AgentsViewTests: XCTestCase {
             try setLink(sessionId: "sug-\(i)", parentId: nil, suggestedParentId: "parent")
         }
         XCTAssertEqual(try db.pendingSuggestionSessions(limit: 2).count, 2)
+    }
+
+    func testAmbiguousSuggestionSessionsDecodeCandidatesAndResolveTitles() throws {
+        try insertTestSession(at: dbPath, id: "parent-a", customName: "Alpha parent")
+        try insertTestSession(at: dbPath, id: "parent-b", generatedTitle: "Beta parent")
+        try insertTestSession(at: dbPath, id: "agent", source: "codex", summary: "Agent needing review")
+        try setAmbiguousSuggestion(
+            sessionId: "agent",
+            candidatesJSON: """
+            [{"id":"parent-b","score":0.95},{"id":"missing-parent","score":0.91},{"id":"parent-a","score":0.9}]
+            """
+        )
+
+        let rows = try db.ambiguousSuggestionSessions()
+
+        XCTAssertEqual(rows.map(\.session.id), ["agent"])
+        XCTAssertEqual(rows[0].candidates.map(\.id), ["parent-b", "missing-parent", "parent-a"])
+        XCTAssertEqual(rows[0].candidates.map(\.displayTitle), ["Beta parent", "missing-parent", "Alpha parent"])
+        XCTAssertEqual(rows[0].candidates.map(\.score), [0.95, 0.91, 0.9])
     }
 
     // MARK: - setParentSession success/error branches via the mock client
@@ -106,7 +142,11 @@ final class AgentsViewTests: XCTestCase {
         XCTAssertFalse(s.contains("SessionCard(session:"), "flat read-only SessionCard list must be gone")
         XCTAssertTrue(s.contains("serviceClient.confirmSuggestion"))
         XCTAssertTrue(s.contains("serviceClient.dismissSuggestion"))
+        XCTAssertTrue(s.contains("serviceClient.dismissAmbiguousSuggestion"))
+        XCTAssertTrue(s.contains("serviceClient.setParentSession"))
         XCTAssertTrue(s.contains("pendingSuggestionSessions"))
+        XCTAssertTrue(s.contains("ambiguousSuggestionSessions"))
+        XCTAssertTrue(s.contains("Ambiguous"))
         XCTAssertTrue(s.contains(".task(id: serviceStatusStore.totalSessions)"),
                       "must live-refresh on indexing progress")
         // Set-parent lives on the pending-suggestion inbox rows (not on the

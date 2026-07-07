@@ -143,6 +143,13 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         )
     }
 
+    func dismissAmbiguousSuggestion(sessionId: String) async throws -> EngramServiceLinkResponse {
+        try await command(
+            "dismissAmbiguousSuggestion",
+            payload: EngramServiceDismissAmbiguousSuggestionRequest(sessionId: sessionId)
+        )
+    }
+
     func addSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse {
         try await command("addSessionRelation", payload: EngramServiceRelationRequest(aId: aId, bId: bId))
     }

@@ -184,6 +184,38 @@ describe('parent-link-repo', () => {
       expect(row.suggested_parent_id).toBeNull();
     });
 
+    it('clears ambiguous suggestion state when setting confirmed parent', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'parent',
+          filePath: '/f/p',
+          startTime: '2026-01-01T09:00:00Z',
+        }),
+      );
+      db.upsertSession(
+        makeSession({
+          id: 'child',
+          filePath: '/f/c',
+          startTime: '2026-01-01T10:00:00Z',
+        }),
+      );
+      db.raw
+        .prepare(
+          "UPDATE sessions SET suggestion_status = 'ambiguous', suggestion_candidates = ? WHERE id = 'child'",
+        )
+        .run('[{"id":"parent","score":0.91}]');
+
+      setParentSession(db.raw, 'child', 'parent', 'manual');
+
+      const row = db.raw
+        .prepare(
+          'SELECT suggestion_status, suggestion_candidates FROM sessions WHERE id = ?',
+        )
+        .get('child') as Record<string, unknown>;
+      expect(row.suggestion_status).toBeNull();
+      expect(row.suggestion_candidates).toBeNull();
+    });
+
     it('does not modify tier when linking', () => {
       db.upsertSession(
         makeSession({
@@ -1151,6 +1183,73 @@ describe('parent-link-repo', () => {
         )
         .get('codex-normal-followup') as Record<string, unknown>;
       expect(row.suggested_parent_id).toBeNull();
+      expect(row.link_checked_at).toBeTruthy();
+    });
+
+    it('stores ambiguous suggestions and clears automatic dispatched skip state', () => {
+      db.upsertSession(
+        makeSession({
+          id: 'cc-parent-a',
+          source: 'claude-code',
+          startTime: '2026-04-13T10:00:00Z',
+          endTime: undefined,
+          cwd: '/test',
+          project: 'myproj',
+          filePath: '/test/cc-a.jsonl',
+          sizeBytes: 100,
+        }),
+      );
+      db.upsertSession(
+        makeSession({
+          id: 'cc-parent-b',
+          source: 'claude-code',
+          startTime: '2026-04-13T10:01:00Z',
+          endTime: undefined,
+          cwd: '/test',
+          project: 'myproj',
+          filePath: '/test/cc-b.jsonl',
+          sizeBytes: 100,
+        }),
+      );
+      db.upsertSession(
+        makeSession({
+          id: 'codex-ambiguous',
+          source: 'codex',
+          startTime: '2026-04-13T10:10:00Z',
+          cwd: '/test',
+          project: 'myproj',
+          filePath: '/test/codex-ambiguous.json',
+          sizeBytes: 50,
+          summary: 'Your task is to audit the repo',
+        }),
+      );
+      db.raw
+        .prepare(
+          "UPDATE sessions SET agent_role = 'dispatched', tier = 'skip' WHERE id = 'codex-ambiguous'",
+        )
+        .run();
+
+      const result = backfillSuggestedParents(db.raw);
+
+      expect(result.checked).toBe(1);
+      expect(result.suggested).toBe(0);
+      const row = db.raw
+        .prepare(
+          `
+          SELECT suggested_parent_id, suggestion_status, suggestion_candidates,
+                 agent_role, tier, link_checked_at
+          FROM sessions WHERE id = ?
+        `,
+        )
+        .get('codex-ambiguous') as Record<string, unknown>;
+      expect(row.suggested_parent_id).toBeNull();
+      expect(row.suggestion_status).toBe('ambiguous');
+      expect(JSON.parse(row.suggestion_candidates as string)).toEqual([
+        { id: 'cc-parent-b', score: expect.any(Number) },
+        { id: 'cc-parent-a', score: expect.any(Number) },
+      ]);
+      expect(row.agent_role).toBeNull();
+      expect(row.tier).toBeNull();
       expect(row.link_checked_at).toBeTruthy();
     });
   });

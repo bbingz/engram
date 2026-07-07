@@ -112,15 +112,23 @@ export function generateParentDetectionFixture(out: string): void {
           { parentId: 'parent-a', score: 0.2 },
           { parentId: 'parent-b', score: 0.8 },
         ],
-        bestParentId: pickBestCandidate([
+        decision: pickBestCandidate([
           { parentId: 'parent-a', score: 0.2 },
           { parentId: 'parent-b', score: 0.8 },
         ]),
       },
       {
         input: [{ parentId: 'parent-zero', score: 0 }],
-        bestParentId: pickBestCandidate([
-          { parentId: 'parent-zero', score: 0 },
+        decision: pickBestCandidate([{ parentId: 'parent-zero', score: 0 }]),
+      },
+      {
+        input: [
+          { parentId: 'parent-a', score: 1 },
+          { parentId: 'parent-b', score: 0.91 },
+        ],
+        decision: pickBestCandidate([
+          { parentId: 'parent-a', score: 1 },
+          { parentId: 'parent-b', score: 0.91 },
         ]),
       },
     ],
