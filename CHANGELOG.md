@@ -7,6 +7,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: plist gate (2026-07-08, Codex)
+
+- Added a plist and entitlements gate that runs `plutil -lint` and detects raw
+  XML duplicate keys before CI can accept silent plist overrides.
+
 ### Fixed: review ambiguous parent suggestions (2026-07-07, Codex)
 
 - Added near-tie parent-suggestion decisions across detection, startup backfill,
