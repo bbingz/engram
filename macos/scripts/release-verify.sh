@@ -14,7 +14,7 @@
 #   - Secure timestamp present
 #
 # Usage:
-#   release-verify.sh /path/to/Engram.app [--adhoc] [--expected-build N] [--expected-short-version X.Y.Z]
+#   release-verify.sh /path/to/Engram.app [--adhoc] [--hygiene-only] [--expected-build N] [--expected-short-version X.Y.Z]
 #
 # Exit nonzero on the first failed assertion.
 set -euo pipefail
@@ -23,11 +23,13 @@ APP="${1:-}"
 shift || true
 
 ADHOC=0
+HYGIENE_ONLY=0
 EXPECTED_BUILD=""
 EXPECTED_SHORT_VERSION=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --adhoc) ADHOC=1 ;;
+    --hygiene-only) HYGIENE_ONLY=1 ;;
     --expected-build) shift; EXPECTED_BUILD="${1:-}" ;;
     --expected-short-version) shift; EXPECTED_SHORT_VERSION="${1:-}" ;;
     *) echo "release-verify: unknown argument: $1" >&2; exit 2 ;;
@@ -45,7 +47,13 @@ ok() { echo "release-verify: ok: $*"; }
 
 echo "======================================"
 echo " release-verify: $APP"
-echo " mode: $([ "$ADHOC" -eq 1 ] && echo 'ad-hoc (hygiene/structure only)' || echo 'Developer ID (full)')"
+if [ "$HYGIENE_ONLY" -eq 1 ]; then
+  echo " mode: hygiene only"
+elif [ "$ADHOC" -eq 1 ]; then
+  echo " mode: ad-hoc"
+else
+  echo " mode: Developer ID (full)"
+fi
 echo "======================================"
 
 # --- 1. Bundle hygiene: forbidden Node/dist artifacts must be absent ---
@@ -66,6 +74,11 @@ if [ -e "$APP/Contents/Resources/node" ]; then
 fi
 [ "$hygiene_failed" -eq 0 ] || fail "bundle hygiene check failed (Node/dist artifacts present)"
 ok "bundle hygiene clean (no node/node_modules/dist/daemon.js/index.js/web.js)"
+
+if [ "$HYGIENE_ONLY" -eq 1 ]; then
+  echo "release-verify: PASS (hygiene only)"
+  exit 0
+fi
 
 # --- 2. Structural sanity ---
 [ -f "$APP/Contents/MacOS/Engram" ] || fail "missing main executable Contents/MacOS/Engram"

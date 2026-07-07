@@ -65,6 +65,17 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain(
       'tests/scripts/swift-boundary-scripts.test.ts',
     );
+    expect(testWorkflow).toContain(
+      'tests/scripts/product-boundary-scripts.test.ts',
+    );
+    expect(testWorkflow).toContain('tests/scripts/version-guard.test.ts');
+  });
+
+  it('runs bundle hygiene against the Debug app built in Swift CI', () => {
+    expect(testWorkflow).toContain('Build/Products/Debug/Engram.app');
+    expect(testWorkflow).toContain(
+      'bash scripts/release-verify.sh "$ENGRAM_APP" --hygiene-only',
+    );
   });
 
   it('keys SPM cache on Package.resolved and gives UI jobs restore keys', () => {
