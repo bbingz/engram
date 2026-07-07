@@ -59,6 +59,7 @@ describe('CI workflow hardening', () => {
 
   it('runs macOS-only vitest suites on pull requests', () => {
     expect(testWorkflow).toContain('macos-vitest:');
+    expect(testWorkflow).toContain('brew install xcodegen ripgrep');
     expect(testWorkflow).toContain(
       'npm test -- tests/scripts/build-release-script.test.ts',
     );

@@ -83,7 +83,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: |
-          brew install xcodegen
+          brew install xcodegen ripgrep
           test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
       - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/product-boundary-scripts.test.ts tests/scripts/version-guard.test.ts
 
