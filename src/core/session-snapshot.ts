@@ -54,6 +54,7 @@ export type IndexJobStatus =
   | 'pending'
   | 'running'
   | 'failed_retryable'
+  | 'failed_permanent'
   | 'completed'
   | 'not_applicable';
 

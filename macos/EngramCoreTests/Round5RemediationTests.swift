@@ -156,7 +156,7 @@ final class Round5RemediationTests: XCTestCase {
         let markEnd = try XCTUnwrap(source.range(of: "}", options: [], range: markStart.lowerBound..<source.endIndex))
         let markRetryable = String(source[markStart.lowerBound...markEnd.lowerBound])
         XCTAssertTrue(markRetryable.contains("retry_count + 1 >= ?"))
-        XCTAssertTrue(markRetryable.contains("failed_permanent"))
+        XCTAssertTrue(markRetryable.contains("IndexJobStatus.failedPermanent.rawValue"))
     }
 
     func testRegenerateAllTitlesStartsBackgroundWorkBeforeReturning() throws {

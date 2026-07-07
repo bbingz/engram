@@ -3,6 +3,7 @@
 ## Index
 
 <!-- AUTO-INDEX (rebuilt 2026-07-06): 93 dated entries; regenerate after adding sections -->
+- [2026-07-07 - Orca comparative study: verified adoption backlog + 5 real bugs found (Fable/Claude)](#2026-07-07---orca-comparative-study-verified-adoption-backlog--5-real-bugs-found-fableclaude)
 - [2026-07-06 - Feature-cut Top 10 completed + low residual cleanup merged (Codex)](#2026-07-06---feature-cut-top-10-completed--low-residual-cleanup-merged-codex)
 - [2026-07-06 - Stale screenshot baselines: check provenance before trusting SSIM failures (Fable/Claude)](#2026-07-06---stale-screenshot-baselines-check-provenance-before-trusting-ssim-failures-fableclaude)
 - [2026-07-05 - Preference: route fan-out subagents to sonnet/opus, not Fable (Fable/Claude)](#2026-07-05---preference-route-fan-out-subagents-to-sonnetopus-not-fable-fableclaude)
@@ -97,6 +98,54 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-07 - Orca comparative study: verified adoption backlog + 5 real bugs found (Fable/Claude)
+
+- A 32-agent workflow study (`wf_63e2b54a-2b8`) compared stablyai/orca
+  (Electron parallel-agent IDE, ~1.4M LoC TS) against Engram. All 12 migration
+  candidates were adversarially verified against both repos; the security
+  subsystem read was delegated to Codex CLI after Sonnet safety-filter false
+  positives on ai-vault/credential code.
+- Real Engram bugs found during verification (unfixed as of 2026-07-07):
+  (1) `EngramServiceReadProvider.sourceFailedIndexJobCounts()` (~L1479)
+  filters `status IN ('failed_retryable','failed_terminal','failed')` but
+  `IndexJobRunner` only writes `'failed_permanent'` — permanent failures are
+  undercounted in per-source health. (2) SEC-C2 `validateProjectPathConfined`
+  allows `src == $HOME`/`dst == $HOME` exactly and has no
+  ancestor-of-tracked-project check. (3) `ObservabilityRetention.swift` prunes
+  tables the runtime no longer writes (per `OSLogReader.swift` comment) — dead
+  maintenance code kept alive by its own tests. (4) Dead settings keys
+  (`syncNodeName`, `syncEnabled`, embedding fields) read as live features.
+  (5) `generate_summary` error path rethrows raw URLSession errors unwrapped
+  and discards `EngramServiceError.retryPolicy`/`name` before the UI.
+- Verified top adoption items: SQLite backup ring via periodic `VACUUM INTO`
+  (insights/manual links/favorites/migration_log have zero snapshot insurance;
+  UndoMigration error text references a backup that does not exist);
+  `SessionCostPricing` hardening (11 stale models, no aliases/tiers,
+  unmatched → $0; port shape from orca claude-usage + codex-usage;
+  `backfillCosts` only recomputes cost=0 rows); wire the 3 dormant boundary
+  scripts (`check-app-mcp-cli-direct-writes.sh` etc.) into CI plus run
+  bundle-hygiene on PRs (currently tag-only); MCP tool docs — add
+  per-error-code recovery guidance + read-tool selection boundaries (search
+  degradation warning and project_move sequencing docs already exist; gap is
+  narrower than first claimed); typed near-tie "ambiguous" state for Layer-2
+  parent suggestions; stale-but-useful status retention for HomeView Service
+  State + PopoverView Live section; source staleness concept for SourcePulse
+  healthStatus.
+- Rejected by verification (do NOT re-propose): cold-restore marker
+  (`file_index_state` mtime+inode+device already covers it); byte-offset
+  incremental indexing framed as new (it is deferred internal backlog #19 with
+  `parsed_offset`/`boundary_hash` columns already in schema); SwiftUI error
+  boundaries (Swift traps are uncatchable; WorkGraphView do/catch pattern +
+  zero force-unwraps already cover the catchable subset); protected-path
+  denylist as net-new (SEC-C2 exists with tests — only the $HOME-equality
+  loophole remains).
+- Strategic conclusion: Orca's own
+  `docs/reference/reliability-pain-points-2026-06-30.md` (9 open P0, 191 open
+  P1, 386 PRs/week, JSON-store regression #5356) is primary evidence FOR
+  Engram's passive-observer + Swift-owned-SQLite boundary. Never adopt: live
+  OAuth quota calls, agent-driving, mobile relay stack, JSON primary store,
+  product CLI, i18n backend.
 
 ## 2026-07-06 - Feature-cut Top 10 completed + low residual cleanup merged (Codex)
 

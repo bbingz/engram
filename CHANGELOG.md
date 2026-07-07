@@ -7,6 +7,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: service health and stale config regressions (2026-07-07, Codex)
+
+- Routed session index-job status reads and writes through shared enum values,
+  including `failed_permanent`, so service health counts and retry transitions
+  stay aligned with the current schema.
+- Limited observability retention pruning to active append-only runtime tables
+  and made pruning tolerate missing dormant legacy tables.
+- Scrubbed retired `syncNodeName`, `syncEnabled`, and nested `embedding`
+  settings from Swift and retained TypeScript settings readers.
+- Rejected project-move source/destination paths that target the home directory
+  root while preserving the existing home-containment checks.
+- Preserved structured service AI transport failures as retry-safe command
+  errors with provider, model, URL, and underlying error metadata.
+
 ### Changed: wired CI boundary and bundle hygiene checks (2026-07-07, Codex)
 
 - Added PR-executed Vitest wrappers for dormant Swift product boundary scripts,

@@ -274,7 +274,7 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             sql: """
             SELECT id, session_id, job_kind
             FROM session_index_jobs
-            WHERE status IN ('pending', 'failed_retryable')
+            WHERE status IN (?, ?)
               AND job_kind != ?
               AND (not_before IS NULL OR not_before <= datetime('now'))
             ORDER BY
@@ -285,7 +285,12 @@ public final class IndexJobRunner: StartupIndexJobRunning {
               id
             LIMIT ?
             """,
-            arguments: [IndexJobKind.embedding.rawValue, limit]
+            arguments: [
+                IndexJobStatus.pending.rawValue,
+                IndexJobStatus.failedRetryable.rawValue,
+                IndexJobKind.embedding.rawValue,
+                limit
+            ]
         )
         return rows.map { row in
             PendingJob(id: row["id"], sessionId: row["session_id"], jobKind: row["job_kind"])
@@ -331,10 +336,10 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         try db.execute(
             sql: """
             UPDATE session_index_jobs
-            SET status = 'completed', last_error = NULL, updated_at = datetime('now')
+            SET status = ?, last_error = NULL, updated_at = datetime('now')
             WHERE id = ?
             """,
-            arguments: [id]
+            arguments: [IndexJobStatus.completed.rawValue, id]
         )
     }
 
@@ -342,10 +347,10 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         try db.execute(
             sql: """
             UPDATE session_index_jobs
-            SET status = 'not_applicable', last_error = NULL, updated_at = datetime('now')
+            SET status = ?, last_error = NULL, updated_at = datetime('now')
             WHERE id = ?
             """,
-            arguments: [id]
+            arguments: [IndexJobStatus.notApplicable.rawValue, id]
         )
     }
 
@@ -354,15 +359,21 @@ public final class IndexJobRunner: StartupIndexJobRunning {
             sql: """
             UPDATE session_index_jobs
             SET status = CASE
-                    WHEN retry_count + 1 >= ? THEN 'failed_permanent'
-                    ELSE 'failed_retryable'
+                    WHEN retry_count + 1 >= ? THEN ?
+                    ELSE ?
                 END,
                 retry_count = retry_count + 1,
                 last_error = ?,
                 updated_at = datetime('now')
             WHERE id = ?
             """,
-            arguments: [Self.maxFtsRetryCount, error, id]
+            arguments: [
+                Self.maxFtsRetryCount,
+                IndexJobStatus.failedPermanent.rawValue,
+                IndexJobStatus.failedRetryable.rawValue,
+                error,
+                id
+            ]
         )
     }
 }

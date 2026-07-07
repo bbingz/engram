@@ -65,6 +65,13 @@ final class DeprecatedSettingsScrubTests: XCTestCase {
         var settings: [String: Any] = [
             "aiProtocol": "gemini",
             "ollamaModel": "qwen3-embedding:4b",
+            "syncNodeName": "legacy-node",
+            "syncEnabled": true,
+            "embedding": [
+                "provider": "ollama",
+                "model": "nomic-embed-text",
+                "dimension": 768
+            ],
             "viking": [
                 "agentId": "ffb1327b18bf",
                 "apiKey": "@keychain",
@@ -77,6 +84,9 @@ final class DeprecatedSettingsScrubTests: XCTestCase {
 
         XCTAssertTrue(didChange)
         XCTAssertNil(settings["viking"])
+        XCTAssertNil(settings["syncNodeName"])
+        XCTAssertNil(settings["syncEnabled"])
+        XCTAssertNil(settings["embedding"])
         XCTAssertEqual(settings["aiProtocol"] as? String, "gemini")
         XCTAssertEqual(settings["ollamaModel"] as? String, "qwen3-embedding:4b")
     }

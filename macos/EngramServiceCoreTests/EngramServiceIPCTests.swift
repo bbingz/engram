@@ -1433,7 +1433,7 @@ final class EngramServiceIPCTests: XCTestCase {
                 INSERT INTO session_index_jobs(
                   id, session_id, job_kind, target_sync_version, status, retry_count, last_error
                 ) VALUES (
-                  's2:1:hash:fts', 's2', 'fts', 1, 'failed_retryable', 1, 'malformed JSON'
+                  's2:1:hash:fts', 's2', 'fts', 1, 'failed_permanent', 3, 'malformed JSON'
                 );
                 INSERT INTO session_costs(
                   session_id, model, input_tokens, output_tokens,
@@ -4051,6 +4051,39 @@ final class EngramServiceIPCTests: XCTestCase {
         let titles = try await client.regenerateAllTitles()
         XCTAssertTrue(["started", "running"].contains(titles.status))
         XCTAssertNil(titles.total)
+    }
+
+    func testServiceAIClientTransportErrorsPreserveStructuredEnvelopeFields() async throws {
+        let config = EngramServiceCommandHandler.ServiceAISettings.ChatConfig(
+            provider: "openai",
+            baseURL: "http://127.0.0.1:1",
+            apiKey: "test",
+            model: "gpt-test",
+            maxTokens: 16,
+            temperature: 0
+        )
+
+        do {
+            _ = try await EngramServiceCommandHandler.ServiceAIClient.chat(
+                purpose: "summary",
+                sessionID: "s1",
+                config: config,
+                messages: [["role": "user", "content": "hello"]]
+            )
+            XCTFail("Expected URLSession transport failure to be converted into EngramServiceError")
+        } catch let error as EngramServiceError {
+            guard case .commandFailed(let name, let message, let retryPolicy, let details) = error else {
+                return XCTFail("Expected commandFailed, got \(error)")
+            }
+            XCTAssertEqual(name, "AIRequestTransportFailed")
+            XCTAssertEqual(retryPolicy, "safe")
+            XCTAssertTrue(message.contains("AI request transport failed"), message)
+            XCTAssertEqual(details?["provider"], .string("openai"))
+            XCTAssertEqual(details?["model"], .string("gpt-test"))
+            XCTAssertEqual(details?["url"], .string("http://127.0.0.1"))
+        } catch {
+            XCTFail("Expected EngramServiceError, got \(error)")
+        }
     }
 
     func testGenerateProjectWorkTitlesWithoutAIConfigReturnsEmptyTitles() async throws {

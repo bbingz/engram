@@ -134,6 +134,17 @@ public enum IndexJobKind: String, Codable, Equatable, Sendable {
     case embedding
 }
 
+public enum IndexJobStatus: String, Codable, Equatable, Sendable {
+    case pending
+    case running
+    case failedRetryable = "failed_retryable"
+    case failedPermanent = "failed_permanent"
+    case failedTerminal = "failed_terminal"
+    case failed
+    case completed
+    case notApplicable = "not_applicable"
+}
+
 public enum IndexingWriteReason: String, Codable, Equatable, Sendable {
     case initialScan = "initial_scan"
     case fileChanged = "file_changed"

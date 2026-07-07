@@ -53,11 +53,6 @@ export interface MonitorConfig {
   notifyOnLongSession?: boolean; // default true
 }
 
-interface SyncPeer {
-  name: string;
-  url: string;
-}
-
 export interface FileSettings {
   // ── Unified AI provider ───────────────────────────────────────────
   aiProtocol?: AiProtocol;
@@ -86,14 +81,7 @@ export interface FileSettings {
   autoSummaryRefresh?: boolean;
   autoSummaryRefreshThreshold?: number;
 
-  // ── Embedding ─────────────────────────────────────────────────────
-  embedding?: {
-    provider?: 'ollama' | 'openai' | 'transformers';
-    model?: string;
-    dimension?: number;
-  };
-
-  // ── Legacy per-provider keys (kept for embeddings) ────────────────
+  // ── Legacy per-provider keys (kept for retained TS embedding tooling) ─
   /** @deprecated Use aiProtocol instead */
   aiProvider?: 'openai' | 'anthropic';
   openaiApiKey?: string;
@@ -113,10 +101,8 @@ export interface FileSettings {
   httpBearerToken?: string;
   /** Legacy Node MCP setting; Swift MCP/service do not read it. */
   mcpStrictSingleWriter?: boolean;
-  syncNodeName?: string;
-  syncPeers?: SyncPeer[];
+  syncPeers?: Array<{ name: string; url: string }>;
   syncIntervalMinutes?: number;
-  syncEnabled?: boolean;
 
   // ── Noise filtering ──────────────────────────────────────────────
   noiseFilter?: 'all' | 'hide-skip' | 'hide-noise';
@@ -334,6 +320,13 @@ export function readFileSettings(): FileSettings {
       }
       delete migrated.titleBaseURL;
       changed = true;
+    }
+    const mutable = migrated as FileSettings & Record<string, unknown>;
+    for (const key of ['syncNodeName', 'syncEnabled', 'embedding']) {
+      if (key in mutable) {
+        delete mutable[key];
+        changed = true;
+      }
     }
     // Persist migration if settings changed (one-time write-back)
     if (changed) {

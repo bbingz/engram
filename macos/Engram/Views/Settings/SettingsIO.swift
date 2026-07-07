@@ -264,7 +264,7 @@ struct UsageTokenLimitSettings: Equatable {
 /// version that wrote them, but whose backing feature has been removed.
 /// Add new entries here whenever a setting/feature is retired.
 enum DeprecatedSettings {
-    static let jsonKeys: [String] = ["viking"]
+    static let jsonKeys: [String] = ["viking", "syncNodeName", "syncEnabled", "embedding"]
     static let keychainAccounts: [String] = ["vikingApiKey"]
 
     /// Removes deprecated keys from the given settings dict in place.
