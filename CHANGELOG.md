@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: expanded session cost pricing coverage (2026-07-07, Codex)
+
+- Added Claude 5-family and CN-vendor pricing coverage for high-volume model
+  IDs, including prefixed/suffixed OpenRouter-style variants, and bumped the
+  session cost pricing table version to recompute stored token rows.
+
 ### Fixed: honest project-directory recovery guidance (2026-07-07, Codex)
 
 - Reworded project-migration recovery and undo errors so they no longer imply
