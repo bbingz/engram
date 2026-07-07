@@ -207,7 +207,7 @@ public actor ServiceWriterGate {
             return true
         // VACUUM rebuilds the whole DB file; let user writes queue (unbounded)
         // rather than hit the 60s WriterBusy timeout while it runs.
-        case "remoteVacuum":
+        case "remoteVacuum", "userDataBackup":
             return true
         default:
             return false

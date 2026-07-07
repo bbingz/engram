@@ -425,6 +425,44 @@ final class ServiceWriterGateTests: XCTestCase {
         XCTAssertEqual(Set(results), ["first", "second"])
     }
 
+    func testQueuedWriteWaitsBehindUserDataBackupWithoutTimeout() async throws {
+        let paths = try makeGatePaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 20_000_000
+        )
+        let probe = CancellationProbe()
+
+        let backup = Task {
+            try await gate.performWriteCommand(name: "userDataBackup") { _ in
+                await probe.markFirstStarted()
+                await probe.waitUntilRelease()
+                return "backup"
+            }
+        }
+        await probe.waitUntilFirstStarted()
+
+        let queued = Task {
+            try await gate.performWriteCommand(name: "queued") { _ in
+                await probe.markQueuedOperationRan()
+                return "queued"
+            }
+        }
+
+        try await Task.sleep(nanoseconds: 80_000_000)
+        let ranBeforeRelease = await probe.queuedOperationRan
+        XCTAssertFalse(ranBeforeRelease)
+        await probe.releaseFirst()
+
+        let backupResult = try await backup.value
+        let queuedResult = try await queued.value
+        XCTAssertEqual(backupResult.value, "backup")
+        XCTAssertEqual(queuedResult.value, "queued")
+        let ranAfterRelease = await probe.queuedOperationRan
+        XCTAssertTrue(ranAfterRelease)
+    }
+
     // MARK: - permit-leak race (audit round 2: grdb_txn-1)
 
     /// When signal() hands a permit to a waiter whose owning task has just been
