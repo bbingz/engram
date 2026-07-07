@@ -7,6 +7,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: wired CI boundary and bundle hygiene checks (2026-07-07, Codex)
+
+- Added PR-executed Vitest wrappers for dormant Swift product boundary scripts,
+  plus a version guard that keeps `package.json` aligned with
+  `macos/project.yml` `MARKETING_VERSION`.
+- Added `release-verify.sh --hygiene-only` and wired Swift CI to run it against
+  the real Debug `Engram.app` built during PR tests.
+
 ### Changed: documented MCP recovery guidance (2026-07-07, Codex)
 
 - Added MCP read-tool selection guidance plus error-code notes and recovery limits for

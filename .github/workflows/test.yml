@@ -83,9 +83,9 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: |
-          brew install xcodegen
+          brew install xcodegen ripgrep
           test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
-      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/swift-boundary-scripts.test.ts
+      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/product-boundary-scripts.test.ts tests/scripts/version-guard.test.ts
 
   swift-unit:
     runs-on: macos-15
@@ -148,6 +148,20 @@ jobs:
           }
 
           run_xcode_tests Engram -skip-testing:EngramUITests
+          ENGRAM_APP="$(
+            find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Debug/Engram.app' -type d -print0 |
+              while IFS= read -r -d '' app; do
+                stat -f '%m %N' "$app"
+              done |
+              sort -rn |
+              head -n 1 |
+              cut -d' ' -f2-
+          )"
+          if [ -z "$ENGRAM_APP" ] || [ ! -d "$ENGRAM_APP" ]; then
+            echo "Debug Engram.app not found under Xcode DerivedData" >&2
+            exit 1
+          fi
+          bash scripts/release-verify.sh "$ENGRAM_APP" --hygiene-only
           run_xcode_tests EngramServiceCore
           run_xcode_tests EngramMCPTests
 

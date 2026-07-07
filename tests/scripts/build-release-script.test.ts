@@ -74,6 +74,20 @@ function buildStubApp(opts?: {
   return app;
 }
 
+/** Build the thinnest possible .app directory for hygiene-only checks. */
+function buildBareApp(opts?: { forbidden?: string }): string {
+  const app = join(workdir, 'Bare.app');
+  mkdirSync(app, { recursive: true });
+
+  if (opts?.forbidden) {
+    const target = join(app, opts.forbidden);
+    mkdirSync(resolve(target, '..'), { recursive: true });
+    writeFileSync(target, 'forbidden');
+  }
+
+  return app;
+}
+
 function runVerify(
   app: string,
   extraArgs: string[],
@@ -140,6 +154,26 @@ describe('macOS release-verify bundle hygiene', () => {
       expect(out).toContain('forbidden');
     });
   }
+
+  describe('hygiene-only mode', () => {
+    it('passes without plist, structure, or codesign checks', () => {
+      const app = buildBareApp();
+      const { code, out } = runVerify(app, ['--hygiene-only']);
+      expect(code).toBe(0);
+      expect(out).toContain('bundle hygiene clean');
+      expect(out).toContain('release-verify: PASS (hygiene only)');
+      expect(out).not.toContain('structure present');
+    });
+
+    it('still fails when a forbidden artifact is present', () => {
+      const app = buildBareApp({
+        forbidden: 'Contents/Resources/node_modules/foo.js',
+      });
+      const { code, out } = runVerify(app, ['--hygiene-only']);
+      expect(code).not.toBe(0);
+      expect(out).toContain('forbidden');
+    });
+  });
 
   describe.skipIf(process.platform !== 'darwin')('macOS version checks', () => {
     // Version checks run at stage 3, before the signature stage, so they do not

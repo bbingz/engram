@@ -59,11 +59,23 @@ describe('CI workflow hardening', () => {
 
   it('runs macOS-only vitest suites on pull requests', () => {
     expect(testWorkflow).toContain('macos-vitest:');
+    expect(testWorkflow).toContain('brew install xcodegen ripgrep');
     expect(testWorkflow).toContain(
       'npm test -- tests/scripts/build-release-script.test.ts',
     );
     expect(testWorkflow).toContain(
       'tests/scripts/swift-boundary-scripts.test.ts',
+    );
+    expect(testWorkflow).toContain(
+      'tests/scripts/product-boundary-scripts.test.ts',
+    );
+    expect(testWorkflow).toContain('tests/scripts/version-guard.test.ts');
+  });
+
+  it('runs bundle hygiene against the Debug app built in Swift CI', () => {
+    expect(testWorkflow).toContain('Build/Products/Debug/Engram.app');
+    expect(testWorkflow).toContain(
+      'bash scripts/release-verify.sh "$ENGRAM_APP" --hygiene-only',
     );
   });
 
