@@ -40,7 +40,10 @@ public struct UndoStaleError: ProjectMoveError, Equatable {
     public var errorMessage: String {
         "undoMigration: refusing to undo \(migrationId) — \(reason). " +
         "The migration is no longer the last one touching these paths. " +
-        "Undo the later migrations first, or manually restore from backup."
+        "Undo the later migrations first. Engram does not back up project " +
+        "directories; if content is missing, use your own file backup (for example " +
+        "Time Machine) and `project_list_migrations`/`project_recover` to inspect " +
+        "migration_log old_path/new_path."
     }
     public var errorDetails: ErrorDetails? {
         ErrorDetails(migrationId: migrationId)

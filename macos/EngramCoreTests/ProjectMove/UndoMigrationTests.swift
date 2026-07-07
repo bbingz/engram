@@ -116,6 +116,11 @@ final class UndoMigrationTests: XCTestCase {
             }
             XCTAssertEqual(stale.migrationId, "m")
             XCTAssertTrue(stale.reason.contains("/renamed"))
+            XCTAssertTrue(stale.errorMessage.contains("does not back up project directories"))
+            XCTAssertTrue(stale.errorMessage.contains("Time Machine"))
+            XCTAssertTrue(stale.errorMessage.contains("project_list_migrations"))
+            XCTAssertTrue(stale.errorMessage.contains("project_recover"))
+            XCTAssertTrue(stale.errorMessage.contains("migration_log old_path/new_path"))
             XCTAssertEqual(stale.errorName, "UndoStaleError")
             XCTAssertEqual(
                 RetryPolicyClassifier.classify(errorName: stale.errorName),

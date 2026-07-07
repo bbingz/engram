@@ -38,8 +38,13 @@ final class RecoverMigrationsTests: XCTestCase {
             .contains("partial fs.cp"))
         XCTAssertTrue(recommendation(state: "fs_pending", old: false, new: true)
             .contains("DB log did not catch up"))
-        XCTAssertTrue(recommendation(state: "fs_pending", old: false, new: false)
-            .contains("Restore from backup"))
+        let missingFsPending = recommendation(state: "fs_pending", old: false, new: false)
+        XCTAssertTrue(missingFsPending.contains("project directory contents are missing"))
+        XCTAssertTrue(missingFsPending.contains("does not back up project directories"))
+        XCTAssertTrue(missingFsPending.contains("Time Machine"))
+        XCTAssertTrue(missingFsPending.contains("project_list_migrations"))
+        XCTAssertTrue(missingFsPending.contains("project_recover"))
+        XCTAssertTrue(missingFsPending.contains("migration_log old_path/new_path"))
     }
 
     func testFsDoneRecommendationsByPathState() {
@@ -58,8 +63,13 @@ final class RecoverMigrationsTests: XCTestCase {
             .contains("did not reverse the FS"))
         XCTAssertTrue(recommendation(state: "failed", old: true, new: true)
             .contains("partially"))
-        XCTAssertTrue(recommendation(state: "failed", old: false, new: false)
-            .contains("data loss"))
+        let missingFailed = recommendation(state: "failed", old: false, new: false)
+        XCTAssertTrue(missingFailed.contains("data loss"))
+        XCTAssertTrue(missingFailed.contains("does not back up project directories"))
+        XCTAssertTrue(missingFailed.contains("Time Machine"))
+        XCTAssertTrue(missingFailed.contains("project_list_migrations"))
+        XCTAssertTrue(missingFailed.contains("project_recover"))
+        XCTAssertTrue(missingFailed.contains("migration_log old_path/new_path"))
     }
 
     func testCommittedRecommendationsByPathState() {

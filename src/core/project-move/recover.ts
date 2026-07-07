@@ -10,7 +10,7 @@
 // `engram project recover` (CLI) reads the log + probes the FS to produce
 // a diagnostic report. It deliberately does NOT auto-fix anything; the user
 // decides based on the report whether to:
-//   1. manually restore src from backup
+//   1. restore missing project directories from the user's own file backup
 //   2. run `engram project move <partial-dst> <src>` to reverse
 //   3. accept the partial state and `engram project log-delete <id>`
 
@@ -163,8 +163,8 @@ function buildRecommendation(
 ): string {
   // Codex major #10: previous text referenced commands (log-delete,
   // commit-migration, log-fix) that don't exist in the CLI. Rewritten to
-  // point only at real affordances: `engram project undo`, manual mv,
-  // restore-from-backup.
+  // point only at real affordances: `engram project undo`, manual mv, and the
+  // user's own project-directory backups.
   if (state === 'committed') {
     if (newExists && !oldExists) return 'OK — move completed as logged.';
     if (oldExists && !newExists)
@@ -178,7 +178,7 @@ function buildRecommendation(
       return 'Both paths exist — partial fs.cp may have occurred. Inspect new path; remove it manually if bogus.';
     if (!oldExists && newExists)
       return "Move seems to have actually succeeded; DB log did not catch up. Manual fix: UPDATE migration_log SET state='committed' WHERE id=<this>. Then re-run `engram project move` to sync DB cwd/source_locator.";
-    return 'Neither path exists — something catastrophic happened. Restore from backup.';
+    return 'Neither path exists — project directory contents are missing. Engram does not back up project directories; restore from your own file backup (for example Time Machine), then use `project_list_migrations`/`project_recover` to inspect migration_log old_path/new_path.';
   }
   if (state === 'fs_done') {
     // Round 4 Codex Minor #9: previously suggested "re-run `engram
@@ -208,7 +208,7 @@ function buildRecommendation(
       );
     if (oldExists && newExists)
       return 'Both paths exist — compensation ran partially. Inspect, then `engram project move` (or manual mv) to reach a consistent state.';
-    return 'Neither path exists — likely data loss. Restore from backup.';
+    return 'Neither path exists — likely data loss. Engram does not back up project directories; restore from your own file backup (for example Time Machine), then use `project_list_migrations`/`project_recover` to inspect migration_log old_path/new_path.';
   }
   return 'Unknown state';
 }

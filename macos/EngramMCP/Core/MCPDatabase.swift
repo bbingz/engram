@@ -1934,7 +1934,7 @@ private func buildRecoverRecommendation(
         if !oldExists && newExists {
             return "Move seems to have actually succeeded; DB log did not catch up. Manual fix: UPDATE migration_log SET state='committed' WHERE id=<this>. Then re-run `engram project move` to sync DB cwd/source_locator."
         }
-        return "Neither path exists — something catastrophic happened. Restore from backup."
+        return "Neither path exists — project directory contents are missing. Engram does not back up project directories; restore from your own file backup (for example Time Machine), then use `project_list_migrations`/`project_recover` to inspect migration_log old_path/new_path."
     }
     if state == "fs_done" {
         if !oldExists && newExists {
@@ -1955,7 +1955,7 @@ private func buildRecoverRecommendation(
         if oldExists && newExists {
             return "Both paths exist — compensation ran partially. Inspect, then `engram project move` (or manual mv) to reach a consistent state."
         }
-        return "Neither path exists — likely data loss. Restore from backup."
+        return "Neither path exists — likely data loss. Engram does not back up project directories; restore from your own file backup (for example Time Machine), then use `project_list_migrations`/`project_recover` to inspect migration_log old_path/new_path."
     }
     return "Unknown state"
 }
