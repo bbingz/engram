@@ -3,7 +3,15 @@
 // Pure functions — no DB or side effects.
 
 /** Bump this when detection logic changes to trigger re-evaluation of unlinked sessions. */
-export const DETECTION_VERSION = 4;
+export const DETECTION_VERSION = 5;
+const AMBIGUITY_THRESHOLD_RATIO = 0.9;
+const MAX_AMBIGUOUS_CANDIDATES = 3;
+
+type ScoredParent = { parentId: string; score: number };
+type ParentCandidateDecision =
+  | { type: 'none' }
+  | { type: 'suggest'; parentId: string }
+  | { type: 'ambiguous'; candidates: ScoredParent[] };
 
 /** Regex patterns that identify agent dispatch messages (first message of a subagent session). */
 export const DISPATCH_PATTERNS = [
@@ -176,23 +184,28 @@ export function scoreCandidate(
 
 /**
  * Pick the best candidate from a scored list.
- * Returns null for empty list or all-zero scores.
- *
- * When the top two candidates score within 5% of each other, the result
- * is considered ambiguous. We still return the highest-scoring candidate
- * because a possibly-wrong suggestion is more useful than no suggestion
- * — the user can correct it via the manual link API.
+ * Returns an explicit decision so near-ties can be reviewed before linking.
  */
 export function pickBestCandidate(
-  scored: { parentId: string; score: number }[],
-): string | null {
-  if (scored.length === 0) return null;
-
-  // Sort descending by score
-  const sorted = [...scored].sort((a, b) => b.score - a.score);
+  scored: ScoredParent[],
+): ParentCandidateDecision {
+  const sorted = scored
+    .filter((candidate) => candidate.score > 0)
+    .sort((a, b) => {
+      if (b.score === a.score) return a.parentId.localeCompare(b.parentId);
+      return b.score - a.score;
+    });
+  if (sorted.length === 0) return { type: 'none' };
   const best = sorted[0];
 
-  if (best.score === 0) return null;
+  const ambiguousCandidates = sorted
+    .filter(
+      (candidate) => candidate.score >= best.score * AMBIGUITY_THRESHOLD_RATIO,
+    )
+    .slice(0, MAX_AMBIGUOUS_CANDIDATES);
+  if (ambiguousCandidates.length >= 2) {
+    return { type: 'ambiguous', candidates: ambiguousCandidates };
+  }
 
-  return best.parentId;
+  return { type: 'suggest', parentId: best.parentId };
 }

@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: review ambiguous parent suggestions (2026-07-07, Codex)
+
+- Added near-tie parent-suggestion decisions across detection, startup backfill,
+  service IPC, and the Agents review UI so ambiguous candidates are reviewed
+  instead of auto-suggested.
+
 ### Changed: expose index-job status counts (2026-07-07, Codex)
 
 - Added app and MCP visibility for `session_index_jobs` counts, including

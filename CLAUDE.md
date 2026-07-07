@@ -158,7 +158,7 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 - Orphan trigger: `trg_sessions_parent_cascade` nullifies children on parent deletion + resets tier for re-evaluation.
 - Tier lifecycle: subagent sessions always stay `skip` (accessed through parent, not independently); unlinked children get tier reset to NULL for re-evaluation. `downgradeSubagentTiers()` on daemon startup fixes any incorrectly upgraded sessions.
 - Dispatch-pattern sessions without a parent get `agent_role = COALESCE(agent_role, 'dispatched')` → `tier = 'skip'`.
-- `src/core/parent-detection.ts`: `DETECTION_VERSION` (bump to trigger re-evaluation), dispatch patterns + `PROBE_REGEXES`, `scoreCandidate()` (4h half-life, CWD classification, soft end_time handling), `pickBestCandidate()` (best-score wins, no ambiguity rejection).
+- `src/core/parent-detection.ts`: `DETECTION_VERSION` (bump to trigger re-evaluation), dispatch patterns + `PROBE_REGEXES`, `scoreCandidate()` (4h half-life, CWD classification, soft end_time handling), `pickBestCandidate()` (returns none/suggest/ambiguous decisions; runner-up scores within 90% of best become review-only ambiguous suggestions).
 - `src/core/db/maintenance.ts`: `backfillCodexOriginator()` (reads file first 16KB for history), `resetStaleDetections()` (version-gated re-evaluation), `backfillSuggestedParents()` (no end_time SQL filter — scoring handles it; includes hidden parents).
 - `src/core/db/parent-link-repo.ts`: validation (self-link, existence, depth=1), CRUD, child queries.
 - `src/core/db/session-repo.ts`: `countTodayParentSessions()` for menu bar badge.

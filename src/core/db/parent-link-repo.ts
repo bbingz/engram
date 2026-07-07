@@ -48,7 +48,9 @@ export function setParentSession(
     UPDATE sessions
     SET parent_session_id = @parentId,
         link_source = @linkSource,
-        suggested_parent_id = NULL
+        suggested_parent_id = NULL,
+        suggestion_status = NULL,
+        suggestion_candidates = NULL
     WHERE id = @sessionId
   `).run({ sessionId, parentId, linkSource });
 }
@@ -82,6 +84,8 @@ export function setSuggestedParent(
   db.prepare(`
     UPDATE sessions
     SET suggested_parent_id = @suggestedParentId,
+        suggestion_status = NULL,
+        suggestion_candidates = NULL,
         link_checked_at = datetime('now')
     WHERE id = @sessionId
   `).run({ sessionId, suggestedParentId });
@@ -99,7 +103,10 @@ export function clearSuggestedParent(
   const result = db
     .prepare(`
       UPDATE sessions
-      SET suggested_parent_id = NULL, link_checked_at = datetime('now')
+      SET suggested_parent_id = NULL,
+          suggestion_status = NULL,
+          suggestion_candidates = NULL,
+          link_checked_at = datetime('now')
       WHERE id = @sessionId AND suggested_parent_id = @expectedParentId
     `)
     .run({ sessionId, expectedParentId });

@@ -104,6 +104,10 @@ export function runMigrations(
       db.exec('ALTER TABLE sessions ADD COLUMN parent_session_id TEXT');
     if (!colNames.has('suggested_parent_id'))
       db.exec('ALTER TABLE sessions ADD COLUMN suggested_parent_id TEXT');
+    if (!colNames.has('suggestion_status'))
+      db.exec('ALTER TABLE sessions ADD COLUMN suggestion_status TEXT');
+    if (!colNames.has('suggestion_candidates'))
+      db.exec('ALTER TABLE sessions ADD COLUMN suggestion_candidates TEXT');
     if (!colNames.has('link_source'))
       db.exec('ALTER TABLE sessions ADD COLUMN link_source TEXT');
     if (!colNames.has('link_checked_at'))
@@ -159,6 +163,8 @@ export function runMigrations(
       access_count INTEGER NOT NULL DEFAULT 0,
       parent_session_id TEXT,
       suggested_parent_id TEXT,
+      suggestion_status TEXT,
+      suggestion_candidates TEXT,
       link_source TEXT,
       link_checked_at TEXT,
       orphan_status TEXT,
@@ -177,6 +183,7 @@ export function runMigrations(
     CREATE INDEX IF NOT EXISTS idx_sessions_last_accessed ON sessions(last_accessed_at, access_count);
     CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id, start_time DESC);
     CREATE INDEX IF NOT EXISTS idx_sessions_suggested_parent ON sessions(suggested_parent_id, start_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_sessions_suggestion_status ON sessions(suggestion_status);
     CREATE INDEX IF NOT EXISTS idx_sessions_orphan_status ON sessions(orphan_status);
     CREATE INDEX IF NOT EXISTS idx_sessions_visible ON sessions(hidden_at) WHERE hidden_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_sessions_offload_state ON sessions(offload_state);

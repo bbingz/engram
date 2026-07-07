@@ -29,6 +29,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let clearParentSessionResult: Result<EngramServiceLinkResponse, Error>
     let confirmSuggestionResult: Result<EngramServiceLinkResponse, Error>
     let dismissSuggestionResult: Result<Void, Error>
+    let dismissAmbiguousSuggestionResult: Result<EngramServiceLinkResponse, Error>
     let addSessionRelationResult: Result<EngramServiceLinkResponse, Error>
     let removeSessionRelationResult: Result<EngramServiceLinkResponse, Error>
     let relatedSessionsResult: Result<[String], Error>
@@ -82,6 +83,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         setParentSession: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         clearParentSession: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         confirmSuggestion: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
+        dismissAmbiguousSuggestion: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         addSessionRelation: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         removeSessionRelation: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         relatedSessions: [String] = [],
@@ -131,6 +133,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.clearParentSessionResult = .success(clearParentSession)
         self.confirmSuggestionResult = .success(confirmSuggestion)
         self.dismissSuggestionResult = .success(())
+        self.dismissAmbiguousSuggestionResult = .success(dismissAmbiguousSuggestion)
         self.addSessionRelationResult = .success(addSessionRelation)
         self.removeSessionRelationResult = .success(removeSessionRelation)
         self.relatedSessionsResult = .success(relatedSessions)
@@ -232,6 +235,10 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
 
     func dismissSuggestion(sessionId: String, suggestedParentId: String) async throws {
         _ = try dismissSuggestionResult.get()
+    }
+
+    func dismissAmbiguousSuggestion(sessionId: String) async throws -> EngramServiceLinkResponse {
+        try dismissAmbiguousSuggestionResult.get()
     }
 
     func addSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse {

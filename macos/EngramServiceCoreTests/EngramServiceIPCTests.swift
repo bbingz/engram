@@ -3017,6 +3017,7 @@ final class EngramServiceIPCTests: XCTestCase {
     func testManualParentLinkAndUnlinkRoundTripThroughClient() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
+        try setFixtureAmbiguousSuggestion(at: paths.database.path, id: "s2")
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
@@ -3037,11 +3038,17 @@ final class EngramServiceIPCTests: XCTestCase {
         try await queue.read { db in
             let row = try Row.fetchOne(
                 db,
-                sql: "SELECT parent_session_id, suggested_parent_id, link_source FROM sessions WHERE id = 's2'"
+                sql: """
+                    SELECT parent_session_id, suggested_parent_id, link_source,
+                           suggestion_status, suggestion_candidates
+                    FROM sessions WHERE id = 's2'
+                """
             )
             XCTAssertEqual(row?["parent_session_id"] as String?, "s1")
             XCTAssertNil(row?["suggested_parent_id"] as String?)
             XCTAssertEqual(row?["link_source"] as String?, "manual")
+            XCTAssertNil(row?["suggestion_status"] as String?)
+            XCTAssertNil(row?["suggestion_candidates"] as String?)
         }
 
         let unlinked = try await client.clearParentSession(sessionId: "s2")
@@ -3050,6 +3057,35 @@ final class EngramServiceIPCTests: XCTestCase {
         let unlinkedState = try fixtureLinkState(at: paths.database.path, id: "s2")
         XCTAssertNil(unlinkedState.parentSessionId)
         XCTAssertEqual(unlinkedState.linkSource, "manual")
+    }
+
+    func testDismissAmbiguousSuggestionRoundTripThroughClient() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        try setFixtureAmbiguousSuggestion(at: paths.database.path, id: "s2")
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+
+        let dismissed = try await client.dismissAmbiguousSuggestion(sessionId: "s2")
+        XCTAssertEqual(dismissed, EngramServiceLinkResponse(ok: true, error: nil))
+        let state = try fixtureLinkState(at: paths.database.path, id: "s2")
+        XCTAssertNil(state.suggestionStatus)
+        XCTAssertNil(state.suggestionCandidates)
+        XCTAssertEqual(state.linkSource, "manual")
+        XCTAssertNotNil(state.linkCheckedAt)
+
+        let rejected = try await client.dismissAmbiguousSuggestion(sessionId: "s2")
+        XCTAssertEqual(rejected, EngramServiceLinkResponse(ok: false, error: "not-ambiguous"))
     }
 
     func testFileSystemProviderReportsRecentlyModifiedLiveSessions() async throws {
@@ -4687,6 +4723,8 @@ private func seedSearchFixture(at path: String) throws {
               generated_title TEXT,
               parent_session_id TEXT,
               suggested_parent_id TEXT,
+              suggestion_status TEXT,
+              suggestion_candidates TEXT,
               link_source TEXT,
               link_checked_at TEXT,
               orphan_status TEXT,
@@ -4765,13 +4803,21 @@ private func loadSettings(_ url: URL) throws -> [String: Any] {
 private func fixtureLinkState(
     at path: String,
     id: String
-) throws -> (parentSessionId: String?, suggestedParentId: String?, linkSource: String?) {
+) throws -> (
+    parentSessionId: String?,
+    suggestedParentId: String?,
+    linkSource: String?,
+    suggestionStatus: String?,
+    suggestionCandidates: String?,
+    linkCheckedAt: String?
+) {
     let queue = try DatabaseQueue(path: path)
     return try queue.read { db in
         let row = try Row.fetchOne(
             db,
             sql: """
-                SELECT parent_session_id, suggested_parent_id, link_source
+                SELECT parent_session_id, suggested_parent_id, link_source,
+                       suggestion_status, suggestion_candidates, link_checked_at
                 FROM sessions
                 WHERE id = ?
             """,
@@ -4780,7 +4826,10 @@ private func fixtureLinkState(
         return (
             row?["parent_session_id"] as String?,
             row?["suggested_parent_id"] as String?,
-            row?["link_source"] as String?
+            row?["link_source"] as String?,
+            row?["suggestion_status"] as String?,
+            row?["suggestion_candidates"] as String?,
+            row?["link_checked_at"] as String?
         )
     }
 }
@@ -4791,10 +4840,34 @@ private func resetFixtureSuggestion(at path: String, id: String, suggestedParent
         try db.execute(
             sql: """
                 UPDATE sessions
-                SET suggested_parent_id = ?, parent_session_id = NULL, link_source = NULL
+                SET suggested_parent_id = ?,
+                    parent_session_id = NULL,
+                    link_source = NULL,
+                    suggestion_status = NULL,
+                    suggestion_candidates = NULL,
+                    link_checked_at = NULL
                 WHERE id = ?
             """,
             arguments: [suggestedParentId, id]
+        )
+    }
+}
+
+private func setFixtureAmbiguousSuggestion(at path: String, id: String) throws {
+    let queue = try DatabaseQueue(path: path)
+    try queue.write { db in
+        try db.execute(
+            sql: """
+                UPDATE sessions
+                SET suggested_parent_id = NULL,
+                    parent_session_id = NULL,
+                    suggestion_status = 'ambiguous',
+                    suggestion_candidates = '[{"id":"s1","score":0.91}]',
+                    link_source = NULL,
+                    link_checked_at = datetime('now')
+                WHERE id = ?
+            """,
+            arguments: [id]
         )
     }
 }

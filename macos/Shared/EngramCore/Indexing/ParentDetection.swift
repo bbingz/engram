@@ -1,6 +1,6 @@
 import Foundation
 
-public struct ScoredParent: Decodable, Equatable, Sendable {
+public struct ScoredParent: Codable, Equatable, Sendable {
     public var parentId: String
     public var score: Double
 
@@ -11,7 +11,16 @@ public struct ScoredParent: Decodable, Equatable, Sendable {
 }
 
 public enum ParentDetection {
-    public static let detectionVersion = 4
+    public enum CandidateDecision: Equatable, Sendable {
+        case none
+        case suggest(parentId: String)
+        case ambiguous(candidates: [ScoredParent])
+    }
+
+    public static let detectionVersion = 5
+
+    private static let ambiguityThresholdRatio = 0.9
+    private static let maxAmbiguousCandidateCount = 3
 
     private static let probeMessages: Set<String> = [
         "ping",
@@ -130,13 +139,26 @@ public enum ParentDetection {
         return timeScore + projectScore + activeScore
     }
 
-    public static func pickBestCandidate(_ scored: [ScoredParent]) -> String? {
-        guard let best = scored.sorted(by: { $0.score > $1.score }).first,
-              best.score != 0
-        else {
-            return nil
+    public static func pickBestCandidate(_ scored: [ScoredParent]) -> CandidateDecision {
+        let sorted = scored
+            .filter { $0.score > 0 }
+            .sorted {
+                if $0.score == $1.score {
+                    return $0.parentId < $1.parentId
+                }
+                return $0.score > $1.score
+            }
+        guard let best = sorted.first else {
+            return .none
         }
-        return best.parentId
+
+        let ambiguousCandidates = Array(sorted
+            .filter { $0.score >= best.score * ambiguityThresholdRatio }
+            .prefix(maxAmbiguousCandidateCount))
+        guard ambiguousCandidates.count < 2 else {
+            return .ambiguous(candidates: ambiguousCandidates)
+        }
+        return .suggest(parentId: best.parentId)
     }
 
     private enum CwdRelation {

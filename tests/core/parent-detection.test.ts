@@ -387,53 +387,113 @@ describe('scoreCandidate', () => {
 });
 
 describe('pickBestCandidate', () => {
-  it('returns null for empty list', () => {
-    expect(pickBestCandidate([])).toBeNull();
+  it('returns none for empty list', () => {
+    expect(pickBestCandidate([])).toEqual({ type: 'none' });
   });
 
   it('returns single candidate', () => {
-    expect(pickBestCandidate([{ parentId: 'abc', score: 0.8 }])).toBe('abc');
+    expect(pickBestCandidate([{ parentId: 'abc', score: 0.8 }])).toEqual({
+      type: 'suggest',
+      parentId: 'abc',
+    });
   });
 
-  it('returns null if best score is 0', () => {
+  it('returns none if best score is 0', () => {
     expect(
       pickBestCandidate([
         { parentId: 'a', score: 0 },
         { parentId: 'b', score: 0 },
       ]),
-    ).toBeNull();
+    ).toEqual({ type: 'none' });
   });
 
-  it('returns best candidate when clear winner (gap > 15%)', () => {
+  it('returns best candidate when clear winner', () => {
     expect(
       pickBestCandidate([
         { parentId: 'best', score: 0.9 },
         { parentId: 'second', score: 0.5 },
       ]),
-    ).toBe('best');
+    ).toEqual({ type: 'suggest', parentId: 'best' });
   });
 
-  it('returns best even for close candidates (prefers suggestion over none)', () => {
-    // Two nearly identical scores — still picks the best one
+  it('returns suggest when runner-up is 89% of best score', () => {
     expect(
       pickBestCandidate([
+        { parentId: 'best', score: 1 },
+        { parentId: 'runner', score: 0.89 },
+      ]),
+    ).toEqual({ type: 'suggest', parentId: 'best' });
+  });
+
+  it('returns ambiguous when runner-up is exactly 90% of best score', () => {
+    expect(
+      pickBestCandidate([
+        { parentId: 'best', score: 1 },
+        { parentId: 'runner', score: 0.9 },
+      ]),
+    ).toEqual({
+      type: 'ambiguous',
+      candidates: [
+        { parentId: 'best', score: 1 },
+        { parentId: 'runner', score: 0.9 },
+      ],
+    });
+  });
+
+  it('returns ambiguous when runner-up is 91% of best score', () => {
+    expect(
+      pickBestCandidate([
+        { parentId: 'best', score: 1 },
+        { parentId: 'runner', score: 0.91 },
+      ]),
+    ).toEqual({
+      type: 'ambiguous',
+      candidates: [
+        { parentId: 'best', score: 1 },
+        { parentId: 'runner', score: 0.91 },
+      ],
+    });
+  });
+
+  it('returns ambiguous for exact ties', () => {
+    expect(
+      pickBestCandidate([
+        { parentId: 'b', score: 0.8 },
         { parentId: 'a', score: 0.8 },
-        { parentId: 'b', score: 0.78 },
       ]),
-    ).toBe('a');
+    ).toEqual({
+      type: 'ambiguous',
+      candidates: [
+        { parentId: 'a', score: 0.8 },
+        { parentId: 'b', score: 0.8 },
+      ],
+    });
   });
 
-  it('handles more than 2 candidates', () => {
+  it('caps ambiguous candidates at 3', () => {
     expect(
       pickBestCandidate([
-        { parentId: 'a', score: 0.3 },
-        { parentId: 'b', score: 0.9 },
-        { parentId: 'c', score: 0.5 },
+        { parentId: 'a', score: 1 },
+        { parentId: 'b', score: 0.95 },
+        { parentId: 'c', score: 0.91 },
+        { parentId: 'd', score: 0.9 },
       ]),
-    ).toBe('b');
+    ).toEqual({
+      type: 'ambiguous',
+      candidates: [
+        { parentId: 'a', score: 1 },
+        { parentId: 'b', score: 0.95 },
+        { parentId: 'c', score: 0.91 },
+      ],
+    });
   });
 
-  it('returns null when single candidate has score 0', () => {
-    expect(pickBestCandidate([{ parentId: 'a', score: 0 }])).toBeNull();
+  it('excludes zero-score candidates from ambiguous decisions', () => {
+    expect(
+      pickBestCandidate([
+        { parentId: 'best', score: 1 },
+        { parentId: 'zero', score: 0 },
+      ]),
+    ).toEqual({ type: 'suggest', parentId: 'best' });
   });
 });

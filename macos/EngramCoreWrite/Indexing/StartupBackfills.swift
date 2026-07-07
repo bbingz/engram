@@ -118,6 +118,11 @@ public enum StartupBackfills {
         }
     }
 
+    private struct StoredSuggestionCandidate: Encodable {
+        var id: String
+        var score: Double
+    }
+
     static let codexModelBackfillMetadataKey = "codex_model_backfill_version"
     static let codexModelBackfillVersion = "1"
     // Codex rollout line 1 can include large base instructions; 256 KiB keeps
@@ -1019,10 +1024,24 @@ public enum StartupBackfills {
             return 0
         }
 
+        let resetAmbiguous = try db.executeAndCountChanges(
+            sql: """
+            UPDATE sessions
+            SET link_checked_at = NULL,
+                suggestion_status = NULL,
+                suggestion_candidates = NULL
+            WHERE suggestion_status = 'ambiguous'
+              AND parent_session_id IS NULL
+              AND suggested_parent_id IS NULL
+              AND (link_source IS NULL OR link_source != 'manual')
+            """
+        )
         let resetUnchecked = try db.executeAndCountChanges(
             sql: """
             UPDATE sessions
-            SET link_checked_at = NULL
+            SET link_checked_at = NULL,
+                suggestion_status = NULL,
+                suggestion_candidates = NULL
             WHERE link_checked_at IS NOT NULL
               AND parent_session_id IS NULL
               AND suggested_parent_id IS NULL
@@ -1033,7 +1052,9 @@ public enum StartupBackfills {
         let resetDispatched = try db.executeAndCountChanges(
             sql: """
             UPDATE sessions
-            SET link_checked_at = NULL
+            SET link_checked_at = NULL,
+                suggestion_status = NULL,
+                suggestion_candidates = NULL
             WHERE link_checked_at IS NOT NULL
               AND agent_role = 'dispatched'
               AND parent_session_id IS NULL
@@ -1048,7 +1069,7 @@ public enum StartupBackfills {
             """,
             arguments: ["\(ParentDetection.detectionVersion)"]
         )
-        return resetUnchecked + resetDispatched
+        return resetAmbiguous + resetUnchecked + resetDispatched
     }
 
     public static func backfillCodexOriginator(_ db: Database) throws -> Int {
@@ -1361,16 +1382,21 @@ public enum StartupBackfills {
                 )
             }
 
-            if let bestParent = ParentDetection.pickBestCandidate(scored) {
+            switch ParentDetection.pickBestCandidate(scored) {
+            case .suggest(let bestParent):
                 try setSuggestedParent(db, sessionId: id, suggestedParentId: bestParent)
                 suggested += 1
-            } else {
+            case .ambiguous(let candidates):
+                try setAmbiguousSuggestion(db, sessionId: id, candidates: candidates)
+            case .none:
                 try db.execute(
                     sql: """
                     UPDATE sessions
                     SET agent_role = COALESCE(agent_role, 'dispatched'),
                         tier = 'skip',
-                        link_checked_at = datetime('now')
+                        link_checked_at = datetime('now'),
+                        suggestion_status = NULL,
+                        suggestion_candidates = NULL
                     WHERE id = ?
                     """,
                     arguments: [id]
@@ -1430,7 +1456,9 @@ public enum StartupBackfills {
             UPDATE sessions
             SET parent_session_id = ?,
                 link_source = ?,
-                suggested_parent_id = NULL
+                suggested_parent_id = NULL,
+                suggestion_status = NULL,
+                suggestion_candidates = NULL
             WHERE id = ?
             """,
             arguments: [parentId, linkSource, sessionId]
@@ -1461,6 +1489,8 @@ public enum StartupBackfills {
             sql: """
             UPDATE sessions
             SET suggested_parent_id = ?,
+                suggestion_status = NULL,
+                suggestion_candidates = NULL,
                 link_checked_at = datetime('now')
             WHERE id = ?
             """,
@@ -1470,8 +1500,43 @@ public enum StartupBackfills {
 
     private static func markChecked(_ db: Database, sessionId: String) throws {
         try db.execute(
-            sql: "UPDATE sessions SET link_checked_at = datetime('now') WHERE id = ?",
+            sql: """
+            UPDATE sessions
+            SET link_checked_at = datetime('now'),
+                suggestion_status = NULL,
+                suggestion_candidates = NULL
+            WHERE id = ?
+            """,
             arguments: [sessionId]
+        )
+    }
+
+    private static func setAmbiguousSuggestion(
+        _ db: Database,
+        sessionId: String,
+        candidates: [ScoredParent]
+    ) throws {
+        let payload = candidates.map { StoredSuggestionCandidate(id: $0.parentId, score: $0.score) }
+        let data = try JSONEncoder().encode(payload)
+        let encoded = String(decoding: data, as: UTF8.self)
+        try db.execute(
+            sql: """
+            UPDATE sessions
+            SET suggested_parent_id = NULL,
+                agent_role = CASE
+                    WHEN agent_role = 'dispatched' AND tier = 'skip' THEN NULL
+                    ELSE agent_role
+                END,
+                tier = CASE
+                    WHEN agent_role = 'dispatched' AND tier = 'skip' THEN NULL
+                    ELSE tier
+                END,
+                suggestion_status = 'ambiguous',
+                suggestion_candidates = ?,
+                link_checked_at = datetime('now')
+            WHERE id = ?
+            """,
+            arguments: [encoded, sessionId]
         )
     }
 

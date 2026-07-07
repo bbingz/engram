@@ -43,7 +43,9 @@ final class StartupBackfillTests: XCTestCase {
                 source: "codex",
                 filePath: "/tmp/parent-1/subagents/worker.jsonl",
                 agentRole: "subagent",
-                tier: "skip"
+                tier: "skip",
+                suggestionStatus: "ambiguous",
+                suggestionCandidates: "[{\"id\":\"old\",\"score\":0.91}]"
             )
             try insertSession(
                 db,
@@ -61,6 +63,8 @@ final class StartupBackfillTests: XCTestCase {
                 try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child-1'"),
                 "parent-1"
             )
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT suggestion_status FROM sessions WHERE id = 'child-1'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT suggestion_candidates FROM sessions WHERE id = 'child-1'"))
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'manual-child'"))
         }
     }
@@ -107,10 +111,21 @@ final class StartupBackfillTests: XCTestCase {
                 linkSource: "manual",
                 linkCheckedAt: "2026-01-01T00:00:00Z"
             )
+            try insertSession(
+                db,
+                id: "ambiguous",
+                source: "codex",
+                linkCheckedAt: "2026-01-01T00:00:00Z",
+                suggestionStatus: "ambiguous",
+                suggestionCandidates: "[{\"id\":\"p1\",\"score\":0.91}]"
+            )
 
             let reset = try StartupBackfills.resetStaleDetections(db)
-            XCTAssertEqual(reset, 1)
+            XCTAssertEqual(reset, 2)
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'stale'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'ambiguous'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT suggestion_status FROM sessions WHERE id = 'ambiguous'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT suggestion_candidates FROM sessions WHERE id = 'ambiguous'"))
             XCTAssertNotNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'manual'"))
             XCTAssertEqual(
                 try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'detection_version'"),
@@ -505,6 +520,108 @@ final class StartupBackfillTests: XCTestCase {
             XCTAssertNotNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'ordinary'"))
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'orphan'"), "dispatched")
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'orphan'"), "skip")
+        }
+    }
+
+    func testBackfillSuggestedParentsWritesAmbiguousCandidatesWithoutSkipping() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "parent-a",
+                source: "claude-code",
+                startTime: "2026-04-23T10:00:00.000Z",
+                endTime: nil,
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "parent-b",
+                source: "claude-code",
+                startTime: "2026-04-23T10:01:00.000Z",
+                endTime: nil,
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "agent",
+                source: "codex",
+                startTime: "2026-04-23T10:10:00.000Z",
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram",
+                summary: "Your task is to audit the repo",
+                agentRole: "dispatched",
+                tier: "skip"
+            )
+
+            let result = try StartupBackfills.backfillSuggestedParents(db)
+
+            XCTAssertEqual(result.checked, 1)
+            XCTAssertEqual(result.suggested, 0)
+            let row = try XCTUnwrap(Row.fetchOne(db, sql: """
+                SELECT suggested_parent_id, suggestion_status, suggestion_candidates,
+                       agent_role, tier, link_checked_at
+                FROM sessions
+                WHERE id = 'agent'
+            """))
+            XCTAssertNil(row["suggested_parent_id"] as String?)
+            XCTAssertEqual(row["suggestion_status"] as String?, "ambiguous")
+            XCTAssertNil(row["agent_role"] as String?)
+            XCTAssertNil(row["tier"] as String?)
+            XCTAssertNotNil(row["link_checked_at"] as String?)
+
+            let encoded = try XCTUnwrap(row["suggestion_candidates"] as String?)
+            let candidates = try JSONDecoder().decode([StoredAmbiguousCandidate].self, from: Data(encoded.utf8))
+            XCTAssertEqual(candidates.map(\.id), ["parent-b", "parent-a"])
+            XCTAssertEqual(candidates.count, 2)
+        }
+    }
+
+    func testBackfillSuggestedParentsClearsAmbiguousStateWhenReevaluationFindsSuggestion() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "best-parent",
+                source: "claude-code",
+                startTime: "2026-04-23T10:05:00.000Z",
+                endTime: nil,
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "weak-parent",
+                source: "claude-code",
+                startTime: "2026-04-22T11:00:00.000Z",
+                endTime: nil,
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "agent",
+                source: "gemini-cli",
+                startTime: "2026-04-23T10:10:00.000Z",
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram",
+                summary: "Your task is to audit the repo",
+                suggestionStatus: "ambiguous",
+                suggestionCandidates: "[{\"id\":\"old\",\"score\":0.91}]"
+            )
+
+            let result = try StartupBackfills.backfillSuggestedParents(db)
+
+            XCTAssertEqual(result.checked, 1)
+            XCTAssertEqual(result.suggested, 1)
+            let row = try XCTUnwrap(Row.fetchOne(db, sql: """
+                SELECT suggested_parent_id, suggestion_status, suggestion_candidates
+                FROM sessions
+                WHERE id = 'agent'
+            """))
+            XCTAssertEqual(row["suggested_parent_id"] as String?, "best-parent")
+            XCTAssertNil(row["suggestion_status"] as String?)
+            XCTAssertNil(row["suggestion_candidates"] as String?)
         }
     }
 
@@ -1205,6 +1322,8 @@ final class StartupBackfillTests: XCTestCase {
         tier: String? = nil,
         linkSource: String? = nil,
         linkCheckedAt: String? = nil,
+        suggestionStatus: String? = nil,
+        suggestionCandidates: String? = nil,
         model: String? = nil,
         userMessageCount: Int = 0,
         assistantMessageCount: Int = 0,
@@ -1217,13 +1336,15 @@ final class StartupBackfillTests: XCTestCase {
             INSERT INTO sessions(
               id, source, start_time, end_time, cwd, project, summary, file_path,
               source_locator, agent_role, tier, link_source, link_checked_at,
+              suggestion_status, suggestion_candidates,
               model, user_message_count, assistant_message_count, tool_message_count, system_message_count,
               quality_score
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             arguments: [
                 id, source, startTime, endTime, cwd, project, summary, filePath,
-                sourceLocator, agentRole, tier, linkSource, linkCheckedAt, model,
+                sourceLocator, agentRole, tier, linkSource, linkCheckedAt,
+                suggestionStatus, suggestionCandidates, model,
                 userMessageCount, assistantMessageCount, toolMessageCount, systemMessageCount,
                 qualityScore
             ]
@@ -1338,6 +1459,11 @@ final class StartupBackfillTests: XCTestCase {
         let volumeScore = min(10, Double(userCount + assistantCount + toolCount) / 5)
         return max(0, min(100, Int((turnScore + toolScore + densityScore + projectScore + volumeScore).rounded())))
     }
+}
+
+private struct StoredAmbiguousCandidate: Decodable, Equatable {
+    var id: String
+    var score: Double
 }
 
 private enum TestError: Error, CustomStringConvertible {

@@ -30,6 +30,7 @@ enum ServiceCapabilityToken {
         "clearParentSession",
         "confirmSuggestion",
         "dismissSuggestion",
+        "dismissAmbiguousSuggestion",
         "addSessionRelation",
         "removeSessionRelation",
         "regenerateAllTitles",

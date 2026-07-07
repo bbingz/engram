@@ -1,5 +1,5 @@
 {
-  "detectionVersion": 4,
+  "detectionVersion": 5,
   "dispatchCases": [
     {
       "input": "Review this repository implementation",
@@ -20,7 +20,10 @@
   ],
   "pickBestCases": [
     {
-      "bestParentId": "parent-b",
+      "decision": {
+        "parentId": "parent-b",
+        "type": "suggest"
+      },
       "input": [
         {
           "parentId": "parent-a",
@@ -33,11 +36,38 @@
       ]
     },
     {
-      "bestParentId": null,
+      "decision": {
+        "type": "none"
+      },
       "input": [
         {
           "parentId": "parent-zero",
           "score": 0
+        }
+      ]
+    },
+    {
+      "decision": {
+        "candidates": [
+          {
+            "parentId": "parent-a",
+            "score": 1
+          },
+          {
+            "parentId": "parent-b",
+            "score": 0.91
+          }
+        ],
+        "type": "ambiguous"
+      },
+      "input": [
+        {
+          "parentId": "parent-a",
+          "score": 1
+        },
+        {
+          "parentId": "parent-b",
+          "score": 0.91
         }
       ]
     }
@@ -53,6 +83,6 @@
       "score": 0
     }
   ],
-  "sourceCommit": "571fd97",
+  "sourceCommit": "cce33391",
   "sourceFile": "src/core/parent-detection.ts"
 }
