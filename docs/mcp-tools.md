@@ -136,7 +136,7 @@ Get usage statistics: session counts, message counts, grouped by various dimensi
 | until | string | no | End time (ISO 8601) |
 | group_by | string | no | Grouping dimension. Enum: `source`, `project`, `day`, `week`. Default `source` |
 
-**Notes:** Each group includes sessionCount, messageCount, userMessageCount, assistantMessageCount, and toolMessageCount. Also returns totalSessions across all groups.
+**Notes:** Each group includes sessionCount, messageCount, userMessageCount, assistantMessageCount, and toolMessageCount. Also returns totalSessions across all groups and an indexJobs object keyed by raw session_index_jobs status strings.
 
 ---
 

@@ -7,6 +7,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: expose index-job status counts (2026-07-07, Codex)
+
+- Added app and MCP visibility for `session_index_jobs` counts, including
+  permanent failure status separation in System Health and `stats`.
+
 ### Changed: mark stale service-status counts (2026-07-07, Codex)
 
 - Added a 30-minute stale-but-useful policy for retained service counts so Home

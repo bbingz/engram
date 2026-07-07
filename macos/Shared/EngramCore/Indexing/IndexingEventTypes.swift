@@ -134,7 +134,7 @@ public enum IndexJobKind: String, Codable, Equatable, Sendable {
     case embedding
 }
 
-public enum IndexJobStatus: String, Codable, Equatable, Sendable {
+public enum IndexJobStatus: String, Codable, Equatable, Sendable, CaseIterable {
     case pending
     case running
     case failedRetryable = "failed_retryable"
