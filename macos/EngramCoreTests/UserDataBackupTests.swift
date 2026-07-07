@@ -1,3 +1,4 @@
+import Darwin
 import GRDB
 import XCTest
 @testable import EngramCoreWrite
@@ -9,7 +10,7 @@ final class UserDataBackupTests: XCTestCase {
     private var writer: EngramDatabaseWriter!
 
     override func setUpWithError() throws {
-        let repoTemp = FileManager.default.homeDirectoryForCurrentUser
+        let repoTemp = URL(fileURLWithPath: resolvedTemporaryDirectoryPath(), isDirectory: true)
             .appendingPathComponent(".engram-test-backups", isDirectory: true)
         tempRoot = repoTemp
             .appendingPathComponent("user-data-backup-\(UUID().uuidString)", isDirectory: true)
@@ -28,6 +29,15 @@ final class UserDataBackupTests: XCTestCase {
         tempRoot = nil
         tempDB = nil
         backupDir = nil
+    }
+
+    private func resolvedTemporaryDirectoryPath() -> String {
+        let temporaryPath = FileManager.default.temporaryDirectory.path
+        guard let resolved = realpath(temporaryPath, nil) else {
+            return temporaryPath
+        }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     func testBackupRoundTripCapturesOnlyIrreplaceableUserRows() throws {
@@ -198,6 +208,24 @@ final class UserDataBackupTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: priorURL.path))
         XCTAssertEqual(try backupFileNames(), [priorURL.lastPathComponent])
         XCTAssertEqual(try allFileNames(), [priorURL.lastPathComponent])
+    }
+
+    func testBackupDirectoryRejectsSymlinkAncestor() throws {
+        let realRoot = tempRoot.appendingPathComponent("real-root", isDirectory: true)
+        let linkRoot = tempRoot.appendingPathComponent("linked-root", isDirectory: true)
+        try FileManager.default.createDirectory(at: realRoot, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linkRoot, withDestinationURL: realRoot)
+
+        var environment = backupEnvironment(minInterval: 0)
+        environment["ENGRAM_BACKUP_DIR"] = linkRoot
+            .appendingPathComponent("backups", isDirectory: true)
+            .path
+
+        XCTAssertThrowsError(try writer.runUserDataBackupIfNeeded(environment: environment)) { error in
+            guard case UserDataBackupError.backupDirectoryTraversesSymlink = error else {
+                return XCTFail("Expected backupDirectoryTraversesSymlink, got \(error)")
+            }
+        }
     }
 
     private func seedIrreplaceableRows() throws {

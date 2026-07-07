@@ -70,16 +70,21 @@ public enum UserDataBackup {
 
     public static func backupDirectory(environment: [String: String]) throws -> URL {
         if let override = environment["ENGRAM_BACKUP_DIR"], !override.isEmpty {
-            let overrideURL = URL(fileURLWithPath: override, isDirectory: true).standardizedFileURL
+            let overrideURL = URL(
+                fileURLWithPath: lexicallyNormalizedPath(URL(fileURLWithPath: override, isDirectory: true).path),
+                isDirectory: true
+            )
             try prepareDirectory(overrideURL, enforceHomeContainment: false)
             return overrideURL
         }
 
-        let homeURL = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        let homeURL = URL(
+            fileURLWithPath: lexicallyNormalizedPath(FileManager.default.homeDirectoryForCurrentUser.path),
+            isDirectory: true
+        )
         let backupURL = homeURL
             .appendingPathComponent(".engram", isDirectory: true)
             .appendingPathComponent("backups", isDirectory: true)
-            .standardizedFileURL
         guard backupURL.path.hasPrefix(homeURL.path + "/") else {
             throw UserDataBackupError.backupDirectoryEscapesHome
         }
@@ -225,22 +230,46 @@ public enum UserDataBackup {
     }
 
     private static func rejectSymlinkAncestors(from url: URL, through boundary: URL? = nil) throws {
-        var current = url.standardizedFileURL
-        let boundaryPath = boundary?.standardizedFileURL.path
+        var currentPath = lexicallyNormalizedPath(url.path)
+        let boundaryPath = boundary.map { lexicallyNormalizedPath($0.path) }
         while true {
             var info = stat()
-            if lstat(current.path, &info) == 0 {
+            if lstat(currentPath, &info) == 0 {
                 guard (info.st_mode & S_IFMT) != S_IFLNK else {
                     throw UserDataBackupError.backupDirectoryTraversesSymlink
                 }
             } else if errno != ENOENT {
                 throw UserDataBackupError.backupDirectoryTraversesSymlink
             }
-            if let boundaryPath, current.path == boundaryPath { break }
-            let parent = current.deletingLastPathComponent()
-            guard parent.path != current.path else { break }
-            current = parent
+            if let boundaryPath, currentPath == boundaryPath { break }
+            let parentPath = (currentPath as NSString).deletingLastPathComponent
+            guard !parentPath.isEmpty, parentPath != currentPath else { break }
+            currentPath = parentPath
         }
+    }
+
+    private static func lexicallyNormalizedPath(_ path: String) -> String {
+        let absolute = path.hasPrefix("/")
+        var components: [String] = []
+        for component in path.split(separator: "/", omittingEmptySubsequences: true) {
+            switch component {
+            case ".":
+                continue
+            case "..":
+                if !components.isEmpty, components.last != ".." {
+                    components.removeLast()
+                } else if !absolute {
+                    components.append(String(component))
+                }
+            default:
+                components.append(String(component))
+            }
+        }
+        let joined = components.joined(separator: "/")
+        if absolute {
+            return joined.isEmpty ? "/" : "/\(joined)"
+        }
+        return joined.isEmpty ? "." : joined
     }
 
     private static func setPermissions(path: String, mode: Int) throws {
