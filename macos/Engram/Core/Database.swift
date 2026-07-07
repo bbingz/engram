@@ -299,6 +299,17 @@ final class DatabaseManager: @unchecked Sendable {
         }
     }
 
+    func indexJobCountsByStatus() throws -> [String: Int] {
+        try readInBackground { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT status, COUNT(*) as count
+                FROM session_index_jobs
+                GROUP BY status
+            """)
+            return Dictionary(uniqueKeysWithValues: rows.map { ($0["status"] as String, $0["count"] as Int) })
+        }
+    }
+
     struct SourceStat {
         let source: String
         let count: Int

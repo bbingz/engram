@@ -23,6 +23,7 @@ struct SystemHealthView: View {
     @State private var walMode: String? = nil
     @State private var errorCount24h: Int = 0
     @State private var logsAvailable = true
+    @State private var indexJobCounts: [String: Int] = [:]
     @State private var isLoading = true
 
     private let timer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
@@ -52,6 +53,19 @@ struct SystemHealthView: View {
                     )
                     // OBS-O2: real index-scan health from the service status store.
                     StatusRow(label: indexScanLabel, status: indexScanStatus)
+                }
+
+                SectionHeader(icon: "tray.full", title: "Index jobs", badge: nil)
+                VStack(alignment: .leading, spacing: 8) {
+                    if indexJobRows.isEmpty {
+                        Text("No index jobs recorded.")
+                            .font(.caption)
+                            .foregroundStyle(Theme.secondaryText)
+                    } else {
+                        ForEach(indexJobRows) { row in
+                            StatusRow(label: "\(row.label): \(row.count)", status: row.status)
+                        }
+                    }
                 }
 
                 // Errors (last 24h) from the unified log — OBS-C1.
@@ -99,25 +113,68 @@ struct SystemHealthView: View {
         }
     }
 
+    private struct IndexJobRow: Identifiable {
+        let id: String
+        let label: String
+        let count: Int
+        let status: StatusRow.HealthStatus
+    }
+
+    private var indexJobRows: [IndexJobRow] {
+        [
+            indexJobRow(id: "pending", label: "Pending", statuses: [.pending], status: .warning),
+            indexJobRow(id: "running", label: "Running", statuses: [.running], status: .warning),
+            indexJobRow(
+                id: "retryable-failures",
+                label: "Retryable failures",
+                statuses: [.failed, .failedRetryable],
+                status: .warning
+            ),
+            indexJobRow(
+                id: "permanent-failures",
+                label: "Permanent failures",
+                statuses: [.failedPermanent, .failedTerminal],
+                status: .error
+            ),
+            indexJobRow(id: "completed", label: "Completed", statuses: [.completed], status: .ok),
+            indexJobRow(id: "not-applicable", label: "Not applicable", statuses: [.notApplicable], status: .ok),
+        ]
+        .filter { $0.count > 0 }
+    }
+
+    private func indexJobRow(
+        id: String,
+        label: String,
+        statuses: [IndexJobStatus],
+        status: StatusRow.HealthStatus
+    ) -> IndexJobRow {
+        let count = statuses.reduce(0) { partial, jobStatus in
+            partial + (indexJobCounts[jobStatus.rawValue] ?? 0)
+        }
+        return IndexJobRow(id: id, label: label, count: count, status: status)
+    }
+
     private func loadData() async {
         isLoading = true
         defer { isLoading = false }
         let db = self.db
         // UI-C1/C2 + OBS-C1: run DB PRAGMA + OSLogStore reads off the main thread.
-        let loaded = await Task.detached { () -> (Int64, String?, Int, Bool) in
+        let loaded = await Task.detached { () -> (Int64, String?, [String: Int], Int, Bool) in
             let size = db.dbSizeBytes()
             let wal = (try? db.journalMode())
+            let indexJobs = (try? db.indexJobCountsByStatus()) ?? [:]
             do {
                 let count = try OSLogReader.countErrors(hours: 24)
-                return (size, wal, count, true)
+                return (size, wal, indexJobs, count, true)
             } catch {
-                return (size, wal, 0, false)
+                return (size, wal, indexJobs, 0, false)
             }
         }.value
         dbSize = loaded.0
         walMode = loaded.1
-        errorCount24h = loaded.2
-        logsAvailable = loaded.3
+        indexJobCounts = loaded.2
+        errorCount24h = loaded.3
+        logsAvailable = loaded.4
     }
 
     private func formatBytes(_ bytes: Int64) -> String {

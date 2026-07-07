@@ -1053,6 +1053,42 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testStatsReportsIndexJobCountsByRawStatus() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        let queue = try DatabaseQueue(path: dbURL.path)
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status) VALUES
+                ('mcp-job-pending', 'mcp-fixture-01', 'fts', 1, 'pending'),
+                ('mcp-job-retryable', 'mcp-fixture-01', 'embedding', 1, 'failed_retryable'),
+                ('mcp-job-permanent', 'mcp-fixture-01', 'fts', 2, 'failed_permanent')
+                """)
+        }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"stats","arguments":{"group_by":"source"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let indexJobs = try XCTUnwrap(capture.ordered["result"]?["structuredContent"]?["indexJobs"]?.objectValue)
+        XCTAssertEqual(indexJobs["pending"]?.intValue, 1)
+        XCTAssertEqual(indexJobs["failed_retryable"]?.intValue, 1)
+        XCTAssertEqual(indexJobs["failed_permanent"]?.intValue, 1)
+        XCTAssertEqual(indexJobs["failed_terminal"]?.intValue, 0)
+        XCTAssertEqual(indexJobs["completed"]?.intValue, 0)
+    }
+
     func testListSessionsMatchesGolden() throws {
         try assertToolCallMatchesGolden(
             tool: "list_sessions",

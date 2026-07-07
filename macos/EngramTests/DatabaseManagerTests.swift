@@ -91,6 +91,38 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testIndexJobCountsByStatusReadsGroupedCounts() throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { database in
+            try database.execute(sql: """
+                CREATE TABLE IF NOT EXISTS session_index_jobs (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    job_kind TEXT NOT NULL,
+                    target_sync_version INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    not_before TEXT
+                )
+                """)
+            try database.execute(sql: """
+                INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status) VALUES
+                ('job-pending-1', 'session-1', 'fts', 1, 'pending'),
+                ('job-pending-2', 'session-2', 'embedding', 1, 'pending'),
+                ('job-permanent-1', 'session-3', 'fts', 1, 'failed_permanent')
+                """)
+        }
+
+        XCTAssertEqual(try db.indexJobCountsByStatus(), [
+            IndexJobStatus.pending.rawValue: 2,
+            IndexJobStatus.failedPermanent.rawValue: 1,
+        ])
+    }
+
+    @MainActor
     func testReadInBackgroundLazilyOpensExistingDatabase() throws {
         let lazyDb = DatabaseManager(path: dbPath)
 
