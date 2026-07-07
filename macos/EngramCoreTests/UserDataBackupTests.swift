@@ -10,9 +10,7 @@ final class UserDataBackupTests: XCTestCase {
 
     override func setUpWithError() throws {
         let repoTemp = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Caches", isDirectory: true)
-            .appendingPathComponent("EngramTests", isDirectory: true)
+            .appendingPathComponent(".engram-test-backups", isDirectory: true)
         tempRoot = repoTemp
             .appendingPathComponent("user-data-backup-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
