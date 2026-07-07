@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: honest project-directory recovery guidance (2026-07-07, Codex)
+
+- Reworded project-migration recovery and undo errors so they no longer imply
+  Engram creates project-directory file backups; the messages now point users to
+  their own file backups and Engram's migration-log inspection tools.
+
 ### Added: periodic user-data backups (2026-07-07, Codex)
 
 - Added a periodic Swift service backup of the small non-regenerable Engram
