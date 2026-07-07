@@ -63,7 +63,9 @@ public enum UserDataBackup {
         ("row_count_sessions", "sessions"),
         ("row_count_session_local_state", "session_local_state"),
         ("row_count_project_aliases", "project_aliases"),
-        ("row_count_migration_log", "migration_log")
+        ("row_count_migration_log", "migration_log"),
+        ("row_count_favorites", "favorites"),
+        ("row_count_session_relations", "session_relations")
     ]
 
     public static func backupDirectory(environment: [String: String]) throws -> URL {
@@ -131,6 +133,12 @@ public enum UserDataBackup {
         return backupFileURL(in: directory, now: candidateDate)
     }
 
+    static func temporaryBackupFileURL(for backupURL: URL) -> URL {
+        backupURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(".\(backupURL.lastPathComponent).tmp-\(UUID().uuidString)")
+    }
+
     static func parseBackupDate(from fileName: String) -> Date? {
         guard fileName.hasPrefix(backupFilePrefix),
               fileName.hasSuffix(backupFileSuffix) else {
@@ -167,7 +175,9 @@ public enum UserDataBackup {
     }
 
     static func rotateBackups(in directory: URL) throws -> Int {
-        let backups = try matchingBackups(in: directory).sorted { lhs, rhs in
+        let backups = try matchingBackups(in: directory).filter { backup in
+            (try? validateBackup(at: backup.url)) != nil
+        }.sorted { lhs, rhs in
             if lhs.date == rhs.date { return lhs.url.lastPathComponent > rhs.url.lastPathComponent }
             return lhs.date > rhs.date
         }
@@ -271,19 +281,37 @@ public extension EngramDatabaseWriter {
         }
 
         let backupURL = UserDataBackup.availableBackupFileURL(in: directory, now: now)
+        let temporaryURL = UserDataBackup.temporaryBackupFileURL(for: backupURL)
         let payload = try read { db in
             try UserDataBackupPayload.fetch(from: db)
         }
-        try payload.write(to: backupURL, createdAt: now)
         do {
-            try UserDataBackup.validateBackup(at: backupURL)
+            try payload.write(to: temporaryURL, createdAt: now)
+        } catch {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw error
+        }
+        do {
+            try UserDataBackup.validateBackup(at: temporaryURL)
+        } catch {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            UserDataBackup.logValidationFailure(error, backupURL: backupURL)
+            return UserDataBackupRunResult(status: .failedValidation, backupURL: backupURL)
+        }
+        do {
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporaryURL.path)
+            try FileManager.default.moveItem(at: temporaryURL, to: backupURL)
+        } catch {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw error
+        }
+        do {
             try validationHook(backupURL)
         } catch {
             try? FileManager.default.removeItem(at: backupURL)
             UserDataBackup.logValidationFailure(error, backupURL: backupURL)
             return UserDataBackupRunResult(status: .failedValidation, backupURL: backupURL)
         }
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
         let deleted = try UserDataBackup.rotateBackups(in: directory)
         return UserDataBackupRunResult(status: .created, backupURL: backupURL, deletedOldBackups: deleted)
     }
@@ -296,6 +324,8 @@ private struct UserDataBackupPayload {
     let sessionLocalStates: [SessionLocalStateRow]
     let projectAliases: [ProjectAliasRow]
     let migrationLogs: [MigrationLogRow]
+    let favorites: [FavoriteRow]
+    let sessionRelations: [SessionRelationRow]
 
     static func fetch(from db: Database) throws -> UserDataBackupPayload {
         UserDataBackupPayload(
@@ -307,7 +337,9 @@ private struct UserDataBackupPayload {
             sessions: try SessionUserRow.fetchAll(db),
             sessionLocalStates: try SessionLocalStateRow.fetchAll(db),
             projectAliases: try ProjectAliasRow.fetchAll(db),
-            migrationLogs: try MigrationLogRow.fetchAll(db)
+            migrationLogs: try MigrationLogRow.fetchAll(db),
+            favorites: try FavoriteRow.fetchAll(db),
+            sessionRelations: try SessionRelationRow.fetchAll(db)
         )
     }
 
@@ -320,6 +352,8 @@ private struct UserDataBackupPayload {
             for row in sessionLocalStates { try row.insert(into: db) }
             for row in projectAliases { try row.insert(into: db) }
             for row in migrationLogs { try row.insert(into: db) }
+            for row in favorites { try row.insert(into: db) }
+            for row in sessionRelations { try row.insert(into: db) }
             try writeMeta(db, createdAt: createdAt)
         }
     }
@@ -380,6 +414,16 @@ private struct UserDataBackupPayload {
               detail TEXT,
               error TEXT
             );
+            CREATE TABLE favorites (
+              session_id TEXT PRIMARY KEY,
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE session_relations (
+              a_id TEXT NOT NULL,
+              b_id TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              PRIMARY KEY (a_id, b_id)
+            );
             CREATE TABLE backup_meta (
               key TEXT PRIMARY KEY,
               value TEXT NOT NULL
@@ -396,7 +440,9 @@ private struct UserDataBackupPayload {
             ("row_count_sessions", "\(sessions.count)"),
             ("row_count_session_local_state", "\(sessionLocalStates.count)"),
             ("row_count_project_aliases", "\(projectAliases.count)"),
-            ("row_count_migration_log", "\(migrationLogs.count)")
+            ("row_count_migration_log", "\(migrationLogs.count)"),
+            ("row_count_favorites", "\(favorites.count)"),
+            ("row_count_session_relations", "\(sessionRelations.count)")
         ]
         for (key, value) in values {
             try db.execute(
@@ -405,6 +451,14 @@ private struct UserDataBackupPayload {
             )
         }
     }
+}
+
+private func backupTableExists(_ db: Database, _ table: String) throws -> Bool {
+    try Bool.fetchOne(
+        db,
+        sql: "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        arguments: [table]
+    ) ?? false
 }
 
 private struct InsightRow {
@@ -634,6 +688,62 @@ private struct MigrationLogRow {
                 occurrences, sessionsUpdated, aliasCreated, ccDirRenamed, startedAt,
                 finishedAt, dryRun, rolledBackOf, auditNote, archived, actor, detail, error
             ]
+        )
+    }
+}
+
+private struct FavoriteRow {
+    let sessionID: String
+    let createdAt: String
+
+    static func fetchAll(_ db: Database) throws -> [FavoriteRow] {
+        guard try backupTableExists(db, "favorites") else { return [] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT session_id, created_at
+            FROM favorites
+            ORDER BY session_id
+            """)
+        return rows.map { row in
+            FavoriteRow(
+                sessionID: row["session_id"],
+                createdAt: row["created_at"]
+            )
+        }
+    }
+
+    func insert(into db: Database) throws {
+        try db.execute(
+            sql: "INSERT INTO favorites(session_id, created_at) VALUES (?, ?)",
+            arguments: [sessionID, createdAt]
+        )
+    }
+}
+
+private struct SessionRelationRow {
+    let aID: String
+    let bID: String
+    let createdAt: String
+
+    static func fetchAll(_ db: Database) throws -> [SessionRelationRow] {
+        guard try backupTableExists(db, "session_relations") else { return [] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT a_id, b_id, created_at
+            FROM session_relations
+            ORDER BY a_id, b_id
+            """)
+        return rows.map { row in
+            SessionRelationRow(
+                aID: row["a_id"],
+                bID: row["b_id"],
+                createdAt: row["created_at"]
+            )
+        }
+    }
+
+    func insert(into db: Database) throws {
+        try db.execute(
+            sql: "INSERT INTO session_relations(a_id, b_id, created_at) VALUES (?, ?, ?)",
+            arguments: [aID, bID, createdAt]
         )
     }
 }

@@ -12,10 +12,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Added a periodic Swift service backup of the small non-regenerable Engram
   user-data set into standalone `~/.engram/backups/user-data-*.sqlite` files.
 - Backups include `insights`, user-authored session columns, `session_local_state`
-  overrides, `project_aliases`, and `migration_log`, while excluding derived FTS,
-  embedding, analytics, and legacy `memory_insights` data.
+  overrides, `project_aliases`, `migration_log`, favorites, and manually curated
+  related-session links, while excluding derived FTS, embedding, analytics, and
+  legacy `memory_insights` data.
 - Validated each backup with SQLite `quick_check` plus metadata row-count checks
-  before rotating older matching backup files, and documented the manual restore
+  before rotating older valid backup files, and documented the manual restore
   procedure.
 
 ### Fixed: service health and stale config regressions (2026-07-07, Codex)

@@ -9,10 +9,10 @@ final class UserDataBackupTests: XCTestCase {
     private var writer: EngramDatabaseWriter!
 
     override func setUpWithError() throws {
-        let repoTemp = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent(".test-tmp", isDirectory: true)
+        let repoTemp = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Caches", isDirectory: true)
+            .appendingPathComponent("EngramTests", isDirectory: true)
         tempRoot = repoTemp
             .appendingPathComponent("user-data-backup-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
@@ -51,6 +51,8 @@ final class UserDataBackupTests: XCTestCase {
             XCTAssertEqual(try metaValue(db, "row_count_session_local_state"), "1")
             XCTAssertEqual(try metaValue(db, "row_count_project_aliases"), "1")
             XCTAssertEqual(try metaValue(db, "row_count_migration_log"), "1")
+            XCTAssertEqual(try metaValue(db, "row_count_favorites"), "1")
+            XCTAssertEqual(try metaValue(db, "row_count_session_relations"), "1")
 
             XCTAssertEqual(
                 try String.fetchOne(db, sql: "SELECT content FROM insights WHERE id = 'insight-1'"),
@@ -92,6 +94,10 @@ final class UserDataBackupTests: XCTestCase {
                 try String.fetchOne(db, sql: "SELECT custom_name FROM session_local_state WHERE session_id = 'local-state'"),
                 "Local override"
             )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT name FROM pragma_table_info('session_local_state') WHERE name = 'local_readable_path'"),
+                "local_readable_path is derived from source session paths and must stay out of user-data backups"
+            )
             XCTAssertEqual(
                 try String.fetchOne(db, sql: "SELECT canonical FROM project_aliases WHERE alias = '/old/project'"),
                 "/new/project"
@@ -99,6 +105,14 @@ final class UserDataBackupTests: XCTestCase {
             XCTAssertEqual(
                 try String.fetchOne(db, sql: "SELECT new_path FROM migration_log WHERE id = 'migration-1'"),
                 "/new/project"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT created_at FROM favorites WHERE session_id = 'manual-child'"),
+                "2026-07-07T00:10:00Z"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT created_at FROM session_relations WHERE a_id = 'manual-child' AND b_id = 'related-peer'"),
+                "2026-07-07T00:20:00Z"
             )
         }
     }
@@ -143,6 +157,30 @@ final class UserDataBackupTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: nonMatching.path))
     }
 
+    func testRotationCountsOnlyValidMatchingBackups() throws {
+        try FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
+        let invalid = backupDir.appendingPathComponent("user-data-20260707-080000.sqlite")
+        let invalidQueue = try DatabaseQueue(path: invalid.path)
+        try invalidQueue.write { db in
+            try db.execute(sql: "CREATE TABLE wrong_schema(id INTEGER PRIMARY KEY)")
+        }
+
+        for hour in 0..<8 {
+            _ = try writer.runUserDataBackupIfNeeded(
+                environment: backupEnvironment(minInterval: 0),
+                now: fixedDate("2026-07-07T0\(hour):00:00Z")
+            )
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: invalid.path))
+        let validNames = try backupFileNames().filter { name in
+            let url = backupDir.appendingPathComponent(name)
+            return (try? UserDataBackup.validateBackup(at: url)) != nil
+        }
+        XCTAssertEqual(validNames.count, 7)
+        XCTAssertFalse(validNames.contains("user-data-20260707-000000.sqlite"))
+    }
+
     func testFailedValidationDeletesAttemptedBackupAndLeavesPriorBackupsUntouched() throws {
         let prior = try writer.runUserDataBackupIfNeeded(
             environment: backupEnvironment(minInterval: 0),
@@ -161,6 +199,7 @@ final class UserDataBackupTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: attemptedURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: priorURL.path))
         XCTAssertEqual(try backupFileNames(), [priorURL.lastPathComponent])
+        XCTAssertEqual(try allFileNames(), [priorURL.lastPathComponent])
     }
 
     private func seedIrreplaceableRows() throws {
@@ -178,6 +217,7 @@ final class UserDataBackupTests: XCTestCase {
             try insertSession(db, id: "hidden-session", hiddenAt: "2026-07-07T00:00:00Z")
             try insertSession(db, id: "named-session", customName: "Pinned name")
             try insertSession(db, id: "local-state")
+            try insertSession(db, id: "related-peer")
 
             try db.execute(
                 sql: """
@@ -204,6 +244,27 @@ final class UserDataBackupTests: XCTestCase {
                 INSERT INTO migration_log(id, old_path, new_path, old_basename, new_basename, started_at, actor, detail)
                 VALUES ('migration-1', '/old/project', '/new/project', 'project', 'project-renamed',
                   '2026-07-07T00:00:00Z', 'cli', '{"kind":"move"}')
+                """
+            )
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS favorites (
+                    session_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS session_relations (
+                    a_id TEXT NOT NULL,
+                    b_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (a_id, b_id)
+                );
+                """)
+            try db.execute(
+                sql: "INSERT INTO favorites(session_id, created_at) VALUES ('manual-child', '2026-07-07T00:10:00Z')"
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO session_relations(a_id, b_id, created_at)
+                VALUES ('manual-child', 'related-peer', '2026-07-07T00:20:00Z')
                 """
             )
         }
@@ -242,6 +303,10 @@ final class UserDataBackupTests: XCTestCase {
         try FileManager.default.contentsOfDirectory(atPath: backupDir.path)
             .filter { $0.hasPrefix("user-data-") && $0.hasSuffix(".sqlite") }
             .sorted()
+    }
+
+    private func allFileNames() throws -> [String] {
+        try FileManager.default.contentsOfDirectory(atPath: backupDir.path).sorted()
     }
 
     private func metaValue(_ db: Database, _ key: String) throws -> String? {

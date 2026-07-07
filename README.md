@@ -390,7 +390,7 @@ interface SessionAdapter {
 database snapshots and they are not project-directory file backups. They contain
 only user-authored Engram rows: `insights`, manual/hidden/named session columns,
 `session_local_state` without `local_readable_path`, `project_aliases`, and
-`migration_log`.
+`migration_log`, plus favorites and manually curated related-session links.
 
 To restore after rebuilding `~/.engram/index.sqlite`, first let Engram re-index
 the original AI-tool session files so `sessions.id` rows exist again. Then quit
@@ -440,12 +440,29 @@ SELECT id, old_path, new_path, old_basename, new_basename, state, files_patched,
   finished_at, dry_run, rolled_back_of, audit_note, archived, actor, detail, error
 FROM backup.migration_log;
 
+CREATE TABLE IF NOT EXISTS favorites (
+  session_id TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO favorites(session_id, created_at)
+SELECT session_id, created_at FROM backup.favorites;
+
+CREATE TABLE IF NOT EXISTS session_relations (
+  a_id TEXT NOT NULL,
+  b_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (a_id, b_id)
+);
+INSERT OR IGNORE INTO session_relations(a_id, b_id, created_at)
+SELECT a_id, b_id, created_at FROM backup.session_relations;
+
 DETACH DATABASE backup;
 ```
 
 Do not restore derived tables such as `insights_fts`, `insight_embeddings`,
-`session_tools`, analytics tables, or legacy `memory_insights`; FTS and embedding
-state is regenerated from the source rows when maintenance runs.
+`session_tools`, analytics tables, `session_local_state.local_readable_path`, or
+legacy `memory_insights`; FTS, embedding state, and local readable paths are
+regenerated from the source rows when maintenance runs.
 
 ## 开发
 
