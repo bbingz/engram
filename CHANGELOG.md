@@ -7,6 +7,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: mark stale service-status counts (2026-07-07, Codex)
+
+- Added a 30-minute stale-but-useful policy for retained service counts so Home
+  and the menu popover show "as of HH:mm" markers or hide expired service counts.
+
 ### Changed: show SourcePulse source freshness (2026-07-07, Codex)
 
 - Replaced per-source indexed date prefixes with relative freshness labels and

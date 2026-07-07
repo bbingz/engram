@@ -58,7 +58,9 @@ struct HomeView: View {
         }
     }
 
+    @ViewBuilder
     private var headerSection: some View {
+        let freshness = serviceStatusStore.dataFreshness(now: Date())
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Today")
@@ -72,7 +74,8 @@ struct HomeView: View {
             Spacer()
             ServiceStatusPill(
                 isRunning: serviceStatusStore.isRunning,
-                label: serviceStatusStore.displayString
+                label: serviceStatusStore.displayString,
+                detail: serviceStatusDetail(freshness)
             )
         }
         .accessibilityIdentifier("home_todayHeader")
@@ -81,8 +84,12 @@ struct HomeView: View {
     @ViewBuilder
     private var kpiSection: some View {
         if let kpi {
+            let freshness = serviceStatusStore.dataFreshness(now: Date())
             HStack(spacing: 12) {
-                KPICard(value: "\(serviceStatusStore.todayParentSessions)", label: "Today")
+                KPICard(
+                    value: serviceCountValue(serviceStatusStore.todayParentSessions, freshness: freshness),
+                    label: serviceTodayLabel(freshness)
+                )
                     .accessibilityIdentifier("home_kpiCard_today")
                 Button { navigate(to: .sessions) } label: {
                     KPICard(value: formatNumber(kpi.sessions), label: "Sessions")
@@ -95,7 +102,7 @@ struct HomeView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("home_kpiCard_projects")
                 Button { navigate(to: .settings) } label: {
-                    KPICard(value: serviceStateValue, label: "Service")
+                    KPICard(value: serviceStateValue(freshness), label: "Service")
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("home_kpiCard_service")
@@ -246,22 +253,21 @@ struct HomeView: View {
         .accessibilityIdentifier("home_changedRepos")
     }
 
+    @ViewBuilder
     private var serviceStateSection: some View {
+        let freshness = serviceStatusStore.dataFreshness(now: Date())
         WorkbenchPanel(icon: "checkmark.shield", title: "Service State") {
             VStack(spacing: 10) {
                 ServiceStateRow(
                     icon: serviceStatusStore.isRunning ? "checkmark.circle.fill" : "xmark.octagon.fill",
                     title: "Indexer",
-                    value: serviceStatusStore.displayString,
+                    value: serviceStatusText(freshness),
                     tint: serviceStatusStore.isRunning ? Theme.green : Theme.red
                 )
                 ServiceStateRow(
                     icon: "calendar",
                     title: "Today indexed",
-                    value: String.localizedStringWithFormat(
-                        String(localized: "%lld parent sessions"),
-                        serviceStatusStore.todayParentSessions
-                    ),
+                    value: serviceParentSessionsText(freshness),
                     tint: Theme.accent
                 )
             }
@@ -269,9 +275,81 @@ struct HomeView: View {
         .accessibilityIdentifier("home_serviceState")
     }
 
-    private var serviceStateValue: String {
-        serviceStatusStore.isRunning ? String(localized: "Running") : String(localized: "Check")
+    private func serviceStateValue(_ freshness: ServiceDataFreshness) -> String {
+        switch freshness {
+        case .live:
+            return String(localized: "Running")
+        case .stale:
+            return String(localized: "Stale")
+        case .expired:
+            return String(localized: "Check")
+        }
     }
+
+    private func serviceCountValue(_ count: Int, freshness: ServiceDataFreshness) -> String {
+        switch freshness {
+        case .expired:
+            return "—"
+        case .live, .stale:
+            return "\(count)"
+        }
+    }
+
+    private func serviceTodayLabel(_ freshness: ServiceDataFreshness) -> String {
+        switch freshness {
+        case .stale(let asOf):
+            return "Today \(Self.asOfText(asOf))"
+        case .live, .expired:
+            return "Today"
+        }
+    }
+
+    private func serviceStatusDetail(_ freshness: ServiceDataFreshness) -> String? {
+        switch freshness {
+        case .stale(let asOf):
+            return Self.asOfText(asOf)
+        case .live, .expired:
+            return nil
+        }
+    }
+
+    private func serviceStatusText(_ freshness: ServiceDataFreshness) -> String {
+        switch freshness {
+        case .stale(let asOf):
+            return "\(serviceStatusStore.displayString) \(Self.asOfText(asOf))"
+        case .live, .expired:
+            return serviceStatusStore.displayString
+        }
+    }
+
+    private func serviceParentSessionsText(_ freshness: ServiceDataFreshness) -> String {
+        switch freshness {
+        case .expired:
+            return "—"
+        case .live:
+            return String.localizedStringWithFormat(
+                String(localized: "%lld parent sessions"),
+                serviceStatusStore.todayParentSessions
+            )
+        case .stale(let asOf):
+            let parentSessions = String.localizedStringWithFormat(
+                String(localized: "%lld parent sessions"),
+                serviceStatusStore.todayParentSessions
+            )
+            return "\(parentSessions) \(Self.asOfText(asOf))"
+        }
+    }
+
+    private static func asOfText(_ date: Date) -> String {
+        "as of \(serviceFreshnessTimeFormatter.string(from: date))"
+    }
+
+    private static let serviceFreshnessTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
 
     private func loadData() async {
         isLoading = true
@@ -650,6 +728,7 @@ private struct ServiceStateRow: View {
 private struct ServiceStatusPill: View {
     let isRunning: Bool
     let label: String
+    let detail: String?
 
     var body: some View {
         HStack(spacing: 6) {
@@ -660,6 +739,12 @@ private struct ServiceStatusPill: View {
                 .font(.caption)
                 .lineLimit(1)
                 .foregroundStyle(Theme.secondaryText)
+            if let detail {
+                Text(detail)
+                    .font(.caption2)
+                    .lineLimit(1)
+                    .foregroundStyle(Theme.tertiaryText)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
