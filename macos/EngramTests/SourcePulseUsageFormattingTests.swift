@@ -2,6 +2,53 @@ import XCTest
 @testable import Engram
 
 final class SourcePulseUsageFormattingTests: XCTestCase {
+    private func utcDate(
+        _ year: Int,
+        _ month: Int,
+        _ day: Int,
+        _ hour: Int,
+        _ minute: Int = 0,
+        _ second: Int = 0
+    ) -> Date {
+        var components = DateComponents()
+        components.calendar = Calendar(identifier: .gregorian)
+        components.timeZone = TimeZone(secondsFromGMT: 0)
+        components.year = year
+        components.month = month
+        components.day = day
+        components.hour = hour
+        components.minute = minute
+        components.second = second
+        return components.date!
+    }
+
+    func testSourceFreshnessClassifiesFreshAgingAndStaleBoundaries() {
+        let now = utcDate(2026, 7, 7, 12)
+
+        XCTAssertEqual(SourceIndexFreshness.classify("2026-07-06 12:00:00", now: now), .fresh)
+        XCTAssertEqual(SourceIndexFreshness.classify("2026-07-06 11:59:59", now: now), .aging)
+        XCTAssertEqual(SourceIndexFreshness.classify("2026-06-30 12:00:00", now: now), .aging)
+        XCTAssertEqual(SourceIndexFreshness.classify("2026-06-30 11:59:59", now: now), .stale)
+    }
+
+    func testSourceFreshnessClassifiesNilGarbageAndFutureTimestamp() {
+        let now = utcDate(2026, 7, 7, 12)
+
+        XCTAssertEqual(SourceIndexFreshness.classify(nil, now: now), .unknown)
+        XCTAssertEqual(SourceIndexFreshness.classify("not-a-date", now: now), .unknown)
+        XCTAssertEqual(SourceIndexFreshness.classify("2026-07-07 12:05:00", now: now), .fresh)
+    }
+
+    func testSourceFreshnessRelativeAgeText() {
+        let now = utcDate(2026, 7, 7, 12)
+
+        XCTAssertEqual(SourceIndexFreshness.relativeAgeText("2026-07-07 11:58:00", now: now), "2m ago")
+        XCTAssertEqual(SourceIndexFreshness.relativeAgeText("2026-07-07 10:00:00", now: now), "2h ago")
+        XCTAssertEqual(SourceIndexFreshness.relativeAgeText("2026-07-02 12:00:00", now: now), "5d ago")
+        XCTAssertEqual(SourceIndexFreshness.relativeAgeText("2026-07-07 12:05:00", now: now), "just now")
+        XCTAssertEqual(SourceIndexFreshness.relativeAgeText(nil, now: now), "Unknown")
+    }
+
     func testUsagePillTextFormatsTokenTotalsCompactly() {
         XCTAssertEqual(
             SourcePulseView.usagePillText(metric: "5h token total", value: 1260, unit: "tokens"),
