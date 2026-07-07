@@ -887,6 +887,92 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(streamed.map(\.content), ["first\n\nsecond"])
     }
 
+    func testCodexUsesTurnContextModelWhenResponseItemModelMissing() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-turn-context-model.jsonl")
+
+        let lines: [[String: Any]] = [
+            [
+                "timestamp": "2026-07-01T10:00:00.000Z",
+                "type": "session_meta",
+                "payload": [
+                    "id": "codex-turn-context-model",
+                    "timestamp": "2026-07-01T10:00:00.000Z",
+                    "cwd": "/tmp/codex-turn-context-model",
+                    "model_provider": "openai",
+                ],
+            ],
+            [
+                "timestamp": "2026-07-01T10:00:00.100Z",
+                "type": "turn_context",
+                "payload": [
+                    "model": "gpt-5.5",
+                ],
+            ],
+            [
+                "timestamp": "2026-07-01T10:00:01.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "user",
+                    "content": [["type": "input_text", "text": "Use turn_context model"]],
+                ],
+            ],
+            [
+                "timestamp": "2026-07-01T10:00:02.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [["type": "output_text", "text": "Using turn_context model."]],
+                ],
+            ],
+        ]
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(sessionsRoot: root.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+
+        XCTAssertEqual(info.model, "gpt-5.5")
+    }
+
+    func testCodexDoesNotUseModelProviderAsFallbackModel() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-model-provider-only.jsonl")
+
+        let lines: [[String: Any]] = [
+            [
+                "timestamp": "2026-07-01T11:00:00.000Z",
+                "type": "session_meta",
+                "payload": [
+                    "id": "codex-model-provider-only",
+                    "timestamp": "2026-07-01T11:00:00.000Z",
+                    "cwd": "/tmp/codex-model-provider-only",
+                    "model_provider": "openai",
+                ],
+            ],
+            [
+                "timestamp": "2026-07-01T11:00:01.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "user",
+                    "content": [["type": "input_text", "text": "No model label here"]],
+                ],
+            ],
+        ]
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(sessionsRoot: root.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+
+        XCTAssertNil(info.model)
+    }
+
     // MARK: - Claude Code
 
     func testClaudeCodeToolResultCountMatchesStream() async throws {

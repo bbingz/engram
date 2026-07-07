@@ -7,6 +7,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: corrected persisted Codex model labels (2026-07-07, Codex)
+
+- Captured Codex `turn_context` model labels when response items omit a model,
+  and added a one-time startup backfill for legacy `openai`/NULL Codex rows so
+  cost rows can be recomputed from honest model names.
+- Synced the retained TypeScript Codex parser and adapter-parity fixture
+  generator output so Swift fixture parity covers the same fallback.
+
 ### Changed: aligned release version with v1.0.x tags (2026-07-07, Codex)
 
 - Bumped package metadata and macOS MARKETING_VERSION to 1.0.4 so the next

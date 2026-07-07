@@ -188,6 +188,82 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillCodexModelLabelsRelabelsTargetsAndLeavesNonCodexRowsUntouched() throws {
+        let openAIToReal = try writeCodexRollout(
+            id: "openai-real",
+            turnContextModel: "gpt-5.5",
+            modelProvider: "openai"
+        )
+        let openAIToNull = try writeCodexRollout(id: "openai-null", modelProvider: "openai")
+        let nullToReal = try writeCodexRollout(id: "null-real", responseItemModel: "gpt-5.4")
+        let nonCodex = try writeCodexRollout(id: "non-codex", turnContextModel: "gpt-5.5")
+        defer {
+            try? FileManager.default.removeItem(at: openAIToReal)
+            try? FileManager.default.removeItem(at: openAIToNull)
+            try? FileManager.default.removeItem(at: nullToReal)
+            try? FileManager.default.removeItem(at: nonCodex)
+        }
+
+        try writer.write { db in
+            try insertSession(db, id: "openai-real", source: "codex", filePath: openAIToReal.path, model: "openai")
+            try insertSession(db, id: "openai-null", source: "codex", filePath: openAIToNull.path, model: "openai")
+            try insertSession(db, id: "null-real", source: "codex", filePath: nullToReal.path)
+            try insertSession(db, id: "non-codex", source: "claude-code", filePath: nonCodex.path, model: "openai")
+
+            let updated = try StartupBackfills.backfillCodexModelLabels(db)
+
+            XCTAssertEqual(updated, 3)
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'openai-real'"), "gpt-5.5")
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'openai-null'"))
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'null-real'"), "gpt-5.4")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'non-codex'"), "openai")
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'codex_model_backfill_version'"),
+                "1"
+            )
+        }
+    }
+
+    func testBackfillCodexModelLabelsVersionGatePreventsSecondScan() throws {
+        let rollout = try writeCodexRollout(id: "version-gated", turnContextModel: "gpt-5.5")
+        defer { try? FileManager.default.removeItem(at: rollout) }
+
+        try writer.write { db in
+            try insertSession(db, id: "version-gated", source: "codex", filePath: rollout.path, model: "openai")
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexModelLabels(db), 1)
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'version-gated'"), "gpt-5.5")
+
+            try db.execute(sql: "UPDATE sessions SET model = 'openai' WHERE id = 'version-gated'")
+            XCTAssertEqual(try StartupBackfills.backfillCodexModelLabels(db), 0)
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'version-gated'"), "openai")
+        }
+    }
+
+    func testCodexModelBackfillRunsBeforeCostBackfillAndRecomputesRelabeledCost() throws {
+        let rollout = try writeCodexRollout(id: "cost-relabel", turnContextModel: "gpt-5.5")
+        defer { try? FileManager.default.removeItem(at: rollout) }
+
+        try writer.write { db in
+            try insertSession(db, id: "cost-relabel", source: "codex", filePath: rollout.path, model: "openai")
+            try db.execute(
+                sql: """
+                INSERT INTO session_costs(
+                  session_id, model, input_tokens, output_tokens, cache_read_tokens,
+                  cache_creation_tokens, cost_usd, computed_at
+                ) VALUES ('cost-relabel', NULL, 1000000, 100000, 0, 0, NULL, '2026-01-01T00:00:00.000Z')
+                """
+            )
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexModelLabels(db), 1)
+            XCTAssertEqual(try StartupBackfills.backfillCosts(db), 1)
+
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'cost-relabel'"), "gpt-5.5")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT model FROM session_costs WHERE session_id = 'cost-relabel'"), "gpt-5.5")
+            XCTAssertNotNil(try Double.fetchOne(db, sql: "SELECT cost_usd FROM session_costs WHERE session_id = 'cost-relabel'"))
+        }
+    }
+
     func testBackfillPolycliProviderParentsClassifiesPingProbes() throws {
         try writer.write { db in
             try insertSession(
@@ -502,6 +578,7 @@ final class StartupBackfillTests: XCTestCase {
         XCTAssertEqual(
             database.callOrder,
             [
+                "backfillCodexModelLabels",
                 "backfillScores",
                 "deduplicateFilePaths",
                 "optimizeFts",
@@ -527,6 +604,7 @@ final class StartupBackfillTests: XCTestCase {
             events,
             [
                 StartupBackfillEvent(event: "backfill_counts", payload: ["backfilled": .int(2)]),
+                StartupBackfillEvent(event: "backfill", payload: ["type": .string("codex_model_labels"), "updated": .int(30)]),
                 StartupBackfillEvent(event: "backfill", payload: ["type": .string("costs"), "count": .int(3)]),
                 StartupBackfillEvent(event: "backfill", payload: ["type": .string("scores"), "count": .int(4)]),
                 StartupBackfillEvent(event: "db_maintenance", payload: ["action": .string("dedup"), "removed": .int(5)]),
@@ -1127,6 +1205,7 @@ final class StartupBackfillTests: XCTestCase {
         tier: String? = nil,
         linkSource: String? = nil,
         linkCheckedAt: String? = nil,
+        model: String? = nil,
         userMessageCount: Int = 0,
         assistantMessageCount: Int = 0,
         toolMessageCount: Int = 0,
@@ -1138,17 +1217,81 @@ final class StartupBackfillTests: XCTestCase {
             INSERT INTO sessions(
               id, source, start_time, end_time, cwd, project, summary, file_path,
               source_locator, agent_role, tier, link_source, link_checked_at,
-              user_message_count, assistant_message_count, tool_message_count, system_message_count,
+              model, user_message_count, assistant_message_count, tool_message_count, system_message_count,
               quality_score
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             arguments: [
                 id, source, startTime, endTime, cwd, project, summary, filePath,
-                sourceLocator, agentRole, tier, linkSource, linkCheckedAt,
+                sourceLocator, agentRole, tier, linkSource, linkCheckedAt, model,
                 userMessageCount, assistantMessageCount, toolMessageCount, systemMessageCount,
                 qualityScore
             ]
         )
+    }
+
+    private func writeCodexRollout(
+        id: String,
+        turnContextModel: String? = nil,
+        responseItemModel: String? = nil,
+        sessionMetaModel: String? = nil,
+        modelProvider: String? = nil
+    ) throws -> URL {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-model-label-\(UUID().uuidString).jsonl")
+        var metaPayload: [String: String] = [
+            "id": id,
+            "timestamp": "2026-07-01T10:00:00.000Z",
+            "cwd": "/tmp/\(id)"
+        ]
+        if let sessionMetaModel {
+            metaPayload["model"] = sessionMetaModel
+        }
+        if let modelProvider {
+            metaPayload["model_provider"] = modelProvider
+        }
+
+        var lines: [[String: Any]] = [
+            [
+                "timestamp": "2026-07-01T10:00:00.000Z",
+                "type": "session_meta",
+                "payload": metaPayload
+            ]
+        ]
+        if let turnContextModel {
+            lines.append(
+                [
+                    "timestamp": "2026-07-01T10:00:00.100Z",
+                    "type": "turn_context",
+                    "payload": ["model": turnContextModel]
+                ]
+            )
+        }
+        var responsePayload: [String: Any] = [
+            "type": "message",
+            "role": "assistant",
+            "content": [["type": "output_text", "text": "ok"]]
+        ]
+        if let responseItemModel {
+            responsePayload["model"] = responseItemModel
+        }
+        lines.append(
+            [
+                "timestamp": "2026-07-01T10:00:01.000Z",
+                "type": "response_item",
+                "payload": responsePayload
+            ]
+        )
+
+        let contents = try lines
+            .map { object -> String in
+                let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+                return String(decoding: data, as: UTF8.self)
+            }
+            .joined(separator: "\n")
+            .appending("\n")
+        try contents.write(to: file, atomically: true, encoding: .utf8)
+        return file
     }
 
     private func endTime(minutesAfterStart: Int) -> String {
@@ -1406,6 +1549,11 @@ private final class RecordingStartupDatabase: StartupBackfillDatabase {
     func backfillCodexOriginator() throws -> Int {
         callOrder.append("backfillCodexOriginator")
         return 12
+    }
+
+    func backfillCodexModelLabels() throws -> Int {
+        callOrder.append("backfillCodexModelLabels")
+        return 30
     }
 
     func backfillPolycliProviderParents() throws -> StartupBackfills.ProviderParentResult {

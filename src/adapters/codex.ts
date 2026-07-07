@@ -64,6 +64,7 @@ export class CodexAdapter implements SessionAdapter {
       let firstUserText = '';
       let lastTimestamp = '';
       let detectedModel: string | undefined;
+      let turnContextModel: string | undefined;
 
       for await (const line of this.readLines(filePath)) {
         const obj = this.parseLine(line);
@@ -79,10 +80,24 @@ export class CodexAdapter implements SessionAdapter {
           meta = obj.payload as Record<string, unknown>;
         }
 
+        if (
+          obj.type === 'turn_context' &&
+          !turnContextModel &&
+          obj.payload &&
+          typeof obj.payload === 'object'
+        ) {
+          const payload = obj.payload as Record<string, unknown>;
+          if (typeof payload.model === 'string') {
+            turnContextModel = payload.model;
+          }
+        }
+
         if (obj.type === 'response_item') {
           const payload = obj.payload as Record<string, unknown>;
           // The real model name lives on response_item.payload.model
-          // (e.g. "gpt-5.3-codex"); session_meta only carries provider name.
+          // (e.g. "gpt-5.3-codex"); otherwise Codex stores the label on
+          // turn_context.payload.model. session_meta.model_provider is only
+          // the provider name and must not become the model.
           if (!detectedModel && typeof payload.model === 'string') {
             detectedModel = payload.model;
           }
@@ -138,7 +153,10 @@ export class CodexAdapter implements SessionAdapter {
         startTime,
         endTime: lastTimestamp || undefined,
         cwd: (payload.cwd as string) || '',
-        model: detectedModel || (payload.model as string | undefined),
+        model:
+          detectedModel ||
+          turnContextModel ||
+          (payload.model as string | undefined),
         messageCount: userCount + assistantCount + toolCount,
         userMessageCount: userCount,
         assistantMessageCount: assistantCount,

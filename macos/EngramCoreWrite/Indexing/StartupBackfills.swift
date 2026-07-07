@@ -90,6 +90,7 @@ public protocol StartupBackfillDatabase: AnyObject {
     func backfillParentLinks() throws -> StartupBackfills.ParentLinkResult
     func resetStaleDetections() throws -> Int
     func backfillCodexOriginator() throws -> Int
+    func backfillCodexModelLabels() throws -> Int
     func backfillPolycliProviderParents() throws -> StartupBackfills.ProviderParentResult
     func backfillSuggestedParents() throws -> StartupBackfills.SuggestedParentResult
     func enqueueStaleFtsJobs() throws -> Int
@@ -116,6 +117,12 @@ public enum StartupBackfills {
             self.suggested = suggested
         }
     }
+
+    static let codexModelBackfillMetadataKey = "codex_model_backfill_version"
+    static let codexModelBackfillVersion = "1"
+    // Codex rollout line 1 can include large base instructions; 256 KiB keeps
+    // startup bounded while covering the early session_meta/turn_context lines.
+    static let codexModelHeadScanBytes = 256 * 1024
 
     public struct ProviderParentResult: Equatable, Sendable {
         public var checked: Int
@@ -221,6 +228,15 @@ public enum StartupBackfills {
             throw CancellationError()
         } catch {
             log.warn("backfill counts failed", error: error)
+        }
+
+        do {
+            let updated = try database.backfillCodexModelLabels()
+            if updated > 0 {
+                emit(StartupBackfillEvent(event: "backfill", payload: ["type": .string("codex_model_labels"), "updated": .int(updated)]))
+            }
+        } catch {
+            log.warn("codex model label backfill failed", error: error)
         }
 
         do {
@@ -1086,6 +1102,55 @@ public enum StartupBackfills {
         return updated
     }
 
+    public static func backfillCodexModelLabels(_ db: Database) throws -> Int {
+        let storedVersion = try String.fetchOne(
+            db,
+            sql: "SELECT value FROM metadata WHERE key = ?",
+            arguments: [codexModelBackfillMetadataKey]
+        )
+        guard storedVersion != codexModelBackfillVersion else { return 0 }
+
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT id, file_path, model
+            FROM sessions
+            WHERE source = 'codex'
+              AND (model = 'openai' OR model IS NULL)
+            ORDER BY rowid
+            """
+        )
+
+        var updated = 0
+        for row in rows {
+            let id: String = row["id"]
+            let filePath: String = row["file_path"]
+            let currentModel: String? = row["model"]
+            let model = codexModelLabelFromHead(path: filePath)
+
+            if let model {
+                updated += try db.executeAndCountChanges(
+                    sql: "UPDATE sessions SET model = ? WHERE id = ?",
+                    arguments: [model, id]
+                )
+            } else if currentModel == "openai" {
+                updated += try db.executeAndCountChanges(
+                    sql: "UPDATE sessions SET model = NULL WHERE id = ?",
+                    arguments: [id]
+                )
+            }
+        }
+
+        try db.execute(
+            sql: """
+            INSERT INTO metadata(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            arguments: [codexModelBackfillMetadataKey, codexModelBackfillVersion]
+        )
+        return updated
+    }
+
     public static func backfillPolycliProviderParents(_ db: Database) throws -> ProviderParentResult {
         let candidates = try Row.fetchAll(
             db,
@@ -1513,6 +1578,44 @@ public enum StartupBackfills {
             return nil
         }
         return text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init)
+    }
+
+    private static func codexModelLabelFromHead(path: String) -> String? {
+        guard let head = readFileHead(path: path, maxBytes: codexModelHeadScanBytes) else {
+            return nil
+        }
+
+        var turnContextModel: String?
+        var metaModel: String?
+        for line in head.split(separator: "\n", omittingEmptySubsequences: false) {
+            guard !line.isEmpty,
+                  let data = String(line).data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let type = object["type"] as? String,
+                  let payload = object["payload"] as? [String: Any]
+            else {
+                continue
+            }
+
+            if type == "response_item", let model = payload["model"] as? String {
+                return model
+            }
+            if type == "turn_context", turnContextModel == nil {
+                turnContextModel = payload["model"] as? String
+            } else if type == "session_meta", metaModel == nil {
+                metaModel = payload["model"] as? String
+            }
+        }
+        return turnContextModel ?? metaModel
+    }
+
+    private static func readFileHead(path: String, maxBytes: Int) -> String? {
+        guard let handle = FileHandle(forReadingAtPath: path) else {
+            return nil
+        }
+        defer { try? handle.close() }
+        let data = handle.readData(ofLength: maxBytes)
+        return String(data: data, encoding: .utf8)
     }
 
     private static func computeQualityScore(

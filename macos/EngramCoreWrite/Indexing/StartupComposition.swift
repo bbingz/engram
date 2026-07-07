@@ -155,6 +155,10 @@ public final class WriterStartupBackfillDatabase: StartupBackfillDatabase {
         try writer.write { db in try StartupBackfills.backfillCodexOriginator(db) }
     }
 
+    public func backfillCodexModelLabels() throws -> Int {
+        try writer.write { db in try StartupBackfills.backfillCodexModelLabels(db) }
+    }
+
     public func backfillPolycliProviderParents() throws -> StartupBackfills.ProviderParentResult {
         try writer.write { db in try StartupBackfills.backfillPolycliProviderParents(db) }
     }
