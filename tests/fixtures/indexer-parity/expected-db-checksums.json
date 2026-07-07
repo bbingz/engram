@@ -116,6 +116,8 @@
           "source_locator": "<repo>/tests/fixtures/indexer-parity/fixture-root/codex/2026/01/15/rollout-sample.jsonl",
           "start_time": "2026-01-15T10:00:00.000Z",
           "suggested_parent_id": null,
+          "suggestion_candidates": null,
+          "suggestion_status": null,
           "summary": "帮我修复登录 bug，用户无法登录",
           "summary_message_count": 3,
           "instruction_count": 1,
@@ -128,7 +130,7 @@
           "user_message_count": 2
         }
       ],
-      "sha256": "465e327e09c0ab4a09f03c8dbb3222277c1c19186309d2a9c7bbc498bede062f"
+      "sha256": "07cc983b8086e19bc1d625416686f003b179a2180cc484df7c320383831e6d7d"
     }
   }
 }
