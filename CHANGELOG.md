@@ -7,6 +7,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: show SourcePulse source freshness (2026-07-07, Codex)
+
+- Replaced per-source indexed date prefixes with relative freshness labels and
+  stale styling for active sources whose latest index is older than seven days.
+
 ### Fixed: corrected persisted Codex model labels (2026-07-07, Codex)
 
 - Captured Codex `turn_context` model labels when response items omit a model,

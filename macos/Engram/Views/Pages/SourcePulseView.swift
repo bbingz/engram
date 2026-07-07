@@ -201,20 +201,20 @@ struct SourcePulseView: View {
 
             LazyVStack(spacing: 4) {
                 ForEach(group.rows) { row in
-                    sourceRow(row)
+                    sourceRow(row, isArchived: group.id == "archived")
                 }
             }
         }
     }
 
     @ViewBuilder
-    private func sourceRow(_ row: SourceRow) -> some View {
+    private func sourceRow(_ row: SourceRow, isArchived: Bool) -> some View {
         let isDisabled = disabledSources.contains(row.id)
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 8) {
                 switch row {
                 case let .detected(source):
-                    detectedRow(source)
+                    detectedRow(source, isArchived: isArchived)
                 case let .catalogOnly(entry):
                     catalogOnlyRow(entry)
                 }
@@ -261,7 +261,7 @@ struct SourcePulseView: View {
     }
 
     @ViewBuilder
-    private func detectedRow(_ source: EngramServiceSourceInfo) -> some View {
+    private func detectedRow(_ source: EngramServiceSourceInfo, isArchived: Bool) -> some View {
         HStack(spacing: 12) {
             SourcePill(source: source.name)
             healthBadge(source.healthStatus)
@@ -269,10 +269,22 @@ struct SourcePulseView: View {
             Text("\(source.sessionCount) sessions")
                 .font(.caption)
                 .foregroundStyle(Theme.secondaryText)
-            if let latest = source.latestIndexed {
-                Text(latest.prefix(10))
+            if source.latestIndexed != nil {
+                let now = Date()
+                let freshness = SourceIndexFreshness.classify(source.latestIndexed, now: now)
+                let isStale = freshness == .stale && !isArchived
+                Text(SourceIndexFreshness.relativeAgeText(source.latestIndexed, now: now))
                     .font(.caption)
-                    .foregroundStyle(Theme.tertiaryText)
+                    .foregroundStyle(isStale ? Theme.orange : Theme.tertiaryText)
+                if isStale {
+                    Text("STALE")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Theme.orange)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Theme.orange.opacity(0.14))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
             }
         }
         HStack(spacing: 8) {
