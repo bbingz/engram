@@ -7,23 +7,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-### Changed: review ambiguous parent suggestions (2026-07-07, Codex)
+### Fixed: review ambiguous parent suggestions (2026-07-07, Codex)
 
 - Added near-tie parent-suggestion decisions across detection, startup backfill,
   service IPC, and the Agents review UI so ambiguous candidates are reviewed
   instead of auto-suggested.
 
-### Changed: expose index-job status counts (2026-07-07, Codex)
+### Fixed: expose index-job status counts (2026-07-07, Codex)
 
 - Added app and MCP visibility for `session_index_jobs` counts, including
   permanent failure status separation in System Health and `stats`.
 
-### Changed: mark stale service-status counts (2026-07-07, Codex)
+### Fixed: mark stale service-status counts (2026-07-07, Codex)
 
 - Added a 30-minute stale-but-useful policy for retained service counts so Home
   and the menu popover show "as of HH:mm" markers or hide expired service counts.
 
-### Changed: show SourcePulse source freshness (2026-07-07, Codex)
+### Fixed: show SourcePulse source freshness (2026-07-07, Codex)
 
 - Replaced per-source indexed date prefixes with relative freshness labels and
   stale styling for active sources whose latest index is older than seven days.
