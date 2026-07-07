@@ -265,6 +265,32 @@ public enum EngramServiceRunner {
         }
     }
 
+    private static func runUserDataBackupBestEffort(
+        gate: ServiceWriterGate,
+        environment: [String: String]
+    ) async {
+        do {
+            let result = try await gate.performWriteCommand(name: "userDataBackup") { writer in
+                try writer.runUserDataBackupIfNeeded(environment: environment)
+            }.value
+            switch result.status {
+            case .created:
+                ServiceLogger.notice(
+                    "user data backup created: file=\(result.backupURL?.lastPathComponent ?? "unknown") rotated=\(result.deletedOldBackups)",
+                    category: .runner
+                )
+            case .failedValidation:
+                ServiceLogger.warn("user data backup failed validation; attempted file was removed", category: .runner)
+            case .skippedFreshBackup:
+                break
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            ServiceLogger.error("user data backup failed", category: .runner, error: error)
+        }
+    }
+
     private static func runIndexingLoop(
         gate: ServiceWriterGate,
         statusMonitor: ServiceStatusMonitor,
@@ -345,6 +371,7 @@ public enum EngramServiceRunner {
                         ServiceLogger.error("remote offload cycle failed", category: .runner, error: error)
                     }
                 }
+                await runUserDataBackupBestEffort(gate: gate, environment: environment)
                 let status = try await gate.performWriteCommand(name: "periodicIndexStatus") { writer in
                     try writer.indexStatus()
                 }.value

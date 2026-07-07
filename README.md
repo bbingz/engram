@@ -383,6 +383,87 @@ interface SessionAdapter {
 - **隐私脱敏：** 导出和 Web 预览使用内置敏感内容脱敏；索引库按原始本地日志建立 FTS，不支持用户配置的索引时正则替换
 - **数据不离本机：** `EngramService`、`EngramMCP` 和 macOS App 本地运行，不向任何远程服务发送数据（除非你显式配置并使用远程 AI 摘要/标题 provider）
 
+### Restoring user data
+
+`EngramService` periodically writes small user-data backups to
+`~/.engram/backups/user-data-<UTC yyyyMMdd-HHmmss>.sqlite`. These are not whole
+database snapshots and they are not project-directory file backups. They contain
+only user-authored Engram rows: `insights`, manual/hidden/named session columns,
+`session_local_state` without `local_readable_path`, `project_aliases`, and
+`migration_log`, plus favorites and manually curated related-session links.
+
+To restore after rebuilding `~/.engram/index.sqlite`, first let Engram re-index
+the original AI-tool session files so `sessions.id` rows exist again. Then quit
+Engram and run a manual SQLite restore using the backup file:
+
+```sql
+ATTACH DATABASE '/Users/<you>/.engram/backups/user-data-YYYYMMDD-HHMMSS.sqlite' AS backup;
+
+INSERT OR IGNORE INTO insights(
+  id, content, wing, room, source_session_id, importance, has_embedding,
+  created_at, insight_type, superseded_by, last_accessed_at, access_count
+)
+SELECT id, content, wing, room, source_session_id, importance, has_embedding,
+  created_at, insight_type, superseded_by, last_accessed_at, access_count
+FROM backup.insights;
+
+UPDATE sessions
+SET parent_session_id = COALESCE(
+      (SELECT parent_session_id FROM backup.sessions b WHERE b.id = sessions.id AND b.link_source = 'manual'),
+      parent_session_id
+    ),
+    link_source = COALESCE(
+      (SELECT link_source FROM backup.sessions b WHERE b.id = sessions.id AND b.link_source = 'manual'),
+      link_source
+    ),
+    hidden_at = COALESCE((SELECT hidden_at FROM backup.sessions b WHERE b.id = sessions.id), hidden_at),
+    custom_name = COALESCE((SELECT custom_name FROM backup.sessions b WHERE b.id = sessions.id), custom_name)
+WHERE id IN (SELECT id FROM backup.sessions);
+
+INSERT OR IGNORE INTO session_local_state(session_id, hidden_at, custom_name)
+SELECT session_id, hidden_at, custom_name FROM backup.session_local_state;
+UPDATE session_local_state
+SET hidden_at = COALESCE((SELECT hidden_at FROM backup.session_local_state b WHERE b.session_id = session_local_state.session_id), hidden_at),
+    custom_name = COALESCE((SELECT custom_name FROM backup.session_local_state b WHERE b.session_id = session_local_state.session_id), custom_name)
+WHERE session_id IN (SELECT session_id FROM backup.session_local_state);
+
+INSERT OR IGNORE INTO project_aliases(alias, canonical, created_at)
+SELECT alias, canonical, created_at FROM backup.project_aliases;
+
+INSERT OR IGNORE INTO migration_log(
+  id, old_path, new_path, old_basename, new_basename, state, files_patched,
+  occurrences, sessions_updated, alias_created, cc_dir_renamed, started_at,
+  finished_at, dry_run, rolled_back_of, audit_note, archived, actor, detail, error
+)
+SELECT id, old_path, new_path, old_basename, new_basename, state, files_patched,
+  occurrences, sessions_updated, alias_created, cc_dir_renamed, started_at,
+  finished_at, dry_run, rolled_back_of, audit_note, archived, actor, detail, error
+FROM backup.migration_log;
+
+CREATE TABLE IF NOT EXISTS favorites (
+  session_id TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO favorites(session_id, created_at)
+SELECT session_id, created_at FROM backup.favorites;
+
+CREATE TABLE IF NOT EXISTS session_relations (
+  a_id TEXT NOT NULL,
+  b_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (a_id, b_id)
+);
+INSERT OR IGNORE INTO session_relations(a_id, b_id, created_at)
+SELECT a_id, b_id, created_at FROM backup.session_relations;
+
+DETACH DATABASE backup;
+```
+
+Do not restore derived tables such as `insights_fts`, `insight_embeddings`,
+`session_tools`, analytics tables, `session_local_state.local_readable_path`, or
+legacy `memory_insights`; FTS, embedding state, and local readable paths are
+regenerated from the source rows when maintenance runs.
+
 ## 开发
 
 ```bash
