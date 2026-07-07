@@ -7,51 +7,6 @@ public enum SessionSnapshotWriterError: Error, Equatable {
     case conflictingSnapshotHash(String)
 }
 
-internal struct SessionModelPrice {
-    let input: Double
-    let output: Double
-    let cacheRead: Double
-    let cacheWrite: Double
-}
-
-internal enum SessionCostPricing {
-    private static let pricing: [String: SessionModelPrice] = [
-        "claude-opus-4-6": SessionModelPrice(input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75),
-        "claude-sonnet-4-6": SessionModelPrice(input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75),
-        "claude-sonnet-4-5": SessionModelPrice(input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75),
-        "claude-haiku-4-5": SessionModelPrice(input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1),
-        "gpt-4o": SessionModelPrice(input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 2.5),
-        "gpt-4o-mini": SessionModelPrice(input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0.15),
-        "gpt-4.1": SessionModelPrice(input: 2, output: 8, cacheRead: 0.5, cacheWrite: 2),
-        "o3-mini": SessionModelPrice(input: 1.1, output: 4.4, cacheRead: 0.55, cacheWrite: 1.1),
-        "o4-mini": SessionModelPrice(input: 1.1, output: 4.4, cacheRead: 0.55, cacheWrite: 1.1),
-        "gemini-2.0-flash": SessionModelPrice(input: 0.1, output: 0.4, cacheRead: 0.025, cacheWrite: 0.1),
-        "gemini-2.5-pro": SessionModelPrice(input: 1.25, output: 10, cacheRead: 0.31, cacheWrite: 1.25)
-    ]
-
-    static func price(for model: String?) -> SessionModelPrice? {
-        guard let model = model?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty else {
-            return nil
-        }
-        if let exact = pricing[model] {
-            return exact
-        }
-        return pricing.keys
-            .sorted { $0.count > $1.count }
-            .first { model.hasPrefix($0) }
-            .flatMap { pricing[$0] }
-    }
-
-    static func computeCost(model: String?, usage: TokenUsage) -> Double {
-        guard let price = price(for: model) else { return 0 }
-        let million = 1_000_000.0
-        return (Double(usage.inputTokens) / million) * price.input
-            + (Double(usage.outputTokens) / million) * price.output
-            + (Double(usage.cacheReadTokens ?? 0) / million) * price.cacheRead
-            + (Double(usage.cacheCreationTokens ?? 0) / million) * price.cacheWrite
-    }
-}
-
 public final class SessionSnapshotWriter {
     private let db: Database
 

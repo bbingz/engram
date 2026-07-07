@@ -506,18 +506,27 @@ public enum StartupBackfills {
     }
 
     public static func backfillCosts(_ db: Database) throws -> Int {
+        let storedVersion = try String.fetchOne(
+            db,
+            sql: "SELECT value FROM metadata WHERE key = ?",
+            arguments: [SessionCostPricing.metadataKey]
+        )
+        let recomputeAllTokenRows = storedVersion != SessionCostPricing.tableVersion
+        let costPredicate = recomputeAllTokenRows ? "1 = 1" : "COALESCE(c.cost_usd, 0) = 0"
         let rows = try Row.fetchAll(
             db,
             sql: """
             SELECT c.session_id,
+                   c.model AS stored_model,
                    COALESCE(NULLIF(c.model, ''), NULLIF(s.model, '')) AS model,
                    COALESCE(c.input_tokens, 0) AS input_tokens,
                    COALESCE(c.output_tokens, 0) AS output_tokens,
                    COALESCE(c.cache_read_tokens, 0) AS cache_read_tokens,
-                   COALESCE(c.cache_creation_tokens, 0) AS cache_creation_tokens
+                   COALESCE(c.cache_creation_tokens, 0) AS cache_creation_tokens,
+                   c.cost_usd AS current_cost_usd
             FROM session_costs c
             LEFT JOIN sessions s ON s.id = c.session_id
-            WHERE COALESCE(c.cost_usd, 0) = 0
+            WHERE \(costPredicate)
               AND (
                 COALESCE(c.input_tokens, 0) > 0
                 OR COALESCE(c.output_tokens, 0) > 0
@@ -526,11 +535,17 @@ public enum StartupBackfills {
               )
             """
         )
-        guard !rows.isEmpty else { return 0 }
+        guard !rows.isEmpty else {
+            if recomputeAllTokenRows {
+                try markCostPricingVersionCurrent(db)
+            }
+            return 0
+        }
 
         var changed = 0
         for row in rows {
             let model: String? = row["model"]
+            let targetModel = model?.isEmpty == false ? model : nil
             let usage = TokenUsage(
                 inputTokens: row["input_tokens"],
                 outputTokens: row["output_tokens"],
@@ -538,7 +553,9 @@ public enum StartupBackfills {
                 cacheCreationTokens: row["cache_creation_tokens"]
             )
             let costUSD = SessionCostPricing.computeCost(model: model, usage: usage)
-            guard costUSD > 0 else { continue }
+            let currentCost: Double? = row["current_cost_usd"]
+            let storedModel: String? = row["stored_model"]
+            guard currentCost != costUSD || storedModel != targetModel else { continue }
 
             try db.execute(
                 sql: """
@@ -552,7 +569,20 @@ public enum StartupBackfills {
             )
             changed += 1
         }
+        if recomputeAllTokenRows {
+            try markCostPricingVersionCurrent(db)
+        }
         return changed
+    }
+
+    private static func markCostPricingVersionCurrent(_ db: Database) throws {
+        try db.execute(
+            sql: """
+            INSERT INTO metadata(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            arguments: [SessionCostPricing.metadataKey, SessionCostPricing.tableVersion]
+        )
     }
 
     public static func deduplicateFilePaths(_ db: Database) throws -> Int {
