@@ -22,7 +22,7 @@ struct SkeletonRow: View {
         // Skip the repeatForever display-link animation when the user prefers
         // reduced motion (also avoids per-row animation cost in that mode).
         .opacity(reduceMotion ? 0.7 : (shimmer ? 0.4 : 1.0))
-        .animation(reduceMotion ? nil : .easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: shimmer)
+        .motionAwareAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: shimmer)
         .onAppear { if !reduceMotion { shimmer = true } }
     }
 }

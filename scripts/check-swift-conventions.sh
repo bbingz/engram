@@ -43,7 +43,7 @@ trim() {
 
 validate_rule_id() {
   case "$1" in
-    R1|R2|R3) return 0 ;;
+    R1|R2|R3|R4) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -124,11 +124,18 @@ is_product_swift_path() {
   [[ "$path" != *Tests* ]]
 }
 
+is_app_swift_path() {
+  local path="$1"
+  [[ "$path" == macos/Engram/*.swift ]] || return 1
+  [[ "$path" != *Tests* ]]
+}
+
 rule_name() {
   case "$1" in
     R1) echo "test-home-isolation" ;;
     R2) echo "no-hashvalue-keys" ;;
     R3) echo "no-node-runtime" ;;
+    R4) echo "motion-aware-animation" ;;
   esac
 }
 
@@ -190,6 +197,15 @@ if (( ${#product_roots[@]} > 0 )); then
       record_violation "R3" "$path" "$line" "$text"
     fi
   done < <(rg -n --no-heading 'node_modules|daemon\.js|web\.js|/usr/bin/env node|"npm' "${product_roots[@]}" --glob '*.swift' || true)
+fi
+
+if [[ -d macos/Engram ]]; then
+  while IFS=: read -r path line text; do
+    [[ -z "${path:-}" || -z "${line:-}" ]] && continue
+    if is_app_swift_path "$path"; then
+      record_violation "R4" "$path" "$line" "$text"
+    fi
+  done < <(rg -n --no-heading 'withAnimation\(|\.animation\(' macos/Engram --glob '*.swift' || true)
 fi
 
 if (( ${#violations[@]} > 0 )); then

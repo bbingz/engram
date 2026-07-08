@@ -7,6 +7,8 @@
 #   R1 test-home-isolation
 #   R2 no-hashvalue-keys
 #   R3 no-node-runtime
+#   R4 motion-aware-animation
 #
-# The allowlist intentionally starts empty. Add entries only with a specific
-# reason and remove them as soon as the source can comply with the rule.
+# Add entries only with a specific reason and remove them as soon as the source
+# can comply with the rule.
+R4 macos/Engram/Components/MotionAware.swift # Motion-aware helper owns the raw SwiftUI animation APIs.

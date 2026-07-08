@@ -338,6 +338,7 @@
 		9274F7C05094BC88A9817446 /* FTSRebuildPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03DA7556A54D18C5612782CD /* FTSRebuildPolicyTests.swift */; };
 		9360E470E6D4542CF14CE6E7 /* EngramServiceCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F5C71A73606B0BEBE33B3711 /* EngramServiceCore.framework */; };
 		93DAA1FB7C1B417B4556E3FD /* SearchSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F29DE61743CA17A368694504 /* SearchSmokeTests.swift */; };
+		9427AAB88B9BC00FD024A40F /* MotionAware.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69D1201BC69D5B372BF95BA3 /* MotionAware.swift */; };
 		942A28287FA74D7CD8FF84AE /* IndexingEventTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B7012F7B41FBCB1E2B95076 /* IndexingEventTypes.swift */; };
 		942C9B07EAA05798B40EC8BC /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4B94C3E09D20F677BFE6355 /* main.swift */; };
 		9503848368703F02F526CB77 /* EngramServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C84C0FDF22D13EE6ABD4D54 /* EngramServiceClient.swift */; };
@@ -446,6 +447,7 @@
 		C0ED889A9425E18A7D505B5E /* WindsurfAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EDCF96A3B2CE8B52F6153E /* WindsurfAdapter.swift */; };
 		C157ED81A707874C5C539EB6 /* SystemMessageClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42221DF48DF9F36A0556900B /* SystemMessageClassifier.swift */; };
 		C2BD2CDBE3892558CD7F7E35 /* SessionTier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78FD43E2ECCEAE95A5C32244 /* SessionTier.swift */; };
+		C31F727E1D53512F75344EA1 /* MotionAwareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD96C02EB641F3C7CCA5854F /* MotionAwareTests.swift */; };
 		C370E7775C8B5CD77479C7B6 /* MemoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3B2347B21F997A69221E40B /* MemoryTests.swift */; };
 		C3E10146A7ABA232C5468565 /* SQLiteConnectionPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FE53777A6116B877F275A1F /* SQLiteConnectionPolicyTests.swift */; };
 		C43583C2A5182B60FF6E5C03 /* ParserLimits.swift in Sources */ = {isa = PBXBuildFile; fileRef = 320BE8A8D898FEE82D4C4E49 /* ParserLimits.swift */; };
@@ -927,6 +929,7 @@
 		6893032E186098253529B5FF /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
 		69039DFE0FE78E947ABF4C63 /* SQLiteConnectionPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SQLiteConnectionPolicy.swift; sourceTree = "<group>"; };
 		6966C0261001E2BC691992C9 /* IndexJobAndMaintenanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexJobAndMaintenanceTests.swift; sourceTree = "<group>"; };
+		69D1201BC69D5B372BF95BA3 /* MotionAware.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionAware.swift; sourceTree = "<group>"; };
 		6A0E4988B449A25982524EB7 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		6AF8688CCE38881CA45A3544 /* Round5RemediationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round5RemediationTests.swift; sourceTree = "<group>"; };
 		6BB1C3D2DCAAB6F0FC5705EA /* AntigravityAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityAdapter.swift; sourceTree = "<group>"; };
@@ -1118,6 +1121,7 @@
 		DD3652C13116E2D9E6A5C5DB /* MigrationLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MigrationLock.swift; sourceTree = "<group>"; };
 		DD55A13FC016BAD5E5F5B88E /* KPICard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KPICard.swift; sourceTree = "<group>"; };
 		DD6B58C28284EBE9B9980BE3 /* ScreenSectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenSectionTests.swift; sourceTree = "<group>"; };
+		DD96C02EB641F3C7CCA5854F /* MotionAwareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionAwareTests.swift; sourceTree = "<group>"; };
 		DDFCC5EAA4FCA45CCC95A55C /* SnippetHighlighterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnippetHighlighterTests.swift; sourceTree = "<group>"; };
 		DF9A31971F74EDB6FF75103C /* SourcePulseScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourcePulseScreen.swift; sourceTree = "<group>"; };
 		E01D22437F623F806929580A /* MCPToolRegistry+ProjectResults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MCPToolRegistry+ProjectResults.swift"; sourceTree = "<group>"; };
@@ -1872,6 +1876,7 @@
 				E91BD2CEB27BB9165CE31FBA /* MessageParserTests.swift */,
 				C50DE90FB3D7536CB18399B7 /* MessageTypeClassifierTests.swift */,
 				57820F1F5D616AACBE130E18 /* MockURLProtocol.swift */,
+				DD96C02EB641F3C7CCA5854F /* MotionAwareTests.swift */,
 				75493749321AFDB1D7A276D8 /* ObservabilityGateTests.swift */,
 				BD362E1468F8B43A3B8C1C21 /* OSLogReaderTests.swift */,
 				2A5DF1AD88AF7076D2848BD4 /* ParentDetectionParityTests.swift */,
@@ -2154,6 +2159,7 @@
 				B56D7E78932B9DFDD9A96741 /* HeatmapGrid.swift */,
 				DD55A13FC016BAD5E5F5B88E /* KPICard.swift */,
 				1C37BCCB1ACAB67E7F8B9C8E /* LiveSessionCard.swift */,
+				69D1201BC69D5B372BF95BA3 /* MotionAware.swift */,
 				972CB1998A34BD047FE48B94 /* ProjectBadge.swift */,
 				31C71D93D6C3E40EFBDD6106 /* ProjectWorkTimeline.swift */,
 				AFB811E3F5CB59716B1B99A2 /* SectionHeader.swift */,
@@ -3146,6 +3152,7 @@
 				EDA448939018A4346685AC5E /* MessageParserTests.swift in Sources */,
 				4A922BF0A0131B7745041E2F /* MessageTypeClassifierTests.swift in Sources */,
 				6B3CB9CBD931AE576DE4FDE4 /* MockURLProtocol.swift in Sources */,
+				C31F727E1D53512F75344EA1 /* MotionAwareTests.swift in Sources */,
 				B53B05880417595CDE3850E1 /* OSLogReaderTests.swift in Sources */,
 				29285E37CDF718C141EE6A03 /* ObservabilityGateTests.swift in Sources */,
 				596A33F4AFCE759B65980126 /* ParentDetectionParityTests.swift in Sources */,
@@ -3312,6 +3319,7 @@
 				493D1B9ABEA637823ED12716 /* MessageTypeClassifier.swift in Sources */,
 				D7AFEC01243917E24FDA94FB /* MigrationHistoryView.swift in Sources */,
 				96BB3F17AA6B8149733CA287 /* MockEngramServiceClient.swift in Sources */,
+				9427AAB88B9BC00FD024A40F /* MotionAware.swift in Sources */,
 				A7B395C3E2C1D1248D8A33F4 /* OSLogReader.swift in Sources */,
 				30D5FB735DE8EEBA293E0E97 /* ObservabilityView.swift in Sources */,
 				B73EA5481CED6E7F3E239655 /* OnboardingView.swift in Sources */,
