@@ -7,6 +7,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: reduce-motion animation guard (2026-07-08, Codex)
+
+- Added a shared motion-aware animation helper and Swift convention ratchet so
+  app animations route through Reduce Motion handling.
+
 ### Changed: service log id fingerprints (2026-07-08, Codex)
 
 - Replaced uniform service-log `<id>` redactions with stable SHA-256 hash

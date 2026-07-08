@@ -92,4 +92,25 @@ describe.skipIf(!hasRg)('Swift conventions gate script', () => {
       /R3 no-node-runtime: macos\/EngramService\/Runtime\.swift:3:.*node_modules/,
     );
   });
+
+  it('rejects raw animation APIs in app Swift sources', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'engram-swift-conventions-'));
+    writeSwift(
+      root,
+      'macos/Engram/AnimatedView.swift',
+      [
+        'import SwiftUI',
+        'struct AnimatedView: View {',
+        '  @State private var visible = false',
+        '  var body: some View {',
+        '    Text("pulse").animation(.default, value: visible)',
+        '  }',
+        '}',
+      ].join('\n'),
+    );
+
+    expect(() => runScript([root])).toThrow(
+      /R4 motion-aware-animation: macos\/Engram\/AnimatedView\.swift:5:.*\.animation\(/,
+    );
+  });
 });

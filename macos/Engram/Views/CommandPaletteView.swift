@@ -9,6 +9,7 @@ struct CommandPaletteView: View {
 
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var query = ""
     @State private var sessionResults: [SessionHit] = []
@@ -168,7 +169,9 @@ struct CommandPaletteView: View {
                     }
                     .onChange(of: selectedIndex) { _, newIndex in
                         guard visibleItems.indices.contains(newIndex) else { return }
-                        withAnimation { proxy.scrollTo(visibleItems[newIndex].id, anchor: .center) }
+                        MotionAware.animate(.default, reduceMotion: reduceMotion) {
+                            proxy.scrollTo(visibleItems[newIndex].id, anchor: .center)
+                        }
                     }
                 }
             }

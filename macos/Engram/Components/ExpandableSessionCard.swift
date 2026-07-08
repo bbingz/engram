@@ -39,6 +39,7 @@ struct ExpandableSessionCard: View {
     // matches, so a stale in-flight load cannot clobber a fresh reset.
     @State private var loadGeneration = 0
     @Environment(DatabaseManager.self) var db
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var totalChildCount: Int { confirmedChildCount + suggestedChildCount }
 
@@ -257,7 +258,7 @@ struct ExpandableSessionCard: View {
     // MARK: - Loading
 
     private func toggleExpand() {
-        withAnimation(.easeInOut(duration: 0.15)) {
+        MotionAware.animate(.easeInOut(duration: 0.15), reduceMotion: reduceMotion) {
             isExpanded.toggle()
         }
         if isExpanded && children.isEmpty && suggestedChildren.isEmpty {
