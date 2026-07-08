@@ -85,7 +85,7 @@ jobs:
       - run: |
           brew install xcodegen ripgrep
           test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
-      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/product-boundary-scripts.test.ts tests/scripts/plist-gate.test.ts tests/scripts/version-guard.test.ts
+      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/product-boundary-scripts.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/version-guard.test.ts
 
   swift-unit:
     runs-on: macos-15
