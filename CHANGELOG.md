@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: diagnostic bundle export (2026-07-08, Codex)
+
+- Added a Settings export flow that writes a redacted, pretty-printed JSON
+  diagnostics bundle with app/service status, aggregate database stats,
+  sanitized recent service logs, and settings with sensitive keys removed.
+
 ### Fixed: perf-integration residual closeout (2026-07-08, Codex)
 
 - Closed the remaining perf-integration follow-ups with focused regression
