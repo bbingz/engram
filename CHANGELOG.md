@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: perf-integration residual closeout (2026-07-08, Codex)
+
+- Closed the remaining perf-integration follow-ups with focused regression
+  coverage for Cursor WAL signatures, FTS rebuild optimize gating, whitespace
+  browse fallback, and skip-tier embedding cleanup telemetry.
+
 ### Fixed: purge leaked session artifacts (2026-07-08, Codex)
 
 - Added regression coverage and conditional cleanup so skip-tier and deleted

@@ -1422,6 +1422,59 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testReconcileSkipTierDeleteCountIncludesEmbeddings_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "skip-count", source: "codex", tier: "skip")
+            try insertSession(db, id: "keep-count", source: "codex", tier: "normal")
+            try db.execute(
+                sql: """
+                CREATE TABLE IF NOT EXISTS session_embeddings(
+                  session_id TEXT PRIMARY KEY,
+                  content TEXT
+                )
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES
+                  ('skip-count', 'skip count fts'),
+                  ('keep-count', 'keep count fts')
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO session_embeddings(session_id, content)
+                VALUES
+                  ('skip-count', 'skip count embedding'),
+                  ('keep-count', 'keep count embedding')
+                """
+            )
+
+            // PR #142 regression: telemetry must include the embedding row
+            // deleted for skip-tier sessions, not just the FTS row count.
+            let removed = try StartupBackfills.reconcileSkipTierIndexArtifacts(db)
+
+            XCTAssertEqual(removed, 2)
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'skip-count'"),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_embeddings WHERE session_id = 'skip-count'"),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'keep-count'"),
+                1
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_embeddings WHERE session_id = 'keep-count'"),
+                1
+            )
+        }
+    }
+
     func testPruneIndexJobsKeepsInFlightAndLatestTerminalPerKind() throws {
         try writer.write { db in
             try insertSession(db, id: "hot", source: "codex", tier: "normal")
