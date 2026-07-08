@@ -209,6 +209,8 @@ public enum ParserFailure: String, CaseIterable, Error, Codable, Equatable, Send
     case sqliteUnreadable
     case grpcUnavailable
     case unsupportedVirtualLocator
+    // Valid transcript bytes, but no user/assistant/tool messages visible to Engram.
+    case noVisibleMessages
 }
 
 public enum AdapterParseResult<Value: Sendable>: Sendable {
