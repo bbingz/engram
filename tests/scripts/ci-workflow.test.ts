@@ -19,6 +19,17 @@ const perfWorkflow = readFileSync(
   resolve(repoRoot, '.github/workflows/perf.yml'),
   'utf8',
 );
+const macosProject = readFileSync(
+  resolve(repoRoot, 'macos/project.yml'),
+  'utf8',
+);
+const engramScheme = readFileSync(
+  resolve(
+    repoRoot,
+    'macos/Engram.xcodeproj/xcshareddata/xcschemes/Engram.xcscheme',
+  ),
+  'utf8',
+);
 const xcodegenWorkflows = [
   testWorkflow,
   releaseWorkflow,
@@ -124,6 +135,9 @@ describe('Perf workflow', () => {
     expect(perfWorkflow).toContain('uses: actions/upload-artifact@v7');
     expect(perfWorkflow).toContain('name: indexer-perf-results');
     expect(perfWorkflow).toContain('retention-days: 90');
+    expect(macosProject).toContain('ENGRAM_PERF: "$(TEST_RUNNER_ENGRAM_PERF)"');
+    expect(engramScheme).toContain('key = "ENGRAM_PERF"');
+    expect(engramScheme).toContain('value = "$(TEST_RUNNER_ENGRAM_PERF)"');
   });
 });
 

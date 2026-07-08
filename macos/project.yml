@@ -387,7 +387,8 @@ schemes:
         - EngramCoreTests
         - EngramTests
         - EngramUITests
-      environmentVariables: []
+      environmentVariables:
+        ENGRAM_PERF: "$(TEST_RUNNER_ENGRAM_PERF)"
   EngramTests:
     build:
       targets:
