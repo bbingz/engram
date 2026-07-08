@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: service log id fingerprints (2026-07-08, Codex)
+
+- Replaced uniform service-log `<id>` redactions with stable SHA-256 hash
+  prefixes so repeated identifiers remain correlatable without exposing raw
+  UUIDs or long opaque tokens.
+
 ### Added: nightly Swift indexer perf workflow (2026-07-08, Codex)
 
 - Added a report-only Perf workflow and opt-in XCTest measurement for Swift
