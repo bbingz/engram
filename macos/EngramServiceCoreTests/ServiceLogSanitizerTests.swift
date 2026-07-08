@@ -62,7 +62,7 @@ final class ServiceLogSanitizerTests: XCTestCase {
         let raw = "linked session 3F2504E0-4F89-41D3-9A0C-0305E82C3301 to parent"
         let out = ServiceLogSanitizer.redact(raw)
         XCTAssertFalse(out.contains("3F2504E0-4F89-41D3-9A0C-0305E82C3301"))
-        XCTAssertTrue(out.contains("<id>"))
+        XCTAssertTrue(out.contains("<id:16362f56>"))
         XCTAssertTrue(out.contains("linked session"))
     }
 
@@ -71,8 +71,42 @@ final class ServiceLogSanitizerTests: XCTestCase {
         let raw = "capability token \(token) accepted"
         let out = ServiceLogSanitizer.redact(raw)
         XCTAssertFalse(out.contains(token))
-        XCTAssertTrue(out.contains("<id>"))
+        XCTAssertTrue(out.contains("<id:3c1c17c7>"))
         XCTAssertTrue(out.contains("capability token"))
+    }
+
+    func testSameIdentifierUsesStableFingerprint_repro() {
+        // PR #138 repro: same identifiers must remain correlatable after redaction.
+        let id = "11111111-2222-3333-4444-555555555555"
+        let raw = "session \(id) retried session \(id)"
+        let out = ServiceLogSanitizer.redact(raw)
+
+        XCTAssertFalse(out.contains(id))
+        XCTAssertEqual(idFingerprints(in: out), ["<id:666ff6cc>", "<id:666ff6cc>"])
+    }
+
+    func testDifferentIdentifiersUseDifferentFingerprints_repro() {
+        // PR #138 repro: different identifiers must stay distinguishable after redaction.
+        let first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        let second = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        let raw = "tokens first=\(first) second=\(second)"
+        let out = ServiceLogSanitizer.redact(raw)
+
+        XCTAssertFalse(out.contains(first))
+        XCTAssertFalse(out.contains(second))
+        XCTAssertEqual(idFingerprints(in: out), ["<id:3ba3f5f4>", "<id:bdb33976>"])
+    }
+
+    func testUuidFingerprintIsCaseInsensitive_repro() {
+        // PR #138 repro: UUID case variants must fingerprint identically.
+        let upper = "3F2504E0-4F89-41D3-9A0C-0305E82C3301"
+        let lower = upper.lowercased()
+        let raw = "upper \(upper) lower \(lower)"
+        let out = ServiceLogSanitizer.redact(raw)
+
+        XCTAssertFalse(out.contains(upper))
+        XCTAssertFalse(out.contains(lower))
+        XCTAssertEqual(idFingerprints(in: out), ["<id:16362f56>", "<id:16362f56>"])
     }
 
     func testErrorLocalizedDescriptionTailIsRedacted() {
@@ -99,5 +133,14 @@ final class ServiceLogSanitizerTests: XCTestCase {
         let raw = "schema migration complete tables=42"
         let out = ServiceLogSanitizer.redact(raw)
         XCTAssertEqual(out, "schema migration complete tables=42")
+    }
+
+    private func idFingerprints(in output: String) -> [String] {
+        let regex = try! NSRegularExpression(pattern: #"<id:[0-9a-f]{8}>"#)
+        let range = NSRange(output.startIndex..<output.endIndex, in: output)
+        return regex.matches(in: output, range: range).compactMap { match in
+            guard let matchRange = Range(match.range, in: output) else { return nil }
+            return String(output[matchRange])
+        }
     }
 }
