@@ -1,0 +1,12 @@
+# Swift convention gate allowlist.
+#
+# Format:
+#   <rule-id> <repo-relative-path>[ <required-substring>] # why this remains allowed
+#
+# Rules:
+#   R1 test-home-isolation
+#   R2 no-hashvalue-keys
+#   R3 no-node-runtime
+#
+# The allowlist intentionally starts empty. Add entries only with a specific
+# reason and remove them as soon as the source can comply with the rule.
