@@ -7,6 +7,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: nightly Swift indexer perf workflow (2026-07-08, Codex)
+
+- Added a report-only Perf workflow and opt-in XCTest measurement for Swift
+  indexer throughput over generated fixture sessions.
+
 ### Added: Swift convention grep gate (2026-07-08, Codex)
 
 - Added a ripgrep-backed Swift convention gate for test home isolation,

@@ -1,0 +1,3 @@
+{"type":"turn_context","cwd":"/Users/test/unknown","model":"codex-1","source":"codex","project":"","timestamp":"2026-01-22T10:00:00.000Z"}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"Work on unknown project: Ad-hoc debugging session without project context"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"Ad-hoc debugging session without project context completed with 6 messages."}]}}

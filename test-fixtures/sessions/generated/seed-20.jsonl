@@ -1,0 +1,3 @@
+{"type":"turn_context","cwd":"/Users/test/engram","model":"codex-1","source":"codex","project":"engram","timestamp":"2026-01-28T14:00:00.000Z"}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"Work on engram: Heavy tool usage session with many file operations"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"Heavy tool usage session with many file operations completed with 80 messages."}]}}
