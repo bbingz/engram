@@ -360,6 +360,9 @@ public final class SwiftIndexer {
             if tail.infoDelta.messageCount == 0,
                tail.infoDelta.systemMessageCount == 0,
                tail.messages.isEmpty {
+                guard tail.parsedOffset == state.parsedOffset else {
+                    return .fallback
+                }
                 return .recordOnly(fileState)
             }
             guard let currentSnapshot,
@@ -384,6 +387,7 @@ public final class SwiftIndexer {
     ) -> AuthoritativeSessionSnapshot? {
         guard current.authoritativeNode == authoritativeNode else { return nil }
         guard current.tier == .normal || current.tier == .premium else { return nil }
+        guard current.userMessageCount >= 3 else { return nil }
         if let id = tail.infoDelta.id, id != current.id { return nil }
         if let source = tail.infoDelta.source, source != current.source { return nil }
         if let firstRole = tail.infoDelta.firstVisibleRole, firstRole != .user { return nil }

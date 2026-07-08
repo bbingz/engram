@@ -169,12 +169,14 @@ final class IndexerParseOnceTests: XCTestCase {
     func testClaudeCodeTailParseAppendMatchesFullReindex() async throws {
         let fixture = try makeClaudeFixture(name: "tail-parity")
         defer { try? FileManager.default.removeItem(at: fixture.root) }
-        try writeClaudeLines(baseClaudeLines(), to: fixture.locator)
-        let adapter = ClaudeCodeAdapter(projectsRoot: fixture.root.path)
+        try writeClaudeLines(mergeSafeClaudeLines(), to: fixture.locator)
+        let adapter = CountingTailAdapter(projectsRoot: fixture.root.path)
 
         let initialResult = try await writer.indexRecentSessions(adapters: [adapter])
         XCTAssertEqual(initialResult.indexed, 1)
         try await drainFtsJobs(writer, adapter: adapter)
+        XCTAssertEqual(adapter.scanForIndexingCalls, 1)
+        XCTAssertEqual(adapter.scanTailForIndexingCalls, 0)
         let initialState = try fileState(locator: indexedLocator(fixture.locator))
         let initialStateDiagnostics = try fileIndexStateDiagnostics()
         XCTAssertEqual(
@@ -190,6 +192,8 @@ final class IndexerParseOnceTests: XCTestCase {
         try appendText(tailClaudeLines().joined(separator: "\n") + "\n", to: fixture.locator)
         _ = try await writer.indexRecentSessions(adapters: [adapter])
         try await drainFtsJobs(writer, adapter: adapter)
+        XCTAssertEqual(adapter.scanTailForIndexingCalls, 1)
+        XCTAssertEqual(adapter.scanForIndexingCalls, 1, "append pass must take the tail path, not a full reparse")
 
         let fullDB = FileManager.default.temporaryDirectory
             .appendingPathComponent("tail-full-\(UUID().uuidString).sqlite")
@@ -210,6 +214,41 @@ final class IndexerParseOnceTests: XCTestCase {
         }
         XCTAssertEqual(try ftsHits(writer, "tailonlysearchtoken"), 1)
         XCTAssertEqual(try ftsHits(fullWriter, "tailonlysearchtoken"), 1)
+    }
+
+    func testClaudeCodeTailParseNoTrailingNewlineFallsBackWithoutDoubleCounting() async throws {
+        let fixture = try makeClaudeFixture(name: "tail-no-newline")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        try mergeSafeClaudeLines().joined(separator: "\n").write(to: fixture.locator, atomically: false, encoding: .utf8)
+        let adapter = CountingTailAdapter(projectsRoot: fixture.root.path)
+
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+        let initialState = try XCTUnwrap(fileState(locator: indexedLocator(fixture.locator)))
+        XCTAssertLessThan(initialState.parsedOffset, initialState.sizeBytes)
+        XCTAssertNil(initialState.boundaryHash, "EOF-remainder parses must not be eligible for tail resume")
+
+        try appendText("\n" + tailClaudeLines().joined(separator: "\n") + "\n", to: fixture.locator)
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+        XCTAssertEqual(adapter.scanTailForIndexingCalls, 0)
+        XCTAssertEqual(adapter.scanForIndexingCalls, 2)
+
+        let fullDB = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tail-no-newline-full-\(UUID().uuidString).sqlite")
+        let fullWriter = try EngramDatabaseWriter(path: fullDB.path)
+        defer {
+            try? FileManager.default.removeItem(at: fullDB)
+        }
+        try fullWriter.migrate()
+        _ = try await fullWriter.indexRecentSessions(adapters: [ClaudeCodeAdapter(projectsRoot: fixture.root.path)])
+
+        for table in stableParityTables where table.name != "session_index_jobs" && table.name != "sessions_fts" {
+            XCTAssertEqual(
+                try stableRows(writer, table.sql),
+                try stableRows(fullWriter, table.sql),
+                table.name
+            )
+        }
+        XCTAssertEqual(try sessionIntValue("message_count", id: "tail-session"), 8)
     }
 
     func testClaudeCodeTailParseRewriteInPlaceFallsBackToFullReparse() async throws {
@@ -279,6 +318,24 @@ final class IndexerParseOnceTests: XCTestCase {
         XCTAssertEqual(finalState.parsedOffset, Int64(try Data(contentsOf: fixture.locator).count))
         XCTAssertEqual(try sessionIntValue("message_count", id: "tail-session"), 4)
         XCTAssertEqual(try ftsHits(writer, "partialcompletesearchtoken"), 1)
+    }
+
+    func testClaudeCodeTailParseNoVisibleCompleteTailFallsBackAndRefreshesSize() async throws {
+        let fixture = try makeClaudeFixture(name: "tail-empty-visible")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        try writeClaudeLines(mergeSafeClaudeLines(), to: fixture.locator)
+        let adapter = CountingTailAdapter(projectsRoot: fixture.root.path)
+
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+        let initialSize = try XCTUnwrap(fileState(locator: indexedLocator(fixture.locator))?.sizeBytes)
+        try appendText(#"{"type":"user","sessionId":"tail-session","timestamp":"2026-01-01T10:09:00Z","message":{"role":"user","content":[{"type":"tool_result","content":""}]}}"# + "\n", to: fixture.locator)
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+
+        let finalState = try XCTUnwrap(fileState(locator: indexedLocator(fixture.locator)))
+        XCTAssertGreaterThan(finalState.sizeBytes, initialSize)
+        XCTAssertEqual(finalState.sizeBytes, try sessionInt64Value("size_bytes", id: "tail-session"))
+        XCTAssertEqual(adapter.scanTailForIndexingCalls, 1)
+        XCTAssertEqual(adapter.scanForIndexingCalls, 2, "complete no-visible tails must full-reparse to refresh session size")
     }
 
     private struct StableParityTable {
@@ -370,6 +427,17 @@ final class IndexerParseOnceTests: XCTestCase {
         [
             claudeUserLine(content: firstUser, timestamp: "2026-01-01T10:00:00Z"),
             claudeAssistantLine(content: "Initial implementation done. checks run", timestamp: "2026-01-01T10:01:00Z", input: 10, output: 5),
+        ]
+    }
+
+    private func mergeSafeClaudeLines() -> [String] {
+        [
+            claudeUserLine(content: "Initial implementation request", timestamp: "2026-01-01T10:00:00Z"),
+            claudeAssistantLine(content: "Initial implementation done. checks run", timestamp: "2026-01-01T10:01:00Z", input: 10, output: 5),
+            claudeUserLine(content: "Second implementation request", timestamp: "2026-01-01T10:01:10Z"),
+            claudeAssistantLine(content: "Second implementation done. checks run", timestamp: "2026-01-01T10:01:20Z", input: 8, output: 4),
+            claudeUserLine(content: "Third implementation request", timestamp: "2026-01-01T10:01:30Z"),
+            claudeAssistantLine(content: "Third implementation done. checks run", timestamp: "2026-01-01T10:01:40Z", input: 7, output: 3),
         ]
     }
 
@@ -486,7 +554,13 @@ final class IndexerParseOnceTests: XCTestCase {
         }
     }
 
-    private func drainFtsJobs(_ writer: EngramDatabaseWriter, adapter: ClaudeCodeAdapter) async throws {
+    private func sessionInt64Value(_ column: String, id: String) throws -> Int64? {
+        try writer.read { db in
+            try Int64.fetchOne(db, sql: "SELECT \(column) FROM sessions WHERE id = ?", arguments: [id])
+        }
+    }
+
+    private func drainFtsJobs(_ writer: EngramDatabaseWriter, adapter: any SessionAdapter) async throws {
         _ = try await IndexJobRunner(writer: writer, adapters: [adapter]).runRecoverableJobs()
     }
 
@@ -540,6 +614,65 @@ private struct CollectingNoopSink: IndexingWriteSink {
 }
 
 // MARK: - Test adapters
+
+private final class CountingTailAdapter: TailIndexingSessionAdapter {
+    let source: SourceName = .claudeCode
+    private let inner: ClaudeCodeAdapter
+    private(set) var scanForIndexingCalls = 0
+    private(set) var scanTailForIndexingCalls = 0
+
+    init(projectsRoot: String) {
+        self.inner = ClaudeCodeAdapter(projectsRoot: projectsRoot)
+    }
+
+    func detect() async -> Bool {
+        await inner.detect()
+    }
+
+    func listSessionLocators() async throws -> [String] {
+        try await inner.listSessionLocators()
+    }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        try await inner.parseSessionInfo(locator: locator)
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        await inner.isAccessible(locator: locator)
+    }
+
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        scanForIndexingCalls += 1
+        return try await inner.scanForIndexing(locator: locator)
+    }
+
+    func scanTailForIndexing(
+        locator: String,
+        from parsedOffset: Int64,
+        expectedBoundaryHash: String
+    ) async throws -> IndexingTailScanResult {
+        scanTailForIndexingCalls += 1
+        return try await inner.scanTailForIndexing(
+            locator: locator,
+            from: parsedOffset,
+            expectedBoundaryHash: expectedBoundaryHash
+        )
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        try await inner.streamMessages(locator: locator, options: options)
+    }
+
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        try await inner.streamMessagesWithMetadata(locator: locator, options: options)
+    }
+}
 
 /// Counts which parse entry points the indexer invokes. Its single-parse
 /// override builds `(info, messages)` without touching the two-pass methods, so

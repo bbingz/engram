@@ -118,12 +118,15 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 return .failure(reason)
             case .success(let info):
                 let checkpoint = try JSONLAdapterSupport.checkpoint(locator: locator, limits: limits)
+                let checkpointBoundaryHash = checkpoint.parsedOffset == info.sizeBytes
+                    ? checkpoint.boundaryHash
+                    : nil
                 return .success(
                     IndexingScan(
                         info: info,
                         messages: objects.compactMap(Self.message(from:)),
                         checkpointParsedOffset: checkpoint.parsedOffset,
-                        checkpointBoundaryHash: checkpoint.boundaryHash
+                        checkpointBoundaryHash: checkpointBoundaryHash
                     )
                 )
             }

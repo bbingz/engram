@@ -85,6 +85,13 @@ adapters. The helper records a checkpoint as:
 - `boundaryHash`: SHA-256 of the last 4 KiB before `parsedOffset` (or the
   available shorter prefix).
 
+If a full scan parses a valid EOF remainder that has no trailing newline, the
+scan stores `parsedOffset` at the previous newline boundary but leaves
+`boundaryHash` nil. That preserves current parser behavior for valid final
+JSONL records while making the next append ineligible for tail resume, avoiding
+double-counting bytes that were already indexed outside the complete-line
+checkpoint.
+
 The fast path is eligible only when all preconditions hold:
 
 - The stored state is schema-current and has `parseStatus == ok`.
@@ -109,6 +116,11 @@ The indexer merge is intentionally gated:
   current persisted snapshot state with the parsed tail.
 - If the tail starts with assistant, tool, system, or any message that could
   alter the previous pending human turn, the indexer must full-reparse.
+- If the persisted row does not prove that the first-three-user-message tier
+  input is already stable (for this implementation: fewer than three prior user
+  turns), the indexer must full-reparse.
+- If a complete tail has no visible messages, the indexer must full-reparse so
+  the session row, including `size_bytes`, stays identical to full indexing.
 - If current persisted costs, tools, work beats, instruction signals, parent
   link, tier inputs, or any other derived field cannot be reconstructed exactly,
   the indexer must full-reparse.
@@ -160,9 +172,10 @@ to prove, but it is a larger storage and migration project than this task needs.
 ## Rollout
 
 No version bump or migration is required. The next app/service build starts
-writing non-null boundary checkpoints for successful JSONL parses. Existing
-rows with `boundary_hash == NULL` are treated as ineligible and will full-reparse
-once before becoming eligible.
+writing non-null boundary checkpoints for successful newline-complete JSONL
+parses. Existing rows with `boundary_hash == NULL`, and rows produced from
+valid EOF remainders without a trailing newline, are treated as ineligible and
+will full-reparse once before becoming eligible.
 
 Revert is straightforward: remove the tail capability and restore success
 checkpoints to full file size with nil boundary hash. Stored checkpoint values
