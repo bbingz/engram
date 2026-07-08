@@ -7,6 +7,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: incremental JSONL tail parsing (2026-07-08, Codex)
+
+- Added Claude Code JSONL tail checkpoints and a gated append-only indexing path
+  with full-reparse fallbacks when boundary or merge context cannot prove parity.
+
 ### Added: provider audit branch reconciliation (2026-07-08, Codex)
 
 - Reconciled the parked provider-audit branch against current `main`, ported the

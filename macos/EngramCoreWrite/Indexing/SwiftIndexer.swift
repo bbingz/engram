@@ -167,6 +167,9 @@ public final class SwiftIndexer {
                 ? (try? sink.knownIndexedFileStates(source: adapter.source, locators: locators))
                 : nil
             let fileIndexStates = try? sink.knownFileIndexStates(source: adapter.source, locators: locators)
+            let tailMergeSnapshots = (adapter as? any TailIndexingSessionAdapter) == nil
+                ? nil
+                : (try? sink.knownTailMergeSnapshots(source: adapter.source, locators: locators))
             let activeFileCutoff = Date().addingTimeInterval(-Self.activeFileGraceInterval)
 
             for locator in locators {
@@ -188,7 +191,38 @@ public final class SwiftIndexer {
                    ) == .skip {
                     continue
                 }
-                if let currentFile = currentStat?.legacyState,
+                if !skipKnownFileLocators {
+                    switch try await attemptTailIndexing(
+                        adapter: adapter,
+                        locator: locator,
+                        currentStat: currentStat,
+                        knownParseState: knownParseState,
+                        currentSnapshot: tailMergeSnapshots?[locator]
+                    ) {
+                    case .yield(let snapshot, let fileState):
+                        yield(snapshot, fileState)
+                        continue
+                    case .recordOnly(let fileState):
+                        try upsertFileIndexStateIsolated(fileState, source: fileState.source, locator: fileState.locator)
+                        continue
+                    case .failure(let failure):
+                        try recordFileIndexFailure(
+                            source: adapter.source,
+                            locator: locator,
+                            stat: currentStat,
+                            failure: failure,
+                            previous: knownParseState
+                        )
+                        Self.log.error(
+                            "session tail parse failed: source=\(adapter.source.rawValue, privacy: .private) reason=\(failure.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
+                        )
+                        continue
+                    case .fallback:
+                        break
+                    }
+                }
+                if (knownParseState == nil || skipKnownFileLocators),
+                   let currentFile = currentStat?.legacyState,
                    let indexed = knownIndexedState {
                     if !needsInstructionBackfill {
                         if skipKnownFileLocators {
@@ -239,7 +273,14 @@ public final class SwiftIndexer {
                         let provableSkip = Self.isProvableSkip(info: info, locator: locator)
                         let stats = computeStats(messages: scan.messages, provableSkip: provableSkip)
                         let fileState = currentStat.map {
-                            FileIndexState.success(source: adapter.source, locator: locator, stat: $0, now: Date())
+                            FileIndexState.success(
+                                source: adapter.source,
+                                locator: locator,
+                                stat: $0,
+                                now: Date(),
+                                parsedOffset: scan.checkpointParsedOffset,
+                                boundaryHash: scan.checkpointBoundaryHash
+                            )
                         }
                         yield(buildSnapshot(info: info, locator: locator, stats: stats), fileState)
                     }
@@ -264,6 +305,201 @@ public final class SwiftIndexer {
                 }
             }
         }
+    }
+
+    private enum TailIndexAttempt {
+        case yield(AuthoritativeSessionSnapshot, FileIndexState)
+        case recordOnly(FileIndexState)
+        case failure(ParserFailure)
+        case fallback
+    }
+
+    private func attemptTailIndexing(
+        adapter: any SessionAdapter,
+        locator: String,
+        currentStat: FileIndexStat?,
+        knownParseState: FileIndexState?,
+        currentSnapshot: AuthoritativeSessionSnapshot?
+    ) async throws -> TailIndexAttempt {
+        guard let tailAdapter = adapter as? any TailIndexingSessionAdapter,
+              let currentStat,
+              let state = knownParseState,
+              let boundaryHash = state.boundaryHash,
+              state.schemaVersion == FileIndexState.currentSchemaVersion,
+              state.parseStatus == .ok,
+              state.parsedOffset >= 0,
+              state.parsedOffset <= state.sizeBytes,
+              currentStat.sizeBytes > state.sizeBytes,
+              currentStat.sizeBytes > state.parsedOffset,
+              let storedInode = state.inode,
+              let storedDevice = state.device,
+              currentStat.inode == storedInode,
+              currentStat.device == storedDevice
+        else {
+            return .fallback
+        }
+
+        switch try await tailAdapter.scanTailForIndexing(
+            locator: locator,
+            from: state.parsedOffset,
+            expectedBoundaryHash: boundaryHash
+        ) {
+        case .fallback:
+            return .fallback
+        case .failure(let failure):
+            return .failure(failure)
+        case .success(let tail):
+            let fileState = FileIndexState.success(
+                source: adapter.source,
+                locator: locator,
+                stat: currentStat,
+                now: Date(),
+                parsedOffset: tail.parsedOffset,
+                boundaryHash: tail.boundaryHash
+            )
+            if tail.infoDelta.messageCount == 0,
+               tail.infoDelta.systemMessageCount == 0,
+               tail.messages.isEmpty {
+                return .recordOnly(fileState)
+            }
+            guard let currentSnapshot,
+                  let snapshot = mergeTailSnapshot(
+                    current: currentSnapshot,
+                    tail: tail,
+                    locator: locator,
+                    stat: currentStat
+                  )
+            else {
+                return .fallback
+            }
+            return .yield(snapshot, fileState)
+        }
+    }
+
+    private func mergeTailSnapshot(
+        current: AuthoritativeSessionSnapshot,
+        tail: IndexingTailScan,
+        locator: String,
+        stat: FileIndexStat
+    ) -> AuthoritativeSessionSnapshot? {
+        guard current.authoritativeNode == authoritativeNode else { return nil }
+        guard current.tier == .normal || current.tier == .premium else { return nil }
+        if let id = tail.infoDelta.id, id != current.id { return nil }
+        if let source = tail.infoDelta.source, source != current.source { return nil }
+        if let firstRole = tail.infoDelta.firstVisibleRole, firstRole != .user { return nil }
+        guard let currentSummaryCount = current.summaryMessageCount else { return nil }
+
+        let tailStats = computeStats(messages: tail.messages, provableSkip: false)
+        guard let instructionSignals = mergeInstructionSignals(current: current, tailMessages: tail.messages) else {
+            return nil
+        }
+
+        var stats = SessionStreamStats()
+        stats.indexedMessageCount = currentSummaryCount + tailStats.indexedMessageCount
+        stats.assistantCount = current.assistantMessageCount + tailStats.assistantCount
+        stats.toolCount = current.toolMessageCount + tailStats.toolCount
+        stats.toolCallCounts = mergedCounts(current.toolCallCounts, tailStats.toolCallCounts)
+        stats.tokenUsage = mergedUsage(current.tokenUsage, tailStats.tokenUsage)
+        stats.humanTurnCount = instructionSignals.humanTurnCount
+        stats.instructions = instructionSignals.instructions
+
+        let info = NormalizedSessionInfo(
+            id: current.id,
+            source: current.source,
+            startTime: current.startTime,
+            endTime: tail.infoDelta.endTime ?? current.endTime,
+            cwd: current.cwd,
+            project: current.project,
+            model: current.model ?? tail.infoDelta.model,
+            messageCount: current.messageCount + tail.infoDelta.messageCount,
+            userMessageCount: current.userMessageCount + tail.infoDelta.userMessageCount,
+            assistantMessageCount: current.assistantMessageCount + tail.infoDelta.assistantMessageCount,
+            toolMessageCount: current.toolMessageCount + tail.infoDelta.toolMessageCount,
+            systemMessageCount: current.systemMessageCount + tail.infoDelta.systemMessageCount,
+            summary: current.summary,
+            filePath: locator,
+            sizeBytes: stat.sizeBytes,
+            indexedAt: current.indexedAt,
+            agentRole: current.agentRole,
+            origin: current.origin,
+            parentSessionId: current.parentSessionId
+        )
+        var snapshot = buildSnapshot(info: info, locator: locator, stats: stats)
+        let tailBeats = ImplementationDigestExtractor.extract(
+            messages: tailStats.implementationMessages,
+            sessionId: current.id,
+            sessionTitle: current.summary
+        ).enumerated().map { offset, beat in
+            var adjusted = beat
+            adjusted.beatIndex = current.implementationBeats.count + offset
+            return adjusted
+        }
+        snapshot.implementationBeats = current.implementationBeats + tailBeats
+        return snapshot
+    }
+
+    private func mergeInstructionSignals(
+        current: AuthoritativeSessionSnapshot,
+        tailMessages: [NormalizedMessage]
+    ) -> (humanTurnCount: Int, instructions: [String])? {
+        guard Self.reliableInstructionSources.contains(current.source) else {
+            return (current.humanTurnCount ?? 0, [])
+        }
+        guard let currentInstructionCount = current.instructionCount,
+              let currentHumanTurnCount = current.humanTurnCount
+        else {
+            return nil
+        }
+
+        var instructions = current.instructionSummary?
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init) ?? []
+        if currentInstructionCount < InstructionExtractor.maxInstructions,
+           instructions.contains(where: { $0.count >= 200 }) {
+            return nil
+        }
+        if instructions.count != currentInstructionCount {
+            return nil
+        }
+
+        var seen: Set<String> = []
+        for instruction in instructions {
+            guard InstructionExtractor.distinctInstruction(from: instruction, seen: &seen) != nil else {
+                return nil
+            }
+        }
+
+        var humanTurnCount = currentHumanTurnCount
+        for message in tailMessages where message.role == .user {
+            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty, !Self.isSystemInjection(content) else { continue }
+            humanTurnCount += 1
+            guard instructions.count < InstructionExtractor.maxInstructions else { continue }
+            if let instruction = InstructionExtractor.distinctInstruction(from: message.content, seen: &seen) {
+                instructions.append(instruction)
+            }
+        }
+        return (humanTurnCount, instructions)
+    }
+
+    private func mergedCounts(_ lhs: [String: Int], _ rhs: [String: Int]) -> [String: Int] {
+        var output = lhs
+        for (key, value) in rhs {
+            output[key, default: 0] += value
+        }
+        return output
+    }
+
+    private func mergedUsage(_ lhs: TokenUsage?, _ rhs: TokenUsage?) -> TokenUsage? {
+        guard lhs != nil || rhs != nil else { return nil }
+        let left = lhs ?? TokenUsage(inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0)
+        let right = rhs ?? TokenUsage(inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0)
+        return TokenUsage(
+            inputTokens: left.inputTokens + right.inputTokens,
+            outputTokens: left.outputTokens + right.outputTokens,
+            cacheReadTokens: (left.cacheReadTokens ?? 0) + (right.cacheReadTokens ?? 0),
+            cacheCreationTokens: (left.cacheCreationTokens ?? 0) + (right.cacheCreationTokens ?? 0)
+        )
     }
 
     private func recordFileIndexFailure(
