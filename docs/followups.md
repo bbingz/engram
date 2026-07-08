@@ -3,6 +3,33 @@
 Follow-ups are verification gaps, low-priority refactors, or items that need
 real data, UI exercise, or product confirmation before becoming TODOs.
 
+## Open — perceived-duration audit (2026-07-08)
+
+- **Add rebuild-specific progress before exposing FTS full rebuild.** The app
+  currently excludes `reindex/triggerSync` from command palette actions
+  (`macos/Engram/Models/PaletteItem.swift:41-43`) and only shows aggregate
+  index-job counts or source coverage (`macos/Engram/Views/Observability/SystemHealthView.swift:58-67`,
+  `macos/Engram/Views/Pages/SourcePulseView.swift:296-299`). If a full rebuild
+  becomes user-visible, add progress plus cancel or background continuation.
+- **Let long project migrations cancel or continue in the background.** Project
+  move, archive, undo, and batch move use a 10 minute service timeout
+  (`macos/Shared/Service/EngramServiceClient.swift:8`,
+  `macos/Shared/Service/EngramServiceClient.swift:189-202`). The app shows
+  progress text for batch, rename, and archive (`macos/Engram/Views/Projects/BatchMoveSheet.swift:139-146`,
+  `macos/Engram/Views/Projects/RenameSheet.swift:117-138`,
+  `macos/Engram/Views/Projects/ArchiveSheet.swift:102-113`) but disables
+  cancellation during execution (`macos/Engram/Views/Projects/BatchMoveSheet.swift:159-164`,
+  `macos/Engram/Views/Projects/RenameSheet.swift:178-180`,
+  `macos/Engram/Views/Projects/ArchiveSheet.swift:202-204`).
+- **Show in-flight feedback for session export.** Session export uses the
+  default 30 second service timeout (`macos/Shared/Service/EngramServiceClient.swift:17-20`,
+  `macos/Shared/Service/EngramServiceClient.swift:260-262`,
+  `macos/Shared/Service/EngramServiceClient.swift:297-306`) but the Sessions
+  page and Command Palette only render success/failure after awaiting the
+  export (`macos/Engram/Views/SessionActionHandlers.swift:81-92`,
+  `macos/Engram/Views/Pages/SessionsPageView.swift:68-70`,
+  `macos/Engram/Views/CommandPaletteView.swift:282-293`).
+
 ## Open
 
 Open follow-ups as of 2026-07-06:

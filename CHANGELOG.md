@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: perceived-duration audit (2026-07-08, Codex)
+
+- Added a macOS perceived-duration audit mapping user-facing waits to required
+  progress, cancel, or background-continuation feedback, with follow-ups for
+  the remaining gaps.
+
 ### Added: reduce-motion animation guard (2026-07-08, Codex)
 
 - Added a shared motion-aware animation helper and Swift convention ratchet so
