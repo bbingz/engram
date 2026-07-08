@@ -225,7 +225,8 @@ public struct FileIndexState: Equatable, Sendable {
 
     private static func isTerminalFailure(_ failure: ParserFailure) -> Bool {
         switch failure {
-        case .fileTooLarge, .lineTooLarge, .messageLimitExceeded, .unsupportedVirtualLocator:
+        case .fileTooLarge, .lineTooLarge, .messageLimitExceeded, .unsupportedVirtualLocator,
+             .noVisibleMessages:
             return true
         default:
             return false

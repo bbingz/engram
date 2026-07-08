@@ -28,7 +28,8 @@ final class AdapterParityTests: XCTestCase {
                 "fileModifiedDuringParse",
                 "sqliteUnreadable",
                 "grpcUnavailable",
-                "unsupportedVirtualLocator"
+                "unsupportedVirtualLocator",
+                "noVisibleMessages"
             ]
         )
     }

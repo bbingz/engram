@@ -665,7 +665,7 @@ public extension EngramDatabaseWriter {
         switch failure {
         case .fileMissing, .fileTooLarge, .invalidUtf8, .truncatedJSON, .truncatedJSONL,
              .malformedToolCall, .deeplyNestedRecord, .messageLimitExceeded, .lineTooLarge,
-             .unsupportedVirtualLocator:
+             .unsupportedVirtualLocator, .noVisibleMessages:
             return true
         case .malformedJSON, .fileModifiedDuringParse, .sqliteUnreadable, .grpcUnavailable:
             return false

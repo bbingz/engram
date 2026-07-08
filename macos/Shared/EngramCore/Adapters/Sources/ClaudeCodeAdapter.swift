@@ -191,6 +191,8 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
         }
 
         guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
+        let messageCount = userCount + assistantCount + toolCount
+        guard messageCount > 0 else { return .failure(.noVisibleMessages) }
 
         let isSubagent = locator.contains("/subagents/")
         let id = isSubagent && !agentId.isEmpty ? agentId : sessionId
@@ -206,7 +208,7 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
                 cwd: cwd,
                 project: Self.projectName(fromCwd: cwd),
                 model: detectedModel.isEmpty ? nil : detectedModel,
-                messageCount: userCount + assistantCount + toolCount,
+                messageCount: messageCount,
                 userMessageCount: userCount,
                 assistantMessageCount: assistantCount,
                 toolMessageCount: toolCount,
@@ -418,6 +420,9 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
         // a user turn. Drop it when it surfaces no content so the streamed
         // transcript matches parseSessionInfo's counts.
         let isToolResultRecord = type == "user" && isToolResult(rawContent)
+        if type == "user", !isToolResultRecord, isSystemInjection(content) {
+            return nil
+        }
         if isToolResultRecord, content.isEmpty {
             return nil
         }

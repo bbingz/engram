@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: provider audit branch reconciliation (2026-07-08, Codex)
+
+- Reconciled the parked provider-audit branch against current `main`, ported the
+  small Claude empty-visible-transcript parser fix, and documented deferred
+  large features plus obsolete branch deltas.
+
 ### Added: diagnostic bundle export (2026-07-08, Codex)
 
 - Added a Settings export flow that writes a redacted, pretty-printed JSON
