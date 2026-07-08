@@ -114,10 +114,12 @@ describe('Perf workflow', () => {
     expect(perfWorkflow).toContain(
       '-only-testing:EngramCoreTests/IndexerPerformanceTests',
     );
+    expect(perfWorkflow).toContain('ENGRAM_PERF: "1"');
     expect(perfWorkflow).toContain('TEST_RUNNER_ENGRAM_PERF=1');
     expect(perfWorkflow).toContain('2>&1 | tee perf-xcodebuild.log');
     expect(perfWorkflow).toContain('if "measured" in line.lower()');
     expect(perfWorkflow).toContain('"average_seconds"');
+    expect(perfWorkflow).toContain('No XCTest measured lines found');
     expect(perfWorkflow).toContain('perf-results.json');
     expect(perfWorkflow).toContain('uses: actions/upload-artifact@v7');
     expect(perfWorkflow).toContain('name: indexer-perf-results');

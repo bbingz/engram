@@ -51,6 +51,8 @@ jobs:
         run: npm run generate:fixtures
 
       - name: Run Swift indexer perf test
+        env:
+          ENGRAM_PERF: "1"
         run: |
           set -o pipefail
           xcodebuild test \
@@ -99,6 +101,8 @@ jobs:
               )
               + "\n"
           )
+          if not measurements:
+              raise SystemExit("No XCTest measured lines found; perf test may have skipped")
           PY
 
       - name: Upload perf results
