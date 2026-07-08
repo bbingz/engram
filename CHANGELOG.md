@@ -7,6 +7,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: engineering docs conventions (2026-07-08, Codex)
+
+- Documented repro-test naming expectations and added the shared design-doc
+  template for non-trivial implementation work.
+
 ### Added: plist gate (2026-07-08, Codex)
 
 - Added a plist and entitlements gate that runs `plutil -lint` and detects raw
