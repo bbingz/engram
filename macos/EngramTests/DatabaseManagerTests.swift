@@ -921,6 +921,26 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(results.count, 0)
     }
 
+    @MainActor
+    func testWhitespaceOnlySearchBrowsesRecentVisibleSessions_repro() throws {
+        try insertTestSession(at: dbPath, id: "old-visible", startTime: "2026-05-01T10:00:00Z", tier: "normal")
+        try insertTestSession(at: dbPath, id: "new-visible", startTime: "2026-05-03T10:00:00Z", tier: "normal")
+        try insertTestSession(at: dbPath, id: "skip-hidden", startTime: "2026-05-04T10:00:00Z", tier: "skip")
+        try insertTestSession(at: dbPath, id: "lite-hidden", startTime: "2026-05-05T10:00:00Z", tier: "lite")
+        try insertTestSession(
+            at: dbPath,
+            id: "user-hidden",
+            startTime: "2026-05-06T10:00:00Z",
+            hiddenAt: "2026-05-06T10:01:00Z"
+        )
+
+        // PR #142 regression: a whitespace-only query has no FTS terms, so the
+        // app read path must browse recent visible sessions instead of returning [].
+        let results = try db.search(query: "   ", limit: 10).map(\.id)
+
+        XCTAssertEqual(results, ["new-visible", "old-visible"])
+    }
+
     // MARK: - Tier filtering (extended)
 
     @MainActor

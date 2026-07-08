@@ -314,7 +314,7 @@ final class AdapterWindowedReadTests: XCTestCase {
         XCTAssertNotNil(c)
     }
 
-    func testParsedTranscriptSignatureIncludesSQLiteWalSidecars() throws {
+    func testParsedTranscriptSignatureIncludesSQLiteWalSidecars_repro() throws {
         let dir = makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let database = dir.appendingPathComponent("state.vscdb")
@@ -322,6 +322,8 @@ final class AdapterWindowedReadTests: XCTestCase {
         let shm = URL(fileURLWithPath: database.path + "-shm")
         try "main".write(to: database, atomically: true, encoding: .utf8)
 
+        // PR #142 regression: Cursor/VSCode WAL sidecars must invalidate the
+        // whole-transcript parse cache even when the main db file is unchanged.
         let base = ParsedTranscriptCache.Signature.forFile(database.path)
         XCTAssertNotNil(base)
 
