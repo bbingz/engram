@@ -1,0 +1,3 @@
+{"type":"turn_context","cwd":"/Users/test/engram","model":"claude-sonnet-4-20250514","source":"claude-code","project":"engram","timestamp":"2026-01-15T10:30:00.000Z"}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"Work on engram: Subagent: file search task"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"Subagent: file search task completed with 5 messages."}]}}

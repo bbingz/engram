@@ -15,6 +15,16 @@ const codeqlWorkflow = readFileSync(
   resolve(repoRoot, '.github/workflows/codeql.yml'),
   'utf8',
 );
+const perfWorkflow = readFileSync(
+  resolve(repoRoot, '.github/workflows/perf.yml'),
+  'utf8',
+);
+const xcodegenWorkflows = [
+  testWorkflow,
+  releaseWorkflow,
+  codeqlWorkflow,
+  perfWorkflow,
+];
 const packageJSON = JSON.parse(
   readFileSync(resolve(repoRoot, 'package.json'), 'utf8'),
 ) as { scripts: Record<string, string> };
@@ -37,13 +47,13 @@ describe('CI workflow hardening', () => {
   });
 
   it('does not mask xcodegen install failures', () => {
-    for (const workflow of [testWorkflow, releaseWorkflow, codeqlWorkflow]) {
+    for (const workflow of xcodegenWorkflows) {
       expect(workflow).not.toContain('brew install xcodegen || true');
     }
   });
 
   it('pins the expected xcodegen generator version in CI', () => {
-    for (const workflow of [testWorkflow, releaseWorkflow, codeqlWorkflow]) {
+    for (const workflow of xcodegenWorkflows) {
       expect(workflow).toContain('XCODEGEN_VERSION: "2.45.4"');
       expect(workflow).toContain(
         'test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"',
@@ -90,6 +100,28 @@ describe('CI workflow hardening', () => {
     const uiFull = testWorkflow.slice(testWorkflow.indexOf('  ui-test-full:'));
     expect(uiSmoke).toContain('restore-keys: spm-');
     expect(uiFull).toContain('restore-keys: spm-');
+  });
+});
+
+describe('Perf workflow', () => {
+  it('runs report-only indexer measurements on macOS nightly and on demand', () => {
+    expect(perfWorkflow).toContain('name: Perf');
+    expect(perfWorkflow).toContain('cron: "30 19 * * *"');
+    expect(perfWorkflow).toContain('workflow_dispatch:');
+    expect(perfWorkflow).toContain('runs-on: macos-15');
+    expect(perfWorkflow).toContain('timeout-minutes: 30');
+    expect(perfWorkflow).toContain('npm run generate:fixtures');
+    expect(perfWorkflow).toContain(
+      '-only-testing:EngramCoreTests/IndexerPerformanceTests',
+    );
+    expect(perfWorkflow).toContain('TEST_RUNNER_ENGRAM_PERF=1');
+    expect(perfWorkflow).toContain('2>&1 | tee perf-xcodebuild.log');
+    expect(perfWorkflow).toContain('if "measured" in line.lower()');
+    expect(perfWorkflow).toContain('"average_seconds"');
+    expect(perfWorkflow).toContain('perf-results.json');
+    expect(perfWorkflow).toContain('uses: actions/upload-artifact@v7');
+    expect(perfWorkflow).toContain('name: indexer-perf-results');
+    expect(perfWorkflow).toContain('retention-days: 90');
   });
 });
 

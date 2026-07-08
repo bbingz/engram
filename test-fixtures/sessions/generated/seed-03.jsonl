@@ -1,0 +1,3 @@
+{"type":"turn_context","cwd":"/Users/test/engram","model":"gpt-4o","source":"cursor","project":"engram","timestamp":"2026-01-16T09:00:00.000Z"}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"Work on engram: Added dark mode support to UI components"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"Added dark mode support to UI components completed with 20 messages."}]}}
