@@ -86,6 +86,13 @@ Invariants are properties that must survive every change; each entry names where
 - **Verified by** - `tests/scripts/product-boundary-scripts.test.ts` (direct-write boundary wrapper), `macos/EngramMCPTests/EngramMCPExecutableTests.swift` (testSaveInsightMatchesGoldenViaServiceSocket, testDeleteInsightRoutesThroughServiceSocket, testHideSessionRoutesThroughServiceSocket, testNativeProjectOperationsRouteThroughTheService).
 - **Gate** - `macos-vitest` in `.github/workflows/test.yml`.
 
+## 13. JSONL Tail Checkpoints Stop at Complete Lines
+
+- **Statement** - Append-tail checkpoints advance `file_index_state.parsed_offset` only to a newline-complete JSONL boundary and persist a bounded boundary hash for that offset; boundary mismatch, shrink, or unprovable merge context must fall back to full reparse.
+- **Enforced by** - `macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift`, `macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift`, `macos/EngramCoreWrite/Indexing/SwiftIndexer.swift`.
+- **Verified by** - `macos/EngramCoreTests/IndexerParseOnceTests.swift` (testClaudeCodeTailParseAppendMatchesFullReindex, testClaudeCodeTailParseNoTrailingNewlineFallsBackWithoutDoubleCounting, testClaudeCodeTailParseNoVisibleCompleteTailFallsBackAndRefreshesSize, testClaudeCodeTailParseRewriteInPlaceFallsBackToFullReparse, testClaudeCodeTailParseTruncationFallsBackToFullReparse, testClaudeCodeTailParseDoesNotAdvancePastPartialLineAndLaterIndexesIt).
+- **Gate** - `none`.
+
 ## Unverified Anchors
 
 None.
