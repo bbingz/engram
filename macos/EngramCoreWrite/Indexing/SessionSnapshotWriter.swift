@@ -743,6 +743,11 @@ public final class SessionSnapshotWriter {
     }
 
     private func deleteIndexArtifacts(sessionId: String) throws {
+        try deleteRowsFromSessionArtifactTableIfPresent(
+            table: "messages",
+            whereSQL: "session_id = ?",
+            arguments: [sessionId]
+        )
         try db.execute(sql: "DELETE FROM sessions_fts WHERE session_id = ?", arguments: [sessionId])
         if try tableExists("fts_map") {
             try db.execute(sql: "DELETE FROM fts_map WHERE session_id = ?", arguments: [sessionId])
@@ -762,6 +767,27 @@ public final class SessionSnapshotWriter {
             sql: "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?)",
             arguments: [name]
         ) ?? false
+    }
+
+    private func deleteRowsFromSessionArtifactTableIfPresent(
+        table: String,
+        whereSQL: String,
+        arguments: StatementArguments = StatementArguments()
+    ) throws {
+        guard try tableExists(table), try tableHasColumn(table, column: "session_id") else {
+            return
+        }
+        try db.execute(
+            sql: "DELETE FROM \(table) WHERE \(whereSQL)",
+            arguments: arguments
+        )
+    }
+
+    private func tableHasColumn(_ table: String, column: String) throws -> Bool {
+        let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(\(table))")
+        return rows.contains { row in
+            (row["name"] as String?) == column
+        }
     }
 
     private func jobKinds(for tier: SessionTier, changeSet: SessionChangeSet) -> [IndexJobKind] {

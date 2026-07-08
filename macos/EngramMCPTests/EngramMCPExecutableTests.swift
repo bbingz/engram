@@ -960,6 +960,27 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(results.compactMap { $0["session"]?["id"]?.stringValue }, ["mcp-like-literal"])
     }
 
+    func testKeywordSearchExcludesHiddenSessions() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-hidden-search-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedHiddenSearchFixture(at: dbPath)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"hiddenneedle","mode":"keyword","limit":10}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]
+        )
+
+        let results = try XCTUnwrap(capture.ordered["result"]?["structuredContent"]?["results"]?.arrayValue)
+        XCTAssertEqual(results.compactMap { $0["session"]?["id"]?.stringValue }, ["mcp-hidden-visible"])
+    }
+
     func testMCPTranscriptFallbackDoesNotBypassAdapterSizeFailures() throws {
         let source = try String(contentsOfFile: sourcePath("EngramMCP/Core/MCPTranscriptReader.swift"), encoding: .utf8)
         let start = try XCTUnwrap(source.range(of: "static func readMessagePage"))
@@ -2948,6 +2969,34 @@ final class EngramMCPExecutableTests: XCTestCase {
                 VALUES
                   ('mcp-like-literal', 'wildcardneedle literal'),
                   ('mcp-like-wildcard', 'wildcardneedle wildcard')
+                """
+            )
+        }
+    }
+
+    private func seedHiddenSearchFixture(at dbPath: String) throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, file_path, message_count, tier, hidden_at, summary
+                )
+                VALUES
+                  ('mcp-hidden-visible', 'codex', '2026-01-10T10:00:00.000Z',
+                   '/Users/test/work/visible', 'visible', '/tmp/mcp-hidden-visible.jsonl', 1, 'normal',
+                   NULL, 'visible search fixture'),
+                  ('mcp-hidden-hidden', 'codex', '2026-01-10T10:01:00.000Z',
+                   '/Users/test/work/hidden', 'hidden', '/tmp/mcp-hidden-hidden.jsonl', 1, 'normal',
+                   '2026-01-10T10:02:00.000Z', 'hidden search fixture')
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES
+                  ('mcp-hidden-visible', 'hiddenneedle visible'),
+                  ('mcp-hidden-hidden', 'hiddenneedle hidden')
                 """
             )
         }
