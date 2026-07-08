@@ -7,6 +7,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: invariant ledger (2026-07-08, Codex)
+
+- Added a maintained invariant ledger plus a path-existence gate so CI catches
+  stale source and test anchors in the documentation.
+
 ### Added: engineering docs conventions (2026-07-08, Codex)
 
 - Documented repro-test naming expectations and added the shared design-doc
