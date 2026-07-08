@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: purge leaked session artifacts (2026-07-08, Codex)
+
+- Added regression coverage and conditional cleanup so skip-tier and deleted
+  sessions purge legacy `messages` and `fts_map` rows alongside FTS and
+  embedding artifacts, including a one-time FTS-only migration sweep.
+
 ### Added: perceived-duration audit (2026-07-08, Codex)
 
 - Added a macOS perceived-duration audit mapping user-facing waits to required
