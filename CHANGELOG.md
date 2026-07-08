@@ -7,6 +7,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: Swift convention grep gate (2026-07-08, Codex)
+
+- Added a ripgrep-backed Swift convention gate for test home isolation,
+  hash-value cache keys, and Node runtime literals in product Swift sources.
+
 ### Added: invariant ledger (2026-07-08, Codex)
 
 - Added a maintained invariant ledger plus a path-existence gate so CI catches
