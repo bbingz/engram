@@ -40,7 +40,7 @@ Invariants are properties that must survive every change; each entry names where
 ## 6. Tests Avoid Production Engram Data
 
 - **Statement** - Tests must not read or write the production `~/.engram`; they use temp directories and test-specific `ENGRAM_BACKUP_DIR` values.
-- **Enforced by** - `.github/copilot-instructions.md`, `macos/EngramCoreTests/UserDataBackupTests.swift`.
+- **Enforced by** - `AGENTS.md`, `CLAUDE.md`, `macos/EngramCoreTests/UserDataBackupTests.swift`.
 - **Verified by** - `macos/EngramCoreTests/UserDataBackupTests.swift` (testBackupRoundTripCapturesOnlyIrreplaceableUserRows, testBackupDirectoryRejectsSymlinkAncestor).
 - **Gate** - `none`.
 

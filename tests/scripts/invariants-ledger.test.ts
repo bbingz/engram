@@ -15,6 +15,7 @@ const checkedPathPrefixes = [
   'docs/',
   '.github/',
 ];
+const checkedRootPaths = ['AGENTS.md', 'CLAUDE.md'];
 
 function runScript(args: string[] = [], cwd = repoRoot): string {
   return execFileSync('bash', [script, ...args], {
@@ -41,10 +42,13 @@ describe('invariants ledger gate script', () => {
       .flatMap((line) =>
         Array.from(line.matchAll(/`([^`]+)`/g), (match) => match[1].trim()),
       )
-      .filter(
-        (token) =>
-          !checkedPathPrefixes.some((prefix) => token.startsWith(prefix)),
-      );
+      .filter((token) => {
+        const candidate = token.replace(/:\d+$/, '');
+        return (
+          !checkedPathPrefixes.some((prefix) => candidate.startsWith(prefix)) &&
+          !checkedRootPaths.includes(candidate)
+        );
+      });
 
     expect(uncheckedAnchors).toEqual([]);
   });
@@ -74,7 +78,7 @@ describe('invariants ledger gate script', () => {
       [
         '# Invariants',
         '',
-        '- **Enforced by** - `docs/invariants.md:1`.',
+        '- **Enforced by** - `docs/invariants.md:1`, `CLAUDE.md:1`.',
         '- **Verified by** - `docs/missing-one.md`, `tests/missing-two.ts`.',
       ].join('\n'),
     );

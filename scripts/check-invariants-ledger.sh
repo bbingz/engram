@@ -28,13 +28,16 @@ prefixes = (
     "docs/",
     ".github/",
 )
+root_paths = (
+    "AGENTS.md",
+    "CLAUDE.md",
+)
 
 seen = set()
 for token in re.findall(r"`([^`]+)`", text):
-    candidate = token.strip()
-    if not candidate.startswith(prefixes):
+    candidate = re.sub(r":\d+$", "", token.strip())
+    if not candidate.startswith(prefixes) and candidate not in root_paths:
         continue
-    candidate = re.sub(r":\d+$", "", candidate)
     if candidate and candidate not in seen:
         seen.add(candidate)
         print(candidate)
