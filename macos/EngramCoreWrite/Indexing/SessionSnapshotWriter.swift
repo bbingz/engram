@@ -802,46 +802,15 @@ public final class SessionSnapshotWriter {
     }
 
     private func computeQualityScore(_ snapshot: AuthoritativeSessionSnapshot) -> Int {
-        let total = snapshot.userMessageCount + snapshot.assistantMessageCount + snapshot.toolMessageCount + snapshot.systemMessageCount
-        var turnScore = 0.0
-        if snapshot.userMessageCount > 0, snapshot.assistantMessageCount > 0, total > 0 {
-            let pairs = min(snapshot.userMessageCount, snapshot.assistantMessageCount)
-            turnScore = min(30, (Double(pairs) / Double(total)) * 30)
-        }
-
-        var toolScore = 0.0
-        if snapshot.assistantMessageCount > 0 {
-            toolScore = min(25, (Double(snapshot.toolMessageCount) / Double(snapshot.assistantMessageCount)) * 50)
-        }
-
-        let duration = durationMinutes(startTime: snapshot.startTime, endTime: snapshot.endTime)
-        let densityScore: Double
-        if duration < 1 {
-            densityScore = 0
-        } else if duration <= 5 {
-            densityScore = (duration / 5) * 20
-        } else if duration <= 60 {
-            densityScore = 20
-        } else if duration <= 180 {
-            densityScore = 20 - ((duration - 60) / 120) * 10
-        } else {
-            densityScore = 10
-        }
-
-        let projectScore = snapshot.project == nil ? 0.0 : 15.0
-        let volumeScore = min(10, Double(snapshot.userMessageCount + snapshot.assistantMessageCount + snapshot.toolMessageCount) / 5)
-        return max(0, min(100, Int((turnScore + toolScore + densityScore + projectScore + volumeScore).rounded())))
-    }
-
-    private func durationMinutes(startTime: String?, endTime: String?) -> Double {
-        guard let startTime,
-              let endTime,
-              let start = parseDate(startTime),
-              let end = parseDate(endTime)
-        else {
-            return 0
-        }
-        return end.timeIntervalSince(start) / 60
+        SessionQualityScore.compute(
+            userCount: snapshot.userMessageCount,
+            assistantCount: snapshot.assistantMessageCount,
+            toolCount: snapshot.toolMessageCount,
+            systemCount: snapshot.systemMessageCount,
+            startTime: snapshot.startTime,
+            endTime: snapshot.endTime,
+            project: snapshot.project
+        )
     }
 
     private func parseDate(_ value: String) -> Date? {

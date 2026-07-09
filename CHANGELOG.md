@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: single computeQualityScore source (2026-07-09, Codex)
+
+- Extracted the 5-factor quality score into `SessionQualityScore` shared by
+  snapshot indexing and startup backfill, with golden + temp-DB parity tests
+  (unblocks lifecycle 3.1; multi-factor evolution still parked).
+
 ### Fixed: D01 codex originator ordering (2026-07-09, Codex)
 
 - Run deterministic Layer-1b `backfillCodexOriginator` before advisory

@@ -514,7 +514,7 @@ public enum StartupBackfills {
         guard !rows.isEmpty else { return 0 }
 
         for row in rows {
-            let score = computeQualityScore(
+            let score = SessionQualityScore.compute(
                 userCount: row["user_message_count"],
                 assistantCount: row["assistant_message_count"],
                 toolCount: row["tool_message_count"],
@@ -1820,56 +1820,6 @@ public enum StartupBackfills {
         defer { try? handle.close() }
         let data = handle.readData(ofLength: maxBytes)
         return String(data: data, encoding: .utf8)
-    }
-
-    private static func computeQualityScore(
-        userCount: Int,
-        assistantCount: Int,
-        toolCount: Int,
-        systemCount: Int,
-        startTime: String?,
-        endTime: String?,
-        project: String?
-    ) -> Int {
-        let total = userCount + assistantCount + toolCount + systemCount
-        var turnScore = 0.0
-        if userCount > 0, assistantCount > 0, total > 0 {
-            turnScore = min(30, (Double(min(userCount, assistantCount)) / Double(total)) * 30)
-        }
-
-        var toolScore = 0.0
-        if assistantCount > 0 {
-            toolScore = min(25, (Double(toolCount) / Double(assistantCount)) * 50)
-        }
-
-        let duration = durationMinutes(startTime: startTime, endTime: endTime)
-        let densityScore: Double
-        if duration < 1 {
-            densityScore = 0
-        } else if duration <= 5 {
-            densityScore = (duration / 5) * 20
-        } else if duration <= 60 {
-            densityScore = 20
-        } else if duration <= 180 {
-            densityScore = 20 - ((duration - 60) / 120) * 10
-        } else {
-            densityScore = 10
-        }
-
-        let projectScore = project == nil ? 0.0 : 15.0
-        let volumeScore = min(10, Double(userCount + assistantCount + toolCount) / 5)
-        return max(0, min(100, Int((turnScore + toolScore + densityScore + projectScore + volumeScore).rounded())))
-    }
-
-    private static func durationMinutes(startTime: String?, endTime: String?) -> Double {
-        guard let startTime,
-              let endTime,
-              let start = parseDate(startTime),
-              let end = parseDate(endTime)
-        else {
-            return 0
-        }
-        return end.timeIntervalSince(start) / 60
     }
 
     private static func parseDate(_ value: String) -> Date? {
