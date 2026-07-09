@@ -342,6 +342,10 @@ targets:
         createIntermediateGroups: false
     dependencies:
       - target: EngramMCP
+      # Hybrid parity vs SQLiteEngramServiceReadProvider.search on the same fixture.
+      - target: EngramServiceCore
+      - target: EngramCoreWrite
+      - target: EngramCoreRead
       - package: GRDB
         product: GRDB-dynamic
     settings:

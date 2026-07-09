@@ -3,6 +3,9 @@ import Foundation
 import GRDB
 import Network
 import XCTest
+import EngramCoreRead
+import EngramCoreWrite
+@testable import EngramServiceCore
 
 final class EngramMCPExecutableTests: XCTestCase {
     private var repoRoot: URL {
@@ -2024,25 +2027,49 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
-    /// Hybrid ranking parity with EngramServiceReadProvider: same
-    /// SessionSemanticSearchPolicy knnTopK + rrfK, same fuse order of
-    /// [keywordIds, semanticIds]. Seeded fixture DB + mock query embed.
-    func testSearchHybridParityMatchesServiceRankingConstants() throws {
-        let dbPath = try temporaryFixtureCopy(
-            "mcp-contract.sqlite",
-            prefix: "engram-mcp-hybrid-parity"
-        )
-        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+    /// Hybrid ranking parity with EngramServiceReadProvider on the **same**
+    /// fixture DB: MCP tools/call hybrid order must equal
+    /// `SQLiteEngramServiceReadProvider.search(hybrid)` order.
+    ///
+    /// Uses a minimal 3-session WAL DB (not the large mcp-contract corpus) so
+    /// keyword FTS lists are identical across MCP/service SQL dialects and RRF
+    /// fusion is the only ranking degree of freedom under test.
+    func testSearchHybridParityMatchesServiceRankingConstants() async throws {
+        let bothSession = "parity-both"
+        let semanticOnlySession = "parity-sem"
+        let keywordOnlySession = "parity-kw"
+        // Unique token so both keyword engines return the same 2-id list.
+        let query = "hybridparitytoken"
 
-        // Three sessions: keyword-only, semantic-only (no FTS hit for query),
-        // and both. Query embedding aligns with the semantic-only chunk so
-        // semantic rank ≠ keyword rank; RRF must fuse both lists.
-        let keywordSession = "mcp-fixture-02" // FTS hits "Swift MCP shim" etc.
-        let semanticOnlySession = "mcp-fixture-01"
-        let bothSession = "mcp-fixture-05"
+        let dbDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-mcp-hybrid-parity-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dbDir, withIntermediateDirectories: true)
+        let dbPath = dbDir.appendingPathComponent("index.sqlite").path
+        defer { try? FileManager.default.removeItem(at: dbDir) }
 
-        try DatabaseQueue(path: dbPath).write { db in
+        // Product schema + WAL via writer (ServiceDatabaseReader requires WAL).
+        let writer = try EngramDatabaseWriter(path: dbPath)
+        try writer.migrate()
+        try writer.write { db in
             try db.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, end_time, cwd, project, model,
+                  message_count, user_message_count, assistant_message_count,
+                  file_path, size_bytes, indexed_at, tier
+                ) VALUES
+                  ('\(bothSession)', 'codex', '2026-07-09T10:00:00Z', '2026-07-09T10:05:00Z',
+                   '/tmp/p', 'parity', 'probe', 4, 2, 2, '/tmp/both.jsonl', 100,
+                   '2026-07-09T10:05:00Z', 'normal'),
+                  ('\(semanticOnlySession)', 'codex', '2026-07-09T11:00:00Z', '2026-07-09T11:05:00Z',
+                   '/tmp/p', 'parity', 'probe', 4, 2, 2, '/tmp/sem.jsonl', 100,
+                   '2026-07-09T11:05:00Z', 'normal'),
+                  ('\(keywordOnlySession)', 'codex', '2026-07-09T12:00:00Z', '2026-07-09T12:05:00Z',
+                   '/tmp/p', 'parity', 'probe', 4, 2, 2, '/tmp/kw.jsonl', 100,
+                   '2026-07-09T12:05:00Z', 'normal');
+                INSERT INTO sessions_fts(session_id, content) VALUES
+                  ('\(bothSession)', 'hybridparitytoken shared keyword hit with weaker vector'),
+                  ('\(semanticOnlySession)', 'unrelated noise without the unique token'),
+                  ('\(keywordOnlySession)', 'hybridparitytoken keyword only session text');
                 CREATE TABLE IF NOT EXISTS semantic_chunks (
                   id TEXT PRIMARY KEY,
                   session_id TEXT NOT NULL,
@@ -2060,68 +2087,75 @@ final class EngramMCPExecutableTests: XCTestCase {
                   dimension INTEGER,
                   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
                 );
-                """)
-            try db.execute(sql: "DELETE FROM semantic_chunks")
-            try db.execute(sql: "DELETE FROM embedding_meta")
-            try db.execute(
-                sql: """
+                DELETE FROM semantic_chunks;
+                DELETE FROM embedding_meta;
                 INSERT INTO embedding_meta (id, provider, model, dimension)
-                VALUES (1, 'test', 'probe', 3)
-                """
-            )
-            // semantic-only: high cosine with query [1,0,0]
+                VALUES (1, 'test', 'probe', 3);
+                """)
+            // Query embedding [1,0,0]: semantic-only strongest, both weaker, keyword orthogonal.
             try db.execute(
                 sql: """
                 INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
-                VALUES (?, ?, 0, 'pure semantic recall about vector memory', ?, 'probe', 3)
+                VALUES
+                  (?, ?, 0, 'pure semantic recall about vector memory', ?, 'probe', 3),
+                  (?, ?, 0, 'weaker hybrid parity chunk', ?, 'probe', 3),
+                  (?, ?, 0, 'orthogonal keyword chunk', ?, 'probe', 3)
                 """,
                 arguments: [
-                    "\(semanticOnlySession):c0",
-                    semanticOnlySession,
-                    encodeVector([1, 0, 0]),
-                ]
-            )
-            // both: weaker cosine
-            try db.execute(
-                sql: """
-                INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
-                VALUES (?, ?, 0, 'Swift MCP shim hybrid parity chunk', ?, 'probe', 3)
-                """,
-                arguments: [
-                    "\(bothSession):c0",
-                    bothSession,
-                    encodeVector([0.4, 0.9, 0]),
-                ]
-            )
-            // keyword-only session has no chunk (or orthogonal vector)
-            try db.execute(
-                sql: """
-                INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
-                VALUES (?, ?, 0, 'unrelated orthogonal', ?, 'probe', 3)
-                """,
-                arguments: [
-                    "\(keywordSession):c0",
-                    keywordSession,
-                    encodeVector([0, 0, 1]),
+                    "\(semanticOnlySession):c0", semanticOnlySession,
+                    VectorMath.encode(VectorMath.l2Normalize([1, 0, 0])),
+                    "\(bothSession):c0", bothSession,
+                    VectorMath.encode(VectorMath.l2Normalize([0.4, 0.9, 0])),
+                    "\(keywordOnlySession):c0", keywordOnlySession,
+                    VectorMath.encode(VectorMath.l2Normalize([0, 0, 1])),
                 ]
             )
         }
+        // Release writer pool before service/MCP open the same path read-only.
+        _ = writer
 
         let server = try MockHTTPServer(jsonBody: #"{"data":[{"index":0,"embedding":[1,0,0]}]}"#)
         server.start()
         defer { server.stop() }
 
+        let limit = 5
+        let embedEnv: [String: String] = [
+            "ENGRAM_EMBEDDING_BASE_URL": "http://127.0.0.1:\(server.port)/v1",
+            "ENGRAM_EMBEDDING_API_KEY": "test",
+            "ENGRAM_EMBEDDING_MODEL": "probe",
+            "ENGRAM_EMBEDDING_DIM": "3",
+        ]
+
+        // Shipped service path on the same fixture + same query embedding.
+        let serviceProvider = try SQLiteEngramServiceReadProvider(
+            databasePath: dbPath,
+            embeddingEnvironment: embedEnv,
+            embeddingProviderFactory: { config in
+                HybridParityStaticEmbeddingProvider(
+                    model: config.model,
+                    dimension: config.dimension,
+                    vector: [1, 0, 0]
+                )
+            }
+        )
+        let serviceHybrid = try await serviceProvider.search(
+            EngramServiceSearchRequest(query: query, mode: "hybrid", limit: limit)
+        )
+        let serviceIds = serviceHybrid.items.map(\.id)
+        XCTAssertEqual(
+            Set(serviceHybrid.searchModes ?? []),
+            Set(["keyword", "semantic"]),
+            "\(serviceHybrid.searchModes ?? [])"
+        )
+        XCTAssertNil(serviceHybrid.warning, "service hybrid must not fall back to keyword-only")
+
         let hybrid = try rpc(
             """
-            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"Swift MCP shim","mode":"hybrid","limit":5}}}
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"\(query)","mode":"hybrid","limit":\(limit)}}}
             """,
             environment: [
                 "ENGRAM_MCP_DB_PATH": dbPath,
-                "ENGRAM_EMBEDDING_BASE_URL": "http://127.0.0.1:\(server.port)/v1",
-                "ENGRAM_EMBEDDING_API_KEY": "test",
-                "ENGRAM_EMBEDDING_MODEL": "probe",
-                "ENGRAM_EMBEDDING_DIM": "3",
-            ]
+            ].merging(embedEnv) { _, new in new }
         )
 
         XCTAssertNil(hybrid.response.error, hybrid.rawLine)
@@ -2130,21 +2164,27 @@ final class EngramMCPExecutableTests: XCTestCase {
         let modes = structured["searchModes"]?.arrayValue?.compactMap(\.stringValue) ?? []
         XCTAssertEqual(Set(modes), Set(["keyword", "semantic"]), "\(modes)")
 
-        let resultIds = (structured["results"]?.arrayValue ?? []).compactMap {
+        let mcpIds = (structured["results"]?.arrayValue ?? []).compactMap {
             $0["session"]?["id"]?.stringValue
         }
-        // Expected RRF (k=60) with lists:
-        //   keyword (FTS): 20, 23, 02, 05, 08
-        //   semantic (KNN): 01, 05, 02
-        // fused top-5: 05, 02, 20, 01, 23
+
+        // Primary contract: MCP hybrid order == service hybrid order on this DB.
         XCTAssertEqual(
-            Array(resultIds.prefix(5)),
-            [bothSession, keywordSession, "mcp-fixture-20", semanticOnlySession, "mcp-fixture-23"],
-            "hybrid RRF order must match service policy on this fixture: \(resultIds)"
+            mcpIds,
+            serviceIds,
+            "MCP hybrid ids must match SQLiteEngramServiceReadProvider.search(hybrid): mcp=\(mcpIds) service=\(serviceIds)"
         )
 
-        // Source-level coupling: service + MCP both use SessionSemanticSearchPolicy
-        // (knnTopK = max(limit*4, limit), rrfK = 60, candidateCap shared).
+        // Sanity: fusion includes keyword-only, semantic-only, and both sessions
+        // (not pure semantic order [sem, both, kw] and not empty keyword half).
+        XCTAssertEqual(Set(serviceIds), Set([bothSession, semanticOnlySession, keywordOnlySession]), "\(serviceIds)")
+        XCTAssertNotEqual(
+            serviceIds,
+            [semanticOnlySession, bothSession, keywordOnlySession],
+            "hybrid must fuse keyword ranks, not return pure semantic KNN order: \(serviceIds)"
+        )
+
+        // Source-level coupling: both use SessionSemanticSearchPolicy.
         let policySource = try source("macos/Shared/EngramCore/AI/SessionSemanticSearchPolicy.swift")
         let mcpSource = try source("macos/EngramMCP/Core/MCPDatabase.swift")
         let serviceSource = try source("macos/EngramService/Core/EngramServiceReadProvider.swift")
@@ -4743,5 +4783,16 @@ private enum MiniJSONSchema {
         case .array: return "array"
         case .object: return "object"
         }
+    }
+}
+
+/// Fixed query embedding for hybrid MCP↔service parity (matches MockHTTPServer body).
+private struct HybridParityStaticEmbeddingProvider: EmbeddingProvider {
+    let model: String
+    let dimension: Int
+    let vector: [Float]
+
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        texts.map { _ in VectorMath.l2Normalize(vector) }
     }
 }

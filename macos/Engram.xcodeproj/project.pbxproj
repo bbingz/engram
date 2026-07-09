@@ -48,6 +48,7 @@
 		0E2F2991C7FF350E4159494E /* RepoDiscoveryRunGitEscalationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57C1783CCD62E2BD52282B57 /* RepoDiscoveryRunGitEscalationTests.swift */; };
 		0F76B3C1EC7E77B129F78237 /* UnixSocketEngramServiceTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1F5883851C4B40F390B6A32 /* UnixSocketEngramServiceTransport.swift */; };
 		0F974AE07BC7D07AABB81DD5 /* EngramServiceError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 444892AADC54BE2BA5FD6F3C /* EngramServiceError.swift */; };
+		0FEC329DF090F7FD2B9325A2 /* EngramServiceCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F5C71A73606B0BEBE33B3711 /* EngramServiceCore.framework */; };
 		10EEF971B946D3AEE015760C /* SessionDetailTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5775C2E548BFDD3CCD79FB42 /* SessionDetailTests.swift */; };
 		11697430BBDA832DE67E0F5C /* PopoverUsageSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8541A2BAC69F290F5828083A /* PopoverUsageSection.swift */; };
 		117C27EC81E85B39B1EB5160 /* SourcePulseScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF9A31971F74EDB6FF75103C /* SourcePulseScreen.swift */; };
@@ -152,6 +153,7 @@
 		3C86CF81341838C043D1D601 /* ServiceCapabilityToken.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D1BB361D9AC2D5B6AEB8F36 /* ServiceCapabilityToken.swift */; };
 		3CBB1DB002774F0F8137C99C /* KimiAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 004BA83DE6BCE75C0189EF89 /* KimiAdapter.swift */; };
 		3CE6BF2075C999A5990B9C2A /* AlertBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = F272267647A1E827C401A5EB /* AlertBanner.swift */; };
+		3CF31BF06953933C56D8E7AA /* EngramCoreWrite.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		3D66DEF0A5D8AAEF8CBFEBF5 /* SchemaCompatibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC1F439CFC6476ED002DD327 /* SchemaCompatibilityTests.swift */; };
 		3DC809812E70A2A5333DE2D3 /* CursorAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB7F18056590015EA9E85B5E /* CursorAdapter.swift */; };
 		3E9B34838FF29BF8EEB9C02F /* SessionsFilterPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46D128C8286E067441F6DD3D /* SessionsFilterPersistenceTests.swift */; };
@@ -203,6 +205,7 @@
 		4F6271D892ABCF72A949AFA4 /* OpenCodeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1980E982CA558FC94B9D15B /* OpenCodeAdapter.swift */; };
 		4F9D490D818324C15B29A45E /* SessionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6607FBDF5FFB473323EBA333 /* SessionsTests.swift */; };
 		4FF3CB20082C3B0B89F236CF /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCB50F5F6574C77FAD1438D1 /* SidebarView.swift */; };
+		500020E51CFF1DBD0FD80EFA /* EngramCoreRead.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D003CBE73276FC27EFD97479 /* EngramCoreRead.framework */; };
 		5020CE74853C590CFEE9F0CA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3ED5F4A67BA499CAD0CB87E2 /* Assets.xcassets */; };
 		5081799F7F73B3B9C3041F00 /* CodexAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6241BC63B4B0010E1081420 /* CodexAdapter.swift */; };
 		5142C1AAF13492F8D35289A7 /* EngramCoreWrite.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */; };
@@ -432,6 +435,7 @@
 		B4E5C736106947F5A7348D28 /* LiveSyncDisabledSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58A7510D7781F78D78F27514 /* LiveSyncDisabledSources.swift */; };
 		B51FE1C2AC2F420196E6FF79 /* SessionsPageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 047FB7BCCCA1E89D0AA04A15 /* SessionsPageView.swift */; };
 		B53B05880417595CDE3850E1 /* OSLogReaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD362E1468F8B43A3B8C1C21 /* OSLogReaderTests.swift */; };
+		B59A9F2BC90573BDCAE1D54C /* EngramCoreRead.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D003CBE73276FC27EFD97479 /* EngramCoreRead.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B5A2B5C54C5668FECC65A38A /* QwenAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CC7EA7D95CA10EAD73E472D /* QwenAdapter.swift */; };
 		B5AD2A8A78E5A8D060FFB0BE /* ServiceTelemetryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2CD6892B3F2B8AA213F635F /* ServiceTelemetryTests.swift */; };
 		B5B38700789A1F06AA3A5323 /* ObservabilityScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E1AA0E9483110F1C9310E5F /* ObservabilityScreen.swift */; };
@@ -469,6 +473,7 @@
 		C157ED81A707874C5C539EB6 /* SystemMessageClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42221DF48DF9F36A0556900B /* SystemMessageClassifier.swift */; };
 		C252E7AFEA0C95156EB79964 /* SessionQualityScore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22FE43955422F172389066FF /* SessionQualityScore.swift */; };
 		C2BD2CDBE3892558CD7F7E35 /* SessionTier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78FD43E2ECCEAE95A5C32244 /* SessionTier.swift */; };
+		C31074BFADF321228BFA5608 /* EngramServiceCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F5C71A73606B0BEBE33B3711 /* EngramServiceCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C31F727E1D53512F75344EA1 /* MotionAwareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD96C02EB641F3C7CCA5854F /* MotionAwareTests.swift */; };
 		C370E7775C8B5CD77479C7B6 /* MemoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3B2347B21F997A69221E40B /* MemoryTests.swift */; };
 		C3E10146A7ABA232C5468565 /* SQLiteConnectionPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FE53777A6116B877F275A1F /* SQLiteConnectionPolicyTests.swift */; };
@@ -538,6 +543,7 @@
 		DC3A79E8817B1DDB1F937B98 /* ActivityChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 284D9ECB80D3BA4F77FEBD9D /* ActivityChart.swift */; };
 		DCDD6FCC5629EB6F36271E9C /* MCPConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26C3EC7BA57EAC5082EC2FA3 /* MCPConfig.swift */; };
 		DCFE12290AA87DC7032F19A8 /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = 80CB7C17CDBCC7719CEFE6CF /* GRDB-dynamic */; };
+		DD2B8C4079F53EE596B1F854 /* EngramCoreWrite.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */; };
 		DD8A08FABF60C16FCFD264CB /* IflowAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C3EDC9B5E51D7E64F27A70F /* IflowAdapter.swift */; };
 		DE69D46D383E0569C1CF00B5 /* MCPStdioServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41D7F49B7C0C0A2950AFA232 /* MCPStdioServer.swift */; };
 		DF1BC07BDC931838E41174CC /* KimiAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 004BA83DE6BCE75C0189EF89 /* KimiAdapter.swift */; };
@@ -630,6 +636,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		048A0BF9B8E8D9BAD14368A2 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E6974E702704633D9605491C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9FCF956C8AC992AD35121793;
+			remoteInfo = EngramCoreRead;
+		};
 		145CE26DE36DE31B1F2B0494 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = E6974E702704633D9605491C /* Project object */;
@@ -672,6 +685,13 @@
 			remoteGlobalIDString = 9FCF956C8AC992AD35121793;
 			remoteInfo = EngramCoreRead;
 		};
+		719AADE786E9F4ABA0EAB37A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E6974E702704633D9605491C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 66715EBDF64143B4B7424B90;
+			remoteInfo = EngramCoreWrite;
+		};
 		81D80FCFFC881475CC686CC1 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = E6974E702704633D9605491C /* Project object */;
@@ -699,6 +719,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 66715EBDF64143B4B7424B90;
 			remoteInfo = EngramCoreWrite;
+		};
+		923AF2F33009A445070BA824 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E6974E702704633D9605491C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0DFC19162331C57E93BD3D83;
+			remoteInfo = EngramServiceCore;
 		};
 		A7D93D448A4BA40785DF0AA9 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -765,6 +792,19 @@
 			files = (
 				4190DDFBC399DBF6CE5FC4E5 /* EngramServiceCore.framework in Embed Frameworks */,
 				43E8E51E93CCD7E0222ABD6D /* EngramCoreWrite.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		65CFE449C6F784C18AB6F2DB /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				C31074BFADF321228BFA5608 /* EngramServiceCore.framework in Embed Frameworks */,
+				3CF31BF06953933C56D8E7AA /* EngramCoreWrite.framework in Embed Frameworks */,
+				B59A9F2BC90573BDCAE1D54C /* EngramCoreRead.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1297,6 +1337,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0FEC329DF090F7FD2B9325A2 /* EngramServiceCore.framework in Frameworks */,
+				DD2B8C4079F53EE596B1F854 /* EngramCoreWrite.framework in Frameworks */,
+				500020E51CFF1DBD0FD80EFA /* EngramCoreRead.framework in Frameworks */,
 				473D9DF183F886E1431336D8 /* GRDB-dynamic in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -2369,11 +2412,15 @@
 				E15F3819A8CE2362CF8356E4 /* Sources */,
 				D615D106F1696183218B04D1 /* Resources */,
 				B329A4628CF87F19AF56FDFD /* Frameworks */,
+				65CFE449C6F784C18AB6F2DB /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				60DBDDA315D7E090215F1C8E /* PBXTargetDependency */,
+				83A33903B51DE76D9800DFEE /* PBXTargetDependency */,
+				1FE38E7DDAD9D7F74978BA31 /* PBXTargetDependency */,
+				E2981962D833CBE8473055CF /* PBXTargetDependency */,
 			);
 			name = EngramMCPTests;
 			packageProductDependencies = (
@@ -3511,6 +3558,11 @@
 			target = 66715EBDF64143B4B7424B90 /* EngramCoreWrite */;
 			targetProxy = 360DA098A57BEC7577C76F50 /* PBXContainerItemProxy */;
 		};
+		1FE38E7DDAD9D7F74978BA31 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 66715EBDF64143B4B7424B90 /* EngramCoreWrite */;
+			targetProxy = 719AADE786E9F4ABA0EAB37A /* PBXContainerItemProxy */;
+		};
 		29B096281523EB5C5FB421ED /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 9FCF956C8AC992AD35121793 /* EngramCoreRead */;
@@ -3551,6 +3603,11 @@
 			target = CBCDC5ABCED1290D34EC5E45 /* Engram */;
 			targetProxy = A7D93D448A4BA40785DF0AA9 /* PBXContainerItemProxy */;
 		};
+		83A33903B51DE76D9800DFEE /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0DFC19162331C57E93BD3D83 /* EngramServiceCore */;
+			targetProxy = 923AF2F33009A445070BA824 /* PBXContainerItemProxy */;
+		};
 		8C204540424E83889445688D /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 5729B9A54FF3E39F8C58A630 /* EngramRemoteServerCore */;
@@ -3575,6 +3632,11 @@
 			isa = PBXTargetDependency;
 			target = 9FCF956C8AC992AD35121793 /* EngramCoreRead */;
 			targetProxy = B04C5D4ADEC9E775228E0A89 /* PBXContainerItemProxy */;
+		};
+		E2981962D833CBE8473055CF /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9FCF956C8AC992AD35121793 /* EngramCoreRead */;
+			targetProxy = 048A0BF9B8E8D9BAD14368A2 /* PBXContainerItemProxy */;
 		};
 		E7878270A6A9C42C6375572D /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;

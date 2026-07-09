@@ -226,6 +226,18 @@ public final class EmbeddingCircuitBreaker: @unchecked Sendable {
         }
     }
 
+    /// Release a half-open probe slot after a non-transport terminal outcome
+    /// (malformed body, 4xx≠429, cancellation, notConfigured). Does **not**
+    /// count toward N and does **not** re-open; leaves `halfOpen` so a later
+    /// request can probe again instead of wedging `probeInFlight` forever.
+    public func recordNonTransportFailure(providerKey: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        var state = providers[providerKey] ?? ProviderState()
+        state.probeInFlight = false
+        providers[providerKey] = state
+    }
+
     private func emitTransition(_ providerKey: String, _ transition: Transition) {
         lock.lock()
         let handler = onTransition
@@ -305,8 +317,13 @@ public struct GuardedEmbeddingProvider: EmbeddingProvider {
             breaker.recordSuccess(providerKey: providerKey)
             return vectors
         } catch {
+            // Always release the half-open probe slot on any terminal outcome.
+            // Transport failures reopen; non-transport failures clear the slot
+            // without counting toward N (see recordNonTransportFailure).
             if EmbeddingCircuitBreaker.isTransportFailure(error) {
                 breaker.recordTransportFailure(providerKey: providerKey)
+            } else {
+                breaker.recordNonTransportFailure(providerKey: providerKey)
             }
             throw error
         }

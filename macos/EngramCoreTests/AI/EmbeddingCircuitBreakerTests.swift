@@ -111,6 +111,64 @@ final class EmbeddingCircuitBreakerTests: XCTestCase {
         XCTAssertEqual(snap.halfOpenProbes, 1)
     }
 
+    /// Half-open probe that fails non-transport (malformedResponse) must release
+    /// `probeInFlight` so a later embed can probe again — not wedge forever
+    /// until process restart (wave-6 skeptic fix).
+    func testHalfOpenNonTransportFailureReleasesProbeAndAllowsRecovery() async throws {
+        let clock = TestClock()
+        let breaker = makeBreaker(threshold: 2, cooldown: 30, clock: clock)
+        let transport = CountingProvider(mode: .failTransport)
+        let transportGuarded = GuardedEmbeddingProvider(
+            inner: transport,
+            breaker: breaker,
+            providerKey: key
+        )
+
+        for _ in 0..<2 {
+            do { _ = try await transportGuarded.embed(["trip"]) } catch { /* expected */ }
+        }
+        XCTAssertEqual(breaker.state(for: key), .open)
+
+        clock.advance(by: 30)
+        let malformed = CountingProvider(mode: .failMalformed)
+        let malformedGuarded = GuardedEmbeddingProvider(
+            inner: malformed,
+            breaker: breaker,
+            providerKey: key
+        )
+        do {
+            _ = try await malformedGuarded.embed(["probe"])
+            XCTFail("expected malformedResponse")
+        } catch EmbeddingError.malformedResponse {
+            // expected
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+
+        // Still half-open (non-transport does not re-open / count N), but the
+        // probe slot must be free so the next request is admitted.
+        XCTAssertEqual(breaker.state(for: key), .halfOpen)
+        let mid = try XCTUnwrap(breaker.snapshots().first)
+        XCTAssertEqual(mid.opens, 1, "non-transport must not increment opens")
+        XCTAssertEqual(mid.transportFailures, 2)
+        XCTAssertEqual(mid.halfOpenProbes, 1)
+
+        // Recovery: next probe succeeds and closes the breaker.
+        let recovering = CountingProvider(mode: .succeed)
+        let okGuarded = GuardedEmbeddingProvider(
+            inner: recovering,
+            breaker: breaker,
+            providerKey: key
+        )
+        let vectors = try await okGuarded.embed(["recover"])
+        XCTAssertEqual(vectors.count, 1)
+        XCTAssertEqual(breaker.state(for: key), .closed)
+        let snap = try XCTUnwrap(breaker.snapshots().first)
+        XCTAssertEqual(snap.halfOpenProbes, 2)
+        XCTAssertEqual(snap.successes, 1)
+        XCTAssertEqual(snap.opens, 1)
+    }
+
     func testConcurrentRequestsShareConsistentOpenState() async throws {
         let clock = TestClock()
         let breaker = makeBreaker(threshold: 3, cooldown: 60, clock: clock)
@@ -194,6 +252,7 @@ private final class TestClock: @unchecked Sendable {
 private actor CountingProvider: EmbeddingProvider {
     enum Mode: Sendable {
         case failTransport
+        case failMalformed
         case succeed
     }
 
@@ -213,6 +272,8 @@ private actor CountingProvider: EmbeddingProvider {
         switch mode {
         case .failTransport:
             throw EmbeddingError.http(503)
+        case .failMalformed:
+            throw EmbeddingError.malformedResponse
         case .succeed:
             return texts.map { _ in VectorMath.l2Normalize([1, 0, 0]) }
         }

@@ -76,7 +76,7 @@ At commit `c99c5b07`:
 |-------|-------|-----------|
 | **N (failure threshold)** | `5` | Require a short streak of transport failures before opening; avoids tripping on a single blip while still protecting quickly. |
 | **Cooldown** | `60s` | Matches TS `ollamaDown` recovery window. |
-| **Half-open** | single in-flight probe | First allow after cooldown; success → closed (reset consecutive failures); failure → re-open with a fresh cooldown. Concurrent requests during open/half-open probe are rejected without calling the network. |
+| **Half-open** | single in-flight probe | First allow after cooldown; success → closed (reset consecutive failures); **transport** failure → re-open with a fresh cooldown; **non-transport** terminal outcomes (malformedResponse, 4xx≠429, cancellation) release `probeInFlight` without counting toward N so a later probe can run (must not wedge halfOpen forever). Concurrent requests during open/half-open probe are rejected without calling the network. |
 
 ### Transport vs non-transport failures
 

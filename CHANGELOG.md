@@ -7,6 +7,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: embedding half-open non-transport probe release (2026-07-09, Codex)
+
+- `GuardedEmbeddingProvider` now releases the half-open probe slot on every
+  terminal outcome: transport failures still re-open the breaker; non-transport
+  failures (`malformedResponse`, 4xx≠429, cancellation) clear `probeInFlight`
+  without counting toward N so recovery is possible without process restart.
+  Hybrid MCP↔service ranking parity is exercised on a shared fixture via
+  `SQLiteEngramServiceReadProvider.search`.
+
 ### Added: MCP search semantic/hybrid when embeddings usable (2026-07-09, Codex)
 
 - In-process MCP `search` path supports `semantic` and `hybrid` over
