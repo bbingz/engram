@@ -457,7 +457,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         },
         embeddingEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         embeddingProviderFactory: @escaping @Sendable (EmbeddingConfig) -> any EmbeddingProvider = {
-            OpenAICompatibleEmbeddingClient(config: $0)
+            EngramServiceRunner.defaultGuardedEmbeddingProvider(config: $0)
         }
     ) throws {
         self.databaseReader = try makeDatabaseReader(databasePath)

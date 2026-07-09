@@ -1065,6 +1065,44 @@ struct ServiceTelemetrySnapshot: Codable, Equatable, Sendable {
     let lastScanAt: String?
     let commands: [ServiceCommandLatency]
     let spans: [ServiceSpan]
+    /// Ephemeral per-provider embedding circuit-breaker counters (process memory
+    /// only; resets on restart). Empty when no embed traffic has run.
+    let embeddingBreakers: [EmbeddingBreakerTelemetry]
+
+    init(
+        lastScanDurationMs: Double?,
+        lastScanIndexed: Int,
+        lastScanTotal: Int,
+        scanCount: Int,
+        lastScanAt: String?,
+        commands: [ServiceCommandLatency],
+        spans: [ServiceSpan],
+        embeddingBreakers: [EmbeddingBreakerTelemetry] = []
+    ) {
+        self.lastScanDurationMs = lastScanDurationMs
+        self.lastScanIndexed = lastScanIndexed
+        self.lastScanTotal = lastScanTotal
+        self.scanCount = scanCount
+        self.lastScanAt = lastScanAt
+        self.commands = commands
+        self.spans = spans
+        self.embeddingBreakers = embeddingBreakers
+    }
+}
+
+/// In-memory embedding circuit-breaker diagnostics (not persisted; no
+/// `ai_audit_log`). Mirrors `EmbeddingCircuitBreaker.ProviderSnapshot`.
+struct EmbeddingBreakerTelemetry: Codable, Equatable, Identifiable, Sendable {
+    var id: String { providerKey }
+    let providerKey: String
+    let state: String
+    let consecutiveFailures: Int
+    let transportFailures: Int
+    let successes: Int
+    let opens: Int
+    let rejections: Int
+    let halfOpenProbes: Int
+    let cooldownRemainingMs: Double?
 }
 
 /// One SANITIZED service log line surfaced through the `serviceLogs` read

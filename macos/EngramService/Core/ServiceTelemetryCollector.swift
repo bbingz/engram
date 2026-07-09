@@ -1,4 +1,5 @@
 import Foundation
+import EngramCoreRead
 
 /// In-process, ephemeral telemetry for the service. Holds a bounded span ring
 /// buffer, per-command latency aggregates over a bounded sample window, and
@@ -9,6 +10,7 @@ import Foundation
 actor ServiceTelemetryCollector {
     private let spanCapacity: Int
     private let latencyWindow: Int
+    private let embeddingBreaker: EmbeddingCircuitBreaker
 
     private var spans: [ServiceSpan] = []
     private var commandSamples: [String: [Double]] = [:]
@@ -21,9 +23,14 @@ actor ServiceTelemetryCollector {
     private var scanCount: Int = 0
     private var lastScanAt: String?
 
-    init(spanCapacity: Int = 200, latencyWindow: Int = 100) {
+    init(
+        spanCapacity: Int = 200,
+        latencyWindow: Int = 100,
+        embeddingBreaker: EmbeddingCircuitBreaker = EmbeddingGuardrails.sharedBreaker
+    ) {
         self.spanCapacity = max(1, spanCapacity)
         self.latencyWindow = max(1, latencyWindow)
+        self.embeddingBreaker = embeddingBreaker
     }
 
     func record(span: ServiceSpan) {
@@ -66,6 +73,19 @@ actor ServiceTelemetryCollector {
         }
         // Newest-first span list for the trace explorer.
         let orderedSpans = Array(spans.reversed())
+        let breakers = embeddingBreaker.snapshots().map { snap in
+            EmbeddingBreakerTelemetry(
+                providerKey: snap.providerKey,
+                state: snap.state,
+                consecutiveFailures: snap.consecutiveFailures,
+                transportFailures: snap.transportFailures,
+                successes: snap.successes,
+                opens: snap.opens,
+                rejections: snap.rejections,
+                halfOpenProbes: snap.halfOpenProbes,
+                cooldownRemainingMs: snap.cooldownRemainingMs
+            )
+        }
         return ServiceTelemetrySnapshot(
             lastScanDurationMs: lastScanDurationMs,
             lastScanIndexed: lastScanIndexed,
@@ -73,7 +93,8 @@ actor ServiceTelemetryCollector {
             scanCount: scanCount,
             lastScanAt: lastScanAt,
             commands: commands,
-            spans: orderedSpans
+            spans: orderedSpans,
+            embeddingBreakers: breakers
         )
     }
 

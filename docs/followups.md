@@ -44,8 +44,10 @@ in-flight execution queue):
   as a complete product surface.
 - **`ai_audit_log` desensitization design precondition.** No Swift writer into
   `ai_audit_log` exists today. Body desensitization must be designed before any
-  writer lands (wave-6 task 9 explicitly descopes DB audit rows for this
-  reason). See also `docs/roadmap.md` Decision pending.
+  writer lands (wave-6 task 9 / `docs/embedding-guardrails-design-2026-07.md`
+  explicitly descopes DB audit rows for this reason; embed guardrails use
+  `os_log` + in-memory telemetry only). See also `docs/roadmap.md` Decision
+  pending.
 
 ## Open
 

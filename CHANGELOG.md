@@ -7,6 +7,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: embedding circuit-breaker guardrails (2026-07-09, Codex)
+
+- Wrap online `provider.embed()` with a per-provider circuit breaker (N=5
+  consecutive transport failures, 60s cooldown, half-open probe) so backfills
+  and semantic search stop hammering a down provider; open breaker soft-skips
+  jobs as pending/retryable; os_log + in-memory `telemetry.embeddingBreakers`
+  counters (no `ai_audit_log`).
+
 ### Added: MCP read-tool outputSchema (2026-07-09, Codex)
 
 - Declare MCP `outputSchema` on every read tool that emits `structuredContent`

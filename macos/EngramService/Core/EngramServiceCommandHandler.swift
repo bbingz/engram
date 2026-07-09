@@ -31,7 +31,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         scanCount: 0,
         lastScanAt: nil,
         commands: [],
-        spans: []
+        spans: [],
+        embeddingBreakers: []
     )
 
     private static let emptyLogSnapshot = ServiceLogSnapshot(lines: [])
