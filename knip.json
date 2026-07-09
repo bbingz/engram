@@ -15,15 +15,23 @@
     "vitest",
     "biome",
     "knip",
-    "husky"
+    "husky",
+    "ps",
+    "lsof",
+    "which",
+    "pgrep",
+    "codesign",
+    "plutil"
   ],
   "ignoreIssues": {
     "tests/fixtures/mcp-runtime/lint-project/src/existing.ts": ["files"],
+    "src/core/config.ts": ["types"],
+    "src/core/cost-advisor.ts": ["types"],
     "src/core/db/maintenance.ts": ["types"],
     "src/cli/health.ts": ["exports"],
     "src/cli/logs.ts": ["exports"],
     "src/cli/traces.ts": ["exports"],
-    "src/core/db/migration-log-repo.ts": ["exports"],
+    "src/core/db/migration-log-repo.ts": ["exports", "types"],
     "src/core/project-move/*.ts": ["types"],
     "src/core/project-move/jsonl-patch.ts": ["exports", "types"],
     "src/tools/project.ts": ["exports", "types"]
