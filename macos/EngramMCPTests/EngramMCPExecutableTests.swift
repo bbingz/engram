@@ -1331,6 +1331,209 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testGetMemoryTypeFilterReturnsOnlyRequestedType() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-memory-type-filter"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try DatabaseQueue(path: dbPath).write { db in
+            for ddl in [
+                "ALTER TABLE insights ADD COLUMN insight_type TEXT DEFAULT 'semantic'",
+                "ALTER TABLE insights ADD COLUMN superseded_by TEXT",
+                "ALTER TABLE insights ADD COLUMN last_accessed_at TEXT",
+                "ALTER TABLE insights ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0",
+            ] {
+                try? db.execute(sql: ddl)
+            }
+            try db.execute(sql: "DELETE FROM insights")
+            try db.execute(sql: "DELETE FROM insights_fts")
+            let rows: [(id: String, content: String, type: String)] = [
+                ("mem-episodic", "typed memory filter episodic fact about deploy window", "episodic"),
+                ("mem-semantic", "typed memory filter semantic fact about deploy window", "semantic"),
+                ("mem-procedural", "typed memory filter procedural fact about deploy window", "procedural"),
+            ]
+            for row in rows {
+                try db.execute(
+                    sql: """
+                    INSERT INTO insights
+                      (id, content, importance, created_at, insight_type, access_count)
+                    VALUES (?, ?, 5, '2026-06-26 00:00:00', ?, 0)
+                    """,
+                    arguments: [row.id, row.content, row.type]
+                )
+                try db.execute(
+                    sql: "INSERT INTO insights_fts (insight_id, content) VALUES (?, ?)",
+                    arguments: [row.id, row.content]
+                )
+            }
+        }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"typed memory filter deploy","type":"episodic"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_NOW": "2026-06-26T00:00:00.000Z",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let memories = try XCTUnwrap(
+            capture.ordered["result"]?["structuredContent"]?["memories"]?.arrayValue
+        )
+        let ids = memories.compactMap { $0["id"]?.stringValue }
+        XCTAssertEqual(ids, ["mem-episodic"], "\(ids)")
+    }
+
+    func testGetMemoryWithoutTypeStillReturnsAllTypes() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-memory-no-type"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try DatabaseQueue(path: dbPath).write { db in
+            for ddl in [
+                "ALTER TABLE insights ADD COLUMN insight_type TEXT DEFAULT 'semantic'",
+                "ALTER TABLE insights ADD COLUMN superseded_by TEXT",
+                "ALTER TABLE insights ADD COLUMN last_accessed_at TEXT",
+                "ALTER TABLE insights ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0",
+            ] {
+                try? db.execute(sql: ddl)
+            }
+            try db.execute(sql: "DELETE FROM insights")
+            try db.execute(sql: "DELETE FROM insights_fts")
+            let rows: [(id: String, content: String, type: String)] = [
+                ("all-episodic", "no type filter mixed memory episodic note", "episodic"),
+                ("all-semantic", "no type filter mixed memory semantic note", "semantic"),
+                ("all-procedural", "no type filter mixed memory procedural note", "procedural"),
+            ]
+            for row in rows {
+                try db.execute(
+                    sql: """
+                    INSERT INTO insights
+                      (id, content, importance, created_at, insight_type, access_count)
+                    VALUES (?, ?, 5, '2026-06-26 00:00:00', ?, 0)
+                    """,
+                    arguments: [row.id, row.content, row.type]
+                )
+                try db.execute(
+                    sql: "INSERT INTO insights_fts (insight_id, content) VALUES (?, ?)",
+                    arguments: [row.id, row.content]
+                )
+            }
+        }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"no type filter mixed memory"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_NOW": "2026-06-26T00:00:00.000Z",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let memories = try XCTUnwrap(
+            capture.ordered["result"]?["structuredContent"]?["memories"]?.arrayValue
+        )
+        let ids = Set(memories.compactMap { $0["id"]?.stringValue })
+        XCTAssertEqual(ids, Set(["all-episodic", "all-semantic", "all-procedural"]), "\(ids)")
+    }
+
+    func testGetMemoryRejectsInvalidType() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"preferences","type":"banana"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+            ]
+        )
+
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["isError"]?.boolValue, true)
+        let message = result["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+        XCTAssertTrue(message.contains("type"), message)
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("one of"), message)
+        XCTAssertTrue(
+            message.contains("episodic")
+                && message.contains("semantic")
+                && message.contains("procedural"),
+            message
+        )
+    }
+
+    func testGetMemoryHybridRespectsTypeFilter() throws {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-semantic-type")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try DatabaseQueue(path: dbPath).write { db in
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS insight_embeddings (
+                  insight_id TEXT PRIMARY KEY, embedding BLOB NOT NULL,
+                  model TEXT NOT NULL, dim INTEGER NOT NULL, created_at TEXT
+                );
+            """)
+            for ddl in [
+                "ALTER TABLE insights ADD COLUMN insight_type TEXT DEFAULT 'semantic'",
+                "ALTER TABLE insights ADD COLUMN superseded_by TEXT",
+                "ALTER TABLE insights ADD COLUMN last_accessed_at TEXT",
+                "ALTER TABLE insights ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0",
+            ] {
+                try? db.execute(sql: ddl)
+            }
+            try db.execute(sql: "DELETE FROM insights")
+            try db.execute(sql: "DELETE FROM insights_fts")
+            try db.execute(sql: "DELETE FROM insight_embeddings")
+            let seeds: [(id: String, content: String, type: String, vector: [Float])] = [
+                ("hyb-episodic", "vector about cats hybrid type", "episodic", [1, 0, 0, 0]),
+                ("hyb-semantic", "vector about cats hybrid type", "semantic", [0.95, 0.05, 0, 0]),
+            ]
+            for seed in seeds {
+                try db.execute(
+                    sql: """
+                    INSERT INTO insights (id, content, importance, insight_type, access_count)
+                    VALUES (?, ?, 5, ?, 0)
+                    """,
+                    arguments: [seed.id, seed.content, seed.type]
+                )
+                try db.execute(
+                    sql: "INSERT INTO insights_fts (insight_id, content) VALUES (?, ?)",
+                    arguments: [seed.id, seed.content]
+                )
+                try db.execute(
+                    sql: "INSERT INTO insight_embeddings (insight_id, embedding, model, dim) VALUES (?, ?, 'test', 4)",
+                    arguments: [seed.id, encodeVector(seed.vector)]
+                )
+            }
+        }
+
+        let server = try MockHTTPServer(jsonBody: #"{"data":[{"index":0,"embedding":[0.92,0.1,0,0]}]}"#)
+        server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"feline","type":"episodic"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_EMBEDDING_BASE_URL": "http://127.0.0.1:\(server.port)/v1",
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "test",
+                "ENGRAM_EMBEDDING_DIM": "4",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertEqual(structured["retrieval"]?.stringValue, "hybrid")
+        let ids = try XCTUnwrap(structured["memories"]?.arrayValue).compactMap { $0["id"]?.stringValue }
+        XCTAssertEqual(ids, ["hyb-episodic"], "\(ids)")
+    }
+
     func testSearchMatchesGolden() throws {
         try assertToolCallMatchesGolden(
             tool: "search",

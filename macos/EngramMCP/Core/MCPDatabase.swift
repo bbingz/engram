@@ -460,15 +460,20 @@ final class MCPDatabase {
         return .array(rows.map(migrationObject(from:)))
     }
 
-    func getMemory(query: String) async throws -> OrderedJSONValue {
+    func getMemory(query: String, type: String? = nil) async throws -> OrderedJSONValue {
+        let insightType = try Self.normalizeMemoryTypeFilter(type)
         let lifecycleAware = (try? insightsHasLifecycleColumns()) == true
 
         // Hybrid keyword + semantic when an embedding provider is configured and
         // embeddings exist. The query-embedding network call is strictly opt-in;
         // any failure (no key, unreachable, malformed) degrades to keyword below.
         if let config = EmbeddingSettings.load(), (try? hasInsightEmbeddings()) == true {
-            if let hybrid = try? await semanticMemory(query: query, config: config, lifecycleAware: lifecycleAware),
-               !hybrid.isEmpty {
+            if let hybrid = try? await semanticMemory(
+                query: query,
+                config: config,
+                lifecycleAware: lifecycleAware,
+                type: insightType
+            ), !hybrid.isEmpty {
                 return .object([
                     ("memories", .array(hybrid.map { memoryObject(from: $0.row, distance: Double($0.distance)) })),
                     ("retrieval", .string("hybrid")),
@@ -481,14 +486,14 @@ final class MCPDatabase {
         // un-migrated DB (those columns absent) fall back to the legacy keyword/
         // recency behavior so a read-only MCP never assumes the writer's schema.
         if lifecycleAware {
-            if let ranked = try? rankedActiveInsights(query: query, fromRecent: false),
+            if let ranked = try? rankedActiveInsights(query: query, fromRecent: false, type: insightType),
                !ranked.isEmpty {
                 return .object([
                     ("memories", .array(ranked.map { memoryObject(from: $0, distance: 0) })),
                     ("warning", .string("No embedding provider — keyword-matched insights ranked by importance and recency.")),
                 ])
             }
-            if let ranked = try? rankedActiveInsights(query: query, fromRecent: true),
+            if let ranked = try? rankedActiveInsights(query: query, fromRecent: true, type: insightType),
                !ranked.isEmpty {
                 return .object([
                     ("memories", .array(ranked.map { memoryObject(from: $0, distance: 0) })),
@@ -499,21 +504,47 @@ final class MCPDatabase {
         }
 
         if let matches = try? searchInsightsFTS(query: query, limit: 10), !matches.isEmpty {
-            return .object([
-                ("memories", .array(matches.map { memoryObject(from: $0, distance: 0) })),
-                ("warning", .string("No embedding provider — showing keyword-matched insights only.")),
-            ])
+            let filtered = filterInsights(matches, byType: insightType)
+            if !filtered.isEmpty {
+                return .object([
+                    ("memories", .array(filtered.map { memoryObject(from: $0, distance: 0) })),
+                    ("warning", .string("No embedding provider — showing keyword-matched insights only.")),
+                ])
+            }
         }
 
         let recent = try listInsightsByWing(wing: nil, limit: 10)
-        if !recent.isEmpty {
+        let filteredRecent = filterInsights(recent, byType: insightType)
+        if !filteredRecent.isEmpty {
             return .object([
-                ("memories", .array(recent.map { memoryObject(from: $0, distance: 0) })),
+                ("memories", .array(filteredRecent.map { memoryObject(from: $0, distance: 0) })),
                 ("warning", .string("No embedding provider — showing recent insights only.")),
             ])
         }
 
         return Self.emptyMemoryResult
+    }
+
+    /// Allowed `insight_type` values (same set as save_insight / half-life switch).
+    private static let allowedMemoryTypes: Set<String> = ["episodic", "semantic", "procedural"]
+
+    /// Normalize optional type filter; nil/blank means no filter. Unknown values error.
+    private static func normalizeMemoryTypeFilter(_ type: String?) throws -> String? {
+        guard let type else { return nil }
+        let normalized = type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return nil }
+        guard allowedMemoryTypes.contains(normalized) else {
+            throw MCPToolError.invalidArguments(
+                "type must be one of: episodic, semantic, procedural"
+            )
+        }
+        return normalized
+    }
+
+    /// Rows whose `insight_type` matches `type`. Missing column / NULL defaults to semantic.
+    private func filterInsights(_ rows: [Row], byType type: String?) -> [Row] {
+        guard let type else { return rows }
+        return rows.filter { (stringValue($0["insight_type"]) ?? "semantic") == type }
     }
 
     private static let emptyMemoryResult: OrderedJSONValue = .object([
@@ -544,13 +575,14 @@ final class MCPDatabase {
     }
 
     /// Active (non-superseded) insights for `query`, lifecycle-ranked, top 10.
-    private func rankedActiveInsights(query: String, fromRecent: Bool) throws -> [Row] {
+    private func rankedActiveInsights(query: String, fromRecent: Bool, type: String?) throws -> [Row] {
         let candidates = fromRecent
             ? try listInsightsByWing(wing: nil, limit: 40)
             : try searchInsightsFTS(query: query, limit: 40)
         let active = candidates.filter { stringValue($0["superseded_by"]) == nil }
-        guard !active.isEmpty else { return [] }
-        return Array(rankInsightsByLifecycle(active, relevanceOrdered: !fromRecent).prefix(10))
+        let typed = filterInsights(active, byType: type)
+        guard !typed.isEmpty else { return [] }
+        return Array(rankInsightsByLifecycle(typed, relevanceOrdered: !fromRecent).prefix(10))
     }
 
     /// `score = relevance · importanceBoost · recencyDecay · accessBoost`.
@@ -637,11 +669,13 @@ final class MCPDatabase {
     }
 
     /// Embed the query, KNN over stored insight embeddings, fuse with the FTS
-    /// keyword ranking via RRF, then drop superseded rows. Top 10.
+    /// keyword ranking via RRF, then drop superseded rows (and optional type).
+    /// Top 10.
     private func semanticMemory(
         query: String,
         config: EmbeddingConfig,
-        lifecycleAware: Bool
+        lifecycleAware: Bool,
+        type: String?
     ) async throws -> [(row: Row, distance: Float)] {
         let client = OpenAICompatibleEmbeddingClient(config: config)
         let vectors = try await client.embed([query])
@@ -661,6 +695,7 @@ final class MCPDatabase {
         for entry in fused {
             guard let row = try insightRowById(entry.id) else { continue }
             if lifecycleAware, stringValue(row["superseded_by"]) != nil { continue }
+            if let type, (stringValue(row["insight_type"]) ?? "semantic") != type { continue }
             results.append((row, 1 - (scoreById[entry.id] ?? 0)))
             if results.count >= 10 { break }
         }
