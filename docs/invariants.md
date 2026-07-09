@@ -19,8 +19,8 @@ Invariants are properties that must survive every change; each entry names where
 ## 3. Tier Visibility
 
 - **Statement** - `skip` sessions are hidden from normal read surfaces; `lite` sessions remain visible in lists but are excluded from keyword search results.
-- **Enforced by** - `macos/Shared/EngramCore/Indexing/SessionTier.swift`, `macos/EngramService/Core/EngramServiceReadProvider.swift`, `macos/Engram/Core/Database.swift`.
-- **Verified by** - `macos/EngramTests/DatabaseManagerTests.swift` (testListSessionsExcludesSkipTier, testSearchExcludesSkipAndLiteSessions, testListSessionsWithAllTiers, testCountSessionsExcludesSkipTier).
+- **Enforced by** - `macos/Shared/EngramCore/Indexing/SessionTier.swift`, `macos/EngramService/Core/EngramServiceReadProvider.swift`, `macos/Engram/Core/Database.swift`, `macos/EngramMCP/Core/MCPDatabase.swift`, `macos/Shared/EngramCore/AI/SessionSemanticSearchPolicy.swift` (keyword + semantic tier filter SQL shared with service/MCP).
+- **Verified by** - `macos/EngramTests/DatabaseManagerTests.swift` (testListSessionsExcludesSkipTier, testSearchExcludesSkipAndLiteSessions, testListSessionsWithAllTiers, testCountSessionsExcludesSkipTier), `macos/EngramMCPTests/EngramMCPExecutableTests.swift` (hybrid/semantic search cases).
 - **Gate** - `none`.
 
 ## 4. Parent-Detection Parity Triple Lock

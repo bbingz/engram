@@ -57,8 +57,10 @@ struct MCPSessionRecord {
 
 final class MCPDatabase {
     private let queue: DatabaseQueue
+    private let databasePath: String
 
     init(path: String) throws {
+        databasePath = path
         var configuration = Configuration()
         configuration.readonly = true
         queue = try DatabaseQueue(path: path, configuration: configuration)
@@ -762,6 +764,29 @@ final class MCPDatabase {
         return .array(diagnoses)
     }
 
+    enum SearchError: Error, LocalizedError {
+        case modeUnavailable(String)
+        case semanticFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .modeUnavailable(let mode):
+                return "Search mode '\(mode)' is unavailable; session embeddings are not usable. Configure an embedding provider and wait for semantic_chunks backfill, or use mode 'keyword'."
+            case .semanticFailed(let detail):
+                return "Semantic search failed: \(detail)"
+            }
+        }
+
+        var structuredCode: String {
+            switch self {
+            case .modeUnavailable:
+                return "searchModeUnavailable"
+            case .semanticFailed:
+                return "searchFailed"
+            }
+        }
+    }
+
     func searchSessions(
         query: String,
         source: String?,
@@ -769,10 +794,19 @@ final class MCPDatabase {
         since: String?,
         limit: Int,
         mode: String
-    ) throws -> OrderedJSONValue {
+    ) async throws -> OrderedJSONValue {
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let cappedLimit = min(max(limit, 1), 50)
-        let normalizedMode = mode.isEmpty ? "keyword" : mode
+        let normalizedMode = mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let effectiveMode = normalizedMode.isEmpty ? "keyword" : normalizedMode
+        let semanticRequested = ["semantic", "hybrid", "both"].contains(effectiveMode)
+
+        // Availability gate (SessionVectorSearchAvailability): never silent
+        // keyword fallback for semantic/hybrid when vectors are not usable.
+        let availability = SessionVectorSearchAvailability.probe(databasePath: databasePath)
+        if semanticRequested, !availability.isUsable {
+            throw SearchError.modeUnavailable(effectiveMode)
+        }
 
         if isUUID(normalizedQuery) {
             if let row = try fetchSessionRow(id: normalizedQuery) {
@@ -798,6 +832,19 @@ final class MCPDatabase {
             ])
         }
 
+        if semanticRequested {
+            return try await semanticOrHybridSearch(
+                query: normalizedQuery,
+                originalQuery: query,
+                source: source,
+                project: project,
+                since: since,
+                limit: cappedLimit,
+                mode: effectiveMode,
+                availability: availability
+            )
+        }
+
         guard normalizedQuery.count >= 3 else {
             var entries: [(String, OrderedJSONValue)] = [
                 ("results", .array([])),
@@ -810,27 +857,34 @@ final class MCPDatabase {
             return .object(entries)
         }
 
-        let matches = try keywordSearch(
+        return try keywordSearchResponse(
             query: normalizedQuery,
+            originalQuery: query,
             source: source,
             project: project,
             since: since,
-            limit: cappedLimit * 3
+            limit: cappedLimit
+        )
+    }
+
+    private func keywordSearchResponse(
+        query: String,
+        originalQuery: String,
+        source: String?,
+        project: String?,
+        since: String?,
+        limit: Int
+    ) throws -> OrderedJSONValue {
+        let ranked = try rankedKeywordMatches(
+            query: query,
+            source: source,
+            project: project,
+            since: since,
+            limit: limit
         )
 
-        var seen = Set<String>()
-        var ranked: [(row: Row, snippet: String, score: Double)] = []
-        var rank = 1
-        for match in matches {
-            let sessionID = stringValue(match.row["id"]) ?? ""
-            guard seen.insert(sessionID).inserted else { continue }
-            ranked.append((match.row, match.snippet, 1.0 / Double(60 + rank)))
-            rank += 1
-            if ranked.count >= cappedLimit { break }
-        }
-
         let resultRows = ranked.map { match -> OrderedJSONValue in
-            return .object([
+            .object([
                 ("session", fullSessionObject(from: match.row)),
                 ("snippet", .string(match.snippet.isEmpty ? (stringValue(match.row["summary"]) ?? "") : match.snippet)),
                 ("matchType", .string("keyword")),
@@ -840,12 +894,12 @@ final class MCPDatabase {
 
         var entries: [(String, OrderedJSONValue)] = [
             ("results", .array(resultRows)),
-            ("query", .string(query)),
+            ("query", .string(originalQuery)),
             ("searchModes", .array([.string("keyword")])),
         ]
 
-        if normalizedQuery.count >= 3 {
-            let insightRows = try searchInsightsFTS(query: normalizedQuery, limit: 5)
+        if query.count >= 3 {
+            let insightRows = try searchInsightsFTS(query: query, limit: 5)
             let insightResults = insightRows.compactMap { row -> OrderedJSONValue? in
                 guard let content = stringValue(row["content"]), !content.isEmpty else { return nil }
                 return .string(content)
@@ -855,11 +909,312 @@ final class MCPDatabase {
             }
         }
 
-        if normalizedMode != "keyword" {
-            entries.append(("warning", .string("Search mode '\(normalizedMode)' is unavailable; results are keyword-only (FTS).")))
+        return .object(entries)
+    }
+
+    private func rankedKeywordMatches(
+        query: String,
+        source: String?,
+        project: String?,
+        since: String?,
+        limit: Int
+    ) throws -> [(id: String, row: Row, snippet: String, score: Double)] {
+        let matches = try keywordSearch(
+            query: query,
+            source: source,
+            project: project,
+            since: since,
+            limit: limit * 3
+        )
+
+        var seen = Set<String>()
+        var ranked: [(id: String, row: Row, snippet: String, score: Double)] = []
+        var rank = 1
+        for match in matches {
+            let sessionID = stringValue(match.row["id"]) ?? ""
+            guard !sessionID.isEmpty, seen.insert(sessionID).inserted else { continue }
+            // Score uses SessionSemanticSearchPolicy.rrfK so keyword ranks fuse
+            // cleanly with RankFusion.rrf in hybrid mode.
+            ranked.append((
+                sessionID,
+                match.row,
+                match.snippet,
+                1.0 / Double(SessionSemanticSearchPolicy.rrfK + rank)
+            ))
+            rank += 1
+            if ranked.count >= limit { break }
+        }
+        return ranked
+    }
+
+    /// Session semantic/hybrid path — mirrors EngramServiceReadProvider
+    /// (brute-force cosine KNN + optional RRF). Coupling constants:
+    /// `SessionSemanticSearchPolicy`.
+    private func semanticOrHybridSearch(
+        query: String,
+        originalQuery: String,
+        source: String?,
+        project: String?,
+        since: String?,
+        limit: Int,
+        mode: String,
+        availability: SessionVectorSearchAvailability.Snapshot
+    ) async throws -> OrderedJSONValue {
+        guard !query.isEmpty else {
+            throw SearchError.semanticFailed("query is empty")
+        }
+        guard let metaModel = availability.model,
+              let metaDim = availability.dimension,
+              metaDim > 0 else {
+            throw SearchError.modeUnavailable(mode)
+        }
+        guard let config = EmbeddingSettings.load() else {
+            throw SearchError.modeUnavailable(mode)
+        }
+        // Never search when the configured provider dim disagrees with stored
+        // vectors — mixing dimensions yields garbage cosine scores.
+        if config.dimension != metaDim {
+            throw SearchError.semanticFailed(
+                "embedding dimension \(config.dimension) does not match stored vectors (\(metaDim))"
+            )
         }
 
-        return .object(entries)
+        let client = OpenAICompatibleEmbeddingClient(config: config)
+        let vectors: [[Float]]
+        do {
+            vectors = try await client.embed([query])
+        } catch {
+            throw SearchError.semanticFailed(error.localizedDescription)
+        }
+        guard let queryVector = vectors.first, !queryVector.isEmpty else {
+            throw SearchError.semanticFailed("empty query embedding")
+        }
+        if queryVector.count != metaDim {
+            throw SearchError.semanticFailed(
+                "query embedding dim \(queryVector.count) does not match stored vectors (\(metaDim))"
+            )
+        }
+
+        let candidates = try semanticChunkCandidates(
+            source: source,
+            project: project,
+            since: since,
+            model: metaModel,
+            dim: metaDim,
+            requestLimit: limit
+        )
+        guard !candidates.isEmpty else {
+            throw SearchError.semanticFailed("no compatible semantic_chunks candidates")
+        }
+
+        let byChunkId = Dictionary(uniqueKeysWithValues: candidates.map { ($0.chunkId, $0) })
+        let hits = VectorSearch.knn(
+            query: queryVector,
+            candidates: candidates.map { VectorSearch.Candidate(id: $0.chunkId, vector: $0.vector) },
+            topK: SessionSemanticSearchPolicy.knnTopK(limit: limit)
+        )
+
+        var semanticSessionIds: [String] = []
+        var snippetBySession: [String: String] = [:]
+        var scoreBySession: [String: Double] = [:]
+        for hit in hits {
+            guard let candidate = byChunkId[hit.id],
+                  !semanticSessionIds.contains(candidate.sessionId) else {
+                continue
+            }
+            semanticSessionIds.append(candidate.sessionId)
+            snippetBySession[candidate.sessionId] = candidate.text
+            scoreBySession[candidate.sessionId] = Double(hit.score)
+            if semanticSessionIds.count >= limit { break }
+        }
+        guard !semanticSessionIds.isEmpty else {
+            throw SearchError.semanticFailed("no sessions above KNN shortlist")
+        }
+
+        let semanticItems = try searchResultItems(
+            sessionIds: semanticSessionIds,
+            snippetBySession: snippetBySession,
+            scoreBySession: scoreBySession,
+            matchType: "semantic"
+        )
+
+        if mode == "hybrid" || mode == "both" {
+            guard query.count >= 3 else {
+                // Hybrid needs a keyword list; short queries cannot FTS-match.
+                throw SearchError.semanticFailed(
+                    "hybrid search requires at least 3 characters so keyword ranks can fuse"
+                )
+            }
+            let keywordRanked = try rankedKeywordMatches(
+                query: query,
+                source: source,
+                project: project,
+                since: since,
+                limit: limit
+            )
+            let keywordIds = keywordRanked.map(\.id)
+            let fusedIds = RankFusion.rrf(
+                [keywordIds, semanticSessionIds],
+                k: SessionSemanticSearchPolicy.rrfK
+            )
+            .prefix(limit)
+            .map(\.id)
+
+            let semanticById = Dictionary(uniqueKeysWithValues: zip(semanticSessionIds, semanticItems))
+            let keywordById = Dictionary(uniqueKeysWithValues: keywordRanked.map {
+                ($0.id, searchResultObject(
+                    row: $0.row,
+                    snippet: $0.snippet,
+                    matchType: "keyword",
+                    score: $0.score
+                ))
+            })
+
+            let fusedItems = fusedIds.compactMap { id in
+                semanticById[id] ?? keywordById[id]
+            }
+
+            return .object([
+                ("results", .array(fusedItems)),
+                ("query", .string(originalQuery)),
+                ("searchModes", .array([.string("keyword"), .string("semantic")])),
+            ])
+        }
+
+        return .object([
+            ("results", .array(semanticItems)),
+            ("query", .string(originalQuery)),
+            ("searchModes", .array([.string("semantic")])),
+        ])
+    }
+
+    private struct SemanticChunkCandidate {
+        let chunkId: String
+        let sessionId: String
+        let text: String
+        let vector: [Float]
+    }
+
+    private func semanticChunkCandidates(
+        source: String?,
+        project: String?,
+        since: String?,
+        model: String,
+        dim: Int,
+        requestLimit: Int
+    ) throws -> [SemanticChunkCandidate] {
+        let expandedProjects = try project.map { try resolveProjectAliases([$0]) } ?? []
+        return try queue.read { db in
+            var conditions = [
+                "sc.embedding IS NOT NULL",
+                "sc.model = ?",
+                "sc.dim = ?",
+                "s.hidden_at IS NULL",
+                "s.orphan_status IS NULL",
+                SessionSemanticSearchPolicy.searchableTierSQL,
+            ]
+            var values: [DatabaseValueConvertible?] = [model, dim]
+
+            if let source {
+                conditions.append("s.source = ?")
+                values.append(source)
+            }
+            if !expandedProjects.isEmpty {
+                if expandedProjects.count == 1, let only = expandedProjects.first {
+                    conditions.append("s.project LIKE ? ESCAPE '\\'")
+                    values.append("%\(escapeLike(only))%")
+                } else {
+                    let clauses = expandedProjects.map { _ in "s.project LIKE ? ESCAPE '\\'" }.joined(separator: " OR ")
+                    conditions.append("(\(clauses))")
+                    values.append(contentsOf: expandedProjects.map { "%\(escapeLike($0))%" })
+                }
+            }
+            if let since {
+                conditions.append("s.start_time >= ?")
+                values.append(since)
+            }
+            values.append(SessionSemanticSearchPolicy.candidateCap(requestLimit: requestLimit))
+
+            let sql = """
+            SELECT sc.id AS chunk_id,
+                   sc.session_id AS session_id,
+                   sc.text AS text,
+                   sc.embedding AS embedding
+            FROM semantic_chunks sc
+            JOIN sessions s ON s.id = sc.session_id
+            WHERE \(conditions.joined(separator: " AND "))
+            ORDER BY s.start_time DESC
+            LIMIT ?
+            """
+            let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
+            return rows.compactMap { row in
+                guard let chunkId = stringValue(row["chunk_id"]),
+                      let sessionId = stringValue(row["session_id"]),
+                      let text = stringValue(row["text"]),
+                      let data = row["embedding"] as Data? else {
+                    return nil
+                }
+                guard let vector = VectorMath.decode(data, expectedCount: dim) else { return nil }
+                return SemanticChunkCandidate(
+                    chunkId: chunkId,
+                    sessionId: sessionId,
+                    text: text,
+                    vector: vector
+                )
+            }
+        }
+    }
+
+    private func searchResultItems(
+        sessionIds: [String],
+        snippetBySession: [String: String],
+        scoreBySession: [String: Double],
+        matchType: String
+    ) throws -> [OrderedJSONValue] {
+        guard !sessionIds.isEmpty else { return [] }
+        let rowsById: [String: Row] = try queue.read { db in
+            let placeholders = Array(repeating: "?", count: sessionIds.count).joined(separator: ",")
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT s.*, ls.local_readable_path
+                FROM sessions s
+                LEFT JOIN session_local_state ls ON ls.session_id = s.id
+                WHERE s.id IN (\(placeholders))
+                """,
+                arguments: StatementArguments(sessionIds)
+            )
+            var map: [String: Row] = [:]
+            for row in rows {
+                if let id = stringValue(row["id"]) {
+                    map[id] = row
+                }
+            }
+            return map
+        }
+        return sessionIds.compactMap { id in
+            guard let row = rowsById[id] else { return nil }
+            return searchResultObject(
+                row: row,
+                snippet: snippetBySession[id] ?? (stringValue(row["summary"]) ?? ""),
+                matchType: matchType,
+                score: scoreBySession[id] ?? 0
+            )
+        }
+    }
+
+    private func searchResultObject(
+        row: Row,
+        snippet: String,
+        matchType: String,
+        score: Double
+    ) -> OrderedJSONValue {
+        .object([
+            ("session", fullSessionObject(from: row)),
+            ("snippet", .string(snippet)),
+            ("matchType", .string(matchType)),
+            ("score", .double(score)),
+        ])
     }
 
     func getContext(
@@ -1512,7 +1867,7 @@ final class MCPDatabase {
                 "sessions_fts MATCH ?",
                 "s.hidden_at IS NULL",
                 "s.orphan_status IS NULL",
-                "(s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))",
+                SessionSemanticSearchPolicy.searchableTierSQL,
             ]
             var values: [DatabaseValueConvertible?] = [query]
 

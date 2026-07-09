@@ -526,7 +526,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     FROM sessions_fts f
                     JOIN sessions s ON s.id = f.session_id
                     WHERE f.content LIKE ? ESCAPE '\\' AND s.hidden_at IS NULL
-                      AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+                      AND \(SessionSemanticSearchPolicy.searchableTierSQL)
                 """]
                 var args: [DatabaseValueConvertible] = [pattern]
                 appendSearchFilters(for: request, to: &parts, args: &args)
@@ -594,7 +594,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 \(joins.joined(separator: " "))
                 JOIN sessions s ON s.id = m0.session_id
                 WHERE s.hidden_at IS NULL
-                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+                  AND \(SessionSemanticSearchPolicy.searchableTierSQL)
             """]
             appendSearchFilters(for: request, to: &parts, args: &args)
             parts.append("""
@@ -639,10 +639,11 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         guard !candidates.isEmpty else { return nil }
 
         let byChunkId = Dictionary(uniqueKeysWithValues: candidates.map { ($0.chunkId, $0) })
+        // KNN shortlist size coupled with MCP via SessionSemanticSearchPolicy.
         let hits = VectorSearch.knn(
             query: queryVector,
             candidates: candidates.map { VectorSearch.Candidate(id: $0.chunkId, vector: $0.vector) },
-            topK: max(limit * 4, limit)
+            topK: SessionSemanticSearchPolicy.knnTopK(limit: limit)
         )
         var sessionIds: [String] = []
         var snippetBySession: [String: String] = [:]
@@ -668,7 +669,11 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
         if requestedMode == "hybrid" || requestedMode == "both" {
             let keyword = try await keywordSearch(query: query, request: request, limit: limit, warning: nil)
-            let fusedIds = RankFusion.rrf([keyword.items.map(\.id), semanticItems.map(\.id)])
+            // RRF k coupled with MCP via SessionSemanticSearchPolicy.rrfK.
+            let fusedIds = RankFusion.rrf(
+                [keyword.items.map(\.id), semanticItems.map(\.id)],
+                k: SessionSemanticSearchPolicy.rrfK
+            )
                 .prefix(limit)
                 .map(\.id)
             let keywordById = Dictionary(uniqueKeysWithValues: keyword.items.map { ($0.id, $0) })
@@ -696,6 +701,15 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     ) async throws -> [SemanticChunkCandidate] {
         try await read { db in
             guard try tableExists("semantic_chunks", db: db) else { return [] }
+            // Prefer embedding_meta model so we never fuse mixed-model vectors.
+            let metaModel: String? = try {
+                guard try tableExists("embedding_meta", db: db) else { return nil }
+                return try String.fetchOne(
+                    db,
+                    sql: "SELECT model FROM embedding_meta WHERE id = 1 LIMIT 1"
+                )?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            }()
             var parts = ["""
                 SELECT sc.id AS chunk_id,
                        sc.session_id AS session_id,
@@ -706,12 +720,16 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 WHERE sc.embedding IS NOT NULL
                   AND sc.dim = ?
                   AND s.hidden_at IS NULL
-                  AND (s.tier IS NULL OR s.tier NOT IN ('skip', 'lite'))
+                  AND \(SessionSemanticSearchPolicy.searchableTierSQL)
             """]
             var args: [DatabaseValueConvertible] = [dim]
+            if let metaModel, !metaModel.isEmpty {
+                parts.append("AND sc.model = ?")
+                args.append(metaModel)
+            }
             appendSearchFilters(for: request, to: &parts, args: &args)
             parts.append("ORDER BY s.start_time DESC LIMIT ?")
-            args.append(max(200, min(request.limit * 20, 2_000)))
+            args.append(SessionSemanticSearchPolicy.candidateCap(requestLimit: request.limit))
             let rows = try Row.fetchAll(
                 db,
                 sql: parts.joined(separator: " "),

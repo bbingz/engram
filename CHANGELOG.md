@@ -7,6 +7,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: MCP search semantic/hybrid when embeddings usable (2026-07-09, Codex)
+
+- In-process MCP `search` path supports `semantic` and `hybrid` over
+  `semantic_chunks` (brute-force cosine KNN + RRF) gated by
+  `SessionVectorSearchAvailability`; tools/list advertises those modes only
+  when vectors are usable, and unavailable modes return `isError` /
+  `searchModeUnavailable` instead of silent keyword fallback. Ranking
+  constants shared with the service via `SessionSemanticSearchPolicy`
+  (`docs/mcp-semantic-search-design-2026-07.md`).
+
 ### Added: embedding circuit-breaker guardrails (2026-07-09, Codex)
 
 - Wrap online `provider.embed()` with a per-provider circuit breaker (N=5

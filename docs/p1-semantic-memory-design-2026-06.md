@@ -21,7 +21,7 @@
 | c.1 Chunker + EmbeddingClient + VectorMath | **done** (2026-06-26) |
 | c.2 VectorSearch.knn + RankFusion.rrf + schema | **done** (2026-06-26) |
 | c.3 Embedding settings + hybrid read + backfill wiring | **done** (service search semantic/hybrid; insight/session backfill) |
-| c.4 MCP `search` semantic/hybrid when embeddings usable | **not_done** → wave-6 **task 10** (today keyword-only schema/runtime) |
+| c.4 MCP `search` semantic/hybrid when embeddings usable | **done** (2026-07-09) — in-process `MCPDatabase` path + `SessionVectorSearchAvailability` gate; design `docs/mcp-semantic-search-design-2026-07.md` |
 | d Ranking (decay · importance · access; exclude superseded) | **done** (read-side) |
 | d Access tracking via service writer | **done** |
 | d Supersession on save (text match; cosine > 0.92 deferred) | **partial** (text match; cosine supersession **parked-see-roadmap**) |

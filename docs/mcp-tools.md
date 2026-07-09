@@ -47,7 +47,7 @@ Error results may include `structuredContent` with `code` / `message` (and relat
 
 | Goal | Use | Notes |
 |------|-----|-------|
-| Find sessions by words or phrases | `search` | Keyword-only SQLite FTS. Queries shorter than 3 characters return no keyword results with a warning. UUID-shaped queries do direct session ID lookup before keyword filters. Keyword results exclude hidden, orphaned, `skip`, and `lite` rows. Unsupported `mode` values are accepted for legacy clients but return keyword-only results with a warning. |
+| Find sessions by words or phrases | `search` | Keyword SQLite FTS by default. When `SessionVectorSearchAvailability` reports usable session embeddings (`embedding_meta` + matching `semantic_chunks`), `tools/list` also advertises `semantic` and `hybrid`. Unavailable semantic/hybrid requests return `isError` with code `searchModeUnavailable` (never silent keyword fallback). Keyword results exclude hidden, orphaned, `skip`, and `lite` rows. |
 | Start work in a repo and recover relevant history | `get_context` | Best first call for a current working directory. It combines recent project sessions, saved insights, and optional environment data within the requested token budget. |
 | Retrieve durable memories or preferences | `get_memory` | Uses insight lookup. When no embedding provider is available, it falls back to keyword/recency ranking and says so in the response warning. |
 | Read one transcript | `get_session` | Use when you already have a session id. It paginates at 50 messages per page; increment `page` to read later messages. A `transcriptTooLarge` error means the source hit the full-JSON size guard, and pagination may not bypass that guard. |
@@ -60,7 +60,8 @@ Error results may include `structuredContent` with `code` / `message` (and relat
 
 | Code | Emitted by | Meaning | Recovery action |
 |------|------------|---------|-----------------|
-| `searchFailed` | `search` | Keyword lookup failed behind a deliberately generic message; database details are not leaked to the MCP client. | Retry once. If it persists, check Engram database/service health and retry with a smaller or simpler query. |
+| `searchFailed` | `search` | Keyword lookup failed (generic message) or a usable-mode semantic request failed mid-flight (embed/provider/candidates). | Retry once. For semantic failures, check embedding provider/env and that `semantic_chunks` match `embedding_meta`. |
+| `searchModeUnavailable` | `search` | `mode` was `semantic`, `hybrid`, or `both` but `SessionVectorSearchAvailability` says session vectors are not usable (or metadata is missing). | Use `mode: "keyword"`, or configure embeddings and wait for session chunk backfill until `tools/list` advertises semantic/hybrid. |
 | `transcriptTooLarge` | `get_session` | The transcript file exceeds `ENGRAM_MAX_FULL_JSON_TRANSCRIPT_BYTES`, or 10 MiB by default; guarded sources can fail before pagination can help. | Reduce the source transcript below the configured limit or restart MCP with a higher `ENGRAM_MAX_FULL_JSON_TRANSCRIPT_BYTES`, then retry. |
 | `serviceUnavailable` | `save_insight`, `delete_insight`, `hide_session`, `export`, `generate_summary`, `link_sessions`, mutating `manage_project_alias`, `project_move`, `project_archive`, `project_undo`, and `project_move_batch` | Mutating, operational, and long-running read tools fail closed when the EngramService socket is unavailable. Read-only tools continue to work. | Launch Engram.app or otherwise start EngramService, then retry. For `delete_insight` and `hide_session`, `dry_run: true` remains read-only. For `manage_project_alias`, `action: "list"` remains read-only. For project move/archive/undo/batch, even dry-runs require the service. |
 | `cancelled` | Any in-flight `tools/call` cancelled by the MCP client | The client sent `notifications/cancelled` for that request id. | Re-run the tool only if the work is still needed; for operational tools, inspect state first with `project_list_migrations` or `project_recover`. |
@@ -107,7 +108,7 @@ Read the full conversation content of a single session. Supports pagination for 
 
 ## search
 
-Full-text keyword search across all session content. Supports Chinese and English.
+Full-text keyword search across session content; optional semantic / hybrid when session embeddings are usable. Supports Chinese and English.
 
 **Parameters:**
 
@@ -118,9 +119,9 @@ Full-text keyword search across all session content. Supports Chinese and Englis
 | project | string | no | Filter by project name |
 | since | string | no | Start time (ISO 8601) |
 | limit | number | no | Max results. Default 10, max 50 |
-| mode | string | no | Search mode. Enum: `keyword`. Default `keyword` |
+| mode | string | no | Search mode. Enum from `tools/list`: always `keyword`; adds `semantic` and `hybrid` only when session vectors are usable. Default `keyword` |
 
-**Notes:** Uses SQLite FTS keyword search. If the query is a UUID, performs direct session ID lookup. Keyword search requires 3+ characters. Legacy clients that pass `semantic`, `hybrid`, or another unsupported mode are accepted for compatibility but receive keyword-only results with a warning. Also searches the insights FTS store and returns matching curated memories in `insightResults`. **Output:** `structuredContent` is `{ results, query, searchModes }` with optional `warning` / `insightResults`; declared via `outputSchema`.
+**Notes:** Keyword path uses SQLite FTS. UUID-shaped queries do direct session ID lookup. Keyword search requires 3+ characters. Semantic mode embeds the query (online provider via `EmbeddingSettings`) and runs brute-force cosine KNN over `semantic_chunks` filtered to `embedding_meta` model/dim (never mix models); tiers `skip` and `lite` are excluded like the app/service search path. Hybrid fuses keyword + semantic session id lists with RRF (`SessionSemanticSearchPolicy.rrfK = 60`, same KNN shortlist formula as `EngramServiceReadProvider`). When semantic/hybrid is not usable, those modes return `isError` + `searchModeUnavailable` instead of keyword results. Keyword mode also searches insights FTS and may return matching curated memories in `insightResults`. **Output:** `structuredContent` is `{ results, query, searchModes }` with optional `warning` / `insightResults`; declared via `outputSchema`.
 
 ---
 

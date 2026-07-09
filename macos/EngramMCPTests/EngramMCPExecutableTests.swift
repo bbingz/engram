@@ -220,10 +220,13 @@ final class EngramMCPExecutableTests: XCTestCase {
     }
 
     func testSearchSchemaDoesNotAdvertiseUnavailableSemanticModes() throws {
+        // Default mcp-contract fixture has no usable session vectors, so
+        // SessionVectorSearchAvailability keeps the mode enum keyword-only.
         let capture = try rpc(
             """
             {"jsonrpc":"2.0","id":1,"method":"tools/list"}
-            """
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
         )
 
         guard case .array(let tools)? = capture.ordered["result"]?["tools"],
@@ -236,6 +239,45 @@ final class EngramMCPExecutableTests: XCTestCase {
             .compactMap(\.stringValue)
         XCTAssertEqual(modeEnum, ["keyword"])
         XCTAssertFalse(search["description"]?.stringValue?.localizedCaseInsensitiveContains("semantic") ?? true)
+    }
+
+    func testSearchSchemaAdvertisesSemanticModesWhenVectorsUsable() throws {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-search-modes")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedUsableSessionEmbeddings(at: dbPath)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": dbPath]
+        )
+
+        guard case .array(let tools)? = capture.ordered["result"]?["tools"],
+              let search = tools.first(where: { $0["name"]?.stringValue == "search" })
+        else {
+            return XCTFail("Expected search tool in tools/list")
+        }
+        let modeEnum = search["inputSchema"]?["properties"]?["mode"]?["enum"]?.arrayValue?
+            .compactMap(\.stringValue)
+        XCTAssertEqual(modeEnum, ["keyword", "semantic", "hybrid"])
+        XCTAssertTrue(
+            search["description"]?.stringValue?.localizedCaseInsensitiveContains("semantic") ?? false,
+            search["description"]?.stringValue ?? ""
+        )
+    }
+
+    func testSearchUnavailableSemanticModeIsErrorNotKeywordFallback() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"single writer daemon HTTP","mode":"semantic","limit":5}}}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        )
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["isError"]?.boolValue, true)
+        XCTAssertEqual(result["structuredContent"]?["code"]?.stringValue, "searchModeUnavailable")
+        XCTAssertNil(result["structuredContent"]?["results"], "must not return keyword results")
     }
 
     func testContextAndSessionSchemasBoundNumericInputs() throws {
@@ -1116,7 +1158,11 @@ final class EngramMCPExecutableTests: XCTestCase {
         let response = capture.response
         XCTAssertEqual(response.error?.code, nil)
         let instructions = capture.ordered["result"]?["instructions"]?.stringValue
-        XCTAssertFalse(instructions?.localizedCaseInsensitiveContains("semantic") ?? true)
+        // Instructions may mention semantic/hybrid; availability is still gated at tools/list + runtime.
+        XCTAssertTrue(
+            instructions?.localizedCaseInsensitiveContains("semantic") ?? false,
+            "initialize instructions should mention optional semantic search"
+        )
         XCTAssertEqual(
             try prettyJSONString(from: XCTUnwrap(capture.ordered["result"])),
             try String(contentsOfFile: fixturePath("mcp-golden/initialize.result.json"), encoding: .utf8)
@@ -1681,6 +1727,59 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertFalse(capture.rawLine.contains(dbURL.path), capture.rawLine)
     }
 
+    private func seedUsableSessionEmbeddings(
+        at dbPath: String,
+        sessionId: String = "mcp-fixture-01",
+        vector: [Float] = [1, 0, 0],
+        text: String = "semantic recall chunk",
+        model: String = "probe"
+    ) throws {
+        try DatabaseQueue(path: dbPath).write { db in
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS semantic_chunks (
+                  id TEXT PRIMARY KEY,
+                  session_id TEXT NOT NULL,
+                  chunk_index INTEGER NOT NULL,
+                  text TEXT NOT NULL,
+                  embedding BLOB,
+                  model TEXT,
+                  dim INTEGER,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS embedding_meta (
+                  id INTEGER PRIMARY KEY CHECK (id = 1),
+                  provider TEXT,
+                  model TEXT,
+                  dimension INTEGER,
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                """)
+            try db.execute(sql: "DELETE FROM semantic_chunks")
+            try db.execute(sql: "DELETE FROM embedding_meta")
+            try db.execute(
+                sql: """
+                INSERT INTO embedding_meta (id, provider, model, dimension)
+                VALUES (1, 'test', ?, ?)
+                """,
+                arguments: [model, vector.count]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
+                VALUES (?, ?, 0, ?, ?, ?, ?)
+                """,
+                arguments: [
+                    "\(sessionId):c0",
+                    sessionId,
+                    text,
+                    encodeVector(vector),
+                    model,
+                    vector.count,
+                ]
+            )
+        }
+    }
+
     private func encodeVector(_ values: [Float]) -> Data {
         var data = Data()
         for value in values {
@@ -1923,6 +2022,180 @@ final class EngramMCPExecutableTests: XCTestCase {
             """,
             goldenFixture: "mcp-golden/search.semantic.short_query.json"
         )
+    }
+
+    /// Hybrid ranking parity with EngramServiceReadProvider: same
+    /// SessionSemanticSearchPolicy knnTopK + rrfK, same fuse order of
+    /// [keywordIds, semanticIds]. Seeded fixture DB + mock query embed.
+    func testSearchHybridParityMatchesServiceRankingConstants() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-hybrid-parity"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+
+        // Three sessions: keyword-only, semantic-only (no FTS hit for query),
+        // and both. Query embedding aligns with the semantic-only chunk so
+        // semantic rank ≠ keyword rank; RRF must fuse both lists.
+        let keywordSession = "mcp-fixture-02" // FTS hits "Swift MCP shim" etc.
+        let semanticOnlySession = "mcp-fixture-01"
+        let bothSession = "mcp-fixture-05"
+
+        try DatabaseQueue(path: dbPath).write { db in
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS semantic_chunks (
+                  id TEXT PRIMARY KEY,
+                  session_id TEXT NOT NULL,
+                  chunk_index INTEGER NOT NULL,
+                  text TEXT NOT NULL,
+                  embedding BLOB,
+                  model TEXT,
+                  dim INTEGER,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS embedding_meta (
+                  id INTEGER PRIMARY KEY CHECK (id = 1),
+                  provider TEXT,
+                  model TEXT,
+                  dimension INTEGER,
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                """)
+            try db.execute(sql: "DELETE FROM semantic_chunks")
+            try db.execute(sql: "DELETE FROM embedding_meta")
+            try db.execute(
+                sql: """
+                INSERT INTO embedding_meta (id, provider, model, dimension)
+                VALUES (1, 'test', 'probe', 3)
+                """
+            )
+            // semantic-only: high cosine with query [1,0,0]
+            try db.execute(
+                sql: """
+                INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
+                VALUES (?, ?, 0, 'pure semantic recall about vector memory', ?, 'probe', 3)
+                """,
+                arguments: [
+                    "\(semanticOnlySession):c0",
+                    semanticOnlySession,
+                    encodeVector([1, 0, 0]),
+                ]
+            )
+            // both: weaker cosine
+            try db.execute(
+                sql: """
+                INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
+                VALUES (?, ?, 0, 'Swift MCP shim hybrid parity chunk', ?, 'probe', 3)
+                """,
+                arguments: [
+                    "\(bothSession):c0",
+                    bothSession,
+                    encodeVector([0.4, 0.9, 0]),
+                ]
+            )
+            // keyword-only session has no chunk (or orthogonal vector)
+            try db.execute(
+                sql: """
+                INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
+                VALUES (?, ?, 0, 'unrelated orthogonal', ?, 'probe', 3)
+                """,
+                arguments: [
+                    "\(keywordSession):c0",
+                    keywordSession,
+                    encodeVector([0, 0, 1]),
+                ]
+            )
+        }
+
+        let server = try MockHTTPServer(jsonBody: #"{"data":[{"index":0,"embedding":[1,0,0]}]}"#)
+        server.start()
+        defer { server.stop() }
+
+        let hybrid = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"Swift MCP shim","mode":"hybrid","limit":5}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_EMBEDDING_BASE_URL": "http://127.0.0.1:\(server.port)/v1",
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ]
+        )
+
+        XCTAssertNil(hybrid.response.error, hybrid.rawLine)
+        let structured = try XCTUnwrap(hybrid.ordered["result"]?["structuredContent"])
+        XCTAssertNotEqual(structured["isError"]?.boolValue, true, "\(structured)")
+        let modes = structured["searchModes"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        XCTAssertEqual(Set(modes), Set(["keyword", "semantic"]), "\(modes)")
+
+        let resultIds = (structured["results"]?.arrayValue ?? []).compactMap {
+            $0["session"]?["id"]?.stringValue
+        }
+        // Expected RRF (k=60) with lists:
+        //   keyword (FTS): 20, 23, 02, 05, 08
+        //   semantic (KNN): 01, 05, 02
+        // fused top-5: 05, 02, 20, 01, 23
+        XCTAssertEqual(
+            Array(resultIds.prefix(5)),
+            [bothSession, keywordSession, "mcp-fixture-20", semanticOnlySession, "mcp-fixture-23"],
+            "hybrid RRF order must match service policy on this fixture: \(resultIds)"
+        )
+
+        // Source-level coupling: service + MCP both use SessionSemanticSearchPolicy
+        // (knnTopK = max(limit*4, limit), rrfK = 60, candidateCap shared).
+        let policySource = try source("macos/Shared/EngramCore/AI/SessionSemanticSearchPolicy.swift")
+        let mcpSource = try source("macos/EngramMCP/Core/MCPDatabase.swift")
+        let serviceSource = try source("macos/EngramService/Core/EngramServiceReadProvider.swift")
+        XCTAssertTrue(policySource.contains("public static let rrfK: Int = 60"))
+        XCTAssertTrue(policySource.contains("max(limit * 4, limit)"))
+        XCTAssertTrue(mcpSource.contains("SessionSemanticSearchPolicy.knnTopK"))
+        XCTAssertTrue(mcpSource.contains("SessionSemanticSearchPolicy.rrfK"))
+        XCTAssertTrue(serviceSource.contains("SessionSemanticSearchPolicy.knnTopK"))
+        XCTAssertTrue(serviceSource.contains("SessionSemanticSearchPolicy.rrfK"))
+    }
+
+    func testSearchSemanticModeReturnsSemanticMatchType() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-semantic-mode"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedUsableSessionEmbeddings(
+            at: dbPath,
+            sessionId: "mcp-fixture-01",
+            vector: [1, 0, 0],
+            text: "semantic recall chunk for parity"
+        )
+
+        let server = try MockHTTPServer(jsonBody: #"{"data":[{"index":0,"embedding":[1,0,0]}]}"#)
+        server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"memory recall","mode":"semantic","limit":5}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_EMBEDDING_BASE_URL": "http://127.0.0.1:\(server.port)/v1",
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ]
+        )
+
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertNotEqual(structured["isError"]?.boolValue, true, "\(structured)")
+        XCTAssertEqual(
+            structured["searchModes"]?.arrayValue?.compactMap(\.stringValue),
+            ["semantic"]
+        )
+        let first = structured["results"]?.arrayValue?.first
+        XCTAssertEqual(first?["matchType"]?.stringValue, "semantic")
+        XCTAssertEqual(first?["session"]?["id"]?.stringValue, "mcp-fixture-01")
+        XCTAssertEqual(first?["snippet"]?.stringValue, "semantic recall chunk for parity")
     }
 
     func testGetContextMatchesGolden() throws {
