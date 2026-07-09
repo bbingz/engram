@@ -1,5 +1,32 @@
 # Engram 全周期管理与检索升级计划（最终版）
 
+## Status as of 2026-07-09 (plan-completion audit)
+
+Per-item status after verifying this plan against git history and product code
+(27-agent plan-completion audit). Wave-6 task numbers mark work in the current
+execution queue; `parked-see-roadmap` items are listed in
+`docs/roadmap.md` → Decision pending.
+
+| Plan item | Status |
+|-----------|--------|
+| P0-1 engine pragma (`mmap_size=256MB`) | **not_done — rejection final**: product keeps `PRAGMA mmap_size == 0`; regression test enforces it |
+| P0-2 activate Command Palette + ⌘K | **done** (alignment WP / palette opener tests) |
+| P0-3 `last_accessed_at` / `access_count` columns + bump | **done** (sessions + insights; service IPC bumps) |
+| P0-4 Service path `snippet()` highlight + cleanSnippet | **done** (service search + tests) |
+| P0-5 observability retention prune | **partial / restart-cadence by design**: `ObservabilityRetention` runs once per service start (`EngramServiceRunner` rationale ~:113-115: legacy metrics writer dormant, largely one-time backlog cleanup). Revisit periodic only if a live `ai_audit_log` writer lands |
+| P0-5b `ai_audit_log` body desensitization | **parked-see-roadmap** (no Swift writer today; design precondition) |
+| P0.5 quality_score → GUI band badge + `value_override` | **parked-see-roadmap** |
+| 3.1 multi-factor value score | **parked-see-roadmap** (unblocked by wave-6 task 5 score parity only) |
+| 3.1 same-input/same-output score test | **partial** → wave-6 **task 5** |
+| 3.2 lifecycle_state / shadow archive | **not_done** / **parked-see-roadmap** (`lifecycle_state` column does not exist) |
+| 3.3 insight decay / access ranking | **partial** (read-side ranking done; type filter → wave-6 **task 7**) |
+| 3.4 BM25/CJK ranking + faceting | **parked-see-roadmap** |
+| 3.5 tool-result normalization + structured summary job | **parked-see-roadmap** |
+| 3.5 P2 auto insight extraction | **parked-see-roadmap** |
+| 3.6 quality_score / lifecycle_state indexes | **partial**: `quality_score` has no index; decision in wave-6 **task 6** (add only if live query uses it). `lifecycle_state` index parked (column missing) |
+| 3.6 periodic FTS optimize | **partial** (startup-only today) → wave-6 **task 6** |
+| P2 sqlite-vec + hybrid RRF (app already has brute-force) | **parked-see-roadmap** (F2); app/service hybrid exists without sqlite-vec |
+
 > ## ⚠️ 实施前必读 — 主控亲自验证结果（2026-05-29）
 >
 > 本文由多 agent workflow 生成。**主控（Claude）随后亲自抽验了最承重的几条，结论是：诊断方向正确且核心叙事已坐实，但本文尚不是"实施就绪规格"——直接照 file:line 改会打偏。** 证据如下：

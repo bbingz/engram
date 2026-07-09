@@ -7,6 +7,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: plan-completion audit backlog truth-up (2026-07-09, Codex)
+
+- Corrected stale roadmap/lifecycle/p1/followups claims against a 27-agent
+  plan-completion audit (every plan doc verified against git history and
+  product code). Parked large product-decision items in a new roadmap
+  decision table; partitioned historical `[Unreleased]` entries into
+  `v1.0`–`v1.0.4` release sections.
+
+## [1.0.4] - 2026-07-09
+
 ### Added: incremental JSONL tail parsing (2026-07-08, Codex)
 
 - Added Claude Code JSONL tail checkpoints and a gated append-only indexing path
@@ -2007,6 +2017,7 @@ build clean, vitest 1580/1580, `npm audit` → 0 vulnerabilities.
 - Recent runtime verifier found no severe `Engram`/`EngramService` log entries
   matching fatal/fault/error/crash/known indexing failures and no new
   `Engram*.ips` or `Engram*.crash` reports in `~/Library/Logs/DiagnosticReports`.
+
 ### Fixed: GRDB linked once as a shared dynamic framework (2026-06-15, Claude) — branch `fix/grdb-single-copy`
 
 - **Symptom:** `EngramService` crash-looped at runtime with a GRDB
@@ -2956,6 +2967,7 @@ squash-merged to `main`.
   died before bootstrap or hung during runner startup before any UI test body
   ran; this is recorded as a local UI runner/environment failure pending CI or a
   GUI-permitted rerun.
+
 ### TypeScript FTS table-swap rebuild (2026-06-04, Codex)
 
 - Added a TypeScript `sessions_fts` rebuild policy with `sessions_fts_rebuild`
@@ -4319,11 +4331,23 @@ None block product behavior; addressing them is a sweep pass.
 
 - **Agent Sessions 不再挤没正文可视区** —— `SessionDetailView` 的子 agent 列表改成默认折叠标题行;展开后列表有独立滚动区域并限制最大高度。含几十条 Polycli/qwen/kimi/pi/copilot 子会话的父会话不再把 transcript 视口压到不可用。
 
+## [1.0.3] - 2026-05-08
+
 ### Fixed — Swift-only cutover removes stale Node schema compat gate (2026-05-08)
 
 - **丢掉旧 Node schema 兼容门禁** —— 删除 `scripts/db/check-swift-schema-compat.ts`、对应 `tests/scripts/check-swift-schema-compat.test.ts`,并从 `.github/workflows/test.yml` 的 `swift-unit` job 后移除 `Check Swift/Node schema compatibility` step。这个 gate 是 Stage 0-4 迁移期护栏,现在会反向要求 Swift schema 迎合旧 TypeScript `src/core/db.ts` 默认值(本次暴露为 `sessions.indexed_at` 的 `''` vs `datetime('now')` drift),不再是 Swift-only 单栈的正确验收条件。
 - **边界澄清**:删的是旧 Node 兼容护栏,不是 npm/TypeScript 开发与 fixture 工具链。当前活跃入口已无 `check-swift-schema-compat` 引用;`npm run test` 112 files / 1272 tests 通过,`npm run build` 通过。
 - **下一步开发基线补齐**:`CLAUDE.md` 改成 Swift `EngramService`/`EngramMCP` 为产品路径、TypeScript 为 dev/reference/fixture;`docs/verification/swift-single-stack-stage5.md`、`docs/swift-single-stack/daemon-client-map.md`、`docs/swift-single-stack/file-disposition.md` 和 `.memory` 同步当前状态:project migration 已是 Swift service pipeline,旧 Node schema gate 不再是当前 CI/验收条件,Polycli provider 噪声识别从 Swift adapter/indexer/backfill 层继续维护。
+
+## [1.0.2] - 2026-04-29
+
+_No dated CHANGELOG entries attributed to this tag boundary (same-day tags share neighboring sections)._
+
+## [1.0.1] - 2026-04-29
+
+_No dated CHANGELOG entries attributed to this tag boundary (same-day tags share neighboring sections)._
+
+## [1.0] - 2026-04-29
 
 ### Shipped — Adapter parser hardening via 3-way review + 2 codex follow-ups (2026-04-28)
 
