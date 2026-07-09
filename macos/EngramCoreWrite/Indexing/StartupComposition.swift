@@ -77,6 +77,20 @@ public final class WriterStartupIndexing: StartupIndexing {
 
 // MARK: - Database maintenance
 
+public extension EngramDatabaseWriter {
+    /// Periodic-path FTS optimize: min-interval gate + content-signature gate.
+    /// See `StartupBackfills.optimizeFtsIfDue`.
+    @discardableResult
+    func optimizeFtsIfDue(
+        now: Date = Date(),
+        minInterval: TimeInterval = StartupBackfills.ftsOptimizeMinInterval
+    ) throws -> Bool {
+        try write { db in
+            try StartupBackfills.optimizeFtsIfDue(db, now: now, minInterval: minInterval)
+        }
+    }
+}
+
 public final class WriterStartupBackfillDatabase: StartupBackfillDatabase {
     private let writer: EngramDatabaseWriter
 

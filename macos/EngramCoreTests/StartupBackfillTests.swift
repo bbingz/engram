@@ -1408,6 +1408,69 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testOptimizeFtsIfDueHonorsMinimumIntervalCadence() throws {
+        // Wave-6 task 6: periodic path must not re-enter optimize every 5-min tick.
+        let t0 = ISO8601DateFormatter().date(from: "2026-07-09T00:00:00Z")!
+        let t1h = t0.addingTimeInterval(60 * 60)
+        let t25h = t0.addingTimeInterval(25 * 60 * 60)
+        let minInterval: TimeInterval = 24 * 60 * 60
+
+        try writer.write { db in
+            try insertSession(db, id: "s1", source: "codex", tier: "normal")
+            try db.execute(sql: "UPDATE sessions SET sync_version = 1, indexed_at = '2026-05-01T00:00:00Z' WHERE id = 's1'")
+
+            XCTAssertTrue(
+                try StartupBackfills.optimizeFtsIfDue(db, now: t0, minInterval: minInterval),
+                "first due attempt must run optimize when content is new"
+            )
+            let signatureAfterFirst = try String.fetchOne(
+                db,
+                sql: "SELECT value FROM metadata WHERE key = ?",
+                arguments: [StartupBackfills.ftsOptimizeSignatureKey]
+            )
+            XCTAssertNotNil(signatureAfterFirst)
+
+            // Content change within the interval must still be interval-gated.
+            try insertSession(db, id: "s2", source: "codex", tier: "normal")
+            XCTAssertFalse(
+                try StartupBackfills.optimizeFtsIfDue(db, now: t1h, minInterval: minInterval),
+                "within min interval must not re-attempt even when content changed"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT value FROM metadata WHERE key = ?",
+                    arguments: [StartupBackfills.ftsOptimizeSignatureKey]
+                ),
+                signatureAfterFirst,
+                "interval skip must not rewrite the stored optimize signature"
+            )
+
+            XCTAssertTrue(
+                try StartupBackfills.optimizeFtsIfDue(db, now: t25h, minInterval: minInterval),
+                "after min interval elapses, changed content must optimize again"
+            )
+        }
+    }
+
+    func testOptimizeFtsIfDueStillHonorsContentSignatureWhenDue() throws {
+        let t0 = ISO8601DateFormatter().date(from: "2026-07-09T00:00:00Z")!
+        let t25h = t0.addingTimeInterval(25 * 60 * 60)
+        let minInterval: TimeInterval = 24 * 60 * 60
+
+        try writer.write { db in
+            try insertSession(db, id: "s1", source: "codex", tier: "normal")
+            try db.execute(sql: "UPDATE sessions SET sync_version = 1, indexed_at = '2026-05-01T00:00:00Z' WHERE id = 's1'")
+
+            XCTAssertTrue(try StartupBackfills.optimizeFtsIfDue(db, now: t0, minInterval: minInterval))
+            // Interval elapsed, but content signature unchanged → skip rewrite.
+            XCTAssertFalse(
+                try StartupBackfills.optimizeFtsIfDue(db, now: t25h, minInterval: minInterval),
+                "due interval must still defer to the content-signature gate"
+            )
+        }
+    }
+
     func testReconcileSkipTierDeletesStaleArtifactsWithoutTouchingTierOrNonSkip() throws {
         try writer.write { db in
             try insertSession(db, id: "skip-1", source: "codex", tier: "skip")
