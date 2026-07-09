@@ -2027,13 +2027,15 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
-    /// Hybrid ranking parity with EngramServiceReadProvider on the **same**
+    /// Hybrid **policy** parity with EngramServiceReadProvider on the same
     /// fixture DB: MCP tools/call hybrid order must equal
-    /// `SQLiteEngramServiceReadProvider.search(hybrid)` order.
+    /// `SQLiteEngramServiceReadProvider.search(hybrid)` order when both sides
+    /// already share the same keyword rank list.
     ///
-    /// Uses a minimal 3-session WAL DB (not the large mcp-contract corpus) so
-    /// keyword FTS lists are identical across MCP/service SQL dialects and RRF
-    /// fusion is the only ranking degree of freedom under test.
+    /// Scope (docs/mcp-semantic-search-design-2026-07.md §3): single-token,
+    /// unfiltered, non-orphan fixture. Does **not** claim multi-token /
+    /// project-since / orphan SQL identity — those remain intentional MCP vs
+    /// service keyword-engine deltas.
     func testSearchHybridParityMatchesServiceRankingConstants() async throws {
         let bothSession = "parity-both"
         let semanticOnlySession = "parity-sem"

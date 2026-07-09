@@ -32,8 +32,9 @@ without lying in the schema and without silent mode downgrade.
   when embedding metadata says stored vectors are usable.
 - Unavailable mode requests return **`isError`** with structured code
   `searchModeUnavailable` — never silent keyword fallback.
-- Hybrid ranking parity with the service on the same fixture DB (shared
-  KNN top-K formula and RRF `k`).
+- Hybrid ranking **policy** parity with the service: shared KNN top-K
+  formula, RRF `k`, candidate cap, and fuse order `[keyword, semantic]`
+  (not full keyword-SQL / filter identity — see §3).
 - Never mix embedding models/dimensions; exclude `skip` from normal reads
   and exclude `lite` from search (match product tier rules).
 - Docs, goldens, p1 c.4 status, CHANGELOG.
@@ -124,16 +125,29 @@ Shared constants live in `SessionSemanticSearchPolicy` (Shared EngramCore):
 | `knnTopK(limit)` | `max(limit * 4, limit)` | `EngramServiceReadProvider.semanticSearch` |
 | `candidateCap(requestLimit)` | `max(200, min(requestLimit * 20, 2000))` | service `semanticChunkCandidates` LIMIT |
 
-MCP hybrid must produce the same **session-id order** as the service read
-path on an identical fixture DB, identical query embedding, and identical
-filters (tests seed one model/dim and a static embed provider / mock HTTP).
+**What “parity” means (narrowed after 2026-07-09 review):**
 
-Documented intentional deltas (not ranking parity):
+MCP hybrid and service hybrid share ranking **policy** via
+`SessionSemanticSearchPolicy` and fuse as `[keywordIds, semanticIds]`.
+Side-by-side tests assert identical session-id order only when both paths
+are given the same keyword rank list (single-token, no project/since
+filter, no orphan rows) and the same query embedding.
 
-- MCP still filters `orphan_status IS NULL` on keyword/semantic SQL (service
-  historically omits orphan filter on search).
-- MCP unavailable semantic mode is hard-error; service app path may still
-  degrade with a warning for UI callers.
+**Not claimed:** identical order for multi-token queries, project/since
+filters, or corpora with `orphan_status` set — keyword SQL and filters
+still differ intentionally until a later shared-keyword ranking PR.
+
+Documented intentional deltas:
+
+- **Keyword SQL:** MCP single `sessions_fts MATCH` (OR-leaning) +
+  `ORDER BY f.rank`; service per-token CTE AND +
+  `ORDER BY m0.rank, s.start_time DESC`.
+- **Filters:** MCP `project LIKE %alias%`, `start_time >= since`,
+  `orphan_status IS NULL` on keyword and semantic SQL; service exact
+  `s.project = ?`, `COALESCE(end_time, start_time) >= since`, no orphan
+  filter on search.
+- **Unavailable mode:** MCP hard-error `searchModeUnavailable`; service
+  app path may still degrade with a warning for UI callers.
 
 ### 4. Never mix models; tier rules
 
@@ -182,9 +196,11 @@ No new invariant required; availability is a schema/runtime contract.
   assert tools/list enum includes semantic/hybrid.
 - Unavailable hybrid/semantic → `isError` + `searchModeUnavailable`
   (update goldens formerly keyword-only hybrid warning).
-- Hybrid parity test
-  (`testSearchHybridParityMatchesServiceRankingConstants` / fixture
-  session order) — same KNN list + RRF fusion as service policy.
+- Hybrid policy parity test
+  (`testSearchHybridParityMatchesServiceRankingConstants`) — minimal
+  single-token fixture; MCP `tools/call` hybrid vs
+  `SQLiteEngramServiceReadProvider.search(hybrid)` same id order when
+  keyword lists already match; documents SQL deltas out of scope.
 - Keyword regression golden `search.keyword.json` unchanged.
 - Short query / UUID paths remain keyword-safe.
 
@@ -205,6 +221,6 @@ No new invariant required; availability is a schema/runtime contract.
   `get_memory` hybrid.
 - **Service soft-fallback vs MCP hard-error**: intentional product split;
   do not “fix” by aligning them without a separate design.
-- **orphan_status filter delta**: if parity tests include orphaned
-  sessions, MCP and service can diverge — fixtures must keep orphans out
-  of the ranking set.
+- **Keyword/filter SQL deltas**: multi-token / filtered / orphan corpora
+  can diverge MCP vs service hybrid order by design until a shared
+  keyword-ranking helper lands. Parity tests keep those out of scope.

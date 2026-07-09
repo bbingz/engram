@@ -7,6 +7,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: FTS optimize attempt throttle throw-safe + hybrid parity claims (2026-07-09, Codex)
+
+- `EngramDatabaseWriter.optimizeFtsIfDue` commits `fts_optimize_last_attempt`
+  in its own write before `optimizeFts`, so a throwing rewrite no longer rolls
+  back the 24h floor (persistent FTS failure no longer retries every 5-min tick).
+- Narrow MCP hybrid “parity” docs to shared ranking **policy**
+  (`SessionSemanticSearchPolicy` + fuse order); document intentional keyword
+  SQL / filter / orphan deltas vs the service (Kimi wave-6 review mediums).
+
 ### Fixed: embedding half-open non-transport probe release (2026-07-09, Codex)
 
 - `GuardedEmbeddingProvider` now releases the half-open probe slot on every

@@ -117,9 +117,10 @@ scheduling.
 - **Status:** done (wave-6 task 10, 2026-07-09)
 - **Acceptance evidence:** `SessionVectorSearchAvailability` gates `tools/list`
   mode enum and runtime; usable vectors enable in-process semantic/hybrid over
-  `semantic_chunks` (cosine KNN + RRF via `SessionSemanticSearchPolicy`, parity
-  with `EngramServiceReadProvider`). Unavailable modes return `isError` +
-  `searchModeUnavailable` (no silent keyword fallback). Design:
+  `semantic_chunks` (cosine KNN + RRF via shared `SessionSemanticSearchPolicy`
+  constants with the service — **policy** parity, not full keyword-SQL identity;
+  see design §3). Unavailable modes return `isError` + `searchModeUnavailable`
+  (no silent keyword fallback). Design:
   `docs/mcp-semantic-search-design-2026-07.md`.
 - **Related files:** `macos/EngramMCP/Core/MCPToolRegistry.swift`,
   `macos/EngramMCP/Core/MCPDatabase.swift`,

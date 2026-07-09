@@ -79,14 +79,29 @@ public final class WriterStartupIndexing: StartupIndexing {
 
 public extension EngramDatabaseWriter {
     /// Periodic-path FTS optimize: min-interval gate + content-signature gate.
-    /// See `StartupBackfills.optimizeFtsIfDue`.
+    ///
+    /// Throw-safe throttle: the attempt timestamp is committed in its own write
+    /// **before** `optimizeFts` runs. A failing rewrite (missing FTS tables,
+    /// SQLITE_ERROR, etc.) still advances the 24h floor so the 5-minute loop
+    /// does not retry every tick. Startup continues to call `optimizeFts()`
+    /// directly (no interval).
     @discardableResult
     func optimizeFtsIfDue(
         now: Date = Date(),
         minInterval: TimeInterval = StartupBackfills.ftsOptimizeMinInterval
     ) throws -> Bool {
+        let due = try write { db in
+            try StartupBackfills.isFtsOptimizeDue(db, now: now, minInterval: minInterval)
+        }
+        guard due else { return false }
+
+        // Commit attempt before the rewrite so optimize throws cannot roll it back.
         try write { db in
-            try StartupBackfills.optimizeFtsIfDue(db, now: now, minInterval: minInterval)
+            try StartupBackfills.recordFtsOptimizeAttempt(db, now: now)
+        }
+
+        return try write { db in
+            try StartupBackfills.optimizeFts(db)
         }
     }
 }
