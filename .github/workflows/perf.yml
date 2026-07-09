@@ -16,7 +16,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v6
         with:
@@ -27,7 +27,7 @@ jobs:
       - run: npm run build
 
       - name: Cache Homebrew (xcodegen)
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/Library/Caches/Homebrew
           key: brew-xcodegen-${{ runner.os }}
@@ -38,7 +38,7 @@ jobs:
           test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
 
       - name: Cache SPM packages
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
           key: spm-${{ hashFiles('macos/project.yml', 'macos/Package.resolved') }}
