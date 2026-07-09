@@ -20,7 +20,7 @@ dev/reference only.
 | Transcript | No "Copy entire conversation" in message context menu | **DONE** — added, backed by `TranscriptText.conversationText` |
 | Transcript | Tool rows showed generic `TOOLS #N` | **DONE** — `ColorBarMessageView.displayLabel` surfaces `TOOL: <name>` |
 | Session list | No column-visibility toggle UI | **REMOVED** — implementation deleted with unreachable legacy `SessionListView` in `322f5095` (2026-06-12 audit remediation); obsolete for card-based `SessionsPageView` (no columns); guarded by `testUnreachableLegacySessionListViewIsRemoved` |
-| Session list | `selectedProject` / `sortOrder` not persisted | **REGRESSED** — persistence deleted with `SessionListView` in `322f5095`; reopened as wave-6 task 3 (persist `SessionsPageView` filters; sort is hardcoded `.updatedDesc`, so `sortOrder` no longer applies) |
+| Session list | `selectedProject` / `sortOrder` not persisted | **DONE** — wave-6 task 3: `SessionsPageView` persists `sessionFilter` / `timeFilter` / `sourceFilter` via `@AppStorage` keys `sessions.sessionFilter` / `sessions.timeFilter` / `sessions.sourceFilter` (empty-string sentinel for optional source; invalid source falls back). Sort remains hardcoded `.updatedDesc` (no sort UI). Evidence: `SessionsFilterPersistenceTests` |
 | Perf | Service-layer `ISO8601DateFormatter` per-call | **DONE** — shared statics in `SwiftIndexer` + `EngramServiceCommandHandler` |
 | Usage (PR5) | Real probe data flow unconfirmed | **DONE** — startup writes real 7-day usage shares for tracked CLI sources |
 | Search | Semantic search still advertised in MCP | **DONE** — MCP search schema and runtime are keyword-only unless vector support exists |

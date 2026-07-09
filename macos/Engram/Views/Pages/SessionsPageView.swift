@@ -9,6 +9,10 @@ struct SessionsPageView: View {
     // Global escape hatch from the human-driven default view. Shared key across
     // SessionsPage / Home / Timeline so one toggle reveals everything everywhere.
     @AppStorage("sessions.showAll") private var showAllSessions = false
+    @AppStorage(SessionsFilterPersistence.sessionFilterKey) private var sessionFilterStorage = "All"
+    @AppStorage(SessionsFilterPersistence.timeFilterKey) private var timeFilterStorage = "All Time"
+    /// Empty string sentinel for Optional source (AppStorage cannot hold String?).
+    @AppStorage(SessionsFilterPersistence.sourceFilterKey) private var sourceFilterStorage = ""
 
     @State private var sessions: [Session] = []
     @State private var confirmedCounts: [String: Int] = [:]
@@ -16,9 +20,6 @@ struct SessionsPageView: View {
     @State private var totalCount = 0
     @State private var totalMessages = 0
     @State private var avgDurationSeconds: Double?
-    @State private var sessionFilter = "All"
-    @State private var timeFilter = "All Time"
-    @State private var sourceFilter: String? = nil
     @State private var availableSources: [String] = []
     @State private var isLoading = true
     @State private var isLoadingMore = false
@@ -35,12 +36,52 @@ struct SessionsPageView: View {
     // pagination). See BrowseReloadCoalescer / #3.
     @State private var lastFilterKey: [AnyHashable]? = nil
 
-    private let sessionOptions = ["All", "Starred"]
-    private let timeOptions = ["Today", "This Week", "This Month", "All Time"]
+    private let sessionOptions = SessionsFilterPersistence.sessionOptions
+    private let timeOptions = SessionsFilterPersistence.timeOptions
     private static let pageSize = 200
+
+    private var sessionFilter: String {
+        SessionsFilterPersistence.sanitizeSessionFilter(sessionFilterStorage)
+    }
+
+    private var timeFilter: String {
+        SessionsFilterPersistence.sanitizeTimeFilter(timeFilterStorage)
+    }
+
+    private var sourceFilter: String? {
+        SessionsFilterPersistence.resolvedSource(
+            stored: sourceFilterStorage,
+            available: availableSources
+        )
+    }
 
     private var favoritesOnly: Bool {
         sessionFilter == "Starred"
+    }
+
+    private var sessionFilterBinding: Binding<String> {
+        Binding(
+            get: { SessionsFilterPersistence.sanitizeSessionFilter(sessionFilterStorage) },
+            set: { sessionFilterStorage = SessionsFilterPersistence.sanitizeSessionFilter($0) }
+        )
+    }
+
+    private var timeFilterBinding: Binding<String> {
+        Binding(
+            get: { SessionsFilterPersistence.sanitizeTimeFilter(timeFilterStorage) },
+            set: { timeFilterStorage = SessionsFilterPersistence.sanitizeTimeFilter($0) }
+        )
+    }
+
+    private var sourceFilterBinding: Binding<String> {
+        Binding(
+            get: { sourceFilter ?? "All" },
+            set: {
+                sourceFilterStorage = SessionsFilterPersistence.storage(
+                    from: $0 == "All" ? nil : $0
+                )
+            }
+        )
     }
 
     private var handlers: SessionActionHandlers {
@@ -79,9 +120,9 @@ struct SessionsPageView: View {
                 }
 
                 HStack(spacing: 12) {
-                    FilterPills(options: sessionOptions, selected: $sessionFilter)
+                    FilterPills(options: sessionOptions, selected: sessionFilterBinding)
                         .accessibilityIdentifier("sessions_sessionFilterPills")
-                    FilterPills(options: timeOptions, selected: $timeFilter)
+                    FilterPills(options: timeOptions, selected: timeFilterBinding)
                         .accessibilityIdentifier("sessions_filterPills")
                     Spacer()
                     Toggle("Show all sessions", isOn: $showAllSessions)
@@ -92,10 +133,7 @@ struct SessionsPageView: View {
                         .toggleStyle(.checkbox)
                         .accessibilityIdentifier("sessions_showHiddenToggle")
                     if !availableSources.isEmpty {
-                        Picker("Source", selection: Binding(
-                            get: { sourceFilter ?? "All" },
-                            set: { sourceFilter = $0 == "All" ? nil : $0 }
-                        )) {
+                        Picker("Source", selection: sourceFilterBinding) {
                             Text("All Sources").tag("All")
                             ForEach(availableSources, id: \.self) { source in
                                 Text(SourceColors.label(for: source)).tag(source)
@@ -273,6 +311,11 @@ struct SessionsPageView: View {
             totalMessages = data.3.totalMessages
             avgDurationSeconds = data.3.avgDurationSeconds
             availableSources = data.4
+            // Drop a persisted source that disappeared so the page never stays empty.
+            sourceFilterStorage = SessionsFilterPersistence.sanitizedSourceStorage(
+                stored: sourceFilterStorage,
+                available: availableSources
+            )
             loadError = nil
         } catch {
             EngramLogger.error("SessionsPage load failed", module: .ui, error: error)
