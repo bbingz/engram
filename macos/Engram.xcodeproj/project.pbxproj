@@ -418,6 +418,7 @@
 		B5A2B5C54C5668FECC65A38A /* QwenAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CC7EA7D95CA10EAD73E472D /* QwenAdapter.swift */; };
 		B5AD2A8A78E5A8D060FFB0BE /* ServiceTelemetryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2CD6892B3F2B8AA213F635F /* ServiceTelemetryTests.swift */; };
 		B5B38700789A1F06AA3A5323 /* ObservabilityScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E1AA0E9483110F1C9310E5F /* ObservabilityScreen.swift */; };
+		B5EEA43739B8AB546BBEC707 /* RelativeTimeTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3313B482201CF67E710DE934 /* RelativeTimeTextTests.swift */; };
 		B6F2EEDB6018EBE4322DE4D3 /* MigrationLogReaders.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2EDBF86D121484D79F1CA3B /* MigrationLogReaders.swift */; };
 		B6F83A18CDBDCF01B64C2455 /* MockEngramServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0696453109985F63C5BE6106 /* MockEngramServiceClient.swift */; };
 		B71ABFB57270591CB9B96F36 /* ServiceLogSanitizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9C8908109FD1567C60784BC /* ServiceLogSanitizerTests.swift */; };
@@ -437,6 +438,7 @@
 		BB44467984C988916B3447DA /* ToolResultView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D0235E45DAAFCBA57B29A6E /* ToolResultView.swift */; };
 		BBC9737D1B712CB133DE6612 /* MCPDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F11777A16A5BF9494F0E586 /* MCPDatabase.swift */; };
 		BBDABE0BC714CBAE6F6ED633 /* BrowseReloadCoalescer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F40F1CCF1C0BF1B7E893478 /* BrowseReloadCoalescer.swift */; };
+		BCEEB8EC6137416FB2713276 /* RelativeTime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9DA8AD0AAE8D623BCA54FC4 /* RelativeTime.swift */; };
 		BD36B61F0A90AA98F049B7E5 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6893032E186098253529B5FF /* ActivityView.swift */; };
 		BDC7CDC23CEFB4B87EE72FB7 /* StartupBackfillTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 646CADEA017A524549A87802 /* StartupBackfillTests.swift */; };
 		BDEF21F015D84D9C3B80D61B /* GitDirty.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E3E709F6C0B2BF19F3496EF /* GitDirty.swift */; };
@@ -845,6 +847,7 @@
 		320BE8A8D898FEE82D4C4E49 /* ParserLimits.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParserLimits.swift; sourceTree = "<group>"; };
 		3292AF2C16EEF1D9DBD524D0 /* ImplementationDigestExtractorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImplementationDigestExtractorTests.swift; sourceTree = "<group>"; };
 		32C1C618EFDED8A8F2398A12 /* HomeScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeScreen.swift; sourceTree = "<group>"; };
+		3313B482201CF67E710DE934 /* RelativeTimeTextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelativeTimeTextTests.swift; sourceTree = "<group>"; };
 		3457E62B73BFD0770B3C2EE0 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
 		3462B0B41EFCDFDA7943AB92 /* EngramCoreSchemaTool */ = {isa = PBXFileReference; includeInIndex = 0; path = EngramCoreSchemaTool; sourceTree = BUILT_PRODUCTS_DIR; };
 		349F6EB71686737B6F265FC3 /* PopoverScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverScreen.swift; sourceTree = "<group>"; };
@@ -1035,6 +1038,7 @@
 		A83770047B9A2B3DE0B6157E /* EngramDatabaseReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramDatabaseReader.swift; sourceTree = "<group>"; };
 		A91D30A0A48276EB34C5E004 /* TerminalLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalLauncher.swift; sourceTree = "<group>"; };
 		A996C37DF96F4028CD1BC7C0 /* ToolCallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolCallView.swift; sourceTree = "<group>"; };
+		A9DA8AD0AAE8D623BCA54FC4 /* RelativeTime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelativeTime.swift; sourceTree = "<group>"; };
 		AAB401A02E27C74016CBF603 /* PopoverSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverSmokeTests.swift; sourceTree = "<group>"; };
 		AAD748C6EC231047FF5EB447 /* StartupComposition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartupComposition.swift; sourceTree = "<group>"; };
 		AB7F43C61056AA05963DC190 /* AgentsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsScreen.swift; sourceTree = "<group>"; };
@@ -1888,6 +1892,7 @@
 				2A5DF1AD88AF7076D2848BD4 /* ParentDetectionParityTests.swift */,
 				B4DCF53422ED7AE4384968ED /* PopoverUsageSectionTests.swift */,
 				0B5E7555A24C759A4AF560EE /* ProjectsMigrationTests.swift */,
+				3313B482201CF67E710DE934 /* RelativeTimeTextTests.swift */,
 				8AB4FC9431C85E265FDC13A3 /* ReplayStateTests.swift */,
 				DD6B58C28284EBE9B9980BE3 /* ScreenSectionTests.swift */,
 				C88C74AD085277A744CD893D /* SearchModeTests.swift */,
@@ -2168,6 +2173,7 @@
 				69D1201BC69D5B372BF95BA3 /* MotionAware.swift */,
 				972CB1998A34BD047FE48B94 /* ProjectBadge.swift */,
 				31C71D93D6C3E40EFBDD6106 /* ProjectWorkTimeline.swift */,
+				A9DA8AD0AAE8D623BCA54FC4 /* RelativeTime.swift */,
 				AFB811E3F5CB59716B1B99A2 /* SectionHeader.swift */,
 				9A94C4C2EF2178B28617F61B /* SessionCard.swift */,
 				58F564930C9AEF2E0AF20609 /* SharedPickers.swift */,
@@ -3165,6 +3171,7 @@
 				596A33F4AFCE759B65980126 /* ParentDetectionParityTests.swift in Sources */,
 				0C7CC633982592B084D9E177 /* PopoverUsageSectionTests.swift in Sources */,
 				7FEAF9BFBF6322FF8AB57367 /* ProjectsMigrationTests.swift in Sources */,
+				B5EEA43739B8AB546BBEC707 /* RelativeTimeTextTests.swift in Sources */,
 				F5EA0D9C097F4AEBEE358DF8 /* ReplayStateTests.swift in Sources */,
 				1F16C2D9468ACFAE3A162F17 /* ScreenSectionTests.swift in Sources */,
 				6AA2ED903F046757E083C02B /* SearchModeTests.swift in Sources */,
@@ -3347,6 +3354,7 @@
 				F9FFF4F196756553BF0274E2 /* QwenAdapter.swift in Sources */,
 				182EF8625B383B94009C7B96 /* RankFusion.swift in Sources */,
 				655AAE5A67011038178D0C5D /* RelatedSessionPicker.swift in Sources */,
+				BCEEB8EC6137416FB2713276 /* RelativeTime.swift in Sources */,
 				3706DA19E996C43EB6B11FE1 /* RenameSheet.swift in Sources */,
 				F62ABEEC5BBD48470B91FED9 /* ReplayState.swift in Sources */,
 				7E80F4BF7362BC18EBDFF2E7 /* RepoDetailView.swift in Sources */,

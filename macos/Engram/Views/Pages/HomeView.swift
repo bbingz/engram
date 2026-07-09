@@ -551,48 +551,6 @@ private struct TodaySessionRow: View {
     }
 }
 
-/// Renders an ISO-8601 start_time as a coarse "Xm ago" label. Parses both
-/// fractional-second and whole-second timestamps — adapters that emit
-/// `2026-06-01T10:00:00Z` (no fractional digits) used to render blank under a
-/// fractional-only formatter.
-enum TodayRelativeTime {
-    static func format(_ iso: String, now: Date = Date()) -> String {
-        RelativeTimeText.format(iso, style: .ago, now: now)
-    }
-}
-
-enum RelativeTimeText {
-    enum Style {
-        case compact
-        case ago
-        case agoWithSeconds
-    }
-
-    static func format(_ iso: String, style: Style = .compact, now: Date = Date()) -> String {
-        guard let date = EngramTimestampParser.date(from: iso) else {
-            return ""
-        }
-        let seconds = max(0, Int(now.timeIntervalSince(date)))
-        switch style {
-        case .compact:
-            if seconds < 60 { return "now" }
-            if seconds < 3600 { return "\(seconds / 60)m" }
-            if seconds < 86400 { return "\(seconds / 3600)h" }
-            return "\(seconds / 86400)d"
-        case .ago:
-            if seconds < 60 { return "now" }
-            if seconds < 3600 { return "\(seconds / 60)m ago" }
-            if seconds < 86400 { return "\(seconds / 3600)h ago" }
-            return "\(seconds / 86400)d ago"
-        case .agoWithSeconds:
-            if seconds < 1 { return "now" }
-            if seconds < 60 { return "\(seconds)s ago" }
-            if seconds < 3600 { return "\(seconds / 60)m ago" }
-            return "\(seconds / 3600)h ago"
-        }
-    }
-}
-
 private struct ChangedRepoRow: View {
     let group: DatabaseManager.ProjectGroup
     let warning: String?
