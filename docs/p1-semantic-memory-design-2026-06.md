@@ -11,6 +11,27 @@
 - **e** — Deepen MCP surface: annotations + outputSchema + resources + prompts
 - **f** — Mine the 17-source corpus into reusable skills/rules/runbooks (online LLM)
 
+## Status as of 2026-07-09 (plan-completion audit)
+
+| Plan item | Status |
+|-----------|--------|
+| F1 Online AI client + circuit breaker / cost telemetry | **partial** (client exists; guardrails missing) → wave-6 **task 9** |
+| F2 sqlite-vec native target | **parked-see-roadmap** (superseded by pure-Swift brute-force cosine; revisit only if measured need) |
+| F3 migration (embedding_meta, chunks, insight lifecycle cols, mined_rules) | **partial** (semantic_chunks / embedding_meta / insight lifecycle cols landed; mined_rules surface removed 2026-07-06) |
+| c.1 Chunker + EmbeddingClient + VectorMath | **done** (2026-06-26) |
+| c.2 VectorSearch.knn + RankFusion.rrf + schema | **done** (2026-06-26) |
+| c.3 Embedding settings + hybrid read + backfill wiring | **done** (service search semantic/hybrid; insight/session backfill) |
+| c.4 MCP `search` semantic/hybrid when embeddings usable | **not_done** → wave-6 **task 10** (today keyword-only schema/runtime) |
+| d Ranking (decay · importance · access; exclude superseded) | **done** (read-side) |
+| d Access tracking via service writer | **done** |
+| d Supersession on save (text match; cosine > 0.92 deferred) | **partial** (text match; cosine supersession **parked-see-roadmap**) |
+| d Typing: `save_insight` type | **done** |
+| d Typing: `get_memory` optional type filter | **not_done** → wave-6 **task 7** |
+| e Tool annotations | **done** (2026-06-26) |
+| e `outputSchema` + `structuredContent` on read tools | **partial** (`structuredContent` landed; `outputSchema` deferred never fulfilled) → wave-6 **task 8** |
+| e resources + prompts capabilities | **done** (2026-06-26; rule resources removed with corpus cut) |
+| f Corpus mining / `get_rules` | **parked-see-roadmap** (product surface deleted feature-cut item 3, 2026-07-06) |
+
 ## Status update (2026-06-26, Codex)
 
 > Superseded note (2026-07-06): feature-cut item 3 removed the corpus rule-mining

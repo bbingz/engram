@@ -19,8 +19,8 @@ dev/reference only.
 | Search | `GlobalSearchOverlay` hardcoded "hybrid" | **DONE** — now requests keyword |
 | Transcript | No "Copy entire conversation" in message context menu | **DONE** — added, backed by `TranscriptText.conversationText` |
 | Transcript | Tool rows showed generic `TOOLS #N` | **DONE** — `ColorBarMessageView.displayLabel` surfaces `TOOL: <name>` |
-| Session list | No column-visibility toggle UI | **DONE** — `columnsMenu` bound to `ColumnVisibilityStore` |
-| Session list | `selectedProject` / `sortOrder` not persisted | **DONE** — persisted via `@AppStorage` + restore on appear |
+| Session list | No column-visibility toggle UI | **REMOVED** — implementation deleted with unreachable legacy `SessionListView` in `322f5095` (2026-06-12 audit remediation); obsolete for card-based `SessionsPageView` (no columns); guarded by `testUnreachableLegacySessionListViewIsRemoved` |
+| Session list | `selectedProject` / `sortOrder` not persisted | **REGRESSED** — persistence deleted with `SessionListView` in `322f5095`; reopened as wave-6 task 3 (persist `SessionsPageView` filters; sort is hardcoded `.updatedDesc`, so `sortOrder` no longer applies) |
 | Perf | Service-layer `ISO8601DateFormatter` per-call | **DONE** — shared statics in `SwiftIndexer` + `EngramServiceCommandHandler` |
 | Usage (PR5) | Real probe data flow unconfirmed | **DONE** — startup writes real 7-day usage shares for tracked CLI sources |
 | Search | Semantic search still advertised in MCP | **DONE** — MCP search schema and runtime are keyword-only unless vector support exists |
@@ -52,7 +52,29 @@ correctly because `PopoverUsageSection` remains gated on real usage data.
 
 ## Open roadmap
 
-No open roadmap items as of 2026-05-24.
+No open roadmap product items as of 2026-05-24. See the decision-pending
+table below for items parked by the 2026-07-09 plan-completion audit.
+
+## Decision pending (2026-07-09 plan-completion audit)
+
+Large product-decision items the audit confirmed **not done** and deliberately
+**not** implemented in wave 6. Each needs an explicit product decision before
+scheduling.
+
+| Item | Source | Audit status | Size estimate | Decision needed |
+|------|--------|--------------|---------------|-----------------|
+| Lifecycle 3.1 multi-factor value score (+ P0-6 measurement-script prerequisite) | `docs/engram-lifecycle-upgrade-plan.md` §3.1 | not_done | L (2–3d + measurement) | Whether to evolve `quality_score` formula and expose bands in GUI |
+| Lifecycle 3.4 BM25/CJK ranking + faceting | `docs/engram-lifecycle-upgrade-plan.md` §3.4 | not_done | L (3–4d) | Whether human search ranking upgrade is next after MCP semantic |
+| Lifecycle 3.5 tool-result normalization + structured summary job | `docs/engram-lifecycle-upgrade-plan.md` §3.5 | not_done | XL (~15 adapters + summary job) | Accept adapter regression surface vs keep lossy tool results |
+| P0.5 value-band badge on session cards + `value_override` | `docs/engram-lifecycle-upgrade-plan.md` §3.1 / P0.5 | not_done | M (~1d after score parity) | Whether to show quality bands before multi-factor scoring |
+| Insight supersession via embedding cosine > 0.92 | `docs/p1-semantic-memory-design-2026-06.md` §d | partial (text match only) | M | Whether cosine supersession is required once embeddings are common |
+| P2 auto insight extraction | `docs/engram-lifecycle-upgrade-plan.md` §3.5; p1 design | not_done | L | Opt-in LLM mining of finished sessions into `insights` |
+| F2 sqlite-vec native target | `docs/p1-semantic-memory-design-2026-06.md` F2 | not_done / superseded by brute-force | XL (native dep + notarization) | Revisit only if brute-force KNN becomes a measured bottleneck |
+| F3/f corpus mining (`mined_rules`) | p1 design §f; removed feature-cut item 3 | not_done (surface deleted 2026-07-06) | L | Whether to reintroduce rule mining after feature-cut |
+| Competitive-relaunch P0 (Claude Code plugin; Homebrew/Sparkle distribution) | `docs/competitive-relaunch-2026-06.md` | not_done | XL | Distribution / plugin strategy for relaunch |
+| `ai_audit_log` desensitization design | lifecycle §3.5 P0; no Swift writer today | not_done | M (design) then L | Design body redaction **before** any Swift audit-log writer lands (wave-6 task 9 descope) |
+| Provider-branch valuable-missing features (Grok/Pi adapters, session taxonomy filter, runtime capability gates) | `docs/reviews/provider-audit-branch-reconciliation-2026-07.md` | not_done | L each | Branch `codex-provider-audit-remediation` deleted local+origin 2026-07-09 after three-model adjudication; recovery path is archive tag `archive/codex-provider-audit-remediation` (`285453d7`) + the reconciliation doc |
+| Sources-sync-3 nav consolidation | `docs/reviews/alignment-design-2026-06-14.md` ~:836,:896 | not_done (explicitly deferred) | M | Whether Sources/Settings nav consolidation is still wanted |
 
 ## Closed on 2026-06-20
 

@@ -30,18 +30,27 @@ real data, UI exercise, or product confirmation before becoming TODOs.
   `macos/Engram/Views/Pages/SessionsPageView.swift:68-70`,
   `macos/Engram/Views/CommandPaletteView.swift:282-293`).
 
+## Open — plan-completion audit (2026-07-09)
+
+Items **not** covered by wave-6 tasks (see `.wave6-sequential.md` for the
+in-flight execution queue):
+
+- **Sources-sync-3 nav consolidation.** Explicitly deferred in
+  `docs/reviews/alignment-design-2026-06-14.md` (~:836, :896). Still needs a
+  product decision on Sources/Settings navigation consolidation.
+- **Subagent-session-disk-audit advisory recommendations.**
+  `docs/subagent-session-disk-audit-2026-06-24.md` — `last_accessed_at` /
+  `access_count` population for disk-audit advisory paths remains unconfirmed
+  as a complete product surface.
+- **`ai_audit_log` desensitization design precondition.** No Swift writer into
+  `ai_audit_log` exists today. Body desensitization must be designed before any
+  writer lands (wave-6 task 9 explicitly descopes DB audit rows for this
+  reason). See also `docs/roadmap.md` Decision pending.
+
 ## Open
 
-Open follow-ups as of 2026-07-06:
+Open follow-ups as of 2026-07-09:
 
-- **Resolve the preserved audit-remediation branch.**
-  `codex-provider-audit-remediation` still tracks
-  `origin/codex-provider-audit-remediation`; as of 2026-07-06 on
-  `main@24cc4562`,
-  `git rev-list --left-right --cherry-pick --count main...codex-provider-audit-remediation`
-  returned `61 4`, so it has four commits not on `main`. Review/merge it or
-  explicitly close and delete it later; do not include it in stale-branch
-  cleanup.
 - **Normalize local ignore rules.** `.git/info/exclude` still contains local
   duplicates (`node_modules`, `.husky/_/`, `dist/`) and repo-specific entries
   such as `audit/` and `.github/copilot-instructions.md`. Decide which belong in
@@ -50,6 +59,21 @@ Open follow-ups as of 2026-07-06:
   perf-integration section below: Cursor WAL-aware parse-cache signatures and
   the three P3 latent issues. P1 truncation, Web UI ETag, and Web UI line-anchor
   items are already resolved.
+
+## Closed — provider-audit branch (2026-07-09)
+
+CLOSEOUT (2026-07-09): **Resolve preserved `codex-provider-audit-remediation`
+branch.**
+
+- Reconciliation doc landed (PR #144) and is committed as
+  `docs/reviews/provider-audit-branch-reconciliation-2026-07.md`.
+- Branch deleted local + origin on 2026-07-09 after third-model (Grok)
+  adjudication following Claude + Codex review.
+- Tip preserved as annotated archive tag
+  `archive/codex-provider-audit-remediation` (`285453d7`, pushed to origin).
+- Deliberately-unported valuable features remain inventoried in the
+  reconciliation doc and the roadmap Decision pending table; do not resurrect
+  the branch name for new work.
 
 Closed during the 2026-07-06 sync: documentation archive cleanup was already
 committed; immediate Time Machine snapshot reclamation is no longer needed
