@@ -137,7 +137,8 @@ enum MCPToolRegistry {
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.search
         )
     }
 

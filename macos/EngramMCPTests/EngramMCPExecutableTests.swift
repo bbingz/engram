@@ -1158,7 +1158,11 @@ final class EngramMCPExecutableTests: XCTestCase {
         let response = capture.response
         XCTAssertEqual(response.error?.code, nil)
         let instructions = capture.ordered["result"]?["instructions"]?.stringValue
-        XCTAssertFalse(instructions?.localizedCaseInsensitiveContains("semantic") ?? true)
+        // Instructions may mention semantic/hybrid; availability is still gated at tools/list + runtime.
+        XCTAssertTrue(
+            instructions?.localizedCaseInsensitiveContains("semantic") ?? false,
+            "initialize instructions should mention optional semantic search"
+        )
         XCTAssertEqual(
             try prettyJSONString(from: XCTUnwrap(capture.ordered["result"])),
             try String(contentsOfFile: fixturePath("mcp-golden/initialize.result.json"), encoding: .utf8)
