@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: Sessions page filter persistence (2026-07-09, Codex)
+
+- Persist Sessions page session/time/source filters across relaunch via
+  `sessions.*` AppStorage keys with invalid-source fallback
+  (`SessionsFilterPersistence` + tests).
+
 ### Fixed: service error detail in SessionDetailView (2026-07-09, Codex)
 
 - Surface structured `EngramServiceError` fields (name/code, message,
