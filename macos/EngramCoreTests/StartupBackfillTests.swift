@@ -154,6 +154,115 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    /// D01 (wave-6 task 4 / multi-expert audit 2026-06-10): phase-1
+    /// `indexSessions(runParentBackfills:)` used to run suggested-parent
+    /// heuristics before Layer-1b originator. The originator query excludes
+    /// rows with `suggested_parent_id` set, so a Codex session with
+    /// originator "Claude Code" that also scores a heuristic parent was
+    /// permanently blocked from `agent_role=dispatched` / tier=skip — periodic
+    /// cycles do not clear the suggestion, so they do not self-heal.
+    func testCodexOriginatorBlockedWhenSuggestedParentAssignedFirst_repro() throws {
+        let codexFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-d01-originator-\(UUID().uuidString).jsonl")
+        try #"{"type":"session_meta","payload":{"id":"codex-d01","originator":"Claude Code"}}"#
+            .appending("\n")
+            .write(to: codexFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: codexFile) }
+
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "parent-d01",
+                source: "claude-code",
+                startTime: "2026-04-23T10:05:00.000Z",
+                endTime: nil,
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "codex-d01",
+                source: "codex",
+                startTime: "2026-04-23T10:10:00.000Z",
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram",
+                summary: "Your task is to audit the repo",
+                filePath: codexFile.path
+            )
+
+            // Old inverted order: heuristics first.
+            let suggestions = try StartupBackfills.backfillSuggestedParents(db)
+            XCTAssertEqual(suggestions.suggested, 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'codex-d01'"),
+                "parent-d01"
+            )
+
+            let originatorUpdated = try StartupBackfills.backfillCodexOriginator(db)
+            XCTAssertEqual(originatorUpdated, 0, "originator must skip rows with suggested_parent_id set")
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'codex-d01'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'codex-d01'"))
+
+            // Periodic re-run does not self-heal: originator still excludes the row.
+            XCTAssertEqual(try StartupBackfills.backfillCodexOriginator(db), 0)
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'codex-d01'"))
+        }
+    }
+
+    func testCodexOriginatorRunsBeforeSuggestedParentsAndClassifies_repro() throws {
+        let codexFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-d01-order-\(UUID().uuidString).jsonl")
+        try #"{"type":"session_meta","payload":{"id":"codex-d01b","originator":"Claude Code"}}"#
+            .appending("\n")
+            .write(to: codexFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: codexFile) }
+
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "parent-d01b",
+                source: "claude-code",
+                startTime: "2026-04-23T10:05:00.000Z",
+                endTime: nil,
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "codex-d01b",
+                source: "codex",
+                startTime: "2026-04-23T10:10:00.000Z",
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram",
+                summary: "Your task is to audit the repo",
+                filePath: codexFile.path
+            )
+
+            // Correct order (matches fixed indexSessions / periodic path).
+            XCTAssertEqual(try StartupBackfills.backfillCodexOriginator(db), 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'codex-d01b'"),
+                "dispatched"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'codex-d01b'"),
+                "skip"
+            )
+
+            // Suggested-parent scoring may still run, but Layer-1b classification
+            // already landed and must not be undone by heuristics.
+            _ = try StartupBackfills.backfillSuggestedParents(db)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'codex-d01b'"),
+                "dispatched"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'codex-d01b'"),
+                "skip"
+            )
+        }
+    }
+
     func testBackfillCodexOriginatorMarksClaudeLaunchedCodexSessions() throws {
         let codexFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-originator-\(UUID().uuidString).jsonl")
