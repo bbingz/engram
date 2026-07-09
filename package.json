@@ -45,7 +45,7 @@
     "@types/node": "^25.9.1",
     "@vitest/coverage-v8": "^4.1.8",
     "husky": "^9.1.7",
-    "knip": "^6.3.1",
+    "knip": "^6.25.0",
     "lint-staged": "^16.4.0",
     "pixelmatch": "^6.0.0",
     "sharp": "^0.34.5",
