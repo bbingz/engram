@@ -136,6 +136,12 @@ Swift SPM: GRDB 6.29.3 (7.x is current; 6.x maintained), Hummingbird 2.20.1, asy
 ### P3 — Tech debt / parity
 21. **TS FTS-rebuild-policy drift** — reconcile with Swift authority or document divergences.
 22. **Duplicated helpers** — `relativeTime` (SessionCard vs ExpandableSessionCard), `escapeLike` call sites.
+    CLOSEOUT (2026-07-09, wave-6 task 1): `relativeTime` half closed — shared
+    `RelativeTimeText` / `TodayRelativeTime` live in
+    `macos/Engram/Components/RelativeTime.swift`; SessionCard + ExpandableSessionCard
+    (and Home/Popover/Trace) call it. Canonical body uses `EngramTimestampParser`
+    + injectable `now` (SessionCard's fractional-only `ISO8601DateFormatter` path
+    removed). Covered by `RelativeTimeTextTests`. `escapeLike` call sites remain open.
 23. **Dead code** — `IflowAdapter.decodeCwd` (orphaned).
 24. **Onboarding re-scan path**; **pulse `accessibilityReduceMotion`**; **messageCount parity** across Qwen/CommandCode/Iflow/Qoder adapters.
 

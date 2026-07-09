@@ -1,12 +1,6 @@
 // macos/Engram/Components/SessionCard.swift
 import SwiftUI
 
-private let isoFormatter: ISO8601DateFormatter = {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return f
-}()
-
 struct SessionCard: View {
     let session: Session
     var onTap: (() -> Void)? = nil
@@ -41,7 +35,7 @@ struct SessionCard: View {
                     .font(.caption)
                     .foregroundStyle(Theme.tertiaryText)
 
-                Text(relativeTime(session.startTime))
+                Text(RelativeTimeText.format(session.startTime, style: .compact))
                     .font(.caption)
                     .foregroundStyle(Theme.tertiaryText)
                     .frame(width: 40, alignment: .trailing)
@@ -60,16 +54,5 @@ struct SessionCard: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
-    }
-
-    private func relativeTime(_ iso: String) -> String {
-        guard let date = isoFormatter.date(from: iso) else {
-            return ""
-        }
-        let seconds = Int(-date.timeIntervalSinceNow)
-        if seconds < 60 { return "now" }
-        if seconds < 3600 { return "\(seconds / 60)m" }
-        if seconds < 86400 { return "\(seconds / 3600)h" }
-        return "\(seconds / 86400)d"
     }
 }

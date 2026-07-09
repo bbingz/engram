@@ -7,6 +7,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: shared relativeTime helper (2026-07-09, Codex)
+
+- Extracted `RelativeTimeText` / `TodayRelativeTime` into
+  `macos/Engram/Components/RelativeTime.swift` and migrated SessionCard (and the
+  remaining list call sites) onto the shared helper; closed P3 item 22's
+  relativeTime half with `RelativeTimeTextTests`.
+
 ### Changed: plan-completion audit backlog truth-up (2026-07-09, Codex)
 
 - Corrected stale roadmap/lifecycle/p1/followups claims against a 27-agent
