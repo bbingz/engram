@@ -7,6 +7,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: periodic FTS optimize cadence (2026-07-09, Codex)
+
+- Wire content-signature FTS optimize into the service indexing loop behind a
+  24h attempt floor so long-running services merge FTS segments without
+  rewriting the index every 5-minute tick (`optimizeFtsIfDue` +
+  `runPeriodicFtsOptimizeBestEffort`). Rejected a `quality_score` index:
+  no live product SQL filters/sorts on that column.
+
 ### Changed: single computeQualityScore source (2026-07-09, Codex)
 
 - Extracted the 5-factor quality score into `SessionQualityScore` shared by

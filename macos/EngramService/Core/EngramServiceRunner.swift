@@ -291,6 +291,29 @@ public enum EngramServiceRunner {
         }
     }
 
+    /// Periodic FTS5 segment merge. Runs through the writer gate, reuses the
+    /// content-signature + rebuild-version gates inside `optimizeFtsIfDue`,
+    /// and adds a 24h attempt floor so a busy corpus does not re-merge on
+    /// every 5-minute tick. Errors are isolated (match backup/embedding
+    /// best-effort helpers) so a failed optimize never aborts the loop.
+    static func runPeriodicFtsOptimizeBestEffort(gate: ServiceWriterGate) async {
+        do {
+            let ran = try await gate.performWriteCommand(name: "periodicFtsOptimize") { writer in
+                try writer.optimizeFtsIfDue()
+            }.value
+            if ran {
+                ServiceLogger.notice("periodic FTS optimize completed", category: .runner)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            ServiceLogger.warn(
+                "periodic FTS optimize failed: \(error.localizedDescription)",
+                category: .runner
+            )
+        }
+    }
+
     private static func runIndexingLoop(
         gate: ServiceWriterGate,
         statusMonitor: ServiceStatusMonitor,
@@ -372,6 +395,11 @@ public enum EngramServiceRunner {
                     }
                 }
                 await runUserDataBackupBestEffort(gate: gate, environment: environment)
+                // FTS segment merge for long-running services. Cadence-gated
+                // (>= 24h since last attempt + content-signature) so the
+                // 5-min loop never rewrites the whole index every tick.
+                // Isolated: failure must not kill the rest of the cycle.
+                await runPeriodicFtsOptimizeBestEffort(gate: gate)
                 let status = try await gate.performWriteCommand(name: "periodicIndexStatus") { writer in
                     try writer.indexStatus()
                 }.value

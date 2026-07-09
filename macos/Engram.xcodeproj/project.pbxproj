@@ -423,6 +423,7 @@
 		B5AD2A8A78E5A8D060FFB0BE /* ServiceTelemetryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2CD6892B3F2B8AA213F635F /* ServiceTelemetryTests.swift */; };
 		B5B38700789A1F06AA3A5323 /* ObservabilityScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E1AA0E9483110F1C9310E5F /* ObservabilityScreen.swift */; };
 		B5EEA43739B8AB546BBEC707 /* RelativeTimeTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3313B482201CF67E710DE934 /* RelativeTimeTextTests.swift */; };
+		B66D9E4EC1E7930ACA0D6764 /* FtsOptimizeCadenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AA6252A3170373CCC1F1881 /* FtsOptimizeCadenceTests.swift */; };
 		B6F2EEDB6018EBE4322DE4D3 /* MigrationLogReaders.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2EDBF86D121484D79F1CA3B /* MigrationLogReaders.swift */; };
 		B6F83A18CDBDCF01B64C2455 /* MockEngramServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0696453109985F63C5BE6106 /* MockEngramServiceClient.swift */; };
 		B71ABFB57270591CB9B96F36 /* ServiceLogSanitizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9C8908109FD1567C60784BC /* ServiceLogSanitizerTests.swift */; };
@@ -914,6 +915,7 @@
 		5A2A430091F68CF3ACFE2261 /* RemoteSyncCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSyncCoordinatorTests.swift; sourceTree = "<group>"; };
 		5A5488076252C1CFD0CBCCF2 /* ServiceLogSanitizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceLogSanitizer.swift; sourceTree = "<group>"; };
 		5A851FAB4E1FB6E1A0F01ADE /* GeminiProjectsJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeminiProjectsJSON.swift; sourceTree = "<group>"; };
+		5AA6252A3170373CCC1F1881 /* FtsOptimizeCadenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FtsOptimizeCadenceTests.swift; sourceTree = "<group>"; };
 		5B1A940D0D6719B788CA2E97 /* TierBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TierBar.swift; sourceTree = "<group>"; };
 		5C1C8678A914AA14E36D52FF /* EngramRemoteServerCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = EngramRemoteServerCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		5C84C0FDF22D13EE6ABD4D54 /* EngramServiceClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramServiceClient.swift; sourceTree = "<group>"; };
@@ -1532,6 +1534,7 @@
 			children = (
 				22AACDDFF337D230DBDEB48F /* EngramServiceCostsTests.swift */,
 				4C02528A606FCBB10D813715 /* EngramServiceIPCTests.swift */,
+				5AA6252A3170373CCC1F1881 /* FtsOptimizeCadenceTests.swift */,
 				787F59D2B6910C101059B282 /* HygieneChecksTests.swift */,
 				EC0C3B223DC3637D7A299413 /* ObservabilityRetentionTests.swift */,
 				5A2A430091F68CF3ACFE2261 /* RemoteSyncCoordinatorTests.swift */,
@@ -2954,6 +2957,7 @@
 			files = (
 				6B2A418029A895251C993D08 /* EngramServiceCostsTests.swift in Sources */,
 				E381616605C7A75146BE73A8 /* EngramServiceIPCTests.swift in Sources */,
+				B66D9E4EC1E7930ACA0D6764 /* FtsOptimizeCadenceTests.swift in Sources */,
 				4E801AC5B0C4AEDD5B34AD31 /* HygieneChecksTests.swift in Sources */,
 				F5AB459B060450EEC46F99FE /* ObservabilityRetentionTests.swift in Sources */,
 				E5BCF2EC52180329EB6A4AE5 /* RemoteSyncCoordinatorTests.swift in Sources */,

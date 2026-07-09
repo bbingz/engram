@@ -679,6 +679,15 @@ public enum StartupBackfills {
     }
 
     static let ftsOptimizeSignatureKey = "fts_optimize_signature"
+    /// ISO8601 timestamp of the last periodic-path optimize attempt (whether
+    /// the content-signature gate then ran or skipped the rewrite).
+    static let ftsOptimizeLastAttemptKey = "fts_optimize_last_attempt"
+    /// Floor between periodic optimize attempts. FTS5 'optimize' rewrites the
+    /// whole index; the 5-minute indexing loop would otherwise re-merge after
+    /// every content change and pin the writer gate. 24h is long enough that
+    /// segment merge is infrequent, short enough that a long-running service
+    /// still consolidates without waiting for a restart.
+    public static let ftsOptimizeMinInterval: TimeInterval = 24 * 60 * 60
 
     /// FTS5 'optimize' merges every b-tree segment into one — a full read+rewrite
     /// of the (multi-hundred-MB) index. Running it unconditionally on every launch
@@ -708,6 +717,41 @@ public enum StartupBackfills {
             arguments: [ftsOptimizeSignatureKey, signature]
         )
         return true
+    }
+
+    /// Periodic-path wrapper around `optimizeFts`. Adds a minimum-interval gate
+    /// so the 5-minute indexing loop does not re-enter the signature check (or
+    /// the rewrite) more often than `minInterval`. Startup continues to call
+    /// `optimizeFts` directly so a fresh launch consolidates immediately when
+    /// the signature differs. The attempt timestamp is recorded before the
+    /// rewrite so a mid-optimize crash does not re-trigger every subsequent
+    /// tick. Returns true only when the underlying optimize actually ran.
+    @discardableResult
+    public static func optimizeFtsIfDue(
+        _ db: Database,
+        now: Date = Date(),
+        minInterval: TimeInterval = ftsOptimizeMinInterval
+    ) throws -> Bool {
+        if let lastRaw = try String.fetchOne(
+            db,
+            sql: "SELECT value FROM metadata WHERE key = ?",
+            arguments: [ftsOptimizeLastAttemptKey]
+        ),
+           let last = parseDate(lastRaw),
+           now.timeIntervalSince(last) < minInterval {
+            return false
+        }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        try db.execute(
+            sql: """
+            INSERT INTO metadata(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            arguments: [ftsOptimizeLastAttemptKey, formatter.string(from: now)]
+        )
+        return try optimizeFts(db)
     }
 
     /// Cheap proxy for "has FTS-eligible content changed since last optimize":
