@@ -286,6 +286,118 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(tool("save_insight")?["annotations"]?["idempotentHint"]?.boolValue, false)
     }
 
+    /// tools/list must advertise `outputSchema` for exactly the read tools that
+    /// emit structuredContent (golden: mcp-golden/tools.outputSchema.json).
+    func testToolsListOutputSchemaMatchesCoveredReadToolSet() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+            """
+        )
+        guard case .array(let tools)? = capture.ordered["result"]?["tools"] else {
+            return XCTFail("Expected tools/list result.tools array")
+        }
+        let withSchema = Set(tools.compactMap { tool -> String? in
+            guard tool["outputSchema"] != nil else { return nil }
+            return tool["name"]?.stringValue
+        })
+        let expectedData = try Data(contentsOf: URL(fileURLWithPath: fixturePath("mcp-golden/tools.outputSchema.json")))
+        let expected = Set(try JSONDecoder().decode([String].self, from: expectedData))
+        XCTAssertEqual(withSchema, expected)
+
+        // Tools without structuredContent (text-only) must not declare outputSchema.
+        let noSchema = tools.filter { $0["outputSchema"] == nil }.compactMap { $0["name"]?.stringValue }
+        XCTAssertTrue(noSchema.contains("get_context"), "get_context is textOnly")
+        XCTAssertTrue(noSchema.contains("generate_summary"), "generate_summary has no structuredContent")
+        XCTAssertTrue(noSchema.contains("save_insight"), "mutating tools omit outputSchema")
+    }
+
+    /// Execute each covered read tool against the fixture DB and validate
+    /// structuredContent against the declared tools/list outputSchema.
+    func testStructuredContentMatchesDeclaredOutputSchema() throws {
+        let listCapture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+            """
+        )
+        guard case .array(let tools)? = listCapture.ordered["result"]?["tools"] else {
+            return XCTFail("Expected tools/list result.tools array")
+        }
+        let schemaByName: [String: OrderedTestJSONValue] = Dictionary(
+            uniqueKeysWithValues: tools.compactMap { tool in
+                guard let name = tool["name"]?.stringValue,
+                      let schema = tool["outputSchema"] else { return nil }
+                return (name, schema)
+            }
+        )
+
+        let expectedData = try Data(contentsOf: URL(fileURLWithPath: fixturePath("mcp-golden/tools.outputSchema.json")))
+        let covered = try JSONDecoder().decode([String].self, from: expectedData)
+        XCTAssertEqual(Set(schemaByName.keys), Set(covered))
+
+        let getSessionDB = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-output-schema-session"
+        )
+        defer { try? FileManager.default.removeItem(atPath: getSessionDB) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: getSessionDB,
+            source: "codex",
+            filePath: fixturePath("mcp-runtime/transcripts/rollout-mcp-transcript-01.jsonl"),
+            messageCount: 3,
+            userMessageCount: 2,
+            assistantMessageCount: 1,
+            toolMessageCount: 0
+        )
+
+        let calls: [(name: String, arguments: String, db: String?)] = [
+            ("list_sessions", #"{"project":"engram","limit":4,"offset":0}"#, nil),
+            ("stats", #"{"group_by":"source"}"#, nil),
+            ("get_costs", #"{"group_by":"project"}"#, nil),
+            ("tool_analytics", #"{"group_by":"tool"}"#, nil),
+            ("file_activity", #"{"project":"engram"}"#, nil),
+            ("project_timeline", #"{"project":"engram"}"#, nil),
+            ("project_list_migrations", #"{"limit":20}"#, nil),
+            ("live_sessions", #"{}"#, nil),
+            ("get_memory", #"{"query":"Swift MCP"}"#, nil),
+            ("search", #"{"query":"Swift MCP","limit":5}"#, nil),
+            ("get_insights", #"{}"#, nil),
+            ("project_review", #"{"old_path":"/Users/test/work/a","new_path":"/Users/test/work/b"}"#, nil),
+            ("get_session", #"{"id":"mcp-transcript-01","page":1}"#, getSessionDB),
+            ("handoff", #"{"cwd":"/Users/test/work/missing-project"}"#, nil),
+            ("project_recover", #"{}"#, nil),
+        ]
+        XCTAssertEqual(Set(calls.map(\.name)), Set(covered), "test must cover every outputSchema tool")
+
+        // Isolate HOME so project_review / live_sessions do not scan the real
+        // user machine, and so EmbeddingSettings does not pick up a live key.
+        let isolatedHome = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: isolatedHome) }
+
+        for call in calls {
+            let schema = try XCTUnwrap(schemaByName[call.name], call.name)
+            let env: [String: String] = [
+                "ENGRAM_MCP_DB_PATH": call.db ?? fixturePath("mcp-contract.sqlite"),
+                "HOME": isolatedHome.path,
+                "ENGRAM_SETTINGS_PATH": isolatedHome.appendingPathComponent("missing-settings.json").path,
+            ]
+            let capture = try rpc(
+                """
+                {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"\(call.name)","arguments":\(call.arguments)}}
+                """,
+                environment: env
+            )
+            XCTAssertNil(capture.response.error, call.name)
+            XCTAssertEqual(capture.ordered["result"]?["isError"]?.boolValue, nil, call.name)
+            let structured = try XCTUnwrap(
+                capture.ordered["result"]?["structuredContent"],
+                "\(call.name) must emit structuredContent"
+            )
+            let errors = MiniJSONSchema.validate(structured, against: schema)
+            XCTAssertTrue(errors.isEmpty, "\(call.name) schema errors:\n\(errors.joined(separator: "\n"))")
+        }
+    }
+
     func testInitializeAdvertisesResourcesAndPromptsCapabilities() throws {
         let capture = try rpc(
             """
@@ -4258,5 +4370,105 @@ private struct OrderedTestJSONParser {
         case invalidEscape
         case invalidUnicode
         case invalidNumber
+    }
+}
+
+/// Small in-test JSON Schema checker for MCP outputSchema validation.
+/// Supports type / required / properties / additionalProperties / items only.
+private enum MiniJSONSchema {
+    static func validate(
+        _ instance: OrderedTestJSONValue,
+        against schema: OrderedTestJSONValue,
+        path: String = "$"
+    ) -> [String] {
+        var errors: [String] = []
+
+        if let typeField = schema["type"] {
+            let allowed = typeNames(typeField)
+            if !allowed.isEmpty, !allowed.contains(where: { matchesType(instance, $0) }) {
+                errors.append("\(path): type mismatch expected \(allowed.joined(separator: "|")) got \(describe(instance))")
+                return errors
+            }
+        }
+
+        switch instance {
+        case .object(let entries):
+            let dict = Dictionary(uniqueKeysWithValues: entries.map { ($0.0, $0.1) })
+            if let required = schema["required"]?.arrayValue {
+                for key in required.compactMap(\.stringValue) where dict[key] == nil {
+                    errors.append("\(path): missing required property '\(key)'")
+                }
+            }
+            let props: [String: OrderedTestJSONValue]
+            if case .object(let propEntries)? = schema["properties"] {
+                props = Dictionary(uniqueKeysWithValues: propEntries.map { ($0.0, $0.1) })
+            } else {
+                props = [:]
+            }
+            let additional = schema["additionalProperties"]?.boolValue
+            for (key, value) in dict {
+                if let sub = props[key] {
+                    errors.append(contentsOf: validate(value, against: sub, path: "\(path).\(key)"))
+                } else if additional == false {
+                    errors.append("\(path): additional property '\(key)' not allowed")
+                }
+            }
+        case .array(let items):
+            if let itemSchema = schema["items"] {
+                for (index, item) in items.enumerated() {
+                    errors.append(contentsOf: validate(item, against: itemSchema, path: "\(path)[\(index)]"))
+                }
+            }
+        default:
+            break
+        }
+        return errors
+    }
+
+    private static func typeNames(_ value: OrderedTestJSONValue) -> [String] {
+        if let single = value.stringValue { return [single] }
+        if let array = value.arrayValue { return array.compactMap(\.stringValue) }
+        return []
+    }
+
+    private static func matchesType(_ value: OrderedTestJSONValue, _ type: String) -> Bool {
+        switch type {
+        case "null":
+            if case .null = value { return true }
+            return false
+        case "boolean":
+            if case .bool = value { return true }
+            return false
+        case "integer":
+            if case .int = value { return true }
+            return false
+        case "number":
+            if case .int = value { return true }
+            if case .double = value { return true }
+            return false
+        case "string":
+            if case .string = value { return true }
+            return false
+        case "array":
+            if case .array = value { return true }
+            return false
+        case "object":
+            if case .object = value { return true }
+            return false
+        default:
+            return true
+        }
+    }
+
+    private static func describe(_ value: OrderedTestJSONValue) -> String {
+        switch value {
+        case .null: return "null"
+        case .bool: return "boolean"
+        case .int: return "integer"
+        case .double: return "number"
+        case .string: return "string"
+        case .array: return "array"
+        case .object: return "object"
+        }
     }
 }

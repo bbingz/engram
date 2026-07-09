@@ -8,6 +8,41 @@
 
 ---
 
+## structuredContent and outputSchema
+
+Successful tool results that carry machine-readable payloads include MCP
+`structuredContent` alongside the usual `content[].text` mirror. Read tools that
+emit structured payloads also declare an `outputSchema` in `tools/list` so
+clients can type-check the JSON without guessing.
+
+| Tool | Root shape | Always present | Optional fields |
+|------|------------|----------------|-----------------|
+| `list_sessions` | object | `sessions[]`, `total` | — |
+| `stats` | object | `groupBy`, `groups[]`, `indexJobs`, `totalSessions` | — |
+| `get_costs` | object | `totalCostUsd`, `totalInputTokens`, `totalOutputTokens`, `breakdown[]` | — |
+| `tool_analytics` | object | `tools[]`, `totalCalls`, `groupCount` | per-row `sessionCount` / `toolCount` / `label` depend on `group_by` |
+| `file_activity` | object | `files[]`, `totalFiles` | — |
+| `project_timeline` | object | `project`, `timeline[]`, `total` | — |
+| `project_list_migrations` | **array** | migration log rows | nullable `finishedAt` / `rolledBackOf` / `auditNote` / `error`; `detail` object or null |
+| `live_sessions` | object | `sessions[]`, `count`, `note` | MCP mode always returns empty sessions + unavailable note |
+| `get_memory` | object | `memories[]` | `warning`, `message`, or `retrieval` depending on path |
+| `search` | object | `results[]`, `query`, `searchModes[]` | `warning`, `insightResults[]` |
+| `get_insights` | object | `content[]` (`type`/`text` items) | — |
+| `project_review` | object | `own[]`, `other[]` | `truncated.{own,other}` when caps apply |
+| `get_session` | object | `session`, `messages[]`, `totalPages`, `currentPage` | `totalKnownComplete`, `truncated`, `truncatedAt` |
+| `handoff` | object | `brief`, `sessionCount` | — |
+| `project_recover` | **array** | recover diagnosis rows with nested `fs` | nullable `finishedAt` / `error` / `fs.probeError` |
+
+Tools that do **not** declare `outputSchema`:
+
+- `get_context` — text-only result (no `structuredContent`)
+- `generate_summary` — text + `metadata` only (no `structuredContent`)
+- Mutating / operational tools (`save_insight`, `export`, `project_move`, …) — they may still emit `structuredContent`, but schemas are reserved for read tools in this wave
+
+Error results may include `structuredContent` with `code` / `message` (and related fields for `serviceUnavailable`); those error envelopes are not covered by tool `outputSchema`.
+
+---
+
 ## Choosing a read tool
 
 | Goal | Use | Notes |
@@ -50,7 +85,7 @@ List historical AI coding assistant sessions. Supports filtering by tool source,
 | limit | number | no | Max results to return. Default 20, max 100 |
 | offset | number | no | Pagination offset. Default 0 |
 
-**Notes:** Returns session metadata (id, source, startTime, endTime, cwd, project, model, messageCount, userMessageCount, summary). Results respect the server's `noiseFilter` setting (tier-based filtering). Limit is clamped to 100 even if a higher value is passed.
+**Notes:** Returns session metadata (id, source, startTime, endTime, cwd, project, model, messageCount, userMessageCount, summary). Results respect the server's `noiseFilter` setting (tier-based filtering). Limit is clamped to 100 even if a higher value is passed. **Output:** `structuredContent` is `{ sessions, total }`; declared via `outputSchema` in `tools/list`.
 
 ---
 
@@ -66,7 +101,7 @@ Read the full conversation content of a single session. Supports pagination for 
 | page | number | no | Page number, starting from 1. Default 1 |
 | roles | string[] | no | Only return messages from specified roles. Enum per item: `user`, `assistant`. Default: all roles |
 
-**Notes:** Page size is fixed at 50 messages. Response includes `totalPages` and `currentPage` for navigation. Returns an error if the session ID is not found or the source adapter is unsupported.
+**Notes:** Page size is fixed at 50 messages. Response includes `totalPages` and `currentPage` for navigation. Returns an error if the session ID is not found or the source adapter is unsupported. **Output:** `structuredContent` is `{ session, messages, totalPages, currentPage }` plus optional truncation flags; declared via `outputSchema`.
 
 ---
 
@@ -85,7 +120,7 @@ Full-text keyword search across all session content. Supports Chinese and Englis
 | limit | number | no | Max results. Default 10, max 50 |
 | mode | string | no | Search mode. Enum: `keyword`. Default `keyword` |
 
-**Notes:** Uses SQLite FTS keyword search. If the query is a UUID, performs direct session ID lookup. Keyword search requires 3+ characters. Legacy clients that pass `semantic`, `hybrid`, or another unsupported mode are accepted for compatibility but receive keyword-only results with a warning. Also searches the insights FTS store and returns matching curated memories in `insightResults`.
+**Notes:** Uses SQLite FTS keyword search. If the query is a UUID, performs direct session ID lookup. Keyword search requires 3+ characters. Legacy clients that pass `semantic`, `hybrid`, or another unsupported mode are accepted for compatibility but receive keyword-only results with a warning. Also searches the insights FTS store and returns matching curated memories in `insightResults`. **Output:** `structuredContent` is `{ results, query, searchModes }` with optional `warning` / `insightResults`; declared via `outputSchema`.
 
 ---
 
@@ -104,7 +139,7 @@ Auto-extract relevant historical session context for the current working directo
 | sort_by | string | no | Sort order. Enum: `recency` (default, reverse chronological), `score` (by quality score) |
 | include_environment | boolean | no | Include live environment data (active sessions, today's cost, tool usage, alerts). Default `true` |
 
-**Notes:** Project name is derived from `basename(cwd)`. Respects project aliases. When `task` is provided, matching saved insights are pulled with FTS keyword lookup before recent session summaries. Includes curated insights (from `save_insight`) when available. The environment section progressively drops lower-priority data (config status, file hotspots, git repos, recent errors) if it exceeds 30% of the token budget. `abstract` mode only shows cost and alerts.
+**Notes:** Project name is derived from `basename(cwd)`. Respects project aliases. When `task` is provided, matching saved insights are pulled with FTS keyword lookup before recent session summaries. Includes curated insights (from `save_insight`) when available. The environment section progressively drops lower-priority data (config status, file hotspots, git repos, recent errors) if it exceeds 30% of the token budget. `abstract` mode only shows cost and alerts. **Output:** text-only (`content[].text`); no `structuredContent` / `outputSchema`.
 
 ---
 
@@ -120,7 +155,7 @@ View a project's cross-tool operation timeline. Understand what was done in diff
 | since | string | no | Start time (ISO 8601) |
 | until | string | no | End time (ISO 8601) |
 
-**Notes:** Returns up to 200 sessions sorted chronologically. Each entry includes time, source tool, summary, session ID, and message count.
+**Notes:** Returns up to 200 sessions sorted chronologically. Each entry includes time, source tool, summary, session ID, and message count. **Output:** `structuredContent` is `{ project, timeline, total }`; declared via `outputSchema`.
 
 ---
 
@@ -136,7 +171,7 @@ Get usage statistics: session counts, message counts, grouped by various dimensi
 | until | string | no | End time (ISO 8601) |
 | group_by | string | no | Grouping dimension. Enum: `source`, `project`, `day`, `week`. Default `source` |
 
-**Notes:** Each group includes sessionCount, messageCount, userMessageCount, assistantMessageCount, and toolMessageCount. Also returns totalSessions across all groups and an indexJobs object keyed by raw session_index_jobs status strings.
+**Notes:** Each group includes sessionCount, messageCount, userMessageCount, assistantMessageCount, and toolMessageCount. Also returns totalSessions across all groups and an indexJobs object keyed by raw session_index_jobs status strings. **Output:** `structuredContent` is `{ groupBy, groups, indexJobs, totalSessions }`; declared via `outputSchema`.
 
 ---
 
@@ -165,7 +200,7 @@ Generate an AI summary for a conversation session.
 |------|------|----------|-------------|
 | sessionId | string | **yes** | The session ID to summarize |
 
-**Notes:** Requires `aiApiKey` to be configured in `~/.engram/settings.json`. Uses the configured AI protocol (default: OpenAI-compatible). Updates the session's summary in the database after generation. Returns an error if no API key is configured, the session is not found, or the adapter is unavailable.
+**Notes:** Requires `aiApiKey` to be configured in `~/.engram/settings.json`. Uses the configured AI protocol (default: OpenAI-compatible). Updates the session's summary in the database after generation. Returns an error if no API key is configured, the session is not found, or the adapter is unavailable. **Output:** text + `metadata.sessionId` only; no `structuredContent` / `outputSchema`.
 
 ---
 
@@ -208,9 +243,9 @@ Retrieve curated insights and memories from past sessions. Use `save_insight` to
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | query | string | **yes** | What to remember (e.g. "user's coding preferences") |
-| type | string | no | Filter by memory type. Enum: `episodic`, `semantic`, `procedural`. Omit to return all types. |
+| type | string | no | Optional insight type filter. Enum: `episodic`, `semantic`, `procedural`. Applied on both keyword/FTS and hybrid semantic paths. Invalid values return an error. Missing/NULL stored types are treated as `semantic`. |
 
-**Notes:** Returns up to 10 matching insights with id, content, wing, room, importance, and distance placeholder. The Swift product path uses hybrid semantic+keyword retrieval when embeddings are available, otherwise insight FTS keyword search ranked by importance/recency (lifecycle columns) or plain keyword/recency fallback. Optional `type` filters both hybrid and keyword paths to `insight_type` (`episodic` half-life 14d, `semantic` 30d, `procedural` 90d); missing `insight_type` is treated as `semantic`. Unknown `type` values return an `isError` result (`type must be one of: episodic, semantic, procedural`). If no memories exist, suggests using `save_insight`.
+**Notes:** Returns up to 10 matching insights with id, content, wing, room, importance, and distance placeholder. The Swift product path uses insight FTS keyword search (and hybrid semantic retrieval when embeddings are usable), then falls back to recent insights. If no memories exist, suggests using `save_insight`. **Output:** `structuredContent` is `{ memories }` plus optional `warning` / `message` / `retrieval`; declared via `outputSchema`.
 
 ---
 
@@ -276,7 +311,7 @@ Get token usage costs across sessions, grouped by various dimensions.
 | since | string | no | Start time (ISO 8601) |
 | until | string | no | End time (ISO 8601) |
 
-**Notes:** Returns totalCostUsd (rounded to 2 decimal places), totalInputTokens, totalOutputTokens, and a detailed breakdown array.
+**Notes:** Returns totalCostUsd (rounded to 2 decimal places), totalInputTokens, totalOutputTokens, and a detailed breakdown array. **Output:** `structuredContent` matches that envelope; declared via `outputSchema`.
 
 ---
 
@@ -292,7 +327,7 @@ Analyze which tools (Read, Edit, Bash, etc.) are used most across sessions.
 | since | string | no | Start time (ISO 8601) |
 | group_by | string | no | Group dimension. Enum: `tool`, `session`, `project`. Default `tool` |
 
-**Notes:** Returns the tools array with usage data, totalCalls across all groups, and groupCount.
+**Notes:** Returns the tools array with usage data, totalCalls across all groups, and groupCount. **Output:** `structuredContent` is `{ tools, totalCalls, groupCount }`; declared via `outputSchema`.
 
 ---
 
@@ -308,7 +343,7 @@ Generate a handoff brief for a project -- summarizes recent sessions to help res
 | sessionId | string | no | Specific session to handoff (if omitted, uses the 10 most recent) |
 | format | string | no | Output format. Enum: `markdown`, `plain`. Default `markdown` |
 
-**Notes:** Project name derived from `basename(cwd)`. Includes cost data per session when available. Reads the last user message from the most recent session to generate a suggested continuation prompt. Includes relative time indicators (e.g. "2h ago") and session duration.
+**Notes:** Project name derived from `basename(cwd)`. Includes cost data per session when available. Reads the last user message from the most recent session to generate a suggested continuation prompt. Includes relative time indicators (e.g. "2h ago") and session duration. **Output:** `structuredContent` is `{ brief, sessionCount }`; declared via `outputSchema`.
 
 ---
 
@@ -322,7 +357,7 @@ Report MCP-mode live session monitoring status.
 |------|------|----------|-------------|
 | *(none)* | | | This tool takes no parameters |
 
-**Notes:** In MCP server mode, this tool intentionally returns an explicit unavailable result with an empty list and note. The macOS app/service IPC path has its own local live-session scanner for UI/service use; that scanner is not exposed through this MCP tool.
+**Notes:** In MCP server mode, this tool intentionally returns an explicit unavailable result with an empty list and note. The macOS app/service IPC path has its own local live-session scanner for UI/service use; that scanner is not exposed through this MCP tool. **Output:** `structuredContent` is `{ sessions, count, note }`; declared via `outputSchema`.
 
 ---
 
@@ -336,7 +371,7 @@ Get actionable cost optimization suggestions with savings estimates.
 |------|------|----------|-------------|
 | since | string | no | ISO timestamp for start of analysis window. Default: 7 days ago |
 
-**Notes:** Returns a formatted report with period summary (total spent, projected monthly), potential savings, and prioritized suggestions (high/medium/low severity). Each suggestion includes a title, detail, savings estimate, and top contributing items.
+**Notes:** Returns a formatted report with period summary (total spent, projected monthly), potential savings, and prioritized suggestions (high/medium/low severity). Each suggestion includes a title, detail, savings estimate, and top contributing items. **Output:** `structuredContent` is `{ content: [{ type, text }] }`; declared via `outputSchema`.
 
 ---
 
@@ -352,7 +387,7 @@ Show most frequently edited/read files across sessions for a project. Helps unde
 | since | string | no | ISO 8601 date filter |
 | limit | number | no | Max results. Default 50 |
 
-**Notes:** Returns file paths with edit/read counts aggregated across sessions.
+**Notes:** Returns file paths with edit/read counts aggregated across sessions. **Output:** `structuredContent` is `{ files, totalFiles }`; declared via `outputSchema`.
 
 ---
 
@@ -434,6 +469,8 @@ List recent project-move migrations with state, paths, counts, and timestamps.
 | since | string | no | ISO timestamp; only rows started after this time |
 | limit | number | no | Max rows to return |
 
+**Notes:** **Output:** `structuredContent` is a top-level **array** of migration log rows; declared via `outputSchema`.
+
 ---
 
 ## project_recover
@@ -447,7 +484,7 @@ Diagnose stuck or failed migrations.
 | since | string | no | ISO timestamp filter |
 | include_committed | boolean | no | Also inspect committed migrations |
 
-**Notes:** Advisory only; does not modify files or DB state.
+**Notes:** Advisory only; does not modify files or DB state. **Output:** `structuredContent` is a top-level **array** of diagnosis objects (`migrationId`, `fs`, `recommendation`, …); declared via `outputSchema`.
 
 ---
 
@@ -463,4 +500,4 @@ Scan AI session roots for residual references to an old project path.
 | new_path | string | **yes** | Absolute new path |
 | max_items | number | no | Cap returned own/other arrays. Default 100 |
 
-**Notes:** Classifies hits into `own` and `other` so migration leftovers are separated from unrelated historical mentions.
+**Notes:** Classifies hits into `own` and `other` so migration leftovers are separated from unrelated historical mentions. **Output:** `structuredContent` is `{ own, other }` with optional `truncated`; declared via `outputSchema`.

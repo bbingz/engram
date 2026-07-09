@@ -7,6 +7,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: MCP read-tool outputSchema (2026-07-09, Codex)
+
+- Declare MCP `outputSchema` on every read tool that emits `structuredContent`
+  (`list_sessions`, `stats`, `get_costs`, `tool_analytics`, `file_activity`,
+  `project_timeline`, `project_list_migrations`, `live_sessions`, `get_memory`,
+  `search`, `get_insights`, `project_review`, `get_session`, `handoff`,
+  `project_recover`), derived from actual payload shapes, with fixture-backed
+  schema validation in EngramMCPTests.
+
 ### Added: get_memory type filter (2026-07-09, Codex)
 
 - Optional `type` on MCP `get_memory` (`episodic` \| `semantic` \| `procedural`)

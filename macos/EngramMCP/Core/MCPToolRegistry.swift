@@ -4,23 +4,45 @@ struct MCPToolDefinition {
     let name: String
     let description: String
     let inputSchema: JSONValue
+    /// Present only for read tools that emit `structuredContent` (MCP `outputSchema`).
+    let outputSchema: JSONValue?
+
+    init(
+        name: String,
+        description: String,
+        inputSchema: JSONValue,
+        outputSchema: JSONValue? = nil
+    ) {
+        self.name = name
+        self.description = description
+        self.inputSchema = inputSchema
+        self.outputSchema = outputSchema
+    }
 
     var jsonValue: JSONValue {
-        .object([
+        var object: [String: JSONValue] = [
             "name": .string(name),
             "description": .string(description),
             "inputSchema": inputSchema,
-        ])
+        ]
+        if let outputSchema {
+            object["outputSchema"] = outputSchema
+        }
+        return .object(object)
     }
 
     var orderedJSONValue: OrderedJSONValue {
-        .object([
+        var entries: [(String, OrderedJSONValue)] = [
             ("name", .string(name)),
             ("title", .string(MCPToolRegistry.humanTitle(for: name))),
             ("description", .string(description)),
             ("inputSchema", OrderedJSONValue(inputSchema)),
-            ("annotations", MCPToolRegistry.toolAnnotations(for: name)),
-        ])
+        ]
+        if let outputSchema {
+            entries.append(("outputSchema", OrderedJSONValue(outputSchema)))
+        }
+        entries.append(("annotations", MCPToolRegistry.toolAnnotations(for: name)))
+        return .object(entries)
     }
 }
 
@@ -93,7 +115,8 @@ enum MCPToolRegistry {
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.listSessions
         ),
         MCPToolDefinition(
             name: "stats",
@@ -115,7 +138,8 @@ enum MCPToolRegistry {
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.stats
         ),
         MCPToolDefinition(
             name: "get_costs",
@@ -143,7 +167,8 @@ enum MCPToolRegistry {
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.getCosts
         ),
         MCPToolDefinition(
             name: "tool_analytics",
@@ -170,7 +195,8 @@ enum MCPToolRegistry {
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.toolAnalytics
         ),
         MCPToolDefinition(
             name: "file_activity",
@@ -192,7 +218,8 @@ enum MCPToolRegistry {
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.fileActivity
         ),
         MCPToolDefinition(
             name: "project_timeline",
@@ -209,7 +236,8 @@ enum MCPToolRegistry {
                     "until": .object(["type": .string("string")]),
                 ]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.projectTimeline
         ),
         MCPToolDefinition(
             name: "project_list_migrations",
@@ -227,7 +255,8 @@ enum MCPToolRegistry {
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.projectListMigrations
         ),
         MCPToolDefinition(
             name: "live_sessions",
@@ -236,7 +265,8 @@ enum MCPToolRegistry {
                 "type": .string("object"),
                 "properties": .object([:]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.liveSessions
         ),
         MCPToolDefinition(
             name: "get_memory",
@@ -256,7 +286,8 @@ enum MCPToolRegistry {
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.getMemory
         ),
         MCPToolDefinition(
             name: "search",
@@ -288,7 +319,8 @@ enum MCPToolRegistry {
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.search
         ),
         MCPToolDefinition(
             name: "get_context",
@@ -348,7 +380,8 @@ enum MCPToolRegistry {
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.getInsights
         ),
         MCPToolDefinition(
             name: "link_sessions",
@@ -387,7 +420,8 @@ enum MCPToolRegistry {
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.projectReview
         ),
         MCPToolDefinition(
             name: "get_session",
@@ -419,7 +453,8 @@ enum MCPToolRegistry {
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.getSession
         ),
         MCPToolDefinition(
             name: "export",
@@ -469,7 +504,8 @@ enum MCPToolRegistry {
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.handoff
         ),
         MCPToolDefinition(
             name: "generate_summary",
@@ -705,7 +741,8 @@ enum MCPToolRegistry {
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
-            ])
+            ]),
+            outputSchema: MCPOutputSchemas.projectRecover
         ),
         MCPToolDefinition(
             name: "manage_project_alias",
