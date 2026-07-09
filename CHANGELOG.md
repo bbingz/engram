@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: service error detail in SessionDetailView (2026-07-09, Codex)
+
+- Surface structured `EngramServiceError` fields (name/code, message,
+  retryPolicy) for summary and handoff failures instead of collapsing to
+  `localizedDescription` alone (`ServiceErrorPresenter` + `_repro` tests).
+
 ### Changed: shared relativeTime helper (2026-07-09, Codex)
 
 - Extracted `RelativeTimeText` / `TodayRelativeTime` into
