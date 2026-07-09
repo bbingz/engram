@@ -91,6 +91,38 @@ final class DatabaseManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testIndexJobCountsByStatusReadsGroupedCounts() throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { database in
+            try database.execute(sql: """
+                CREATE TABLE IF NOT EXISTS session_index_jobs (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    job_kind TEXT NOT NULL,
+                    target_sync_version INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    not_before TEXT
+                )
+                """)
+            try database.execute(sql: """
+                INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status) VALUES
+                ('job-pending-1', 'session-1', 'fts', 1, 'pending'),
+                ('job-pending-2', 'session-2', 'embedding', 1, 'pending'),
+                ('job-permanent-1', 'session-3', 'fts', 1, 'failed_permanent')
+                """)
+        }
+
+        XCTAssertEqual(try db.indexJobCountsByStatus(), [
+            IndexJobStatus.pending.rawValue: 2,
+            IndexJobStatus.failedPermanent.rawValue: 1,
+        ])
+    }
+
+    @MainActor
     func testReadInBackgroundLazilyOpensExistingDatabase() throws {
         let lazyDb = DatabaseManager(path: dbPath)
 
@@ -887,6 +919,26 @@ final class DatabaseManagerTests: XCTestCase {
         // 1-char query should return empty (guard query.count >= 2)
         let results = try db.search(query: "a")
         XCTAssertEqual(results.count, 0)
+    }
+
+    @MainActor
+    func testWhitespaceOnlySearchBrowsesRecentVisibleSessions_repro() throws {
+        try insertTestSession(at: dbPath, id: "old-visible", startTime: "2026-05-01T10:00:00Z", tier: "normal")
+        try insertTestSession(at: dbPath, id: "new-visible", startTime: "2026-05-03T10:00:00Z", tier: "normal")
+        try insertTestSession(at: dbPath, id: "skip-hidden", startTime: "2026-05-04T10:00:00Z", tier: "skip")
+        try insertTestSession(at: dbPath, id: "lite-hidden", startTime: "2026-05-05T10:00:00Z", tier: "lite")
+        try insertTestSession(
+            at: dbPath,
+            id: "user-hidden",
+            startTime: "2026-05-06T10:00:00Z",
+            hiddenAt: "2026-05-06T10:01:00Z"
+        )
+
+        // PR #142 regression: a whitespace-only query has no FTS terms, so the
+        // app read path must browse recent visible sessions instead of returning [].
+        let results = try db.search(query: "   ", limit: 10).map(\.id)
+
+        XCTAssertEqual(results, ["new-visible", "old-visible"])
     }
 
     // MARK: - Tier filtering (extended)

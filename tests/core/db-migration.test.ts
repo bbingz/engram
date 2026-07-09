@@ -403,7 +403,7 @@ describe('Database migration', () => {
   });
 
   // 3. Parent session columns exist after migration
-  it('adds parent_session_id, suggested_parent_id, link_source, link_checked_at columns', () => {
+  it('adds parent and suggestion-review columns', () => {
     const dbPath = makeTmpDb();
     const db = new Database(dbPath);
     const cols = db.raw.prepare('PRAGMA table_info(sessions)').all() as {
@@ -412,6 +412,8 @@ describe('Database migration', () => {
     const colNames = cols.map((c) => c.name);
     expect(colNames).toContain('parent_session_id');
     expect(colNames).toContain('suggested_parent_id');
+    expect(colNames).toContain('suggestion_status');
+    expect(colNames).toContain('suggestion_candidates');
     expect(colNames).toContain('link_source');
     expect(colNames).toContain('link_checked_at');
     db.close();
@@ -474,6 +476,7 @@ describe('Database migration', () => {
     const names = indexes.map((i) => i.name);
     expect(names).toContain('idx_sessions_parent');
     expect(names).toContain('idx_sessions_suggested_parent');
+    expect(names).toContain('idx_sessions_suggestion_status');
     expect(names).toContain('idx_sessions_project');
     db.close();
   });
@@ -597,6 +600,8 @@ describe('Database migration', () => {
 
     expect(colNames).toContain('parent_session_id');
     expect(colNames).toContain('suggested_parent_id');
+    expect(colNames).toContain('suggestion_status');
+    expect(colNames).toContain('suggestion_candidates');
     expect(colNames).toContain('link_source');
     expect(colNames).toContain('link_checked_at');
 

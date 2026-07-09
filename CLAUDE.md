@@ -158,7 +158,7 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 - Orphan trigger: `trg_sessions_parent_cascade` nullifies children on parent deletion + resets tier for re-evaluation.
 - Tier lifecycle: subagent sessions always stay `skip` (accessed through parent, not independently); unlinked children get tier reset to NULL for re-evaluation. `downgradeSubagentTiers()` on daemon startup fixes any incorrectly upgraded sessions.
 - Dispatch-pattern sessions without a parent get `agent_role = COALESCE(agent_role, 'dispatched')` → `tier = 'skip'`.
-- `src/core/parent-detection.ts`: `DETECTION_VERSION` (bump to trigger re-evaluation), dispatch patterns + `PROBE_REGEXES`, `scoreCandidate()` (4h half-life, CWD classification, soft end_time handling), `pickBestCandidate()` (best-score wins, no ambiguity rejection).
+- `src/core/parent-detection.ts`: `DETECTION_VERSION` (bump to trigger re-evaluation), dispatch patterns + `PROBE_REGEXES`, `scoreCandidate()` (4h half-life, CWD classification, soft end_time handling), `pickBestCandidate()` (returns none/suggest/ambiguous decisions; runner-up scores within 90% of best become review-only ambiguous suggestions).
 - `src/core/db/maintenance.ts`: `backfillCodexOriginator()` (reads file first 16KB for history), `resetStaleDetections()` (version-gated re-evaluation), `backfillSuggestedParents()` (no end_time SQL filter — scoring handles it; includes hidden parents).
 - `src/core/db/parent-link-repo.ts`: validation (self-link, existence, depth=1), CRUD, child queries.
 - `src/core/db/session-repo.ts`: `countTodayParentSessions()` for menu bar badge.
@@ -204,6 +204,13 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 - **Tests**: Vitest with real fixtures in `tests/fixtures/<adapter>/` for parser/DB
   behavior. Focused module mocks are acceptable for external service boundaries
   and failure injection when real file I/O would not exercise the contract.
+- **Repro tests**: a bug-fix PR adds a regression test that fails before the
+  fix and passes after. Name it with a `_repro` suffix (Swift:
+  `func testOrphanTierReset_repro()`; Vitest: title ending in `(repro)`),
+  and reference the PR/issue in a comment above the test.
+- **Design docs**: non-trivial changes (new subsystem, schema change,
+  cross-runtime parity impact, new IPC command) start from
+  `docs/templates/design-doc.md`; link the doc from the PR description.
 - **Comments**: Chinese comments are intentional, keep them as-is
 - **Swift DB reads**: Use `nonisolated` + `readInBackground` for all DatabaseManager read methods. Views call via `Task.detached { ... }.value` (see PopoverView.loadData as pattern).
 

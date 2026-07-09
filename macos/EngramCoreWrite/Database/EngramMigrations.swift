@@ -42,6 +42,8 @@ enum EngramMigrations {
               access_count INTEGER NOT NULL DEFAULT 0,
               parent_session_id TEXT,
               suggested_parent_id TEXT,
+              suggestion_status TEXT,
+              suggestion_candidates TEXT,
               link_source TEXT,
               link_checked_at TEXT,
               orphan_status TEXT,
@@ -64,6 +66,7 @@ enum EngramMigrations {
             CREATE INDEX IF NOT EXISTS idx_sessions_last_accessed ON sessions(last_accessed_at, access_count);
             CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id, start_time DESC);
             CREATE INDEX IF NOT EXISTS idx_sessions_suggested_parent ON sessions(suggested_parent_id, start_time DESC);
+            CREATE INDEX IF NOT EXISTS idx_sessions_suggestion_status ON sessions(suggestion_status);
             CREATE INDEX IF NOT EXISTS idx_sessions_orphan_status ON sessions(orphan_status);
             -- Serves `COUNT(*) FROM sessions WHERE hidden_at IS NULL`, the visible-
             -- session count refreshed by the status poll every ~10s, as an
@@ -622,6 +625,8 @@ enum EngramMigrations {
             ("access_count", "INTEGER NOT NULL DEFAULT 0"),
             ("parent_session_id", "TEXT"),
             ("suggested_parent_id", "TEXT"),
+            ("suggestion_status", "TEXT"),
+            ("suggestion_candidates", "TEXT"),
             ("link_source", "TEXT"),
             ("link_checked_at", "TEXT"),
             ("orphan_status", "TEXT"),

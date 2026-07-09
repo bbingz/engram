@@ -110,7 +110,7 @@ final class FTSRebuildPolicyTests: XCTestCase {
         XCTAssertEqual(try writer.read { db in try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions_fts_rebuild") }, 0)
     }
 
-    func testFinalizeRebuildInvalidatesStoredOptimizeSignatureForSwappedTable() throws {
+    func testFinalizeRebuildInvalidatesStoredOptimizeSignatureForSwappedTable_repro() throws {
         let writer = try EngramDatabaseWriter(path: databasePath("finalize-fts-optimize.sqlite"))
         try writer.migrate()
         try writer.write { db in
@@ -128,6 +128,9 @@ final class FTSRebuildPolicyTests: XCTestCase {
             try db.execute(sql: "INSERT INTO sessions_fts_rebuild(session_id, content) VALUES ('s1', 'rebuilt searchable row')")
             try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE id = 's1:1::fts'")
 
+            // PR #142 regression: a completed full rebuild swaps in a new FTS
+            // table without changing session aggregates, so it must invalidate
+            // the stored optimize signature before the next optimize gate.
             XCTAssertTrue(try StartupBackfills.optimizeFts(db), "pre-finalize optimize stores the current content signature")
             XCTAssertFalse(try StartupBackfills.optimizeFts(db), "unchanged signature skips before the rebuild table is swapped in")
 

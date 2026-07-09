@@ -1,0 +1,3 @@
+{"type":"turn_context","cwd":"/Users/test/legacy","model":"claude-3-opus","source":"claude-code","project":"legacy","timestamp":"2025-01-01T00:00:00.000Z"}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"Work on legacy: Legacy session from early 2025"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"Legacy session from early 2025 completed with 10 messages."}]}}

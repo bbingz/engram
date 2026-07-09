@@ -160,7 +160,9 @@ public struct FileIndexState: Equatable, Sendable {
         source: SourceName,
         locator: String,
         stat: FileIndexStat,
-        now: Date
+        now: Date,
+        parsedOffset: Int64? = nil,
+        boundaryHash: String? = nil
     ) -> FileIndexState {
         FileIndexState(
             source: source,
@@ -169,8 +171,8 @@ public struct FileIndexState: Equatable, Sendable {
             modifiedAtNanos: stat.modifiedAtNanos,
             inode: stat.inode,
             device: stat.device,
-            parsedOffset: stat.sizeBytes,
-            boundaryHash: nil,
+            parsedOffset: parsedOffset ?? stat.sizeBytes,
+            boundaryHash: boundaryHash,
             parseStatus: .ok,
             failureKind: nil,
             retryAfterEpochSeconds: nil,
@@ -225,7 +227,8 @@ public struct FileIndexState: Equatable, Sendable {
 
     private static func isTerminalFailure(_ failure: ParserFailure) -> Bool {
         switch failure {
-        case .fileTooLarge, .lineTooLarge, .messageLimitExceeded, .unsupportedVirtualLocator:
+        case .fileTooLarge, .lineTooLarge, .messageLimitExceeded, .unsupportedVirtualLocator,
+             .noVisibleMessages:
             return true
         default:
             return false
@@ -244,6 +247,7 @@ public protocol IndexingWriteSink {
 
     func knownIndexedFileStates(source: SourceName, locators: [String]) throws -> [String: KnownIndexedFileState]
     func knownFileIndexStates(source: SourceName, locators: [String]) throws -> [String: FileIndexState]
+    func knownTailMergeSnapshots(source: SourceName, locators: [String]) throws -> [String: AuthoritativeSessionSnapshot]
     func upsertFileIndexState(_ state: FileIndexState) throws
 }
 
@@ -253,6 +257,10 @@ public extension IndexingWriteSink {
     }
 
     func knownFileIndexStates(source: SourceName, locators: [String]) throws -> [String: FileIndexState] {
+        [:]
+    }
+
+    func knownTailMergeSnapshots(source: SourceName, locators: [String]) throws -> [String: AuthoritativeSessionSnapshot] {
         [:]
     }
 

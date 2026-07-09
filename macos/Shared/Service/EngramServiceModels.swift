@@ -908,6 +908,10 @@ struct EngramServiceDismissSuggestionRequest: Codable, Equatable, Sendable {
     let suggestedParentId: String
 }
 
+struct EngramServiceDismissAmbiguousSuggestionRequest: Codable, Equatable, Sendable {
+    let sessionId: String
+}
+
 struct EngramServiceLinkResponse: Codable, Equatable, Sendable {
     let ok: Bool
     let error: String?

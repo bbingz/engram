@@ -101,8 +101,17 @@ final class MCPDatabase {
         ORDER BY sessionCount DESC
         """
 
-        let rows = try queue.read { db in
-            try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
+        let (rows, indexJobCounts) = try queue.read { db in
+            let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
+            let jobRows = try Row.fetchAll(db, sql: """
+                SELECT status, COUNT(*) as count
+                FROM session_index_jobs
+                GROUP BY status
+                """)
+            let jobCounts = Dictionary(uniqueKeysWithValues: jobRows.map { row in
+                (row["status"] as String, intValue(row["count"]))
+            })
+            return (rows, jobCounts)
         }
         let groups = rows.map { row in
             OrderedJSONValue.object([
@@ -117,10 +126,14 @@ final class MCPDatabase {
         let totalSessions = rows.reduce(0) { partial, row in
             partial + intValue(row["sessionCount"])
         }
+        let indexJobs = OrderedJSONValue.object(IndexJobStatus.allCases.map { status in
+            (status.rawValue, .int(indexJobCounts[status.rawValue] ?? 0))
+        })
 
         return .object([
             ("groupBy", .string(groupBy)),
             ("groups", .array(groups)),
+            ("indexJobs", indexJobs),
             ("totalSessions", .int(totalSessions)),
         ])
     }

@@ -470,7 +470,31 @@ export function backfillSuggestedParents(db: BetterSqlite3.Database): {
   `,
   );
   const markChecked = db.prepare(
-    `UPDATE sessions SET link_checked_at = datetime('now') WHERE id = ?`,
+    `
+    UPDATE sessions
+    SET link_checked_at = datetime('now'),
+        suggestion_status = NULL,
+        suggestion_candidates = NULL
+    WHERE id = ?
+  `,
+  );
+  const setAmbiguousSuggestion = db.prepare(
+    `
+    UPDATE sessions
+    SET suggested_parent_id = NULL,
+        agent_role = CASE
+          WHEN agent_role = 'dispatched' AND tier = 'skip' THEN NULL
+          ELSE agent_role
+        END,
+        tier = CASE
+          WHEN agent_role = 'dispatched' AND tier = 'skip' THEN NULL
+          ELSE tier
+        END,
+        suggestion_status = 'ambiguous',
+        suggestion_candidates = @candidates,
+        link_checked_at = datetime('now')
+    WHERE id = @sessionId
+  `,
   );
 
   while (true) {
@@ -511,16 +535,34 @@ export function backfillSuggestedParents(db: BetterSqlite3.Database): {
         ),
       }));
 
-      const bestParent = pickBestCandidate(scored);
-      if (bestParent) {
-        setSuggestedParent(db, candidate.id, bestParent);
+      const decision = pickBestCandidate(scored);
+      if (decision.type === 'suggest') {
+        setSuggestedParent(db, candidate.id, decision.parentId);
         suggested++;
+      } else if (decision.type === 'ambiguous') {
+        setAmbiguousSuggestion.run({
+          sessionId: candidate.id,
+          candidates: JSON.stringify(
+            decision.candidates.map((item) => ({
+              id: item.parentId,
+              score: item.score,
+            })),
+          ),
+        });
       } else {
         // No parent found, but dispatch pattern matched → mark as agent anyway.
         // COALESCE preserves existing roles (worker, explorer) while setting
         // 'dispatched' for sessions that have no role yet.
         db.prepare(
-          `UPDATE sessions SET agent_role = COALESCE(agent_role, 'dispatched'), tier = 'skip', link_checked_at = datetime('now') WHERE id = ?`,
+          `
+          UPDATE sessions
+          SET agent_role = COALESCE(agent_role, 'dispatched'),
+              tier = 'skip',
+              link_checked_at = datetime('now'),
+              suggestion_status = NULL,
+              suggestion_candidates = NULL
+          WHERE id = ?
+        `,
         ).run(candidate.id);
       }
     }
@@ -596,12 +638,29 @@ export function resetStaleDetections(db: BetterSqlite3.Database): number {
 
   if (storedVersion >= DETECTION_VERSION) return 0;
 
+  const r0 = db
+    .prepare(
+      `
+    UPDATE sessions
+    SET link_checked_at = NULL,
+        suggestion_status = NULL,
+        suggestion_candidates = NULL
+    WHERE suggestion_status = 'ambiguous'
+      AND parent_session_id IS NULL
+      AND suggested_parent_id IS NULL
+      AND (link_source IS NULL OR link_source != 'manual')
+  `,
+    )
+    .run();
+
   // Reset sessions that were checked but didn't get a parent link
   const r1 = db
     .prepare(
       `
     UPDATE sessions
-    SET link_checked_at = NULL
+    SET link_checked_at = NULL,
+        suggestion_status = NULL,
+        suggestion_candidates = NULL
     WHERE link_checked_at IS NOT NULL
       AND parent_session_id IS NULL
       AND suggested_parent_id IS NULL
@@ -617,7 +676,9 @@ export function resetStaleDetections(db: BetterSqlite3.Database): number {
     .prepare(
       `
     UPDATE sessions
-    SET link_checked_at = NULL
+    SET link_checked_at = NULL,
+        suggestion_status = NULL,
+        suggestion_candidates = NULL
     WHERE link_checked_at IS NOT NULL
       AND agent_role = 'dispatched'
       AND parent_session_id IS NULL
@@ -632,7 +693,7 @@ export function resetStaleDetections(db: BetterSqlite3.Database): number {
     "INSERT INTO metadata (key, value) VALUES ('detection_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
   ).run(String(DETECTION_VERSION));
 
-  return r1.changes + r2.changes;
+  return r0.changes + r1.changes + r2.changes;
 }
 
 export interface OrphanScanAdapter {

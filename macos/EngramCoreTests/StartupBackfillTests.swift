@@ -34,6 +34,26 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testDowngradeSubagentTiersPurgesFtsMapArtifacts_repro() throws {
+        try writer.write { db in
+            let leaked = "purge-leak-subagent-downgrade"
+            let kept = "purge-keep-subagent-downgrade"
+            try insertSession(db, id: "subagent-1", source: "codex", agentRole: "subagent", tier: "lite")
+            try insertSession(db, id: "normal-1", source: "codex", tier: "normal")
+            try createRecoverableArtifactTables(db)
+            try insertRecoverableArtifacts(db, sessionId: "subagent-1", content: leaked)
+            try insertRecoverableArtifacts(db, sessionId: "normal-1", content: kept)
+
+            // PR #141 regression: batch skip cleanup must purge fts_map rows as
+            // well as cached messages, FTS, and embedding artifacts.
+            let changed = try StartupBackfills.downgradeSubagentTiers(db)
+
+            XCTAssertEqual(changed, 1)
+            try assertRecoverableArtifactContent(db, content: leaked, expectedCount: 0)
+            try assertRecoverableArtifactContent(db, content: kept, expectedCount: 4)
+        }
+    }
+
     func testBackfillParentLinksUsesPathAndPreservesManualLinks() throws {
         try writer.write { db in
             try insertSession(db, id: "parent-1", source: "codex", tier: "normal")
@@ -43,7 +63,9 @@ final class StartupBackfillTests: XCTestCase {
                 source: "codex",
                 filePath: "/tmp/parent-1/subagents/worker.jsonl",
                 agentRole: "subagent",
-                tier: "skip"
+                tier: "skip",
+                suggestionStatus: "ambiguous",
+                suggestionCandidates: "[{\"id\":\"old\",\"score\":0.91}]"
             )
             try insertSession(
                 db,
@@ -61,6 +83,8 @@ final class StartupBackfillTests: XCTestCase {
                 try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child-1'"),
                 "parent-1"
             )
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT suggestion_status FROM sessions WHERE id = 'child-1'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT suggestion_candidates FROM sessions WHERE id = 'child-1'"))
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'manual-child'"))
         }
     }
@@ -107,10 +131,21 @@ final class StartupBackfillTests: XCTestCase {
                 linkSource: "manual",
                 linkCheckedAt: "2026-01-01T00:00:00Z"
             )
+            try insertSession(
+                db,
+                id: "ambiguous",
+                source: "codex",
+                linkCheckedAt: "2026-01-01T00:00:00Z",
+                suggestionStatus: "ambiguous",
+                suggestionCandidates: "[{\"id\":\"p1\",\"score\":0.91}]"
+            )
 
             let reset = try StartupBackfills.resetStaleDetections(db)
-            XCTAssertEqual(reset, 1)
+            XCTAssertEqual(reset, 2)
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'stale'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'ambiguous'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT suggestion_status FROM sessions WHERE id = 'ambiguous'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT suggestion_candidates FROM sessions WHERE id = 'ambiguous'"))
             XCTAssertNotNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'manual'"))
             XCTAssertEqual(
                 try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'detection_version'"),
@@ -150,6 +185,33 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillCodexOriginatorPurgesLegacyMessageArtifacts_repro() throws {
+        let codexFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-originator-purge-\(UUID().uuidString).jsonl")
+        try #"{"type":"session_meta","payload":{"id":"codex-claude","originator":"Claude Code"}}"#
+            .appending("\n")
+            .write(to: codexFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: codexFile) }
+
+        try writer.write { db in
+            let leaked = "purge-leak-codex-originator"
+            let kept = "purge-keep-codex-originator"
+            try insertSession(db, id: "codex-claude", source: "codex", filePath: codexFile.path, tier: "normal")
+            try insertSession(db, id: "codex-native", source: "codex", tier: "normal")
+            try createRecoverableArtifactTables(db)
+            try insertRecoverableArtifacts(db, sessionId: "codex-claude", content: leaked)
+            try insertRecoverableArtifacts(db, sessionId: "codex-native", content: kept)
+
+            // PR #141 regression: per-session skip classification must purge
+            // legacy cached message rows as well as FTS and embedding artifacts.
+            let updated = try StartupBackfills.backfillCodexOriginator(db)
+
+            XCTAssertEqual(updated, 1)
+            try assertRecoverableArtifactContent(db, content: leaked, expectedCount: 0)
+            try assertRecoverableArtifactContent(db, content: kept, expectedCount: 4)
+        }
+    }
+
     func testBackfillCodexOriginatorDrainsLargeOrdinaryBatchBeforeClaudeOriginatedRows() throws {
         let nativeCodexFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-native-originator-\(UUID().uuidString).jsonl")
@@ -185,6 +247,82 @@ final class StartupBackfillTests: XCTestCase {
                 try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'claude-late'"),
                 "skip"
             )
+        }
+    }
+
+    func testBackfillCodexModelLabelsRelabelsTargetsAndLeavesNonCodexRowsUntouched() throws {
+        let openAIToReal = try writeCodexRollout(
+            id: "openai-real",
+            turnContextModel: "gpt-5.5",
+            modelProvider: "openai"
+        )
+        let openAIToNull = try writeCodexRollout(id: "openai-null", modelProvider: "openai")
+        let nullToReal = try writeCodexRollout(id: "null-real", responseItemModel: "gpt-5.4")
+        let nonCodex = try writeCodexRollout(id: "non-codex", turnContextModel: "gpt-5.5")
+        defer {
+            try? FileManager.default.removeItem(at: openAIToReal)
+            try? FileManager.default.removeItem(at: openAIToNull)
+            try? FileManager.default.removeItem(at: nullToReal)
+            try? FileManager.default.removeItem(at: nonCodex)
+        }
+
+        try writer.write { db in
+            try insertSession(db, id: "openai-real", source: "codex", filePath: openAIToReal.path, model: "openai")
+            try insertSession(db, id: "openai-null", source: "codex", filePath: openAIToNull.path, model: "openai")
+            try insertSession(db, id: "null-real", source: "codex", filePath: nullToReal.path)
+            try insertSession(db, id: "non-codex", source: "claude-code", filePath: nonCodex.path, model: "openai")
+
+            let updated = try StartupBackfills.backfillCodexModelLabels(db)
+
+            XCTAssertEqual(updated, 3)
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'openai-real'"), "gpt-5.5")
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'openai-null'"))
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'null-real'"), "gpt-5.4")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'non-codex'"), "openai")
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'codex_model_backfill_version'"),
+                "1"
+            )
+        }
+    }
+
+    func testBackfillCodexModelLabelsVersionGatePreventsSecondScan() throws {
+        let rollout = try writeCodexRollout(id: "version-gated", turnContextModel: "gpt-5.5")
+        defer { try? FileManager.default.removeItem(at: rollout) }
+
+        try writer.write { db in
+            try insertSession(db, id: "version-gated", source: "codex", filePath: rollout.path, model: "openai")
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexModelLabels(db), 1)
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'version-gated'"), "gpt-5.5")
+
+            try db.execute(sql: "UPDATE sessions SET model = 'openai' WHERE id = 'version-gated'")
+            XCTAssertEqual(try StartupBackfills.backfillCodexModelLabels(db), 0)
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'version-gated'"), "openai")
+        }
+    }
+
+    func testCodexModelBackfillRunsBeforeCostBackfillAndRecomputesRelabeledCost() throws {
+        let rollout = try writeCodexRollout(id: "cost-relabel", turnContextModel: "gpt-5.5")
+        defer { try? FileManager.default.removeItem(at: rollout) }
+
+        try writer.write { db in
+            try insertSession(db, id: "cost-relabel", source: "codex", filePath: rollout.path, model: "openai")
+            try db.execute(
+                sql: """
+                INSERT INTO session_costs(
+                  session_id, model, input_tokens, output_tokens, cache_read_tokens,
+                  cache_creation_tokens, cost_usd, computed_at
+                ) VALUES ('cost-relabel', NULL, 1000000, 100000, 0, 0, NULL, '2026-01-01T00:00:00.000Z')
+                """
+            )
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexModelLabels(db), 1)
+            XCTAssertEqual(try StartupBackfills.backfillCosts(db), 1)
+
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT model FROM sessions WHERE id = 'cost-relabel'"), "gpt-5.5")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT model FROM session_costs WHERE session_id = 'cost-relabel'"), "gpt-5.5")
+            XCTAssertNotNil(try Double.fetchOne(db, sql: "SELECT cost_usd FROM session_costs WHERE session_id = 'cost-relabel'"))
         }
     }
 
@@ -432,6 +570,108 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testBackfillSuggestedParentsWritesAmbiguousCandidatesWithoutSkipping() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "parent-a",
+                source: "claude-code",
+                startTime: "2026-04-23T10:00:00.000Z",
+                endTime: nil,
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "parent-b",
+                source: "claude-code",
+                startTime: "2026-04-23T10:01:00.000Z",
+                endTime: nil,
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "agent",
+                source: "codex",
+                startTime: "2026-04-23T10:10:00.000Z",
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram",
+                summary: "Your task is to audit the repo",
+                agentRole: "dispatched",
+                tier: "skip"
+            )
+
+            let result = try StartupBackfills.backfillSuggestedParents(db)
+
+            XCTAssertEqual(result.checked, 1)
+            XCTAssertEqual(result.suggested, 0)
+            let row = try XCTUnwrap(Row.fetchOne(db, sql: """
+                SELECT suggested_parent_id, suggestion_status, suggestion_candidates,
+                       agent_role, tier, link_checked_at
+                FROM sessions
+                WHERE id = 'agent'
+            """))
+            XCTAssertNil(row["suggested_parent_id"] as String?)
+            XCTAssertEqual(row["suggestion_status"] as String?, "ambiguous")
+            XCTAssertNil(row["agent_role"] as String?)
+            XCTAssertNil(row["tier"] as String?)
+            XCTAssertNotNil(row["link_checked_at"] as String?)
+
+            let encoded = try XCTUnwrap(row["suggestion_candidates"] as String?)
+            let candidates = try JSONDecoder().decode([StoredAmbiguousCandidate].self, from: Data(encoded.utf8))
+            XCTAssertEqual(candidates.map(\.id), ["parent-b", "parent-a"])
+            XCTAssertEqual(candidates.count, 2)
+        }
+    }
+
+    func testBackfillSuggestedParentsClearsAmbiguousStateWhenReevaluationFindsSuggestion() throws {
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "best-parent",
+                source: "claude-code",
+                startTime: "2026-04-23T10:05:00.000Z",
+                endTime: nil,
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "weak-parent",
+                source: "claude-code",
+                startTime: "2026-04-22T11:00:00.000Z",
+                endTime: nil,
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram"
+            )
+            try insertSession(
+                db,
+                id: "agent",
+                source: "gemini-cli",
+                startTime: "2026-04-23T10:10:00.000Z",
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram",
+                summary: "Your task is to audit the repo",
+                suggestionStatus: "ambiguous",
+                suggestionCandidates: "[{\"id\":\"old\",\"score\":0.91}]"
+            )
+
+            let result = try StartupBackfills.backfillSuggestedParents(db)
+
+            XCTAssertEqual(result.checked, 1)
+            XCTAssertEqual(result.suggested, 1)
+            let row = try XCTUnwrap(Row.fetchOne(db, sql: """
+                SELECT suggested_parent_id, suggestion_status, suggestion_candidates
+                FROM sessions
+                WHERE id = 'agent'
+            """))
+            XCTAssertEqual(row["suggested_parent_id"] as String?, "best-parent")
+            XCTAssertNil(row["suggestion_status"] as String?)
+            XCTAssertNil(row["suggestion_candidates"] as String?)
+        }
+    }
+
     func testBackfillSuggestedParentsKeepsBatchParentsWithinCandidateLookback() throws {
         try writer.write { db in
             try insertSession(
@@ -502,6 +742,7 @@ final class StartupBackfillTests: XCTestCase {
         XCTAssertEqual(
             database.callOrder,
             [
+                "backfillCodexModelLabels",
                 "backfillScores",
                 "deduplicateFilePaths",
                 "optimizeFts",
@@ -527,6 +768,7 @@ final class StartupBackfillTests: XCTestCase {
             events,
             [
                 StartupBackfillEvent(event: "backfill_counts", payload: ["backfilled": .int(2)]),
+                StartupBackfillEvent(event: "backfill", payload: ["type": .string("codex_model_labels"), "updated": .int(30)]),
                 StartupBackfillEvent(event: "backfill", payload: ["type": .string("costs"), "count": .int(3)]),
                 StartupBackfillEvent(event: "backfill", payload: ["type": .string("scores"), "count": .int(4)]),
                 StartupBackfillEvent(event: "db_maintenance", payload: ["action": .string("dedup"), "removed": .int(5)]),
@@ -857,6 +1099,26 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testDeduplicateFilePathsPurgesDeletedSessionArtifactTables_repro() throws {
+        try writer.write { db in
+            let leaked = "purge-leak-deduplicate"
+            let kept = "purge-keep-deduplicate"
+            try insertSession(db, id: "old", source: "codex", filePath: "/tmp/dup.jsonl")
+            try insertSession(db, id: "new", source: "codex", filePath: "/tmp/dup.jsonl")
+            try createRecoverableArtifactTables(db)
+            try insertRecoverableArtifacts(db, sessionId: "old", content: leaked)
+            try insertRecoverableArtifacts(db, sessionId: "new", content: kept)
+
+            // PR #141 regression: deleting a duplicate session must remove every
+            // recoverable content artifact keyed by the deleted session id.
+            let removed = try StartupBackfills.deduplicateFilePaths(db)
+
+            XCTAssertEqual(removed, 1)
+            try assertRecoverableArtifactContent(db, content: leaked, expectedCount: 0)
+            try assertRecoverableArtifactContent(db, content: kept, expectedCount: 4)
+        }
+    }
+
     func testDeduplicateFilePathsReparentsChildrenBeforeDeletingDuplicateParent() throws {
         try writer.write { db in
             try insertSession(db, id: "old-parent", source: "codex", filePath: "/tmp/parent.jsonl")
@@ -883,6 +1145,40 @@ final class StartupBackfillTests: XCTestCase {
                 "new-parent"
             )
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = 'confirmed-child'"), "path")
+        }
+    }
+
+    func testSessionDeleteTriggerNullifiesChildParentSessionId() throws {
+        try writer.write { db in
+            try insertSession(db, id: "parent", source: "codex", filePath: "/tmp/parent.jsonl")
+            try insertSession(db, id: "child", source: "codex", filePath: "/tmp/child.jsonl", tier: "normal")
+            try db.execute(
+                sql: "UPDATE sessions SET parent_session_id = 'parent', link_source = 'manual' WHERE id = 'child'"
+            )
+
+            try db.execute(sql: "DELETE FROM sessions WHERE id = 'parent'")
+
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'child'"))
+        }
+    }
+
+    func testDeletingSessionRetainsInsightSourceSessionReferenceByDesign() throws {
+        try writer.write { db in
+            try insertSession(db, id: "source-session", source: "codex", filePath: "/tmp/source.jsonl")
+            try db.execute(
+                sql: """
+                INSERT INTO insights(id, content, source_session_id, importance)
+                VALUES ('insight-source', 'retained provenance insight', 'source-session', 5)
+                """
+            )
+
+            try db.execute(sql: "DELETE FROM sessions WHERE id = 'source-session'")
+
+            // source_session_id is retained provenance, not a cascading foreign key.
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT source_session_id FROM insights WHERE id = 'insight-source'"),
+                "source-session"
+            )
         }
     }
 
@@ -1047,6 +1343,138 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    func testReconcileSkipTierPurgesLegacyMessageArtifacts_repro() throws {
+        try writer.write { db in
+            let leaked = "purge-leak-reconcile-skip-tier"
+            let kept = "purge-keep-reconcile-skip-tier"
+            try insertSession(db, id: "skip-legacy", source: "codex", tier: "skip")
+            try insertSession(db, id: "keep-legacy", source: "codex", tier: "normal")
+            try createRecoverableArtifactTables(db)
+            try insertRecoverableArtifacts(db, sessionId: "skip-legacy", content: leaked)
+            try insertRecoverableArtifacts(db, sessionId: "keep-legacy", content: kept)
+            try db.execute(
+                sql: """
+                INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status)
+                VALUES ('skip-legacy:1:h:fts', 'skip-legacy', 'fts', 1, 'completed')
+                """
+            )
+
+            // PR #141 regression: startup reconciliation must purge legacy cached
+            // message rows for skip-tier sessions alongside FTS and embeddings.
+            let removed = try StartupBackfills.reconcileSkipTierIndexArtifacts(db)
+
+            XCTAssertEqual(removed, 4)
+            try assertRecoverableArtifactContent(db, content: leaked, expectedCount: 0)
+            try assertRecoverableArtifactContent(db, content: kept, expectedCount: 4)
+        }
+    }
+
+    func testReconcileSkipTierPurgesJoblessLegacyArtifacts_repro() throws {
+        try writer.write { db in
+            let leaked = "purge-leak-jobless-skip-tier"
+            let kept = "purge-keep-jobless-skip-tier"
+            try insertSession(db, id: "skip-jobless", source: "codex", tier: "skip")
+            try insertSession(db, id: "keep-jobless", source: "codex", tier: "normal")
+            try createRecoverableArtifactTables(db)
+            try insertRecoverableArtifacts(db, sessionId: "skip-jobless", content: leaked)
+            try insertRecoverableArtifacts(db, sessionId: "keep-jobless", content: kept)
+
+            // PR #141 regression: cheap companion artifacts must trigger skip
+            // reconciliation even when obsolete session_index_jobs rows are absent.
+            let removed = try StartupBackfills.reconcileSkipTierIndexArtifacts(db)
+
+            XCTAssertEqual(removed, 4)
+            try assertRecoverableArtifactContent(db, content: leaked, expectedCount: 0)
+            try assertRecoverableArtifactContent(db, content: kept, expectedCount: 4)
+        }
+    }
+
+    func testReconcileSkipTierPurgesJoblessFtsOnlyArtifacts_repro() throws {
+        try writer.write { db in
+            let leaked = "purge-leak-jobless-fts-only"
+            let kept = "purge-keep-jobless-fts-only"
+            try insertSession(db, id: "skip-fts-only", source: "codex", tier: "skip")
+            try insertSession(db, id: "keep-fts-only", source: "codex", tier: "normal")
+            try db.execute(
+                sql: """
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES
+                  ('skip-fts-only', ?),
+                  ('keep-fts-only', ?)
+                """,
+                arguments: [leaked, kept]
+            )
+
+            // PR #141 regression: the one-time migration sweep must catch stale
+            // skip-tier FTS rows even when no job or companion artifact remains.
+            let removed = try StartupBackfills.reconcileSkipTierIndexArtifacts(db)
+
+            XCTAssertEqual(removed, 1)
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE content = ?", arguments: [leaked]),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE content = ?", arguments: [kept]),
+                1
+            )
+            XCTAssertEqual(try StartupBackfills.reconcileSkipTierIndexArtifacts(db), 0)
+        }
+    }
+
+    func testReconcileSkipTierDeleteCountIncludesEmbeddings_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "skip-count", source: "codex", tier: "skip")
+            try insertSession(db, id: "keep-count", source: "codex", tier: "normal")
+            try db.execute(
+                sql: """
+                CREATE TABLE IF NOT EXISTS session_embeddings(
+                  session_id TEXT PRIMARY KEY,
+                  content TEXT
+                )
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES
+                  ('skip-count', 'skip count fts'),
+                  ('keep-count', 'keep count fts')
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO session_embeddings(session_id, content)
+                VALUES
+                  ('skip-count', 'skip count embedding'),
+                  ('keep-count', 'keep count embedding')
+                """
+            )
+
+            // PR #142 regression: telemetry must include the embedding row
+            // deleted for skip-tier sessions, not just the FTS row count.
+            let removed = try StartupBackfills.reconcileSkipTierIndexArtifacts(db)
+
+            XCTAssertEqual(removed, 2)
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'skip-count'"),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_embeddings WHERE session_id = 'skip-count'"),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'keep-count'"),
+                1
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_embeddings WHERE session_id = 'keep-count'"),
+                1
+            )
+        }
+    }
+
     func testPruneIndexJobsKeepsInFlightAndLatestTerminalPerKind() throws {
         try writer.write { db in
             try insertSession(db, id: "hot", source: "codex", tier: "normal")
@@ -1127,6 +1555,9 @@ final class StartupBackfillTests: XCTestCase {
         tier: String? = nil,
         linkSource: String? = nil,
         linkCheckedAt: String? = nil,
+        suggestionStatus: String? = nil,
+        suggestionCandidates: String? = nil,
+        model: String? = nil,
         userMessageCount: Int = 0,
         assistantMessageCount: Int = 0,
         toolMessageCount: Int = 0,
@@ -1138,17 +1569,149 @@ final class StartupBackfillTests: XCTestCase {
             INSERT INTO sessions(
               id, source, start_time, end_time, cwd, project, summary, file_path,
               source_locator, agent_role, tier, link_source, link_checked_at,
-              user_message_count, assistant_message_count, tool_message_count, system_message_count,
+              suggestion_status, suggestion_candidates,
+              model, user_message_count, assistant_message_count, tool_message_count, system_message_count,
               quality_score
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             arguments: [
                 id, source, startTime, endTime, cwd, project, summary, filePath,
                 sourceLocator, agentRole, tier, linkSource, linkCheckedAt,
+                suggestionStatus, suggestionCandidates, model,
                 userMessageCount, assistantMessageCount, toolMessageCount, systemMessageCount,
                 qualityScore
             ]
         )
+    }
+
+    private func createRecoverableArtifactTables(_ db: Database) throws {
+        try db.execute(
+            sql: """
+            CREATE TABLE IF NOT EXISTS messages(
+              session_id TEXT NOT NULL,
+              msg_seq INTEGER NOT NULL,
+              content TEXT NOT NULL,
+              PRIMARY KEY(session_id, msg_seq)
+            );
+            """
+        )
+        try db.execute(
+            sql: """
+            CREATE TABLE IF NOT EXISTS session_embeddings(
+              session_id TEXT PRIMARY KEY,
+              content TEXT
+            );
+            """
+        )
+    }
+
+    private func insertRecoverableArtifacts(_ db: Database, sessionId: String, content: String) throws {
+        try db.execute(
+            sql: "INSERT INTO messages(session_id, msg_seq, content) VALUES (?, 0, ?)",
+            arguments: [sessionId, content]
+        )
+        try db.execute(
+            sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, ?)",
+            arguments: [sessionId, content]
+        )
+        let rowID = db.lastInsertedRowID
+        try db.execute(
+            sql: "INSERT INTO fts_map(session_id, msg_seq, fts_rowid, content_hash) VALUES (?, 0, ?, ?)",
+            arguments: [sessionId, rowID, content]
+        )
+        try db.execute(
+            sql: "INSERT INTO session_embeddings(session_id, content) VALUES (?, ?)",
+            arguments: [sessionId, content]
+        )
+    }
+
+    private func assertRecoverableArtifactContent(_ db: Database, content: String, expectedCount: Int) throws {
+        let pattern = "%\(content)%"
+        let messages = try Int.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) FROM messages WHERE content LIKE ?",
+            arguments: [pattern]
+        ) ?? 0
+        let fts = try Int.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) FROM sessions_fts WHERE content LIKE ?",
+            arguments: [pattern]
+        ) ?? 0
+        let ftsMap = try Int.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) FROM fts_map WHERE content_hash LIKE ?",
+            arguments: [pattern]
+        ) ?? 0
+        let embeddings = try Int.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) FROM session_embeddings WHERE content LIKE ?",
+            arguments: [pattern]
+        ) ?? 0
+        XCTAssertEqual(messages + fts + ftsMap + embeddings, expectedCount)
+    }
+
+    private func writeCodexRollout(
+        id: String,
+        turnContextModel: String? = nil,
+        responseItemModel: String? = nil,
+        sessionMetaModel: String? = nil,
+        modelProvider: String? = nil
+    ) throws -> URL {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-model-label-\(UUID().uuidString).jsonl")
+        var metaPayload: [String: String] = [
+            "id": id,
+            "timestamp": "2026-07-01T10:00:00.000Z",
+            "cwd": "/tmp/\(id)"
+        ]
+        if let sessionMetaModel {
+            metaPayload["model"] = sessionMetaModel
+        }
+        if let modelProvider {
+            metaPayload["model_provider"] = modelProvider
+        }
+
+        var lines: [[String: Any]] = [
+            [
+                "timestamp": "2026-07-01T10:00:00.000Z",
+                "type": "session_meta",
+                "payload": metaPayload
+            ]
+        ]
+        if let turnContextModel {
+            lines.append(
+                [
+                    "timestamp": "2026-07-01T10:00:00.100Z",
+                    "type": "turn_context",
+                    "payload": ["model": turnContextModel]
+                ]
+            )
+        }
+        var responsePayload: [String: Any] = [
+            "type": "message",
+            "role": "assistant",
+            "content": [["type": "output_text", "text": "ok"]]
+        ]
+        if let responseItemModel {
+            responsePayload["model"] = responseItemModel
+        }
+        lines.append(
+            [
+                "timestamp": "2026-07-01T10:00:01.000Z",
+                "type": "response_item",
+                "payload": responsePayload
+            ]
+        )
+
+        let contents = try lines
+            .map { object -> String in
+                let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+                return String(decoding: data, as: UTF8.self)
+            }
+            .joined(separator: "\n")
+            .appending("\n")
+        try contents.write(to: file, atomically: true, encoding: .utf8)
+        return file
     }
 
     private func endTime(minutesAfterStart: Int) -> String {
@@ -1195,6 +1758,11 @@ final class StartupBackfillTests: XCTestCase {
         let volumeScore = min(10, Double(userCount + assistantCount + toolCount) / 5)
         return max(0, min(100, Int((turnScore + toolScore + densityScore + projectScore + volumeScore).rounded())))
     }
+}
+
+private struct StoredAmbiguousCandidate: Decodable, Equatable {
+    var id: String
+    var score: Double
 }
 
 private enum TestError: Error, CustomStringConvertible {
@@ -1406,6 +1974,11 @@ private final class RecordingStartupDatabase: StartupBackfillDatabase {
     func backfillCodexOriginator() throws -> Int {
         callOrder.append("backfillCodexOriginator")
         return 12
+    }
+
+    func backfillCodexModelLabels() throws -> Int {
+        callOrder.append("backfillCodexModelLabels")
+        return 30
     }
 
     func backfillPolycliProviderParents() throws -> StartupBackfills.ProviderParentResult {

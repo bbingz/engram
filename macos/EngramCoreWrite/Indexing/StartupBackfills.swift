@@ -90,6 +90,7 @@ public protocol StartupBackfillDatabase: AnyObject {
     func backfillParentLinks() throws -> StartupBackfills.ParentLinkResult
     func resetStaleDetections() throws -> Int
     func backfillCodexOriginator() throws -> Int
+    func backfillCodexModelLabels() throws -> Int
     func backfillPolycliProviderParents() throws -> StartupBackfills.ProviderParentResult
     func backfillSuggestedParents() throws -> StartupBackfills.SuggestedParentResult
     func enqueueStaleFtsJobs() throws -> Int
@@ -116,6 +117,19 @@ public enum StartupBackfills {
             self.suggested = suggested
         }
     }
+
+    private struct StoredSuggestionCandidate: Encodable {
+        var id: String
+        var score: Double
+    }
+
+    static let codexModelBackfillMetadataKey = "codex_model_backfill_version"
+    static let codexModelBackfillVersion = "1"
+    static let skipTierArtifactReconcileMetadataKey = "skip_tier_artifact_reconcile_version"
+    static let skipTierArtifactReconcileVersion = "1"
+    // Codex rollout line 1 can include large base instructions; 256 KiB keeps
+    // startup bounded while covering the early session_meta/turn_context lines.
+    static let codexModelHeadScanBytes = 256 * 1024
 
     public struct ProviderParentResult: Equatable, Sendable {
         public var checked: Int
@@ -221,6 +235,15 @@ public enum StartupBackfills {
             throw CancellationError()
         } catch {
             log.warn("backfill counts failed", error: error)
+        }
+
+        do {
+            let updated = try database.backfillCodexModelLabels()
+            if updated > 0 {
+                emit(StartupBackfillEvent(event: "backfill", payload: ["type": .string("codex_model_labels"), "updated": .int(updated)]))
+            }
+        } catch {
+            log.warn("codex model label backfill failed", error: error)
         }
 
         do {
@@ -630,12 +653,26 @@ public enum StartupBackfills {
               AND file_path != ''
             """
         )
-        // The DELETE above leaves orphaned sessions_fts rows behind (FTS is an
-        // external-content-style table keyed by session_id, with no cascade), so
-        // reconcile them in the same transaction.
+        // The DELETE above leaves recoverable artifacts keyed by session_id behind,
+        // so reconcile them in the same transaction.
         if removed > 0 {
+            _ = try deleteRowsFromSessionArtifactTableIfPresent(
+                db,
+                table: "messages",
+                whereSQL: "session_id NOT IN (SELECT id FROM sessions)"
+            )
             try db.execute(
                 sql: "DELETE FROM sessions_fts WHERE session_id NOT IN (SELECT id FROM sessions)"
+            )
+            _ = try deleteRowsFromSessionArtifactTableIfPresent(
+                db,
+                table: "fts_map",
+                whereSQL: "session_id NOT IN (SELECT id FROM sessions)"
+            )
+            _ = try deleteRowsFromSessionArtifactTableIfPresent(
+                db,
+                table: "session_embeddings",
+                whereSQL: "session_id NOT IN (SELECT id FROM sessions)"
             )
         }
         return removed
@@ -728,25 +765,29 @@ public enum StartupBackfills {
     /// rows. DELETE-only: it never modifies tier, so the subagent/skip invariant
     /// holds. Because `sessions_fts.session_id` is UNINDEXED, the batched DELETE
     /// is a full-FTS scan, so only pay it when a skip-tier session still owns an
-    /// fts/embedding job — a cheap, index-backed staleness signal. The obsolete
-    /// jobs are then cleared so the signal is empty (and this scan skipped) next
-    /// launch.
+    /// fts/embedding job, cheap companion artifact row, or one-time migration
+    /// sweep. The obsolete jobs are then cleared so the signal is empty (and this
+    /// scan skipped) next launch.
     public static func reconcileSkipTierIndexArtifacts(_ db: Database) throws -> Int {
-        let hasStale = try Bool.fetchOne(
-            db,
-            sql: """
-            SELECT EXISTS(
-              SELECT 1
-              FROM session_index_jobs j
-              JOIN sessions s ON s.id = j.session_id
-              WHERE j.job_kind IN ('fts', 'embedding')
-                AND COALESCE(s.tier, 'normal') = 'skip'
-            )
-            """
-        ) ?? false
-        guard hasStale else { return 0 }
-
         let skipSubquery = "SELECT id FROM sessions WHERE COALESCE(tier, 'normal') = 'skip'"
+        let shouldFullScanFts = try needsSkipTierArtifactFullScan(db)
+        let hasStale = try hasSkipTierIndexArtifacts(
+            db,
+            skipSubquery: skipSubquery,
+            includeFtsScan: shouldFullScanFts
+        )
+        guard hasStale else {
+            if shouldFullScanFts {
+                try markSkipTierArtifactFullScanComplete(db)
+            }
+            return 0
+        }
+
+        let deletedMessages = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "messages",
+            whereSQL: "session_id IN (\(skipSubquery))"
+        )
         let deletedFts = try db.executeAndCountChanges(
             sql: "DELETE FROM sessions_fts WHERE session_id IN (\(skipSubquery))"
         )
@@ -769,7 +810,10 @@ public enum StartupBackfills {
               AND session_id IN (\(skipSubquery))
             """
         )
-        return deletedFts + deletedFtsMap + deletedEmbeddings
+        if shouldFullScanFts {
+            try markSkipTierArtifactFullScanComplete(db)
+        }
+        return deletedMessages + deletedFts + deletedFtsMap + deletedEmbeddings
     }
 
     public static func vacuumIfNeeded(_ db: Database, fragmentationPercent: Int) throws -> Bool {
@@ -906,8 +950,20 @@ public enum StartupBackfills {
     }
 
     private static func deleteRecoverableIndexArtifactsForSkippedSession(_ db: Database, sessionId: String) throws {
+        _ = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "messages",
+            whereSQL: "session_id = ?",
+            arguments: [sessionId]
+        )
         try db.execute(
             sql: "DELETE FROM sessions_fts WHERE session_id = ?",
+            arguments: [sessionId]
+        )
+        _ = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "fts_map",
+            whereSQL: "session_id = ?",
             arguments: [sessionId]
         )
         if try tableExists(db, "session_embeddings") {
@@ -930,11 +986,21 @@ public enum StartupBackfills {
         _ db: Database,
         whereClause: String
     ) throws {
+        _ = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "messages",
+            whereSQL: "session_id IN (SELECT id FROM sessions WHERE \(whereClause))"
+        )
         try db.execute(
             sql: """
             DELETE FROM sessions_fts
             WHERE session_id IN (SELECT id FROM sessions WHERE \(whereClause))
             """
+        )
+        _ = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "fts_map",
+            whereSQL: "session_id IN (SELECT id FROM sessions WHERE \(whereClause))"
         )
         if try tableExists(db, "session_embeddings") {
             try db.execute(
@@ -959,6 +1025,100 @@ public enum StartupBackfills {
             sql: "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
             arguments: [table]
         ) ?? false
+    }
+
+    private static func needsSkipTierArtifactFullScan(_ db: Database) throws -> Bool {
+        let current = try String.fetchOne(
+            db,
+            sql: "SELECT value FROM metadata WHERE key = ?",
+            arguments: [skipTierArtifactReconcileMetadataKey]
+        )
+        return current != skipTierArtifactReconcileVersion
+    }
+
+    private static func markSkipTierArtifactFullScanComplete(_ db: Database) throws {
+        try db.execute(
+            sql: """
+            INSERT INTO metadata(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            arguments: [skipTierArtifactReconcileMetadataKey, skipTierArtifactReconcileVersion]
+        )
+    }
+
+    private static func hasSkipTierIndexArtifacts(
+        _ db: Database,
+        skipSubquery: String,
+        includeFtsScan: Bool
+    ) throws -> Bool {
+        let hasJobSignal = try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+              SELECT 1
+              FROM session_index_jobs j
+              JOIN sessions s ON s.id = j.session_id
+              WHERE j.job_kind IN ('fts', 'embedding')
+                AND COALESCE(s.tier, 'normal') = 'skip'
+            )
+            """
+        ) ?? false
+        if hasJobSignal { return true }
+
+        for table in ["messages", "fts_map", "session_embeddings"] {
+            if try hasRowsInSessionArtifactTableIfPresent(
+                db,
+                table: table,
+                whereSQL: "session_id IN (\(skipSubquery))"
+            ) {
+                return true
+            }
+        }
+        if includeFtsScan {
+            return try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM sessions_fts WHERE session_id IN (\(skipSubquery)))"
+            ) ?? false
+        }
+        return false
+    }
+
+    private static func hasRowsInSessionArtifactTableIfPresent(
+        _ db: Database,
+        table: String,
+        whereSQL: String,
+        arguments: StatementArguments = StatementArguments()
+    ) throws -> Bool {
+        guard try tableExists(db, table), try tableHasColumn(db, table: table, column: "session_id") else {
+            return false
+        }
+        return try Bool.fetchOne(
+            db,
+            sql: "SELECT EXISTS(SELECT 1 FROM \(table) WHERE \(whereSQL))",
+            arguments: arguments
+        ) ?? false
+    }
+
+    private static func deleteRowsFromSessionArtifactTableIfPresent(
+        _ db: Database,
+        table: String,
+        whereSQL: String,
+        arguments: StatementArguments = StatementArguments()
+    ) throws -> Int {
+        guard try tableExists(db, table), try tableHasColumn(db, table: table, column: "session_id") else {
+            return 0
+        }
+        return try db.executeAndCountChanges(
+            sql: "DELETE FROM \(table) WHERE \(whereSQL)",
+            arguments: arguments
+        )
+    }
+
+    private static func tableHasColumn(_ db: Database, table: String, column: String) throws -> Bool {
+        let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(\(table))")
+        return rows.contains { row in
+            (row["name"] as String?) == column
+        }
     }
 
     public static func backfillParentLinks(_ db: Database) throws -> ParentLinkResult {
@@ -1003,10 +1163,24 @@ public enum StartupBackfills {
             return 0
         }
 
+        let resetAmbiguous = try db.executeAndCountChanges(
+            sql: """
+            UPDATE sessions
+            SET link_checked_at = NULL,
+                suggestion_status = NULL,
+                suggestion_candidates = NULL
+            WHERE suggestion_status = 'ambiguous'
+              AND parent_session_id IS NULL
+              AND suggested_parent_id IS NULL
+              AND (link_source IS NULL OR link_source != 'manual')
+            """
+        )
         let resetUnchecked = try db.executeAndCountChanges(
             sql: """
             UPDATE sessions
-            SET link_checked_at = NULL
+            SET link_checked_at = NULL,
+                suggestion_status = NULL,
+                suggestion_candidates = NULL
             WHERE link_checked_at IS NOT NULL
               AND parent_session_id IS NULL
               AND suggested_parent_id IS NULL
@@ -1017,7 +1191,9 @@ public enum StartupBackfills {
         let resetDispatched = try db.executeAndCountChanges(
             sql: """
             UPDATE sessions
-            SET link_checked_at = NULL
+            SET link_checked_at = NULL,
+                suggestion_status = NULL,
+                suggestion_candidates = NULL
             WHERE link_checked_at IS NOT NULL
               AND agent_role = 'dispatched'
               AND parent_session_id IS NULL
@@ -1032,7 +1208,7 @@ public enum StartupBackfills {
             """,
             arguments: ["\(ParentDetection.detectionVersion)"]
         )
-        return resetUnchecked + resetDispatched
+        return resetAmbiguous + resetUnchecked + resetDispatched
     }
 
     public static func backfillCodexOriginator(_ db: Database) throws -> Int {
@@ -1083,6 +1259,55 @@ public enum StartupBackfills {
                 updated += changes
             }
         }
+        return updated
+    }
+
+    public static func backfillCodexModelLabels(_ db: Database) throws -> Int {
+        let storedVersion = try String.fetchOne(
+            db,
+            sql: "SELECT value FROM metadata WHERE key = ?",
+            arguments: [codexModelBackfillMetadataKey]
+        )
+        guard storedVersion != codexModelBackfillVersion else { return 0 }
+
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT id, file_path, model
+            FROM sessions
+            WHERE source = 'codex'
+              AND (model = 'openai' OR model IS NULL)
+            ORDER BY rowid
+            """
+        )
+
+        var updated = 0
+        for row in rows {
+            let id: String = row["id"]
+            let filePath: String = row["file_path"]
+            let currentModel: String? = row["model"]
+            let model = codexModelLabelFromHead(path: filePath)
+
+            if let model {
+                updated += try db.executeAndCountChanges(
+                    sql: "UPDATE sessions SET model = ? WHERE id = ?",
+                    arguments: [model, id]
+                )
+            } else if currentModel == "openai" {
+                updated += try db.executeAndCountChanges(
+                    sql: "UPDATE sessions SET model = NULL WHERE id = ?",
+                    arguments: [id]
+                )
+            }
+        }
+
+        try db.execute(
+            sql: """
+            INSERT INTO metadata(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            arguments: [codexModelBackfillMetadataKey, codexModelBackfillVersion]
+        )
         return updated
     }
 
@@ -1296,16 +1521,21 @@ public enum StartupBackfills {
                 )
             }
 
-            if let bestParent = ParentDetection.pickBestCandidate(scored) {
+            switch ParentDetection.pickBestCandidate(scored) {
+            case .suggest(let bestParent):
                 try setSuggestedParent(db, sessionId: id, suggestedParentId: bestParent)
                 suggested += 1
-            } else {
+            case .ambiguous(let candidates):
+                try setAmbiguousSuggestion(db, sessionId: id, candidates: candidates)
+            case .none:
                 try db.execute(
                     sql: """
                     UPDATE sessions
                     SET agent_role = COALESCE(agent_role, 'dispatched'),
                         tier = 'skip',
-                        link_checked_at = datetime('now')
+                        link_checked_at = datetime('now'),
+                        suggestion_status = NULL,
+                        suggestion_candidates = NULL
                     WHERE id = ?
                     """,
                     arguments: [id]
@@ -1365,7 +1595,9 @@ public enum StartupBackfills {
             UPDATE sessions
             SET parent_session_id = ?,
                 link_source = ?,
-                suggested_parent_id = NULL
+                suggested_parent_id = NULL,
+                suggestion_status = NULL,
+                suggestion_candidates = NULL
             WHERE id = ?
             """,
             arguments: [parentId, linkSource, sessionId]
@@ -1396,6 +1628,8 @@ public enum StartupBackfills {
             sql: """
             UPDATE sessions
             SET suggested_parent_id = ?,
+                suggestion_status = NULL,
+                suggestion_candidates = NULL,
                 link_checked_at = datetime('now')
             WHERE id = ?
             """,
@@ -1405,8 +1639,43 @@ public enum StartupBackfills {
 
     private static func markChecked(_ db: Database, sessionId: String) throws {
         try db.execute(
-            sql: "UPDATE sessions SET link_checked_at = datetime('now') WHERE id = ?",
+            sql: """
+            UPDATE sessions
+            SET link_checked_at = datetime('now'),
+                suggestion_status = NULL,
+                suggestion_candidates = NULL
+            WHERE id = ?
+            """,
             arguments: [sessionId]
+        )
+    }
+
+    private static func setAmbiguousSuggestion(
+        _ db: Database,
+        sessionId: String,
+        candidates: [ScoredParent]
+    ) throws {
+        let payload = candidates.map { StoredSuggestionCandidate(id: $0.parentId, score: $0.score) }
+        let data = try JSONEncoder().encode(payload)
+        let encoded = String(decoding: data, as: UTF8.self)
+        try db.execute(
+            sql: """
+            UPDATE sessions
+            SET suggested_parent_id = NULL,
+                agent_role = CASE
+                    WHEN agent_role = 'dispatched' AND tier = 'skip' THEN NULL
+                    ELSE agent_role
+                END,
+                tier = CASE
+                    WHEN agent_role = 'dispatched' AND tier = 'skip' THEN NULL
+                    ELSE tier
+                END,
+                suggestion_status = 'ambiguous',
+                suggestion_candidates = ?,
+                link_checked_at = datetime('now')
+            WHERE id = ?
+            """,
+            arguments: [encoded, sessionId]
         )
     }
 
@@ -1513,6 +1782,44 @@ public enum StartupBackfills {
             return nil
         }
         return text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init)
+    }
+
+    private static func codexModelLabelFromHead(path: String) -> String? {
+        guard let head = readFileHead(path: path, maxBytes: codexModelHeadScanBytes) else {
+            return nil
+        }
+
+        var turnContextModel: String?
+        var metaModel: String?
+        for line in head.split(separator: "\n", omittingEmptySubsequences: false) {
+            guard !line.isEmpty,
+                  let data = String(line).data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let type = object["type"] as? String,
+                  let payload = object["payload"] as? [String: Any]
+            else {
+                continue
+            }
+
+            if type == "response_item", let model = payload["model"] as? String {
+                return model
+            }
+            if type == "turn_context", turnContextModel == nil {
+                turnContextModel = payload["model"] as? String
+            } else if type == "session_meta", metaModel == nil {
+                metaModel = payload["model"] as? String
+            }
+        }
+        return turnContextModel ?? metaModel
+    }
+
+    private static func readFileHead(path: String, maxBytes: Int) -> String? {
+        guard let handle = FileHandle(forReadingAtPath: path) else {
+            return nil
+        }
+        defer { try? handle.close() }
+        let data = handle.readData(ofLength: maxBytes)
+        return String(data: data, encoding: .utf8)
     }
 
     private static func computeQualityScore(

@@ -1,5 +1,11 @@
 #!/usr/bin/env tsx
-import { existsSync, unlinkSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 /**
@@ -9,7 +15,27 @@ import { fileURLToPath } from 'node:url';
 import { Database } from '../src/core/db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const fixturePath = resolve(__dirname, '../test-fixtures/test-index.sqlite');
+
+function argValue(name: string, fallback: string): string {
+  const index = process.argv.indexOf(name);
+  if (index === -1) return fallback;
+  const value = process.argv[index + 1];
+  if (!value) {
+    throw new Error(`${name} requires a value`);
+  }
+  return resolve(value);
+}
+
+const fixturePath = argValue(
+  '--out-db',
+  resolve(__dirname, '../test-fixtures/test-index.sqlite'),
+);
+const generatedSessionFixtureRoot = argValue(
+  '--session-fixture-root',
+  resolve(__dirname, '../test-fixtures/sessions/generated'),
+);
+
+mkdirSync(dirname(fixturePath), { recursive: true });
 
 // Remove existing fixture for clean generation
 if (existsSync(fixturePath)) {
@@ -568,6 +594,56 @@ const sessions: SeedSession[] = [
   },
 ];
 
+function writeGeneratedSessionFixtures(): void {
+  rmSync(generatedSessionFixtureRoot, { recursive: true, force: true });
+  mkdirSync(generatedSessionFixtureRoot, { recursive: true });
+
+  for (const session of sessions) {
+    const path = resolve(generatedSessionFixtureRoot, `${session.id}.jsonl`);
+    const summary = session.summary ?? `Session ${session.id}`;
+    const records = [
+      {
+        type: 'turn_context',
+        cwd: session.cwd,
+        model: session.model,
+        source: session.source,
+        project: session.project,
+        timestamp: session.startTime,
+      },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [
+            {
+              text: `Work on ${session.project || 'unknown project'}: ${summary}`,
+            },
+          ],
+        },
+      },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              text: `${summary} completed with ${session.messageCount} messages.`,
+            },
+          ],
+        },
+      },
+    ];
+    writeFileSync(
+      path,
+      `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+    );
+  }
+}
+
+writeGeneratedSessionFixtures();
+
 // Insert all sessions using raw SQL for deterministic indexed_at
 const insertAll = raw.transaction(() => {
   for (const s of sessions) {
@@ -772,6 +848,7 @@ insertMetric.run('sessions_synced', 'counter', 3, '{}', '2026-01-12T11:00:00Z');
 db.close();
 
 console.log(`Generated fixture DB at ${fixturePath}`);
+console.log(`Generated session fixtures at ${generatedSessionFixtureRoot}`);
 console.log(`  Sessions: ${sessions.length}`);
 console.log(`  Favorites: 3`);
 console.log(`  Tags: 5`);

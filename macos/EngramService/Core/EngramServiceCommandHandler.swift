@@ -278,6 +278,16 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
+            case "dismissAmbiguousSuggestion":
+                let payload = try decodePayload(EngramServiceDismissAmbiguousSuggestionRequest.self, from: request)
+                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
+                    try Self.dismissAmbiguousSuggestion(payload, writer: writer)
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(result.value),
+                    databaseGeneration: result.databaseGeneration
+                )
             case "addSessionRelation":
                 let payload = try decodePayload(EngramServiceRelationRequest.self, from: request)
                 let result = try await writerGate.performWriteCommand(name: request.command) { writer in
@@ -676,7 +686,9 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     SET parent_session_id = ?,
                         link_source = 'manual',
                         link_checked_at = datetime('now'),
-                        suggested_parent_id = NULL
+                        suggested_parent_id = NULL,
+                        suggestion_status = NULL,
+                        suggestion_candidates = NULL
                     WHERE id = ?
                 """,
                 arguments: [suggestedParentId, request.sessionId]
@@ -703,6 +715,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     SET parent_session_id = ?,
                         link_source = 'manual',
                         suggested_parent_id = NULL,
+                        suggestion_status = NULL,
+                        suggestion_candidates = NULL,
                         link_checked_at = datetime('now')
                     WHERE id = ?
                 """,
@@ -752,6 +766,37 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             )
         }
         return EmptyEncodableResult()
+    }
+
+    private static func dismissAmbiguousSuggestion(
+        _ request: EngramServiceDismissAmbiguousSuggestionRequest,
+        writer: EngramDatabaseWriter
+    ) throws -> EngramServiceLinkResponse {
+        try writer.write { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT suggestion_status FROM sessions WHERE id = ?",
+                arguments: [request.sessionId]
+            )
+            guard let row else {
+                return EngramServiceLinkResponse(ok: false, error: "session-not-found")
+            }
+            guard row["suggestion_status"] as String? == "ambiguous" else {
+                return EngramServiceLinkResponse(ok: false, error: "not-ambiguous")
+            }
+            try db.execute(
+                sql: """
+                    UPDATE sessions
+                    SET suggestion_status = NULL,
+                        suggestion_candidates = NULL,
+                        link_source = 'manual',
+                        link_checked_at = datetime('now')
+                    WHERE id = ?
+                """,
+                arguments: [request.sessionId]
+            )
+            return EngramServiceLinkResponse(ok: true, error: nil)
+        }
     }
 
     /// Symmetric, untyped "related" link. Normalizes the pair to a_id < b_id so

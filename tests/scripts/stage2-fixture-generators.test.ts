@@ -77,6 +77,34 @@ describe('stage2 Node parity fixture generators', () => {
     );
   });
 
+  it('generates deterministic perf session fixtures for Swift indexer measurements', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'engram-generated-session-fixture-test-'));
+    const dbPath = join(tmp, 'test-index.sqlite');
+    const sessionFixtureRoot = join(tmp, 'sessions', 'generated');
+
+    runScript('scripts/generate-test-fixtures.ts', [
+      '--out-db',
+      dbPath,
+      '--session-fixture-root',
+      sessionFixtureRoot,
+    ]);
+    const first = snapshotFixtureFiles(sessionFixtureRoot);
+
+    expect(existsSync(dbPath)).toBe(true);
+    expect(first.size).toBe(20);
+    expect(first.get('seed-01.jsonl')).toContain(
+      'Refactored adapter pipeline for performance',
+    );
+
+    runScript('scripts/generate-test-fixtures.ts', [
+      '--out-db',
+      dbPath,
+      '--session-fixture-root',
+      sessionFixtureRoot,
+    ]);
+    expect(snapshotFixtureFiles(sessionFixtureRoot)).toEqual(first);
+  });
+
   it('generates deterministic adapter parity fixtures with required fields', () => {
     tmp = mkdtempSync(join(tmpdir(), 'engram-adapter-parity-test-'));
     const fixtureRoot = join(tmp, 'adapter-parity');
@@ -276,7 +304,7 @@ describe('stage2 Node parity fixture generators', () => {
     const detection = JSON.parse(
       readFileSync(join(parentOut, 'detection-version.json'), 'utf8'),
     );
-    expect(detection.detectionVersion).toBe(4);
+    expect(detection.detectionVersion).toBe(5);
     expect(detection.dispatchCases).toContainEqual({
       input: 'Review this repository implementation',
       isDispatch: true,

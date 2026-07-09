@@ -2,6 +2,7 @@ import Foundation
 import SQLite3
 import XCTest
 @testable import EngramCoreRead
+@testable import EngramCoreWrite
 
 /// Coverage for the adapter message-count fixes (data-integrity review pass):
 /// parseSessionInfo counts must reflect only the turns that streamMessages
@@ -24,6 +25,15 @@ final class AdapterMessageCountTests: XCTestCase {
             return value
         case .failure(let failure):
             throw XCTSkip("unexpected adapter failure: \(failure)")
+        }
+    }
+
+    private func parseFailure<T>(_ result: AdapterParseResult<T>) throws -> ParserFailure {
+        switch result {
+        case .success:
+            throw XCTSkip("expected adapter failure")
+        case .failure(let failure):
+            return failure
         }
     }
 
@@ -887,6 +897,92 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(streamed.map(\.content), ["first\n\nsecond"])
     }
 
+    func testCodexUsesTurnContextModelWhenResponseItemModelMissing() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-turn-context-model.jsonl")
+
+        let lines: [[String: Any]] = [
+            [
+                "timestamp": "2026-07-01T10:00:00.000Z",
+                "type": "session_meta",
+                "payload": [
+                    "id": "codex-turn-context-model",
+                    "timestamp": "2026-07-01T10:00:00.000Z",
+                    "cwd": "/tmp/codex-turn-context-model",
+                    "model_provider": "openai",
+                ],
+            ],
+            [
+                "timestamp": "2026-07-01T10:00:00.100Z",
+                "type": "turn_context",
+                "payload": [
+                    "model": "gpt-5.5",
+                ],
+            ],
+            [
+                "timestamp": "2026-07-01T10:00:01.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "user",
+                    "content": [["type": "input_text", "text": "Use turn_context model"]],
+                ],
+            ],
+            [
+                "timestamp": "2026-07-01T10:00:02.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [["type": "output_text", "text": "Using turn_context model."]],
+                ],
+            ],
+        ]
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(sessionsRoot: root.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+
+        XCTAssertEqual(info.model, "gpt-5.5")
+    }
+
+    func testCodexDoesNotUseModelProviderAsFallbackModel() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-model-provider-only.jsonl")
+
+        let lines: [[String: Any]] = [
+            [
+                "timestamp": "2026-07-01T11:00:00.000Z",
+                "type": "session_meta",
+                "payload": [
+                    "id": "codex-model-provider-only",
+                    "timestamp": "2026-07-01T11:00:00.000Z",
+                    "cwd": "/tmp/codex-model-provider-only",
+                    "model_provider": "openai",
+                ],
+            ],
+            [
+                "timestamp": "2026-07-01T11:00:01.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "user",
+                    "content": [["type": "input_text", "text": "No model label here"]],
+                ],
+            ],
+        ]
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(sessionsRoot: root.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+
+        XCTAssertNil(info.model)
+    }
+
     // MARK: - Claude Code
 
     func testClaudeCodeToolResultCountMatchesStream() async throws {
@@ -943,6 +1039,122 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(streamed.filter { $0.role == .tool }.count, 1)
         XCTAssertEqual(streamed.filter { $0.role == .user }.count, 1)
         XCTAssertEqual(streamed.filter { $0.role == .assistant }.count, 1)
+    }
+
+    func testClaudeCodeSystemOnlyTranscriptIsTerminalNoVisibleMessages() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("-Users-test-empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            ["type": "summary", "summary": "Prior session title", "leafUuid": "prev"],
+            [
+                "type": "user",
+                "sessionId": "system-only-session",
+                "cwd": "/Users/test/empty",
+                "timestamp": "2026-04-29T10:00:00.000Z",
+                "message": [
+                    "role": "user",
+                    "content": "<command-message>compact</command-message>\n<command-name>/compact</command-name>",
+                ],
+            ],
+        ]
+        let file = projectDir.appendingPathComponent("system-only.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: root.path)
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+
+        XCTAssertEqual(failure, .noVisibleMessages)
+        XCTAssertEqual(ParserFailure.noVisibleMessages.rawValue, "noVisibleMessages")
+
+        let now = Date(timeIntervalSince1970: 2_000)
+        let stat = FileIndexStat(sizeBytes: 128, modifiedAtNanos: 1_000_000_000, inode: 42, device: 7)
+        let state = FileIndexState.failure(
+            source: .claudeCode,
+            locator: file.path,
+            stat: stat,
+            failure: failure,
+            previous: nil,
+            now: now
+        )
+        XCTAssertEqual(state.parseStatus, .terminal)
+        XCTAssertNil(state.retryAfterEpochSeconds)
+        XCTAssertEqual(state.retryCount, 0)
+        XCTAssertEqual(FileIndexDecision.decide(stat: stat, state: state, now: now), .skip)
+    }
+
+    func testClaudeCodeMalformedTranscriptStaysRetryable() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let badFile = root.appendingPathComponent("garbage.jsonl")
+        try "this is not json at all\n{ broken\n".write(to: badFile, atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: root.path)
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: badFile.path))
+
+        XCTAssertEqual(failure, .malformedJSON)
+        let now = Date(timeIntervalSince1970: 2_000)
+        let stat = FileIndexStat(sizeBytes: 128, modifiedAtNanos: 1_000_000_000, inode: 42, device: 7)
+        let state = FileIndexState.failure(
+            source: .claudeCode,
+            locator: badFile.path,
+            stat: stat,
+            failure: failure,
+            previous: nil,
+            now: now
+        )
+        XCTAssertEqual(state.parseStatus, .retry)
+        XCTAssertNotNil(state.retryAfterEpochSeconds)
+        XCTAssertGreaterThan(state.retryCount, 0)
+    }
+
+    func testClaudeCodeSystemInjectionCountMatchesStream() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("-Users-test-system-mixed", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "type": "user",
+                "sessionId": "cc-system-mixed",
+                "cwd": "/Users/test/system-mixed",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "message": [
+                    "role": "user",
+                    "content": "# AGENTS.md instructions for /Users/test/system-mixed\n<INSTRUCTIONS>...</INSTRUCTIONS>",
+                ],
+            ],
+            [
+                "type": "user",
+                "sessionId": "cc-system-mixed",
+                "timestamp": "2026-01-01T00:00:01Z",
+                "message": ["role": "user", "content": "real task"],
+            ],
+            [
+                "type": "assistant",
+                "sessionId": "cc-system-mixed",
+                "timestamp": "2026-01-01T00:00:02Z",
+                "message": ["role": "assistant", "model": "claude-x", "content": "done"],
+            ],
+        ]
+        let file = projectDir.appendingPathComponent("mixed.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: root.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+        XCTAssertEqual(info.systemMessageCount, 1)
+        XCTAssertEqual(info.messageCount, 2)
+        XCTAssertEqual(info.messageCount, streamed.count, "count must match streamed message count")
+        XCTAssertEqual(streamed.map(\.content), ["real task", "done"])
     }
 
     // MARK: - Copilot

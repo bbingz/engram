@@ -299,11 +299,12 @@ private struct IssueSection: View {
     let issues: [EngramServiceHygieneIssue]
     @Binding var isExpanded: Bool
     let onHideEmptySessions: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
+                MotionAware.animate(.easeInOut(duration: 0.2), reduceMotion: reduceMotion) {
                     isExpanded.toggle()
                 }
             } label: {

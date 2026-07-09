@@ -66,6 +66,10 @@ private final class EngramDatabaseIndexingSink: IndexingWriteSink {
         try writer.knownFileIndexStates(source: source, locators: locators)
     }
 
+    func knownTailMergeSnapshots(source: SourceName, locators: [String]) throws -> [String: AuthoritativeSessionSnapshot] {
+        try writer.knownTailMergeSnapshots(source: source, locators: locators)
+    }
+
     func upsertFileIndexState(_ state: FileIndexState) throws {
         try writer.upsertFileIndexState(state)
     }
@@ -135,6 +139,42 @@ private struct ImplementationBeatBackfillSignal: Sendable {
 }
 
 public extension EngramDatabaseWriter {
+    func knownTailMergeSnapshots(source: SourceName, locators: [String]) throws -> [String: AuthoritativeSessionSnapshot] {
+        guard !locators.isEmpty else { return [:] }
+        return try read { db in
+            var snapshots: [String: AuthoritativeSessionSnapshot] = [:]
+            for batch in stride(from: 0, to: locators.count, by: 500) {
+                let slice = Array(locators[batch..<Swift.min(batch + 500, locators.count)])
+                let placeholders = Array(repeating: "?", count: slice.count).joined(separator: ",")
+                var arguments: StatementArguments = [source.rawValue]
+                for locator in slice {
+                    arguments += [locator]
+                }
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT *,
+                           COALESCE(NULLIF(source_locator, ''), NULLIF(file_path, '')) AS merge_locator
+                    FROM sessions
+                    WHERE source = ?
+                      AND COALESCE(NULLIF(source_locator, ''), NULLIF(file_path, '')) IN (\(placeholders))
+                    """,
+                    arguments: arguments
+                )
+                for row in rows {
+                    guard let locator = row["merge_locator"] as String?,
+                          !locator.isEmpty,
+                          let snapshot = try Self.tailMergeSnapshot(from: row, db: db)
+                    else {
+                        continue
+                    }
+                    snapshots[locator] = snapshot
+                }
+            }
+            return snapshots
+        }
+    }
+
     func knownFileIndexStates(source: SourceName, locators: [String]) throws -> [String: FileIndexState] {
         guard !locators.isEmpty else { return [:] }
         return try read { db in
@@ -165,6 +205,121 @@ public extension EngramDatabaseWriter {
             }
             return states
         }
+    }
+
+    private static func tailMergeSnapshot(from row: Row, db: Database) throws -> AuthoritativeSessionSnapshot? {
+        guard let id = row["id"] as String?,
+              let sourceRaw = row["source"] as String?,
+              let source = SourceName(rawValue: sourceRaw)
+        else {
+            return nil
+        }
+        return AuthoritativeSessionSnapshot(
+            id: id,
+            source: source,
+            authoritativeNode: row["authoritative_node"] ?? "",
+            syncVersion: row["sync_version"] ?? 0,
+            snapshotHash: row["snapshot_hash"] ?? "",
+            indexedAt: row["indexed_at"] ?? "",
+            sourceLocator: row["source_locator"] ?? row["file_path"] ?? "",
+            sizeBytes: row["size_bytes"],
+            startTime: row["start_time"],
+            endTime: row["end_time"],
+            cwd: row["cwd"],
+            project: row["project"],
+            model: row["model"],
+            messageCount: row["message_count"],
+            userMessageCount: row["user_message_count"],
+            assistantMessageCount: row["assistant_message_count"],
+            toolMessageCount: row["tool_message_count"],
+            systemMessageCount: row["system_message_count"],
+            summary: row["summary"],
+            summaryMessageCount: row["summary_message_count"],
+            instructionCount: row["instruction_count"],
+            humanTurnCount: row["human_turn_count"],
+            instructionSummary: row["instruction_summary"],
+            origin: row["origin"],
+            tier: (row["tier"] as String?).flatMap(SessionTier.init(rawValue:)),
+            agentRole: row["agent_role"],
+            parentSessionId: row["parent_session_id"],
+            toolCallCounts: try tailMergeToolCounts(sessionId: id, db: db),
+            tokenUsage: try tailMergeTokenUsage(sessionId: id, db: db),
+            implementationBeats: try tailMergeWorkBeats(sessionId: id, db: db)
+        )
+    }
+
+    private static func tailMergeTokenUsage(sessionId: String, db: Database) throws -> TokenUsage? {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: """
+            SELECT input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+            FROM session_costs
+            WHERE session_id = ?
+            """,
+            arguments: [sessionId]
+        ) else {
+            return nil
+        }
+        return TokenUsage(
+            inputTokens: row["input_tokens"] ?? 0,
+            outputTokens: row["output_tokens"] ?? 0,
+            cacheReadTokens: row["cache_read_tokens"],
+            cacheCreationTokens: row["cache_creation_tokens"]
+        )
+    }
+
+    private static func tailMergeToolCounts(sessionId: String, db: Database) throws -> [String: Int] {
+        let rows = try Row.fetchAll(
+            db,
+            sql: "SELECT tool_name, call_count FROM session_tools WHERE session_id = ?",
+            arguments: [sessionId]
+        )
+        var counts: [String: Int] = [:]
+        for row in rows {
+            let name: String = row["tool_name"]
+            let count: Int = row["call_count"]
+            counts[name] = count
+        }
+        return counts
+    }
+
+    private static func tailMergeWorkBeats(sessionId: String, db: Database) throws -> [SessionImplementationBeat] {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT session_id, beat_index, action_date, action_timestamp, work_key, work_title,
+                   human_intent, assistant_outcome, kind, status, operation_events, confidence
+              FROM session_work_beats
+             WHERE session_id = ?
+             ORDER BY beat_index ASC
+            """,
+            arguments: [sessionId]
+        )
+        return rows.map { row in
+            let eventsJSON: String = row["operation_events"] ?? "[]"
+            let events = tailMergeOperationEvents(eventsJSON)
+            return SessionImplementationBeat(
+                sessionId: row["session_id"],
+                beatIndex: row["beat_index"],
+                actionDate: row["action_date"],
+                actionTimestamp: row["action_timestamp"],
+                workKey: row["work_key"],
+                workTitle: row["work_title"],
+                humanIntent: row["human_intent"],
+                assistantOutcome: row["assistant_outcome"],
+                kind: SessionImplementationKind(rawValue: row["kind"]) ?? .implementation,
+                status: SessionImplementationStatus(rawValue: row["status"]) ?? .partial,
+                operationEvents: events,
+                confidence: row["confidence"]
+            )
+        }
+    }
+
+    private static func tailMergeOperationEvents(_ json: String) -> [SessionOperationEvent] {
+        guard let data = json.data(using: .utf8),
+              let events = try? JSONDecoder().decode([SessionOperationEvent].self, from: data)
+        else { return [] }
+        return events
     }
 
     func upsertFileIndexState(_ state: FileIndexState) throws {
@@ -665,7 +820,7 @@ public extension EngramDatabaseWriter {
         switch failure {
         case .fileMissing, .fileTooLarge, .invalidUtf8, .truncatedJSON, .truncatedJSONL,
              .malformedToolCall, .deeplyNestedRecord, .messageLimitExceeded, .lineTooLarge,
-             .unsupportedVirtualLocator:
+             .unsupportedVirtualLocator, .noVisibleMessages:
             return true
         case .malformedJSON, .fileModifiedDuringParse, .sqliteUnreadable, .grpcUnavailable:
             return false

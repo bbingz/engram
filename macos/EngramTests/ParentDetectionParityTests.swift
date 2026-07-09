@@ -50,7 +50,10 @@ final class ParentDetectionParityTests: XCTestCase {
             XCTAssertEqual(actual, item.score, accuracy: 0.000000000001, item.name)
         }
         for item in fixture.pickBestCases {
-            XCTAssertEqual(ParentDetection.pickBestCandidate(item.input), item.bestParentId)
+            XCTAssertEqual(
+                ParentDetection.pickBestCandidate(item.input),
+                item.decision.parentDetectionDecision
+            )
         }
     }
 
@@ -121,6 +124,80 @@ final class ParentDetectionParityTests: XCTestCase {
             0
         )
     }
+
+    func testCandidateDecisionHandlesAmbiguousNearTies() {
+        XCTAssertEqual(
+            ParentDetection.pickBestCandidate([]),
+            .none
+        )
+        XCTAssertEqual(
+            ParentDetection.pickBestCandidate([
+                ScoredParent(parentId: "best", score: 1),
+                ScoredParent(parentId: "runner", score: 0.89)
+            ]),
+            .suggest(parentId: "best")
+        )
+        XCTAssertEqual(
+            ParentDetection.pickBestCandidate([
+                ScoredParent(parentId: "best", score: 1),
+                ScoredParent(parentId: "runner", score: 0.9)
+            ]),
+            .ambiguous(candidates: [
+                ScoredParent(parentId: "best", score: 1),
+                ScoredParent(parentId: "runner", score: 0.9)
+            ])
+        )
+        XCTAssertEqual(
+            ParentDetection.pickBestCandidate([
+                ScoredParent(parentId: "best", score: 1),
+                ScoredParent(parentId: "runner", score: 0.91)
+            ]),
+            .ambiguous(candidates: [
+                ScoredParent(parentId: "best", score: 1),
+                ScoredParent(parentId: "runner", score: 0.91)
+            ])
+        )
+        XCTAssertEqual(
+            ParentDetection.pickBestCandidate([
+                ScoredParent(parentId: "b", score: 0.8),
+                ScoredParent(parentId: "a", score: 0.8)
+            ]),
+            .ambiguous(candidates: [
+                ScoredParent(parentId: "a", score: 0.8),
+                ScoredParent(parentId: "b", score: 0.8)
+            ])
+        )
+    }
+
+    func testCandidateDecisionCapsAmbiguousCandidatesAndExcludesZeroScores() {
+        XCTAssertEqual(
+            ParentDetection.pickBestCandidate([
+                ScoredParent(parentId: "a", score: 1),
+                ScoredParent(parentId: "b", score: 0.95),
+                ScoredParent(parentId: "c", score: 0.91),
+                ScoredParent(parentId: "d", score: 0.9)
+            ]),
+            .ambiguous(candidates: [
+                ScoredParent(parentId: "a", score: 1),
+                ScoredParent(parentId: "b", score: 0.95),
+                ScoredParent(parentId: "c", score: 0.91)
+            ])
+        )
+        XCTAssertEqual(
+            ParentDetection.pickBestCandidate([
+                ScoredParent(parentId: "best", score: 1),
+                ScoredParent(parentId: "zero", score: 0)
+            ]),
+            .suggest(parentId: "best")
+        )
+        XCTAssertEqual(
+            ParentDetection.pickBestCandidate([
+                ScoredParent(parentId: "a", score: 0),
+                ScoredParent(parentId: "b", score: 0)
+            ]),
+            .none
+        )
+    }
 }
 
 private struct ParentDetectionFixture: Decodable {
@@ -142,5 +219,46 @@ private struct ScoreCase: Decodable {
 
 private struct PickBestCase: Decodable {
     var input: [ScoredParent]
-    var bestParentId: String?
+    var decision: ParentDecisionFixture
+}
+
+private enum ParentDecisionFixture: Decodable {
+    case none
+    case suggest(parentId: String)
+    case ambiguous(candidates: [ScoredParent])
+
+    var parentDetectionDecision: ParentDetection.CandidateDecision {
+        switch self {
+        case .none:
+            return .none
+        case .suggest(let parentId):
+            return .suggest(parentId: parentId)
+        case .ambiguous(let candidates):
+            return .ambiguous(candidates: candidates)
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case parentId
+        case candidates
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(String.self, forKey: .type) {
+        case "none":
+            self = .none
+        case "suggest":
+            self = .suggest(parentId: try container.decode(String.self, forKey: .parentId))
+        case "ambiguous":
+            self = .ambiguous(candidates: try container.decode([ScoredParent].self, forKey: .candidates))
+        case let type:
+            throw DecodingError.dataCorruptedError(
+                forKey: .type,
+                in: container,
+                debugDescription: "Unknown parent decision type \(type)"
+            )
+        }
+    }
 }

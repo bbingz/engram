@@ -47,9 +47,89 @@ describe('CodexAdapter', () => {
     expect(info?.endTime).toBe('2026-01-15T10:05:00.000Z');
   });
 
-  it('does not treat session_meta.model_provider as a model name', async () => {
+  it('uses turn_context.payload.model when response items omit model', async () => {
     const info = await adapter.parseSessionInfo(FIXTURE);
-    expect(info?.model).toBeUndefined();
+    expect(info?.model).toBe('gpt-5.5');
+  });
+
+  it('does not treat session_meta.model_provider as a model name', async () => {
+    const tmpRoot = join(tmpdir(), `engram-codex-provider-only-${Date.now()}`);
+    const path = join(tmpRoot, 'rollout-provider-only.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    try {
+      writeFileSync(
+        path,
+        [
+          JSON.stringify({
+            timestamp: '2026-06-01T10:00:00.000Z',
+            type: 'session_meta',
+            payload: {
+              id: 'provider-only',
+              timestamp: '2026-06-01T10:00:00.000Z',
+              cwd: '/tmp/codex-provider-only',
+              originator: 'codex',
+              model_provider: 'openai',
+            },
+          }),
+          JSON.stringify({
+            timestamp: '2026-06-01T10:00:01.000Z',
+            type: 'response_item',
+            payload: {
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_text', text: 'No model label here' }],
+            },
+          }),
+        ].join('\n'),
+      );
+      const info = await adapter.parseSessionInfo(path);
+      expect(info?.model).toBeUndefined();
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers response_item.payload.model over turn_context.payload.model', async () => {
+    const tmpRoot = join(tmpdir(), `engram-codex-response-model-${Date.now()}`);
+    const path = join(tmpRoot, 'rollout-response-model.jsonl');
+    mkdirSync(tmpRoot, { recursive: true });
+    try {
+      writeFileSync(
+        path,
+        [
+          JSON.stringify({
+            timestamp: '2026-06-01T10:00:00.000Z',
+            type: 'session_meta',
+            payload: {
+              id: 'response-model',
+              timestamp: '2026-06-01T10:00:00.000Z',
+              cwd: '/tmp/codex-response-model',
+              originator: 'codex',
+              model_provider: 'openai',
+            },
+          }),
+          JSON.stringify({
+            timestamp: '2026-06-01T10:00:00.500Z',
+            type: 'turn_context',
+            payload: { model: 'gpt-5.5' },
+          }),
+          JSON.stringify({
+            timestamp: '2026-06-01T10:00:01.000Z',
+            type: 'response_item',
+            payload: {
+              type: 'message',
+              role: 'assistant',
+              model: 'gpt-5.6',
+              content: [{ type: 'output_text', text: 'Real model wins.' }],
+            },
+          }),
+        ].join('\n'),
+      );
+      const info = await adapter.parseSessionInfo(path);
+      expect(info?.model).toBe('gpt-5.6');
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   it('prefers response_item.payload.model over session_meta.model_provider', async () => {

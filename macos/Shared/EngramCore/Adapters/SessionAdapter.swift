@@ -209,6 +209,8 @@ public enum ParserFailure: String, CaseIterable, Error, Codable, Equatable, Send
     case sqliteUnreadable
     case grpcUnavailable
     case unsupportedVirtualLocator
+    // Valid transcript bytes, but no user/assistant/tool messages visible to Engram.
+    case noVisibleMessages
 }
 
 public enum AdapterParseResult<Value: Sendable>: Sendable {
@@ -222,11 +224,82 @@ public enum AdapterParseResult<Value: Sendable>: Sendable {
 public struct IndexingScan: Sendable {
     public var info: NormalizedSessionInfo
     public var messages: [NormalizedMessage]
+    public var checkpointParsedOffset: Int64?
+    public var checkpointBoundaryHash: String?
 
-    public init(info: NormalizedSessionInfo, messages: [NormalizedMessage]) {
+    public init(
+        info: NormalizedSessionInfo,
+        messages: [NormalizedMessage],
+        checkpointParsedOffset: Int64? = nil,
+        checkpointBoundaryHash: String? = nil
+    ) {
         self.info = info
         self.messages = messages
+        self.checkpointParsedOffset = checkpointParsedOffset
+        self.checkpointBoundaryHash = checkpointBoundaryHash
     }
+}
+
+public struct IndexingTailInfoDelta: Sendable {
+    public var id: String?
+    public var source: SourceName?
+    public var endTime: String?
+    public var model: String?
+    public var messageCount: Int
+    public var userMessageCount: Int
+    public var assistantMessageCount: Int
+    public var toolMessageCount: Int
+    public var systemMessageCount: Int
+    public var firstVisibleRole: NormalizedMessageRole?
+
+    public init(
+        id: String?,
+        source: SourceName?,
+        endTime: String?,
+        model: String?,
+        messageCount: Int,
+        userMessageCount: Int,
+        assistantMessageCount: Int,
+        toolMessageCount: Int,
+        systemMessageCount: Int,
+        firstVisibleRole: NormalizedMessageRole?
+    ) {
+        self.id = id
+        self.source = source
+        self.endTime = endTime
+        self.model = model
+        self.messageCount = messageCount
+        self.userMessageCount = userMessageCount
+        self.assistantMessageCount = assistantMessageCount
+        self.toolMessageCount = toolMessageCount
+        self.systemMessageCount = systemMessageCount
+        self.firstVisibleRole = firstVisibleRole
+    }
+}
+
+public struct IndexingTailScan: Sendable {
+    public var infoDelta: IndexingTailInfoDelta
+    public var messages: [NormalizedMessage]
+    public var parsedOffset: Int64
+    public var boundaryHash: String
+
+    public init(
+        infoDelta: IndexingTailInfoDelta,
+        messages: [NormalizedMessage],
+        parsedOffset: Int64,
+        boundaryHash: String
+    ) {
+        self.infoDelta = infoDelta
+        self.messages = messages
+        self.parsedOffset = parsedOffset
+        self.boundaryHash = boundaryHash
+    }
+}
+
+public enum IndexingTailScanResult: Sendable {
+    case success(IndexingTailScan)
+    case fallback
+    case failure(ParserFailure)
 }
 
 public protocol MessageAdapter {
@@ -251,6 +324,14 @@ public protocol SessionAdapter: MessageAdapter {
     /// single file read override this to parse once. Declared as a protocol
     /// requirement so overrides dispatch dynamically through `any SessionAdapter`.
     func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan>
+}
+
+public protocol TailIndexingSessionAdapter: SessionAdapter {
+    func scanTailForIndexing(
+        locator: String,
+        from parsedOffset: Int64,
+        expectedBoundaryHash: String
+    ) async throws -> IndexingTailScanResult
 }
 
 public extension SessionAdapter {

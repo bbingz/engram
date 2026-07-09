@@ -69,8 +69,34 @@ struct SessionListStats {
     let sources: [String]
 }
 
+private struct StoredAmbiguousSuggestionCandidate: Decodable {
+    let id: String
+    let score: Double
+}
+
 @Observable
 final class DatabaseManager: @unchecked Sendable {
+    struct AmbiguousSuggestionCandidate: Identifiable, Equatable {
+        let id: String
+        let score: Double
+        let title: String?
+
+        var displayTitle: String {
+            title ?? Self.shortId(id)
+        }
+
+        private static func shortId(_ id: String) -> String {
+            id.count <= 16 ? id : "\(id.prefix(12))..."
+        }
+    }
+
+    struct AmbiguousSuggestionSession: Identifiable, Equatable {
+        let session: Session
+        let candidates: [AmbiguousSuggestionCandidate]
+
+        var id: String { session.id }
+    }
+
     @ObservationIgnored private let dbPath: String
     @ObservationIgnored private var pool: DatabasePool?
     @ObservationIgnored private let poolLock = NSLock()
@@ -296,6 +322,17 @@ final class DatabaseManager: @unchecked Sendable {
                 SELECT source, COUNT(*) as n FROM sessions WHERE hidden_at IS NULL GROUP BY source
             """)
             return Dictionary(uniqueKeysWithValues: rows.map { ($0["source"] as String, $0["n"] as Int) })
+        }
+    }
+
+    func indexJobCountsByStatus() throws -> [String: Int] {
+        try readInBackground { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT status, COUNT(*) as count
+                FROM session_index_jobs
+                GROUP BY status
+            """)
+            return Dictionary(uniqueKeysWithValues: rows.map { ($0["status"] as String, $0["count"] as Int) })
         }
     }
 
@@ -750,6 +787,52 @@ final class DatabaseManager: @unchecked Sendable {
             return StatsResult(totalSessions: total, totalMessages: messages,
                                bySource: Dictionary(uniqueKeysWithValues: counts.map { ($0.source, $0.count) }))
         }
+    }
+
+    func diagnosticStats() throws -> DiagnosticDatabaseStats {
+        let aggregates = try readInBackground { db in
+            let sourceRows = try Row.fetchAll(db, sql: """
+                SELECT source AS key, COUNT(*) AS count
+                FROM sessions
+                WHERE hidden_at IS NULL
+                GROUP BY source
+                ORDER BY source ASC
+            """)
+            let tierRows = try Row.fetchAll(db, sql: """
+                SELECT COALESCE(NULLIF(tier, ''), 'normal') AS key, COUNT(*) AS count
+                FROM sessions
+                WHERE hidden_at IS NULL
+                GROUP BY COALESCE(NULLIF(tier, ''), 'normal')
+                ORDER BY key ASC
+            """)
+            let jobRows: [Row]
+            if try Self.tableExists("session_index_jobs", db: db) {
+                jobRows = try Row.fetchAll(db, sql: """
+                    SELECT status AS key, COUNT(*) AS count
+                    FROM session_index_jobs
+                    GROUP BY status
+                    ORDER BY status ASC
+                """)
+            } else {
+                jobRows = []
+            }
+
+            return (
+                sessionsBySource: Self.countDictionary(sourceRows),
+                sessionsByTier: Self.countDictionary(tierRows),
+                indexJobsByStatus: Self.countDictionary(jobRows)
+            )
+        }
+        return DiagnosticDatabaseStats(
+            sessionsBySource: aggregates.sessionsBySource,
+            sessionsByTier: aggregates.sessionsByTier,
+            indexJobsByStatus: aggregates.indexJobsByStatus,
+            dbFileSizeBytes: dbSizeBytes()
+        )
+    }
+
+    private static func countDictionary(_ rows: [Row]) -> [String: Int] {
+        Dictionary(uniqueKeysWithValues: rows.map { ($0["key"] as String, $0["count"] as Int) })
     }
 
     func dbSizeBytes() -> Int64 {
@@ -1370,6 +1453,70 @@ final class DatabaseManager: @unchecked Sendable {
                 ORDER BY start_time DESC
                 LIMIT ?
             """, arguments: [limit])
+        }
+    }
+
+    func ambiguousSuggestionSessions(
+        includeHidden: Bool = false,
+        limit: Int = 200
+    ) throws -> [AmbiguousSuggestionSession] {
+        try readInBackground { db in
+            let hiddenClause = includeHidden ? "" : "AND hidden_at IS NULL"
+            let sessions = try Session.fetchAll(db, sql: """
+                SELECT * FROM sessions
+                WHERE suggestion_status = 'ambiguous'
+                  AND parent_session_id IS NULL
+                  \(hiddenClause)
+                ORDER BY start_time DESC
+                LIMIT ?
+            """, arguments: [limit])
+            guard !sessions.isEmpty else { return [] }
+
+            let sessionIds = sessions.map(\.id)
+            let sessionPlaceholders = sessionIds.map { _ in "?" }.joined(separator: ",")
+            let candidateRows = try Row.fetchAll(db, sql: """
+                SELECT id, suggestion_candidates
+                FROM sessions
+                WHERE id IN (\(sessionPlaceholders))
+            """, arguments: StatementArguments(sessionIds))
+            var storedBySession: [String: [StoredAmbiguousSuggestionCandidate]] = [:]
+            for row in candidateRows {
+                let sessionId: String = row["id"]
+                guard let json = row["suggestion_candidates"] as String?,
+                      let data = json.data(using: .utf8),
+                      let decoded = try? JSONDecoder().decode([StoredAmbiguousSuggestionCandidate].self, from: data)
+                else {
+                    storedBySession[sessionId] = []
+                    continue
+                }
+                storedBySession[sessionId] = Array(decoded.prefix(3))
+            }
+
+            let candidateIds = Array(Set(storedBySession.values.flatMap { $0.map(\.id) }))
+            let titleById: [String: String]
+            if candidateIds.isEmpty {
+                titleById = [:]
+            } else {
+                let candidatePlaceholders = candidateIds.map { _ in "?" }.joined(separator: ",")
+                let candidateSessions = try Session.fetchAll(db, sql: """
+                    SELECT * FROM sessions
+                    WHERE id IN (\(candidatePlaceholders))
+                """, arguments: StatementArguments(candidateIds))
+                titleById = Dictionary(uniqueKeysWithValues: candidateSessions.map { ($0.id, $0.displayTitle) })
+            }
+
+            // Candidate ids can linger if a candidate parent is deleted after JSON
+            // capture; setParentSession still validates parent existence on confirm.
+            return sessions.map { session in
+                let candidates = (storedBySession[session.id] ?? []).map {
+                    AmbiguousSuggestionCandidate(
+                        id: $0.id,
+                        score: $0.score,
+                        title: titleById[$0.id]
+                    )
+                }
+                return AmbiguousSuggestionSession(session: session, candidates: candidates)
+            }
         }
     }
 

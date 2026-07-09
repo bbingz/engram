@@ -3,6 +3,26 @@ import XCTest
 
 @MainActor
 final class EngramServiceStatusStoreTests: XCTestCase {
+    private func utcDate(
+        _ year: Int,
+        _ month: Int,
+        _ day: Int,
+        _ hour: Int,
+        _ minute: Int = 0,
+        _ second: Int = 0
+    ) -> Date {
+        var components = DateComponents()
+        components.calendar = Calendar(identifier: .gregorian)
+        components.timeZone = TimeZone(secondsFromGMT: 0)
+        components.year = year
+        components.month = month
+        components.day = day
+        components.hour = hour
+        components.minute = minute
+        components.second = second
+        return components.date!
+    }
+
     func testDisplayStringAndRunningSemanticsMatchLegacyIndexerStatus() {
         let store = EngramServiceStatusStore()
 
@@ -28,6 +48,39 @@ final class EngramServiceStatusStoreTests: XCTestCase {
             String.localizedStringWithFormat(String(localized: "Error: %@"), errorMessage)
         )
         XCTAssertFalse(store.isRunning)
+    }
+
+    func testDataFreshnessTransitionsAcrossThirtyMinuteBoundary() {
+        let store = EngramServiceStatusStore()
+        let now = utcDate(2026, 7, 7, 12)
+
+        store.status = .running(total: 100, todayParents: 8)
+        store.lastEventAt = now.addingTimeInterval(-60 * 60)
+        XCTAssertEqual(store.dataFreshness(now: now), .live)
+
+        store.status = .degraded(message: "offline")
+        let stillUseful = now.addingTimeInterval(-30 * 60)
+        store.lastEventAt = stillUseful
+        XCTAssertEqual(store.dataFreshness(now: now), .stale(asOf: stillUseful))
+
+        store.lastEventAt = now.addingTimeInterval(-(30 * 60 + 1))
+        XCTAssertEqual(store.dataFreshness(now: now), .expired)
+
+        store.lastEventAt = nil
+        XCTAssertEqual(store.dataFreshness(now: now), .expired)
+    }
+
+    func testCountsAreRetainedWhenStatusFlipsFromRunningToDegradedAndError() {
+        let store = EngramServiceStatusStore()
+
+        store.apply(EngramServiceStatus.running(total: 100, todayParents: 8))
+        store.apply(EngramServiceStatus.degraded(message: "slow provider"))
+        XCTAssertEqual(store.totalSessions, 100)
+        XCTAssertEqual(store.todayParentSessions, 8)
+
+        store.apply(EngramServiceStatus.error(message: "service unavailable"))
+        XCTAssertEqual(store.totalSessions, 100)
+        XCTAssertEqual(store.todayParentSessions, 8)
     }
 
     func testAppliesReadyIndexedAndSummaryEvents() throws {
