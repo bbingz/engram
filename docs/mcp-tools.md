@@ -243,8 +243,9 @@ Retrieve curated insights and memories from past sessions. Use `save_insight` to
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | query | string | **yes** | What to remember (e.g. "user's coding preferences") |
+| type | string | no | Optional insight type filter. Enum: `episodic`, `semantic`, `procedural`. Applied on both keyword/FTS and hybrid semantic paths. Invalid values return an error. Missing/NULL stored types are treated as `semantic`. |
 
-**Notes:** Returns up to 10 matching insights with id, content, wing, room, importance, and distance placeholder. The Swift product path uses insight FTS keyword search, then falls back to recent insights. If no memories exist, suggests using `save_insight`. **Output:** `structuredContent` is `{ memories }` plus optional `warning` / `message` / `retrieval`; declared via `outputSchema`.
+**Notes:** Returns up to 10 matching insights with id, content, wing, room, importance, and distance placeholder. The Swift product path uses insight FTS keyword search (and hybrid semantic retrieval when embeddings are usable), then falls back to recent insights. If no memories exist, suggests using `save_insight`. **Output:** `structuredContent` is `{ memories }` plus optional `warning` / `message` / `retrieval`; declared via `outputSchema`.
 
 ---
 
