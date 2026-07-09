@@ -68,8 +68,77 @@ enum MCPToolRegistry {
     /// project_* commands through to the Swift pipeline.
     private static let unavailableNativeProjectOperationTools: Set<String> = []
 
-    static let tools: [MCPToolDefinition] = allToolDefinitions.filter {
-        !unavailableNativeProjectOperationTools.contains($0.name)
+    /// Default tools list (probes the process MCP DB path for search modes).
+    static var tools: [MCPToolDefinition] {
+        tools(dbPath: MCPConfig.load().dbPath)
+    }
+
+    /// tools/list + argument validation surface. Search `mode` enum is gated by
+    /// `SessionVectorSearchAvailability` on the given database path.
+    static func tools(dbPath: String) -> [MCPToolDefinition] {
+        let semanticUsable = SessionVectorSearchAvailability.probe(databasePath: dbPath).isUsable
+        return allToolDefinitions.compactMap { definition in
+            guard !unavailableNativeProjectOperationTools.contains(definition.name) else {
+                return nil
+            }
+            if definition.name == "search" {
+                return searchToolDefinition(semanticModesAvailable: semanticUsable)
+            }
+            return definition
+        }
+    }
+
+    private static func searchToolDefinition(semanticModesAvailable: Bool) -> MCPToolDefinition {
+        let modeEnum: JSONValue
+        let modeDescription: String
+        let toolDescription: String
+        if semanticModesAvailable {
+            modeEnum = .array([
+                .string("keyword"),
+                .string("semantic"),
+                .string("hybrid"),
+            ])
+            modeDescription =
+                "Search mode: keyword (FTS), semantic (embedding KNN), or hybrid (RRF fusion of both)"
+            toolDescription =
+                "Full-text and semantic search across session content. Semantic and hybrid modes require usable session embeddings."
+        } else {
+            modeEnum = .array([.string("keyword")])
+            modeDescription =
+                "Search mode (keyword only; semantic/hybrid require usable session embeddings in embedding_meta)"
+            toolDescription =
+                "Full-text keyword search across all session content. Supports Chinese and English."
+        }
+        return MCPToolDefinition(
+            name: "search",
+            description: toolDescription,
+            inputSchema: .object([
+                "type": .string("object"),
+                "required": .array([.string("query")]),
+                "properties": .object([
+                    "query": .object([
+                        "type": .string("string"),
+                        "description": .string("Search keywords (at least 3 characters for keyword search)"),
+                    ]),
+                    "source": .object([
+                        "type": .string("string"),
+                        "enum": sourceSchemaEnum,
+                    ]),
+                    "project": .object(["type": .string("string")]),
+                    "since": .object(["type": .string("string")]),
+                    "limit": .object([
+                        "type": .string("number"),
+                        "description": .string("Default 10, max 50"),
+                    ]),
+                    "mode": .object([
+                        "type": .string("string"),
+                        "enum": modeEnum,
+                        "description": .string(modeDescription),
+                    ]),
+                ]),
+                "additionalProperties": .bool(false),
+            ])
+        )
     }
 
     private static let sourceSchemaEnum: JSONValue = .array(SourceName.allCases.map { .string($0.rawValue) })
@@ -289,6 +358,7 @@ enum MCPToolRegistry {
             ]),
             outputSchema: MCPOutputSchemas.getMemory
         ),
+        // Placeholder replaced by `searchToolDefinition` in `tools(dbPath:)`.
         MCPToolDefinition(
             name: "search",
             description: "Full-text keyword search across all session content. Supports Chinese and English.",
@@ -312,9 +382,7 @@ enum MCPToolRegistry {
                     ]),
                     "mode": .object([
                         "type": .string("string"),
-                        "enum": .array([
-                            .string("keyword"),
-                        ]),
+                        "enum": .array([.string("keyword")]),
                         "description": .string("Search mode (keyword only)"),
                     ]),
                 ]),
@@ -779,7 +847,8 @@ enum MCPToolRegistry {
         arguments: [String: JSONValue],
         config: MCPConfig
     ) async throws -> OrderedJSONValue {
-        guard let definition = tools.first(where: { $0.name == name }) else {
+        let catalog = tools(dbPath: config.dbPath)
+        guard let definition = catalog.first(where: { $0.name == name }) else {
             return .toolError(message: "Unknown tool: \(name)")
         }
         try validateArguments(arguments, for: definition)
@@ -881,7 +950,7 @@ enum MCPToolRegistry {
             let query = try requiredString("query", in: arguments)
             do {
                 let database = try MCPDatabase(path: config.dbPath)
-                let structured = try database.searchSessions(
+                let structured = try await database.searchSessions(
                     query: query,
                     source: arguments["source"]?.stringValue,
                     project: arguments["project"]?.stringValue,
@@ -890,6 +959,11 @@ enum MCPToolRegistry {
                     mode: arguments["mode"]?.stringValue ?? "keyword"
                 )
                 return .toolSuccess(structured)
+            } catch let error as MCPDatabase.SearchError {
+                return .toolError(
+                    message: error.localizedDescription,
+                    code: error.structuredCode
+                )
             } catch {
                 return .toolError(
                     message: "Search failed. Check the Engram database and retry.",
@@ -1454,9 +1528,12 @@ enum MCPToolRegistry {
             }
         }
 
-        // Keep legacy search clients working: unsupported modes are downgraded
-        // by the search path, while the advertised schema stays keyword-only.
-        if "\(toolName).\(key)" == "search.mode" {
+        // search.mode: accept known mode names even when tools/list currently
+        // advertises only keyword so the search path can return structured
+        // `searchModeUnavailable` instead of a generic invalidArguments error.
+        if "\(toolName).\(key)" == "search.mode",
+           let mode = value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           ["keyword", "semantic", "hybrid", "both"].contains(mode) {
             return
         }
 

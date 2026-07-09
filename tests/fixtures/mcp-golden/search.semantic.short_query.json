@@ -2,13 +2,12 @@
   "content": [
     {
       "type": "text",
-      "text": "{\n  \"results\": [],\n  \"query\": \"ab\",\n  \"searchModes\": [],\n  \"warning\": \"Search query needs at least 3 characters for keyword search\"\n}"
+      "text": "Search mode 'semantic' is unavailable; session embeddings are not usable. Configure an embedding provider and wait for semantic_chunks backfill, or use mode 'keyword'."
     }
   ],
+  "isError": true,
   "structuredContent": {
-    "results": [],
-    "query": "ab",
-    "searchModes": [],
-    "warning": "Search query needs at least 3 characters for keyword search"
+    "code": "searchModeUnavailable",
+    "message": "Search mode 'semantic' is unavailable; session embeddings are not usable. Configure an embedding provider and wait for semantic_chunks backfill, or use mode 'keyword'."
   }
 }

@@ -23,7 +23,7 @@ dev/reference only.
 | Session list | `selectedProject` / `sortOrder` not persisted | **DONE** — wave-6 task 3: `SessionsPageView` persists `sessionFilter` / `timeFilter` / `sourceFilter` via `@AppStorage` keys `sessions.sessionFilter` / `sessions.timeFilter` / `sessions.sourceFilter` (empty-string sentinel for optional source; invalid source falls back). Sort remains hardcoded `.updatedDesc` (no sort UI). Evidence: `SessionsFilterPersistenceTests` |
 | Perf | Service-layer `ISO8601DateFormatter` per-call | **DONE** — shared statics in `SwiftIndexer` + `EngramServiceCommandHandler` |
 | Usage (PR5) | Real probe data flow unconfirmed | **DONE** — startup writes real 7-day usage shares for tracked CLI sources |
-| Search | Semantic search still advertised in MCP | **DONE** — MCP search schema and runtime are keyword-only unless vector support exists |
+| Search | Semantic search still advertised in MCP | **DONE** — `SessionVectorSearchAvailability` gates tools/list + runtime; semantic/hybrid only when vectors usable (wave-6 task 10) |
 | Session links | Manual parent link/unlink missing | **DONE** — service IPC + detail-view affordances support manual link/unlink |
 | Runtime monitor | `live_sessions` returned unavailable | **DONE** — Swift service/app IPC scan active local CLI session files; MCP mode keeps an explicit unavailable contract |
 | Insights | Cost optimization suggestions not computed | **DONE** — MCP insights derive actionable suggestions from spend distribution |
@@ -114,11 +114,17 @@ scheduling.
 ### Semantic search and embeddings
 
 - **Module:** MCP search
-- **Status:** done
-- **Acceptance evidence:** MCP search schema exposes only `keyword`; unsupported
-  semantic/hybrid requests degrade with an explicit keyword-only warning.
+- **Status:** done (wave-6 task 10, 2026-07-09)
+- **Acceptance evidence:** `SessionVectorSearchAvailability` gates `tools/list`
+  mode enum and runtime; usable vectors enable in-process semantic/hybrid over
+  `semantic_chunks` (cosine KNN + RRF via `SessionSemanticSearchPolicy`, parity
+  with `EngramServiceReadProvider`). Unavailable modes return `isError` +
+  `searchModeUnavailable` (no silent keyword fallback). Design:
+  `docs/mcp-semantic-search-design-2026-07.md`.
 - **Related files:** `macos/EngramMCP/Core/MCPToolRegistry.swift`,
-  `macos/EngramMCP/Core/MCPDatabase.swift`
+  `macos/EngramMCP/Core/MCPDatabase.swift`,
+  `macos/Shared/EngramCore/AI/SessionVectorSearchAvailability.swift`,
+  `macos/Shared/EngramCore/AI/SessionSemanticSearchPolicy.swift`
 
 ### Manual link/unlink and extra source ingest
 
