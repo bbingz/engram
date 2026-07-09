@@ -354,6 +354,7 @@ struct CollapsibleSystemBubble: View {
     let message: ChatMessage
     @State private var isExpanded = false
     @AppStorage("contentFontSize") var fontSize: Double = 14
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var categoryLabel: String {
         switch message.systemCategory {
@@ -388,7 +389,7 @@ struct CollapsibleSystemBubble: View {
         VStack(alignment: .leading, spacing: 0) {
             // Header — always visible
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
+                MotionAware.animate(.easeInOut(duration: 0.2), reduceMotion: reduceMotion) {
                     isExpanded.toggle()
                 }
             } label: {

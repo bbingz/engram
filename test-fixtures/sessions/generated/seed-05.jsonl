@@ -1,0 +1,3 @@
+{"type":"turn_context","cwd":"/Users/test/test-lib","model":"codex-1","source":"codex","project":"test-lib","timestamp":"2026-01-17T08:00:00.000Z"}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"Work on test-lib: Quick lint fix"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"Quick lint fix completed with 2 messages."}]}}

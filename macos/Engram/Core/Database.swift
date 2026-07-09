@@ -789,6 +789,52 @@ final class DatabaseManager: @unchecked Sendable {
         }
     }
 
+    func diagnosticStats() throws -> DiagnosticDatabaseStats {
+        let aggregates = try readInBackground { db in
+            let sourceRows = try Row.fetchAll(db, sql: """
+                SELECT source AS key, COUNT(*) AS count
+                FROM sessions
+                WHERE hidden_at IS NULL
+                GROUP BY source
+                ORDER BY source ASC
+            """)
+            let tierRows = try Row.fetchAll(db, sql: """
+                SELECT COALESCE(NULLIF(tier, ''), 'normal') AS key, COUNT(*) AS count
+                FROM sessions
+                WHERE hidden_at IS NULL
+                GROUP BY COALESCE(NULLIF(tier, ''), 'normal')
+                ORDER BY key ASC
+            """)
+            let jobRows: [Row]
+            if try Self.tableExists("session_index_jobs", db: db) {
+                jobRows = try Row.fetchAll(db, sql: """
+                    SELECT status AS key, COUNT(*) AS count
+                    FROM session_index_jobs
+                    GROUP BY status
+                    ORDER BY status ASC
+                """)
+            } else {
+                jobRows = []
+            }
+
+            return (
+                sessionsBySource: Self.countDictionary(sourceRows),
+                sessionsByTier: Self.countDictionary(tierRows),
+                indexJobsByStatus: Self.countDictionary(jobRows)
+            )
+        }
+        return DiagnosticDatabaseStats(
+            sessionsBySource: aggregates.sessionsBySource,
+            sessionsByTier: aggregates.sessionsByTier,
+            indexJobsByStatus: aggregates.indexJobsByStatus,
+            dbFileSizeBytes: dbSizeBytes()
+        )
+    }
+
+    private static func countDictionary(_ rows: [Row]) -> [String: Int] {
+        Dictionary(uniqueKeysWithValues: rows.map { ($0["key"] as String, $0["count"] as Int) })
+    }
+
     func dbSizeBytes() -> Int64 {
         (try? FileManager.default.attributesOfItem(atPath: dbPath)[.size] as? Int64) ?? 0
     }

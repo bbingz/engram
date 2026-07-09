@@ -125,6 +125,8 @@ public enum StartupBackfills {
 
     static let codexModelBackfillMetadataKey = "codex_model_backfill_version"
     static let codexModelBackfillVersion = "1"
+    static let skipTierArtifactReconcileMetadataKey = "skip_tier_artifact_reconcile_version"
+    static let skipTierArtifactReconcileVersion = "1"
     // Codex rollout line 1 can include large base instructions; 256 KiB keeps
     // startup bounded while covering the early session_meta/turn_context lines.
     static let codexModelHeadScanBytes = 256 * 1024
@@ -651,12 +653,26 @@ public enum StartupBackfills {
               AND file_path != ''
             """
         )
-        // The DELETE above leaves orphaned sessions_fts rows behind (FTS is an
-        // external-content-style table keyed by session_id, with no cascade), so
-        // reconcile them in the same transaction.
+        // The DELETE above leaves recoverable artifacts keyed by session_id behind,
+        // so reconcile them in the same transaction.
         if removed > 0 {
+            _ = try deleteRowsFromSessionArtifactTableIfPresent(
+                db,
+                table: "messages",
+                whereSQL: "session_id NOT IN (SELECT id FROM sessions)"
+            )
             try db.execute(
                 sql: "DELETE FROM sessions_fts WHERE session_id NOT IN (SELECT id FROM sessions)"
+            )
+            _ = try deleteRowsFromSessionArtifactTableIfPresent(
+                db,
+                table: "fts_map",
+                whereSQL: "session_id NOT IN (SELECT id FROM sessions)"
+            )
+            _ = try deleteRowsFromSessionArtifactTableIfPresent(
+                db,
+                table: "session_embeddings",
+                whereSQL: "session_id NOT IN (SELECT id FROM sessions)"
             )
         }
         return removed
@@ -749,25 +765,29 @@ public enum StartupBackfills {
     /// rows. DELETE-only: it never modifies tier, so the subagent/skip invariant
     /// holds. Because `sessions_fts.session_id` is UNINDEXED, the batched DELETE
     /// is a full-FTS scan, so only pay it when a skip-tier session still owns an
-    /// fts/embedding job — a cheap, index-backed staleness signal. The obsolete
-    /// jobs are then cleared so the signal is empty (and this scan skipped) next
-    /// launch.
+    /// fts/embedding job, cheap companion artifact row, or one-time migration
+    /// sweep. The obsolete jobs are then cleared so the signal is empty (and this
+    /// scan skipped) next launch.
     public static func reconcileSkipTierIndexArtifacts(_ db: Database) throws -> Int {
-        let hasStale = try Bool.fetchOne(
-            db,
-            sql: """
-            SELECT EXISTS(
-              SELECT 1
-              FROM session_index_jobs j
-              JOIN sessions s ON s.id = j.session_id
-              WHERE j.job_kind IN ('fts', 'embedding')
-                AND COALESCE(s.tier, 'normal') = 'skip'
-            )
-            """
-        ) ?? false
-        guard hasStale else { return 0 }
-
         let skipSubquery = "SELECT id FROM sessions WHERE COALESCE(tier, 'normal') = 'skip'"
+        let shouldFullScanFts = try needsSkipTierArtifactFullScan(db)
+        let hasStale = try hasSkipTierIndexArtifacts(
+            db,
+            skipSubquery: skipSubquery,
+            includeFtsScan: shouldFullScanFts
+        )
+        guard hasStale else {
+            if shouldFullScanFts {
+                try markSkipTierArtifactFullScanComplete(db)
+            }
+            return 0
+        }
+
+        let deletedMessages = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "messages",
+            whereSQL: "session_id IN (\(skipSubquery))"
+        )
         let deletedFts = try db.executeAndCountChanges(
             sql: "DELETE FROM sessions_fts WHERE session_id IN (\(skipSubquery))"
         )
@@ -790,7 +810,10 @@ public enum StartupBackfills {
               AND session_id IN (\(skipSubquery))
             """
         )
-        return deletedFts + deletedFtsMap + deletedEmbeddings
+        if shouldFullScanFts {
+            try markSkipTierArtifactFullScanComplete(db)
+        }
+        return deletedMessages + deletedFts + deletedFtsMap + deletedEmbeddings
     }
 
     public static func vacuumIfNeeded(_ db: Database, fragmentationPercent: Int) throws -> Bool {
@@ -927,8 +950,20 @@ public enum StartupBackfills {
     }
 
     private static func deleteRecoverableIndexArtifactsForSkippedSession(_ db: Database, sessionId: String) throws {
+        _ = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "messages",
+            whereSQL: "session_id = ?",
+            arguments: [sessionId]
+        )
         try db.execute(
             sql: "DELETE FROM sessions_fts WHERE session_id = ?",
+            arguments: [sessionId]
+        )
+        _ = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "fts_map",
+            whereSQL: "session_id = ?",
             arguments: [sessionId]
         )
         if try tableExists(db, "session_embeddings") {
@@ -951,11 +986,21 @@ public enum StartupBackfills {
         _ db: Database,
         whereClause: String
     ) throws {
+        _ = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "messages",
+            whereSQL: "session_id IN (SELECT id FROM sessions WHERE \(whereClause))"
+        )
         try db.execute(
             sql: """
             DELETE FROM sessions_fts
             WHERE session_id IN (SELECT id FROM sessions WHERE \(whereClause))
             """
+        )
+        _ = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "fts_map",
+            whereSQL: "session_id IN (SELECT id FROM sessions WHERE \(whereClause))"
         )
         if try tableExists(db, "session_embeddings") {
             try db.execute(
@@ -980,6 +1025,100 @@ public enum StartupBackfills {
             sql: "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
             arguments: [table]
         ) ?? false
+    }
+
+    private static func needsSkipTierArtifactFullScan(_ db: Database) throws -> Bool {
+        let current = try String.fetchOne(
+            db,
+            sql: "SELECT value FROM metadata WHERE key = ?",
+            arguments: [skipTierArtifactReconcileMetadataKey]
+        )
+        return current != skipTierArtifactReconcileVersion
+    }
+
+    private static func markSkipTierArtifactFullScanComplete(_ db: Database) throws {
+        try db.execute(
+            sql: """
+            INSERT INTO metadata(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            arguments: [skipTierArtifactReconcileMetadataKey, skipTierArtifactReconcileVersion]
+        )
+    }
+
+    private static func hasSkipTierIndexArtifacts(
+        _ db: Database,
+        skipSubquery: String,
+        includeFtsScan: Bool
+    ) throws -> Bool {
+        let hasJobSignal = try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+              SELECT 1
+              FROM session_index_jobs j
+              JOIN sessions s ON s.id = j.session_id
+              WHERE j.job_kind IN ('fts', 'embedding')
+                AND COALESCE(s.tier, 'normal') = 'skip'
+            )
+            """
+        ) ?? false
+        if hasJobSignal { return true }
+
+        for table in ["messages", "fts_map", "session_embeddings"] {
+            if try hasRowsInSessionArtifactTableIfPresent(
+                db,
+                table: table,
+                whereSQL: "session_id IN (\(skipSubquery))"
+            ) {
+                return true
+            }
+        }
+        if includeFtsScan {
+            return try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM sessions_fts WHERE session_id IN (\(skipSubquery)))"
+            ) ?? false
+        }
+        return false
+    }
+
+    private static func hasRowsInSessionArtifactTableIfPresent(
+        _ db: Database,
+        table: String,
+        whereSQL: String,
+        arguments: StatementArguments = StatementArguments()
+    ) throws -> Bool {
+        guard try tableExists(db, table), try tableHasColumn(db, table: table, column: "session_id") else {
+            return false
+        }
+        return try Bool.fetchOne(
+            db,
+            sql: "SELECT EXISTS(SELECT 1 FROM \(table) WHERE \(whereSQL))",
+            arguments: arguments
+        ) ?? false
+    }
+
+    private static func deleteRowsFromSessionArtifactTableIfPresent(
+        _ db: Database,
+        table: String,
+        whereSQL: String,
+        arguments: StatementArguments = StatementArguments()
+    ) throws -> Int {
+        guard try tableExists(db, table), try tableHasColumn(db, table: table, column: "session_id") else {
+            return 0
+        }
+        return try db.executeAndCountChanges(
+            sql: "DELETE FROM \(table) WHERE \(whereSQL)",
+            arguments: arguments
+        )
+    }
+
+    private static func tableHasColumn(_ db: Database, table: String, column: String) throws -> Bool {
+        let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(\(table))")
+        return rows.contains { row in
+            (row["name"] as String?) == column
+        }
     }
 
     public static func backfillParentLinks(_ db: Database) throws -> ParentLinkResult {

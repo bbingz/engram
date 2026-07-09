@@ -253,7 +253,8 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         case .invalidUtf8,
              .malformedJSON,
              .messageLimitExceeded,
-             .lineTooLarge:
+             .lineTooLarge,
+             .noVisibleMessages:
             return true
         case .truncatedJSON,
              .truncatedJSONL,

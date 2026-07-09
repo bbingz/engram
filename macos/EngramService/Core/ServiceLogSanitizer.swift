@@ -1,4 +1,5 @@
 // macos/EngramService/Core/ServiceLogSanitizer.swift
+import CryptoKit
 import Foundation
 
 /// Deny-by-default sanitizer for the in-process service log ring buffer.
@@ -67,11 +68,16 @@ enum ServiceLogSanitizer {
         var output = message
 
         // 1. Structured shapes, most specific first, so a path/id embedded in an
-        //    error tail is caught as <path>/<id> before the generic tail pass.
+        //    error tail is caught as a structured redaction before the generic tail pass.
         output = replace(emailRegex, in: output, with: "<email>")
         output = replace(pathRegex, in: output, with: "<path>")
-        output = replace(uuidRegex, in: output, with: "<id>")
-        output = replace(hexTokenRegex, in: output, with: "<id>")
+        // Unsalted hash prefixes keep same-id log lines correlatable across runs.
+        // These are identifiers, not cleartext credentials, but a reader holding a
+        // candidate value could confirm its presence. That tradeoff is acceptable
+        // for the local-user-only Logs tab. The 8-char fingerprint cannot re-match
+        // hexTokenRegex (32+ chars), so this remains a one-pass replacement.
+        output = replaceIdentifiers(uuidRegex, in: output)
+        output = replaceIdentifiers(hexTokenRegex, in: output)
         output = replace(quotedRegex, in: output, with: "<redacted>")
 
         // 2. Literal home-dir prefix fallback for a bare "/Users/name" reference
@@ -98,5 +104,34 @@ enum ServiceLogSanitizer {
             range: range,
             withTemplate: template
         )
+    }
+
+    private static func replaceIdentifiers(
+        _ regex: NSRegularExpression,
+        in input: String
+    ) -> String {
+        replace(regex, in: input) { match in
+            "<id:\(identifierFingerprint(match))>"
+        }
+    }
+
+    private static func replace(
+        _ regex: NSRegularExpression,
+        in input: String,
+        using transform: (String) -> String
+    ) -> String {
+        var output = input
+        let range = NSRange(input.startIndex..<input.endIndex, in: input)
+        for match in regex.matches(in: input, options: [], range: range).reversed() {
+            guard let matchRange = Range(match.range, in: output) else { continue }
+            let raw = String(output[matchRange])
+            output.replaceSubrange(matchRange, with: transform(raw))
+        }
+        return output
+    }
+
+    private static func identifierFingerprint(_ raw: String) -> String {
+        let digest = SHA256.hash(data: Data(raw.lowercased().utf8))
+        return digest.prefix(4).map { String(format: "%02x", $0) }.joined()
     }
 }

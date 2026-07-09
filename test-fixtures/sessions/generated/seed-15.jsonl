@@ -1,0 +1,3 @@
+{"type":"turn_context","cwd":"/Users/test/engram","model":"claude-sonnet-4-20250514","source":"claude-code","project":"engram","timestamp":"2026-01-25T12:00:00.000Z"}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"Work on engram: Instant session with zero duration"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"Instant session with zero duration completed with 4 messages."}]}}

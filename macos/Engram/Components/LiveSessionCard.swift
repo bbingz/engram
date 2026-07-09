@@ -5,6 +5,7 @@ struct LiveSessionCard: View {
     let session: EngramServiceLiveSessionInfo
     var onOpen: (() -> Void)? = nil
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isPulsing = false
     private static let isoFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -54,8 +55,8 @@ struct LiveSessionCard: View {
             Circle()
                 .fill(levelColor)
                 .frame(width: 8, height: 8)
-                .opacity(session.activityLevel == "active" && isPulsing ? 0.4 : 1.0)
-                .animation(
+                .opacity(session.activityLevel == "active" && !reduceMotion && isPulsing ? 0.4 : 1.0)
+                .motionAwareAnimation(
                     session.activityLevel == "active"
                         ? .easeInOut(duration: 1.2).repeatForever(autoreverses: true)
                         : .default,
@@ -110,6 +111,6 @@ struct LiveSessionCard: View {
                 .stroke(levelColor.opacity(0.3), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .onAppear { isPulsing = true }
+        .onAppear { if !reduceMotion { isPulsing = true } }
     }
 }

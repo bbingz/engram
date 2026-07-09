@@ -4,6 +4,7 @@ import SwiftUI
 struct ToolResultView: View {
     let parsed: ParsedToolResult
     @AppStorage("contentFontSize") var fontSize: Double = 14
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var isExpanded: Bool = false
 
@@ -27,7 +28,7 @@ struct ToolResultView: View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
             Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
+                MotionAware.animate(.easeInOut(duration: 0.18), reduceMotion: reduceMotion) {
                     isExpanded.toggle()
                 }
             } label: {

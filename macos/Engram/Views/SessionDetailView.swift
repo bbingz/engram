@@ -21,6 +21,7 @@ struct SessionDetailView: View {
     var searchTerm: String? = nil
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isFavorite = false
     @State private var favoriteLoadSessionId: String?
     @State private var handoffStatus: String? = nil
@@ -222,7 +223,7 @@ struct SessionDetailView: View {
                 .background(.regularMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .transition(.move(edge: .top).combined(with: .opacity))
-                .animation(.easeInOut(duration: 0.2), value: handoffStatus)
+                .motionAwareAnimation(.easeInOut(duration: 0.2), value: handoffStatus)
             }
 
             if showFind {
@@ -402,7 +403,9 @@ struct SessionDetailView: View {
                     .accessibilityIdentifier("detail_transcript")
                     .onChange(of: scrollTarget) { _, target in
                         if let target {
-                            withAnimation { proxy.scrollTo(target, anchor: .center) }
+                            MotionAware.animate(.default, reduceMotion: reduceMotion) {
+                                proxy.scrollTo(target, anchor: .center)
+                            }
                         }
                     }
                     .overlay(alignment: .bottomTrailing) {
@@ -584,7 +587,7 @@ struct SessionDetailView: View {
             Divider().padding(.horizontal, 16)
             VStack(alignment: .leading, spacing: 6) {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.16)) {
+                    MotionAware.animate(.easeInOut(duration: 0.16), reduceMotion: reduceMotion) {
                         showAgentSessions.toggle()
                     }
                 } label: {

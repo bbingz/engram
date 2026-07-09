@@ -1307,14 +1307,29 @@ final class IndexerParityTests: XCTestCase {
         }
     }
 
-    func testDowngradingSessionToSkipDeletesStaleSearchArtifacts() throws {
+    func testDowngradingSessionToSkipDeletesStaleSearchArtifacts_repro() throws {
         try writer.write { db in
             let snapshotWriter = SessionSnapshotWriter(db: db)
             _ = try snapshotWriter.writeAuthoritativeSnapshot(makeSnapshot(id: "downgrade", snapshotHash: "h1", tier: .normal))
             try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('downgrade', 'old searchable content')")
             try db.execute(sql: "CREATE TABLE IF NOT EXISTS session_embeddings(session_id TEXT PRIMARY KEY)")
             try db.execute(sql: "INSERT INTO session_embeddings(session_id) VALUES ('downgrade')")
+            try db.execute(
+                sql: """
+                CREATE TABLE IF NOT EXISTS messages(
+                  session_id TEXT NOT NULL,
+                  msg_seq INTEGER NOT NULL,
+                  content TEXT NOT NULL,
+                  PRIMARY KEY(session_id, msg_seq)
+                )
+                """
+            )
+            try db.execute(
+                sql: "INSERT INTO messages(session_id, msg_seq, content) VALUES ('downgrade', 0, 'old searchable content')"
+            )
 
+            // PR #141 regression: direct snapshot downgrades must purge legacy
+            // cached message rows alongside FTS and embedding artifacts.
             _ = try snapshotWriter.writeAuthoritativeSnapshot(
                 makeSnapshot(id: "downgrade", snapshotHash: "h2", tier: .skip)
             )
@@ -1325,6 +1340,10 @@ final class IndexerParityTests: XCTestCase {
             )
             XCTAssertEqual(
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_embeddings WHERE session_id = 'downgrade'"),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messages WHERE session_id = 'downgrade'"),
                 0
             )
             XCTAssertEqual(

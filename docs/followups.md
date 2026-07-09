@@ -3,6 +3,33 @@
 Follow-ups are verification gaps, low-priority refactors, or items that need
 real data, UI exercise, or product confirmation before becoming TODOs.
 
+## Open — perceived-duration audit (2026-07-08)
+
+- **Add rebuild-specific progress before exposing FTS full rebuild.** The app
+  currently excludes `reindex/triggerSync` from command palette actions
+  (`macos/Engram/Models/PaletteItem.swift:41-43`) and only shows aggregate
+  index-job counts or source coverage (`macos/Engram/Views/Observability/SystemHealthView.swift:58-67`,
+  `macos/Engram/Views/Pages/SourcePulseView.swift:296-299`). If a full rebuild
+  becomes user-visible, add progress plus cancel or background continuation.
+- **Let long project migrations cancel or continue in the background.** Project
+  move, archive, undo, and batch move use a 10 minute service timeout
+  (`macos/Shared/Service/EngramServiceClient.swift:8`,
+  `macos/Shared/Service/EngramServiceClient.swift:189-202`). The app shows
+  progress text for batch, rename, and archive (`macos/Engram/Views/Projects/BatchMoveSheet.swift:139-146`,
+  `macos/Engram/Views/Projects/RenameSheet.swift:117-138`,
+  `macos/Engram/Views/Projects/ArchiveSheet.swift:102-113`) but disables
+  cancellation during execution (`macos/Engram/Views/Projects/BatchMoveSheet.swift:159-164`,
+  `macos/Engram/Views/Projects/RenameSheet.swift:178-180`,
+  `macos/Engram/Views/Projects/ArchiveSheet.swift:202-204`).
+- **Show in-flight feedback for session export.** Session export uses the
+  default 30 second service timeout (`macos/Shared/Service/EngramServiceClient.swift:17-20`,
+  `macos/Shared/Service/EngramServiceClient.swift:260-262`,
+  `macos/Shared/Service/EngramServiceClient.swift:297-306`) but the Sessions
+  page and Command Palette only render success/failure after awaiting the
+  export (`macos/Engram/Views/SessionActionHandlers.swift:81-92`,
+  `macos/Engram/Views/Pages/SessionsPageView.swift:68-70`,
+  `macos/Engram/Views/CommandPaletteView.swift:282-293`).
+
 ## Open
 
 Open follow-ups as of 2026-07-06:
@@ -251,10 +278,10 @@ there, not a maintenance cut).
 
 ## Open — perf-integration review findings (2026-07-04)
 
-Current active items in this section as of 2026-07-06: CursorAdapter WAL-aware
-parse-cache signatures plus the three P3 latent issues. The original P1
-oversized-transcript path, Web UI ETag path, and Web UI line anchors were
-resolved by later fixes/deletions and remain below only as closeout evidence.
+Current active items in this section as of 2026-07-08: none. The CursorAdapter
+WAL-aware parse-cache signature and the three P3 latent issues were closed in
+the Wave 5 perf-residual closeout; older P1/Web UI entries remain below only as
+closeout evidence.
 
 From the 18-agent adversarial review of the Codex-integrated 8-PR perf batch
 (base `f9a236dc..main`). The one blocking item (fts_map self-heal ownership) was
@@ -346,6 +373,9 @@ deletion. The two residuals below were resolved on 2026-07-05 by Codex:
   stale cached messages while Cursor is open.
 - **Fix direction:** include the `-wal` (and `-shm`) sidecar mtime/size in the
   cache signature, or don't cache while the sidecar is non-empty.
+- **Resolution (2026-07-08, Codex):** current Swift cache signatures include
+  both `-wal` and `-shm` sidecar mtime/size, and the residual is covered by
+  `AdapterWindowedReadTests.testParsedTranscriptSignatureIncludesSQLiteWalSidecars_repro`.
 
 ### P3 — lower-impact / latent
 
@@ -357,17 +387,28 @@ deletion. The two residuals below were resolved on 2026-07-05 by Codex:
   rebuilt multi-segment index is never merged. *Latent* until the next tokenizer/
   schema version bump. Fix: also gate on a rebuild marker/version, not just the
   content signature.
+  **Resolution (2026-07-08, Codex):** `FTSRebuildPolicy.finalizeRebuildIfReady`
+  invalidates the stored optimize signature after swapping in the rebuilt table;
+  coverage lives in
+  `FTSRebuildPolicyTests.testFinalizeRebuildInvalidatesStoredOptimizeSignatureForSwappedTable_repro`.
 - **Whitespace-only query returns empty vs old browse-all.**
   `macos/Engram/Core/Database.swift` `keywordSearchSQL` (`:418`), `ctes.isEmpty`
   branch (`:445`). When `CJKText.ftsMatchTerms` yields `[]` (e.g. a 3-space
   query), the new CTE returns no rows; the old correlated-EXISTS query returned
   the most recent non-hidden sessions. Fix: restore the empty-term browse-all
   fallback (or short-circuit whitespace-only queries upstream).
+  **Resolution (2026-07-08, Codex):** the app read path now falls through to
+  the empty-term browse-all branch and preserves hidden/skip/lite exclusions;
+  coverage lives in
+  `DatabaseManagerTests.testWhitespaceOnlySearchBrowsesRecentVisibleSessions_repro`.
 - **`reconcileSkipTierIndexArtifacts` undercounts embeddings deletes.**
   `macos/EngramCoreWrite/Indexing/StartupBackfills.swift` (`:713`) discards the
   `session_embeddings` delete count, so the returned/logged `reconcile_skip_fts`
   total understates cleanup. *Latent* until sqlite-vec / `session_embeddings`
   is implemented. Fix: add the embeddings-delete row count to the return value.
+  **Resolution (2026-07-08, Codex):** skip-tier reconciliation now includes
+  `session_embeddings` deletions in its returned/logged total; coverage lives in
+  `StartupBackfillTests.testReconcileSkipTierDeleteCountIncludesEmbeddings_repro`.
 
 ## Closed in cleanup
 

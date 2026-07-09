@@ -1,6 +1,6 @@
 import Foundation
 
-final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
+final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, ModificationFilteredSessionAdapter, Sendable {
     let source: SourceName = .claudeCode
     private let projectsRoot: URL
     private let limits: ParserLimits
@@ -117,8 +117,61 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
             case .failure(let reason):
                 return .failure(reason)
             case .success(let info):
-                return .success(IndexingScan(info: info, messages: objects.compactMap(Self.message(from:))))
+                let checkpoint = try JSONLAdapterSupport.checkpoint(locator: locator, limits: limits)
+                let checkpointBoundaryHash = checkpoint.parsedOffset == info.sizeBytes
+                    ? checkpoint.boundaryHash
+                    : nil
+                return .success(
+                    IndexingScan(
+                        info: info,
+                        messages: objects.compactMap(Self.message(from:)),
+                        checkpointParsedOffset: checkpoint.parsedOffset,
+                        checkpointBoundaryHash: checkpointBoundaryHash
+                    )
+                )
             }
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
+    }
+
+    func scanTailForIndexing(
+        locator: String,
+        from parsedOffset: Int64,
+        expectedBoundaryHash: String
+    ) async throws -> IndexingTailScanResult {
+        do {
+            let result = try JSONLAdapterSupport.readTailObjects(
+                locator: locator,
+                from: parsedOffset,
+                expectedBoundaryHash: expectedBoundaryHash,
+                limits: limits
+            )
+            guard !result.boundaryHash.isEmpty else { return .fallback }
+            if let failure = result.failure { return .failure(failure) }
+            let messages = result.objects.compactMap(Self.message(from:))
+            let aggregate = Self.aggregateSessionInfo(from: result.objects)
+            return .success(
+                IndexingTailScan(
+                    infoDelta: IndexingTailInfoDelta(
+                        id: aggregate.id(locator: locator),
+                        source: aggregate.source(locator: locator),
+                        endTime: aggregate.endTime.isEmpty ? nil : aggregate.endTime,
+                        model: aggregate.detectedModel.isEmpty ? nil : aggregate.detectedModel,
+                        messageCount: aggregate.messageCount,
+                        userMessageCount: aggregate.userCount,
+                        assistantMessageCount: aggregate.assistantCount,
+                        toolMessageCount: aggregate.toolCount,
+                        systemMessageCount: aggregate.systemCount,
+                        firstVisibleRole: messages.first?.role
+                    ),
+                    messages: messages,
+                    parsedOffset: result.parsedOffset,
+                    boundaryHash: result.boundaryHash
+                )
+            )
         } catch let failure as ParserFailure {
             return .failure(failure)
         } catch {
@@ -130,6 +183,41 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
         from objects: [JSONLAdapterSupport.JSONObject],
         locator: String
     ) -> AdapterParseResult<NormalizedSessionInfo> {
+        let aggregate = aggregateSessionInfo(from: objects)
+        guard let id = aggregate.id(locator: locator) else { return .failure(.malformedJSON) }
+        guard aggregate.messageCount > 0 else { return .failure(.noVisibleMessages) }
+
+        return .success(
+            NormalizedSessionInfo(
+                id: id,
+                source: aggregate.source(locator: locator) ?? .claudeCode,
+                startTime: aggregate.startTime,
+                endTime: aggregate.endTime != aggregate.startTime ? aggregate.endTime : nil,
+                cwd: aggregate.cwd,
+                project: Self.projectName(fromCwd: aggregate.cwd),
+                model: aggregate.detectedModel.isEmpty ? nil : aggregate.detectedModel,
+                messageCount: aggregate.messageCount,
+                userMessageCount: aggregate.userCount,
+                assistantMessageCount: aggregate.assistantCount,
+                toolMessageCount: aggregate.toolCount,
+                systemMessageCount: aggregate.systemCount,
+                summary: aggregate.firstUserText.isEmpty ? nil : String(aggregate.firstUserText.prefix(200)),
+                filePath: locator,
+                sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
+                indexedAt: nil,
+                agentRole: locator.contains("/subagents/") ? "subagent" : nil,
+                originator: nil,
+                origin: nil,
+                summaryMessageCount: nil,
+                tier: nil,
+                qualityScore: nil,
+                parentSessionId: locator.contains("/subagents/") ? Self.parentSessionId(from: locator) : nil,
+                suggestedParentId: nil
+            )
+        )
+    }
+
+    private struct SessionInfoAggregate {
         var sessionId = ""
         var agentId = ""
         var cwd = ""
@@ -142,6 +230,24 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
         var firstUserText = ""
         var detectedModel = ""
 
+        var messageCount: Int {
+            userCount + assistantCount + toolCount
+        }
+
+        func id(locator: String) -> String? {
+            guard !sessionId.isEmpty else { return nil }
+            let isSubagent = locator.contains("/subagents/")
+            return isSubagent && !agentId.isEmpty ? agentId : sessionId
+        }
+
+        func source(locator: String) -> SourceName? {
+            guard !sessionId.isEmpty else { return nil }
+            return ClaudeCodeAdapter.detectSource(model: detectedModel, filePath: locator)
+        }
+    }
+
+    private static func aggregateSessionInfo(from objects: [JSONLAdapterSupport.JSONObject]) -> SessionInfoAggregate {
+        var aggregate = SessionInfoAggregate()
         for object in objects {
             guard let type = JSONLAdapterSupport.string(object["type"]),
                   type == "user" || type == "assistant"
@@ -149,82 +255,47 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
                 continue
             }
 
-            if sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
-                sessionId = value
+            if aggregate.sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
+                aggregate.sessionId = value
             }
-            if agentId.isEmpty, let value = JSONLAdapterSupport.string(object["agentId"]) {
-                agentId = value
+            if aggregate.agentId.isEmpty, let value = JSONLAdapterSupport.string(object["agentId"]) {
+                aggregate.agentId = value
             }
-            if cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) {
-                cwd = value
+            if aggregate.cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) {
+                aggregate.cwd = value
             }
-            if startTime.isEmpty, let value = JSONLAdapterSupport.string(object["timestamp"]) {
-                startTime = value
+            if aggregate.startTime.isEmpty, let value = JSONLAdapterSupport.string(object["timestamp"]) {
+                aggregate.startTime = value
             }
             if let value = JSONLAdapterSupport.string(object["timestamp"]) {
-                endTime = value
+                aggregate.endTime = value
             }
 
             let message = JSONLAdapterSupport.object(object["message"])
-            if detectedModel.isEmpty, let value = JSONLAdapterSupport.string(message?["model"]) {
-                detectedModel = value
+            if aggregate.detectedModel.isEmpty, let value = JSONLAdapterSupport.string(message?["model"]) {
+                aggregate.detectedModel = value
             }
 
             if type == "assistant" {
-                assistantCount += 1
+                aggregate.assistantCount += 1
             } else if Self.isToolResult(message?["content"]) {
                 // Count a tool_result user record only when it surfaces
                 // non-empty content, matching message(from:) which drops
                 // empty tool results from the streamed transcript.
                 if !Self.extractContent(message?["content"]).isEmpty {
-                    toolCount += 1
+                    aggregate.toolCount += 1
                 }
             } else {
                 let text = Self.extractContent(message?["content"])
                 if Self.isSystemInjection(text) {
-                    systemCount += 1
+                    aggregate.systemCount += 1
                 } else {
-                    userCount += 1
-                    if firstUserText.isEmpty { firstUserText = text }
+                    aggregate.userCount += 1
+                    if aggregate.firstUserText.isEmpty { aggregate.firstUserText = text }
                 }
             }
         }
-
-        guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
-
-        let isSubagent = locator.contains("/subagents/")
-        let id = isSubagent && !agentId.isEmpty ? agentId : sessionId
-        let source = Self.detectSource(model: detectedModel, filePath: locator)
-        let parentSessionId = isSubagent ? Self.parentSessionId(from: locator) : nil
-
-        return .success(
-            NormalizedSessionInfo(
-                id: id,
-                source: source,
-                startTime: startTime,
-                endTime: endTime != startTime ? endTime : nil,
-                cwd: cwd,
-                project: Self.projectName(fromCwd: cwd),
-                model: detectedModel.isEmpty ? nil : detectedModel,
-                messageCount: userCount + assistantCount + toolCount,
-                userMessageCount: userCount,
-                assistantMessageCount: assistantCount,
-                toolMessageCount: toolCount,
-                systemMessageCount: systemCount,
-                summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
-                filePath: locator,
-                sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
-                indexedAt: nil,
-                agentRole: isSubagent ? "subagent" : nil,
-                originator: nil,
-                origin: nil,
-                summaryMessageCount: nil,
-                tier: nil,
-                qualityScore: nil,
-                parentSessionId: parentSessionId,
-                suggestedParentId: nil
-            )
-        )
+        return aggregate
     }
 
     func streamMessages(
@@ -418,6 +489,9 @@ final class ClaudeCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapte
         // a user turn. Drop it when it surfaces no content so the streamed
         // transcript matches parseSessionInfo's counts.
         let isToolResultRecord = type == "user" && isToolResult(rawContent)
+        if type == "user", !isToolResultRecord, isSystemInjection(content) {
+            return nil
+        }
         if isToolResultRecord, content.isEmpty {
             return nil
         }

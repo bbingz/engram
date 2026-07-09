@@ -17,7 +17,7 @@ struct OnboardingView: View {
                     Capsule()
                         .fill(i <= step ? Theme.accent : Theme.surfaceHighlight)
                         .frame(width: i == step ? 20 : 8, height: 4)
-                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: step)
+                        .motionAwareAnimation(.easeInOut(duration: 0.25), value: step)
                 }
             }
             .padding(.top, 20)
@@ -171,10 +171,8 @@ struct OnboardingView: View {
     }
 
     private func advance(to nextStep: Int) {
-        if reduceMotion {
+        MotionAware.animate(.default, reduceMotion: reduceMotion) {
             step = nextStep
-        } else {
-            withAnimation { step = nextStep }
         }
     }
 

@@ -5,6 +5,7 @@ import SwiftUI
 struct SourcePulseView: View {
     @Environment(DatabaseManager.self) var db
     @Environment(EngramServiceClient.self) var serviceClient
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var sources: [EngramServiceSourceInfo] = []
     @State private var sourceDist: [(source: String, count: Int)] = []
@@ -368,7 +369,7 @@ struct SourcePulseView: View {
                 }
                 if sessions.count > 10 {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
+                        MotionAware.animate(.easeInOut(duration: 0.2), reduceMotion: reduceMotion) {
                             if isExpanded {
                                 expandedGroups.remove(label)
                             } else {

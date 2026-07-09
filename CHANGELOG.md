@@ -7,6 +7,72 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: incremental JSONL tail parsing (2026-07-08, Codex)
+
+- Added Claude Code JSONL tail checkpoints and a gated append-only indexing path
+  with full-reparse fallbacks when boundary or merge context cannot prove parity.
+
+### Added: provider audit branch reconciliation (2026-07-08, Codex)
+
+- Reconciled the parked provider-audit branch against current `main`, ported the
+  small Claude empty-visible-transcript parser fix, and documented deferred
+  large features plus obsolete branch deltas.
+
+### Added: diagnostic bundle export (2026-07-08, Codex)
+
+- Added a Settings export flow that writes a redacted, pretty-printed JSON
+  diagnostics bundle with app/service status, aggregate database stats,
+  sanitized recent service logs, and settings with sensitive keys removed.
+
+### Fixed: perf-integration residual closeout (2026-07-08, Codex)
+
+- Closed the remaining perf-integration follow-ups with focused regression
+  coverage for Cursor WAL signatures, FTS rebuild optimize gating, whitespace
+  browse fallback, and skip-tier embedding cleanup telemetry.
+
+### Fixed: purge leaked session artifacts (2026-07-08, Codex)
+
+- Added regression coverage and conditional cleanup so skip-tier and deleted
+  sessions purge legacy `messages` and `fts_map` rows alongside FTS and
+  embedding artifacts, including a one-time FTS-only migration sweep.
+
+### Added: perceived-duration audit (2026-07-08, Codex)
+
+- Added a macOS perceived-duration audit mapping user-facing waits to required
+  progress, cancel, or background-continuation feedback, with follow-ups for
+  the remaining gaps.
+
+### Added: reduce-motion animation guard (2026-07-08, Codex)
+
+- Added a shared motion-aware animation helper and Swift convention ratchet so
+  app animations route through Reduce Motion handling.
+
+### Changed: service log id fingerprints (2026-07-08, Codex)
+
+- Replaced uniform service-log `<id>` redactions with stable SHA-256 hash
+  prefixes so repeated identifiers remain correlatable without exposing raw
+  UUIDs or long opaque tokens.
+
+### Added: nightly Swift indexer perf workflow (2026-07-08, Codex)
+
+- Added a report-only Perf workflow and opt-in XCTest measurement for Swift
+  indexer throughput over generated fixture sessions.
+
+### Added: Swift convention grep gate (2026-07-08, Codex)
+
+- Added a ripgrep-backed Swift convention gate for test home isolation,
+  hash-value cache keys, and Node runtime literals in product Swift sources.
+
+### Added: invariant ledger (2026-07-08, Codex)
+
+- Added a maintained invariant ledger plus a path-existence gate so CI catches
+  stale source and test anchors in the documentation.
+
+### Added: engineering docs conventions (2026-07-08, Codex)
+
+- Documented repro-test naming expectations and added the shared design-doc
+  template for non-trivial implementation work.
+
 ### Added: plist gate (2026-07-08, Codex)
 
 - Added a plist and entitlements gate that runs `plutil -lint` and detects raw

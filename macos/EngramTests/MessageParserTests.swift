@@ -237,7 +237,8 @@ final class MessageParserTests: XCTestCase {
         let path = try fixturePath("system-prompts.jsonl")
         let messages = await MessageParser.parse(filePath: path, source: "claude-code")
 
-        XCTAssertEqual(messages.count, 4)
+        XCTAssertEqual(messages.count, 3)
+        guard messages.count == 3 else { return }
         // <system-reminder> → systemPrompt
         XCTAssertEqual(messages[0].systemCategory, .systemPrompt)
         XCTAssertTrue(messages[0].isSystem)
@@ -246,8 +247,6 @@ final class MessageParserTests: XCTestCase {
         XCTAssertFalse(messages[1].isSystem)
         // <environment_context> → systemPrompt
         XCTAssertEqual(messages[2].systemCategory, .systemPrompt)
-        // <local-command-stdout> → agentComm
-        XCTAssertEqual(messages[3].systemCategory, .agentComm)
     }
 
     func testParseWithOffsetAndLimit() async throws {

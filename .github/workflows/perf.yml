@@ -1,0 +1,116 @@
+name: Perf
+
+on:
+  schedule:
+    - cron: "30 19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  XCODEGEN_VERSION: "2.45.4"
+
+jobs:
+  indexer-throughput:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Cache Homebrew (xcodegen)
+        uses: actions/cache@v5
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-xcodegen-${{ runner.os }}
+
+      - name: Install xcodegen
+        run: |
+          brew install xcodegen
+          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
+
+      - name: Cache SPM packages
+        uses: actions/cache@v5
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
+          key: spm-${{ hashFiles('macos/project.yml', 'macos/Package.resolved') }}
+          restore-keys: spm-
+
+      - name: Generate Xcode project
+        run: cd macos && xcodegen generate
+
+      - name: Generate test fixtures
+        run: npm run generate:fixtures
+
+      - name: Run Swift indexer perf test
+        env:
+          ENGRAM_PERF: "1"
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project macos/Engram.xcodeproj \
+            -scheme Engram \
+            -only-testing:EngramCoreTests/IndexerPerformanceTests \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            TEST_RUNNER_ENGRAM_PERF=1 \
+            2>&1 | tee perf-xcodebuild.log
+
+      - name: Extract perf results
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          log_path = Path("perf-xcodebuild.log")
+          measured_lines = []
+          if log_path.exists():
+              measured_lines = [
+                  line.strip()
+                  for line in log_path.read_text(errors="replace").splitlines()
+                  if "measured" in line.lower()
+              ]
+
+          average_pattern = re.compile(r"average:\s*([0-9.]+)")
+          measurements = []
+          for line in measured_lines:
+              match = average_pattern.search(line)
+              measurements.append({
+                  "line": line,
+                  "average_seconds": float(match.group(1)) if match else None,
+              })
+
+          Path("perf-results.json").write_text(
+              json.dumps(
+                  {
+                      "workflow": "Perf",
+                      "metric": "Swift indexer generated-fixture throughput",
+                      "measurements": measurements,
+                  },
+                  indent=2,
+              )
+              + "\n"
+          )
+          if not measurements:
+              raise SystemExit("No XCTest measured lines found; perf test may have skipped")
+          PY
+
+      - name: Upload perf results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: indexer-perf-results
+          path: |
+            perf-results.json
+            perf-xcodebuild.log
+          retention-days: 90

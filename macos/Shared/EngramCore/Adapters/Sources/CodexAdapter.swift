@@ -1,8 +1,22 @@
 import Darwin
+import CryptoKit
 import Foundation
 
 enum JSONLAdapterSupport {
     typealias JSONObject = [String: Any]
+    private static let checkpointBoundaryBytes = 4 * 1024
+
+    struct JSONLCheckpoint {
+        let parsedOffset: Int64
+        let boundaryHash: String
+    }
+
+    struct TailObjectsResult {
+        let objects: [JSONObject]
+        let parsedOffset: Int64
+        let boundaryHash: String
+        let failure: ParserFailure?
+    }
 
     struct WindowedMessagesResult {
         let messages: [NormalizedMessage]
@@ -111,9 +125,136 @@ enum JSONLAdapterSupport {
         }
     }
 
+    static func checkpoint(locator: String, limits: ParserLimits) throws -> JSONLCheckpoint {
+        let (url, before) = try prepareFile(locator: locator, limits: limits)
+        let parsedOffset = try completeLineOffset(fileURL: url, fileSize: before.sizeBytes)
+        let boundaryHash = try boundaryHash(fileURL: url, offset: parsedOffset)
+        let after = try limits.fileIdentity(for: url)
+        guard limits.isSameFileIdentity(before, after) else {
+            throw ParserFailure.fileModifiedDuringParse
+        }
+        return JSONLCheckpoint(parsedOffset: parsedOffset, boundaryHash: boundaryHash)
+    }
+
+    static func readTailObjects(
+        locator: String,
+        from parsedOffset: Int64,
+        expectedBoundaryHash: String,
+        limits: ParserLimits
+    ) throws -> TailObjectsResult {
+        try autoreleasepool {
+            let (url, before) = try prepareFile(locator: locator, limits: limits)
+            guard parsedOffset >= 0, parsedOffset <= before.sizeBytes else {
+                return TailObjectsResult(objects: [], parsedOffset: parsedOffset, boundaryHash: "", failure: nil)
+            }
+            guard try boundaryHash(fileURL: url, offset: parsedOffset) == expectedBoundaryHash else {
+                return TailObjectsResult(objects: [], parsedOffset: parsedOffset, boundaryHash: "", failure: nil)
+            }
+
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            try handle.seek(toOffset: UInt64(parsedOffset))
+            let tail = try handle.readToEnd() ?? Data()
+            let completeLength = completePrefixLength(tail)
+            let completeData = tail.prefix(completeLength)
+            var objects: [JSONObject] = []
+
+            for lineData in completeData.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false) {
+                if lineData.isEmpty { continue }
+                guard lineData.count <= limits.maxLineBytes else {
+                    return TailObjectsResult(
+                        objects: objects,
+                        parsedOffset: parsedOffset + Int64(completeLength),
+                        boundaryHash: try boundaryHash(fileURL: url, offset: parsedOffset + Int64(completeLength)),
+                        failure: .lineTooLarge
+                    )
+                }
+                guard let line = String(data: Data(lineData), encoding: .utf8) else {
+                    return TailObjectsResult(
+                        objects: objects,
+                        parsedOffset: parsedOffset + Int64(completeLength),
+                        boundaryHash: try boundaryHash(fileURL: url, offset: parsedOffset + Int64(completeLength)),
+                        failure: .invalidUtf8
+                    )
+                }
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard !trimmed.isEmpty else { continue }
+                guard let object = parseObject(trimmed) else { continue }
+                guard objects.count < limits.maxMessages else {
+                    return TailObjectsResult(
+                        objects: objects,
+                        parsedOffset: parsedOffset + Int64(completeLength),
+                        boundaryHash: try boundaryHash(fileURL: url, offset: parsedOffset + Int64(completeLength)),
+                        failure: .messageLimitExceeded
+                    )
+                }
+                objects.append(object)
+            }
+
+            let newParsedOffset = parsedOffset + Int64(completeLength)
+            let newBoundaryHash = try boundaryHash(fileURL: url, offset: newParsedOffset)
+            let after = try limits.fileIdentity(for: url)
+            guard limits.isSameFileIdentity(before, after) else {
+                return TailObjectsResult(
+                    objects: objects,
+                    parsedOffset: newParsedOffset,
+                    boundaryHash: newBoundaryHash,
+                    failure: .fileModifiedDuringParse
+                )
+            }
+            return TailObjectsResult(
+                objects: objects,
+                parsedOffset: newParsedOffset,
+                boundaryHash: newBoundaryHash,
+                failure: nil
+            )
+        }
+    }
+
     static func parseObject(_ line: String) -> JSONObject? {
         guard let data = line.data(using: .utf8) else { return nil }
         return try? JSONSerialization.jsonObject(with: data) as? JSONObject
+    }
+
+    private static func completePrefixLength(_ data: Data) -> Int {
+        guard let lastNewline = data.lastIndex(of: UInt8(ascii: "\n")) else { return 0 }
+        return data.distance(from: data.startIndex, to: data.index(after: lastNewline))
+    }
+
+    private static func completeLineOffset(fileURL: URL, fileSize: Int64) throws -> Int64 {
+        guard fileSize > 0 else { return 0 }
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        var searchEnd = fileSize
+        while searchEnd > 0 {
+            let length = min(Int64(64 * 1024), searchEnd)
+            let start = searchEnd - length
+            try handle.seek(toOffset: UInt64(start))
+            let chunk = handle.readData(ofLength: Int(length))
+            if let newline = chunk.lastIndex(of: UInt8(ascii: "\n")) {
+                let distance = chunk.distance(from: chunk.startIndex, to: chunk.index(after: newline))
+                return start + Int64(distance)
+            }
+            searchEnd = start
+        }
+        return 0
+    }
+
+    private static func boundaryHash(fileURL: URL, offset: Int64) throws -> String {
+        let safeOffset = max(0, offset)
+        let length = min(Int64(checkpointBoundaryBytes), safeOffset)
+        guard length > 0 else {
+            return sha256Hex(Data())
+        }
+        let start = safeOffset - length
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(start))
+        return sha256Hex(handle.readData(ofLength: Int(length)))
+    }
+
+    private static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     static func string(_ value: Any?) -> String? {
