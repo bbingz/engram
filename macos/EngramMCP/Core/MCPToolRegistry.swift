@@ -249,6 +249,11 @@ enum MCPToolRegistry {
                         "type": .string("string"),
                         "description": .string("What to remember (e.g. \"user's coding preferences\")"),
                     ]),
+                    "type": .object([
+                        "type": .string("string"),
+                        "description": .string("Optional memory type filter: episodic, semantic, or procedural"),
+                        "enum": .array([.string("episodic"), .string("semantic"), .string("procedural")]),
+                    ]),
                 ]),
                 "additionalProperties": .bool(false),
             ])
@@ -829,7 +834,10 @@ enum MCPToolRegistry {
             ]))
         case "get_memory":
             let database = try MCPDatabase(path: config.dbPath)
-            let structured = try await database.getMemory(query: try requiredString("query", in: arguments))
+            let structured = try await database.getMemory(
+                query: try requiredString("query", in: arguments),
+                type: arguments["type"]?.stringValue
+            )
             await recordInsightAccessBestEffort(in: structured, config: config)
             return .toolSuccess(structured)
         case "search":

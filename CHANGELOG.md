@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: get_memory type filter (2026-07-09, Codex)
+
+- Optional `type` on MCP `get_memory` (`episodic` \| `semantic` \| `procedural`)
+  filters keyword/FTS and hybrid semantic retrieval; invalid values return a
+  helpful `isError` message (`MCPToolRegistry` + `MCPDatabase.getMemory`).
+
 ### Fixed: periodic FTS optimize cadence (2026-07-09, Codex)
 
 - Wire content-signature FTS optimize into the service indexing loop behind a

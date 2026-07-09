@@ -208,8 +208,9 @@ Retrieve curated insights and memories from past sessions. Use `save_insight` to
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | query | string | **yes** | What to remember (e.g. "user's coding preferences") |
+| type | string | no | Filter by memory type. Enum: `episodic`, `semantic`, `procedural`. Omit to return all types. |
 
-**Notes:** Returns up to 10 matching insights with id, content, wing, room, importance, and distance placeholder. The Swift product path uses insight FTS keyword search, then falls back to recent insights. If no memories exist, suggests using `save_insight`.
+**Notes:** Returns up to 10 matching insights with id, content, wing, room, importance, and distance placeholder. The Swift product path uses hybrid semantic+keyword retrieval when embeddings are available, otherwise insight FTS keyword search ranked by importance/recency (lifecycle columns) or plain keyword/recency fallback. Optional `type` filters both hybrid and keyword paths to `insight_type` (`episodic` half-life 14d, `semantic` 30d, `procedural` 90d); missing `insight_type` is treated as `semantic`. Unknown `type` values return an `isError` result (`type must be one of: episodic, semantic, procedural`). If no memories exist, suggests using `save_insight`.
 
 ---
 
