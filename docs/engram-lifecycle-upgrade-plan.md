@@ -24,7 +24,7 @@ execution queue; `parked-see-roadmap` items are listed in
 | 3.5 tool-result normalization + structured summary job | **parked-see-roadmap** |
 | 3.5 P2 auto insight extraction | **parked-see-roadmap** |
 | 3.6 quality_score / lifecycle_state indexes | **partial / quality_score index rejected (wave-6 task 6)**: live product paths only project `quality_score` or sort it in-memory after fetch (`MCPDatabase.getContext` when `sortBy == "score"`); no SQL `WHERE`/`ORDER BY` on the column in read paths. `lifecycle_state` index parked (column missing) |
-| 3.6 periodic FTS optimize | **done** (wave-6 task 6): `runIndexingLoop` calls cadence-gated `optimizeFtsIfDue` (≥24h attempt floor + existing content-signature/rebuild-marker gates) via writer gate with best-effort isolation |
+| 3.6 periodic FTS optimize | **done** (wave-6 task 6 + throw-safe follow-up): `runIndexingLoop` calls cadence-gated `optimizeFtsIfDue` (≥24h attempt floor committed in its own write before rewrite + existing content-signature/rebuild-marker gates) via writer gate with best-effort isolation so persistent optimize failures do not retry every 5-min tick |
 | P2 sqlite-vec + hybrid RRF (app already has brute-force) | **parked-see-roadmap** (F2); app/service hybrid exists without sqlite-vec |
 
 > ## ⚠️ 实施前必读 — 主控亲自验证结果（2026-05-29）

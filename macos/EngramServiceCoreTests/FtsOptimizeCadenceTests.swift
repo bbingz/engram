@@ -85,6 +85,64 @@ final class FtsOptimizeCadenceTests: XCTestCase {
         XCTAssertFalse(second, "within interval must skip")
     }
 
+    /// Wave-6 review medium: optimize throw must not roll back the attempt
+    /// stamp, otherwise a persistently broken FTS path retries every 5-min tick.
+    func testOptimizeFtsIfDuePersistsAttemptWhenOptimizeThrows_repro() async throws {
+        let gate = try await makeMigratedGate()
+        let t0 = ISO8601DateFormatter().date(from: "2026-07-09T12:00:00Z")!
+        let t1h = t0.addingTimeInterval(60 * 60)
+        let minInterval: TimeInterval = 24 * 60 * 60
+
+        _ = try await gate.performWriteCommand(name: "seed") { writer in
+            try writer.write { db in
+                try db.execute(
+                    sql: """
+                    INSERT INTO sessions(
+                      id, source, start_time, file_path, tier, sync_version, indexed_at
+                    ) VALUES (
+                      's1', 'codex', '2026-07-01T00:00:00Z', '/tmp/s1.jsonl',
+                      'normal', 1, '2026-07-01T00:00:00Z'
+                    )
+                    """
+                )
+                // Break FTS so optimize SQL fails after the attempt is recorded.
+                try db.execute(sql: "DROP TABLE IF EXISTS sessions_fts")
+                try db.execute(sql: "DROP TABLE IF EXISTS insights_fts")
+            }
+        }
+
+        do {
+            _ = try await gate.performWriteCommand(name: "optimize_throws") { writer in
+                try writer.optimizeFtsIfDue(now: t0, minInterval: minInterval)
+            }
+            XCTFail("expected optimize to throw when FTS tables are missing")
+        } catch {
+            // expected
+        }
+
+        let attemptAfterThrow = try await gate.performWriteCommand(name: "read_attempt") { writer in
+            try writer.read { db in
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT value FROM metadata WHERE key = ?",
+                    arguments: [StartupBackfills.ftsOptimizeLastAttemptKey]
+                )
+            }
+        }.value
+        XCTAssertNotNil(
+            attemptAfterThrow,
+            "attempt timestamp must survive optimize failure (throw-safe throttle)"
+        )
+
+        let early = try await gate.performWriteCommand(name: "optimize_early_after_throw") { writer in
+            try writer.optimizeFtsIfDue(now: t1h, minInterval: minInterval)
+        }.value
+        XCTAssertFalse(
+            early,
+            "within min interval after a failed attempt must not re-enter optimize"
+        )
+    }
+
     // MARK: - Helpers
 
     private func serviceCoreSource(_ relativePath: String) throws -> String {

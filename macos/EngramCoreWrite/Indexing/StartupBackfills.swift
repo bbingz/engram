@@ -681,7 +681,7 @@ public enum StartupBackfills {
     static let ftsOptimizeSignatureKey = "fts_optimize_signature"
     /// ISO8601 timestamp of the last periodic-path optimize attempt (whether
     /// the content-signature gate then ran or skipped the rewrite).
-    static let ftsOptimizeLastAttemptKey = "fts_optimize_last_attempt"
+    public static let ftsOptimizeLastAttemptKey = "fts_optimize_last_attempt"
     /// Floor between periodic optimize attempts. FTS5 'optimize' rewrites the
     /// whole index; the 5-minute indexing loop would otherwise re-merge after
     /// every content change and pin the writer gate. 24h is long enough that
@@ -719,15 +719,8 @@ public enum StartupBackfills {
         return true
     }
 
-    /// Periodic-path wrapper around `optimizeFts`. Adds a minimum-interval gate
-    /// so the 5-minute indexing loop does not re-enter the signature check (or
-    /// the rewrite) more often than `minInterval`. Startup continues to call
-    /// `optimizeFts` directly so a fresh launch consolidates immediately when
-    /// the signature differs. The attempt timestamp is recorded before the
-    /// rewrite so a mid-optimize crash does not re-trigger every subsequent
-    /// tick. Returns true only when the underlying optimize actually ran.
-    @discardableResult
-    public static func optimizeFtsIfDue(
+    /// Whether the periodic-path min-interval gate would admit an attempt at `now`.
+    public static func isFtsOptimizeDue(
         _ db: Database,
         now: Date = Date(),
         minInterval: TimeInterval = ftsOptimizeMinInterval
@@ -741,7 +734,17 @@ public enum StartupBackfills {
            now.timeIntervalSince(last) < minInterval {
             return false
         }
+        return true
+    }
 
+    /// Persist the periodic optimize attempt timestamp. Must run in its **own**
+    /// committed write before `optimizeFts` so a throw from the rewrite does not
+    /// roll back the throttle (throw-safe 24h floor). Crash mid-rewrite is still
+    /// covered once this write has committed.
+    public static func recordFtsOptimizeAttempt(
+        _ db: Database,
+        now: Date = Date()
+    ) throws {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         try db.execute(
@@ -751,6 +754,24 @@ public enum StartupBackfills {
             """,
             arguments: [ftsOptimizeLastAttemptKey, formatter.string(from: now)]
         )
+    }
+
+    /// Single-connection helper: interval gate + attempt stamp + `optimizeFts`.
+    ///
+    /// **Not throw-safe when nested in one outer transaction** — if `optimizeFts`
+    /// throws, the attempt stamp rolls back with it. Production uses
+    /// `EngramDatabaseWriter.optimizeFtsIfDue`, which commits the attempt in a
+    /// separate write before the rewrite. Prefer that API for the periodic path.
+    @discardableResult
+    public static func optimizeFtsIfDue(
+        _ db: Database,
+        now: Date = Date(),
+        minInterval: TimeInterval = ftsOptimizeMinInterval
+    ) throws -> Bool {
+        guard try isFtsOptimizeDue(db, now: now, minInterval: minInterval) else {
+            return false
+        }
+        try recordFtsOptimizeAttempt(db, now: now)
         return try optimizeFts(db)
     }
 
