@@ -14,6 +14,8 @@ READ_ONLY_DB_FILES=(
   "macos/Engram/Core/Database.swift"
   "macos/Engram/Core/MessageParser.swift"
   "macos/EngramMCP/Core/MCPDatabase.swift"
+  # Read-only probe for MCP tools/list semantic mode availability (configuration.readonly = true).
+  "macos/Shared/EngramCore/AI/SessionVectorSearchAvailability.swift"
 )
 
 contains_path() {
