@@ -26,6 +26,10 @@ public enum EmbeddingError: Error, Equatable {
     case notConfigured
     case http(Int)
     case malformedResponse
+    /// Breaker is open (or half-open without the probe slot). Callers must
+    /// treat this as a soft skip — leave jobs pending/retryable, do not burn
+    /// permanent-failure budgets (see embedding-guardrails design).
+    case circuitOpen
 }
 
 public protocol EmbeddingProvider: Sendable {

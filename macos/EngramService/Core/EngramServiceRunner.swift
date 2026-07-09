@@ -76,7 +76,16 @@ public enum EngramServiceRunner {
         }
 
         let statusMonitor = ServiceStatusMonitor()
-        let telemetry = ServiceTelemetryCollector()
+        // Wire breaker transition logs once at process start (os_log subsystem
+        // com.engram.service, category ai). Counters stay on the shared breaker
+        // and surface through ServiceTelemetryCollector.snapshot().
+        EmbeddingGuardrails.sharedBreaker.setOnTransition { providerKey, transition in
+            ServiceLogger.info(
+                "embedding circuit \(transition.rawValue) provider=\(providerKey)",
+                category: .ai
+            )
+        }
+        let telemetry = ServiceTelemetryCollector(embeddingBreaker: EmbeddingGuardrails.sharedBreaker)
         // Sanitized in-process log ring: tee a redacted copy of each service log
         // line so the gated Observability "Logs" tab is readable (os_log stays
         // `privacy: .private`). Install BEFORE the server starts so startup lines
@@ -717,12 +726,22 @@ public enum EngramServiceRunner {
         return false
     }
 
+    /// Default factory: OpenAI-compatible client wrapped by the process-shared
+    /// embedding circuit breaker (N=5, 60s cooldown). Tests inject their own
+    /// factory (often unguarded mocks) via the `providerFactory` parameter.
+    static func defaultGuardedEmbeddingProvider(config: EmbeddingConfig) -> any EmbeddingProvider {
+        GuardedEmbeddingProvider(
+            config: config,
+            breaker: EmbeddingGuardrails.sharedBreaker
+        )
+    }
+
     @discardableResult
     static func backfillSessionEmbeddingsOnce(
         gate: ServiceWriterGate,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         providerFactory: @escaping @Sendable (EmbeddingConfig) -> any EmbeddingProvider = {
-            OpenAICompatibleEmbeddingClient(config: $0)
+            EngramServiceRunner.defaultGuardedEmbeddingProvider(config: $0)
         },
         limit: Int = 32,
         phaseName: String = "sessionEmbeddingBackfill"
@@ -734,7 +753,17 @@ public enum EngramServiceRunner {
         guard !pending.isEmpty else { return 0 }
 
         let provider = providerFactory(config)
-        let embedded = try await SessionEmbeddingBackfill.embedPendingSessions(pending, provider: provider)
+        let embedded: [SessionEmbeddingBackfill.EmbeddedSession]
+        do {
+            embedded = try await SessionEmbeddingBackfill.embedPendingSessions(pending, provider: provider)
+        } catch EmbeddingError.circuitOpen {
+            // Soft skip: leave jobs pending/failed_retryable; never burn retry budget.
+            ServiceLogger.info(
+                "\(phaseName) skipped: embedding circuit open provider=\(EmbeddingCircuitBreaker.providerKey(for: config))",
+                category: .ai
+            )
+            return 0
+        }
         let result = try await gate.performWriteCommand(name: "\(phaseName)Write") { writer in
             try SessionEmbeddingBackfill.writeEmbeddings(
                 writer: writer,
@@ -762,6 +791,8 @@ public enum EngramServiceRunner {
             }
         } catch is CancellationError {
             return
+        } catch EmbeddingError.circuitOpen {
+            ServiceLogger.info("\(name) skipped: embedding circuit open", category: .ai)
         } catch {
             ServiceLogger.warn("\(name) failed: \(error.localizedDescription)", category: .runner)
         }
@@ -772,7 +803,7 @@ public enum EngramServiceRunner {
         gate: ServiceWriterGate,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         providerFactory: @escaping @Sendable (EmbeddingConfig) -> any EmbeddingProvider = {
-            OpenAICompatibleEmbeddingClient(config: $0)
+            EngramServiceRunner.defaultGuardedEmbeddingProvider(config: $0)
         },
         limit: Int = 64,
         phaseName: String = "insightEmbeddingBackfill"
@@ -784,7 +815,16 @@ public enum EngramServiceRunner {
         guard !pending.isEmpty else { return 0 }
 
         let provider = providerFactory(config)
-        let vectors = try await provider.embed(pending.map(\.content))
+        let vectors: [[Float]]
+        do {
+            vectors = try await provider.embed(pending.map(\.content))
+        } catch EmbeddingError.circuitOpen {
+            ServiceLogger.info(
+                "\(phaseName) skipped: embedding circuit open provider=\(EmbeddingCircuitBreaker.providerKey(for: config))",
+                category: .ai
+            )
+            return 0
+        }
         guard vectors.count == pending.count else { return 0 }
         let embedded = zip(pending, vectors).map { item, vector in
             InsightEmbeddingBackfill.EmbeddedInsight(id: item.id, vector: vector)
@@ -817,6 +857,8 @@ public enum EngramServiceRunner {
             }
         } catch is CancellationError {
             return
+        } catch EmbeddingError.circuitOpen {
+            ServiceLogger.info("\(name) skipped: embedding circuit open", category: .ai)
         } catch {
             ServiceLogger.warn("\(name) failed: \(error.localizedDescription)", category: .runner)
         }

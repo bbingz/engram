@@ -15,7 +15,7 @@
 
 | Plan item | Status |
 |-----------|--------|
-| F1 Online AI client + circuit breaker / cost telemetry | **partial** (client exists; guardrails missing) → wave-6 **task 9** |
+| F1 Online AI client + circuit breaker / cost telemetry | **done** for circuit breaker (2026-07-09; `docs/embedding-guardrails-design-2026-07.md`); cost/`ai_audit_log` still descoped |
 | F2 sqlite-vec native target | **parked-see-roadmap** (superseded by pure-Swift brute-force cosine; revisit only if measured need) |
 | F3 migration (embedding_meta, chunks, insight lifecycle cols, mined_rules) | **partial** (semantic_chunks / embedding_meta / insight lifecycle cols landed; mined_rules surface removed 2026-07-06) |
 | c.1 Chunker + EmbeddingClient + VectorMath | **done** (2026-06-26) |
