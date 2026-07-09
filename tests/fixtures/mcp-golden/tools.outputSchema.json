@@ -1,0 +1,17 @@
+[
+  "file_activity",
+  "get_costs",
+  "get_insights",
+  "get_memory",
+  "get_session",
+  "handoff",
+  "list_sessions",
+  "live_sessions",
+  "project_list_migrations",
+  "project_recover",
+  "project_review",
+  "project_timeline",
+  "search",
+  "stats",
+  "tool_analytics"
+]
