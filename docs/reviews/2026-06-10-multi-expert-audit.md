@@ -1612,6 +1612,16 @@ The documented invariant is downgradeSubagentTiers -> backfillParentLinks -> res
 
 Both verifiers agree on the mechanics (suggested-parent scoring runs before the codex-originator pass in startup phase 1); they disagree on whether later periodic cycles self-heal the ordering. Treat as UNRESOLVED pending a targeted test.
 
+CLOSEOUT (2026-07-09, wave-6 task 4): **fixed-with-evidence**. Targeted tests
+`testCodexOriginatorBlockedWhenSuggestedParentAssignedFirst_repro` and
+`testCodexOriginatorRunsBeforeSuggestedParentsAndClassifies_repro` prove
+permanent blockage when heuristics run first (periodic originator re-runs still
+skip rows with `suggested_parent_id` set) and correct classification when
+Layer-1b runs first. Product fix: `EngramDatabaseIndexer.indexSessions(runParentBackfills:)`
+now matches `runPeriodicParentBackfills` order
+(`backfillParentLinks` → `backfillCodexOriginator` → `backfillPolycliProviderParents`
+→ `backfillSuggestedParents`).
+
 
 ---
 

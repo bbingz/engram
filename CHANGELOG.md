@@ -7,6 +7,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: D01 codex originator ordering (2026-07-09, Codex)
+
+- Run deterministic Layer-1b `backfillCodexOriginator` before advisory
+  suggested-parent scoring in `indexSessions(runParentBackfills:)` so Claude
+  Code–originated Codex sessions are not permanently blocked by
+  `suggested_parent_id` exclusion (D01 repro + fix tests).
+
 ### Added: Sessions page filter persistence (2026-07-09, Codex)
 
 - Persist Sessions page session/time/source filters across relaunch via
