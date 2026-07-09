@@ -732,7 +732,7 @@ struct SessionDetailView: View {
                 summaryText = response.summary
             } catch {
                 guard favoriteLoadSessionId == sessionId else { return }
-                summaryError = "Summary failed: \(error.localizedDescription)"
+                summaryError = "Summary failed: \(ServiceErrorPresenter.displayMessage(for: error))"
             }
             if favoriteLoadSessionId == sessionId { isSummarizing = false }
         }
@@ -928,7 +928,7 @@ struct SessionDetailView: View {
                 try? await Task.sleep(for: .seconds(3))
                 if handoffStatus?.hasPrefix("Handoff") == true { handoffStatus = nil }
             } catch {
-                handoffStatus = "Handoff failed: \(error.localizedDescription)"
+                handoffStatus = "Handoff failed: \(ServiceErrorPresenter.displayMessage(for: error))"
             }
         }
     }

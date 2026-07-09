@@ -28,6 +28,38 @@ enum EngramServiceError: Error, Equatable, LocalizedError, Sendable {
             return "Unsupported provider: \(provider)"
         }
     }
+
+    /// User-facing detail that keeps structured fields (name/code, message,
+    /// retryPolicy) instead of collapsing to `localizedDescription` alone.
+    var userFacingDetail: String {
+        switch self {
+        case .serviceUnavailable(let message):
+            return "ServiceUnavailable: \(message)"
+        case .transportClosed(let message):
+            return "TransportClosed: \(message)"
+        case .invalidRequest(let message):
+            return "InvalidRequest: \(message)"
+        case .unauthorized(let message):
+            return "Unauthorized: \(message)"
+        case .writerBusy(let message):
+            return "WriterBusy: \(message)"
+        case .commandFailed(let name, let message, let retryPolicy, _):
+            return "\(name): \(message) [retry: \(retryPolicy)]"
+        case .unsupportedProvider(let provider):
+            return "UnsupportedProvider: \(provider)"
+        }
+    }
+}
+
+/// Formats service errors for UI surfaces. Non-`EngramServiceError` values fall
+/// back to `localizedDescription`.
+enum ServiceErrorPresenter {
+    static func displayMessage(for error: Error) -> String {
+        if let serviceError = error as? EngramServiceError {
+            return serviceError.userFacingDetail
+        }
+        return error.localizedDescription
+    }
 }
 
 /// Returns the `writerBusy` message when `error` is the single-writer-lock
