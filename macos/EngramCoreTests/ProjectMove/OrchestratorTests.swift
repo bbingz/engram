@@ -1086,6 +1086,133 @@ final class OrchestratorTests: XCTestCase {
         )
     }
 
+    /// Archive parent must not be left behind when cancel wins before FS mutation.
+    func testCancelBeforeRunDoesNotLeaveArchiveParent_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "archive-empty")
+        let archiveCategory = tempRoot
+            .appendingPathComponent("_archive/空项目", isDirectory: true)
+        let dst = archiveCategory.appendingPathComponent("archive-empty").path
+        XCTAssertFalse(FileManager.default.fileExists(atPath: archiveCategory.path))
+
+        var options = makeOptions(src: src, dst: dst)
+        options.archived = true
+        options.shouldCancel = { true }
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(writer: writer, options: options)
+            XCTFail("expected cancel")
+        } catch is ProjectMoveCancelledError {
+            // ok
+        }
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: archiveCategory.path),
+            "cancel-before-run must not create archive parent"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: tempRoot.appendingPathComponent("_archive").path),
+            "cancel-before-run must not create _archive root"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+    }
+
+    /// Preflight DirCollision after parents would be wrong if provision ran too early;
+    /// also proves pre-existing parents are never deleted.
+    func testPreflightCollisionPreservesPreexistingParentAndDoesNotCreateSiblings_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "collision-src")
+        let archiveRoot = tempRoot.appendingPathComponent("_archive", isDirectory: true)
+        let category = archiveRoot.appendingPathComponent("历史脚本", isDirectory: true)
+        try FileManager.default.createDirectory(at: category, withIntermediateDirectories: true)
+        // Marker proves preexisting parent is never deleted.
+        let marker = category.appendingPathComponent(".keep")
+        try Data().write(to: marker)
+
+        // Force a gemini dir collision by placing an unrelated dir at the encoded new path
+        // while also having the old gemini dir — classic DirCollisionError path.
+        let home = tempRoot!
+        let geminiRoot = home.appendingPathComponent(".gemini/tmp", isDirectory: true)
+        try FileManager.default.createDirectory(at: geminiRoot, withIntermediateDirectories: true)
+        let oldGemini = geminiRoot.appendingPathComponent(SessionSources.encodeGemini(src))
+        let newGemini = geminiRoot.appendingPathComponent(
+            SessionSources.encodeGemini(category.appendingPathComponent("collision-src").path)
+        )
+        try FileManager.default.createDirectory(at: oldGemini, withIntermediateDirectories: true)
+        // Distinct third-party dir at new name → collision.
+        if oldGemini.path != newGemini.path {
+            try FileManager.default.createDirectory(at: newGemini, withIntermediateDirectories: true)
+            try "foreign".write(
+                to: newGemini.appendingPathComponent("x.txt"),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+
+        let dst = category.appendingPathComponent("collision-src").path
+        var options = makeOptions(src: src, dst: dst)
+        options.archived = true
+        options.homeDirectory = home
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(writer: writer, options: options)
+            // If encodings collide to same path (case/normalize), collision may not fire;
+            // still assert preexisting parent survives either outcome.
+        } catch is DirCollisionError {
+            // expected when new gemini dir is a distinct third-party path
+        } catch {
+            // Other preflight errors are fine for this FS residual assertion.
+        }
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: category.path),
+            "preexisting archive parent must never be deleted"
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: marker.path),
+            "preexisting parent contents must remain"
+        )
+        // Destination project itself must not exist after failed preflight.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+    }
+
+    /// Parent created for the move, then cancel at commit boundary: after reverse
+    /// compensation the empty shells we created must be removed.
+    func testCreatedArchiveParentRemovedAfterCancelAtCommitBoundary_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "archive-commit-cancel")
+        let archiveRoot = tempRoot.appendingPathComponent("_archive", isDirectory: true)
+        let category = archiveRoot.appendingPathComponent("空项目", isDirectory: true)
+        let dst = category.appendingPathComponent("archive-commit-cancel").path
+        XCTAssertFalse(FileManager.default.fileExists(atPath: archiveRoot.path))
+
+        var options = makeOptions(src: src, dst: dst)
+        options.archived = true
+        options.shouldCancel = { false }
+        // Cancel wins at the commit boundary after FS mutation + parent provision.
+        options.beginCommitIfNotCancelled = { false }
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(writer: writer, options: options)
+            XCTFail("expected cancel at commit boundary")
+        } catch let error as ProjectMoveCancelledError {
+            XCTAssertTrue(
+                error.compensationSucceeded,
+                "reverse + empty-parent teardown should be clean"
+            )
+        } catch {
+            XCTFail("expected ProjectMoveCancelledError, got \(error)")
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src), "src restored")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst), "dst not left behind")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: category.path),
+            "empty archive category created by this run must be removed"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: archiveRoot.path),
+            "empty _archive root created by this run must be removed"
+        )
+    }
+
     func testAtomicBeginCommitPreventsCancelRaceWindow_repro() async throws {
         // beginCommitIfNotCancelled returns false → cancel wins, no commit.
         let (src, _) = try makeProjectFixture(name: "atomic-cancel")

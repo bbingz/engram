@@ -517,13 +517,15 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
     }
 
     func testWithTimeoutReturnsEvenWhenChildIgnoresCancellation_repro() async {
+        let loserFinished = expectation(description: "loser finishes without hot-spin")
         let start = Date()
         let result: Int? = await withTimeout(seconds: 0.15) {
             // Cancellation-insensitive finite wait: Task.cancel must not hot-spin.
-            // Dispatch asyncAfter ignores cooperative cancellation; loser ends ~0.75s later.
+            // Dispatch asyncAfter ignores cooperative cancellation; mark finished for drain.
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 DispatchQueue.global().asyncAfter(deadline: .now() + 0.75) {
                     cont.resume()
+                    loserFinished.fulfill()
                 }
             }
             return 1
@@ -531,6 +533,8 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
         let elapsed = Date().timeIntervalSince(start)
         XCTAssertNil(result, "timeout must win")
         XCTAssertLessThan(elapsed, 0.5, "helper must not await the hanging child")
+        // Drain the unstructured loser so it cannot outlive this test case.
+        await fulfillment(of: [loserFinished], timeout: 2)
     }
 
     private func waitUntil(

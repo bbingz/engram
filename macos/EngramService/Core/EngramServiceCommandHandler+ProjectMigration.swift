@@ -159,14 +159,9 @@ extension EngramServiceCommandHandler {
             hooks: hooks,
             map: { mapPipelineResult($0, suggestion: suggestion) }
         ) { writer in
-            // Create archive parent dirs only after holding the writer gate.
-            if !request.dryRun {
-                try FileManager.default.createDirectory(
-                    atPath: (suggestion.dst as NSString).deletingLastPathComponent,
-                    withIntermediateDirectories: true
-                )
-            }
-            return try await ProjectMoveOrchestrator.run(
+            // Destination-parent creation lives inside the orchestrator so cancel /
+            // preflight failure can remove empty shells created by this attempt.
+            try await ProjectMoveOrchestrator.run(
                 writer: writer,
                 options: RunProjectMoveOptions(
                     src: request.src,

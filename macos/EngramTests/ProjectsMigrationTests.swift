@@ -565,17 +565,14 @@ final class ProjectsMigrationTests: XCTestCase {
         )
     }
 
-    func testArchiveCreateDirectoryIsInsideProduceWithGate_repro() throws {
-        let source = try Self.source(
+    func testArchiveParentCreationOwnedByOrchestratorNotHandler_repro() throws {
+        let handler = try Self.source(
             "macos/EngramService/Core/EngramServiceCommandHandler+ProjectMigration.swift"
         )
-        // Locate projectArchive function body via its entry signature.
-        guard let archiveRange = source.range(of: "static func projectArchive(") else {
+        guard let archiveRange = handler.range(of: "static func projectArchive(") else {
             return XCTFail("projectArchive not found")
         }
-        let afterArchive = source[archiveRange.lowerBound...]
-        // produceWithGate body for archive must contain createDirectory; outer
-        // preflight section (before produceWithGate) must not.
+        let afterArchive = handler[archiveRange.lowerBound...]
         guard let produceRange = afterArchive.range(of: "produceWithGate(") else {
             return XCTFail("produceWithGate not found in projectArchive")
         }
@@ -584,18 +581,35 @@ final class ProjectsMigrationTests: XCTestCase {
             preflight.contains("FileManager.default.createDirectory"),
             "archive preflight must not mutate FS before holding the writer gate"
         )
-        // Extract the trailing closure after produceWithGate's map: line until matching braces.
         let gateBody = try Self.swiftClosureBody(
             in: String(afterArchive),
             afterMarker: ") { writer in"
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             gateBody.contains("FileManager.default.createDirectory"),
-            "createDirectory must run inside produceWithGate while holding the gate"
+            "handler must not create archive parents; orchestrator owns compensatable provision"
         )
         XCTAssertTrue(
             gateBody.contains("ProjectMoveOrchestrator.run"),
-            "orchestrator must remain inside the same gated body"
+            "orchestrator must remain inside the gated body"
+        )
+
+        let batch = try Self.source("macos/EngramCoreWrite/ProjectMove/Batch.swift")
+        XCTAssertFalse(
+            batch.contains("SafeMoveDir requires the dst's parent to exist"),
+            "batch must not pre-create archive parents outside orchestrator compensation"
+        )
+
+        let orchestrator = try Self.source(
+            "macos/EngramCoreWrite/ProjectMove/Orchestrator.swift"
+        )
+        XCTAssertTrue(
+            orchestrator.contains("DestinationParentProvision.ensure"),
+            "orchestrator must provision destination parents"
+        )
+        XCTAssertTrue(
+            orchestrator.contains("DestinationParentProvision.removeEmptyCreated"),
+            "orchestrator must tear down empty parents it created on failure/cancel"
         )
     }
 

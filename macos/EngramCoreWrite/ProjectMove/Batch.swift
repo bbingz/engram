@@ -271,13 +271,8 @@ public enum Batch {
                         options: ArchiveOptions(skipProbe: doc.defaults.dryRun, forceCategory: op.archiveTo)
                     )
                     dst = suggestion.dst
-                    if !doc.defaults.dryRun {
-                        // SafeMoveDir requires the dst's parent to exist.
-                        try FileManager.default.createDirectory(
-                            atPath: (dst as NSString).deletingLastPathComponent,
-                            withIntermediateDirectories: true
-                        )
-                    }
+                    // Destination-parent creation is owned by the orchestrator
+                    // (compensatable empty-dir teardown on cancel/failure).
                 } catch {
                     result.failed.append(
                         BatchOperationFailure(operation: op, error: errorText(error))

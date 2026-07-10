@@ -449,6 +449,8 @@ public enum ProjectMoveOrchestrator {
         var skippedDirs: [SkippedDirEntry] = []
         var moveStrategy: MoveResult.Strategy = .rename
         var physicalMoveApplied = false
+        /// Destination-parent dirs created by this run (deepest first).
+        var createdDestinationParents: [String] = []
         var geminiProjectsPlan: GeminiProjectsJsonUpdatePlan?
         var geminiProjectsApplied = false
         var sqlitePatches: [OpenCodeSQLitePatchResult] = []
@@ -569,6 +571,14 @@ public enum ProjectMoveOrchestrator {
                     )
                 }
             }
+
+            // Step 0.9: ensure destination parent exists (archive `_archive/...`
+            // and plain renames into new folders). Track only newly created
+            // components so cancel/preflight/failure can remove empty shells
+            // without touching pre-existing parents.
+            createdDestinationParents = try DestinationParentProvision.ensure(
+                destinationPath: dst
+            )
 
             // Step 1: physical move
             let moveResult = try SafeMoveDir.run(src: src, dst: dst)
@@ -781,6 +791,9 @@ public enum ProjectMoveOrchestrator {
                     physicalMoveApplied: physicalMoveApplied
                 )
             }
+            // Always drop empty destination parents we created on this attempt
+            // (including after a successful physical-move reverse). Never recurse.
+            DestinationParentProvision.removeEmptyCreated(createdDestinationParents)
 
             // Contract 3: cancelled + clean compensation → clean cancelled error.
             // Cancelled + residual compensation failures → partial/unsafe error.

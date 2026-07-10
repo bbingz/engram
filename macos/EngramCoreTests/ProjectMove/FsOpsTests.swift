@@ -26,6 +26,63 @@ final class FsOpsTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    // MARK: - Destination parent provision (compensatable)
+
+    func testDestinationParentProvisionCreatesOnlyMissingAndRemovesEmpty_repro() throws {
+        let leaf = tmpRoot.appendingPathComponent("a/b/c/proj").path
+        let parent = (leaf as NSString).deletingLastPathComponent
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parent))
+
+        let created = try DestinationParentProvision.ensure(destinationPath: leaf)
+        XCTAssertFalse(created.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: parent))
+        // Deepest first for teardown.
+        XCTAssertEqual(created.first, parent)
+
+        // Second ensure is a no-op (pre-existing).
+        let again = try DestinationParentProvision.ensure(destinationPath: leaf)
+        XCTAssertTrue(again.isEmpty)
+
+        DestinationParentProvision.removeEmptyCreated(created)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: parent),
+            "empty shells we created must be removed"
+        )
+    }
+
+    func testDestinationParentProvisionNeverDeletesPreexistingOrNonEmpty_repro() throws {
+        let preexisting = tmpRoot.appendingPathComponent("keep", isDirectory: true)
+        try FileManager.default.createDirectory(at: preexisting, withIntermediateDirectories: true)
+        try "marker".write(
+            to: preexisting.appendingPathComponent("marker.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let nested = preexisting.appendingPathComponent("new-child/proj").path
+        let created = try DestinationParentProvision.ensure(destinationPath: nested)
+        XCTAssertFalse(created.contains(preexisting.path))
+        XCTAssertTrue(created.contains(preexisting.appendingPathComponent("new-child").path))
+
+        // Put concurrent content into the newly created child before teardown.
+        let child = preexisting.appendingPathComponent("new-child")
+        try "other".write(
+            to: child.appendingPathComponent("other.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        DestinationParentProvision.removeEmptyCreated(created)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: child.path),
+            "non-empty created dir must not be removed"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: preexisting.path))
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: preexisting.appendingPathComponent("marker.txt").path
+            )
+        )
+    }
+
     // MARK: - rename fast path
 
     func testRenamesDirectoryOnSameVolume() throws {

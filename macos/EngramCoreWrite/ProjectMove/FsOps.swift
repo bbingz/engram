@@ -217,3 +217,87 @@ public enum SafeMoveDir {
         return raw.map { String(format: "%02x", $0) }.joined()
     }
 }
+
+// MARK: - Destination parent provision (compensatable)
+
+/// Creates missing destination-parent directories and records only the paths this
+/// call newly created so cancel/preflight failure can remove empty shells
+/// without touching pre-existing or concurrently populated directories.
+public enum DestinationParentProvision {
+    /// Ensure the parent directory of `destinationPath` exists.
+    /// - Returns: newly created path components, deepest-first (safe teardown order).
+    @discardableResult
+    public static func ensure(
+        destinationPath: String,
+        fileManager: FileManager = .default
+    ) throws -> [String] {
+        let parent = (destinationPath as NSString).deletingLastPathComponent
+        guard !parent.isEmpty, parent != "/", parent != "." else { return [] }
+        return try ensureDirectory(atPath: parent, fileManager: fileManager)
+    }
+
+    /// Ensure `path` exists as a directory. Returns newly created components
+    /// (deepest first).
+    public static func ensureDirectory(
+        atPath path: String,
+        fileManager: FileManager = .default
+    ) throws -> [String] {
+        var isDir: ObjCBool = false
+        if fileManager.fileExists(atPath: path, isDirectory: &isDir) {
+            return []
+        }
+
+        // Walk ancestors; record missing segments shallow→deep, then create.
+        var missing: [String] = []
+        var cursor = path
+        var chain: [String] = []
+        while !cursor.isEmpty, cursor != "/", cursor != "." {
+            chain.append(cursor)
+            let next = (cursor as NSString).deletingLastPathComponent
+            if next == cursor { break }
+            cursor = next
+        }
+        // chain is leaf→root; reverse to root→leaf for creation bookkeeping.
+        for candidate in chain.reversed() {
+            var candidateIsDir: ObjCBool = false
+            if fileManager.fileExists(atPath: candidate, isDirectory: &candidateIsDir) {
+                continue
+            }
+            missing.append(candidate)
+        }
+
+        if !missing.isEmpty {
+            try fileManager.createDirectory(
+                atPath: path,
+                withIntermediateDirectories: true
+            )
+        }
+        // Teardown must be deepest-first.
+        return missing.reversed()
+    }
+
+    /// Best-effort: remove only empty directories from `created` (deepest first).
+    /// Never recursive; never removes a non-empty or pre-existing concurrent dir.
+    public static func removeEmptyCreated(
+        _ created: [String],
+        fileManager: FileManager = .default
+    ) {
+        for path in created {
+            var isDir: ObjCBool = false
+            guard fileManager.fileExists(atPath: path, isDirectory: &isDir),
+                  isDir.boolValue
+            else {
+                continue
+            }
+            let contents: [String]
+            do {
+                contents = try fileManager.contentsOfDirectory(atPath: path)
+            } catch {
+                continue
+            }
+            // Only truly empty shells; ignore AppleDouble noise? Keep strict empty.
+            guard contents.isEmpty else { continue }
+            try? fileManager.removeItem(atPath: path)
+        }
+    }
+}
