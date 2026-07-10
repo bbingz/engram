@@ -325,12 +325,73 @@ final class UnixSocketServiceServer: Sendable {
     }
 
     /// Blocks until the peer closes the connection, the fd errors, or this task
-    /// is cancelled. Used to propagate client timeout/disconnect into handlers.
+    /// is cancelled. Uses a self-pipe so task cancellation wakes `poll` immediately
+    /// (avoids up to ~50ms tail latency when the handler finishes first).
     static func waitForPeerDisconnect(_ fd: Int32) async {
+        var pipeFds: [Int32] = [0, 0]
+        guard pipe(&pipeFds) == 0 else {
+            await waitForPeerDisconnectFallback(fd)
+            return
+        }
+        let readEnd = pipeFds[0]
+        let writeEnd = pipeFds[1]
+        // Non-blocking write end so onCancel never stalls.
+        let flags = fcntl(writeEnd, F_GETFL)
+        if flags >= 0 {
+            _ = fcntl(writeEnd, F_SETFL, flags | O_NONBLOCK)
+        }
+        defer {
+            close(readEnd)
+            close(writeEnd)
+        }
+
+        await withTaskCancellationHandler {
+            while !Task.isCancelled {
+                var polls = [
+                    pollfd(fd: fd, events: Int16(POLLHUP | POLLERR | POLLIN), revents: 0),
+                    pollfd(fd: readEnd, events: Int16(POLLIN), revents: 0),
+                ]
+                let ready = polls.withUnsafeMutableBufferPointer { buffer in
+                    Darwin.poll(buffer.baseAddress, nfds_t(buffer.count), -1)
+                }
+                if ready < 0 {
+                    if errno == EINTR { continue }
+                    return
+                }
+                if polls[1].revents & Int16(POLLIN) != 0 {
+                    // Cancellation wake-up.
+                    return
+                }
+                let revents = polls[0].revents
+                if revents & Int16(POLLHUP | POLLERR) != 0 {
+                    return
+                }
+                if revents & Int16(POLLIN) != 0 {
+                    var byte: UInt8 = 0
+                    let n = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
+                    if n == 0 { return }
+                    if n < 0 {
+                        let code = errno
+                        if code == EAGAIN || code == EWOULDBLOCK {
+                            continue
+                        }
+                        return
+                    }
+                    // Unexpected inbound data mid-request; keep watching.
+                }
+            }
+        } onCancel: {
+            var token: UInt8 = 1
+            _ = write(writeEnd, &token, 1)
+        }
+    }
+
+    /// Fallback when pipe() fails: short poll so cancel is observed quickly.
+    private static func waitForPeerDisconnectFallback(_ fd: Int32) async {
         while !Task.isCancelled {
             var pfd = pollfd(fd: fd, events: Int16(POLLHUP | POLLERR | POLLIN), revents: 0)
             let ready = withUnsafeMutablePointer(to: &pfd) { pointer in
-                Darwin.poll(pointer, 1, 50)
+                Darwin.poll(pointer, 1, 5)
             }
             if ready < 0 {
                 if errno == EINTR { continue }
@@ -342,20 +403,15 @@ final class UnixSocketServiceServer: Sendable {
                 return
             }
             if revents & Int16(POLLIN) != 0 {
-                // EOF from peer appears as readable with zero-length peek.
                 var byte: UInt8 = 0
                 let n = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
                 if n == 0 { return }
                 if n < 0 {
                     let code = errno
-                    if code == EAGAIN || code == EWOULDBLOCK {
-                        continue
-                    }
+                    if code == EAGAIN || code == EWOULDBLOCK { continue }
                     return
                 }
-                // Unexpected inbound data mid-request; keep watching.
             }
-            try? await Task.sleep(nanoseconds: 20_000_000)
         }
     }
 

@@ -60,7 +60,7 @@
 | L07 | PARTIAL-FIXED | — | — | get_memory type not in payload | Follow-up |
 | L08 | CONFIRMED-FIXED | `12d3c081` | `LiveSessionCard` → `RelativeTimeText` | shared ISO parser | — |
 | L09 | PARTIAL-FIXED | — | — | invariant ledger still path-existence | Follow-up |
-| S01 | CONFIRMED-FIXED | pass5 | **`testCancelDuringWorkWaitsForWorkExit_repro`** + **`testRecordingSchedulerFinishesOnlyAfterWork_repro`** + sleep cancel-wait | activity `.finished` after work; **cancel awaits work exit** (tracked Task, no orphan scan); idle skips embedding | — |
+| S01 | CONFIRMED-FIXED | pass6 | **`testCancelDuringWorkWaitsForWorkExit_repro`** + **`testInvalidateDuringWorkWaitsForExit_repro`** + finish-after-work | activity finish-after-work; cancel **and async invalidate** await work exit; idle skips embedding | — |
 
 ## Tallies
 
@@ -140,7 +140,8 @@ H05 behavioral evidence: `{SCRATCH}/h05-behavioral.log` — `testClearParentPres
 
 Pass3 (M05 remaining): prior closeout.
 Pass4 (H03 peer cancel + S01 finish-after-work): prior.
-Pass5 (S01 cancel-awaits-work): `{SCRATCH}/pass5-tests.log` — EngramServiceCoreTests **286 tests, 0 failures**; cancel-during-work waits for exit PASS.
+Pass5 (S01 cancel-awaits-work): prior.
+Pass6 (non-blocking harden): `{SCRATCH}/pass6-tests.log` — **288 tests, 0 failures**; `invalidate()` awaits work; peer-disconnect self-pipe wake (no 50ms poll tail).
 
 ### Scheduling smoke (plan step 6)
 

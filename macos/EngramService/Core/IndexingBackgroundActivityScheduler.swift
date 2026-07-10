@@ -30,26 +30,23 @@ public protocol IndexingBackgroundActivityScheduling: AnyObject, Sendable {
         work: @escaping @Sendable () async -> Void
     ) async -> IndexingActivityOpportunity
 
-    /// Tear down any pending scheduled work. If work is in flight, cancels it
-    /// (best-effort; prefer cancelling the `performWhenDue` caller task so the
-    /// await-for-exit contract applies).
-    func invalidate()
+    /// Tear down schedule/work. If work is in flight, cancels it and **awaits
+    /// exit** before returning (same contract as cancel of `performWhenDue`).
+    func invalidate() async
 }
 
 // MARK: - Production NSBackgroundActivityScheduler
 
 /// Production scheduler: `NSBackgroundActivityScheduler` at background QoS.
 /// Activity completion and the `performWhenDue` return both wait for work exit,
-/// including on cancellation (no orphaned scan Task).
+/// including on cancellation / invalidate (no orphaned scan Task).
 public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActivityScheduling, @unchecked Sendable {
     public static let identifier = "com.engram.service.periodic-index"
     public let backendName = "NSBackgroundActivityScheduler"
 
     private enum Phase {
         case idle
-        /// Waiting for the OS to fire the scheduled activity.
         case awaitingSchedule
-        /// Running indexing work under an open activity completion handler.
         case runningWork
     }
 
@@ -58,6 +55,8 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
     private var scheduleWait: CheckedContinuation<ScheduleFire, Never>?
     private var activeWork: Task<Void, Never>?
     private var activityCompletion: ((NSBackgroundActivityScheduler.Result) -> Void)?
+    /// Ensures OS activity completion is invoked at most once per work cycle.
+    private var activityFinished = false
     private var phase: Phase = .idle
     private var cancelledWhileWaiting = false
 
@@ -74,7 +73,6 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
         tolerance: TimeInterval,
         work: @escaping @Sendable () async -> Void
     ) async -> IndexingActivityOpportunity {
-        // Phase 1: wait for OS schedule (or cancel/defer).
         let fire = await waitForScheduleFire(
             interval: max(1, interval),
             tolerance: max(0, tolerance)
@@ -85,36 +83,62 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
         case .deferred:
             return .deferred
         case .run(let completeActivity):
-            // Phase 2: run work on a tracked Task so cancel can await exit.
             return await runTrackedWork(work: work, completeActivity: completeActivity)
         }
     }
 
-    public func invalidate() {
+    public func invalidate() async {
+        await cancelAndAwaitWork(completeOSActivity: true)
+    }
+
+    // MARK: Shared cancel / invalidate
+
+    /// Cancel schedule wait + active work, await work exit, finish OS activity.
+    private func cancelAndAwaitWork(completeOSActivity: Bool) async {
         lock.lock()
+        cancelledWhileWaiting = true
         scheduler?.invalidate()
         scheduler = nil
-        cancelledWhileWaiting = true
         let wait = scheduleWait
         scheduleWait = nil
         let work = activeWork
         let completion = activityCompletion
-        activityCompletion = nil
-        phase = .idle
+        if phase == .awaitingSchedule {
+            phase = .idle
+        }
         lock.unlock()
 
         wait?.resume(returning: .cancelled)
         work?.cancel()
-        // Best-effort: do not block invalidate on work exit (caller should cancel
-        // the performWhenDue task, which awaits). Still complete OS activity.
+
         if let work {
-            Task {
-                await work.value
-                completion?(.finished)
-            }
-        } else {
-            completion?(.finished)
+            await work.value
         }
+
+        lock.lock()
+        activeWork = nil
+        if phase == .runningWork {
+            phase = .idle
+        }
+        lock.unlock()
+
+        if completeOSActivity {
+            finishActivityOnce(completion)
+        }
+    }
+
+    private func finishActivityOnce(
+        _ completion: ((NSBackgroundActivityScheduler.Result) -> Void)?
+    ) {
+        lock.lock()
+        guard !activityFinished else {
+            lock.unlock()
+            return
+        }
+        activityFinished = true
+        activityCompletion = nil
+        lock.unlock()
+        completion?(.finished)
     }
 
     // MARK: Schedule wait
@@ -144,11 +168,11 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
                 self.armScheduler(interval: interval, tolerance: tolerance)
             }
         } onCancel: {
-            self.cancelScheduleWait()
+            self.cancelScheduleWaitOnly()
         }
     }
 
-    private func cancelScheduleWait() {
+    private func cancelScheduleWaitOnly() {
         lock.lock()
         cancelledWhileWaiting = true
         scheduler?.invalidate()
@@ -194,7 +218,6 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
                 wait?.resume(returning: .deferred)
                 return
             }
-            // Hand the OS completion to the work phase — do not finish yet.
             self.lock.unlock()
             wait?.resume(returning: .run(complete: { result in
                 completion(result)
@@ -215,6 +238,7 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
         lock.lock()
         activeWork = workTask
         activityCompletion = completeActivity
+        activityFinished = false
         phase = .runningWork
         let alreadyCancelled = cancelledWhileWaiting || Task.isCancelled
         lock.unlock()
@@ -229,28 +253,46 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
             workTask.cancel()
         }
 
-        // Work has fully exited. Only now finish the OS activity and clear state.
         lock.lock()
         activeWork = nil
-        activityCompletion = nil
-        phase = .idle
         let wasCancelled = cancelledWhileWaiting || Task.isCancelled
-        cancelledWhileWaiting = false
+        if !wasCancelled {
+            cancelledWhileWaiting = false
+        }
+        phase = .idle
+        let completion = activityCompletion
         lock.unlock()
 
-        completeActivity(.finished)
+        finishActivityOnce(completion ?? completeActivity)
         return wasCancelled ? .cancelled : .run
     }
 
     deinit {
-        invalidate()
+        // deinit cannot await; cancel without waiting (process is going away).
+        lock.lock()
+        scheduler?.invalidate()
+        scheduler = nil
+        cancelledWhileWaiting = true
+        let wait = scheduleWait
+        scheduleWait = nil
+        let work = activeWork
+        activeWork = nil
+        let completion = activityCompletion
+        let alreadyFinished = activityFinished
+        activityFinished = true
+        activityCompletion = nil
+        phase = .idle
+        lock.unlock()
+        wait?.resume(returning: .cancelled)
+        work?.cancel()
+        if !alreadyFinished {
+            completion?(.finished)
+        }
     }
 }
 
 // MARK: - Sleep fallback
 
-/// Test / fallback scheduler: sleep, then run work on a tracked Task so cancel
-/// waits for work exit (same contract as production).
 public final class SleepIndexingBackgroundActivityScheduler: IndexingBackgroundActivityScheduling, @unchecked Sendable {
     public let backendName = "Task.sleep"
 
@@ -291,29 +333,31 @@ public final class SleepIndexingBackgroundActivityScheduler: IndexingBackgroundA
         return Task.isCancelled ? .cancelled : .run
     }
 
-    public func invalidate() {
+    public func invalidate() async {
         lock.lock()
         let work = activeWork
         activeWork = nil
         lock.unlock()
         work?.cancel()
+        if let work {
+            await work.value
+        }
     }
 }
 
 // MARK: - Recording test double
 
-/// Test double that records finish-after-work ordering and cancel-wait behavior.
 public final class RecordingIndexingBackgroundActivityScheduler: IndexingBackgroundActivityScheduling, @unchecked Sendable {
     public let backendName = "Recording"
 
     public private(set) var workInvocations = 0
     public private(set) var finishedAfterWorkCount = 0
     public private(set) var lastRunFinishedAfterWork = false
-    /// True when a cancel during work waited for work to exit before returning.
     public private(set) var lastCancelWaitedForWork = false
+    /// True when `invalidate()` awaited in-flight work exit.
+    public private(set) var lastInvalidateWaitedForWork = false
     public var forceDeferred = false
     public var immediate = true
-    /// Artificial work delay (for cancel-during-work tests).
     public var workDelayNanoseconds: UInt64 = 0
 
     private let lock = NSLock()
@@ -373,11 +417,17 @@ public final class RecordingIndexingBackgroundActivityScheduler: IndexingBackgro
         return cancelled ? .cancelled : .run
     }
 
-    public func invalidate() {
+    public func invalidate() async {
         lock.lock()
         let work = activeWork
         activeWork = nil
         lock.unlock()
         work?.cancel()
+        if let work {
+            await work.value
+            lock.lock()
+            lastInvalidateWaitedForWork = true
+            lock.unlock()
+        }
     }
 }

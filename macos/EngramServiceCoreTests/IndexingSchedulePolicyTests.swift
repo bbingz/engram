@@ -47,15 +47,15 @@ final class IndexingSchedulePolicyTests: XCTestCase {
         XCTAssertFalse(IndexingSchedulePolicy.shouldDefer(conditions: .init(thermal: .fair)))
     }
 
-    func testNSSchedulerBackendIdentifierAndSleepFallbackExist() throws {
+    func testNSSchedulerBackendIdentifierAndSleepFallbackExist() async {
         // Production path uses NSBackgroundActivityScheduler; sleep fallback is for tests/hosts.
         let ns = NSIndexingBackgroundActivityScheduler()
         XCTAssertEqual(NSIndexingBackgroundActivityScheduler.identifier, "com.engram.service.periodic-index")
         XCTAssertEqual(ns.backendName, "NSBackgroundActivityScheduler")
-        ns.invalidate()
+        await ns.invalidate()
         let sleep = SleepIndexingBackgroundActivityScheduler()
         XCTAssertEqual(sleep.backendName, "Task.sleep")
-        sleep.invalidate()
+        await sleep.invalidate()
     }
 
     func testMinIntervalIsNotFixedFiveMinutes() {
@@ -143,5 +143,56 @@ final class IndexingSchedulePolicyTests: XCTestCase {
         let outcome = await performTask.value
         XCTAssertEqual(outcome, .cancelled)
         await fulfillment(of: [workExited], timeout: 1)
+    }
+
+    /// Concurrent `invalidate()` during active work must await work exit
+    /// (no fire-and-forget orphan Task).
+    func testInvalidateDuringWorkWaitsForExit_repro() async {
+        let recorder = RecordingIndexingBackgroundActivityScheduler()
+        recorder.workDelayNanoseconds = 100_000_000
+
+        let workStarted = expectation(description: "invalidate work started")
+        let workExited = expectation(description: "invalidate work exited")
+
+        let performTask = Task { () -> IndexingActivityOpportunity in
+            await recorder.performWhenDue(interval: 0.001, tolerance: 0) {
+                workStarted.fulfill()
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                workExited.fulfill()
+            }
+        }
+
+        await fulfillment(of: [workStarted], timeout: 1)
+        // Race: invalidate while work is running (does not go through Task.cancel
+        // of performWhenDue alone).
+        await recorder.invalidate()
+        await fulfillment(of: [workExited], timeout: 1)
+        XCTAssertTrue(
+            recorder.lastInvalidateWaitedForWork,
+            "invalidate() must await active work before returning"
+        )
+        // performWhenDue should also finish (work cancelled).
+        _ = await performTask.value
+    }
+
+    func testPeerDisconnectWatcherSourceUsesSelfPipeWake() throws {
+        // H03: cancel path must not wait on a long poll timeout.
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("EngramService/IPC/UnixSocketServiceServer.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(
+            source.contains("pipe(&pipeFds)") || source.contains("pipe(&"),
+            "peer-disconnect watcher must use a self-pipe to wake poll on cancel"
+        )
+        XCTAssertTrue(
+            source.contains("onCancel:"),
+            "cancel must write the wake pipe"
+        )
+        XCTAssertFalse(
+            source.contains("Darwin.poll(pointer, 1, 50)"),
+            "50ms-only poll tail on normal completion must be gone"
+        )
     }
 }

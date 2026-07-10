@@ -347,7 +347,8 @@ public enum EngramServiceRunner {
         // (background QoS, tolerance, shouldDefer). Work runs *inside* the
         // activity so OS completion fires only after the scan cycle ends.
         let scheduleBox = IndexingScheduleBox()
-        defer { activityScheduler.invalidate() }
+        // Explicit await invalidate at end so in-flight activity work exits
+        // before the runner returns (matches gate cancel-and-wait contract).
 
         while !Task.isCancelled {
             let sleepSeconds = scheduleBox.policy.nextInterval()
@@ -377,6 +378,7 @@ public enum EngramServiceRunner {
             if opportunity == .cancelled { break }
             // .deferred / .run both continue the outer loop with updated schedule.
         }
+        await activityScheduler.invalidate()
     }
 
     /// One adaptive scan cycle. Invoked only while an NSBackground activity is open.
