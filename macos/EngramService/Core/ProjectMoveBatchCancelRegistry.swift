@@ -83,6 +83,7 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
     /// Instance-scoped test seams for deterministic waiter registration races.
     private var testBeforeWaiterRegister: (@Sendable () async -> Void)?
     private var testOnWaiterRegistered: (@Sendable () -> Void)?
+    private var testOnPendingCancel: (@Sendable () -> Void)?
 
     init(config: Config = .default) {
         self.config = config
@@ -97,16 +98,22 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
     /// Install instance-scoped waiter barriers (nil = production no-op).
     func installWaiterTestSeamsForTests(
         beforeRegister: (@Sendable () async -> Void)? = nil,
-        onRegistered: (@Sendable () -> Void)? = nil
+        onRegistered: (@Sendable () -> Void)? = nil,
+        onPendingCancel: (@Sendable () -> Void)? = nil
     ) {
         lock.lock()
         testBeforeWaiterRegister = beforeRegister
         testOnWaiterRegistered = onRegistered
+        testOnPendingCancel = onPendingCancel
         lock.unlock()
     }
 
     func clearWaiterTestSeamsForTests() {
-        installWaiterTestSeamsForTests(beforeRegister: nil, onRegistered: nil)
+        installWaiterTestSeamsForTests(
+            beforeRegister: nil,
+            onRegistered: nil,
+            onPendingCancel: nil
+        )
     }
 
     // MARK: - Explicit cancel
@@ -461,7 +468,9 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
             entry.waiters[waiterId] = .pendingCancel
             entry.touchedAt = config.now()
             entries[operationId] = entry
+            let onPending = testOnPendingCancel
             lock.unlock()
+            onPending?()
         }
     }
 

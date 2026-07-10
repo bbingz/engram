@@ -208,24 +208,30 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
     // MARK: - Unsafe batch via real handler encode + same-ID reconnect
 
     func testHandlerUnsafeBatchCachesCancelUnsafeFieldsOnReconnect_repro() async throws {
-        try await withTemporaryHome { _ in
+        try await withTemporaryHome { home in
             let paths = try makePaths()
             try migrateDatabase(at: paths.database.path)
             let gate = try ServiceWriterGate(
                 databasePath: paths.database.path,
                 runtimeDirectory: paths.runtime
             )
+            // HOME-confined paths so real handler preflight passes and reaches batchRunOverride.
+            let src = home.appendingPathComponent(".claude/projects/batch-src", isDirectory: true)
+            let dst = home.appendingPathComponent(".claude/projects/batch-dst", isDirectory: true)
+            try FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)
+
             let operationId = "batch-unsafe-op"
+            let op = BatchOperation(src: src.path, dst: dst.path)
             let unsafeResult = BatchResult(
                 completed: [],
                 failed: [
                     BatchOperationFailure(
-                        operation: BatchOperation(src: "/a", dst: "/b"),
+                        operation: op,
                         error: "project-move: cancelled before commit but compensation was incomplete — rollback"
                     ),
                 ],
                 skipped: [],
-                remaining: [BatchOperation(src: "/a", dst: "/b")],
+                remaining: [op],
                 cancelled: true,
                 cancelUnsafe: true,
                 cancelErrorName: "ProjectMoveCancelCompensationFailedError",
@@ -239,7 +245,9 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
             )
             let handler = EngramServiceCommandHandler(writerGate: gate, longOpHooks: hooks)
 
-            let yaml = #"{"version":1,"operations":[{"src":"/a","dst":"/b"}]}"#
+            let yaml = """
+            {"version":1,"operations":[{"src":"\(src.path)","dst":"\(dst.path)"}]}
+            """
             let request = EngramServiceRequestEnvelope(
                 command: "projectMoveBatch",
                 payload: try JSONEncoder().encode(EngramServiceProjectMoveBatchRequest(
@@ -256,7 +264,7 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
             let firstJSON = try JSONDecoder().decode(EngramServiceJSONValue.self, from: firstData)
             assertCancelUnsafe(firstJSON)
 
-            // Same-ID reconnect must return cached encoded payload (handler path, not manual registry).
+            // Same-ID reconnect must return cached encoded payload (handler path).
             let second = await withTimeout(seconds: 2) {
                 await handler.handle(request)
             }

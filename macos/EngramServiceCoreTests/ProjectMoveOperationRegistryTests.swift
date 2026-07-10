@@ -155,11 +155,15 @@ final class ProjectMoveOperationRegistryTests: XCTestCase {
         _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"k":"1"}"#)
 
         let enteredBarrier = expectation(description: "entered before-register barrier")
+        let pendingCancelRecorded = expectation(description: "pendingCancel recorded")
         let releaseBarrier = StallRelease()
         reg.installWaiterTestSeamsForTests(
             beforeRegister: {
                 enteredBarrier.fulfill()
                 await releaseBarrier.wait()
+            },
+            onPendingCancel: {
+                pendingCancelRecorded.fulfill()
             }
         )
         defer { reg.clearWaiterTestSeamsForTests() }
@@ -172,8 +176,8 @@ final class ProjectMoveOperationRegistryTests: XCTestCase {
         XCTAssertEqual(reg.registeredWaiterCountForTests(id), 0)
 
         waiter.cancel()
-        // Allow onCancel to record pendingCancel before release.
-        try await Task.sleep(nanoseconds: 20_000_000)
+        // Wait for cancelWaiter to record pendingCancel (no sleep).
+        await fulfillment(of: [pendingCancelRecorded], timeout: 2)
         await releaseBarrier.open()
 
         do {
