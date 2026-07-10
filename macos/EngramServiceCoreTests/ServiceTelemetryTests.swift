@@ -58,6 +58,168 @@ final class ServiceTelemetryTests: XCTestCase {
         XCTAssertNotNil(snapshot.lastScanAt)
     }
 
+    /// M02: a failed initial-scan phase must emit distinct failure telemetry and
+    /// must not be counted as a successful scan sample.
+    func testFailedScanPhaseDoesNotRecordSuccessSample_repro() async {
+        let collector = ServiceTelemetryCollector()
+        let startedAt = "2026-07-10T12:00:00.000Z"
+        await collector.recordFailedScanPhase(
+            phase: "initialScanIndex",
+            durationMs: 42.5,
+            startedAt: startedAt
+        )
+        let snapshot = await collector.snapshot()
+
+        XCTAssertEqual(snapshot.scanCount, 0, "failed phase must not increment scanCount")
+        XCTAssertNil(snapshot.lastScanDurationMs)
+        XCTAssertNil(snapshot.lastScanAt)
+        XCTAssertEqual(snapshot.lastScanIndexed, 0)
+        XCTAssertEqual(snapshot.lastScanTotal, 0)
+
+        let failed = snapshot.spans.first(where: { $0.command == "scanPhase.initialScanIndex" })
+        XCTAssertNotNil(failed, "failed phase must appear as distinct span telemetry")
+        XCTAssertEqual(failed?.ok, false)
+        XCTAssertEqual(failed?.errorName, "ScanPhaseFailed")
+        XCTAssertEqual(failed?.durationMs, 42.5)
+        XCTAssertEqual(failed?.startedAt, startedAt)
+
+        let latency = snapshot.commands.first(where: { $0.command == "scanPhase.initialScanIndex" })
+        XCTAssertEqual(latency?.errorCount, 1)
+        XCTAssertEqual(latency?.count, 1)
+    }
+
+    func testFailedScanPhaseUsesSuppliedStartedAtNotRecordTime() async {
+        let collector = ServiceTelemetryCollector()
+        let startedAt = "2026-01-01T00:00:00.000Z"
+        await collector.recordFailedScanPhase(phase: "initialFtsDrain", durationMs: 7, startedAt: startedAt)
+        let snapshot = await collector.snapshot()
+        XCTAssertEqual(snapshot.spans.first?.startedAt, startedAt)
+    }
+
+    func testSuccessScanSampleStillRecordsAfterFailedPhaseTelemetry() async {
+        let collector = ServiceTelemetryCollector()
+        await collector.recordFailedScanPhase(
+            phase: "initialScanOrphans",
+            durationMs: 3,
+            startedAt: "2026-07-10T00:00:00.000Z"
+        )
+        await collector.recordScan(durationMs: 11, indexed: 2, total: 9)
+        let snapshot = await collector.snapshot()
+        XCTAssertEqual(snapshot.scanCount, 1)
+        XCTAssertEqual(snapshot.lastScanIndexed, 2)
+        XCTAssertTrue(snapshot.spans.contains(where: { $0.command == "scanPhase.initialScanOrphans" && $0.ok == false }))
+    }
+
+    /// M02 behavioral: outer `runInitialScan` orchestration with a required
+    /// phase failure must not record a success scan sample. Would fail if
+    /// finalize always called `recordScan` regardless of `failedPhaseCount`.
+    func testRunInitialScanOuterOrchestrationPhaseFailureOmitsSuccessSample() async throws {
+        let paths = try makeServicePaths()
+        // Touch the DB file so EngramDatabaseWriter can open it.
+        FileManager.default.createFile(atPath: paths.database.path, contents: nil)
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime
+        )
+        _ = try await gate.performWriteCommand(name: "migrate") { writer in
+            try writer.migrate()
+            try writer.verifySchemaPresent()
+        }
+
+        let collector = ServiceTelemetryCollector()
+        let monitor = ServiceStatusMonitor()
+        // Empty HOME + all shipped source IDs disabled keeps residual phases cheap.
+        // Inject failure on initialScanBackfills so maintenance/parents never runs
+        // (early inject left that phase hanging). maxFtsDrainIterations: 0 still
+        // bounds undrainable FTS after later phases. Outer failedPhaseCount gate
+        // still decides success-sample recording.
+        let emptyHome = paths.runtime.deletingLastPathComponent()
+            .appendingPathComponent("empty-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: emptyHome, withIntermediateDirectories: true)
+        let disabledAll = [
+            "codex", "claude-code", "copilot", "gemini-cli", "opencode", "iflow",
+            "qwen", "qoder", "kimi", "minimax", "lobsterai", "commandcode",
+            "cline", "cursor", "vscode", "antigravity", "windsurf",
+        ].joined(separator: ",")
+
+        await EngramServiceRunner.runInitialScan(
+            gate: gate,
+            statusMonitor: monitor,
+            telemetry: collector,
+            environment: [
+                "HOME": emptyHome.path,
+                "ENGRAM_DISABLED_SOURCES": disabledAll,
+            ],
+            tokenLimitsProvider: { [:] },
+            testHooks: .init(
+                failPhaseNamed: "initialScanBackfills",
+                maxFtsDrainIterations: 0
+            )
+        )
+
+        let snapshot = await collector.snapshot()
+        XCTAssertEqual(
+            snapshot.scanCount,
+            0,
+            "outer runInitialScan must not record success when a required phase failed"
+        )
+        XCTAssertNil(snapshot.lastScanDurationMs)
+        XCTAssertNil(snapshot.lastScanAt)
+        let failed = try XCTUnwrap(
+            snapshot.spans.first(where: { $0.command == "scanPhase.initialScanBackfills" }),
+            "injected required phase must emit distinct failure telemetry"
+        )
+        XCTAssertEqual(failed.ok, false)
+        XCTAssertEqual(failed.errorName, "ScanPhaseFailed")
+    }
+
+    /// L01: stdout event encoding must go through JSONEncoder so quotes/newlines
+    /// in error text cannot break the JSON line.
+    func testStdoutEventEncodingEscapesQuotesAndControlCharacters() throws {
+        struct Event: Encodable {
+            let event: String
+            let stage: String
+            let error: String
+        }
+        let rawError = "migrate failed: path \"/tmp/a\"\nnext line\t\u{0008}"
+        let line = try EngramServiceRunner.encodeStdoutJSON(
+            Event(event: "fatal", stage: "migrate", error: rawError)
+        )
+        let data = try XCTUnwrap(line.data(using: .utf8))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["event"] as? String, "fatal")
+        XCTAssertEqual(object["stage"] as? String, "migrate")
+        XCTAssertEqual(object["error"] as? String, rawError)
+        XCTAssertFalse(line.contains("\n"), "structured stdout must be a single JSON line")
+        XCTAssertTrue(line.contains("\\n") || line.contains("\\u000a") || (object["error"] as? String) == rawError)
+    }
+
+    func testStdoutCheckpointEventEncodingIncludesOptionalError() throws {
+        struct Checkpoint: Encodable {
+            let event: String
+            let mode: String
+            let ok: Bool
+            let error: String?
+        }
+        let okLine = try EngramServiceRunner.encodeStdoutJSON(
+            Checkpoint(event: "checkpoint", mode: "PASSIVE", ok: true, error: nil)
+        )
+        let okObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(okLine.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(okObject["ok"] as? Bool, true)
+        XCTAssertNil(okObject["error"])
+
+        let failLine = try EngramServiceRunner.encodeStdoutJSON(
+            Checkpoint(event: "checkpoint", mode: "PASSIVE", ok: false, error: "boom \"x\"")
+        )
+        let failObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(failLine.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(failObject["ok"] as? Bool, false)
+        XCTAssertEqual(failObject["error"] as? String, "boom \"x\"")
+    }
+
     // MARK: - Handler dispatch instrumentation
 
     func testHandlerRecordsSpanOnDispatchAndExcludesStatusAndTelemetry() async throws {

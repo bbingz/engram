@@ -71,6 +71,99 @@ final class ServiceLogIPCTests: XCTestCase {
         XCTAssertFalse(ServiceCapabilityToken.requiresToken("serviceLogs"))
     }
 
+    /// L02: malformed serviceLogs payloads must fail closed with invalidRequest
+    /// instead of silently applying defaults via try?.
+    func testServiceLogsMalformedPayloadReturnsInvalidRequest_repro() async throws {
+        let paths = try makeServicePaths()
+        try seedSessionsFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate, logRing: ServiceLogRing())
+
+        let malformed = EngramServiceRequestEnvelope(
+            command: "serviceLogs",
+            payload: Data(#"{"limit":"not-a-number"}"#.utf8)
+        )
+        let response = await handler.handle(malformed)
+        guard case .failure(_, let error) = response else {
+            return XCTFail("malformed serviceLogs payload must return error, not success defaults")
+        }
+        XCTAssertEqual(error.name, "InvalidRequest")
+        XCTAssertFalse(error.message.isEmpty)
+    }
+
+    func testServiceLogsNonJSONPayloadReturnsInvalidRequest() async throws {
+        let paths = try makeServicePaths()
+        try seedSessionsFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate, logRing: ServiceLogRing())
+
+        let response = await handler.handle(
+            EngramServiceRequestEnvelope(command: "serviceLogs", payload: Data("not-json".utf8))
+        )
+        guard case .failure(_, let error) = response else {
+            return XCTFail("non-JSON serviceLogs payload must return InvalidRequest")
+        }
+        XCTAssertEqual(error.name, "InvalidRequest")
+    }
+
+    func testServiceLogsEmptyObjectPayloadStillSucceedsWithDefaults() async throws {
+        let paths = try makeServicePaths()
+        try seedSessionsFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let ring = ServiceLogRing(capacity: 10)
+        await ring.record(level: "info", category: "runner", message: "hello")
+        let handler = EngramServiceCommandHandler(writerGate: gate, logRing: ring)
+
+        let response = await handler.handle(
+            EngramServiceRequestEnvelope(command: "serviceLogs", payload: Data("{}".utf8))
+        )
+        guard case .success(_, let data, _) = response else {
+            return XCTFail("valid empty object payload must still succeed")
+        }
+        let snapshot = try JSONDecoder().decode(ServiceLogSnapshot.self, from: data)
+        XCTAssertEqual(snapshot.lines.count, 1)
+    }
+
+    /// L02 narrow mapping: only DecodingError becomes InvalidRequest; custom
+    /// Decodable domain errors rethrow unchanged.
+    func testDecodeJSONPayloadMapsDecodingErrorOnly() throws {
+        struct OkPayload: Decodable {
+            let limit: Int?
+        }
+        struct DomainThrowingPayload: Decodable {
+            init(from decoder: Decoder) throws {
+                throw EngramServiceError.writerBusy(message: "domain-busy")
+            }
+        }
+
+        do {
+            _ = try EngramServiceCommandHandler.decodeJSONPayload(
+                OkPayload.self,
+                from: Data(#"{"limit":"nope"}"#.utf8),
+                command: "serviceLogs"
+            )
+            XCTFail("type mismatch must throw")
+        } catch let error as EngramServiceError {
+            guard case .invalidRequest = error else {
+                return XCTFail("DecodingError must map to invalidRequest, got \(error)")
+            }
+        }
+
+        do {
+            _ = try EngramServiceCommandHandler.decodeJSONPayload(
+                DomainThrowingPayload.self,
+                from: Data("{}".utf8),
+                command: "serviceLogs"
+            )
+            XCTFail("domain error must rethrow")
+        } catch let error as EngramServiceError {
+            guard case .writerBusy(let message) = error else {
+                return XCTFail("non-DecodingError must rethrow unchanged, got \(error)")
+            }
+            XCTAssertEqual(message, "domain-busy")
+        }
+    }
+
     // MARK: - Helpers
 
     private func makeServicePaths() throws -> (runtime: URL, socket: URL, database: URL) {

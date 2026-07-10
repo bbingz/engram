@@ -2139,6 +2139,121 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(warning?.contains("ranked by importance and recency"), true, "\(warning ?? "nil")")
     }
 
+    /// Disk-audit product consumer E2E: service `recordInsightAccess` must
+    /// causally reverse shipped MCP `get_memory` lifecycle ranking.
+    ///
+    /// - FTS-miss query → recent ranking with uniform relevance.
+    /// - Pre-seed mem-cold with access_count=1 so it ranks first before the write.
+    /// - Service write bumps mem-hot twice (Set-dedupes per call) so accessBoost
+    ///   overtakes cold; post-write order must flip. A no-op access write fails
+    ///   the post-assert because cold would remain first.
+    func testGetMemoryRanksByServiceRecordedAccessCount_diskAuditConsumer() async throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-disk-audit-access"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        // Bind the queue so the async GRDB write lifetime is explicit (async test
+        // context selects DatabaseQueue.write as async).
+        let seedQueue = try DatabaseQueue(path: dbPath)
+        try await seedQueue.write { db in
+            for ddl in [
+                "ALTER TABLE insights ADD COLUMN insight_type TEXT DEFAULT 'semantic'",
+                "ALTER TABLE insights ADD COLUMN superseded_by TEXT",
+                "ALTER TABLE insights ADD COLUMN last_accessed_at TEXT",
+                "ALTER TABLE insights ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0",
+            ] {
+                try? db.execute(sql: ddl)
+            }
+            try db.execute(sql: "DELETE FROM insights")
+            try db.execute(sql: "DELETE FROM insights_fts")
+            // Identical importance/recency; cold starts with higher access so it
+            // wins pre-write ranking (uniform relevance path).
+            let rows: [(id: String, content: String, access: Int)] = [
+                ("mem-cold", "disk audit access ranking shared fact about single writer", 1),
+                ("mem-hot", "disk audit access ranking shared fact about single writer", 0),
+            ]
+            for row in rows {
+                try db.execute(
+                    sql: """
+                    INSERT INTO insights
+                      (id, content, importance, created_at, insight_type, access_count)
+                    VALUES (?, ?, 5, '2026-06-26 00:00:00', 'semantic', ?)
+                    """,
+                    arguments: [row.id, row.content, row.access]
+                )
+                try db.execute(
+                    sql: "INSERT INTO insights_fts (insight_id, content) VALUES (?, ?)",
+                    arguments: [row.id, row.content]
+                )
+            }
+        }
+
+        let runtime = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("engram-disk-audit-run-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runtime,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: runtime) }
+        let gate = try ServiceWriterGate(databasePath: dbPath, runtimeDirectory: runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let socket = runtime.appendingPathComponent("service.sock")
+        let server = UnixSocketServiceServer(socketPath: socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: socket.path)
+        )
+
+        let isolatedHome = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: isolatedHome) }
+        let mcpEnv: [String: String] = [
+            "ENGRAM_MCP_DB_PATH": dbPath,
+            "ENGRAM_MCP_NOW": "2026-06-26T00:00:00.000Z",
+            "HOME": isolatedHome.path,
+            "ENGRAM_SETTINGS_PATH": isolatedHome.appendingPathComponent("missing-settings.json").path,
+        ]
+        // FTS-miss probe: recent lifecycle ranking with uniform relevance.
+        let missQuery = "zzzz-no-fts-hit-disk-audit-probe"
+        let getMemoryRPC = """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"\(missQuery)"}}}
+            """
+
+        let before = try rpc(getMemoryRPC, environment: mcpEnv)
+        XCTAssertNil(before.response.error)
+        let beforeIds = try XCTUnwrap(
+            before.ordered["result"]?["structuredContent"]?["memories"]?.arrayValue
+        ).compactMap { $0["id"]?.stringValue }
+        XCTAssertEqual(
+            beforeIds.first,
+            "mem-cold",
+            "pre-write baseline must rank seeded cold access ahead of hot: \(beforeIds)"
+        )
+        XCTAssertNotEqual(beforeIds.first, "mem-hot")
+
+        // Service write path — two separate calls (Set-dedupes within one call).
+        // hot access_count: 0→1→2 overtakes cold's seeded 1.
+        try await client.recordInsightAccess(ids: ["mem-hot"])
+        try await client.recordInsightAccess(ids: ["mem-hot"])
+
+        let after = try rpc(getMemoryRPC, environment: mcpEnv)
+        XCTAssertNil(after.response.error)
+        let afterIds = try XCTUnwrap(
+            after.ordered["result"]?["structuredContent"]?["memories"]?.arrayValue
+        ).compactMap { $0["id"]?.stringValue }
+        XCTAssertEqual(
+            afterIds.first,
+            "mem-hot",
+            "post service-access get_memory must reverse ranking to prefer hot: \(afterIds)"
+        )
+        XCTAssertTrue(afterIds.contains("mem-cold"), "\(afterIds)")
+    }
+
     func testSearchHybridNoEmbeddingMatchesGolden() throws {
         try assertToolCallMatchesGolden(
             tool: "search",

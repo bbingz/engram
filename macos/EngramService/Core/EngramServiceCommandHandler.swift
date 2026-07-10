@@ -159,7 +159,13 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 // READ command: returns the sanitized in-process log ring. No
                 // capability token (it never mutates state); the ring sanitizes
                 // every line before storage so this surfaces no raw paths/ids.
-                let payload = try? decodePayload(EngramServiceServiceLogsRequest.self, from: request)
+                // Missing payload → defaults; present-but-malformed → invalidRequest (L02).
+                let payload: EngramServiceServiceLogsRequest?
+                if request.payload == nil {
+                    payload = nil
+                } else {
+                    payload = try decodePayload(EngramServiceServiceLogsRequest.self, from: request)
+                }
                 let snapshot = await logRing?.snapshot(
                     level: payload?.level,
                     category: payload?.category,
@@ -613,7 +619,23 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         guard let payload = request.payload else {
             throw EngramServiceError.invalidRequest(message: "Missing payload for \(request.command)")
         }
-        return try JSONDecoder().decode(type, from: payload)
+        return try Self.decodeJSONPayload(type, from: payload, command: request.command)
+    }
+
+    /// L02: map JSON `DecodingError` to structured InvalidRequest only.
+    /// Other errors from custom `Decodable` types rethrow unchanged.
+    static func decodeJSONPayload<T: Decodable>(
+        _ type: T.Type,
+        from data: Data,
+        command: String
+    ) throws -> T {
+        do {
+            return try JSONDecoder().decode(type, from: data)
+        } catch let error as DecodingError {
+            throw EngramServiceError.invalidRequest(
+                message: "Invalid payload for \(command): \(error.localizedDescription)"
+            )
+        }
     }
 
     private static func encode<T: Encodable>(_ value: T) throws -> Data {

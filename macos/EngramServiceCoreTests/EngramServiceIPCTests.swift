@@ -213,6 +213,10 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse((row?["last_accessed_at"] as String? ?? "").isEmpty)
     }
 
+    // Disk-audit product consumer E2E lives in EngramMCPExecutableTests
+    // (get_memory lifecycle ranking) and EngramTests (DatabaseManager accessedDesc).
+    // Ad-hoc DatabaseQueue ORDER BY is not a shipped consumer.
+
     func testSessionRelationRoundTripIsSymmetricIdempotentAndRemovable() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -858,7 +862,7 @@ final class EngramServiceIPCTests: XCTestCase {
             source.range(of: "private static func runOnePeriodicIndexCycle(")
                 ?? source.range(of: "private static func runIndexingLoop(")
         )
-        let end = try XCTUnwrap(source.range(of: "private static func runInitialScan(", options: [], range: start.lowerBound..<source.endIndex))
+        let end = try XCTUnwrap(source.range(of: "static func runInitialScan(", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(body.contains("let disabled = readDisabledSources(environment: environment)"))
@@ -906,7 +910,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
     func testRunnerInitialScanPhasesAreFaultIsolatedAndRetryWriterBusy() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
-        let start = try XCTUnwrap(source.range(of: "private static func runInitialScan("))
+        let start = try XCTUnwrap(source.range(of: "static func runInitialScan("))
         let end = try XCTUnwrap(source.range(of: "@discardableResult", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
@@ -929,9 +933,30 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(source.contains("startup phase failed"))
     }
 
+    /// L01: fatal/ready/checkpoint stdout lines must use structured encoding, not string interpolation of errors.
+    func testRunnerStdoutEventsUseStructuredJSONEncoderNotInterpolation() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        XCTAssertFalse(
+            source.contains(#"writeStdoutLine(#"{"event":"fatal""#),
+            "fatal events must not interpolate error text into JSON"
+        )
+        XCTAssertFalse(
+            source.contains(#"writeStdoutLine(#"{"event":"ready""#),
+            "ready events must not interpolate socket paths into raw JSON strings"
+        )
+        XCTAssertFalse(
+            source.contains(#"writeStdoutLine(#"{"event":"checkpoint""#),
+            "checkpoint events must not interpolate error text into JSON"
+        )
+        XCTAssertTrue(source.contains("encodeStdoutJSON(") || source.contains("emit(Service"))
+        XCTAssertTrue(source.contains("ServiceFatalEvent") || source.contains("event: \"fatal\""))
+        XCTAssertTrue(source.contains("ServiceReadyEvent") || source.contains("event: \"ready\""))
+        XCTAssertTrue(source.contains("ServiceCheckpointEvent") || source.contains("event: \"checkpoint\""))
+    }
+
     func testRunnerBackfillsInstructionSignalsBeforeHeavyStartupIndex() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
-        let start = try XCTUnwrap(source.range(of: "private static func runInitialScan("))
+        let start = try XCTUnwrap(source.range(of: "static func runInitialScan("))
         let end = try XCTUnwrap(source.range(of: "private static func elapsedMs", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
@@ -955,7 +980,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
     func testRunnerInitialScanSchedulesInsightEmbeddingBackfillOutsideMainWritePhases() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
-        let start = try XCTUnwrap(source.range(of: "private static func runInitialScan("))
+        let start = try XCTUnwrap(source.range(of: "static func runInitialScan("))
         let end = try XCTUnwrap(source.range(of: "private static func elapsedMs", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
