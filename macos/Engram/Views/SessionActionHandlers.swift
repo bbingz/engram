@@ -99,6 +99,8 @@ struct SessionActionHandlers {
             do {
                 try await serviceClient.setFavorite(sessionId: session.id, favorite: favorite)
                 onStatus(favorite ? "Added to favorites" : "Removed from favorites")
+                // Reload so Browse flips labels and Starred drops removed rows.
+                await reload()
             } catch {
                 onStatus("Favorite failed: \(error.localizedDescription)")
             }

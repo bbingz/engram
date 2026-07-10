@@ -136,6 +136,7 @@ struct ExpandableSessionCard: View {
                     }
                     SessionWriteMenuItems(
                         isHidden: isHidden,
+                        isFavorite: session.isFavorite,
                         onToggleFavorite: onToggleFavorite.map { cb in { cb(session) } },
                         onRename: onRename.map { cb in { cb(session) } },
                         onExportMarkdown: onExportMarkdown.map { cb in { cb(session) } },
@@ -388,6 +389,7 @@ struct CompactChildRow: View {
             }
             SessionWriteMenuItems(
                 isHidden: isHidden,
+                isFavorite: session.isFavorite,
                 onToggleFavorite: onToggleFavorite,
                 onRename: onRename,
                 onExportMarkdown: onExportMarkdown,
@@ -405,6 +407,7 @@ struct CompactChildRow: View {
 /// that pass none (e.g. SessionDetailView child rows) get an unchanged menu.
 private struct SessionWriteMenuItems: View {
     let isHidden: Bool
+    var isFavorite: Bool = false
     var onToggleFavorite: (() -> Void)? = nil
     var onRename: (() -> Void)? = nil
     var onExportMarkdown: (() -> Void)? = nil
@@ -420,9 +423,11 @@ private struct SessionWriteMenuItems: View {
         if hasAny {
             Divider()
             if let onToggleFavorite {
-                // Browse-card menu always adds (no isFavorite flag on the read
-                // model yet), so the label states what it actually does.
-                Button("Add to Favorites") { onToggleFavorite() }
+                // M19: label reflects current favorite membership (Add vs Remove).
+                Button(Session.favoriteMenuLabel(isFavorite: isFavorite)) {
+                    onToggleFavorite()
+                }
+                .accessibilityLabel(Session.favoriteAccessibilityLabel(isFavorite: isFavorite))
             }
             if let onRename {
                 Button("Rename…") { onRename() }

@@ -178,8 +178,9 @@ struct SessionsPageView: View {
                                 onRename: { beginRename($0) },
                                 onExportMarkdown: { handlers.export($0, format: "markdown") },
                                 onExportJSON: { handlers.export($0, format: "json") },
-                                onToggleFavorite: favoritesOnly ? nil : { session in
-                                    handlers.setFavorite(session, favorite: true)
+                                // M19: one toggle for Browse and Starred — target is !isFavorite.
+                                onToggleFavorite: { session in
+                                    handlers.setFavorite(session, favorite: session.favoriteToggleTarget)
                                 },
                                 isHidden: session.hiddenAt != nil
                             )
@@ -302,7 +303,16 @@ struct SessionsPageView: View {
                 let parentIds = loaded.map(\.id)
                 let confirmed = try db.childCount(parentIds: parentIds, includeHidden: includeHidden)
                 let suggested = try db.suggestedChildCount(parentIds: parentIds, includeHidden: includeHidden)
-                return (loaded, confirmed, suggested, stats, sourceOptions)
+                // Starred filter already implies membership; otherwise join the
+                // favorites id set so Browse can toggle Add vs Remove correctly.
+                let favoriteIds: Set<String>
+                if favoritesOnly {
+                    favoriteIds = Set(parentIds)
+                } else {
+                    favoriteIds = Set((try? db.listFavorites())?.map(\.id) ?? [])
+                }
+                let annotated = Session.applyingFavoriteIds(loaded, favoriteIds: favoriteIds)
+                return (annotated, confirmed, suggested, stats, sourceOptions)
             }.value
             sessions = data.0
             confirmedCounts = data.1
@@ -393,7 +403,14 @@ struct SessionsPageView: View {
                     let parentIds = loaded.map(\.id)
                     let confirmed = try db.childCount(parentIds: parentIds, includeHidden: includeHidden)
                     let suggested = try db.suggestedChildCount(parentIds: parentIds, includeHidden: includeHidden)
-                    return (loaded, confirmed, suggested)
+                    let favoriteIds: Set<String>
+                    if favoritesOnly {
+                        favoriteIds = Set(parentIds)
+                    } else {
+                        favoriteIds = Set((try? db.listFavorites())?.map(\.id) ?? [])
+                    }
+                    let annotated = Session.applyingFavoriteIds(loaded, favoriteIds: favoriteIds)
+                    return (annotated, confirmed, suggested)
                 }.value
                 // De-dup on append in case a reload raced with this page fetch.
                 let existing = Set(sessions.map(\.id))

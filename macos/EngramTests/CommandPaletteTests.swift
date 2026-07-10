@@ -98,4 +98,56 @@ final class CommandPaletteTests: XCTestCase {
     func testThemeCornerRadiusTokenIsEight() {
         XCTAssertEqual(Theme.cornerRadius, 8)
     }
+
+    // MARK: - H12 export state machine
+
+    func testExportStateStartsIdleAndKeepsResultsVisible() {
+        let state = CommandPaletteExportState.idle
+        XCTAssertFalse(state.isInFlight)
+        XCTAssertNil(state.statusText)
+        XCTAssertNil(state.revealPath)
+        XCTAssertTrue(state.keepsResultsVisible)
+        XCTAssertTrue(state.allowsExportAction)
+    }
+
+    func testExportStateInFlightShowsProgressAndBlocksDuplicateExport() {
+        var state = CommandPaletteExportState.idle
+        XCTAssertTrue(state.begin(sessionId: "s1"))
+        XCTAssertEqual(state, .inFlight(sessionId: "s1"))
+        XCTAssertTrue(state.isInFlight)
+        XCTAssertEqual(state.statusText, "Exporting…")
+        XCTAssertTrue(state.keepsResultsVisible)
+        XCTAssertFalse(state.allowsExportAction)
+        // Second begin while in flight is rejected (no double-submit).
+        XCTAssertFalse(state.begin(sessionId: "s2"))
+        XCTAssertEqual(state, .inFlight(sessionId: "s1"))
+    }
+
+    func testExportStateSucceededExposesFinderRevealPath() {
+        var state = CommandPaletteExportState.idle
+        XCTAssertTrue(state.begin(sessionId: "s1"))
+        state.succeed(path: "/tmp/exports/s1.md")
+        XCTAssertEqual(state, .succeeded(path: "/tmp/exports/s1.md"))
+        XCTAssertEqual(state.statusText, "Exported to s1.md")
+        XCTAssertEqual(state.revealPath, "/tmp/exports/s1.md")
+        XCTAssertTrue(state.keepsResultsVisible)
+        XCTAssertTrue(state.allowsExportAction)
+    }
+
+    func testExportStateFailedSurfacesMessageWithoutClearingList() {
+        var state = CommandPaletteExportState.idle
+        XCTAssertTrue(state.begin(sessionId: "s1"))
+        state.fail(message: "Export failed")
+        XCTAssertEqual(state, .failed(message: "Export failed"))
+        XCTAssertEqual(state.statusText, "Export failed")
+        XCTAssertNil(state.revealPath)
+        XCTAssertTrue(state.keepsResultsVisible)
+        XCTAssertTrue(state.allowsExportAction)
+    }
+
+    func testExportStateClearReturnsToIdle() {
+        var state = CommandPaletteExportState.succeeded(path: "/tmp/out.md")
+        state.clear()
+        XCTAssertEqual(state, .idle)
+    }
 }

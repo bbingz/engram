@@ -235,4 +235,37 @@ final class SessionModelTests: XCTestCase {
         set.insert(c)
         XCTAssertEqual(set.count, 2)
     }
+
+    // MARK: - M19 favorite flag + toggle presentation
+
+    func testIsFavoriteDefaultsFalseOnDecode() throws {
+        let session = makeSession()
+        XCTAssertFalse(session.isFavorite)
+    }
+
+    func testApplyingFavoriteIdsMarksMatchingSessions() throws {
+        let a = makeSession(id: "a")
+        let b = makeSession(id: "b")
+        let c = makeSession(id: "c")
+        let marked = Session.applyingFavoriteIds([a, b, c], favoriteIds: ["a", "c"])
+        XCTAssertEqual(marked.map(\.id), ["a", "b", "c"])
+        XCTAssertTrue(marked[0].isFavorite)
+        XCTAssertFalse(marked[1].isFavorite)
+        XCTAssertTrue(marked[2].isFavorite)
+    }
+
+    func testFavoriteToggleTargetIsSymmetricNegation() throws {
+        var session = makeSession(id: "starred")
+        session.isFavorite = true
+        XCTAssertFalse(session.favoriteToggleTarget)
+        session.isFavorite = false
+        XCTAssertTrue(session.favoriteToggleTarget)
+    }
+
+    func testFavoriteMenuLabelReflectsAddVersusRemove() throws {
+        XCTAssertEqual(Session.favoriteMenuLabel(isFavorite: false), "Add to Favorites")
+        XCTAssertEqual(Session.favoriteMenuLabel(isFavorite: true), "Remove from Favorites")
+        XCTAssertEqual(Session.favoriteAccessibilityLabel(isFavorite: false), "Add to favorites")
+        XCTAssertEqual(Session.favoriteAccessibilityLabel(isFavorite: true), "Remove from favorites")
+    }
 }
