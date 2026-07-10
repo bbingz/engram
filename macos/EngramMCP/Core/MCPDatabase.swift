@@ -687,24 +687,32 @@ final class MCPDatabase {
         try probeInsightEmbeddingMeta() != nil
     }
 
-    /// Probe a single stored (model, dimension) for insight embeddings.
-    /// Returns nil when the table is missing/empty or model/dim is unusable.
+    /// Probe authoritative stored (model, dimension) for insight embeddings.
+    ///
+    /// `embedding_meta` id=1 is the sole source of truth for model+dimension
+    /// (backfill only fills missing insight rows while meta can advance). At
+    /// least one `insight_embeddings` row must match that exact model+dim with
+    /// a non-null BLOB. Mixed leftover old-model rows are ignored. Returns nil
+    /// (corpusMissing) when meta is missing/unusable or no matching insight
+    /// row exists — never an unordered LIMIT 1 sample of insight_embeddings.
     private func probeInsightEmbeddingMeta() throws -> (model: String, dimension: Int)? {
         try queue.read { db in
-            let exists = try Int.fetchOne(
+            let hasMeta = try Int.fetchOne(
+                db,
+                sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name='embedding_meta'"
+            ) != nil
+            let hasInsights = try Int.fetchOne(
                 db,
                 sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name='insight_embeddings'"
             ) != nil
-            guard exists else { return nil }
+            guard hasMeta, hasInsights else { return nil }
+
             guard let row = try Row.fetchOne(
                 db,
                 sql: """
-                SELECT model, dim
-                FROM insight_embeddings
-                WHERE embedding IS NOT NULL
-                  AND model IS NOT NULL
-                  AND dim IS NOT NULL
-                  AND dim > 0
+                SELECT model, dimension
+                FROM embedding_meta
+                WHERE id = 1
                 LIMIT 1
                 """
             ) else {
@@ -712,8 +720,22 @@ final class MCPDatabase {
             }
             let model = (row["model"] as String?)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let dimension = row["dim"] as Int?
+            let dimension = row["dimension"] as Int?
             guard let model, !model.isEmpty, let dimension, dimension > 0 else { return nil }
+
+            let hasCompatible = try Int.fetchOne(
+                db,
+                sql: """
+                SELECT 1
+                FROM insight_embeddings
+                WHERE embedding IS NOT NULL
+                  AND model = ?
+                  AND dim = ?
+                LIMIT 1
+                """,
+                arguments: [model, dimension]
+            ) != nil
+            guard hasCompatible else { return nil }
             return (model, dimension)
         }
     }
