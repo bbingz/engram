@@ -81,19 +81,30 @@ public struct BatchResult: Equatable, Sendable {
     /// Ops never started because cooperative cancel fired (Wave 7C M05 remaining).
     public var remaining: [BatchOperation]
     public var cancelled: Bool
+    /// True when cancel hit after FS mutation and compensation did not fully succeed.
+    public var cancelUnsafe: Bool
+    /// Structured cancel error name when `cancelUnsafe` (preserves identity for UI).
+    public var cancelErrorName: String?
+    public var cancelErrorMessage: String?
 
     public init(
         completed: [PipelineResult] = [],
         failed: [BatchOperationFailure] = [],
         skipped: [BatchOperation] = [],
         remaining: [BatchOperation] = [],
-        cancelled: Bool = false
+        cancelled: Bool = false,
+        cancelUnsafe: Bool = false,
+        cancelErrorName: String? = nil,
+        cancelErrorMessage: String? = nil
     ) {
         self.completed = completed
         self.failed = failed
         self.skipped = skipped
         self.remaining = remaining
         self.cancelled = cancelled
+        self.cancelUnsafe = cancelUnsafe
+        self.cancelErrorName = cancelErrorName
+        self.cancelErrorMessage = cancelErrorMessage
     }
 }
 
@@ -219,10 +230,12 @@ public enum Batch {
         _ doc: BatchDocument,
         writer: EngramDatabaseWriter,
         overrides: BatchOverrides = BatchOverrides(),
-        shouldCancel: @escaping @Sendable () -> Bool = { Task.isCancelled }
+        shouldCancel: @escaping @Sendable () -> Bool = { Task.isCancelled },
+        beginCommitIfNotCancelled: (@Sendable () -> Bool)? = nil
     ) async -> BatchResult {
         var result = BatchResult()
         var halted = false
+        let commitProbe = beginCommitIfNotCancelled ?? { !shouldCancel() }
 
         for (index, op) in doc.operations.enumerated() {
             if shouldCancel() {
@@ -287,16 +300,23 @@ public enum Batch {
                         actor: .batch,
                         homeDirectory: overrides.homeDirectory,
                         lockPath: overrides.lockPath,
-                        // Mid-op cancel before that op's commit; between-ops cancel
-                        // is handled at the top of the loop.
-                        shouldCancel: shouldCancel
+                        shouldCancel: shouldCancel,
+                        beginCommitIfNotCancelled: commitProbe
                     )
                 )
                 result.completed.append(pipelineResult)
-            } catch is ProjectMoveCancelledError {
-                // Current op was not committed; treat as cancel with this op + rest remaining.
+            } catch let cancel as ProjectMoveCancelledError {
+                // Preserve unsafe compensation identity (finding 3).
                 result.cancelled = true
                 result.remaining.append(contentsOf: Array(doc.operations[index...]))
+                if !cancel.compensationSucceeded {
+                    result.cancelUnsafe = true
+                    result.cancelErrorName = cancel.errorName
+                    result.cancelErrorMessage = cancel.errorMessage
+                    result.failed.append(
+                        BatchOperationFailure(operation: op, error: cancel.errorMessage)
+                    )
+                }
                 break
             } catch {
                 result.failed.append(

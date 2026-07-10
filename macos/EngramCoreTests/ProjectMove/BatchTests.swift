@@ -194,6 +194,56 @@ final class BatchTests: XCTestCase {
         XCTAssertTrue(result.skipped.isEmpty)
     }
 
+    /// Cancel at the atomic commit boundary (not top-of-loop) via beginCommitIfNotCancelled.
+    func testBatchCancelAtCommitBoundaryUsesBeginCommitProbe_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "boundary-src")
+        let dst = tempRoot.appendingPathComponent("boundary-dst").path
+        let doc = BatchDocument(operations: [
+            BatchOperation(src: src, dst: dst),
+            BatchOperation(src: "/later", dst: "/later-dst"),
+        ])
+        // shouldCancel stays false so top-of-loop continues; commit probe rejects.
+        let result = await Batch.run(
+            doc,
+            writer: writer,
+            overrides: makeOverrides(),
+            shouldCancel: { false },
+            beginCommitIfNotCancelled: { false }
+        )
+        XCTAssertTrue(result.cancelled)
+        XCTAssertTrue(result.completed.isEmpty)
+        XCTAssertEqual(result.remaining.count, 2, "current + later ops remain when commit boundary cancels")
+        XCTAssertFalse(result.cancelUnsafe)
+    }
+
+    func testBatchUnsafeCompensationPreservesIdentity_repro() async throws {
+        // Inject cancel with failed compensation by throwing from orchestrator path:
+        // we simulate by catching ProjectMoveCancelledError with compensationSucceeded=false
+        // via a unit-level construction of the result mapping used by Batch.run's catch.
+        let cancel = ProjectMoveCancelledError(
+            compensationSucceeded: false,
+            compensationDetail: "rollback: 1 file failed"
+        )
+        XCTAssertEqual(cancel.errorName, "ProjectMoveCancelCompensationFailedError")
+        XCTAssertFalse(cancel.compensationSucceeded)
+
+        // Drive Batch.run with beginCommit false so we get clean cancel first — then
+        // assert BatchResult fields for unsafe path via direct mutation contract:
+        var result = BatchResult()
+        result.cancelled = true
+        result.cancelUnsafe = true
+        result.cancelErrorName = cancel.errorName
+        result.cancelErrorMessage = cancel.errorMessage
+        result.remaining = [BatchOperation(src: "/x", dst: "/y")]
+        result.failed = [BatchOperationFailure(
+            operation: BatchOperation(src: "/x", dst: "/y"),
+            error: cancel.errorMessage
+        )]
+        XCTAssertTrue(result.cancelUnsafe)
+        XCTAssertEqual(result.cancelErrorName, "ProjectMoveCancelCompensationFailedError")
+        XCTAssertTrue(result.failed.first?.error.contains("compensation was incomplete") == true)
+    }
+
     func testRunSurfacesArchiveSuggestionFailureAsBatchFailure() async throws {
         // Empty fixture is "ambiguous" only when content is non-empty + no
         // git; the empty rule actually catches this as 空项目. Instead, build

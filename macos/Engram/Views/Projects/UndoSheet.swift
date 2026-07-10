@@ -331,9 +331,12 @@ struct UndoSheet: View {
             isReconnecting = false
             activeTask = nil
         }
-        isReconnecting = longOpSession.operationId != nil
+        let prepared = ProjectLongOperationRunner.prepare(session: longOpSession)
+        longOpSession = prepared.session
+        isReconnecting = prepared.session.transientFailures > 0
         let executeResult = await ProjectLongOperationRunner.execute(
             session: longOpSession,
+            operationId: prepared.operationId,
             isReconnectable: projectMoveIsReconnectableError
         ) { operationId in
             try await serviceClient.projectUndo(

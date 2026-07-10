@@ -31,6 +31,9 @@ struct BatchMoveOutcome: Equatable {
     /// Ops not started after cooperative cancel (Wave 7C M05).
     var remaining: Int = 0
     var cancelled: Bool = false
+    var cancelUnsafe: Bool = false
+    var cancelErrorName: String?
+    var cancelErrorMessage: String?
     var failures: [(src: String, error: String)] = []
 
     static func == (lhs: BatchMoveOutcome, rhs: BatchMoveOutcome) -> Bool {
@@ -39,6 +42,9 @@ struct BatchMoveOutcome: Equatable {
             && lhs.skipped == rhs.skipped
             && lhs.remaining == rhs.remaining
             && lhs.cancelled == rhs.cancelled
+            && lhs.cancelUnsafe == rhs.cancelUnsafe
+            && lhs.cancelErrorName == rhs.cancelErrorName
+            && lhs.cancelErrorMessage == rhs.cancelErrorMessage
             && lhs.failures.map(\.src) == rhs.failures.map(\.src)
             && lhs.failures.map(\.error) == rhs.failures.map(\.error)
     }
@@ -78,6 +84,9 @@ func parseBatchMoveOutcome(_ value: EngramServiceJSONValue) -> BatchMoveOutcome 
     if case .array(let items)? = root["skipped"] { outcome.skipped = items.count }
     if case .array(let items)? = root["remaining"] { outcome.remaining = items.count }
     if case .bool(let cancelled)? = root["cancelled"] { outcome.cancelled = cancelled }
+    if case .bool(let unsafe)? = root["cancel_unsafe"] { outcome.cancelUnsafe = unsafe }
+    if case .string(let name)? = root["cancel_error_name"] { outcome.cancelErrorName = name }
+    if case .string(let message)? = root["cancel_error_message"] { outcome.cancelErrorMessage = message }
     if case .array(let items)? = root["failed"] {
         outcome.failed = items.count
         for item in items {
@@ -304,10 +313,13 @@ struct BatchMoveSheet: View {
             longOpSession.reset()
         }
         let body = BatchMoveBody.make(operations: movableOperations, dryRun: dryRun)
-        // Resume path (existing id) shows reconnect copy; no inout across await.
-        isReconnecting = longOpSession.operationId != nil
+        // Publish operationId to @State BEFORE any await so in-flight Cancel works.
+        let prepared = ProjectLongOperationRunner.prepare(session: longOpSession)
+        longOpSession = prepared.session
+        isReconnecting = prepared.session.transientFailures > 0
         let executeResult = await ProjectLongOperationRunner.execute(
             session: longOpSession,
+            operationId: prepared.operationId,
             isReconnectable: projectMoveIsReconnectableError
         ) { operationId in
             try await serviceClient.projectMoveBatch(
@@ -326,14 +338,25 @@ struct BatchMoveSheet: View {
         case .success(let result):
             let parsed = parseBatchMoveOutcome(result)
             outcome = parsed
+            if parsed.cancelUnsafe {
+                errorMessage = projectMoveCancelCompensationFailedMessage(
+                    parsed.cancelErrorMessage ?? ""
+                )
+            }
             if !dryRun && parsed.failed == 0 && !parsed.cancelled && parsed.remaining == 0 {
                 NotificationCenter.default.post(name: .projectsDidChange, object: nil)
                 dismiss()
             }
         case .failure(let error):
-            errorMessage = projectMoveErrorMessage(error)
-            if longOpSession.blocksDuplicateSubmit {
-                errorMessage = (errorMessage ?? "") + "\n" + projectMoveResumeAvailableMessage()
+            if projectMoveIsCancelCompensationFailure(error) {
+                errorMessage = projectMoveCancelCompensationFailedMessage(
+                    projectMoveErrorMessage(error)
+                )
+            } else {
+                errorMessage = projectMoveErrorMessage(error)
+                if longOpSession.blocksDuplicateSubmit {
+                    errorMessage = (errorMessage ?? "") + "\n" + projectMoveResumeAvailableMessage()
+                }
             }
         }
     }

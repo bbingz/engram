@@ -370,10 +370,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     result: try Self.encode(result)
                 )
             case "projectMove":
+                // Gate is acquired inside the long-op producer so peer disconnect
+                // can detach the client waiter without releasing the write gate
+                // while migration work is still running.
                 let payload = try decodePayload(EngramServiceProjectMoveRequest.self, from: request)
-                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
-                    try await Self.projectMove(payload, writer: writer)
-                }
+                let result = try await Self.projectMove(payload, writerGate: writerGate)
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
@@ -381,9 +382,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 )
             case "projectArchive":
                 let payload = try decodePayload(EngramServiceProjectArchiveRequest.self, from: request)
-                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
-                    try await Self.projectArchive(payload, writer: writer)
-                }
+                let result = try await Self.projectArchive(payload, writerGate: writerGate)
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
@@ -391,9 +390,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 )
             case "projectUndo":
                 let payload = try decodePayload(EngramServiceProjectUndoRequest.self, from: request)
-                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
-                    try await Self.projectUndo(payload, writer: writer)
-                }
+                let result = try await Self.projectUndo(payload, writerGate: writerGate)
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
@@ -401,9 +398,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 )
             case "projectMoveBatch":
                 let payload = try decodePayload(EngramServiceProjectMoveBatchRequest.self, from: request)
-                let result = try await writerGate.performWriteCommand(name: request.command) { writer in
-                    try await Self.projectMoveBatch(payload, writer: writer)
-                }
+                let result = try await Self.projectMoveBatch(payload, writerGate: writerGate)
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
@@ -586,6 +581,27 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 name: "QuerySyntaxError",
                 message: error.localizedDescription,
                 retryPolicy: "never"
+            )
+        }
+        // Preserve project-move structured identity (incl. unsafe compensation cancel).
+        if let pm = error as? ProjectMoveError {
+            let envelope = buildErrorEnvelope(pm, sanitize: false)
+            var details: [String: EngramServiceJSONValue]?
+            if let d = envelope.error.details, !d.isEmpty {
+                var map: [String: EngramServiceJSONValue] = [:]
+                if let v = d.sourceId { map["sourceId"] = .string(v) }
+                if let v = d.oldDir { map["oldDir"] = .string(v) }
+                if let v = d.newDir { map["newDir"] = .string(v) }
+                if let v = d.migrationId { map["migrationId"] = .string(v) }
+                if let v = d.state { map["state"] = .string(v) }
+                if let v = d.sharingCwds { map["sharingCwds"] = .array(v.map { .string($0) }) }
+                details = map.isEmpty ? nil : map
+            }
+            return EngramServiceErrorEnvelope(
+                name: envelope.error.name,
+                message: envelope.error.message,
+                retryPolicy: envelope.error.retryPolicy.rawValue,
+                details: details
             )
         }
         return EngramServiceErrorEnvelope(

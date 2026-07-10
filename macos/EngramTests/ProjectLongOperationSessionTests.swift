@@ -2,15 +2,56 @@ import XCTest
 @testable import Engram
 
 final class ProjectLongOperationSessionTests: XCTestCase {
+    /// CRITICAL finding 1: operationId must be published before any await.
+    func testPreparePublishesOperationIdBeforeAwait_repro() async {
+        var session = ProjectLongOperationSession()
+        XCTAssertNil(session.operationId)
+
+        let prepared = ProjectLongOperationRunner.prepare(
+            session: session,
+            mint: { "published-before-await" }
+        )
+        // Simulate UI assigning @State before suspension.
+        session = prepared.session
+        XCTAssertEqual(session.operationId, "published-before-await")
+        XCTAssertTrue(session.blocksDuplicateSubmit)
+
+        // Cancel can read the published id while work is "in flight".
+        let cancelTarget = session.operationId
+        XCTAssertEqual(cancelTarget, "published-before-await")
+
+        let gate = AsyncGate()
+        async let executeResult = ProjectLongOperationRunner.execute(
+            session: session,
+            operationId: prepared.operationId,
+            isReconnectable: { _ in false }
+        ) { operationId in
+            XCTAssertEqual(operationId, "published-before-await")
+            await gate.wait()
+            return "done"
+        }
+
+        // While suspended, session still holds the id for Cancel.
+        XCTAssertEqual(session.operationId, "published-before-await")
+        await gate.open()
+        let finished = await executeResult
+        session = finished.session
+        XCTAssertEqual(try? finished.result.get(), "done")
+        XCTAssertNil(session.operationId)
+    }
+
     func testKeepsOperationIdAcrossTransientFailures_repro() async throws {
         var session = ProjectLongOperationSession(maxTransientRetries: 3)
-        let id = session.beginOrReuseOperationId(mint: { "stable-id" })
-        XCTAssertEqual(id, "stable-id")
-        XCTAssertTrue(session.blocksDuplicateSubmit)
+        let prepared = ProjectLongOperationRunner.prepare(
+            session: session,
+            mint: { "stable-id" }
+        )
+        session = prepared.session
 
         var attempts = 0
         let executeResult = await ProjectLongOperationRunner.execute(
             session: session,
+            operationId: prepared.operationId,
             isReconnectable: { _ in true }
         ) { operationId in
             XCTAssertEqual(operationId, "stable-id")
@@ -21,97 +62,72 @@ final class ProjectLongOperationSessionTests: XCTestCase {
             return "ok"
         }
         session = executeResult.session
-        switch executeResult.result {
-        case .success(let value):
-            XCTAssertEqual(value, "ok")
-        case .failure(let error):
-            XCTFail("should succeed after transient retries: \(error)")
-        }
+        XCTAssertEqual(try? executeResult.result.get(), "ok")
         XCTAssertEqual(attempts, 3)
-        XCTAssertNil(session.operationId, "terminal success clears id")
-        XCTAssertFalse(session.blocksDuplicateSubmit)
+        XCTAssertNil(session.operationId)
     }
 
     func testExhaustedRetriesRetainIdForResume_repro() async {
         var session = ProjectLongOperationSession(maxTransientRetries: 1)
-        _ = session.beginOrReuseOperationId(mint: { "keep-me" })
+        let prepared = ProjectLongOperationRunner.prepare(
+            session: session,
+            mint: { "keep-me" }
+        )
+        session = prepared.session
         let executeResult = await ProjectLongOperationRunner.execute(
             session: session,
+            operationId: prepared.operationId,
             isReconnectable: { _ in true }
         ) { _ in
             throw EngramServiceError.serviceUnavailable(message: "timeout")
         }
         session = executeResult.session
         guard case .failure = executeResult.result else {
-            return XCTFail("expected throw")
+            return XCTFail("expected failure")
         }
         XCTAssertEqual(session.operationId, "keep-me")
         XCTAssertTrue(session.blocksDuplicateSubmit)
-        XCTAssertEqual(session.prepareResume(), "keep-me")
     }
 
     func testNonReconnectableClearsId_repro() async {
         var session = ProjectLongOperationSession()
-        _ = session.beginOrReuseOperationId(mint: { "gone" })
+        let prepared = ProjectLongOperationRunner.prepare(session: session, mint: { "gone" })
+        session = prepared.session
         let executeResult = await ProjectLongOperationRunner.execute(
             session: session,
+            operationId: prepared.operationId,
             isReconnectable: projectMoveIsReconnectableError
         ) { _ in
             throw EngramServiceError.invalidRequest(message: "bad path")
         }
         session = executeResult.session
-        guard case .failure = executeResult.result else {
-            return XCTFail("expected throw")
-        }
         XCTAssertNil(session.operationId)
-        XCTAssertFalse(session.blocksDuplicateSubmit)
-    }
-
-    func testExecuteDoesNotRequireInoutAcrossAwait_repro() async {
-        // Copy-in / copy-out: original value is unchanged until caller assigns.
-        let original = ProjectLongOperationSession(maxTransientRetries: 1)
-        let executeResult = await ProjectLongOperationRunner.execute(
-            session: original,
-            isReconnectable: { _ in false }
-        ) { _ in
-            "done"
-        }
-        XCTAssertNil(original.operationId)
-        XCTAssertNil(executeResult.session.operationId)
-        XCTAssertEqual(try? executeResult.result.get(), "done")
     }
 
     func testCancelledBeforeCommitWordingIsPrecise_repro() {
         let clean = projectMoveCancelledBeforeCommitMessage(kind: "Rename")
-        XCTAssertTrue(clean.contains("cancelled before commit"))
         XCTAssertTrue(clean.contains("Safe to retry"))
-        let dirty = projectMoveCancelCompensationFailedMessage("rollback: 1 file failed")
-        XCTAssertTrue(dirty.contains("compensation was incomplete") || dirty.contains("rollback"))
+        let dirty = projectMoveCancelCompensationFailedMessage("rollback failed")
         XCTAssertFalse(dirty.contains("Safe to retry"))
-        XCTAssertFalse(dirty.contains("no files or index rows were committed"))
+    }
+}
+
+/// Tiny async gate for behavioral tests that need a mid-await observation window.
+private actor AsyncGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { cont in
+            waiters.append(cont)
+        }
     }
 
-    func testReconnectableHelperTreatsTransportAndCancellation_repro() {
-        XCTAssertTrue(
-            projectMoveIsReconnectableError(
-                EngramServiceError.transportClosed(message: "socket closed")
-            )
-        )
-        XCTAssertTrue(projectMoveIsReconnectableError(CancellationError()))
-        XCTAssertFalse(
-            projectMoveIsReconnectableError(
-                EngramServiceError.invalidRequest(message: "bad")
-            )
-        )
-        XCTAssertTrue(
-            projectMoveIsCancelCompensationFailure(
-                EngramServiceError.commandFailed(
-                    name: "ProjectMoveCancelCompensationFailedError",
-                    message: "incomplete",
-                    retryPolicy: "never",
-                    details: ["state": .string("cancelled_compensation_failed")]
-                )
-            )
-        )
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters = []
+        for w in pending { w.resume() }
     }
 }

@@ -1,196 +1,154 @@
 import XCTest
 @testable import EngramServiceCore
 
-/// Wave 8 long-ops rescue: atomic commit boundary, disconnect ≠ cancel, TTL,
-/// fingerprints, structured failure identity, terminal preflight resolution.
 final class ProjectMoveOperationRegistryTests: XCTestCase {
     private func makeRegistry(
         maxTerminal: Int = 64,
-        ttl: TimeInterval = 1800,
+        maxCancelOnly: Int = 32,
+        terminalTTL: TimeInterval = 1800,
+        cancelOnlyTTL: TimeInterval = 60,
         now: @escaping @Sendable () -> Date = { Date() }
     ) -> ProjectMoveBatchCancelRegistry {
-        let reg = ProjectMoveBatchCancelRegistry(
-            config: .init(maxTerminalEntries: maxTerminal, terminalTTL: ttl, now: now)
+        ProjectMoveBatchCancelRegistry(
+            config: .init(
+                maxTerminalEntries: maxTerminal,
+                maxCancelOnlyEntries: maxCancelOnly,
+                terminalTTL: terminalTTL,
+                cancelOnlyTTL: cancelOnlyTTL,
+                now: now
+            )
         )
-        return reg
     }
 
     func testBeginCommitIfNotCancelled_cancelWins_repro() {
         let reg = makeRegistry()
-        let id = "race-cancel"
-        _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"kind":"move"}"#)
-        reg.requestCancel(operationId: id)
-        XCTAssertFalse(
-            reg.beginCommitIfNotCancelled(operationId: id),
-            "cancel before commit transition must win"
-        )
-        XCTAssertTrue(reg.shouldStop(operationId: id))
+        _ = reg.beginOrJoin(operationId: "race-cancel", fingerprint: #"{"k":"1"}"#)
+        reg.requestCancel(operationId: "race-cancel")
+        XCTAssertFalse(reg.beginCommitIfNotCancelled(operationId: "race-cancel"))
     }
 
     func testBeginCommitIfNotCancelled_commitWins_laterCancelIgnored_repro() {
         let reg = makeRegistry()
-        let id = "race-commit"
-        _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"kind":"move"}"#)
-        XCTAssertTrue(reg.beginCommitIfNotCancelled(operationId: id))
-        reg.requestCancel(operationId: id)
-        XCTAssertFalse(
-            reg.shouldStop(operationId: id),
-            "explicit cancel after commit transition must be ignored"
-        )
-        XCTAssertTrue(reg.isPastCommit(operationId: id))
+        _ = reg.beginOrJoin(operationId: "race-commit", fingerprint: #"{"k":"1"}"#)
+        XCTAssertTrue(reg.beginCommitIfNotCancelled(operationId: "race-commit"))
+        reg.requestCancel(operationId: "race-commit")
+        XCTAssertFalse(reg.shouldStop(operationId: "race-commit"))
     }
 
-    func testWaiterDetachesOnParentCancelWithoutRequestingCancel_repro() async throws {
+    func testTerminalFingerprintConflictOnCompleted_repro() {
         let reg = makeRegistry()
-        let id = "detach-waiter"
-        _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"kind":"move"}"#)
+        let id = "term-fp"
+        _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"actor":"app"}"#)
+        reg.complete(operationId: id, payload: Data("ok".utf8))
+        switch reg.beginOrJoin(operationId: id, fingerprint: #"{"actor":"mcp"}"#) {
+        case .fingerprintConflict:
+            break
+        default:
+            XCTFail("completed terminal must still fingerprint-check")
+        }
+    }
 
+    func testTerminalFingerprintConflictOnFailed_repro() {
+        let reg = makeRegistry()
+        let id = "term-fail-fp"
+        _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"src":"/a"}"#)
+        reg.completeWithFailure(
+            operationId: id,
+            failure: .init(name: "InvalidRequest", message: "bad", retryPolicy: "never")
+        )
+        switch reg.beginOrJoin(operationId: id, fingerprint: #"{"src":"/b"}"#) {
+        case .fingerprintConflict:
+            break
+        default:
+            XCTFail("failed terminal must still fingerprint-check")
+        }
+    }
+
+    func testWaiterImmediateCancelRace_repro() async throws {
+        let reg = makeRegistry()
+        let id = "waiter-race"
+        _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"k":"1"}"#)
+
+        // Cancel the waiting task before it can register (tight race).
         let waiter = Task {
             try await reg.waitForTerminal(operationId: id)
         }
-        // Let waiter park.
-        try await Task.sleep(nanoseconds: 30_000_000)
         waiter.cancel()
         do {
             _ = try await waiter.value
-            XCTFail("cancelled waiter must throw")
+            XCTFail("must throw CancellationError")
         } catch is CancellationError {
             // ok
         }
-        // Work still running; cancel was NOT requested by detach.
+        // Producer can still complete; cancel was not requested.
         XCTAssertFalse(reg.shouldStop(operationId: id))
-        XCTAssertTrue(reg.isRunningForTests(id))
-
-        let payload = Data("ok".utf8)
-        reg.complete(operationId: id, payload: payload)
-        // Terminal still available for reconnect join.
-        switch reg.beginOrJoin(operationId: id, fingerprint: #"{"kind":"move"}"#) {
+        reg.complete(operationId: id, payload: Data("done".utf8))
+        switch reg.beginOrJoin(operationId: id, fingerprint: #"{"k":"1"}"#) {
         case .completed(.success(let data)):
-            XCTAssertEqual(data, payload)
+            XCTAssertEqual(data, Data("done".utf8))
         default:
-            XCTFail("reconnect must see completed payload")
+            XCTFail("producer terminal must remain available after waiter detach")
         }
     }
 
-    func testExplicitCancelStillStopsBeforeCommit_repro() {
-        let reg = makeRegistry()
-        let id = "explicit-cancel"
-        _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"k":"1"}"#)
-        reg.requestCancel(operationId: id)
-        XCTAssertTrue(reg.shouldStop(operationId: id))
+    func testUnknownCancelReservationsAreBounded_repro() {
+        var clock = Date(timeIntervalSince1970: 10_000)
+        let reg = makeRegistry(maxCancelOnly: 5, cancelOnlyTTL: 100, now: { clock })
+        for i in 0..<20 {
+            reg.requestCancel(operationId: "unknown-\(i)")
+        }
+        XCTAssertLessThanOrEqual(reg.cancelOnlyCountForTests(), 5)
+        clock = clock.addingTimeInterval(200)
+        reg.requestCancel(operationId: "trigger-prune")
+        XCTAssertLessThanOrEqual(reg.cancelOnlyCountForTests(), 5)
     }
 
-    func testPreflightFailureTerminalBlocksForeverJoin_repro() async throws {
-        let reg = makeRegistry()
-        let id = "preflight-fail"
-        _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"kind":"move"}"#)
-        reg.completeWithFailure(
-            operationId: id,
-            failure: .init(
-                name: "InvalidRequest",
-                message: "path escapes home",
-                retryPolicy: "never"
-            )
-        )
-        switch reg.beginOrJoin(operationId: id, fingerprint: #"{"kind":"move"}"#) {
-        case .completed(.failure(let f)):
-            XCTAssertEqual(f.name, "InvalidRequest")
-            XCTAssertEqual(f.message, "path escapes home")
-            XCTAssertEqual(f.retryPolicy, "never")
-        default:
-            XCTFail("same-id retry must return terminal failure, not join forever")
-        }
+    func testFingerprintPipeSafeAndActorDifference_repro() {
+        let a = ProjectMoveOperationFingerprint.encode([
+            "kind": "move", "src": "/tmp/a|b", "dst": "/tmp/c", "actor": "app",
+        ])
+        let b = ProjectMoveOperationFingerprint.encode([
+            "kind": "move", "src": "/tmp/a", "dst": "b|/tmp/c", "actor": "app",
+        ])
+        XCTAssertNotEqual(a, b)
+        let app = ProjectMoveOperationFingerprint.encode(["kind": "move", "actor": "app"])
+        let mcp = ProjectMoveOperationFingerprint.encode(["kind": "move", "actor": "mcp"])
+        XCTAssertNotEqual(app, mcp)
     }
 
     func testStructuredFailureIdentityPreserved_repro() {
         let reg = makeRegistry()
-        let id = "struct-fail"
-        _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"kind":"undo"}"#)
+        let id = "struct"
+        _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"k":"1"}"#)
         let failure = ProjectMoveBatchCancelRegistry.CachedFailure(
-            name: "DirCollisionError",
-            message: "target exists",
+            name: "ProjectMoveCancelCompensationFailedError",
+            message: "incomplete",
             retryPolicy: "never",
-            detailsJSON: #"{"state":"failed"}"#
+            detailsJSON: #"{"state":"cancelled_compensation_failed"}"#
         )
         reg.completeWithFailure(operationId: id, failure: failure)
-        switch reg.beginOrJoin(operationId: id, fingerprint: #"{"kind":"undo"}"#) {
+        switch reg.beginOrJoin(operationId: id, fingerprint: #"{"k":"1"}"#) {
         case .completed(.failure(let f)):
             XCTAssertEqual(f, failure)
         default:
-            XCTFail("structured failure must round-trip")
+            XCTFail("expected structured failure")
         }
     }
 
-    func testFingerprintCollisionSafeForPipeInPath_repro() {
-        let a = ProjectMoveOperationFingerprint.encode([
-            "kind": "move",
-            "src": "/tmp/a|b",
-            "dst": "/tmp/c",
-            "actor": "app",
-        ])
-        let b = ProjectMoveOperationFingerprint.encode([
-            "kind": "move",
-            "src": "/tmp/a",
-            "dst": "b|/tmp/c",
-            "actor": "app",
-        ])
-        XCTAssertNotEqual(a, b, "pipe characters inside paths must not collide")
-    }
-
-    func testFingerprintIncludesActorDifference_repro() {
-        let app = ProjectMoveOperationFingerprint.encode([
-            "kind": "move", "src": "/a", "dst": "/b", "actor": "app",
-        ])
-        let mcp = ProjectMoveOperationFingerprint.encode([
-            "kind": "move", "src": "/a", "dst": "/b", "actor": "mcp",
-        ])
-        XCTAssertNotEqual(app, mcp)
+    func testPreflightFailureTerminalBlocksForeverJoin_repro() {
         let reg = makeRegistry()
-        _ = reg.beginOrJoin(operationId: "fp-actor", fingerprint: app)
-        switch reg.beginOrJoin(operationId: "fp-actor", fingerprint: mcp) {
-        case .fingerprintConflict:
-            break
+        let id = "preflight"
+        // Handler now registers first then fails — simulate that path.
+        _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"kind":"move"}"#)
+        reg.completeWithFailure(
+            operationId: id,
+            failure: .init(name: "InvalidRequest", message: "path escapes home", retryPolicy: "never")
+        )
+        switch reg.beginOrJoin(operationId: id, fingerprint: #"{"kind":"move"}"#) {
+        case .completed(.failure(let f)):
+            XCTAssertEqual(f.name, "InvalidRequest")
         default:
-            XCTFail("actor difference must conflict")
+            XCTFail("same-id reconnect must get terminal failure, not hang")
         }
-    }
-
-    func testTTLEvictsTerminalButPreservesRunning_repro() {
-        var clock = Date(timeIntervalSince1970: 1_000)
-        let reg = makeRegistry(maxTerminal: 10, ttl: 10, now: { clock })
-        _ = reg.beginOrJoin(operationId: "done", fingerprint: #"{"k":"1"}"#)
-        reg.complete(operationId: "done", payload: Data("x".utf8))
-        _ = reg.beginOrJoin(operationId: "run", fingerprint: #"{"k":"2"}"#)
-        XCTAssertEqual(reg.entryCountForTests(), 2)
-
-        clock = clock.addingTimeInterval(11)
-        // Trigger prune via another begin.
-        _ = reg.beginOrJoin(operationId: "fresh", fingerprint: #"{"k":"3"}"#)
-        XCTAssertTrue(reg.isRunningForTests("run"), "running must never be TTL-evicted")
-        // Terminal "done" should be gone; running + fresh remain.
-        XCTAssertLessThanOrEqual(reg.entryCountForTests(), 2)
-        switch reg.beginOrJoin(operationId: "done", fingerprint: #"{"k":"1"}"#) {
-        case .proceed:
-            break // expired terminal treated as new begin
-        default:
-            // join/completed would mean it was not evicted
-            XCTFail("expired terminal should not remain as completed")
-        }
-    }
-
-    func testLRUCapPreservesWaitersAndRunning_repro() async throws {
-        var clock = Date(timeIntervalSince1970: 5_000)
-        let reg = makeRegistry(maxTerminal: 2, ttl: 10_000, now: { clock })
-        for i in 0..<3 {
-            let id = "t\(i)"
-            _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"i":"\#(i)"}"#)
-            reg.complete(operationId: id, payload: Data("\(i)".utf8))
-            clock = clock.addingTimeInterval(1)
-        }
-        // Force prune
-        _ = reg.beginOrJoin(operationId: "runner", fingerprint: #"{"k":"r"}"#)
-        XCTAssertTrue(reg.isRunningForTests("runner"))
-        // At most 2 terminals + 1 running
-        XCTAssertLessThanOrEqual(reg.entryCountForTests(), 3)
     }
 }

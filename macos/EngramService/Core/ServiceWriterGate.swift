@@ -82,6 +82,12 @@ public actor ServiceWriterGate {
         close(lockFD)
     }
 
+    /// Snapshot of the monotonic generation counter (for long-op waiters that
+    /// completed work under a detached gate holder).
+    public func currentDatabaseGeneration() -> Int {
+        databaseGeneration
+    }
+
     public func performWriteCommand<Value: Sendable>(
         name: String,
         operation: @Sendable (EngramDatabaseWriter) async throws -> Value

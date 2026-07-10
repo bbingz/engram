@@ -7,10 +7,14 @@ extension EngramServiceCommandHandler {
     private static let projectMovePayloadStringLimit = 512
     private static let projectMovePorcelainLimit = 8 * 1024
 
+    // MARK: - Entry points (gate owned by producer when operationId present)
+
+    /// Long-op path: register → preflight → detached producer holds `writerGate`
+    /// for the full lifetime; client only waits on the registry (finding 8).
     static func projectMove(
         _ request: EngramServiceProjectMoveRequest,
-        writer: EngramDatabaseWriter
-    ) async throws -> EngramServiceProjectMoveResult {
+        writerGate: ServiceWriterGate
+    ) async throws -> ServiceWriterGateResult<EngramServiceProjectMoveResult> {
         ServiceLogger.notice(
             "projectMove requested actor=\(request.actor ?? "mcp") dryRun=\(request.dryRun) force=\(request.force) src=\(request.src) dst=\(request.dst) operationId=\(request.operationId ?? "")",
             category: .writer
@@ -27,21 +31,29 @@ extension EngramServiceCommandHandler {
             "actor": actor.rawValue,
         ])
 
-        // Contract 4: validate before registration so failed preflight does not
-        // leave a running orphan. After registration every exit is terminal.
-        try validateProjectMovePaths(src: request.src, dst: request.dst)
-
+        // Finding 5: reserve/fingerprint before fallible preflight.
         if let cached = try await resolveExistingOperation(
             operationId: operationId,
             fingerprint: fingerprint
         ) {
-            return try materializeMoveResult(cached)
+            let value = try materializeMoveResult(cached)
+            let gen = await writerGate.currentDatabaseGeneration()
+            return ServiceWriterGateResult(value: value, databaseGeneration: gen)
         }
 
-        return try await produceMoveResult(
+        do {
+            try validateProjectMovePaths(src: request.src, dst: request.dst)
+        } catch {
+            failOperation(operationId: operationId, error: error)
+            throw error
+        }
+
+        return try await produceWithGate(
             operationId: operationId,
+            commandName: "projectMove",
+            writerGate: writerGate,
             map: { mapPipelineResult($0, suggestion: nil) }
-        ) {
+        ) { writer in
             try await ProjectMoveOrchestrator.run(
                 writer: writer,
                 options: RunProjectMoveOptions(
@@ -67,38 +79,18 @@ extension EngramServiceCommandHandler {
 
     static func projectArchive(
         _ request: EngramServiceProjectArchiveRequest,
-        writer: EngramDatabaseWriter
-    ) async throws -> EngramServiceProjectMoveResult {
+        writerGate: ServiceWriterGate
+    ) async throws -> ServiceWriterGateResult<EngramServiceProjectMoveResult> {
         ServiceLogger.notice(
             "projectArchive requested actor=\(request.actor ?? "mcp") dryRun=\(request.dryRun) force=\(request.force) src=\(request.src) archiveTo=\(request.archiveTo ?? "") operationId=\(request.operationId ?? "")",
             category: .writer
         )
         let operationId = normalizeOperationId(request.operationId)
         let actor = parseActor(request.actor) ?? .mcp
-
-        // Preflight before registry registration (contract 4).
-        try validateProjectPathConfined(request.src, label: "source")
-        let homeDirectory = homeDirectoryURL()
-        let suggestion = try Archive.suggestTarget(
-            src: request.src,
-            options: ArchiveOptions(
-                archiveRoot: nil,
-                skipProbe: request.dryRun,
-                forceCategory: request.archiveTo
-            )
-        )
-        try validateProjectPathConfined(suggestion.dst, label: "archive destination")
-        if !request.dryRun {
-            try FileManager.default.createDirectory(
-                atPath: (suggestion.dst as NSString).deletingLastPathComponent,
-                withIntermediateDirectories: true
-            )
-        }
-
+        // Fingerprint uses src + archive category; dst resolved after reservation.
         let fingerprint = ProjectMoveOperationFingerprint.encode([
             "kind": "archive",
             "src": request.src,
-            "dst": suggestion.dst,
             "archiveTo": request.archiveTo ?? "",
             "dryRun": String(request.dryRun),
             "force": String(request.force),
@@ -110,13 +102,40 @@ extension EngramServiceCommandHandler {
             operationId: operationId,
             fingerprint: fingerprint
         ) {
-            return try materializeMoveResult(cached)
+            let value = try materializeMoveResult(cached)
+            let gen = await writerGate.currentDatabaseGeneration()
+            return ServiceWriterGateResult(value: value, databaseGeneration: gen)
         }
 
-        return try await produceMoveResult(
+        let suggestion: ArchiveSuggestion
+        do {
+            try validateProjectPathConfined(request.src, label: "source")
+            suggestion = try Archive.suggestTarget(
+                src: request.src,
+                options: ArchiveOptions(
+                    archiveRoot: nil,
+                    skipProbe: request.dryRun,
+                    forceCategory: request.archiveTo
+                )
+            )
+            try validateProjectPathConfined(suggestion.dst, label: "archive destination")
+            if !request.dryRun {
+                try FileManager.default.createDirectory(
+                    atPath: (suggestion.dst as NSString).deletingLastPathComponent,
+                    withIntermediateDirectories: true
+                )
+            }
+        } catch {
+            failOperation(operationId: operationId, error: error)
+            throw error
+        }
+
+        return try await produceWithGate(
             operationId: operationId,
+            commandName: "projectArchive",
+            writerGate: writerGate,
             map: { mapPipelineResult($0, suggestion: suggestion) }
-        ) {
+        ) { writer in
             try await ProjectMoveOrchestrator.run(
                 writer: writer,
                 options: RunProjectMoveOptions(
@@ -127,7 +146,7 @@ extension EngramServiceCommandHandler {
                     archived: true,
                     auditNote: request.auditNote,
                     actor: actor,
-                    homeDirectory: homeDirectory,
+                    homeDirectory: homeDirectoryURL(),
                     rolledBackOf: nil,
                     shouldCancel: { shouldStop(operationId: operationId) },
                     beginCommitIfNotCancelled: {
@@ -142,8 +161,8 @@ extension EngramServiceCommandHandler {
 
     static func projectUndo(
         _ request: EngramServiceProjectUndoRequest,
-        writer: EngramDatabaseWriter
-    ) async throws -> EngramServiceProjectMoveResult {
+        writerGate: ServiceWriterGate
+    ) async throws -> ServiceWriterGateResult<EngramServiceProjectMoveResult> {
         ServiceLogger.notice(
             "projectUndo requested actor=\(request.actor ?? "mcp") force=\(request.force) migrationId=\(request.migrationId) operationId=\(request.operationId ?? "")",
             category: .writer
@@ -161,13 +180,17 @@ extension EngramServiceCommandHandler {
             operationId: operationId,
             fingerprint: fingerprint
         ) {
-            return try materializeMoveResult(cached)
+            let value = try materializeMoveResult(cached)
+            let gen = await writerGate.currentDatabaseGeneration()
+            return ServiceWriterGateResult(value: value, databaseGeneration: gen)
         }
 
-        return try await produceMoveResult(
+        return try await produceWithGate(
             operationId: operationId,
+            commandName: "projectUndo",
+            writerGate: writerGate,
             map: { mapPipelineResult($0.pipelineResult, suggestion: nil) }
-        ) {
+        ) { writer in
             try await ProjectMoveOrchestrator.runUndo(
                 writer: writer,
                 migrationId: request.migrationId,
@@ -185,23 +208,13 @@ extension EngramServiceCommandHandler {
 
     static func projectMoveBatch(
         _ request: EngramServiceProjectMoveBatchRequest,
-        writer: EngramDatabaseWriter
-    ) async throws -> EngramServiceJSONValue {
+        writerGate: ServiceWriterGate
+    ) async throws -> ServiceWriterGateResult<EngramServiceJSONValue> {
         ServiceLogger.notice(
             "projectMoveBatch requested bytes=\(request.yaml.utf8.count) force=\(request.force) operationId=\(request.operationId ?? "")",
             category: .writer
         )
         let operationId = normalizeOperationId(request.operationId)
-
-        // Preflight parse + path confinement before registration.
-        let document = try Batch.parseJSON(Data(request.yaml.utf8))
-        for operation in document.operations {
-            try validateProjectPathConfined(operation.src, label: "source")
-            if let dst = operation.dst, !dst.isEmpty {
-                try validateProjectPathConfined(dst, label: "destination")
-            }
-        }
-
         let fingerprint = ProjectMoveOperationFingerprint.encode([
             "kind": "batch",
             "yaml": request.yaml,
@@ -213,92 +226,125 @@ extension EngramServiceCommandHandler {
             operationId: operationId,
             fingerprint: fingerprint
         ) {
-            return try materializeJSONValue(cached)
+            let value = try materializeJSONValue(cached)
+            let gen = await writerGate.currentDatabaseGeneration()
+            return ServiceWriterGateResult(value: value, databaseGeneration: gen)
+        }
+
+        let document: BatchDocument
+        do {
+            document = try Batch.parseJSON(Data(request.yaml.utf8))
+            for operation in document.operations {
+                try validateProjectPathConfined(operation.src, label: "source")
+                if let dst = operation.dst, !dst.isEmpty {
+                    try validateProjectPathConfined(dst, label: "destination")
+                }
+            }
+        } catch {
+            failOperation(operationId: operationId, error: error)
+            throw error
         }
 
         guard let operationId else {
-            let result = await Batch.run(
-                document,
-                writer: writer,
-                overrides: BatchOverrides(
-                    homeDirectory: homeDirectoryURL(),
-                    force: request.force
-                ),
-                shouldCancel: { Task.isCancelled }
-            )
-            return encodeBatchResult(result)
+            let gateResult = try await writerGate.performWriteCommand(name: "projectMoveBatch") { writer in
+                let result = await Batch.run(
+                    document,
+                    writer: writer,
+                    overrides: BatchOverrides(
+                        homeDirectory: homeDirectoryURL(),
+                        force: request.force
+                    ),
+                    shouldCancel: { Task.isCancelled }
+                )
+                return encodeBatchResult(result)
+            }
+            return gateResult
         }
 
-        // Detached producer; request only waits. Disconnect detaches waiter only.
+        // Producer owns the gate for its full lifetime (finding 8).
         Task.detached(priority: .userInitiated) {
-            let result = await Batch.run(
-                document,
-                writer: writer,
-                overrides: BatchOverrides(
-                    homeDirectory: homeDirectoryURL(),
-                    force: request.force
-                ),
-                shouldCancel: {
-                    ProjectMoveBatchCancelRegistry.shared.shouldStop(operationId: operationId)
-                }
-            )
-            ServiceLogger.notice(
-                "projectMoveBatch finished completed=\(result.completed.count) failed=\(result.failed.count) skipped=\(result.skipped.count) cancelled=\(result.cancelled) remaining=\(result.remaining.count)",
-                category: .writer
-            )
-            let encoded = encodeBatchResult(result)
-            if let data = try? JSONEncoder().encode(encoded) {
-                ProjectMoveBatchCancelRegistry.shared.complete(operationId: operationId, payload: data)
-            } else {
-                ProjectMoveBatchCancelRegistry.shared.completeWithFailure(
-                    operationId: operationId,
-                    failure: .init(
-                        name: "ProjectMoveBatchEncodeError",
-                        message: "failed to encode batch result",
-                        retryPolicy: "never"
+            do {
+                let gateResult = try await writerGate.performWriteCommand(name: "projectMoveBatch") { writer in
+                    await Batch.run(
+                        document,
+                        writer: writer,
+                        overrides: BatchOverrides(
+                            homeDirectory: homeDirectoryURL(),
+                            force: request.force
+                        ),
+                        shouldCancel: {
+                            ProjectMoveBatchCancelRegistry.shared.shouldStop(operationId: operationId)
+                        },
+                        beginCommitIfNotCancelled: {
+                            ProjectMoveBatchCancelRegistry.shared.beginCommitIfNotCancelled(
+                                operationId: operationId
+                            )
+                        }
                     )
+                }
+                let batch = gateResult.value
+                ServiceLogger.notice(
+                    "projectMoveBatch finished completed=\(batch.completed.count) failed=\(batch.failed.count) cancelled=\(batch.cancelled) unsafe=\(batch.cancelUnsafe)",
+                    category: .writer
                 )
+                // Preserve cancel_unsafe / cancel_error_* in the success payload so UI
+                // never maps incomplete compensation to "safe before commit" wording.
+                let encoded = encodeBatchResult(batch)
+                if let data = try? JSONEncoder().encode(encoded) {
+                    ProjectMoveBatchCancelRegistry.shared.complete(
+                        operationId: operationId,
+                        payload: data
+                    )
+                } else {
+                    ProjectMoveBatchCancelRegistry.shared.completeWithFailure(
+                        operationId: operationId,
+                        failure: .init(
+                            name: "ProjectMoveBatchEncodeError",
+                            message: "failed to encode batch result",
+                            retryPolicy: "never"
+                        )
+                    )
+                }
+                ProjectMoveBatchCancelRegistry.shared.clear(operationId: operationId)
+            } catch {
+                failOperation(operationId: operationId, error: error)
             }
-            ProjectMoveBatchCancelRegistry.shared.clear(operationId: operationId)
         }
 
         let terminal = try await ProjectMoveBatchCancelRegistry.shared.waitForTerminal(
             operationId: operationId
         )
-        return try materializeJSONValue(terminal)
+        let value = try materializeJSONValue(terminal)
+        let gen = await writerGate.currentDatabaseGeneration()
+        return ServiceWriterGateResult(value: value, databaseGeneration: gen)
     }
 
-    // MARK: - Long-op helpers
+    // MARK: - Producer / gate helpers
 
-    private static func normalizeOperationId(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private static func shouldStop(operationId: String?) -> Bool {
-        ProjectMoveBatchCancelRegistry.shared.shouldStop(operationId: operationId)
-    }
-
-    /// Produce pipeline work in a detached task and join via registry waiters.
-    /// Parent-task cancel removes only the waiter — never requestCancel (contract 2).
-    private static func produceMoveResult<Pipeline: Sendable>(
+    private static func produceWithGate<Pipeline: Sendable>(
         operationId: String?,
+        commandName: String,
+        writerGate: ServiceWriterGate,
         map: @escaping @Sendable (Pipeline) -> EngramServiceProjectMoveResult,
-        _ body: @escaping @Sendable () async throws -> Pipeline
-    ) async throws -> EngramServiceProjectMoveResult {
+        _ body: @escaping @Sendable (EngramDatabaseWriter) async throws -> Pipeline
+    ) async throws -> ServiceWriterGateResult<EngramServiceProjectMoveResult> {
         guard let operationId else {
-            do {
-                return map(try await body())
-            } catch let error as ProjectMoveCancelledError {
-                return try mapCancelled(error)
+            // No operation id: run under gate on the request task (legacy path).
+            return try await writerGate.performWriteCommand(name: commandName) { writer in
+                do {
+                    return map(try await body(writer))
+                } catch let error as ProjectMoveCancelledError {
+                    return try mapCancelled(error)
+                }
             }
         }
 
         Task.detached(priority: .userInitiated) {
             do {
-                let pipeline = try await body()
-                let mapped = map(pipeline)
+                let gateResult = try await writerGate.performWriteCommand(name: commandName) { writer in
+                    try await body(writer)
+                }
+                let mapped = map(gateResult.value)
                 completeOperation(operationId: operationId, result: mapped)
             } catch let error as ProjectMoveCancelledError {
                 do {
@@ -315,16 +361,25 @@ extension EngramServiceCommandHandler {
         let terminal = try await ProjectMoveBatchCancelRegistry.shared.waitForTerminal(
             operationId: operationId
         )
-        return try materializeMoveResult(terminal)
+        let value = try materializeMoveResult(terminal)
+        let gen = await writerGate.currentDatabaseGeneration()
+        return ServiceWriterGateResult(value: value, databaseGeneration: gen)
+    }
+
+    private static func normalizeOperationId(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func shouldStop(operationId: String?) -> Bool {
+        ProjectMoveBatchCancelRegistry.shared.shouldStop(operationId: operationId)
     }
 
     private static func mapCancelled(
         _ error: ProjectMoveCancelledError
     ) throws -> EngramServiceProjectMoveResult {
-        // Contract 3: only clean compensation maps to successful cancelled state.
-        guard error.compensationSucceeded else {
-            throw error
-        }
+        guard error.compensationSucceeded else { throw error }
         return EngramServiceProjectMoveResult(
             migrationId: "",
             state: "cancelled",
@@ -452,12 +507,7 @@ extension EngramServiceCommandHandler {
                 } else {
                     detailsJSON = nil
                 }
-                return .init(
-                    name: name,
-                    message: message,
-                    retryPolicy: retryPolicy,
-                    detailsJSON: detailsJSON
-                )
+                return .init(name: name, message: message, retryPolicy: retryPolicy, detailsJSON: detailsJSON)
             case .invalidRequest(let message):
                 return .init(name: "InvalidRequest", message: message, retryPolicy: "never")
             case .serviceUnavailable(let message):
@@ -624,12 +674,20 @@ extension EngramServiceCommandHandler {
                 "archive": .bool(op.archive),
             ])
         }
-        return .object([
+        var root: [String: EngramServiceJSONValue] = [
             "completed": .array(completed),
             "failed": .array(failed),
             "skipped": .array(skipped),
             "remaining": .array(remaining),
             "cancelled": .bool(result.cancelled),
-        ])
+            "cancel_unsafe": .bool(result.cancelUnsafe),
+        ]
+        if let name = result.cancelErrorName {
+            root["cancel_error_name"] = .string(name)
+        }
+        if let message = result.cancelErrorMessage {
+            root["cancel_error_message"] = .string(message)
+        }
+        return .object(root)
     }
 }

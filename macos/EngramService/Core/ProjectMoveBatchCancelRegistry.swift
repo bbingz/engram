@@ -2,17 +2,15 @@ import Foundation
 
 /// Cooperative cancel + long-operation lifecycle for project migrations.
 ///
-/// Wave 8 long-ops contracts:
-/// - stable `operationId` with collision-safe fingerprints
-/// - **explicit** cancel only via `requestCancel` (IPC `cancelProjectMoveBatch`)
-/// - atomic pre-commit → commit transition via `beginCommitIfNotCancelled`
-/// - peer disconnect / request-task cancel detaches waiters only (never calls cancel)
-/// - terminal success/failure cached for reconnect/idempotence within a bounded TTL
-/// - in-process only: restart loses entries (idempotence window is process-local)
+/// - Explicit cancel only via `requestCancel` (IPC `cancelProjectMoveBatch`)
+/// - Atomic pre-commit → commit via `beginCommitIfNotCancelled`
+/// - Peer disconnect detaches waiters only (never requestCancel)
+/// - Fingerprint checked before every cached-terminal return
+/// - Bounded TTL/LRU for terminals and cancel-only reservations
+/// - Waiter register/cancel is race-safe under one lock
 final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
     static let shared = ProjectMoveBatchCancelRegistry()
 
-    /// Structured terminal failure preserved for reconnect/duplicate (contract 7).
     struct CachedFailure: Codable, Equatable, Sendable {
         let name: String
         let message: String
@@ -44,15 +42,18 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
         case fingerprintConflict(existing: String)
     }
 
-    /// Injectable clock + retention for tests (contract 5).
     struct Config: Sendable {
         var maxTerminalEntries: Int
+        var maxCancelOnlyEntries: Int
         var terminalTTL: TimeInterval
+        var cancelOnlyTTL: TimeInterval
         var now: @Sendable () -> Date
 
         static let `default` = Config(
             maxTerminalEntries: 64,
+            maxCancelOnlyEntries: 32,
             terminalTTL: 30 * 60,
+            cancelOnlyTTL: 60,
             now: { Date() }
         )
     }
@@ -65,7 +66,6 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
     private struct Entry {
         var fingerprint: String
         var cancelRequested = false
-        /// Commit sequence started or finished — cancel must not stop work.
         var pastCommit = false
         var terminal: Terminal?
         var terminalAt: Date?
@@ -76,34 +76,37 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
 
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
+    /// Waiter tokens cancelled before their continuation was registered.
+    private var cancelledWaiterTokens = Set<UUID>()
     private var config: Config
 
     init(config: Config = .default) {
         self.config = config
     }
 
-    /// Test seam: replace shared-style instance config (only for non-shared test instances).
     func replaceConfigForTests(_ config: Config) {
         lock.lock()
         self.config = config
         lock.unlock()
     }
 
-    // MARK: - Explicit cancel (IPC only)
+    // MARK: - Explicit cancel
 
     func requestCancel(operationId: String) {
         let id = normalize(operationId)
         guard !id.isEmpty else { return }
         lock.lock()
         defer { lock.unlock() }
+        let now = config.now()
         var entry = entries[id] ?? Entry(
             fingerprint: "",
             running: false,
-            touchedAt: config.now()
+            touchedAt: now
         )
         entry.cancelRequested = true
-        entry.touchedAt = config.now()
+        entry.touchedAt = now
         entries[id] = entry
+        pruneLocked(now: now)
     }
 
     func isCancelled(operationId: String?) -> Bool {
@@ -121,9 +124,6 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
         return entry.cancelRequested
     }
 
-    /// Atomic commit-boundary transition (contract 1).
-    /// - Returns `false` when cancel already won → caller must cancel without committing.
-    /// - Returns `true` when commit may proceed; subsequent `shouldStop` is false.
     @discardableResult
     func beginCommitIfNotCancelled(operationId: String?) -> Bool {
         guard let operationId else { return true }
@@ -170,7 +170,16 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
         pruneLocked(now: config.now())
 
         if var existing = entries[id] {
+            // Fingerprint before ANY terminal/cached return (finding 4).
+            if !existing.fingerprint.isEmpty, existing.fingerprint != fingerprint {
+                return .fingerprintConflict(existing: existing.fingerprint)
+            }
             if let terminal = existing.terminal {
+                // Adopt empty fingerprint from cancel-only into conflict-free path.
+                if existing.fingerprint.isEmpty {
+                    existing.fingerprint = fingerprint
+                    entries[id] = existing
+                }
                 return .completed(terminal)
             }
             if existing.fingerprint.isEmpty {
@@ -179,9 +188,6 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
                 existing.touchedAt = config.now()
                 entries[id] = existing
                 return .proceed
-            }
-            if existing.fingerprint != fingerprint {
-                return .fingerprintConflict(existing: existing.fingerprint)
             }
             if existing.running {
                 let opId = id
@@ -214,7 +220,6 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
         completeTerminal(operationId: operationId, terminal: .failure(failure))
     }
 
-    /// Backward-compatible string failure → structured name/message only.
     func completeWithError(operationId: String?, message: String) {
         completeWithFailure(
             operationId: operationId,
@@ -251,7 +256,6 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Test inspection: number of retained entries.
     func entryCountForTests() -> Int {
         lock.lock()
         defer { lock.unlock() }
@@ -263,6 +267,14 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return entries[id]?.running == true
+    }
+
+    func cancelOnlyCountForTests() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.values.filter {
+            $0.fingerprint.isEmpty && $0.terminal == nil && !$0.running && $0.waiters.isEmpty
+        }.count
     }
 
     // MARK: - Internals
@@ -291,13 +303,19 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
         }
     }
 
-    /// Cancellation-aware wait: request cancel removes only this waiter (contract 2).
+    /// Cancellation-aware wait with register/cancel race closed under one lock.
     func waitForTerminal(operationId: String) async throws -> Terminal {
         let id = normalize(operationId)
         let waiterId = UUID()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Terminal, Error>) in
                 lock.lock()
+                // Cancel arrived before registration (or task already cancelled).
+                if cancelledWaiterTokens.remove(waiterId) != nil || Task.isCancelled {
+                    lock.unlock()
+                    cont.resume(throwing: CancellationError())
+                    return
+                }
                 if let terminal = entries[id]?.terminal {
                     lock.unlock()
                     cont.resume(returning: terminal)
@@ -308,6 +326,12 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
                     cont.resume(
                         throwing: ProjectMoveOperationRegistryError.completedWithError("operation missing")
                     )
+                    return
+                }
+                // Re-check cancel token after deciding to register (same critical section).
+                if cancelledWaiterTokens.remove(waiterId) != nil {
+                    lock.unlock()
+                    cont.resume(throwing: CancellationError())
                     return
                 }
                 entry.waiters.append(Waiter(id: waiterId, continuation: cont))
@@ -322,55 +346,69 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
 
     private func removeWaiter(operationId: String, waiterId: UUID) {
         lock.lock()
-        guard var entry = entries[operationId] else {
+        if var entry = entries[operationId],
+           let idx = entry.waiters.firstIndex(where: { $0.id == waiterId })
+        {
+            let removed = entry.waiters.remove(at: idx)
+            entry.touchedAt = config.now()
+            entries[operationId] = entry
             lock.unlock()
+            removed.continuation.resume(throwing: CancellationError())
             return
         }
-        var removed: Waiter?
-        if let idx = entry.waiters.firstIndex(where: { $0.id == waiterId }) {
-            removed = entry.waiters.remove(at: idx)
+        // Cancel before registration: remember token so register path fails closed.
+        cancelledWaiterTokens.insert(waiterId)
+        // Bound token set growth.
+        if cancelledWaiterTokens.count > 256 {
+            cancelledWaiterTokens.removeAll(keepingCapacity: true)
         }
-        entry.touchedAt = config.now()
-        entries[operationId] = entry
         lock.unlock()
-        removed?.continuation.resume(throwing: CancellationError())
     }
 
-    /// Evict expired/stale terminal and cancel-only entries. Never running or waiter-bearing.
     private func pruneLocked(now: Date) {
-        let ttl = config.terminalTTL
+        let terminalTTL = config.terminalTTL
+        let cancelTTL = config.cancelOnlyTTL
         let maxTerminal = config.maxTerminalEntries
+        let maxCancelOnly = config.maxCancelOnlyEntries
 
-        // Drop expired terminals and stale cancel-only reservations.
         for (key, entry) in entries {
             if entry.running || !entry.waiters.isEmpty { continue }
             if let terminalAt = entry.terminalAt,
-               now.timeIntervalSince(terminalAt) > ttl
+               now.timeIntervalSince(terminalAt) > terminalTTL
             {
                 entries.removeValue(forKey: key)
                 continue
             }
-            // Cancel-only reservation with no fingerprint / no work.
             if entry.fingerprint.isEmpty,
                entry.terminal == nil,
                !entry.running,
                entry.waiters.isEmpty,
-               now.timeIntervalSince(entry.touchedAt) > ttl
+               now.timeIntervalSince(entry.touchedAt) > cancelTTL
             {
                 entries.removeValue(forKey: key)
             }
         }
 
-        // LRU cap among terminal-only entries.
+        // LRU terminals.
         let terminals = entries.filter { _, e in
             e.terminal != nil && !e.running && e.waiters.isEmpty
         }
         if terminals.count > maxTerminal {
-            let sorted = terminals.sorted { a, b in
-                (a.value.terminalAt ?? a.value.touchedAt) < (b.value.terminalAt ?? b.value.touchedAt)
+            let sorted = terminals.sorted {
+                ($0.value.terminalAt ?? $0.value.touchedAt) < ($1.value.terminalAt ?? $1.value.touchedAt)
             }
-            let overflow = sorted.count - maxTerminal
-            for i in 0..<overflow {
+            for i in 0..<(sorted.count - maxTerminal) {
+                entries.removeValue(forKey: sorted[i].key)
+            }
+        }
+
+        // Bound cancel-only reservations (finding 7).
+        let cancelOnly = entries.filter { _, e in
+            e.fingerprint.isEmpty && e.terminal == nil && !e.running && e.waiters.isEmpty
+        }
+        if cancelOnly.count > maxCancelOnly {
+            let sorted = cancelOnly.sorted { $0.value.touchedAt < $1.value.touchedAt }
+            for i in 0..<(sorted.count - maxCancelOnly) {
                 entries.removeValue(forKey: sorted[i].key)
             }
         }
@@ -398,10 +436,7 @@ enum ProjectMoveOperationRegistryError: Error, Equatable, LocalizedError {
     }
 }
 
-// MARK: - Collision-safe fingerprints (contract 6)
-
 enum ProjectMoveOperationFingerprint {
-    /// Canonical JSON object with sorted keys — paths may contain `|` safely.
     static func encode(_ fields: [String: String]) -> String {
         let sorted = fields.keys.sorted()
         var obj = "{"
