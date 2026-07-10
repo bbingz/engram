@@ -244,7 +244,11 @@ struct RenameSheet: View {
             guard nativeProjectMigrationCommandsEnabled else { return }
             await loadCwds()
         }
-        .onDisappear { activeTask?.cancel() }
+        .onDisappear {
+            // Keep commit-path awaits alive for cooperative cancel / reconnect.
+            guard !isExecuting else { return }
+            activeTask?.cancel()
+        }
         // Round 4: instead of hard-clearing the preview (abrupt visual
         // jump), flag it stale and render dimmed with an inline notice.
         // Rename button also gates on `!previewStale` so the user can't

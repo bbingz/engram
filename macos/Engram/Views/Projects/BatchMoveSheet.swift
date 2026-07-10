@@ -212,7 +212,13 @@ struct BatchMoveSheet: View {
             guard nativeProjectMigrationCommandsEnabled else { return }
             await loadCwds()
         }
-        .onDisappear { activeTask?.cancel() }
+        .onDisappear {
+            // Never cancel an in-flight migration await — Cancel uses cooperative
+            // service cancel only; tearing down the client task would look like
+            // peer disconnect and discard partial/reconnect results.
+            guard !isExecuting else { return }
+            activeTask?.cancel()
+        }
     }
 
     @ViewBuilder

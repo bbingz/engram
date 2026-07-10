@@ -189,7 +189,11 @@ struct UndoSheet: View {
             await loadMigrations()
         }
         .onMoveCommand(perform: moveSelection)
-        .onDisappear { activeTask?.cancel() }
+        .onDisappear {
+            // Keep commit-path awaits alive for cooperative cancel / reconnect.
+            guard !isExecuting else { return }
+            activeTask?.cancel()
+        }
     }
 
     @ViewBuilder

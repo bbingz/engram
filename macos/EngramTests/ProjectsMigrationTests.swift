@@ -149,9 +149,31 @@ final class ProjectsMigrationTests: XCTestCase {
         XCTAssertTrue(source.contains("longOpSession") || source.contains("ProjectLongOperationSession"))
         // Cancel remains enabled during execute (no .disabled(isExecuting) on Cancel).
         XCTAssertFalse(source.contains("Button(\"Cancel\") { dismiss() }\n                    .keyboardShortcut(.cancelAction)\n                    .disabled(isExecuting)"))
+        // Cancel button must request cooperative service cancel for the operation id.
+        XCTAssertTrue(
+            source.range(
+                of: #"Button\("Cancel"\)[\s\S]*?cancelProjectMoveBatch\([\s\S]*?operationId:\s*operationId"#,
+                options: .regularExpression
+            ) != nil,
+            "in-flight Cancel must call cancelProjectMoveBatch with the active operationId"
+        )
+        // Cancel button body must not cancel the local client Task (would tear down
+        // the await / connection instead of cooperative cancel + partial results).
         XCTAssertFalse(
-            source.contains("activeTask?.cancel()"),
+            source.range(
+                of: #"Button\("Cancel"\)[\s\S]*?activeTask\?\.cancel\(\)"#,
+                options: .regularExpression
+            ) != nil,
             "execute-path Cancel must not cancel the client task"
+        )
+        // onDisappear must not unconditionally cancel in-flight migration awaits.
+        XCTAssertFalse(
+            source.contains(".onDisappear { activeTask?.cancel() }"),
+            "onDisappear must guard !isExecuting before cancelling preview/idle tasks"
+        )
+        XCTAssertTrue(
+            source.contains("guard !isExecuting else { return }"),
+            "onDisappear must preserve in-flight migration awaits"
         )
         XCTAssertTrue(source.contains("remaining"))
         XCTAssertTrue(source.contains("cancelled"))

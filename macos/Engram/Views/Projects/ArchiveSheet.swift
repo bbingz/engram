@@ -246,7 +246,11 @@ struct ArchiveSheet: View {
             guard nativeProjectMigrationCommandsEnabled else { return }
             await loadCwds()
         }
-        .onDisappear { activeTask?.cancel() }
+        .onDisappear {
+            // Keep commit-path awaits alive for cooperative cancel / reconnect.
+            guard !isExecuting else { return }
+            activeTask?.cancel()
+        }
         .confirmationDialog(
             "Archive project?",
             isPresented: $showConfirmDialog,
