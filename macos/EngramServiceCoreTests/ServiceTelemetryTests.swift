@@ -128,11 +128,11 @@ final class ServiceTelemetryTests: XCTestCase {
 
         let collector = ServiceTelemetryCollector()
         let monitor = ServiceStatusMonitor()
-        // Empty HOME + all shipped source IDs disabled keeps residual phases cheap
-        // after inject. Explicit list (EngramServiceCoreTests cannot use
-        // SessionAdapterFactory). maxFtsDrainIterations: 0 skips the FTS drain
-        // while-loop so a migrated DB with undrainable backlog cannot hang when
-        // every adapter is disabled — still reaches outer failedPhaseCount gate.
+        // Empty HOME + all shipped source IDs disabled keeps residual phases cheap.
+        // Inject failure on initialScanBackfills so maintenance/parents never runs
+        // (early inject left that phase hanging). maxFtsDrainIterations: 0 still
+        // bounds undrainable FTS after later phases. Outer failedPhaseCount gate
+        // still decides success-sample recording.
         let emptyHome = paths.runtime.deletingLastPathComponent()
             .appendingPathComponent("empty-home", isDirectory: true)
         try FileManager.default.createDirectory(at: emptyHome, withIntermediateDirectories: true)
@@ -152,7 +152,7 @@ final class ServiceTelemetryTests: XCTestCase {
             ],
             tokenLimitsProvider: { [:] },
             testHooks: .init(
-                failPhaseNamed: "usageParserBackfillCheck",
+                failPhaseNamed: "initialScanBackfills",
                 maxFtsDrainIterations: 0
             )
         )
@@ -166,7 +166,7 @@ final class ServiceTelemetryTests: XCTestCase {
         XCTAssertNil(snapshot.lastScanDurationMs)
         XCTAssertNil(snapshot.lastScanAt)
         let failed = try XCTUnwrap(
-            snapshot.spans.first(where: { $0.command == "scanPhase.usageParserBackfillCheck" }),
+            snapshot.spans.first(where: { $0.command == "scanPhase.initialScanBackfills" }),
             "injected required phase must emit distinct failure telemetry"
         )
         XCTAssertEqual(failed.ok, false)
