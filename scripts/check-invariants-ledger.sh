@@ -98,7 +98,6 @@ if not isinstance(invariants, dict) or not invariants:
     print("invalid invariant gates registry: missing non-empty 'invariants' object", file=sys.stderr)
     sys.exit(1)
 
-allowed_prefixes = ("scripts/",)
 errors = []
 referenced = set()
 
@@ -115,9 +114,16 @@ for inv_id, gate_ids in invariants.items():
             continue
         referenced.add(gate_id)
 
-# Execute every registered gate in the registry (allowlisted argv only).
-# Invariant rows must reference known gate IDs; unreferenced registry gates
-# still run so the allowlist is executable, not documentation-only.
+# Exact argv schema for type=argv gates:
+#   ["bash", "scripts/<repo-owned>.sh"]
+# Reject extra flags/args, -c, control tokens, non-bash interpreters, path
+# escapes, and symlink escapes. Registry strings never become free-form shell.
+import os
+import re
+
+SCRIPT_REL_RE = re.compile(r"^scripts/[A-Za-z0-9][A-Za-z0-9._/-]*\.sh$")
+scripts_root = (root / "scripts").resolve()
+
 planned = []  # list of (gate_id, argv)
 for gate_id, spec in gates.items():
     if not isinstance(spec, dict):
@@ -131,32 +137,58 @@ for gate_id, spec in gates.items():
         errors.append(f"gate {gate_id!r}: unsupported type {gate_type!r}")
         continue
     argv = spec.get("argv")
-    if not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a for a in argv):
-        errors.append(f"gate {gate_id!r}: argv must be a non-empty string list")
+    if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
+        errors.append(f"gate {gate_id!r}: argv must be a string list")
         continue
-    # Allowlist: every script path component after the interpreter must live under scripts/.
-    script_args = [a for a in argv if a.endswith(".sh") or a.startswith("scripts/")]
-    if not script_args:
-        errors.append(f"gate {gate_id!r}: argv must reference a scripts/ command")
+    if len(argv) != 2 or argv[0] != "bash" or not argv[1]:
+        errors.append(
+            f"gate {gate_id!r}: invalid argv: exact argv schema requires "
+            f'exactly ["bash", "scripts/<repo-owned>.sh"]'
+        )
         continue
-    for script in script_args:
-        rel = script
-        if rel.startswith("./"):
-            rel = rel[2:]
-        if not rel.startswith(allowed_prefixes):
-            errors.append(
-                f"gate {gate_id!r}: path {script!r} is outside allowlisted scripts/ prefix"
-            )
-            continue
-        abs_script = (root / rel).resolve()
-        try:
-            abs_script.relative_to(root / "scripts")
-        except ValueError:
-            errors.append(f"gate {gate_id!r}: path {script!r} escapes scripts/")
-            continue
-        if not abs_script.is_file():
-            errors.append(f"gate {gate_id!r}: missing script {rel}")
-    planned.append((gate_id, argv))
+    script = argv[1]
+    # Reject control characters, absolute paths, parent traversal, and flags.
+    if any(ch in script for ch in ("\0", "\n", "\r", "\t")):
+        errors.append(f"gate {gate_id!r}: invalid argv: script path contains control characters")
+        continue
+    if script.startswith("-") or script.startswith("/") or "\\" in script:
+        errors.append(
+            f"gate {gate_id!r}: invalid argv: exact argv schema requires "
+            f'exactly ["bash", "scripts/<repo-owned>.sh"]'
+        )
+        continue
+    if ".." in script.split("/"):
+        errors.append(f"gate {gate_id!r}: invalid argv: path escapes via '..'")
+        continue
+    if not SCRIPT_REL_RE.fullmatch(script):
+        errors.append(
+            f"gate {gate_id!r}: invalid argv: exact argv schema requires "
+            f'exactly ["bash", "scripts/<repo-owned>.sh"]'
+        )
+        continue
+    # Resolve under repo scripts/ and reject symlink escapes outside scripts/.
+    candidate = root / script
+    if candidate.is_symlink():
+        # Allow only if the final resolved target still lives under scripts/.
+        pass
+    try:
+        abs_script = candidate.resolve(strict=True)
+    except FileNotFoundError:
+        errors.append(f"gate {gate_id!r}: missing script {script}")
+        continue
+    except OSError as exc:
+        errors.append(f"gate {gate_id!r}: cannot resolve script {script}: {exc}")
+        continue
+    try:
+        abs_script.relative_to(scripts_root)
+    except ValueError:
+        errors.append(f"gate {gate_id!r}: path {script!r} escapes scripts/ (symlink or resolve)")
+        continue
+    if not abs_script.is_file() or not os.access(abs_script, os.R_OK):
+        errors.append(f"gate {gate_id!r}: missing readable script {script}")
+        continue
+    # Final argv is the validated exact pair only — never pass through extras.
+    planned.append((gate_id, ["bash", script]))
 
 if errors:
     for err in errors:

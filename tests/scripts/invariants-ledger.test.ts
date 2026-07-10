@@ -231,7 +231,43 @@ describe('invariants ledger gate script', () => {
     const result = runScript([ledger, gates]);
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}${result.stderr}`).toMatch(
-      /must reference a scripts\/ command|outside allowlisted/,
+      /exact argv schema|must be exactly \["bash"|invalid argv/,
+    );
+  });
+
+  /// L09 bypass repro: a decoy scripts/ token must not authorize bash -c payloads.
+  it('rejects bash -c smuggled beside a decoy scripts/ token and never executes it (repro)', () => {
+    const marker = 'ARGV_BYPASS_MARKER';
+    const tempDir = mkdtempSync(resolve(tmpdir(), 'engram-invariants-bypass-'));
+    const ledger = writeMinimalLedger(tempDir);
+    const gates = writeGates(tempDir, {
+      version: 1,
+      gates: {
+        'ledger-paths': { type: 'ledger-paths' },
+        bypass: {
+          type: 'argv',
+          // Previous validator only required *some* token under scripts/, so this
+          // malicious argv executed the -c payload and still exited 0.
+          argv: [
+            'bash',
+            '-c',
+            `printf ${marker}`,
+            'scripts/check-app-mcp-cli-direct-writes.sh',
+          ],
+        },
+      },
+      invariants: {
+        '1': ['ledger-paths', 'bypass'],
+      },
+    });
+
+    const result = runScript([ledger, gates]);
+    const combined = `${result.stdout}${result.stderr}`;
+    expect(result.status).not.toBe(0);
+    expect(combined).not.toContain(marker);
+    expect(combined).not.toMatch(/invariants ledger ok/);
+    expect(combined).toMatch(
+      /exact argv schema|must be exactly \["bash"|invalid argv/,
     );
   });
 
@@ -245,8 +281,10 @@ describe('invariants ledger gate script', () => {
     for (const [gateId, spec] of Object.entries(registry.gates)) {
       if (spec.type === 'ledger-paths') continue;
       expect(spec.type).toBe('argv');
-      expect(Array.isArray(spec.argv)).toBe(true);
-      expect(spec.argv?.some((part) => part.startsWith('scripts/'))).toBe(true);
+      expect(spec.argv).toHaveLength(2);
+      expect(spec.argv?.[0]).toBe('bash');
+      expect(spec.argv?.[1]).toMatch(/^scripts\/[A-Za-z0-9._/-]+\.sh$/);
+      expect(spec.argv?.[1]?.includes('..')).toBe(false);
       expect(gateId).not.toMatch(/[`$]/);
     }
     // Markdown is not an execution source: registry maps IDs to gate IDs only.
