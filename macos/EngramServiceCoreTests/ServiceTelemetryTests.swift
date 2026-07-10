@@ -130,7 +130,9 @@ final class ServiceTelemetryTests: XCTestCase {
         let monitor = ServiceStatusMonitor()
         // Empty HOME + all shipped source IDs disabled keeps residual phases cheap
         // after inject. Explicit list (EngramServiceCoreTests cannot use
-        // SessionAdapterFactory); keep complete enough that no default adapter runs.
+        // SessionAdapterFactory). maxFtsDrainIterations: 0 skips the FTS drain
+        // while-loop so a migrated DB with undrainable backlog cannot hang when
+        // every adapter is disabled — still reaches outer failedPhaseCount gate.
         let emptyHome = paths.runtime.deletingLastPathComponent()
             .appendingPathComponent("empty-home", isDirectory: true)
         try FileManager.default.createDirectory(at: emptyHome, withIntermediateDirectories: true)
@@ -149,7 +151,10 @@ final class ServiceTelemetryTests: XCTestCase {
                 "ENGRAM_DISABLED_SOURCES": disabledAll,
             ],
             tokenLimitsProvider: { [:] },
-            testHooks: .init(failPhaseNamed: "usageParserBackfillCheck")
+            testHooks: .init(
+                failPhaseNamed: "usageParserBackfillCheck",
+                maxFtsDrainIterations: 0
+            )
         )
 
         let snapshot = await collector.snapshot()

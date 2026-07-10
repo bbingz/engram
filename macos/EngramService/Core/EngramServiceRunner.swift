@@ -548,9 +548,13 @@ private final class IndexingScheduleBox: @unchecked Sendable {
     struct InitialScanTestHooks: Sendable {
         /// When set, the required phase with this name fails before its operation runs.
         var failPhaseNamed: String? = nil
+        /// Cap on `initialFtsDrain` while-loop iterations. `nil` = unbounded (production).
+        /// Tests use a small bound so residual FTS work cannot hang when adapters are disabled.
+        var maxFtsDrainIterations: Int? = nil
 
-        init(failPhaseNamed: String? = nil) {
+        init(failPhaseNamed: String? = nil, maxFtsDrainIterations: Int? = nil) {
             self.failPhaseNamed = failPhaseNamed
+            self.maxFtsDrainIterations = maxFtsDrainIterations
         }
     }
 
@@ -697,7 +701,13 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         // large (100k+) drain releases the single write gate BETWEEN batches
         // and user write commands can interleave instead of failing with
         // WriterBusy after the gate is held for the whole scan.
+        var ftsDrainIterations = 0
         while !Task.isCancelled {
+            if let maxDrain = testHooks.maxFtsDrainIterations, ftsDrainIterations >= maxDrain {
+                // Test-only bound: production leaves maxFtsDrainIterations nil.
+                break
+            }
+            ftsDrainIterations += 1
             let drainPhase = await runInitialScanPhase(
                 name: "initialFtsDrain",
                 statusMonitor: statusMonitor,
