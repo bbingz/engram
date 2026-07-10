@@ -171,8 +171,10 @@ final class IndexingSchedulePolicyTests: XCTestCase {
             recorder.lastInvalidateWaitedForWork,
             "invalidate() must await active work before returning"
         )
-        // performWhenDue should also finish (work cancelled).
-        _ = await performTask.value
+        // performWhenDue must report .cancelled when only invalidate() fired
+        // (parity with production NS scheduler).
+        let outcome = await performTask.value
+        XCTAssertEqual(outcome, .cancelled)
     }
 
     func testPeerDisconnectWatcherSourceUsesSelfPipeWake() throws {

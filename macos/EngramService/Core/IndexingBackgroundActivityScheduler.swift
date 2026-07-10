@@ -298,6 +298,9 @@ public final class SleepIndexingBackgroundActivityScheduler: IndexingBackgroundA
 
     private let lock = NSLock()
     private var activeWork: Task<Void, Never>?
+    /// Set by invalidate() so performWhenDue returns `.cancelled` even when the
+    /// caller task itself was not cancelled (parity with production).
+    private var cancelRequested = false
 
     public init() {}
 
@@ -314,7 +317,10 @@ public final class SleepIndexingBackgroundActivityScheduler: IndexingBackgroundA
         } catch {
             return .cancelled
         }
-        if Task.isCancelled { return .cancelled }
+        lock.lock()
+        let preCancel = cancelRequested || Task.isCancelled
+        lock.unlock()
+        if preCancel { return .cancelled }
 
         let workTask = Task { await work() }
         lock.lock()
@@ -329,12 +335,15 @@ public final class SleepIndexingBackgroundActivityScheduler: IndexingBackgroundA
 
         lock.lock()
         activeWork = nil
+        let cancelled = Task.isCancelled || cancelRequested
+        cancelRequested = false
         lock.unlock()
-        return Task.isCancelled ? .cancelled : .run
+        return cancelled ? .cancelled : .run
     }
 
     public func invalidate() async {
         lock.lock()
+        cancelRequested = true
         let work = activeWork
         activeWork = nil
         lock.unlock()
@@ -362,6 +371,7 @@ public final class RecordingIndexingBackgroundActivityScheduler: IndexingBackgro
 
     private let lock = NSLock()
     private var activeWork: Task<Void, Never>?
+    private var cancelRequested = false
 
     public init() {}
 
@@ -404,9 +414,10 @@ public final class RecordingIndexingBackgroundActivityScheduler: IndexingBackgro
             workTask.cancel()
         }
 
-        let cancelled = Task.isCancelled
         lock.lock()
         activeWork = nil
+        let cancelled = Task.isCancelled || cancelRequested
+        cancelRequested = false
         if cancelled {
             lastCancelWaitedForWork = true
         } else {
@@ -419,6 +430,7 @@ public final class RecordingIndexingBackgroundActivityScheduler: IndexingBackgro
 
     public func invalidate() async {
         lock.lock()
+        cancelRequested = true
         let work = activeWork
         activeWork = nil
         lock.unlock()
