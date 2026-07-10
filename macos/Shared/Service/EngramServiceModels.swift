@@ -421,11 +421,20 @@ struct EngramServiceSearchResponse: Codable, Equatable, Sendable {
     let items: [Item]
     let searchModes: [String]?
     let warning: String?
+    /// Optional machine-readable degrade code (e.g. `embeddingModelMismatch`).
+    /// Additive / optional so older clients ignore the field.
+    let warningCode: String?
 
-    init(items: [Item], searchModes: [String]? = nil, warning: String? = nil) {
+    init(
+        items: [Item],
+        searchModes: [String]? = nil,
+        warning: String? = nil,
+        warningCode: String? = nil
+    ) {
         self.items = items
         self.searchModes = searchModes
         self.warning = warning
+        self.warningCode = warningCode
     }
 }
 

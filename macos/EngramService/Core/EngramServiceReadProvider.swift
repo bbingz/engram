@@ -499,10 +499,13 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         let requestedMode = request.mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let semanticRequested = ["semantic", "hybrid", "both"].contains(requestedMode)
         guard query.count >= 2 else {
-            let warning: String? = semanticRequested
-                ? SessionVectorSearchAvailability.SemanticDegradeReason.providerUnavailable.serviceWarning
-                : nil
-            return EngramServiceSearchResponse(items: [], searchModes: ["keyword"], warning: warning)
+            let reason = SessionVectorSearchAvailability.SemanticDegradeReason.providerUnavailable
+            return EngramServiceSearchResponse(
+                items: [],
+                searchModes: ["keyword"],
+                warning: semanticRequested ? reason.serviceWarning : nil,
+                warningCode: semanticRequested ? reason.structuredCode : nil
+            )
         }
 
         let limit = max(1, min(request.limit, 100))
@@ -525,7 +528,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                         query: query,
                         request: request,
                         limit: limit,
-                        warning: reason.serviceWarning(detail: detail)
+                        warning: reason.serviceWarning(detail: detail),
+                        warningCode: reason.structuredCode
                     )
                 }
             } catch is CancellationError {
@@ -535,24 +539,32 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     "semantic search failed; falling back to keyword: \(error.localizedDescription)",
                     category: .reader
                 )
+                let reason = SessionVectorSearchAvailability.SemanticDegradeReason.embedFailed
                 return try await keywordSearch(
                     query: query,
                     request: request,
                     limit: limit,
-                    warning: SessionVectorSearchAvailability.SemanticDegradeReason.embedFailed
-                        .serviceWarning(detail: error.localizedDescription)
+                    warning: reason.serviceWarning(detail: error.localizedDescription),
+                    warningCode: reason.structuredCode
                 )
             }
         }
 
-        return try await keywordSearch(query: query, request: request, limit: limit, warning: nil)
+        return try await keywordSearch(
+            query: query,
+            request: request,
+            limit: limit,
+            warning: nil,
+            warningCode: nil
+        )
     }
 
     private func keywordSearch(
         query: String,
         request: EngramServiceSearchRequest,
         limit: Int,
-        warning: String?
+        warning: String?,
+        warningCode: String?
     ) async throws -> EngramServiceSearchResponse {
         try await read { db in
             if CJKText.containsCJK(query) || query.count < 3 {
@@ -585,7 +597,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 return EngramServiceSearchResponse(
                     items: rows.map { item(from: $0, query: query) },
                     searchModes: ["keyword"],
-                    warning: warning
+                    warning: warning,
+                    warningCode: warningCode
                 )
             }
 
@@ -651,7 +664,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             return EngramServiceSearchResponse(
                 items: rows.map { item(from: $0, query: query) },
                 searchModes: ["keyword"],
-                warning: warning
+                warning: warning,
+                warningCode: warningCode
             )
         }
     }
@@ -662,6 +676,13 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         let sessionId: String
         let text: String
         let vector: [Float]
+    }
+
+    /// Raw SQL page cursor is independent of successful vector decode.
+    private struct SemanticChunkPage: Sendable {
+        let candidates: [SemanticChunkCandidate]
+        /// Last `sc.rowid` in the raw SQL page; `nil` only when the page is empty.
+        let lastRawRowID: Int64?
     }
 
     private enum SemanticSearchOutcome {
@@ -758,7 +779,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     query: query,
                     request: request,
                     limit: limit,
-                    warning: nil
+                    warning: nil,
+                    warningCode: nil
                 )
                 let fusedIds = RankFusion.rrf(
                     [keyword.items.map(\.id), semanticItems.map(\.id)],
@@ -774,14 +796,16 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 return .results(EngramServiceSearchResponse(
                     items: fusedItems,
                     searchModes: ["keyword", "semantic"],
-                    warning: nil
+                    warning: nil,
+                    warningCode: nil
                 ))
             }
 
             return .results(EngramServiceSearchResponse(
                 items: semanticItems,
                 searchModes: ["semantic"],
-                warning: nil
+                warning: nil,
+                warningCode: nil
             ))
 
         case .corpusUnavailable:
@@ -797,6 +821,10 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
     /// Stream every eligible semantic chunk in GRDB batches; keep only top-K
     /// scored hits in memory. Checks cancellation between batches.
+    ///
+    /// Cursor advances from the **raw** SQL page's last rowid, not from
+    /// successfully decoded candidates — a full page of malformed BLOBs must
+    /// not terminate the scan (M09).
     private func semanticChunkTopK(
         for request: EngramServiceSearchRequest,
         queryVector: [Float],
@@ -810,16 +838,16 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
 
         while true {
             try Task.checkCancellation()
-            let batch = try await fetchSemanticChunkBatch(
+            let page = try await fetchSemanticChunkPage(
                 for: request,
                 model: model,
                 dim: dim,
                 afterRowID: afterRowID,
                 batchSize: batchSize
             )
-            if batch.isEmpty { break }
-            afterRowID = batch.last!.rowID
-            for candidate in batch {
+            guard let lastRaw = page.lastRawRowID else { break }
+            afterRowID = lastRaw
+            for candidate in page.candidates {
                 let score = VectorMath.cosine(queryVector, candidate.vector)
                 SessionSemanticSearchPolicy.accumulateTopK(
                     &top,
@@ -836,15 +864,17 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         return top
     }
 
-    private func fetchSemanticChunkBatch(
+    private func fetchSemanticChunkPage(
         for request: EngramServiceSearchRequest,
         model: String,
         dim: Int,
         afterRowID: Int64,
         batchSize: Int
-    ) async throws -> [SemanticChunkCandidate] {
+    ) async throws -> SemanticChunkPage {
         try await read { db in
-            guard try tableExists("semantic_chunks", db: db) else { return [] }
+            guard try tableExists("semantic_chunks", db: db) else {
+                return SemanticChunkPage(candidates: [], lastRawRowID: nil)
+            }
             var parts = ["""
                 SELECT sc.rowid AS row_id,
                        sc.id AS chunk_id,
@@ -870,7 +900,19 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 sql: parts.joined(separator: " "),
                 arguments: StatementArguments(args)
             )
-            return rows.compactMap { row in
+            guard let lastRow = rows.last else {
+                return SemanticChunkPage(candidates: [], lastRawRowID: nil)
+            }
+            let lastRawRowID: Int64
+            if let value = lastRow["row_id"] as Int64? {
+                lastRawRowID = value
+            } else if let value = lastRow["row_id"] as Int? {
+                lastRawRowID = Int64(value)
+            } else {
+                // Malformed rowid on last row — still must not loop forever; stop.
+                return SemanticChunkPage(candidates: [], lastRawRowID: nil)
+            }
+            let candidates: [SemanticChunkCandidate] = rows.compactMap { row in
                 let rowID: Int64
                 if let value = row["row_id"] as Int64? {
                     rowID = value
@@ -894,6 +936,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     vector: vector
                 )
             }
+            return SemanticChunkPage(candidates: candidates, lastRawRowID: lastRawRowID)
         }
     }
 

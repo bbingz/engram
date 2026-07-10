@@ -51,6 +51,11 @@ final class SemanticSearchIntegrityTests: XCTestCase {
                 || warning.localizedCaseInsensitiveContains("model-a"),
             "warning must identify mismatch: \(warning)"
         )
+        XCTAssertEqual(
+            response.warningCode,
+            "embeddingModelMismatch",
+            "H07: service must surface stable machine-readable code"
+        )
         let embedCallCount = await embedCalls.count()
         XCTAssertEqual(
             embedCallCount,
@@ -74,8 +79,16 @@ final class SemanticSearchIntegrityTests: XCTestCase {
             sessions: [("s2", "2026-06-01T00:00:00Z", [1, 0, 0], "semantic recall chunk")]
         )
 
-        // No embedding env → provider unavailable.
-        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        // No usable API key and no settings file → provider unavailable.
+        // Isolate from process env / ~/.engram/settings.json (may have keys).
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            embeddingEnvironment: [
+                "HOME": FileManager.default.temporaryDirectory
+                    .appendingPathComponent("engram-no-settings-\(UUID().uuidString)").path,
+                "ENGRAM_SETTINGS_PATH": "/tmp/engram-missing-settings-\(UUID().uuidString).json",
+            ]
+        )
         let response = try await provider.search(
             EngramServiceSearchRequest(query: "semantic recall", mode: "semantic", limit: 10)
         )
@@ -86,6 +99,7 @@ final class SemanticSearchIntegrityTests: XCTestCase {
                 || warning.localizedCaseInsensitiveContains("not configured"),
             "expected provider-unavailable wording, got: \(warning)"
         )
+        XCTAssertEqual(response.warningCode, "embeddingProviderUnavailable")
         XCTAssertFalse(
             warning.localizedCaseInsensitiveContains("breaker"),
             "must not mislabel as breaker: \(warning)"
@@ -215,6 +229,65 @@ final class SemanticSearchIntegrityTests: XCTestCase {
             "old exact match outside former recency cap must win; got \(response.items.map(\.id))"
         )
         XCTAssertEqual(response.items.first?.matchType, "semantic")
+    }
+
+    /// M09: a full page of non-null but undecodable BLOBs must not stop the
+    /// scan before a later valid exact match.
+    func testFullCorpusContinuesPastMalformedPageToLaterExactMatch() async throws {
+        let paths = try makePaths()
+        try seedBaseSessions(at: paths.database.path)
+
+        let limit = 10
+        let pageSize = SessionSemanticSearchPolicy.candidateBatchSize(requestLimit: limit)
+        var sessions: [(String, String, [Float]?, String, Bool)] = []
+        // Full page of dim-labeled rows whose BLOBs are wrong-size (decode fails).
+        for i in 0..<pageSize {
+            sessions.append((
+                "malformed-\(i)",
+                "2026-06-01T00:00:00Z",
+                nil,
+                "malformed blob \(i)",
+                true
+            ))
+        }
+        sessions.append((
+            "exact-late",
+            "2026-06-02T00:00:00Z",
+            [1, 0, 0],
+            "exact semantic recall about vector memory",
+            false
+        ))
+        try seedExtraSessions(
+            at: paths.database.path,
+            idsAndTimes: sessions.map { ($0.0, $0.1) }
+        )
+        try seedSemanticCorpusWithOptionalMalformed(
+            at: paths.database.path,
+            model: "probe",
+            sessions: sessions
+        )
+
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: paths.database.path,
+            embeddingEnvironment: [
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ],
+            embeddingProviderFactory: { _ in
+                StaticIntegrityEmbeddingProvider { _ in [1, 0, 0] }
+            }
+        )
+
+        let response = try await provider.search(
+            EngramServiceSearchRequest(query: "vector memory", mode: "semantic", limit: limit)
+        )
+        XCTAssertEqual(response.searchModes, ["semantic"], "\(response.warning ?? "nil")")
+        XCTAssertEqual(
+            response.items.first?.id,
+            "exact-late",
+            "must continue past a full malformed page; got \(response.items.map(\.id))"
+        )
     }
 
     // MARK: - Shared breaker source coupling (M08 service side)
@@ -356,6 +429,20 @@ final class SemanticSearchIntegrityTests: XCTestCase {
         model: String,
         sessions: [(id: String, start: String, vector: [Float], text: String)]
     ) throws {
+        try seedSemanticCorpusWithOptionalMalformed(
+            at: path,
+            model: model,
+            sessions: sessions.map { ($0.id, $0.start, $0.vector, $0.text, false) }
+        )
+    }
+
+    /// `malformed == true` inserts a non-null wrong-size embedding BLOB with dim=3
+    /// so SQL includes the row but decode drops it.
+    private func seedSemanticCorpusWithOptionalMalformed(
+        at path: String,
+        model: String,
+        sessions: [(id: String, start: String, vector: [Float]?, text: String, malformed: Bool)]
+    ) throws {
         let queue = try DatabaseQueue(path: path)
         try queue.write { db in
             try db.execute(sql: """
@@ -379,27 +466,33 @@ final class SemanticSearchIntegrityTests: XCTestCase {
                 DELETE FROM semantic_chunks;
                 DELETE FROM embedding_meta;
                 """)
-            let dim = sessions.first?.vector.count ?? 3
             try db.execute(
                 sql: """
                 INSERT INTO embedding_meta (id, provider, model, dimension)
-                VALUES (1, 'test', ?, ?)
+                VALUES (1, 'test', ?, 3)
                 """,
-                arguments: [model, dim]
+                arguments: [model]
             )
             for session in sessions {
+                let blob: Data
+                if session.malformed {
+                    // 2 floats while dim column claims 3 → decode(expectedCount: 3) fails.
+                    blob = VectorMath.encode([0.1, 0.2])
+                } else {
+                    let vector = session.vector ?? [1, 0, 0]
+                    blob = VectorMath.encode(VectorMath.l2Normalize(vector))
+                }
                 try db.execute(
                     sql: """
                     INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
-                    VALUES (?, ?, 0, ?, ?, ?, ?)
+                    VALUES (?, ?, 0, ?, ?, ?, 3)
                     """,
                     arguments: [
                         "\(session.id):c0",
                         session.id,
                         session.text,
-                        VectorMath.encode(VectorMath.l2Normalize(session.vector)),
+                        blob,
                         model,
-                        session.vector.count,
                     ]
                 )
             }

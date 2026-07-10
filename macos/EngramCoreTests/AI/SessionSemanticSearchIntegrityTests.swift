@@ -119,6 +119,10 @@ final class SessionSemanticSearchIntegrityTests: XCTestCase {
                 .memoryWarning
                 .localizedCaseInsensitiveContains("No embedding provider")
         )
+        XCTAssertEqual(
+            SessionVectorSearchAvailability.SemanticDegradeReason.modelMismatch.structuredCode,
+            "embeddingModelMismatch"
+        )
     }
 
     // MARK: - Availability probe still requires matching corpus

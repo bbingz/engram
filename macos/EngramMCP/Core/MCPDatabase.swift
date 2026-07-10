@@ -469,31 +469,53 @@ final class MCPDatabase {
         // Hybrid keyword + semantic when an embedding provider is configured and
         // embeddings exist. Any failure degrades to keyword with a warning that
         // names the *actual* reason (M07) — never a blanket "No embedding provider"
-        // when the provider was present.
+        // when the provider was present, and never embed on model mismatch.
         var degradeReason: SessionVectorSearchAvailability.SemanticDegradeReason?
         var degradeDetail: String?
         if let config = EmbeddingSettings.load() {
-            if (try? hasInsightEmbeddings()) == true {
-                do {
-                    let hybrid = try await semanticMemory(
-                        query: query,
-                        config: config,
-                        lifecycleAware: lifecycleAware,
-                        type: insightType
-                    )
-                    if !hybrid.isEmpty {
-                        return .object([
-                            ("memories", .array(hybrid.map { memoryObject(from: $0.row, distance: Double($0.distance)) })),
-                            ("retrieval", .string("hybrid")),
-                        ])
+            if let insightMeta = try? probeInsightEmbeddingMeta() {
+                let snapshot = SessionVectorSearchAvailability.Snapshot(
+                    isUsable: true,
+                    model: insightMeta.model,
+                    dimension: insightMeta.dimension
+                )
+                switch SessionVectorSearchAvailability.queryCompatibility(
+                    configuredModel: config.model,
+                    configuredDimension: config.dimension,
+                    snapshot: snapshot
+                ) {
+                case .compatible:
+                    do {
+                        let hybrid = try await semanticMemory(
+                            query: query,
+                            config: config,
+                            lifecycleAware: lifecycleAware,
+                            type: insightType,
+                            storedModel: insightMeta.model,
+                            storedDim: insightMeta.dimension
+                        )
+                        if !hybrid.isEmpty {
+                            return .object([
+                                ("memories", .array(hybrid.map { memoryObject(from: $0.row, distance: Double($0.distance)) })),
+                                ("retrieval", .string("hybrid")),
+                            ])
+                        }
+                        // Empty hybrid is not a provider failure — fall through without
+                        // mislabeling as providerUnavailable.
+                    } catch EmbeddingError.circuitOpen {
+                        degradeReason = .breakerOpen
+                    } catch EmbeddingError.notConfigured {
+                        degradeReason = .providerUnavailable
+                    } catch {
+                        degradeReason = .embedFailed
+                        degradeDetail = error.localizedDescription
                     }
-                } catch EmbeddingError.circuitOpen {
-                    degradeReason = .breakerOpen
-                } catch EmbeddingError.notConfigured {
-                    degradeReason = .providerUnavailable
-                } catch {
-                    degradeReason = .embedFailed
-                    degradeDetail = error.localizedDescription
+                case .corpusUnavailable:
+                    degradeReason = .corpusMissing
+                case let .modelMismatch(cfgModel, cfgDim, storedModel, storedDim):
+                    // Fail closed: no provider call and no ranking on mismatch.
+                    degradeReason = .modelMismatch
+                    degradeDetail = "configured \(cfgModel)@\(cfgDim) vs stored \(storedModel)@\(storedDim)"
                 }
             } else {
                 degradeReason = .corpusMissing
@@ -502,7 +524,9 @@ final class MCPDatabase {
             degradeReason = .providerUnavailable
         }
 
-        let warning = (degradeReason ?? .providerUnavailable).memoryWarning(detail: degradeDetail)
+        // Only claim "No embedding provider" when that is the actual reason.
+        let warning = degradeReason?.memoryWarning(detail: degradeDetail)
+            ?? "Keyword-matched insights ranked by importance and recency."
 
         // When the writer has applied the memory-lifecycle migration, rank by
         // importance + recency decay + access and exclude superseded rows. On an
@@ -660,19 +684,53 @@ final class MCPDatabase {
     // MARK: - Semantic memory (hybrid keyword + vector)
 
     private func hasInsightEmbeddings() throws -> Bool {
+        try probeInsightEmbeddingMeta() != nil
+    }
+
+    /// Probe a single stored (model, dimension) for insight embeddings.
+    /// Returns nil when the table is missing/empty or model/dim is unusable.
+    private func probeInsightEmbeddingMeta() throws -> (model: String, dimension: Int)? {
         try queue.read { db in
             let exists = try Int.fetchOne(
                 db,
                 sql: "SELECT 1 FROM sqlite_master WHERE type='table' AND name='insight_embeddings'"
             ) != nil
-            guard exists else { return false }
-            return try Int.fetchOne(db, sql: "SELECT 1 FROM insight_embeddings LIMIT 1") != nil
+            guard exists else { return nil }
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT model, dim
+                FROM insight_embeddings
+                WHERE embedding IS NOT NULL
+                  AND model IS NOT NULL
+                  AND dim IS NOT NULL
+                  AND dim > 0
+                LIMIT 1
+                """
+            ) else {
+                return nil
+            }
+            let model = (row["model"] as String?)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let dimension = row["dim"] as Int?
+            guard let model, !model.isEmpty, let dimension, dimension > 0 else { return nil }
+            return (model, dimension)
         }
     }
 
-    private func insightEmbeddingCandidates(dim: Int) throws -> [VectorSearch.Candidate] {
+    private func insightEmbeddingCandidates(model: String, dim: Int) throws -> [VectorSearch.Candidate] {
         let rows = try queue.read { db in
-            try Row.fetchAll(db, sql: "SELECT insight_id, embedding FROM insight_embeddings")
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT insight_id, embedding
+                FROM insight_embeddings
+                WHERE embedding IS NOT NULL
+                  AND model = ?
+                  AND dim = ?
+                """,
+                arguments: [model, dim]
+            )
         }
         var candidates: [VectorSearch.Candidate] = []
         for row in rows {
@@ -694,11 +752,14 @@ final class MCPDatabase {
     /// Embed the query, KNN over stored insight embeddings, fuse with the FTS
     /// keyword ranking via RRF, then drop superseded rows (and optional type).
     /// Top 10. Uses `EmbeddingGuardrails.sharedBreaker` (M08) — no private bypass.
+    /// Caller must already enforce model+dim equality (M07).
     private func semanticMemory(
         query: String,
         config: EmbeddingConfig,
         lifecycleAware: Bool,
-        type: String?
+        type: String?,
+        storedModel: String,
+        storedDim: Int
     ) async throws -> [(row: Row, distance: Float)] {
         let client = EmbeddingGuardrails.guardedProvider(
             for: config,
@@ -706,8 +767,9 @@ final class MCPDatabase {
         )
         let vectors = try await client.embed([query])
         guard let queryVector = vectors.first, !queryVector.isEmpty else { return [] }
+        guard queryVector.count == storedDim else { return [] }
 
-        let candidates = try insightEmbeddingCandidates(dim: queryVector.count)
+        let candidates = try insightEmbeddingCandidates(model: storedModel, dim: storedDim)
         guard !candidates.isEmpty else { return [] }
 
         let knn = VectorSearch.knn(query: queryVector, candidates: candidates, topK: 40)
@@ -1152,7 +1214,16 @@ final class MCPDatabase {
         let vector: [Float]
     }
 
-    /// Full-corpus stream: page by rowid, accumulate constant-memory top-K.
+    /// Raw SQL page cursor is independent of successful vector decode.
+    private struct SemanticChunkPage {
+        let candidates: [SemanticChunkCandidate]
+        /// Last `sc.rowid` in the raw SQL page; `nil` only when the page is empty.
+        let lastRawRowID: Int64?
+    }
+
+    /// Full-corpus stream: page by raw rowid, accumulate constant-memory top-K.
+    /// Cursor advances from raw page last rowid so a full malformed page does not
+    /// terminate the scan (M09).
     private func semanticChunkTopK(
         source: String?,
         project: String?,
@@ -1169,7 +1240,7 @@ final class MCPDatabase {
 
         while true {
             try Task.checkCancellation()
-            let batch = try fetchSemanticChunkBatch(
+            let page = try fetchSemanticChunkPage(
                 source: source,
                 project: project,
                 since: since,
@@ -1178,9 +1249,9 @@ final class MCPDatabase {
                 afterRowID: afterRowID,
                 batchSize: batchSize
             )
-            if batch.isEmpty { break }
-            afterRowID = batch.last!.rowID
-            for candidate in batch {
+            guard let lastRaw = page.lastRawRowID else { break }
+            afterRowID = lastRaw
+            for candidate in page.candidates {
                 let score = VectorMath.cosine(queryVector, candidate.vector)
                 SessionSemanticSearchPolicy.accumulateTopK(
                     &top,
@@ -1197,7 +1268,7 @@ final class MCPDatabase {
         return top
     }
 
-    private func fetchSemanticChunkBatch(
+    private func fetchSemanticChunkPage(
         source: String?,
         project: String?,
         since: String?,
@@ -1205,7 +1276,7 @@ final class MCPDatabase {
         dim: Int,
         afterRowID: Int64,
         batchSize: Int
-    ) throws -> [SemanticChunkCandidate] {
+    ) throws -> SemanticChunkPage {
         let expandedProjects = try project.map { try resolveProjectAliases([$0]) } ?? []
         return try queue.read { db in
             var conditions = [
@@ -1252,7 +1323,18 @@ final class MCPDatabase {
             LIMIT ?
             """
             let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
-            return rows.compactMap { row in
+            guard let lastRow = rows.last else {
+                return SemanticChunkPage(candidates: [], lastRawRowID: nil)
+            }
+            let lastRawRowID: Int64
+            if let value = lastRow["row_id"] as Int64? {
+                lastRawRowID = value
+            } else if let value = lastRow["row_id"] as Int? {
+                lastRawRowID = Int64(value)
+            } else {
+                return SemanticChunkPage(candidates: [], lastRawRowID: nil)
+            }
+            let candidates: [SemanticChunkCandidate] = rows.compactMap { row in
                 let rowID: Int64
                 if let value = row["row_id"] as Int64? {
                     rowID = value
@@ -1276,6 +1358,7 @@ final class MCPDatabase {
                     vector: vector
                 )
             }
+            return SemanticChunkPage(candidates: candidates, lastRawRowID: lastRawRowID)
         }
     }
 

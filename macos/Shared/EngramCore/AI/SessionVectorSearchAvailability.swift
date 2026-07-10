@@ -82,6 +82,23 @@ public enum SessionVectorSearchAvailability {
                 return "Query embedding failed — keyword-matched insights ranked by importance and recency."
             }
         }
+
+        /// Stable machine-readable code for service/MCP clients (H07 / M06 / M07).
+        public var structuredCode: String {
+            switch self {
+            case .providerUnavailable:
+                return "embeddingProviderUnavailable"
+            case .corpusMissing:
+                return "embeddingCorpusMissing"
+            case .modelMismatch:
+                // Match MCP SearchError structured code.
+                return "embeddingModelMismatch"
+            case .breakerOpen:
+                return "embeddingCircuitOpen"
+            case .embedFailed:
+                return "embeddingFailed"
+            }
+        }
     }
 
     /// Result of comparing the configured query embedding model against stored meta.

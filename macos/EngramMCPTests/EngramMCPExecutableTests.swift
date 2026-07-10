@@ -3997,6 +3997,189 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    /// M07: same-dim different-model insight embeddings fail closed with a
+    /// model-mismatch warning and without calling the embedding provider.
+    func testGetMemoryInsightModelMismatchDoesNotEmbedAndNamesReason() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-m07-insight-model"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try DatabaseQueue(path: dbPath).write { db in
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS insight_embeddings (
+                  insight_id TEXT PRIMARY KEY, embedding BLOB NOT NULL,
+                  model TEXT NOT NULL, dim INTEGER NOT NULL, created_at TEXT
+                );
+            """)
+            try db.execute(sql: "DELETE FROM insights")
+            try db.execute(sql: "DELETE FROM insights_fts")
+            try db.execute(sql: "DELETE FROM insight_embeddings")
+            try db.execute(
+                sql: "INSERT INTO insights (id, content, importance) VALUES (?, ?, 5)",
+                arguments: ["ins-a", "vector about cats hybrid type"]
+            )
+            try db.execute(
+                sql: "INSERT INTO insights_fts (insight_id, content) VALUES (?, ?)",
+                arguments: ["ins-a", "vector about cats hybrid type"]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO insight_embeddings (insight_id, embedding, model, dim)
+                VALUES ('ins-a', ?, 'model-a', 4)
+                """,
+                arguments: [encodeVector([1, 0, 0, 0])]
+            )
+        }
+
+        let server = try MockHTTPServer(jsonBody: #"{"data":[{"index":0,"embedding":[1,0,0,0]}]}"#)
+        server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"feline cats"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_EMBEDDING_BASE_URL": "http://127.0.0.1:\(server.port)/v1",
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "model-b",
+                "ENGRAM_EMBEDDING_DIM": "4",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertNil(structured["retrieval"], "model mismatch must not return hybrid")
+        let warning = structured["warning"]?.stringValue ?? ""
+        XCTAssertTrue(
+            warning.localizedCaseInsensitiveContains("model")
+                && warning.localizedCaseInsensitiveContains("mismatch"),
+            "warning must name model mismatch: \(warning)"
+        )
+        XCTAssertFalse(
+            warning.localizedCaseInsensitiveContains("No embedding provider"),
+            "must not mislabel as missing provider: \(warning)"
+        )
+        XCTAssertEqual(server.requestCount, 0, "must not call provider on insight model mismatch")
+    }
+
+    /// M09: a full page of malformed embedding BLOBs must not stop the scan
+    /// before a later valid exact match.
+    func testSearchSemanticContinuesPastMalformedPageToLaterExactMatch() throws {
+        let dbDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-mcp-m09-malformed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dbDir, withIntermediateDirectories: true)
+        let dbPath = dbDir.appendingPathComponent("index.sqlite").path
+        defer { try? FileManager.default.removeItem(at: dbDir) }
+
+        let limit = 10
+        let pageSize = SessionSemanticSearchPolicy.candidateBatchSize(requestLimit: limit)
+
+        let writer = try EngramDatabaseWriter(path: dbPath)
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS semantic_chunks (
+                  id TEXT PRIMARY KEY,
+                  session_id TEXT NOT NULL,
+                  chunk_index INTEGER NOT NULL,
+                  text TEXT NOT NULL,
+                  embedding BLOB,
+                  model TEXT,
+                  dim INTEGER,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS embedding_meta (
+                  id INTEGER PRIMARY KEY CHECK (id = 1),
+                  provider TEXT,
+                  model TEXT,
+                  dimension INTEGER,
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                DELETE FROM semantic_chunks;
+                DELETE FROM embedding_meta;
+                INSERT INTO embedding_meta (id, provider, model, dimension)
+                VALUES (1, 'test', 'probe', 3);
+                """)
+            for i in 0..<pageSize {
+                let id = "malformed-\(i)"
+                try db.execute(
+                    sql: """
+                    INSERT INTO sessions (
+                      id, source, start_time, end_time, cwd, project, model,
+                      message_count, user_message_count, assistant_message_count,
+                      file_path, size_bytes, indexed_at, tier
+                    ) VALUES (?, 'codex', '2026-06-01T00:00:00Z', '2026-06-01T01:00:00Z',
+                      '/tmp', 'demo', 'gpt', 1, 1, 0, ?, 10, '2026-06-01T01:00:00Z', 'normal')
+                    """,
+                    arguments: [id, "/tmp/\(id).jsonl"]
+                )
+                // dim=3 metadata but 2-float BLOB → decode fails.
+                try db.execute(
+                    sql: """
+                    INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
+                    VALUES (?, ?, 0, ?, ?, 'probe', 3)
+                    """,
+                    arguments: [
+                        "\(id):c0",
+                        id,
+                        "malformed \(i)",
+                        encodeVector([0.1, 0.2]),
+                    ]
+                )
+            }
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, end_time, cwd, project, model,
+                  message_count, user_message_count, assistant_message_count,
+                  file_path, size_bytes, indexed_at, tier
+                ) VALUES (
+                  'exact-late', 'codex', '2026-06-02T00:00:00Z', '2026-06-02T01:00:00Z',
+                  '/tmp', 'demo', 'gpt', 1, 1, 0, '/tmp/exact-late.jsonl', 10,
+                  '2026-06-02T01:00:00Z', 'normal'
+                )
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
+                VALUES ('exact-late:c0', 'exact-late', 0, 'exact semantic recall about vector memory', ?, 'probe', 3)
+                """,
+                arguments: [encodeVector([1, 0, 0])]
+            )
+        }
+        _ = writer
+
+        let server = try MockHTTPServer(jsonBody: #"{"data":[{"index":0,"embedding":[1,0,0]}]}"#)
+        server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"vector memory","mode":"semantic","limit":\(limit)}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_EMBEDDING_BASE_URL": "http://127.0.0.1:\(server.port)/v1",
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ]
+        )
+
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertNotEqual(structured["isError"]?.boolValue, true, "\(structured)")
+        let firstId = structured["results"]?.arrayValue?.first?["session"]?["id"]?.stringValue
+        XCTAssertEqual(
+            firstId,
+            "exact-late",
+            "must continue past a full malformed page; got \(structured)"
+        )
+    }
+
     /// M09: old exact semantic match outside former recency cap must win.
     func testSearchSemanticFullCorpusPrefersOldExactMatchOutsideFormerCap() throws {
         let dbDir = FileManager.default.temporaryDirectory
