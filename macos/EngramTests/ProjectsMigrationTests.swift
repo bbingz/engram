@@ -611,6 +611,19 @@ final class ProjectsMigrationTests: XCTestCase {
             orchestrator.contains("DestinationParentProvision.removeEmptyCreated"),
             "orchestrator must tear down empty parents it created on failure/cancel"
         )
+        XCTAssertTrue(
+            orchestrator.contains("if options.archived"),
+            "parent provision must be archive-only so plain renames keep prior behavior"
+        )
+
+        let fsOps = try Self.source("macos/EngramCoreWrite/ProjectMove/FsOps.swift")
+        guard let mark = fsOps.range(of: "public enum DestinationParentProvision") else {
+            return XCTFail("DestinationParentProvision missing")
+        }
+        let provision = String(fsOps[mark.lowerBound...].prefix(3500))
+        XCTAssertTrue(provision.contains("Darwin.mkdir"))
+        XCTAssertTrue(provision.contains("Darwin.rmdir"))
+        XCTAssertFalse(provision.contains("removeItem"))
     }
 
     // MARK: - (d) alias add AND remove both encode new_project (non-nil)

@@ -572,13 +572,15 @@ public enum ProjectMoveOrchestrator {
                 }
             }
 
-            // Step 0.9: ensure destination parent exists (archive `_archive/...`
-            // and plain renames into new folders). Track only newly created
-            // components so cancel/preflight/failure can remove empty shells
-            // without touching pre-existing parents.
-            createdDestinationParents = try DestinationParentProvision.ensure(
-                destinationPath: dst
-            )
+            // Step 0.9: archive destinations live under `_archive/<category>/…`
+            // which may not exist yet. Provision only when `archived` so plain
+            // renames keep their historical "parent must already exist" behavior.
+            // mkdir-only ownership tracking: only segments this call created.
+            if options.archived {
+                createdDestinationParents = try DestinationParentProvision.ensure(
+                    destinationPath: dst
+                )
+            }
 
             // Step 1: physical move
             let moveResult = try SafeMoveDir.run(src: src, dst: dst)

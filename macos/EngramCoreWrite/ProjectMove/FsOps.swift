@@ -220,84 +220,104 @@ public enum SafeMoveDir {
 
 // MARK: - Destination parent provision (compensatable)
 
-/// Creates missing destination-parent directories and records only the paths this
-/// call newly created so cancel/preflight failure can remove empty shells
-/// without touching pre-existing or concurrently populated directories.
+/// Creates missing destination-parent directories using POSIX `mkdir`/`rmdir`
+/// so concurrent creators cannot be mis-attributed or recursively deleted.
+///
+/// - **Create (shallow→deep):** `mkdir(path, 0o755)`. Only `return 0` is
+///   recorded as "created by this call". `EEXIST` is not recorded (and the
+///   path must already be a directory). Other errno values throw.
+/// - **Teardown (deepest→shallow):** `rmdir` only — fails safely on
+///   `ENOTEMPTY` / concurrent writers. Never `FileManager.removeItem`
+///   (which is recursive and races with concurrent writes).
 public enum DestinationParentProvision {
-    /// Ensure the parent directory of `destinationPath` exists.
-    /// - Returns: newly created path components, deepest-first (safe teardown order).
-    @discardableResult
-    public static func ensure(
-        destinationPath: String,
-        fileManager: FileManager = .default
-    ) throws -> [String] {
-        let parent = (destinationPath as NSString).deletingLastPathComponent
-        guard !parent.isEmpty, parent != "/", parent != "." else { return [] }
-        return try ensureDirectory(atPath: parent, fileManager: fileManager)
+    public enum Error: Swift.Error, Equatable, LocalizedError {
+        case mkdirFailed(path: String, errno: Int32)
+        case existsButNotDirectory(path: String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .mkdirFailed(let path, let code):
+                return "mkdir \(path) failed: \(String(cString: strerror(code))) (\(code))"
+            case .existsButNotDirectory(let path):
+                return "path exists but is not a directory: \(path)"
+            }
+        }
     }
 
-    /// Ensure `path` exists as a directory. Returns newly created components
-    /// (deepest first).
-    public static func ensureDirectory(
-        atPath path: String,
-        fileManager: FileManager = .default
-    ) throws -> [String] {
-        var isDir: ObjCBool = false
-        if fileManager.fileExists(atPath: path, isDirectory: &isDir) {
+    /// Ensure the parent directory of `destinationPath` exists.
+    /// - Returns: newly created path components, deepest-first (teardown order).
+    @discardableResult
+    public static func ensure(destinationPath: String) throws -> [String] {
+        let parent = (destinationPath as NSString).deletingLastPathComponent
+        guard !parent.isEmpty, parent != "/", parent != "." else { return [] }
+        return try ensureDirectory(atPath: parent)
+    }
+
+    /// Ensure `path` exists as a directory via per-segment `mkdir`.
+    /// Returns only segments this call created (deepest first).
+    public static func ensureDirectory(atPath path: String) throws -> [String] {
+        let standardized = (path as NSString).standardizingPath
+        guard !standardized.isEmpty, standardized != "/", standardized != "." else {
             return []
         }
 
-        // Walk ancestors; record missing segments shallow→deep, then create.
-        var missing: [String] = []
-        var cursor = path
+        // Build shallow→deep chain of absolute path prefixes.
         var chain: [String] = []
+        var cursor = standardized
         while !cursor.isEmpty, cursor != "/", cursor != "." {
             chain.append(cursor)
             let next = (cursor as NSString).deletingLastPathComponent
             if next == cursor { break }
             cursor = next
         }
-        // chain is leaf→root; reverse to root→leaf for creation bookkeeping.
-        for candidate in chain.reversed() {
-            var candidateIsDir: ObjCBool = false
-            if fileManager.fileExists(atPath: candidate, isDirectory: &candidateIsDir) {
+        chain.reverse() // root-most → leaf
+
+        var createdShallowToDeep: [String] = []
+        for candidate in chain {
+            let rc = candidate.withCString { cPath in
+                Darwin.mkdir(cPath, 0o755)
+            }
+            if rc == 0 {
+                // Atomically ours — only mkdir success is recorded.
+                createdShallowToDeep.append(candidate)
                 continue
             }
-            missing.append(candidate)
+            let code = errno
+            if code == EEXIST {
+                // Concurrent/pre-existing: never claim ownership; must be a dir.
+                try requireDirectory(atPath: candidate)
+                continue
+            }
+            // Roll back segments we created on this attempt before propagating.
+            removeEmptyCreated(createdShallowToDeep.reversed())
+            throw Error.mkdirFailed(path: candidate, errno: code)
         }
-
-        if !missing.isEmpty {
-            try fileManager.createDirectory(
-                atPath: path,
-                withIntermediateDirectories: true
-            )
-        }
-        // Teardown must be deepest-first.
-        return missing.reversed()
+        // Teardown order is deepest-first.
+        return createdShallowToDeep.reversed()
     }
 
-    /// Best-effort: remove only empty directories from `created` (deepest first).
-    /// Never recursive; never removes a non-empty or pre-existing concurrent dir.
-    public static func removeEmptyCreated(
-        _ created: [String],
-        fileManager: FileManager = .default
-    ) {
+    /// Best-effort: `rmdir` each path deepest-first. Empty-dir only;
+    /// `ENOTEMPTY` / races fail safely without recursive delete.
+    public static func removeEmptyCreated(_ created: [String]) {
         for path in created {
-            var isDir: ObjCBool = false
-            guard fileManager.fileExists(atPath: path, isDirectory: &isDir),
-                  isDir.boolValue
-            else {
-                continue
+            _ = path.withCString { cPath in
+                Darwin.rmdir(cPath)
             }
-            let contents: [String]
-            do {
-                contents = try fileManager.contentsOfDirectory(atPath: path)
-            } catch {
-                continue
-            }
-            // Only truly empty shells; ignore AppleDouble noise? Keep strict empty.
-            guard contents.isEmpty else { continue }
-            try? fileManager.removeItem(atPath: path)
+            // Ignore ENOTEMPTY, ENOENT, EEXIST, ENOTDIR, etc. — never escalate
+            // to FileManager.removeItem (recursive).
+        }
+    }
+
+    private static func requireDirectory(atPath path: String) throws {
+        var info = stat()
+        let rc = path.withCString { cPath in
+            Darwin.stat(cPath, &info)
+        }
+        guard rc == 0 else {
+            throw Error.mkdirFailed(path: path, errno: errno)
+        }
+        guard (info.st_mode & S_IFMT) == S_IFDIR else {
+            throw Error.existsButNotDirectory(path: path)
         }
     }
 }

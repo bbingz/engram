@@ -26,7 +26,7 @@ final class FsOpsTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    // MARK: - Destination parent provision (compensatable)
+    // MARK: - Destination parent provision (POSIX mkdir/rmdir)
 
     func testDestinationParentProvisionCreatesOnlyMissingAndRemovesEmpty_repro() throws {
         let leaf = tmpRoot.appendingPathComponent("a/b/c/proj").path
@@ -39,14 +39,14 @@ final class FsOpsTests: XCTestCase {
         // Deepest first for teardown.
         XCTAssertEqual(created.first, parent)
 
-        // Second ensure is a no-op (pre-existing).
+        // Second ensure: EEXIST paths are not owned (empty created list).
         let again = try DestinationParentProvision.ensure(destinationPath: leaf)
-        XCTAssertTrue(again.isEmpty)
+        XCTAssertTrue(again.isEmpty, "EEXIST must not be recorded as created-by-us")
 
         DestinationParentProvision.removeEmptyCreated(created)
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: parent),
-            "empty shells we created must be removed"
+            "rmdir must remove empty shells we created"
         )
     }
 
@@ -63,7 +63,7 @@ final class FsOpsTests: XCTestCase {
         XCTAssertFalse(created.contains(preexisting.path))
         XCTAssertTrue(created.contains(preexisting.appendingPathComponent("new-child").path))
 
-        // Put concurrent content into the newly created child before teardown.
+        // Concurrent content before teardown: rmdir must fail safely (ENOTEMPTY).
         let child = preexisting.appendingPathComponent("new-child")
         try "other".write(
             to: child.appendingPathComponent("other.txt"),
@@ -73,13 +73,75 @@ final class FsOpsTests: XCTestCase {
         DestinationParentProvision.removeEmptyCreated(created)
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: child.path),
-            "non-empty created dir must not be removed"
+            "rmdir must not remove non-empty dir (ENOTEMPTY)"
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: preexisting.path))
         XCTAssertTrue(
             FileManager.default.fileExists(
                 atPath: preexisting.appendingPathComponent("marker.txt").path
             )
+        )
+    }
+
+    func testDestinationParentProvisionEEXISTDoesNotClaimOwnership_repro() throws {
+        // Simulate "another process created the empty dir first": pre-create,
+        // then ensure must not list it as created-by-us, and teardown of that
+        // empty list must not remove the foreign empty directory.
+        let foreignParent = tmpRoot.appendingPathComponent("foreign-empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: foreignParent, withIntermediateDirectories: true)
+        let leaf = foreignParent.appendingPathComponent("proj").path
+
+        let created = try DestinationParentProvision.ensure(destinationPath: leaf)
+        XCTAssertFalse(
+            created.contains(foreignParent.path),
+            "EEXIST empty dir must not be attributed to this call"
+        )
+        DestinationParentProvision.removeEmptyCreated(created)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: foreignParent.path),
+            "foreign empty parent must survive when we never owned it"
+        )
+    }
+
+    func testDestinationParentProvisionRejectsFileAtSegment_repro() throws {
+        let filePath = tmpRoot.appendingPathComponent("not-a-dir")
+        try "x".write(to: filePath, atomically: true, encoding: .utf8)
+        let leaf = filePath.appendingPathComponent("child/proj").path
+        XCTAssertThrowsError(try DestinationParentProvision.ensure(destinationPath: leaf)) { error in
+            guard case DestinationParentProvision.Error.existsButNotDirectory = error else {
+                return XCTFail("expected existsButNotDirectory, got \(error)")
+            }
+        }
+    }
+
+    func testDestinationParentProvisionSourceUsesPosixAtomicSemantics_repro() throws {
+        // Source-level contract: mkdir/rmdir only — never FileManager races.
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // ProjectMove/
+            .deletingLastPathComponent() // EngramCoreTests/
+            .deletingLastPathComponent() // macos/
+            .appendingPathComponent("EngramCoreWrite/ProjectMove/FsOps.swift")
+        let source = try String(contentsOf: root, encoding: .utf8)
+        guard let mark = source.range(of: "public enum DestinationParentProvision") else {
+            return XCTFail("DestinationParentProvision not found")
+        }
+        let body = String(source[mark.lowerBound...])
+        // Bound roughly to next top-level after the enum (best-effort).
+        let segment = String(body.prefix(3500))
+        XCTAssertTrue(segment.contains("Darwin.mkdir"), "must create with mkdir")
+        XCTAssertTrue(segment.contains("Darwin.rmdir"), "must tear down with rmdir")
+        XCTAssertTrue(segment.contains("EEXIST"), "must handle EEXIST without ownership")
+        XCTAssertFalse(
+            segment.contains("FileManager.default.createDirectory"),
+            "must not use FileManager createDirectory"
+        )
+        XCTAssertFalse(
+            segment.contains("removeItem"),
+            "must not use recursive removeItem"
+        )
+        XCTAssertFalse(
+            segment.contains("contentsOfDirectory"),
+            "must not TOCTOU empty-check before delete"
         )
     }
 
