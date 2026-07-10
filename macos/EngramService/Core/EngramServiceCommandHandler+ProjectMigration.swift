@@ -1,18 +1,14 @@
 import Foundation
 import EngramCoreWrite
 
-/// Narrow test seams for long-op producer / writer-gate ownership.
-/// Default nil is inert in production.
-enum ProjectMoveLongOpTestHooks {
+/// Immutable, handler-scoped long-op producer hooks (no global mutable state).
+struct ProjectMoveLongOpHooks: Sendable {
     /// Fired once the detached producer has entered `performWriteCommand` (holds the gate).
-    nonisolated(unsafe) static var onProducerHoldsGate: (@Sendable () -> Void)?
+    var onProducerHoldsGate: (@Sendable () -> Void)?
     /// Awaited while the gate is held, before the real pipeline body.
-    nonisolated(unsafe) static var stallWhileHoldingGate: (@Sendable () async -> Void)?
+    var stallWhileHoldingGate: (@Sendable () async -> Void)?
 
-    static func reset() {
-        onProducerHoldsGate = nil
-        stallWhileHoldingGate = nil
-    }
+    static let none = ProjectMoveLongOpHooks(onProducerHoldsGate: nil, stallWhileHoldingGate: nil)
 }
 
 extension EngramServiceCommandHandler {
@@ -27,7 +23,8 @@ extension EngramServiceCommandHandler {
     /// for the full lifetime; client only waits on the registry (finding 8).
     static func projectMove(
         _ request: EngramServiceProjectMoveRequest,
-        writerGate: ServiceWriterGate
+        writerGate: ServiceWriterGate,
+        hooks: ProjectMoveLongOpHooks = .none
     ) async throws -> ServiceWriterGateResult<EngramServiceProjectMoveResult> {
         ServiceLogger.notice(
             "projectMove requested actor=\(request.actor ?? "mcp") dryRun=\(request.dryRun) force=\(request.force) src=\(request.src) dst=\(request.dst) operationId=\(request.operationId ?? "")",
@@ -66,6 +63,7 @@ extension EngramServiceCommandHandler {
             operationId: operationId,
             commandName: "projectMove",
             writerGate: writerGate,
+            hooks: hooks,
             map: { mapPipelineResult($0, suggestion: nil) }
         ) { writer in
             try await ProjectMoveOrchestrator.run(
@@ -93,7 +91,8 @@ extension EngramServiceCommandHandler {
 
     static func projectArchive(
         _ request: EngramServiceProjectArchiveRequest,
-        writerGate: ServiceWriterGate
+        writerGate: ServiceWriterGate,
+        hooks: ProjectMoveLongOpHooks = .none
     ) async throws -> ServiceWriterGateResult<EngramServiceProjectMoveResult> {
         ServiceLogger.notice(
             "projectArchive requested actor=\(request.actor ?? "mcp") dryRun=\(request.dryRun) force=\(request.force) src=\(request.src) archiveTo=\(request.archiveTo ?? "") operationId=\(request.operationId ?? "")",
@@ -148,6 +147,7 @@ extension EngramServiceCommandHandler {
             operationId: operationId,
             commandName: "projectArchive",
             writerGate: writerGate,
+            hooks: hooks,
             map: { mapPipelineResult($0, suggestion: suggestion) }
         ) { writer in
             try await ProjectMoveOrchestrator.run(
@@ -175,7 +175,8 @@ extension EngramServiceCommandHandler {
 
     static func projectUndo(
         _ request: EngramServiceProjectUndoRequest,
-        writerGate: ServiceWriterGate
+        writerGate: ServiceWriterGate,
+        hooks: ProjectMoveLongOpHooks = .none
     ) async throws -> ServiceWriterGateResult<EngramServiceProjectMoveResult> {
         ServiceLogger.notice(
             "projectUndo requested actor=\(request.actor ?? "mcp") force=\(request.force) migrationId=\(request.migrationId) operationId=\(request.operationId ?? "")",
@@ -203,6 +204,7 @@ extension EngramServiceCommandHandler {
             operationId: operationId,
             commandName: "projectUndo",
             writerGate: writerGate,
+            hooks: hooks,
             map: { mapPipelineResult($0.pipelineResult, suggestion: nil) }
         ) { writer in
             try await ProjectMoveOrchestrator.runUndo(
@@ -222,7 +224,8 @@ extension EngramServiceCommandHandler {
 
     static func projectMoveBatch(
         _ request: EngramServiceProjectMoveBatchRequest,
-        writerGate: ServiceWriterGate
+        writerGate: ServiceWriterGate,
+        hooks: ProjectMoveLongOpHooks = .none
     ) async throws -> ServiceWriterGateResult<EngramServiceJSONValue> {
         ServiceLogger.notice(
             "projectMoveBatch requested bytes=\(request.yaml.utf8.count) force=\(request.force) operationId=\(request.operationId ?? "")",
@@ -279,7 +282,11 @@ extension EngramServiceCommandHandler {
         Task.detached(priority: .userInitiated) {
             do {
                 let gateResult = try await writerGate.performWriteCommand(name: "projectMoveBatch") { writer in
-                    await Batch.run(
+                    hooks.onProducerHoldsGate?()
+                    if let stall = hooks.stallWhileHoldingGate {
+                        await stall()
+                    }
+                    return await Batch.run(
                         document,
                         writer: writer,
                         overrides: BatchOverrides(
@@ -291,6 +298,11 @@ extension EngramServiceCommandHandler {
                         },
                         beginCommitIfNotCancelled: {
                             ProjectMoveBatchCancelRegistry.shared.beginCommitIfNotCancelled(
+                                operationId: operationId
+                            )
+                        },
+                        endItemCommitWindow: {
+                            ProjectMoveBatchCancelRegistry.shared.endItemCommitWindow(
                                 operationId: operationId
                             )
                         }
@@ -339,6 +351,7 @@ extension EngramServiceCommandHandler {
         operationId: String?,
         commandName: String,
         writerGate: ServiceWriterGate,
+        hooks: ProjectMoveLongOpHooks,
         map: @escaping @Sendable (Pipeline) -> EngramServiceProjectMoveResult,
         _ body: @escaping @Sendable (EngramDatabaseWriter) async throws -> Pipeline
     ) async throws -> ServiceWriterGateResult<EngramServiceProjectMoveResult> {
@@ -356,8 +369,8 @@ extension EngramServiceCommandHandler {
         Task.detached(priority: .userInitiated) {
             do {
                 let gateResult = try await writerGate.performWriteCommand(name: commandName) { writer in
-                    ProjectMoveLongOpTestHooks.onProducerHoldsGate?()
-                    if let stall = ProjectMoveLongOpTestHooks.stallWhileHoldingGate {
+                    hooks.onProducerHoldsGate?()
+                    if let stall = hooks.stallWhileHoldingGate {
                         await stall()
                     }
                     return try await body(writer)

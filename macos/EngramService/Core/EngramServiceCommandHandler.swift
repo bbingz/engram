@@ -16,6 +16,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     private let usageNow: @Sendable () -> Date
     private let usageTokenLimitsProvider: @Sendable () -> [String: StartupUsageTokenLimits]
     private let usageEmitter: @Sendable ([StartupUsageSnapshot]) -> Void
+    /// Immutable producer hooks (test injection only; production uses `.none`).
+    let longOpHooks: ProjectMoveLongOpHooks
 
     /// Commands excluded from telemetry span recording: `status` is a poll the
     /// app/launcher fires continuously (would drown out real signal), `telemetry`
@@ -49,7 +51,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         },
         usageEmitter: @escaping @Sendable ([StartupUsageSnapshot]) -> Void = { snapshots in
             EngramServiceRunner.emitUsageSnapshots(snapshots)
-        }
+        },
+        longOpHooks: ProjectMoveLongOpHooks = .none
     ) {
         self.writerGate = writerGate
         self.readProvider = readProvider
@@ -59,6 +62,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         self.usageNow = usageNow
         self.usageTokenLimitsProvider = usageTokenLimitsProvider
         self.usageEmitter = usageEmitter
+        self.longOpHooks = longOpHooks
     }
 
     func handle(_ request: EngramServiceRequestEnvelope) async -> EngramServiceResponseEnvelope {
@@ -374,7 +378,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 // can detach the client waiter without releasing the write gate
                 // while migration work is still running.
                 let payload = try decodePayload(EngramServiceProjectMoveRequest.self, from: request)
-                let result = try await Self.projectMove(payload, writerGate: writerGate)
+                let result = try await Self.projectMove(
+                    payload,
+                    writerGate: writerGate,
+                    hooks: longOpHooks
+                )
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
@@ -382,7 +390,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 )
             case "projectArchive":
                 let payload = try decodePayload(EngramServiceProjectArchiveRequest.self, from: request)
-                let result = try await Self.projectArchive(payload, writerGate: writerGate)
+                let result = try await Self.projectArchive(
+                    payload,
+                    writerGate: writerGate,
+                    hooks: longOpHooks
+                )
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
@@ -390,7 +402,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 )
             case "projectUndo":
                 let payload = try decodePayload(EngramServiceProjectUndoRequest.self, from: request)
-                let result = try await Self.projectUndo(payload, writerGate: writerGate)
+                let result = try await Self.projectUndo(
+                    payload,
+                    writerGate: writerGate,
+                    hooks: longOpHooks
+                )
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
@@ -398,7 +414,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 )
             case "projectMoveBatch":
                 let payload = try decodePayload(EngramServiceProjectMoveBatchRequest.self, from: request)
-                let result = try await Self.projectMoveBatch(payload, writerGate: writerGate)
+                let result = try await Self.projectMoveBatch(
+                    payload,
+                    writerGate: writerGate,
+                    hooks: longOpHooks
+                )
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),

@@ -269,7 +269,7 @@ struct UndoSheet: View {
         .buttonStyle(.plain)
         .focusable(!disabledMigrationIds.contains(m.id))
         .focused($focusedMigrationId, equals: m.id)
-        .disabled(isExecuting || disabledMigrationIds.contains(m.id))
+        .disabled(isExecuting || longOpSession.blocksDuplicateSubmit || disabledMigrationIds.contains(m.id))
         .accessibilityIdentifier("undo_migrationRow_\(index)")
         .accessibilityLabel(
             disabledMigrationIds.contains(m.id)

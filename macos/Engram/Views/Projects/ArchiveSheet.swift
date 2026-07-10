@@ -72,6 +72,7 @@ struct ArchiveSheet: View {
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
+                    .disabled(isExecuting || longOpSession.blocksDuplicateSubmit)
                 } else {
                     Text("Source path:")
                         .font(.caption)
@@ -90,7 +91,7 @@ struct ArchiveSheet: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
-                .disabled(isExecuting)
+                .disabled(isExecuting || longOpSession.blocksDuplicateSubmit)
 
                 // Round 4 Gemini Minor: previously hardcoded ~/-Code-/_archive/
                 // which is wrong for any user whose projects live elsewhere.

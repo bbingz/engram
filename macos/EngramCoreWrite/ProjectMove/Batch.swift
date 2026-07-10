@@ -120,15 +120,19 @@ public struct BatchOverrides: Sendable {
     public var homeDirectory: URL
     public var lockPath: String?
     public var force: Bool
+    /// Test seam: when set, replaces `ProjectMoveOrchestrator.run` per operation.
+    public var runOperation: (@Sendable (_ op: BatchOperation, _ src: String, _ dst: String) async throws -> PipelineResult)?
 
     public init(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         lockPath: String? = nil,
-        force: Bool = false
+        force: Bool = false,
+        runOperation: (@Sendable (BatchOperation, String, String) async throws -> PipelineResult)? = nil
     ) {
         self.homeDirectory = homeDirectory
         self.lockPath = lockPath
         self.force = force
+        self.runOperation = runOperation
     }
 }
 
@@ -231,11 +235,13 @@ public enum Batch {
         writer: EngramDatabaseWriter,
         overrides: BatchOverrides = BatchOverrides(),
         shouldCancel: @escaping @Sendable () -> Bool = { Task.isCancelled },
-        beginCommitIfNotCancelled: (@Sendable () -> Bool)? = nil
+        beginCommitIfNotCancelled: (@Sendable () -> Bool)? = nil,
+        endItemCommitWindow: (@Sendable () -> Void)? = nil
     ) async -> BatchResult {
         var result = BatchResult()
         var halted = false
         let commitProbe = beginCommitIfNotCancelled ?? { !shouldCancel() }
+        let endWindow = endItemCommitWindow ?? {}
 
         for (index, op) in doc.operations.enumerated() {
             if shouldCancel() {
@@ -288,25 +294,32 @@ public enum Batch {
             }
 
             do {
-                let pipelineResult = try await ProjectMoveOrchestrator.run(
-                    writer: writer,
-                    options: RunProjectMoveOptions(
-                        src: src,
-                        dst: dst,
-                        dryRun: doc.defaults.dryRun,
-                        force: overrides.force,
-                        archived: op.archive,
-                        auditNote: op.note,
-                        actor: .batch,
-                        homeDirectory: overrides.homeDirectory,
-                        lockPath: overrides.lockPath,
-                        shouldCancel: shouldCancel,
-                        beginCommitIfNotCancelled: commitProbe
+                let pipelineResult: PipelineResult
+                if let inject = overrides.runOperation {
+                    pipelineResult = try await inject(op, src, dst)
+                } else {
+                    pipelineResult = try await ProjectMoveOrchestrator.run(
+                        writer: writer,
+                        options: RunProjectMoveOptions(
+                            src: src,
+                            dst: dst,
+                            dryRun: doc.defaults.dryRun,
+                            force: overrides.force,
+                            archived: op.archive,
+                            auditNote: op.note,
+                            actor: .batch,
+                            homeDirectory: overrides.homeDirectory,
+                            lockPath: overrides.lockPath,
+                            shouldCancel: shouldCancel,
+                            beginCommitIfNotCancelled: commitProbe
+                        )
                     )
-                )
+                }
                 result.completed.append(pipelineResult)
+                // Re-open cancel window so a cancel after this item stops before the next.
+                endWindow()
             } catch let cancel as ProjectMoveCancelledError {
-                // Preserve unsafe compensation identity (finding 3).
+                // Preserve unsafe compensation identity.
                 result.cancelled = true
                 result.remaining.append(contentsOf: Array(doc.operations[index...]))
                 if !cancel.compensationSucceeded {
@@ -317,12 +330,14 @@ public enum Batch {
                         BatchOperationFailure(operation: op, error: cancel.errorMessage)
                     )
                 }
+                endWindow()
                 break
             } catch {
                 result.failed.append(
                     BatchOperationFailure(operation: op, error: errorText(error))
                 )
                 if doc.defaults.stopOnError { halted = true }
+                endWindow()
             }
         }
         return result

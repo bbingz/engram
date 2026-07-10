@@ -234,6 +234,60 @@ final class ProjectsMigrationTests: XCTestCase {
         }
     }
 
+    func testUnresolvedSessionFreezesRequestAffectingControls_repro() throws {
+        // Batch row path fields freeze.
+        let batch = try Self.source("macos/Engram/Views/Projects/BatchMoveSheet.swift")
+        XCTAssertTrue(
+            batch.contains(".disabled(isExecuting || longOpSession.blocksDuplicateSubmit)"),
+            "BatchMoveSheet row TextField must freeze under unresolved long-op session"
+        )
+        // Rename path freezes.
+        let rename = try Self.source("macos/Engram/Views/Projects/RenameSheet.swift")
+        XCTAssertTrue(
+            rename.contains(".disabled(isExecuting || longOpSession.blocksDuplicateSubmit)"),
+            "RenameSheet path field must freeze under unresolved session"
+        )
+        // Archive category freezes.
+        let archive = try Self.source("macos/Engram/Views/Projects/ArchiveSheet.swift")
+        XCTAssertTrue(
+            archive.contains(".disabled(isExecuting || longOpSession.blocksDuplicateSubmit)"),
+            "ArchiveSheet category/source must freeze under unresolved session"
+        )
+        // Undo row selection freezes.
+        let undo = try Self.source("macos/Engram/Views/Projects/UndoSheet.swift")
+        XCTAssertTrue(
+            undo.contains("longOpSession.blocksDuplicateSubmit"),
+            "UndoSheet migration rows must freeze under unresolved session"
+        )
+    }
+
+    func testParseBatchMoveOutcomeSurfacesCancelUnsafeFieldsAndWording_repro() {
+        let json: EngramServiceJSONValue = .object([
+            "completed": .array([]),
+            "failed": .array([
+                .object([
+                    "src": .string("/a"),
+                    "error": .string("project-move: cancelled before commit but compensation was incomplete"),
+                ]),
+            ]),
+            "skipped": .array([]),
+            "remaining": .array([.object(["src": .string("/a")])]),
+            "cancelled": .bool(true),
+            "cancel_unsafe": .bool(true),
+            "cancel_error_name": .string("ProjectMoveCancelCompensationFailedError"),
+            "cancel_error_message": .string(
+                "project-move: cancelled before commit but compensation was incomplete — rollback"
+            ),
+        ])
+        let outcome = parseBatchMoveOutcome(json)
+        XCTAssertTrue(outcome.cancelled)
+        XCTAssertTrue(outcome.cancelUnsafe)
+        XCTAssertEqual(outcome.cancelErrorName, "ProjectMoveCancelCompensationFailedError")
+        XCTAssertTrue(outcome.cancelErrorMessage?.contains("compensation was incomplete") == true)
+        let message = projectMoveCancelCompensationFailedMessage(outcome.cancelErrorMessage ?? "")
+        XCTAssertFalse(message.contains("Safe to retry"))
+    }
+
     func testRenameArchiveUndoSheetsWireOperationIdAndCooperativeCancel_repro() throws {
         for relativePath in [
             "macos/Engram/Views/Projects/RenameSheet.swift",

@@ -245,7 +245,7 @@ struct BatchMoveSheet: View {
                 TextField("/absolute/path/to/new/location", text: row.newPath)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.caption, design: .monospaced))
-                    .disabled(isExecuting)
+                    .disabled(isExecuting || longOpSession.blocksDuplicateSubmit)
             }
         }
     }

@@ -99,6 +99,7 @@ struct RenameSheet: View {
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
+                    .disabled(isExecuting || longOpSession.blocksDuplicateSubmit)
                 } else {
                     Text("Source path:")
                         .font(.caption)
@@ -114,7 +115,7 @@ struct RenameSheet: View {
                 TextField("/absolute/path/to/new/location", text: $newPath)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
-                    .disabled(isExecuting)
+                    .disabled(isExecuting || longOpSession.blocksDuplicateSubmit)
                     .accessibilityLabel("New project path")
                     .accessibilityHint("Enter the full destination path; ~/… is accepted.")
 

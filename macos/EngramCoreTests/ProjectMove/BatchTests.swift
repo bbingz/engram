@@ -216,32 +216,89 @@ final class BatchTests: XCTestCase {
         XCTAssertFalse(result.cancelUnsafe)
     }
 
-    func testBatchUnsafeCompensationPreservesIdentity_repro() async throws {
-        // Inject cancel with failed compensation by throwing from orchestrator path:
-        // we simulate by catching ProjectMoveCancelledError with compensationSucceeded=false
-        // via a unit-level construction of the result mapping used by Batch.run's catch.
-        let cancel = ProjectMoveCancelledError(
-            compensationSucceeded: false,
-            compensationDetail: "rollback: 1 file failed"
-        )
-        XCTAssertEqual(cancel.errorName, "ProjectMoveCancelCompensationFailedError")
-        XCTAssertFalse(cancel.compensationSucceeded)
+    /// Item 1 commits; cancel after endItemCommitWindow; item 2 remains unstarted.
+    func testBatchCancelAfterFirstItemCommitsStopsBeforeSecond_repro() async throws {
+        let (src1, _) = try makeProjectFixture(name: "item1")
+        let dst1 = tempRoot.appendingPathComponent("item1-dst").path
+        let op1 = BatchOperation(src: src1, dst: dst1)
+        let op2 = BatchOperation(src: "/later", dst: "/later-dst")
+        let doc = BatchDocument(operations: [op1, op2])
 
-        // Drive Batch.run with beginCommit false so we get clean cancel first — then
-        // assert BatchResult fields for unsafe path via direct mutation contract:
-        var result = BatchResult()
-        result.cancelled = true
-        result.cancelUnsafe = true
-        result.cancelErrorName = cancel.errorName
-        result.cancelErrorMessage = cancel.errorMessage
-        result.remaining = [BatchOperation(src: "/x", dst: "/y")]
-        result.failed = [BatchOperationFailure(
-            operation: BatchOperation(src: "/x", dst: "/y"),
-            error: cancel.errorMessage
-        )]
+        let cancelAfterFirst = CancelAfterFirstBox()
+        let dryCompleted = PipelineResult(
+            migrationId: "m1",
+            state: .committed,
+            src: src1,
+            dst: dst1,
+            moveStrategy: .rename,
+            ccDirRenamed: false,
+            renamedDirs: [],
+            skippedDirs: [],
+            perSource: [],
+            totalFilesPatched: 0,
+            totalOccurrences: 0,
+            sessionsUpdated: 0,
+            aliasCreated: false,
+            review: ReviewResult(own: [], other: []),
+            git: GitDirtyStatus(isGitRepo: false, dirty: false, untrackedOnly: false, porcelain: ""),
+            manifest: [],
+            error: nil
+        )
+
+        let result = await Batch.run(
+            doc,
+            writer: writer,
+            overrides: BatchOverrides(
+                homeDirectory: tempRoot,
+                lockPath: tempRoot.appendingPathComponent("lock").path,
+                force: true,
+                runOperation: { op, _, _ in
+                    if op.src == src1 {
+                        await cancelAfterFirst.markFirstDone()
+                        return dryCompleted
+                    }
+                    XCTFail("second op must not start after cancel")
+                    return dryCompleted
+                }
+            ),
+            shouldCancel: { cancelAfterFirst.shouldCancel },
+            beginCommitIfNotCancelled: { true },
+            endItemCommitWindow: {
+                // After first item settles, arm cancel so next top-of-loop stops.
+                cancelAfterFirst.armCancel()
+            }
+        )
+        XCTAssertEqual(result.completed.count, 1)
+        XCTAssertTrue(result.cancelled)
+        XCTAssertEqual(result.remaining, [op2])
+    }
+
+    /// Batch.run itself catches ProjectMoveCancelledError(compensationSucceeded:false).
+    func testBatchRunCatchesUnsafeCompensationError_repro() async throws {
+        let op1 = BatchOperation(src: "/a", dst: "/b")
+        let op2 = BatchOperation(src: "/c", dst: "/d")
+        let doc = BatchDocument(operations: [op1, op2])
+        let result = await Batch.run(
+            doc,
+            writer: writer,
+            overrides: BatchOverrides(
+                homeDirectory: tempRoot,
+                runOperation: { _, _, _ in
+                    throw ProjectMoveCancelledError(
+                        compensationSucceeded: false,
+                        compensationDetail: "rollback: 1 file failed"
+                    )
+                }
+            ),
+            shouldCancel: { false },
+            beginCommitIfNotCancelled: { true }
+        )
+        XCTAssertTrue(result.cancelled)
         XCTAssertTrue(result.cancelUnsafe)
         XCTAssertEqual(result.cancelErrorName, "ProjectMoveCancelCompensationFailedError")
-        XCTAssertTrue(result.failed.first?.error.contains("compensation was incomplete") == true)
+        XCTAssertTrue(result.cancelErrorMessage?.contains("compensation was incomplete") == true)
+        XCTAssertEqual(result.remaining.count, 2)
+        XCTAssertEqual(result.failed.count, 1)
     }
 
     func testRunSurfacesArchiveSuggestionFailureAsBatchFailure() async throws {
@@ -378,5 +435,19 @@ final class BatchTests: XCTestCase {
                 userInfo: [NSLocalizedDescriptionKey: "git \(args.joined(separator: " ")) failed"]
             )
         }
+    }
+}
+
+/// Box for cancel-after-first batch test.
+private final class CancelAfterFirstBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _shouldCancel = false
+    var shouldCancel: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _shouldCancel
+    }
+    func markFirstDone() async {}
+    func armCancel() {
+        lock.lock(); _shouldCancel = true; lock.unlock()
     }
 }
