@@ -7,6 +7,47 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Docs: Wave 8 Round 4 engineering-zero durable closeout (2026-07-11)
+
+- Reconciled seven durable surfaces only (no source/tests/scripts):
+  `docs/TODO.md`, `docs/followups.md`, `docs/roadmap.md`,
+  `docs/reviews/2026-07-10-wave7-remediation-closeout.md`,
+  new `docs/reviews/2026-07-10-wave7-engineering-zero-closeout.md`,
+  `CHANGELOG.md`, and `.memory`.
+- Wave 7 ledger tallies: **43 CONFIRMED-FIXED / 0 residual-open**, using merged
+  Wave 8 evidence through main `c983a759` (semantic/secret, MCP/transcript,
+  export/favorites, telemetry/invariants, long project ops).
+- Engineering TODO and implementation-ready follow-ups: **0 open**. Roadmap
+  Decision pending remains **exactly 12** product rows (engineering zero ≠
+  roadmap zero). Final CI/release/runtime Task 7 is **not** claimed here.
+
+### Docs: Wave 8 Round 4 review-rescue polish (2026-07-11)
+
+- Historicalized stale active wording in closed perf follow-ups; fixed false
+  `.memory` MEMO claim; set AUTO-INDEX count to **95**.
+- Escaped remediation H12 table pipe; labeled Wave 7 matrix/release evidence
+  historical; added unchecked same-SHA Task 7 checklist (local matrix, remote
+  Tests, remote CodeQL, release, install, runtime).
+- Mechanical gates now assert 43 unique terminal / TODO0 / followup0 /
+  roadmap12 / seven paths / `git diff --check c983a759..HEAD`; recorded
+  coordinator Core 68/68 · Service 42/42 · App 29/29 · Vitest 16/16 · Bash
+  ledger PASS; remote CI URL **none yet**.
+- Roadmap wording: no scheduled items (12 decisions remain). Favorite symmetric
+  toggle attributed only to Wave 8C `262d59a2`. H03/M05 evidence refreshed with
+  `c983a759`/`eeab26a8` named long-op tests while preserving pass3/pass4
+  provenance.
+
+### Docs: Wave 8 Round 4 evidence-command accuracy (2026-07-11)
+
+- Split Wave 8C symmetric favorite out of the 2026-06-21 “Retired” heading in
+  `docs/TODO.md` into a date-neutral historical closed section.
+- Replaced invented full-scheme `xcodebuild test` lines in the engineering-zero
+  closeout with the actual coordinator sequence: `xcodegen generate`,
+  `build-for-testing` + framework staging + `xcrun xctest` filters (68/42/29),
+  `npm test -- --run` three invariant/boundary files (16/16), and
+  `/bin/bash scripts/check-invariants-ledger.sh` (PASS). Remote CI URL still
+  none.
+
 ### Fixed: FTS optimize attempt throttle throw-safe + hybrid parity claims (2026-07-09, Codex)
 
 - `EngramDatabaseWriter.optimizeFtsIfDue` commits `fts_optimize_last_attempt`

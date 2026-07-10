@@ -3,66 +3,55 @@
 Follow-ups are verification gaps, low-priority refactors, or items that need
 real data, UI exercise, or product confirmation before becoming TODOs.
 
-## Open — perceived-duration audit (2026-07-08)
+## Engineering-zero status (2026-07-11, Wave 8 Round 4)
 
-- **Add rebuild-specific progress before exposing FTS full rebuild.** The app
-  currently excludes `reindex/triggerSync` from command palette actions
-  (`macos/Engram/Models/PaletteItem.swift:41-43`) and only shows aggregate
-  index-job counts or source coverage (`macos/Engram/Views/Observability/SystemHealthView.swift:58-67`,
-  `macos/Engram/Views/Pages/SourcePulseView.swift:296-299`). If a full rebuild
-  becomes user-visible, add progress plus cancel or background continuation.
-- **Let long project migrations cancel or continue in the background.** Project
-  move, archive, undo, and batch move use a 10 minute service timeout
-  (`macos/Shared/Service/EngramServiceClient.swift:8`,
-  `macos/Shared/Service/EngramServiceClient.swift:189-202`). The app shows
-  progress text for batch, rename, and archive (`macos/Engram/Views/Projects/BatchMoveSheet.swift:139-146`,
-  `macos/Engram/Views/Projects/RenameSheet.swift:117-138`,
-  `macos/Engram/Views/Projects/ArchiveSheet.swift:102-113`) but disables
-  cancellation during execution (`macos/Engram/Views/Projects/BatchMoveSheet.swift:159-164`,
-  `macos/Engram/Views/Projects/RenameSheet.swift:178-180`,
-  `macos/Engram/Views/Projects/ArchiveSheet.swift:202-204`).
-- **Show in-flight feedback for session export.** Session export uses the
-  default 30 second service timeout (`macos/Shared/Service/EngramServiceClient.swift:17-20`,
-  `macos/Shared/Service/EngramServiceClient.swift:260-262`,
-  `macos/Shared/Service/EngramServiceClient.swift:297-306`) but the Sessions
-  page and Command Palette only render success/failure after awaiting the
-  export (`macos/Engram/Views/SessionActionHandlers.swift:81-92`,
-  `macos/Engram/Views/Pages/SessionsPageView.swift:68-70`,
-  `macos/Engram/Views/CommandPaletteView.swift:282-293`).
+**Open implementation-ready engineering follow-ups: 0.**
 
-## Open — plan-completion audit (2026-07-09)
+Wave 8 merged on main through `c983a759` closed the actionable perceived-duration
+items (export progress, long project migrations), disk-audit consumer evidence,
+and ignore-rule classification. Product-decision items already live in
+`docs/roadmap.md` Decision pending (exactly 12 rows). Conditional UX that is not
+currently exposed (FTS full-rebuild progress) is recorded as closed/deferred
+below, not as open engineering work.
 
-Items **not** covered by wave-6 tasks (see `.wave6-sequential.md` for the
-in-flight execution queue):
+Evidence ledger:
+`docs/reviews/2026-07-10-wave7-engineering-zero-closeout.md`.
 
-- **Sources-sync-3 nav consolidation.** Explicitly deferred in
-  `docs/reviews/alignment-design-2026-06-14.md` (~:836, :896). Still needs a
-  product decision on Sources/Settings navigation consolidation.
-- **Subagent-session-disk-audit advisory recommendations.**
-  `docs/subagent-session-disk-audit-2026-06-24.md` — `last_accessed_at` /
-  `access_count` population for disk-audit advisory paths remains unconfirmed
-  as a complete product surface.
-- **`ai_audit_log` desensitization design precondition.** No Swift writer into
-  `ai_audit_log` exists today. Body desensitization must be designed before any
-  writer lands (wave-6 task 9 / `docs/embedding-guardrails-design-2026-07.md`
-  explicitly descopes DB audit rows for this reason; embed guardrails use
-  `os_log` + in-memory telemetry only). See also `docs/roadmap.md` Decision
-  pending.
+## Closed — Wave 8 perceived-duration + ops (2026-07-10/11)
 
-## Open
+CLOSEOUT (2026-07-11): actionable items from the 2026-07-08 perceived-duration
+audit and related ops follow-ups.
 
-Open follow-ups as of 2026-07-09:
+- **Session export in-flight feedback.** Closed via Wave 8C / H12
+  (`262d59a2` / `cfed29b5`): `CommandPaletteExportState` idle→inFlight→
+  succeeded|failed with progress, duplicate-export disable, and Finder reveal.
+  Evidence: `CommandPaletteTests` export state suite.
+- **Long project migrations cancel or continue.** Closed via Wave 8D
+  (`c983a759` / `eeab26a8`): stable operation ID, cancel-before-commit,
+  post-commit reconnect/continuation (not false cancellation), idempotent
+  re-submit. Evidence: ProjectMove Core/Service/App long-op suites.
+- **Disk-audit advisory access counters.** Closed via Wave 8E
+  (`c87fab56` / `f1486c2f`): product read paths already update
+  `last_accessed_at` / `access_count`; E2E consumer coverage in
+  `EngramMCPExecutableTests.testGetMemoryRanksByServiceRecordedAccessCount_diskAuditConsumer`.
+- **Normalize local ignore rules.** Closed: universal generated artifacts already
+  live in shared `.gitignore` (`node_modules/`, `dist/`, `.husky/_/`). Remaining
+  `.git/info/exclude` entries are host-local by design and stay uncommitted.
+- **FTS full-rebuild progress UI.** Closed as not implementation-ready. Command
+  palette still excludes `reindex`/`triggerSync`; aggregate index-job coverage
+  remains the only surface. Reopen only if product exposes a user-visible full
+  rebuild action.
 
-- **Normalize local ignore rules.** `.git/info/exclude` still contains local
-  duplicates (`node_modules`, `.husky/_/`, `dist/`) and repo-specific entries
-  such as `audit/` and `.github/copilot-instructions.md`. Decide which belong in
-  shared `.gitignore` and which should remain local-only.
-- **Fix remaining perf-integration residuals.** Active items are in the
-  perf-integration section below: Cursor WAL-aware parse-cache signatures and
-  the three P3 latent issues. P1 truncation, Web UI ETag, and Web UI line-anchor
-  items are already resolved.
+## Closed — plan-completion product decisions moved to roadmap (2026-07-11)
+
+CLOSEOUT (2026-07-11): these were never wave-6 implementation tasks; they remain
+product decisions in `docs/roadmap.md` Decision pending (do not re-open here).
+
+- **Sources-sync-3 nav consolidation** — roadmap row (alignment design deferred).
+- **`ai_audit_log` desensitization design** — roadmap row (design-before-writer).
 
 ## Closed — provider-audit branch (2026-07-09)
+
 
 CLOSEOUT (2026-07-09): **Resolve preserved `codex-provider-audit-remediation`
 branch.**
@@ -302,19 +291,21 @@ retrieval behind get_memory is live and tested — only item 7a is dead), and
 demoting the Popover usage section (active UX work stream, owner decides
 there, not a maintenance cut).
 
-## Open — perf-integration review findings (2026-07-04)
+## Closed — perf-integration review findings (2026-07-04)
 
-Current active items in this section as of 2026-07-08: none. The CursorAdapter
-WAL-aware parse-cache signature and the three P3 latent issues were closed in
-the Wave 5 perf-residual closeout; older P1/Web UI entries remain below only as
-closeout evidence.
+**Historical section (closed).** As of 2026-07-08 there were **no active**
+items in this section. The CursorAdapter WAL-aware parse-cache signature and
+the three P3 latent issues were closed in the Wave 5 perf-residual closeout;
+older P1/Web UI entries remain below only as closeout evidence. Do not treat
+the narrative below as open engineering work.
 
 From the 18-agent adversarial review of the Codex-integrated 8-PR perf batch
 (base `f9a236dc..main`). The one blocking item (fts_map self-heal ownership) was
 already fixed on `main` (see `CHANGELOG.md`, new test
 `FTSIncrementalTests.testReusedRowidWithUnchangedContentIsNotMaskedByStaleMap`).
-The items below were each re-verified against real code and are left for a
-follow-up fix pass. Every behavior change here needs a matching Swift test.
+Each item below was re-verified against real code and **later closed** (see
+per-item Resolution notes). The narrative is retained as historical evidence
+only; it is not an open fix-pass list.
 
 ### P1 — oversized-transcript (>10k msgs) silent truncation makes totals/tails stale
 
@@ -329,19 +320,21 @@ follow-up fix pass. Every behavior change here needs a matching Swift test.
   `.messageLimitExceeded`; it logs a private `.notice` and returns only the
   first 10k parsed records as success. This is a *deliberate, tested* change
   (AdapterWindowedReadTests) to avoid falling back to an uncapped legacy parser.
-- **Why it's a problem:** two downstream call sites still assume "a whole read
-  either fully succeeds or throws." MCP `get_session` now computes `totalPages`
-  from a truncated total, so a client that pages to the reported last page
-  believes it read the whole session while the tail past record ~10,000 is
-  silently missing; the resume primer's "last messages" can likewise go stale.
-  Separately, `collectVisiblePageWindow` (cache-hit fast path) asks the adapter
-  for `StreamMessagesOptions(offset: 0, limit: rawLimit)`, which bypasses the
-  10k cap that `fullScanPage` used to compute the cached total — so deep paging
-  and the cached total disagree about how much content exists.
-- **Needs a decision:** silent truncation vs. surfacing it. Preferred direction:
-  thread a `truncated`/`totalKnownComplete` signal out of the adapter window so
-  MCP totals and the resume primer can report incompleteness instead of
-  quietly capping. Confirm the intended UX before implementing.
+- **Why it was a problem (historical):** two downstream call sites still assumed
+  "a whole read either fully succeeds or throws." MCP `get_session` computed
+  `totalPages` from a truncated total, so a client that paged to the reported
+  last page believed it read the whole session while the tail past record
+  ~10,000 was silently missing; the resume primer's "last messages" could
+  likewise go stale. Separately, `collectVisiblePageWindow` (cache-hit fast
+  path) asked the adapter for `StreamMessagesOptions(offset: 0, limit: rawLimit)`,
+  which bypassed the 10k cap that `fullScanPage` used to compute the cached
+  total — so deep paging and the cached total disagreed about how much content
+  existed.
+- **Decision resolved (historical):** silent truncation was replaced by an
+  explicit incompleteness signal. The preferred direction was adopted: a
+  `truncated`/`totalKnownComplete` signal is threaded out of the adapter window
+  so MCP totals and the resume primer report incompleteness instead of quietly
+  capping (see residuals resolution below).
 
 #### P1 residuals after Codex fix pass (re-verified 2026-07-05, Claude Code)
 

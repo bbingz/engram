@@ -52,10 +52,17 @@ correctly because `PopoverUsageSection` remains gated on real usage data.
 
 ## Open roadmap
 
-No open roadmap product items as of 2026-05-24. See the decision-pending
-table below for items parked by the 2026-07-09 plan-completion audit.
+No scheduled roadmap product items as of 2026-05-24. Twelve owner decisions
+remain in the Decision pending table below (parked by the 2026-07-09
+plan-completion audit); they are not scheduled implementation work.
 
 ## Decision pending (2026-07-09 plan-completion audit)
+
+**Engineering zero ≠ roadmap zero (2026-07-11).** Wave 8 + Round 4 docs closed
+the Wave 7 defect ledger (43 terminal confirmed) and removed open engineering
+TODO/follow-ups. The **12 rows below remain owner decisions** and are
+intentionally **not** implemented, scheduled, or mislabeled as engineering
+defects. They do not block engineering-zero backlog truth.
 
 Large product-decision items the audit confirmed **not done** and deliberately
 **not** implemented in wave 6. Each needs an explicit product decision before
