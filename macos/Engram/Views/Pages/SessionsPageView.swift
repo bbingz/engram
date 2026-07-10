@@ -35,10 +35,26 @@ struct SessionsPageView: View {
     // immediately from page one) from a background index tick (debounce + keep
     // pagination). See BrowseReloadCoalescer / #3.
     @State private var lastFilterKey: [AnyHashable]? = nil
+    /// Bumped on every full load start so a slower favorite-triggered reload for
+    /// filter A cannot overwrite a newer filter-B load that already applied.
+    @State private var loadGeneration = 0
+    /// Tracks the post-favorite reload so a filter change can cancel it.
+    @State private var favoriteReloadTask: Task<Void, Never>? = nil
 
     private let sessionOptions = SessionsFilterPersistence.sessionOptions
     private let timeOptions = SessionsFilterPersistence.timeOptions
     private static let pageSize = 200
+
+    /// Pure gate for concurrent browse loads (favorite reload vs filter change).
+    /// A completed load publishes only when it is still the newest generation and
+    /// its task was not cancelled.
+    static func shouldApplyLoad(
+        resultGeneration: Int,
+        currentGeneration: Int,
+        isCancelled: Bool = false
+    ) -> Bool {
+        !isCancelled && resultGeneration == currentGeneration
+    }
 
     private var sessionFilter: String {
         SessionsFilterPersistence.sanitizeSessionFilter(sessionFilterStorage)
@@ -87,7 +103,7 @@ struct SessionsPageView: View {
     private var handlers: SessionActionHandlers {
         SessionActionHandlers(
             serviceClient: serviceClient,
-            reload: { await loadData() },
+            reload: { await reloadAfterMutation() },
             onStatus: { message in
                 actionStatus = message
                 // Auto-clear so a success banner doesn't linger as a permanent
@@ -98,6 +114,17 @@ struct SessionsPageView: View {
                 }
             }
         )
+    }
+
+    /// Favorite/hide/rename mutations reload the list; track the task so a
+    /// subsequent filter change can cancel it before a newer load starts.
+    private func reloadAfterMutation() async {
+        favoriteReloadTask?.cancel()
+        let task = Task {
+            await loadData()
+        }
+        favoriteReloadTask = task
+        await task.value
     }
 
     var body: some View {
@@ -241,6 +268,10 @@ struct SessionsPageView: View {
             AnyHashable(showAllSessions),
             AnyHashable(serviceStatusStore.totalSessions),
         ]) {
+            // Drop any favorite-triggered reload for the previous filter so it
+            // cannot finish after this filter's load and clobber the list.
+            favoriteReloadTask?.cancel()
+            favoriteReloadTask = nil
             let filterKey: [AnyHashable] = [
                 AnyHashable(sessionFilter),
                 AnyHashable(timeFilter),
@@ -259,8 +290,17 @@ struct SessionsPageView: View {
     }
 
     private func loadData(preservePagination: Bool = false) async {
+        loadGeneration += 1
+        let generation = loadGeneration
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            // Clear the spinner when this generation is still current (including
+            // cancelled-but-newest). A superseded generation leaves isLoading to
+            // the newer load that bumped the counter.
+            if generation == loadGeneration {
+                isLoading = false
+            }
+        }
         do {
             let db = self.db
             let sources: Set<String> = sourceFilter.map { [$0] } ?? []
@@ -314,6 +354,12 @@ struct SessionsPageView: View {
                 let annotated = Session.applyingFavoriteIds(loaded, favoriteIds: favoriteIds)
                 return (annotated, confirmed, suggested, stats, sourceOptions)
             }.value
+            // Favorite reload for filter A must not overwrite a newer filter-B load.
+            guard Self.shouldApplyLoad(
+                resultGeneration: generation,
+                currentGeneration: loadGeneration,
+                isCancelled: Task.isCancelled
+            ) else { return }
             sessions = data.0
             confirmedCounts = data.1
             suggestedCounts = data.2
@@ -328,6 +374,11 @@ struct SessionsPageView: View {
             )
             loadError = nil
         } catch {
+            guard Self.shouldApplyLoad(
+                resultGeneration: generation,
+                currentGeneration: loadGeneration,
+                isCancelled: Task.isCancelled
+            ) else { return }
             EngramLogger.error("SessionsPage load failed", module: .ui, error: error)
             loadError = error.localizedDescription
         }
@@ -376,8 +427,12 @@ struct SessionsPageView: View {
         guard !isLoading, !isLoadingMore else { return }
         guard sessions.count < totalCount else { return }
         isLoadingMore = true
+        // Capture (do not bump) so a full reload that advances loadGeneration
+        // invalidates this page append.
+        let generation = loadGeneration
         let favoritesOnly = self.favoritesOnly
         Task {
+            // Always clear the spinner; only the append path is generation-gated.
             defer { isLoadingMore = false }
             do {
                 let db = self.db
@@ -412,12 +467,22 @@ struct SessionsPageView: View {
                     let annotated = Session.applyingFavoriteIds(loaded, favoriteIds: favoriteIds)
                     return (annotated, confirmed, suggested)
                 }.value
+                guard Self.shouldApplyLoad(
+                    resultGeneration: generation,
+                    currentGeneration: loadGeneration,
+                    isCancelled: Task.isCancelled
+                ) else { return }
                 // De-dup on append in case a reload raced with this page fetch.
                 let existing = Set(sessions.map(\.id))
                 sessions.append(contentsOf: more.0.filter { !existing.contains($0.id) })
                 confirmedCounts.merge(more.1) { _, new in new }
                 suggestedCounts.merge(more.2) { _, new in new }
             } catch {
+                guard Self.shouldApplyLoad(
+                    resultGeneration: generation,
+                    currentGeneration: loadGeneration,
+                    isCancelled: Task.isCancelled
+                ) else { return }
                 EngramLogger.error("SessionsPage load-more failed", module: .ui, error: error)
             }
         }

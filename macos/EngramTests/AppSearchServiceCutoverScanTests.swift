@@ -1112,9 +1112,21 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
             sessionsPage.contains("favoritesOnly: favoritesOnly"),
             "SessionsPageView should query starred sessions through the regular list path"
         )
-        XCTAssertTrue(
+        // M19: Browse and Starred share one symmetric toggle (target = !isFavorite).
+        // The old full-target gate nil'd the menu on Starred; that must not return.
+        XCTAssertFalse(
             sessionsPage.contains("onToggleFavorite: favoritesOnly ? nil"),
-            "Starred rows should not offer an Add to Favorites browse-card action"
+            "Starred must keep a favorite toggle (Remove), not nil the browse-card action"
+        )
+        XCTAssertTrue(
+            sessionsPage.contains("favorite: session.favoriteToggleTarget")
+                || sessionsPage.contains("favorite: session.favoriteToggleTarget,"),
+            "Browse and Starred must toggle with favoriteToggleTarget (!isFavorite), not a hard-coded true/false"
+        )
+        XCTAssertTrue(
+            sessionsPage.contains("Session.applyingFavoriteIds")
+                || sessionsPage.contains("applyingFavoriteIds(loaded"),
+            "SessionsPageView must annotate list rows from the favorites id source"
         )
 
         let strings = try source("macos/Engram/Resources/Localizable.xcstrings")

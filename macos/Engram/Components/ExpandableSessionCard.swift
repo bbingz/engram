@@ -280,11 +280,16 @@ struct ExpandableSessionCard: View {
                 parentId: session.id,
                 includeHidden: includeHiddenChildren
             )) ?? []
+            // Same favorites-table source as SessionsPageView parent rows — do not
+            // infer child isFavorite from the parent page filter.
+            let favoriteIds = Set((try? db.listFavorites())?.map(\.id) ?? [])
+            let annotatedConfirmed = Session.applyingFavoriteIds(confirmed, favoriteIds: favoriteIds)
+            let annotatedSuggested = Session.applyingFavoriteIds(suggested, favoriteIds: favoriteIds)
             await MainActor.run {
                 // Drop stale results from a generation that was invalidated.
                 guard generation == loadGeneration else { return }
-                children = confirmed
-                suggestedChildren = suggested
+                children = annotatedConfirmed
+                suggestedChildren = annotatedSuggested
                 isLoadingChildren = false
             }
         }
@@ -303,13 +308,15 @@ struct ExpandableSessionCard: View {
                 limit: 20,
                 offset: currentCount
             )) ?? []
+            let favoriteIds = Set((try? db.listFavorites())?.map(\.id) ?? [])
+            let annotated = Session.applyingFavoriteIds(more, favoriteIds: favoriteIds)
             await MainActor.run {
                 defer { isLoadingMore = false }
                 // Drop stale results from a generation that was invalidated.
                 guard generation == loadGeneration else { return }
                 // De-dup on append in case offsets overlap or a reload raced.
                 let existing = Set(children.map(\.id))
-                children.append(contentsOf: more.filter { !existing.contains($0.id) })
+                children.append(contentsOf: annotated.filter { !existing.contains($0.id) })
             }
         }
     }

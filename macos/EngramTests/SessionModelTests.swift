@@ -268,4 +268,69 @@ final class SessionModelTests: XCTestCase {
         XCTAssertEqual(Session.favoriteAccessibilityLabel(isFavorite: false), "Add to favorites")
         XCTAssertEqual(Session.favoriteAccessibilityLabel(isFavorite: true), "Remove from favorites")
     }
+
+    // MARK: - M19 production wiring (source contract)
+
+    func testBrowseStarredAndChildCardsWireIsFavoriteSourceTruth() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // EngramTests
+            .deletingLastPathComponent() // macos
+            .deletingLastPathComponent() // repo root
+
+        let sessionsPage = try String(
+            contentsOfFile: root.appendingPathComponent("macos/Engram/Views/Pages/SessionsPageView.swift").path,
+            encoding: .utf8
+        )
+        let card = try String(
+            contentsOfFile: root.appendingPathComponent("macos/Engram/Components/ExpandableSessionCard.swift").path,
+            encoding: .utf8
+        )
+        let handlers = try String(
+            contentsOfFile: root.appendingPathComponent("macos/Engram/Views/SessionActionHandlers.swift").path,
+            encoding: .utf8
+        )
+
+        // Browse + Starred: one toggle, target from session.isFavorite (not page filter).
+        XCTAssertTrue(
+            sessionsPage.contains("favorite: session.favoriteToggleTarget"),
+            "SessionsPageView must pass favoriteToggleTarget for both Browse and Starred"
+        )
+        XCTAssertFalse(
+            sessionsPage.contains("onToggleFavorite: favoritesOnly ? nil"),
+            "Starred must not drop the toggle"
+        )
+        XCTAssertTrue(
+            sessionsPage.contains("Session.applyingFavoriteIds"),
+            "parent rows must be annotated from the favorites id set"
+        )
+        XCTAssertTrue(
+            sessionsPage.contains("favoriteReloadTask"),
+            "favorite-triggered reload must be tracked so filter changes can cancel it"
+        )
+        XCTAssertTrue(
+            sessionsPage.contains("shouldApplyLoad"),
+            "load pipeline must generation-gate stale favorite reloads"
+        )
+
+        // Child cards: same favorites-table source as parents; menu uses isFavorite.
+        XCTAssertTrue(
+            card.contains("Session.applyingFavoriteIds(confirmed, favoriteIds: favoriteIds)")
+                || (card.contains("applyingFavoriteIds") && card.contains("listFavorites")),
+            "loadChildren must annotate child rows from listFavorites, not leave isFavorite=false"
+        )
+        XCTAssertTrue(
+            card.contains("isFavorite: session.isFavorite"),
+            "parent and child menu items must read Session.isFavorite for labels/targets"
+        )
+        XCTAssertTrue(
+            card.contains("Session.favoriteMenuLabel(isFavorite: isFavorite)"),
+            "menu labels must use isFavorite (Add vs Remove), not a fixed Add string"
+        )
+
+        // Mutation path reloads so labels flip / Starred rows drop.
+        XCTAssertTrue(
+            handlers.contains("await reload()"),
+            "setFavorite success must reload list surfaces"
+        )
+    }
 }
