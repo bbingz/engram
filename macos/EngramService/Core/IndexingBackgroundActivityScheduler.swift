@@ -2,9 +2,9 @@ import Foundation
 
 /// Outcome of one scheduled opportunity (Wave 7C S01).
 public enum IndexingActivityOpportunity: Sendable, Equatable {
-    /// OS (or fake) granted a run slot — do work.
+    /// OS (or fake) granted a run slot and `work` completed under the activity.
     case run
-    /// `shouldDefer` / discretionary deferral — skip this tick.
+    /// `shouldDefer` / discretionary deferral — `work` was not invoked.
     case deferred
     /// Task cancelled or scheduler invalidated.
     case cancelled
@@ -12,19 +12,28 @@ public enum IndexingActivityOpportunity: Sendable, Equatable {
 
 /// Injectable background activity surface for adaptive periodic indexing.
 /// Production uses `NSBackgroundActivityScheduler` (background QoS, tolerance,
-/// `shouldDefer`). Tests use an immediate/fake implementation.
+/// `shouldDefer`) and only reports `.finished` **after** `work` returns.
 public protocol IndexingBackgroundActivityScheduling: AnyObject, Sendable {
-    /// Suspend until the next scheduled opportunity for the given interval.
-    /// Callers may change `interval` between waits (adaptive 15→30→60m).
-    func waitForOpportunity(interval: TimeInterval, tolerance: TimeInterval) async -> IndexingActivityOpportunity
+    /// Backend name published to telemetry (must match real implementation).
+    var backendName: String { get }
+
+    /// Wait until the next scheduled opportunity, then run `work` inside the
+    /// activity's lifetime. OS completion is only signaled after `work` ends.
+    func performWhenDue(
+        interval: TimeInterval,
+        tolerance: TimeInterval,
+        work: @escaping @Sendable () async -> Void
+    ) async -> IndexingActivityOpportunity
 
     /// Tear down any pending scheduled work.
     func invalidate()
 }
 
 /// Production scheduler: `NSBackgroundActivityScheduler` at background QoS.
+/// The activity completion handler is invoked only after indexing `work` finishes.
 public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActivityScheduling, @unchecked Sendable {
     public static let identifier = "com.engram.service.periodic-index"
+    public let backendName = "NSBackgroundActivityScheduler"
 
     private let lock = NSLock()
     private var scheduler: NSBackgroundActivityScheduler?
@@ -32,7 +41,11 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
 
     public init() {}
 
-    public func waitForOpportunity(interval: TimeInterval, tolerance: TimeInterval) async -> IndexingActivityOpportunity {
+    public func performWhenDue(
+        interval: TimeInterval,
+        tolerance: TimeInterval,
+        work: @escaping @Sendable () async -> Void
+    ) async -> IndexingActivityOpportunity {
         await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<IndexingActivityOpportunity, Never>) in
                 self.lock.lock()
@@ -41,7 +54,6 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
                     continuation.resume(returning: .cancelled)
                     return
                 }
-                // Replace any previous wait (should not stack in production loop).
                 if let previous = self.pending {
                     self.pending = continuation
                     self.lock.unlock()
@@ -50,7 +62,11 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
                     self.pending = continuation
                     self.lock.unlock()
                 }
-                self.armScheduler(interval: max(1, interval), tolerance: max(0, tolerance))
+                self.armScheduler(
+                    interval: max(1, interval),
+                    tolerance: max(0, tolerance),
+                    work: work
+                )
             }
         } onCancel: {
             self.finishPending(.cancelled)
@@ -67,13 +83,16 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
         cont?.resume(returning: .cancelled)
     }
 
-    private func armScheduler(interval: TimeInterval, tolerance: TimeInterval) {
+    private func armScheduler(
+        interval: TimeInterval,
+        tolerance: TimeInterval,
+        work: @escaping @Sendable () async -> Void
+    ) {
         lock.lock()
         scheduler?.invalidate()
         let next = NSBackgroundActivityScheduler(identifier: Self.identifier)
         next.repeats = false
         next.interval = interval
-        // Cap tolerance at 25% of interval (design: tolerance + shouldDefer).
         next.tolerance = min(tolerance, interval * 0.25)
         next.qualityOfService = .background
         scheduler = next
@@ -85,12 +104,17 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
                 return
             }
             if next.shouldDefer {
+                // Defer without running work; OS activity ends as deferred.
                 completion(NSBackgroundActivityScheduler.Result.deferred)
                 self.finishPending(.deferred)
                 return
             }
-            completion(NSBackgroundActivityScheduler.Result.finished)
-            self.finishPending(.run)
+            // Keep the activity alive until indexing work returns (S01 contract).
+            Task {
+                await work()
+                completion(NSBackgroundActivityScheduler.Result.finished)
+                self.finishPending(.run)
+            }
         }
     }
 
@@ -107,13 +131,18 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
     }
 }
 
-/// Test / fallback scheduler: `Task.sleep` for the interval (no OS activity API).
-/// Still honors Task cancellation. Used when NSBackgroundActivityScheduler is
-/// unavailable in unit-test hosts that need deterministic timing.
+/// Test / fallback scheduler: sleep, then run work synchronously in the caller's
+/// task (completion-after-work ordering preserved for tests).
 public final class SleepIndexingBackgroundActivityScheduler: IndexingBackgroundActivityScheduling, @unchecked Sendable {
+    public let backendName = "Task.sleep"
+
     public init() {}
 
-    public func waitForOpportunity(interval: TimeInterval, tolerance: TimeInterval) async -> IndexingActivityOpportunity {
+    public func performWhenDue(
+        interval: TimeInterval,
+        tolerance: TimeInterval,
+        work: @escaping @Sendable () async -> Void
+    ) async -> IndexingActivityOpportunity {
         _ = tolerance
         if Task.isCancelled { return .cancelled }
         let nanos = UInt64(max(0, interval) * 1_000_000_000)
@@ -122,7 +151,57 @@ public final class SleepIndexingBackgroundActivityScheduler: IndexingBackgroundA
         } catch {
             return .cancelled
         }
-        return Task.isCancelled ? .cancelled : .run
+        if Task.isCancelled { return .cancelled }
+        await work()
+        return .run
+    }
+
+    public func invalidate() {}
+}
+
+/// Test double that records whether OS-style completion is ordered after work.
+public final class RecordingIndexingBackgroundActivityScheduler: IndexingBackgroundActivityScheduling, @unchecked Sendable {
+    public let backendName = "Recording"
+
+    public private(set) var workInvocations = 0
+    public private(set) var finishedAfterWorkCount = 0
+    /// True only if the last run completed work before signalling finished.
+    public private(set) var lastRunFinishedAfterWork = false
+    public var forceDeferred = false
+    public var immediate = true
+
+    private let lock = NSLock()
+
+    public init() {}
+
+    public func performWhenDue(
+        interval: TimeInterval,
+        tolerance: TimeInterval,
+        work: @escaping @Sendable () async -> Void
+    ) async -> IndexingActivityOpportunity {
+        _ = interval
+        _ = tolerance
+        if forceDeferred { return .deferred }
+        if !immediate {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        if Task.isCancelled { return .cancelled }
+
+        lock.lock()
+        workInvocations += 1
+        lock.unlock()
+
+        var finishedAfter = false
+        await work()
+        finishedAfter = true
+
+        lock.lock()
+        if finishedAfter {
+            finishedAfterWorkCount += 1
+            lastRunFinishedAfterWork = true
+        }
+        lock.unlock()
+        return .run
     }
 
     public func invalidate() {}

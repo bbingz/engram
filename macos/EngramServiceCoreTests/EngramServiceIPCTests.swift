@@ -777,24 +777,87 @@ final class EngramServiceIPCTests: XCTestCase {
             source.contains("var isFirstScan = true"),
             "Periodic indexing must not run an immediate first scan while startup maintenance already holds the write gate"
         )
-        // Wave 7C S01: NSBackgroundActivityScheduler opportunity wait before indexRecent
-        // (adaptive 15m+ interval; not an immediate first scan).
+        // Wave 7C S01: NSBackgroundActivityScheduler performs work *inside* the
+        // activity (completion only after index cycle), not an immediate first scan.
         XCTAssertTrue(
             source.contains("NSIndexingBackgroundActivityScheduler")
-                || source.contains("waitForOpportunity"),
+                || source.contains("performWhenDue"),
             "periodic loop must use background activity scheduling, not an immediate first scan"
         )
-        let waitRange = try XCTUnwrap(
-            source.range(of: "waitForOpportunity(")
-                ?? source.range(of: "activityScheduler.waitForOpportunity")
+        XCTAssertTrue(
+            source.contains("performWhenDue("),
+            "must schedule via performWhenDue so OS completion waits for work"
         )
-        let writeRange = try XCTUnwrap(source.range(of: #"gate.performWriteCommand(name: "indexRecent")"#))
-        XCTAssertLessThan(waitRange.lowerBound, writeRange.lowerBound)
+        XCTAssertTrue(
+            source.contains("runOnePeriodicIndexCycle")
+                || source.contains("indexRecent"),
+            "scan work must live under the activity work closure"
+        )
+        // Idle scans must not start embedding (plan Task 4 step 4).
+        let cycleStart = try XCTUnwrap(source.range(of: "runOnePeriodicIndexCycle"))
+        let cycleBody = String(source[cycleStart.lowerBound...])
+        XCTAssertTrue(
+            cycleBody.contains("if scan.indexed > 0")
+                && cycleBody.contains("periodicSessionEmbeddingBackfill"),
+            "embedding backfill must be gated on indexed > 0"
+        )
+    }
+
+    func testPeerDisconnectCancelsInFlightHandler_repro() async throws {
+        // Wave 7C H03: client socket close must cancel the server handler task
+        // (not only server.stop()), so Task.isCancelled flips mid-command.
+        let paths = try makeServiceIPCPaths()
+        let requestStarted = expectation(description: "handler started")
+        let handlerCancelled = expectation(description: "handler saw cancellation")
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            requestStarted.fulfill()
+            for _ in 0..<200 {
+                if Task.isCancelled {
+                    handlerCancelled.fulfill()
+                    return .failure(
+                        requestId: request.requestId,
+                        error: EngramServiceErrorEnvelope(
+                            name: "Cancelled",
+                            message: "peer disconnect cancel",
+                            retryPolicy: "never"
+                        )
+                    )
+                }
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+            XCTFail("peer disconnect must cancel the in-flight handler")
+            return .failure(
+                requestId: request.requestId,
+                error: EngramServiceErrorEnvelope(
+                    name: "Timeout",
+                    message: "handler completed without cancel",
+                    retryPolicy: "never"
+                )
+            )
+        }
+        try server.start()
+        defer { server.stop() }
+
+        // Raw framed request then immediate close (simulates client timeout).
+        let fd = try UnixSocketEngramServiceTransport.connectSocket(path: paths.socket.path)
+        let body = try JSONEncoder().encode(EngramServiceRequestEnvelope(command: "status"))
+        try UnixSocketEngramServiceTransport.writeFrame(body, to: fd)
+
+        await fulfillment(of: [requestStarted], timeout: 2)
+        // Client abandons the connection without reading the response.
+        shutdown(fd, SHUT_RDWR)
+        close(fd)
+
+        await fulfillment(of: [handlerCancelled], timeout: 3)
     }
 
     func testRunnerPeriodicScanUsesEnabledAdapters() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
-        let start = try XCTUnwrap(source.range(of: "private static func runIndexingLoop("))
+        // Cycle body lives in runOnePeriodicIndexCycle (under performWhenDue work).
+        let start = try XCTUnwrap(
+            source.range(of: "private static func runOnePeriodicIndexCycle(")
+                ?? source.range(of: "private static func runIndexingLoop(")
+        )
         let end = try XCTUnwrap(source.range(of: "private static func runInitialScan(", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 

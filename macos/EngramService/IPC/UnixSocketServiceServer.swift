@@ -147,7 +147,14 @@ final class UnixSocketServiceServer: Sendable {
                                 message: "Missing or invalid capability token for \(request.command)"
                             )
                         }
-                        let response = await handler(request)
+                        // Wave 7C H03: when the client times out / closes the socket,
+                        // cancel the handler task so cooperative loops (linkSessions)
+                        // stop instead of continuing after the client already failed.
+                        let response = await Self.handleWithPeerDisconnectCancellation(
+                            client: client,
+                            request: request,
+                            handler: handler
+                        )
                         try await Self.writeFrameOffCooperativePool(try JSONEncoder().encode(response), to: client)
                     } catch {
                         let response = Self.errorResponse(for: error, requestId: decodedRequestId)
@@ -267,6 +274,88 @@ final class UnixSocketServiceServer: Sendable {
             )
         case .commandFailed(let name, let message, let retryPolicy, let details):
             return EngramServiceErrorEnvelope(name: name, message: message, retryPolicy: retryPolicy, details: details)
+        }
+    }
+
+    private enum HandlerRaceOutcome: Sendable {
+        case completed(EngramServiceResponseEnvelope)
+        case peerDisconnected
+    }
+
+    /// Run `handler` in a child task; if the peer closes (client timeout/cancel),
+    /// cancel that child so `Task.isCancelled` flips inside long command loops.
+    static func handleWithPeerDisconnectCancellation(
+        client: Int32,
+        request: EngramServiceRequestEnvelope,
+        handler: @escaping Handler
+    ) async -> EngramServiceResponseEnvelope {
+        await withTaskGroup(of: HandlerRaceOutcome.self) { group in
+            group.addTask {
+                let response = await handler(request)
+                return .completed(response)
+            }
+            group.addTask {
+                await Self.waitForPeerDisconnect(client)
+                return .peerDisconnected
+            }
+            let first = await group.next()!
+            switch first {
+            case .completed(let response):
+                group.cancelAll()
+                return response
+            case .peerDisconnected:
+                // Cancel the handler child so cooperative cancel checks fire,
+                // then prefer any partial response the handler still produces.
+                group.cancelAll()
+                for await outcome in group {
+                    if case .completed(let response) = outcome {
+                        return response
+                    }
+                }
+                return .failure(
+                    requestId: request.requestId,
+                    error: EngramServiceErrorEnvelope(
+                        name: "TransportClosed",
+                        message: "Client disconnected during \(request.command)",
+                        retryPolicy: "safe"
+                    )
+                )
+            }
+        }
+    }
+
+    /// Blocks until the peer closes the connection, the fd errors, or this task
+    /// is cancelled. Used to propagate client timeout/disconnect into handlers.
+    static func waitForPeerDisconnect(_ fd: Int32) async {
+        while !Task.isCancelled {
+            var pfd = pollfd(fd: fd, events: Int16(POLLHUP | POLLERR | POLLIN), revents: 0)
+            let ready = withUnsafeMutablePointer(to: &pfd) { pointer in
+                Darwin.poll(pointer, 1, 50)
+            }
+            if ready < 0 {
+                if errno == EINTR { continue }
+                return
+            }
+            if ready == 0 { continue }
+            let revents = pfd.revents
+            if revents & Int16(POLLHUP | POLLERR) != 0 {
+                return
+            }
+            if revents & Int16(POLLIN) != 0 {
+                // EOF from peer appears as readable with zero-length peek.
+                var byte: UInt8 = 0
+                let n = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
+                if n == 0 { return }
+                if n < 0 {
+                    let code = errno
+                    if code == EAGAIN || code == EWOULDBLOCK {
+                        continue
+                    }
+                    return
+                }
+                // Unexpected inbound data mid-request; keep watching.
+            }
+            try? await Task.sleep(nanoseconds: 20_000_000)
         }
     }
 

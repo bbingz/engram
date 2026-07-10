@@ -343,91 +343,107 @@ public enum EngramServiceRunner {
         remoteSync: RemoteSyncCoordinator? = nil,
         activityScheduler: IndexingBackgroundActivityScheduling = NSIndexingBackgroundActivityScheduler()
     ) async {
-        // Wave 7C S01: adaptive 15→30→60m idle backoff + NSBackgroundActivityScheduler
-        // (background QoS, tolerance, shouldDefer). Was fixed 5m Task.sleep.
-        var schedule = IndexingSchedulePolicy()
+        // Wave 7C S01: adaptive 15→30→60m + NSBackgroundActivityScheduler
+        // (background QoS, tolerance, shouldDefer). Work runs *inside* the
+        // activity so OS completion fires only after the scan cycle ends.
+        let scheduleBox = IndexingScheduleBox()
         defer { activityScheduler.invalidate() }
 
         while !Task.isCancelled {
-            let sleepSeconds = schedule.nextInterval()
+            let sleepSeconds = scheduleBox.policy.nextInterval()
             await statusMonitor.recordSchedule(nextScanIntervalSeconds: Int(sleepSeconds))
             await telemetry?.recordSchedule(
                 nextScanIntervalSeconds: Int(sleepSeconds),
-                targetIntervalSeconds: Int(schedule.targetInterval),
-                consecutiveIdleScans: schedule.consecutiveIdleScans,
-                backend: "NSBackgroundActivityScheduler"
+                targetIntervalSeconds: Int(scheduleBox.policy.targetInterval),
+                consecutiveIdleScans: scheduleBox.policy.consecutiveIdleScans,
+                backend: activityScheduler.backendName
             )
 
             let tolerance = min(5 * 60.0, sleepSeconds * 0.25)
-            let opportunity = await activityScheduler.waitForOpportunity(
+            let opportunity = await activityScheduler.performWhenDue(
                 interval: sleepSeconds,
                 tolerance: tolerance
-            )
-            switch opportunity {
-            case .cancelled:
-                break
-            case .deferred:
-                // OS asked to defer; keep schedule, wait again.
-                continue
-            case .run:
-                break
+            ) {
+                await Self.runOnePeriodicIndexCycle(
+                    gate: gate,
+                    statusMonitor: statusMonitor,
+                    telemetry: telemetry,
+                    environment: environment,
+                    tokenLimitsProvider: tokenLimitsProvider,
+                    remoteSync: remoteSync,
+                    scheduleBox: scheduleBox
+                )
             }
-            if case .cancelled = opportunity { break }
+            if opportunity == .cancelled { break }
+            // .deferred / .run both continue the outer loop with updated schedule.
+        }
+    }
 
-            // Defer discretionary work under Low Power / serious thermal pressure.
-            let processInfo = ProcessInfo.processInfo
-            let conditions = IndexingSchedulePolicy.SystemConditions(
-                lowPower: processInfo.isLowPowerModeEnabled,
-                thermal: {
-                    switch processInfo.thermalState {
-                    case .nominal: return .nominal
-                    case .fair: return .fair
-                    case .serious: return .serious
-                    case .critical: return .critical
-                    @unknown default: return .fair
-                    }
-                }()
-            )
-            if IndexingSchedulePolicy.shouldDefer(conditions: conditions) {
-                continue
+    /// One adaptive scan cycle. Invoked only while an NSBackground activity is open.
+    private static func runOnePeriodicIndexCycle(
+        gate: ServiceWriterGate,
+        statusMonitor: ServiceStatusMonitor,
+        telemetry: ServiceTelemetryCollector?,
+        environment: [String: String],
+        tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits],
+        remoteSync: RemoteSyncCoordinator?,
+        scheduleBox: IndexingScheduleBox
+    ) async {
+        let processInfo = ProcessInfo.processInfo
+        let conditions = IndexingSchedulePolicy.SystemConditions(
+            lowPower: processInfo.isLowPowerModeEnabled,
+            thermal: {
+                switch processInfo.thermalState {
+                case .nominal: return .nominal
+                case .fair: return .fair
+                case .serious: return .serious
+                case .critical: return .critical
+                @unknown default: return .fair
+                }
+            }()
+        )
+        if IndexingSchedulePolicy.shouldDefer(conditions: conditions) {
+            return
+        }
+
+        let disabled = readDisabledSources(environment: environment)
+        let recentAdapters = adaptersExcludingDisabled(
+            SessionAdapterFactory.recentActiveAdapters(),
+            disabledSources: disabled
+        )
+        let enabledAdapters = adaptersExcludingDisabled(
+            SessionAdapterFactory.defaultAdapters(),
+            disabledSources: disabled
+        )
+        let scanClock = ContinuousClock()
+        let scanStarted = scanClock.now
+        do {
+            let scan = try await gate.performWriteCommand(name: "indexRecent") { writer in
+                try await writer.indexRecentSessions(adapters: recentAdapters)
+            }.value
+            scheduleBox.policy.recordScan(.init(indexed: scan.indexed, failed: false))
+
+            // Parent-link only after indexed changes (idle skip).
+            if scan.indexed > 0 {
+                _ = try await gate.performWriteCommand(name: "periodicParentBackfills") { writer in
+                    try writer.runPeriodicParentBackfills()
+                }
             }
 
-            let disabled = readDisabledSources(environment: environment)
-            let recentAdapters = adaptersExcludingDisabled(
-                SessionAdapterFactory.recentActiveAdapters(),
-                disabledSources: disabled
-            )
-            let enabledAdapters = adaptersExcludingDisabled(
-                SessionAdapterFactory.defaultAdapters(),
-                disabledSources: disabled
-            )
-            let scanClock = ContinuousClock()
-            let scanStarted = scanClock.now
-            do {
-                let scan = try await gate.performWriteCommand(name: "indexRecent") { writer in
-                    try await writer.indexRecentSessions(adapters: recentAdapters)
+            // FTS drain has its own backlog gate — still OK after idle scans.
+            var jobs = StartupIndexJobRecoveryResult(completed: 0, notApplicable: 0)
+            while !Task.isCancelled {
+                let drain = try await gate.performWriteCommand(name: "periodicFtsDrain") { writer in
+                    try await IndexJobRunner(writer: writer, adapters: enabledAdapters)
+                        .runRecoverableJobsOnce()
                 }.value
-                schedule.recordScan(.init(indexed: scan.indexed, failed: false))
-                // Run parent-link / dispatch detection on the freshly indexed
-                // sessions so agent children created mid-run are grouped under
-                // their parent (and skip-tiered) without waiting for a restart.
-                if scan.indexed > 0 {
-                    _ = try await gate.performWriteCommand(name: "periodicParentBackfills") { writer in
-                        try writer.runPeriodicParentBackfills()
-                    }
-                }
-                // Drain any FTS jobs enqueued by this scan so search content is
-                // written, but release the single write gate between batches.
-                var jobs = StartupIndexJobRecoveryResult(completed: 0, notApplicable: 0)
-                while !Task.isCancelled {
-                    let drain = try await gate.performWriteCommand(name: "periodicFtsDrain") { writer in
-                        try await IndexJobRunner(writer: writer, adapters: enabledAdapters)
-                            .runRecoverableJobsOnce()
-                    }.value
-                    jobs.completed += drain.result.completed
-                    jobs.notApplicable += drain.result.notApplicable
-                    if drain.drained { break }
-                }
+                jobs.completed += drain.result.completed
+                jobs.notApplicable += drain.result.notApplicable
+                if drain.drained { break }
+            }
+
+            // Wave 7C S01: idle scans must not start embedding backfills.
+            if scan.indexed > 0 {
                 await runSessionEmbeddingBackfillBestEffort(
                     name: "periodicSessionEmbeddingBackfill",
                     gate: gate,
@@ -438,85 +454,85 @@ public enum EngramServiceRunner {
                     gate: gate,
                     environment: environment
                 )
-                // Remote offload: drain offload/rehydrate queues + reclaim disk.
-                // Each DB step is its own gated write; network I/O runs between
-                // them (outside the gate). No-op when offload is disabled.
-                if let remoteSync {
-                    do {
-                        let sync = try await remoteSync.runOnce()
-                        if sync.offloaded > 0 || sync.rehydrated > 0 || sync.reclaimedDisk {
-                            ServiceLogger.notice(
-                                "remote offload cycle: offloaded=\(sync.offloaded) rehydrated=\(sync.rehydrated) vacuumed=\(sync.reclaimedDisk)",
-                                category: .runner
-                            )
-                        }
-                    } catch is CancellationError {
-                        break
-                    } catch {
-                        ServiceLogger.error("remote offload cycle failed", category: .runner, error: error)
-                    }
-                }
-                await runUserDataBackupBestEffort(gate: gate, environment: environment)
-                // FTS segment merge for long-running services. Cadence-gated
-                // (>= 24h since last attempt + content-signature) so the
-                // 5-min loop never rewrites the whole index every tick.
-                // Isolated: failure must not kill the rest of the cycle.
-                await runPeriodicFtsOptimizeBestEffort(gate: gate)
-                let status = try await gate.performReadCommand(name: "periodicIndexStatus") { writer in
-                    try writer.indexStatus()
-                }.value
-                // Refresh git_repos from session cwds (replaces removed Node
-                // git-probe.ts; populates the otherwise-dormant Repos page).
-                // Each probe spawns several `git` subprocesses per cwd (up to 200
-                // cwds), so only re-probe when this scan actually indexed new
-                // content — mirroring the parent-backfill gate above. An idle
-                // machine with no new sessions then does ZERO git fan-out per
-                // cycle instead of hundreds of subprocess spawns every 5 minutes.
-                var repoCount = 0
-                if scan.indexed > 0 {
-                    let repoCandidates = try await gate.performWriteCommand(name: "periodicRepoCandidates") { writer in
-                        try writer.read { db in
-                            try RepoDiscovery.sessionCwdCounts(db)
-                        }
-                    }.value
-                    // Git probes can be slow or wedged, so they run outside the
-                    // serialized service write gate; only the final upsert is gated.
-                    let repoEntries = RepoDiscovery.probeRepositories(repoCandidates)
-                    repoCount = try await gate.performWriteCommand(name: "repoDiscoveryUpsert") { writer in
-                        try writer.write { db in
-                            try RepoDiscovery.upsert(
-                                db,
-                                entries: repoEntries,
-                                probedAt: ISO8601DateFormatter().string(from: Date())
-                            )
-                        }
-                    }.value
-                }
-                ServiceLogger.notice(
-                    "index scan completed: indexed=\(scan.indexed) total=\(status.total) todayParents=\(status.todayParents) ftsCompleted=\(jobs.completed) ftsNotApplicable=\(jobs.notApplicable) repos=\(repoCount)",
-                    category: .runner
-                )
-                emit(ServiceIndexEvent(
-                    indexed: scan.indexed,
-                    total: status.total,
-                    todayParents: status.todayParents
-                ))
-                await statusMonitor.recordScanSuccess()
-                await telemetry?.recordScan(
-                    durationMs: Self.elapsedMs(from: scanStarted, clock: scanClock),
-                    indexed: scan.indexed,
-                    total: status.total
-                )
-                await collectUsageBestEffort(gate: gate, tokenLimitsProvider: tokenLimitsProvider)
-            } catch is CancellationError {
-                break
-            } catch {
-                ServiceLogger.error("index scan failed", category: .runner, error: error)
-                emit(ServiceIndexErrorEvent(error: error.localizedDescription))
-                await statusMonitor.recordScanFailure(error.localizedDescription)
             }
+
+            if let remoteSync {
+                do {
+                    let sync = try await remoteSync.runOnce()
+                    if sync.offloaded > 0 || sync.rehydrated > 0 || sync.reclaimedDisk {
+                        ServiceLogger.notice(
+                            "remote offload cycle: offloaded=\(sync.offloaded) rehydrated=\(sync.rehydrated) vacuumed=\(sync.reclaimedDisk)",
+                            category: .runner
+                        )
+                    }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    ServiceLogger.error("remote offload cycle failed", category: .runner, error: error)
+                }
+            }
+
+            await runUserDataBackupBestEffort(gate: gate, environment: environment)
+            await runPeriodicFtsOptimizeBestEffort(gate: gate)
+
+            let status = try await gate.performReadCommand(name: "periodicIndexStatus") { writer in
+                try writer.indexStatus()
+            }.value
+
+            var repoCount = 0
+            if scan.indexed > 0 {
+                let repoCandidates = try await gate.performWriteCommand(name: "periodicRepoCandidates") { writer in
+                    try writer.read { db in
+                        try RepoDiscovery.sessionCwdCounts(db)
+                    }
+                }.value
+                let repoEntries = RepoDiscovery.probeRepositories(repoCandidates)
+                repoCount = try await gate.performWriteCommand(name: "repoDiscoveryUpsert") { writer in
+                    try writer.write { db in
+                        try RepoDiscovery.upsert(
+                            db,
+                            entries: repoEntries,
+                            probedAt: ISO8601DateFormatter().string(from: Date())
+                        )
+                    }
+                }.value
+            }
+
+            ServiceLogger.notice(
+                "index scan completed: indexed=\(scan.indexed) total=\(status.total) todayParents=\(status.todayParents) ftsCompleted=\(jobs.completed) ftsNotApplicable=\(jobs.notApplicable) repos=\(repoCount)",
+                category: .runner
+            )
+            emit(ServiceIndexEvent(
+                indexed: scan.indexed,
+                total: status.total,
+                todayParents: status.todayParents
+            ))
+            await statusMonitor.recordScanSuccess()
+            await telemetry?.recordScan(
+                durationMs: Self.elapsedMs(from: scanStarted, clock: scanClock),
+                indexed: scan.indexed,
+                total: status.total
+            )
+            await collectUsageBestEffort(gate: gate, tokenLimitsProvider: tokenLimitsProvider)
+        } catch is CancellationError {
+            return
+        } catch {
+            ServiceLogger.error("index scan failed", category: .runner, error: error)
+            emit(ServiceIndexErrorEvent(error: error.localizedDescription))
+            await statusMonitor.recordScanFailure(error.localizedDescription)
+            scheduleBox.policy.recordScan(.init(indexed: 0, failed: true))
         }
     }
+
+
+/// Mutable adaptive schedule shared into @Sendable activity work closures.
+private final class IndexingScheduleBox: @unchecked Sendable {
+    var policy: IndexingSchedulePolicy
+
+    init(policy: IndexingSchedulePolicy = IndexingSchedulePolicy()) {
+        self.policy = policy
+    }
+}
 
     private static func adaptersExcludingDisabled(
         _ adapters: [any SessionAdapter],

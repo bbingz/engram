@@ -51,8 +51,10 @@ final class IndexingSchedulePolicyTests: XCTestCase {
         // Production path uses NSBackgroundActivityScheduler; sleep fallback is for tests/hosts.
         let ns = NSIndexingBackgroundActivityScheduler()
         XCTAssertEqual(NSIndexingBackgroundActivityScheduler.identifier, "com.engram.service.periodic-index")
+        XCTAssertEqual(ns.backendName, "NSBackgroundActivityScheduler")
         ns.invalidate()
         let sleep = SleepIndexingBackgroundActivityScheduler()
+        XCTAssertEqual(sleep.backendName, "Task.sleep")
         sleep.invalidate()
     }
 
@@ -60,5 +62,38 @@ final class IndexingSchedulePolicyTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(IndexingSchedulePolicy.minInterval, 15 * 60)
         XCTAssertNotEqual(IndexingSchedulePolicy.minInterval, 5 * 60)
         XCTAssertEqual(IndexingSchedulePolicy().nextInterval(), 15 * 60)
+    }
+
+    /// S01: activity completion must only fire after work returns (not before).
+    func testRecordingSchedulerFinishesOnlyAfterWork_repro() async {
+        let recorder = RecordingIndexingBackgroundActivityScheduler()
+        var workStarted = false
+        var workFinished = false
+        let outcome = await recorder.performWhenDue(interval: 0.001, tolerance: 0) {
+            workStarted = true
+            try? await Task.sleep(nanoseconds: 5_000_000)
+            workFinished = true
+        }
+        XCTAssertEqual(outcome, .run)
+        XCTAssertTrue(workStarted)
+        XCTAssertTrue(workFinished)
+        XCTAssertEqual(recorder.workInvocations, 1)
+        XCTAssertTrue(
+            recorder.lastRunFinishedAfterWork,
+            "OS-style finished must be ordered after work completes"
+        )
+        XCTAssertEqual(recorder.finishedAfterWorkCount, 1)
+    }
+
+    func testRecordingSchedulerDeferredSkipsWork() async {
+        let recorder = RecordingIndexingBackgroundActivityScheduler()
+        recorder.forceDeferred = true
+        var ran = false
+        let outcome = await recorder.performWhenDue(interval: 0.001, tolerance: 0) {
+            ran = true
+        }
+        XCTAssertEqual(outcome, .deferred)
+        XCTAssertFalse(ran)
+        XCTAssertEqual(recorder.workInvocations, 0)
     }
 }

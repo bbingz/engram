@@ -21,7 +21,7 @@
 | C01 | CONFIRMED-FIXED | `12d3c081` | `testStartupDeferralDoesNotStampSuccess_recentScanRecovers_repro` | `SwiftIndexer.swift` deferral `continue` without `recordFileIndexSuccess` | — |
 | H01 | CONFIRMED-FIXED | `12d3c081` | `testFinalizeRebuildPreservesLiveRowsForPermanentFailures_repro` | `FTSRebuildPolicy.finalizeRebuildIfReady` copies live→shadow before swap | — |
 | H02 | CONFIRMED-FIXED | `12d3c081` | **`testIndexAndFtsNamesAreLongRunning_repro`** | `ServiceWriterGate.isLongRunningWriteCommand` | Named-command coverage may miss exotic names |
-| H03 | CONFIRMED-FIXED | pass3 | **`testLinkSessionsCooperativeCancelReturnsRemaining_repro`** + **`testLongButFrameBoundCommandsUseExplicitTimeoutUnderTransportDeadline`** | AI/IPC headroom + cooperative cancel between symlink units; partial `cancelled`/`remaining` | — |
+| H03 | CONFIRMED-FIXED | pass4 | **`testPeerDisconnectCancelsInFlightHandler_repro`** + **`testLinkSessionsCooperativeCancelReturnsRemaining_repro`** + timeout headroom | peer disconnect cancels handler task; symlink loop cooperative cancel + partial remaining | — |
 | H04 | CONFIRMED-FIXED | `12d3c081` | `testBackfillSuggestedParentsWritesAmbiguousCandidatesWithoutSkipping` | `setAmbiguousSuggestion` keeps role/tier | — |
 | H05 | CONFIRMED-FIXED | `12d3c081`+follow-up | **`testClearParentPreservesDispatchedSkipTier_repro`** (IPC behavioral) + cascade SQL source lock | shipped `clearParentSession` keeps dispatched→skip | Existing DBs get trigger via createOrUpdateBaseSchema |
 | H06 | CONFIRMED-FIXED | `12d3c081`+follow-up | **`testGenerateSummaryIsNotReadOnly_repro`** + tools/list annotation assert | `MCPToolRegistry.toolCategory` → `.mutating` | — |
@@ -60,7 +60,7 @@
 | L07 | PARTIAL-FIXED | — | — | get_memory type not in payload | Follow-up |
 | L08 | CONFIRMED-FIXED | `12d3c081` | `LiveSessionCard` → `RelativeTimeText` | shared ISO parser | — |
 | L09 | PARTIAL-FIXED | — | — | invariant ledger still path-existence | Follow-up |
-| S01 | CONFIRMED-FIXED | pass3 | `IndexingSchedulePolicyTests` + `testNSSchedulerBackendIdentifierAndSleepFallbackExist` + `testMinIntervalIsNotFixedFiveMinutes` | **`NSIndexingBackgroundActivityScheduler`** (background QoS, tolerance, shouldDefer) + adaptive 15→30→60m; telemetry `nextScanIntervalSeconds` | — |
+| S01 | CONFIRMED-FIXED | pass4 | **`testRecordingSchedulerFinishesOnlyAfterWork_repro`** + policy tests | activity `.finished` only **after** scan work; idle skips embedding; adaptive 15→30→60m; backend from scheduler | — |
 
 ## Tallies
 
@@ -85,9 +85,9 @@
 
 ### Service / IPC (H02 / H03 / M05 / S01)
 - **H02:** `testIndexAndFtsNamesAreLongRunning_repro` (`ServiceWriterGateTests`)
-- **H03:** `testLinkSessionsCooperativeCancelReturnsRemaining_repro` + `testLongButFrameBoundCommandsUseExplicitTimeoutUnderTransportDeadline`
+- **H03:** `testPeerDisconnectCancelsInFlightHandler_repro` (real IPC socket close) + `testLinkSessionsCooperativeCancelReturnsRemaining_repro` + timeout headroom
 - **M05:** `testRunCancellationStopsBeforeNextOperationAndReportsRemaining` + `testParseBatchMoveOutcomeSurfacesCancelledAndRemaining_repro`
-- **S01:** `IndexingSchedulePolicyTests` (incl. NS scheduler + min≠5m)
+- **S01:** `testRecordingSchedulerFinishesOnlyAfterWork_repro` + `testMinIntervalIsNotFixedFiveMinutes` + idle embedding gate
 
 ### H06 / H09 / H11 (named skeptic gate)
 - **H06:** `testGenerateSummaryIsNotReadOnly_repro` (`EngramMCPExecutableTests`)
@@ -138,7 +138,8 @@ Script: `ENGRAM_BUILD_NUMBER=2026071001 macos/scripts/build-release.sh --local-o
 
 H05 behavioral evidence: `{SCRATCH}/h05-behavioral.log` — `testClearParentPreservesDispatchedSkipTier_repro` passed.
 
-Pass3 (H03/M05/S01): `{SCRATCH}/pass3-service-full.log` — EngramServiceCoreTests **281 tests, 0 failures**; H03/M05/S01 focused green.
+Pass3 (M05 remaining): prior closeout.
+Pass4 (H03 peer cancel + S01 activity lifetime): `{SCRATCH}/pass4-tests.log` — EngramServiceCoreTests **284 tests, 0 failures**; peer-disconnect cancel + activity-after-work PASS.
 
 ### Scheduling smoke (plan step 6)
 
@@ -161,7 +162,8 @@ After deploy of pass3 service binary (or rebuilt service), `status`/`telemetry` 
 | Wave 7A–7F bundle | `12d3c081` |
 | Closeout hash stamp | `61fdd5a8` |
 | Follow-up: M05 cancel + H06/H09/H11 + matrix | `2ce900ba` / `c88b7f20` |
-| Pass3: H03 cancel units + M05 remaining contract + S01 NSBackgroundActivityScheduler | this commit |
+| Pass3: M05 remaining + initial S01 shell | `6b301b86` |
+| Pass4: H03 peer-disconnect cancel + S01 finish-after-work + idle embed skip | this commit |
 
 ## Residual risks for Codex
 
