@@ -5,6 +5,7 @@ final class ProjectMoveOperationRegistryTests: XCTestCase {
     private func makeRegistry(
         maxTerminal: Int = 64,
         maxCancelOnly: Int = 32,
+        maxRunning: Int = 16,
         terminalTTL: TimeInterval = 1800,
         cancelOnlyTTL: TimeInterval = 60,
         now: @escaping @Sendable () -> Date = { Date() }
@@ -13,6 +14,7 @@ final class ProjectMoveOperationRegistryTests: XCTestCase {
             config: .init(
                 maxTerminalEntries: maxTerminal,
                 maxCancelOnlyEntries: maxCancelOnly,
+                maxRunningEntries: maxRunning,
                 terminalTTL: terminalTTL,
                 cancelOnlyTTL: cancelOnlyTTL,
                 now: now
@@ -223,6 +225,61 @@ final class ProjectMoveOperationRegistryTests: XCTestCase {
             reg.requestCancel(operationId: "unknown-\(i)")
         }
         XCTAssertLessThanOrEqual(reg.cancelOnlyCountForTests(), 5)
+    }
+
+    func testMaxRunningEntriesAdmission_repro() {
+        let reg = makeRegistry(maxRunning: 2)
+        switch reg.beginOrJoin(operationId: "r1", fingerprint: #"{"k":"1"}"#) {
+        case .proceed: break
+        default: return XCTFail("first must proceed")
+        }
+        switch reg.beginOrJoin(operationId: "r2", fingerprint: #"{"k":"2"}"#) {
+        case .proceed: break
+        default: return XCTFail("second must proceed")
+        }
+        XCTAssertEqual(reg.runningCountForTests(), 2)
+
+        // Third new id rejected without creating an entry.
+        switch reg.beginOrJoin(operationId: "r3", fingerprint: #"{"k":"3"}"#) {
+        case .capacityExceeded:
+            break
+        default:
+            return XCTFail("third must be capacityExceeded")
+        }
+        XCTAssertFalse(reg.hasEntryForTests("r3"))
+        XCTAssertEqual(reg.runningCountForTests(), 2)
+
+        // Existing join on running id still allowed (no new capacity).
+        switch reg.beginOrJoin(operationId: "r1", fingerprint: #"{"k":"1"}"#) {
+        case .join:
+            break
+        default:
+            return XCTFail("existing running join must be allowed under cap")
+        }
+
+        // Complete one → new id allowed.
+        reg.complete(operationId: "r1", payload: Data("ok".utf8))
+        XCTAssertEqual(reg.runningCountForTests(), 1)
+        switch reg.beginOrJoin(operationId: "r3", fingerprint: #"{"k":"3"}"#) {
+        case .proceed:
+            break
+        default:
+            return XCTFail("after free slot, new id must proceed")
+        }
+        XCTAssertTrue(reg.isRunningForTests("r3"))
+        XCTAssertEqual(reg.runningCountForTests(), 2)
+
+        // Cancel-only → running also admits under the same cap.
+        reg.requestCancel(operationId: "cancel-only")
+        XCTAssertTrue(reg.hasEntryForTests("cancel-only"))
+        switch reg.beginOrJoin(operationId: "cancel-only", fingerprint: #"{"k":"c"}"#) {
+        case .capacityExceeded:
+            break
+        default:
+            return XCTFail("cancel-only→running must also hit capacity when full")
+        }
+        // Still cancel-only, not running.
+        XCTAssertFalse(reg.isRunningForTests("cancel-only"))
     }
 }
 

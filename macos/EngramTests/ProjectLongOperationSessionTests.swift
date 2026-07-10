@@ -110,6 +110,96 @@ final class ProjectLongOperationSessionTests: XCTestCase {
         let dirty = projectMoveCancelCompensationFailedMessage("rollback failed")
         XCTAssertFalse(dirty.contains("Safe to retry"))
     }
+
+    func testTerminalWriterBusyDoesNotReconnectAndClearsId_repro() async {
+        var session = ProjectLongOperationSession(maxTransientRetries: 8)
+        let prepared = ProjectLongOperationRunner.prepare(session: session, mint: { "term-wb" })
+        session = prepared.session
+        var attempts = 0
+        let terminal = EngramServiceError.commandFailed(
+            name: "WriterBusy",
+            message: "writer busy — timeout waiting for lock",
+            retryPolicy: "safe",
+            details: [EngramServiceErrorEnvelope.operationTerminalDetailKey: .bool(true)]
+        )
+        let executeResult = await ProjectLongOperationRunner.execute(
+            session: session,
+            operationId: prepared.operationId,
+            isReconnectable: projectMoveIsReconnectableError
+        ) { _ in
+            attempts += 1
+            throw terminal
+        }
+        session = executeResult.session
+        XCTAssertEqual(attempts, 1, "terminal failure must not re-enter same-ID loop")
+        XCTAssertNil(session.operationId, "terminal failure clears operationId for a fresh retry")
+        XCTAssertFalse(session.blocksDuplicateSubmit)
+        XCTAssertFalse(projectMoveIsReconnectableError(terminal))
+        // New id can still retry after clear.
+        let next = ProjectLongOperationRunner.prepare(session: session, mint: { "fresh-id" })
+        XCTAssertEqual(next.operationId, "fresh-id")
+    }
+
+    func testLocalTransportAmbiguityKeepsSameId_repro() async {
+        var session = ProjectLongOperationSession(maxTransientRetries: 2)
+        let prepared = ProjectLongOperationRunner.prepare(session: session, mint: { "keep-transport" })
+        session = prepared.session
+        var attempts = 0
+        let executeResult = await ProjectLongOperationRunner.execute(
+            session: session,
+            operationId: prepared.operationId,
+            isReconnectable: projectMoveIsReconnectableError
+        ) { operationId in
+            XCTAssertEqual(operationId, "keep-transport")
+            attempts += 1
+            if attempts == 1 {
+                throw EngramServiceError.serviceUnavailable(message: "socket read timeout")
+            }
+            return "ok"
+        }
+        session = executeResult.session
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(try? executeResult.result.get(), "ok")
+        XCTAssertNil(session.operationId)
+        XCTAssertTrue(
+            projectMoveIsReconnectableError(
+                EngramServiceError.serviceUnavailable(message: "socket read timeout")
+            )
+        )
+        XCTAssertTrue(
+            projectMoveIsReconnectableError(
+                EngramServiceError.transportClosed(message: "broken pipe")
+            )
+        )
+    }
+
+    func testAsErrorTerminalMarkerBlocksWriterBusyReclassification_repro() {
+        let envelope = EngramServiceErrorEnvelope(
+            name: "WriterBusy",
+            message: "writer busy",
+            retryPolicy: "safe",
+            details: [EngramServiceErrorEnvelope.operationTerminalDetailKey: .bool(true)]
+        )
+        let error = envelope.asError()
+        guard case .commandFailed(let name, _, _, let details) = error else {
+            return XCTFail("expected commandFailed, got \(error)")
+        }
+        XCTAssertEqual(name, "WriterBusy")
+        XCTAssertTrue(EngramServiceErrorEnvelope.hasOperationTerminalMarker(details))
+        XCTAssertFalse(projectMoveIsReconnectableError(error))
+
+        // Without marker, bare WriterBusy name still maps — but reconnect policy rejects it.
+        let bare = EngramServiceErrorEnvelope(
+            name: "WriterBusy",
+            message: "writer busy",
+            retryPolicy: "safe",
+            details: nil
+        ).asError()
+        guard case .writerBusy = bare else {
+            return XCTFail("bare WriterBusy maps to writerBusy")
+        }
+        XCTAssertFalse(projectMoveIsReconnectableError(bare))
+    }
 }
 
 /// Tiny async gate for behavioral tests that need a mid-await observation window.

@@ -393,9 +393,209 @@ final class ProjectsMigrationTests: XCTestCase {
                 EngramServiceError.invalidRequest(message: "bad path")
             )
         )
+        // WriterBusy / commandFailed text-matching must never reconnect.
+        XCTAssertFalse(
+            projectMoveIsReconnectableError(
+                EngramServiceError.writerBusy(message: "timeout waiting for lock")
+            )
+        )
+        XCTAssertFalse(
+            projectMoveIsReconnectableError(
+                EngramServiceError.commandFailed(
+                    name: "SomeError",
+                    message: "timeout disconnect",
+                    retryPolicy: "safe",
+                    details: nil
+                )
+            )
+        )
+        XCTAssertFalse(
+            projectMoveIsReconnectableError(
+                EngramServiceError.commandFailed(
+                    name: "WriterBusy",
+                    message: "writer busy",
+                    retryPolicy: "safe",
+                    details: [EngramServiceErrorEnvelope.operationTerminalDetailKey: .bool(true)]
+                )
+            )
+        )
         XCTAssertTrue(
             projectMoveCancelledBeforeCommitMessage(kind: "Rename")
                 .contains("cancelled before commit")
+        )
+    }
+
+    func testBatchResumeIdentityPreservesDryRunFingerprint_repro() {
+        // Preview resume must keep dry_run=true so YAML fingerprint matches.
+        XCTAssertTrue(
+            BatchMoveResumeIdentity.effectiveDryRun(
+                isResume: true,
+                requestedDryRun: false,
+                savedDryRun: true
+            ),
+            "Resume of preview must re-issue dryRun true"
+        )
+        XCTAssertFalse(
+            BatchMoveResumeIdentity.effectiveDryRun(
+                isResume: true,
+                requestedDryRun: true,
+                savedDryRun: false
+            ),
+            "Resume of commit must re-issue dryRun false"
+        )
+        XCTAssertTrue(
+            BatchMoveResumeIdentity.effectiveDryRun(
+                isResume: false,
+                requestedDryRun: true,
+                savedDryRun: nil
+            )
+        )
+        XCTAssertFalse(
+            BatchMoveResumeIdentity.shouldResetSessionForPreview(
+                isResume: true,
+                effectiveDryRun: true
+            ),
+            "resume must not reset session (would mint a new id)"
+        )
+        XCTAssertTrue(
+            BatchMoveResumeIdentity.shouldResetSessionForPreview(
+                isResume: false,
+                effectiveDryRun: true
+            )
+        )
+        XCTAssertFalse(
+            BatchMoveResumeIdentity.shouldResetSessionForPreview(
+                isResume: false,
+                effectiveDryRun: false
+            )
+        )
+
+        let previewBody = BatchMoveBody.make(operations: [(src: "/a", dst: "/b")], dryRun: true)
+        let commitBody = BatchMoveBody.make(operations: [(src: "/a", dst: "/b")], dryRun: false)
+        XCTAssertNotEqual(previewBody, commitBody, "preview/commit fingerprints must differ")
+        let previewDefaults = try? Self.defaults(in: previewBody)
+        XCTAssertEqual(previewDefaults?["dry_run"] as? Bool, true)
+    }
+
+    func testBatchMoveSheetResumeUsesSavedDryRunNotHardCodedCommit_repro() throws {
+        let source = try Self.source("macos/Engram/Views/Projects/BatchMoveSheet.swift")
+        // Resume button must not hard-code run(dryRun: false).
+        let resumeBody = try Self.swiftClosureBody(
+            in: source,
+            afterMarker: "Button(\"Resume / Check Status\") {"
+        )
+        XCTAssertTrue(
+            resumeBody.contains("unresolvedRequestIsDryRun") || resumeBody.contains("resumeDryRun"),
+            "Resume must use saved dry-run identity"
+        )
+        XCTAssertFalse(
+            resumeBody.contains("await run(dryRun: false)"),
+            "Resume must not hard-code commit mode"
+        )
+        // run() must consult BatchMoveResumeIdentity / unresolvedRequestIsDryRun.
+        XCTAssertTrue(source.contains("BatchMoveResumeIdentity.effectiveDryRun"))
+        XCTAssertTrue(source.contains("unresolvedRequestIsDryRun"))
+        XCTAssertTrue(
+            source.contains("shouldResetSessionForPreview"),
+            "fresh preview reset must be gated so resume is not destroyed"
+        )
+    }
+
+    func testUndoSelectionFrozenWhileUnresolvedLongOp_repro() {
+        let m1 = EngramServiceMigrationLogEntry(
+            id: "m1",
+            oldPath: "/a",
+            newPath: "/b",
+            oldBasename: "a",
+            newBasename: "b",
+            state: "committed",
+            startedAt: "2026-01-01T00:00:00Z",
+            finishedAt: "2026-01-01T00:00:01Z",
+            archived: false,
+            auditNote: nil,
+            actor: "app",
+            detail: nil
+        )
+        let m2 = EngramServiceMigrationLogEntry(
+            id: "m2",
+            oldPath: "/c",
+            newPath: "/d",
+            oldBasename: "c",
+            newBasename: "d",
+            state: "committed",
+            startedAt: "2026-01-01T00:00:00Z",
+            finishedAt: "2026-01-01T00:00:01Z",
+            archived: false,
+            auditNote: nil,
+            actor: "app",
+            detail: nil
+        )
+        // Normal navigation works.
+        XCTAssertEqual(
+            UndoMigrationSelection.nextSelectedId(
+                direction: .down,
+                selectedId: "m1",
+                migrations: [m1, m2],
+                disabledIds: [],
+                isExecuting: false,
+                blocksDuplicateSubmit: false
+            ),
+            "m2"
+        )
+        // Unresolved long-op freezes selection (must not change migrationId).
+        XCTAssertNil(
+            UndoMigrationSelection.nextSelectedId(
+                direction: .down,
+                selectedId: "m1",
+                migrations: [m1, m2],
+                disabledIds: [],
+                isExecuting: false,
+                blocksDuplicateSubmit: true
+            )
+        )
+        XCTAssertNil(
+            UndoMigrationSelection.nextSelectedId(
+                direction: .down,
+                selectedId: "m1",
+                migrations: [m1, m2],
+                disabledIds: [],
+                isExecuting: true,
+                blocksDuplicateSubmit: false
+            )
+        )
+    }
+
+    func testArchiveCreateDirectoryIsInsideProduceWithGate_repro() throws {
+        let source = try Self.source(
+            "macos/EngramService/Core/EngramServiceCommandHandler+ProjectMigration.swift"
+        )
+        // Locate projectArchive function body via its entry signature.
+        guard let archiveRange = source.range(of: "static func projectArchive(") else {
+            return XCTFail("projectArchive not found")
+        }
+        let afterArchive = source[archiveRange.lowerBound...]
+        // produceWithGate body for archive must contain createDirectory; outer
+        // preflight section (before produceWithGate) must not.
+        guard let produceRange = afterArchive.range(of: "produceWithGate(") else {
+            return XCTFail("produceWithGate not found in projectArchive")
+        }
+        let preflight = String(afterArchive[..<produceRange.lowerBound])
+        XCTAssertFalse(
+            preflight.contains("FileManager.default.createDirectory"),
+            "archive preflight must not mutate FS before holding the writer gate"
+        )
+        // Extract the trailing closure after produceWithGate's map: line until matching braces.
+        let gateBody = try Self.swiftClosureBody(
+            in: String(afterArchive),
+            afterMarker: ") { writer in"
+        )
+        XCTAssertTrue(
+            gateBody.contains("FileManager.default.createDirectory"),
+            "createDirectory must run inside produceWithGate while holding the gate"
+        )
+        XCTAssertTrue(
+            gateBody.contains("ProjectMoveOrchestrator.run"),
+            "orchestrator must remain inside the same gated body"
         )
     }
 

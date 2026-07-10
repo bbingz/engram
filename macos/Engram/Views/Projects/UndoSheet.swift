@@ -37,6 +37,35 @@ private func humanizeMigrationTimestamp(_ raw: String) -> String {
     return migrationHumanFormatter.localizedString(for: date, relativeTo: Date())
 }
 
+/// Pure selection navigation for Undo list — frozen while a long-op is unresolved.
+enum UndoMigrationSelection {
+    /// Returns the next selected migration id, or `nil` when navigation is blocked
+    /// (executing / unresolved long-op / empty selectable set).
+    static func nextSelectedId(
+        direction: MoveCommandDirection,
+        selectedId: String?,
+        migrations: [EngramServiceMigrationLogEntry],
+        disabledIds: Set<String>,
+        isExecuting: Bool,
+        blocksDuplicateSubmit: Bool
+    ) -> String? {
+        guard !isExecuting, !blocksDuplicateSubmit else { return nil }
+        let selectable = migrations.filter { !disabledIds.contains($0.id) }
+        guard !selectable.isEmpty else { return nil }
+        let current = selectedId.flatMap { id in selectable.firstIndex { $0.id == id } } ?? 0
+        let nextIndex: Int
+        switch direction {
+        case .up, .left:
+            nextIndex = max(current - 1, 0)
+        case .down, .right:
+            nextIndex = min(current + 1, selectable.count - 1)
+        @unknown default:
+            nextIndex = current
+        }
+        return selectable[nextIndex].id
+    }
+}
+
 struct UndoSheet: View {
     @Environment(EngramServiceClient.self) var serviceClient
     @Environment(\.dismiss) var dismiss
@@ -303,20 +332,16 @@ struct UndoSheet: View {
     }
 
     private func moveSelection(_ direction: MoveCommandDirection) {
-        guard !isExecuting else { return }
-        let selectable = migrations.filter { !disabledMigrationIds.contains($0.id) }
-        guard !selectable.isEmpty else { return }
-        let current = selectedMigrationId.flatMap { id in selectable.firstIndex { $0.id == id } } ?? 0
-        let nextIndex: Int
-        switch direction {
-        case .up, .left:
-            nextIndex = max(current - 1, 0)
-        case .down, .right:
-            nextIndex = min(current + 1, selectable.count - 1)
-        @unknown default:
-            nextIndex = current
+        guard let next = UndoMigrationSelection.nextSelectedId(
+            direction: direction,
+            selectedId: selectedMigrationId,
+            migrations: migrations,
+            disabledIds: disabledMigrationIds,
+            isExecuting: isExecuting,
+            blocksDuplicateSubmit: longOpSession.blocksDuplicateSubmit
+        ) else {
+            return
         }
-        let next = selectable[nextIndex].id
         selectedMigrationId = next
         focusedMigrationId = next
     }

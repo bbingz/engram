@@ -100,6 +100,16 @@ struct EngramServiceErrorEnvelope: Codable, Equatable, Sendable {
     }
 
     func asError() -> EngramServiceError {
+        // Registry-confirmed terminal failures keep their wire name but must not
+        // be re-typed into reconnectable transport cases (writerBusy / serviceUnavailable).
+        if Self.hasOperationTerminalMarker(details) {
+            return .commandFailed(
+                name: name,
+                message: message,
+                retryPolicy: retryPolicy,
+                details: details
+            )
+        }
         switch name {
         case "ServiceUnavailable", "serviceUnavailable":
             return .serviceUnavailable(message: message)
@@ -123,6 +133,24 @@ struct EngramServiceErrorEnvelope: Codable, Equatable, Sendable {
                 retryPolicy: retryPolicy,
                 details: details
             )
+        }
+    }
+
+    /// Service-confirmed terminal operation failures carry this marker so clients
+    /// never treat them as ambiguous local transport drops.
+    static let operationTerminalDetailKey = "operationTerminal"
+
+    static func hasOperationTerminalMarker(_ details: [String: EngramServiceJSONValue]?) -> Bool {
+        guard let details else { return false }
+        switch details[operationTerminalDetailKey] {
+        case .bool(true)?:
+            return true
+        case .string(let value)? where value == "true" || value == "1":
+            return true
+        case .number(let value)? where value != 0:
+            return true
+        default:
+            return false
         }
     }
 }

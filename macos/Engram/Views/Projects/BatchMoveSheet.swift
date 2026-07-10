@@ -75,6 +75,31 @@ enum BatchMoveBody {
     }
 }
 
+/// Resume must re-issue the *same* dry-run identity that minted the operationId.
+/// Preview YAML fingerprints include `defaults.dry_run`; Commit omits it.
+enum BatchMoveResumeIdentity {
+    /// When resuming an unresolved long-op, use the saved dry-run mode; otherwise
+    /// the button-requested mode.
+    static func effectiveDryRun(
+        isResume: Bool,
+        requestedDryRun: Bool,
+        savedDryRun: Bool?
+    ) -> Bool {
+        if isResume, let savedDryRun {
+            return savedDryRun
+        }
+        return requestedDryRun
+    }
+
+    /// Fresh Preview may reset session identity; Resume must not.
+    static func shouldResetSessionForPreview(
+        isResume: Bool,
+        effectiveDryRun: Bool
+    ) -> Bool {
+        !isResume && effectiveDryRun
+    }
+}
+
 /// Hand-pattern-match the bare EngramServiceJSONValue (no accessors) into
 /// completed/failed/skipped counts and failed src+error lines.
 func parseBatchMoveOutcome(_ value: EngramServiceJSONValue) -> BatchMoveOutcome {
@@ -114,6 +139,8 @@ struct BatchMoveSheet: View {
     @State private var activeTask: Task<Void, Never>?
     @State private var longOpSession = ProjectLongOperationSession()
     @State private var isReconnecting = false
+    /// Dry-run mode that minted the current unresolved operationId (Preview vs Commit).
+    @State private var unresolvedRequestIsDryRun: Bool?
 
     /// Rows that actually have a destination to move (recorded cwd present).
     private var movableOperations: [(src: String, dst: String)] {
@@ -200,7 +227,9 @@ struct BatchMoveSheet: View {
                 .disabled(isExecuting || movableOperations.isEmpty || longOpSession.blocksDuplicateSubmit)
                 if longOpSession.blocksDuplicateSubmit && !isExecuting {
                     Button("Resume / Check Status") {
-                        activeTask = Task { await run(dryRun: false) }
+                        // Re-issue original dry-run identity (Preview stays Preview).
+                        let resumeDryRun = unresolvedRequestIsDryRun ?? false
+                        activeTask = Task { await run(dryRun: resumeDryRun) }
                     }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
@@ -308,15 +337,28 @@ struct BatchMoveSheet: View {
             isReconnecting = false
             activeTask = nil
         }
-        // Preview is dry-run only — use a fresh session that does not block commit.
-        if dryRun {
+        let isResume = longOpSession.blocksDuplicateSubmit
+        let effectiveDryRun = BatchMoveResumeIdentity.effectiveDryRun(
+            isResume: isResume,
+            requestedDryRun: dryRun,
+            savedDryRun: unresolvedRequestIsDryRun
+        )
+        // Fresh Preview may mint a new id; Resume must keep the unresolved one.
+        // Unconditional reset would destroy preview identity before resume.
+        if BatchMoveResumeIdentity.shouldResetSessionForPreview(
+            isResume: isResume,
+            effectiveDryRun: effectiveDryRun
+        ) {
             longOpSession.reset()
+            unresolvedRequestIsDryRun = nil
         }
-        let body = BatchMoveBody.make(operations: movableOperations, dryRun: dryRun)
+        let body = BatchMoveBody.make(operations: movableOperations, dryRun: effectiveDryRun)
         // Publish operationId to @State BEFORE any await so in-flight Cancel works.
         let prepared = ProjectLongOperationRunner.prepare(session: longOpSession)
         longOpSession = prepared.session
         isReconnecting = prepared.session.transientFailures > 0
+        // Remember the request mode that minted this operationId for Resume.
+        unresolvedRequestIsDryRun = effectiveDryRun
         let executeResult = await ProjectLongOperationRunner.execute(
             session: longOpSession,
             operationId: prepared.operationId,
@@ -336,6 +378,8 @@ struct BatchMoveSheet: View {
         isReconnecting = false
         switch executeResult.result {
         case .success(let result):
+            // Terminal success: clear identity so Commit after Preview mints a new id.
+            unresolvedRequestIsDryRun = nil
             let parsed = parseBatchMoveOutcome(result)
             outcome = parsed
             if parsed.cancelUnsafe {
@@ -343,11 +387,16 @@ struct BatchMoveSheet: View {
                     parsed.cancelErrorMessage ?? ""
                 )
             }
-            if !dryRun && parsed.failed == 0 && !parsed.cancelled && parsed.remaining == 0 {
+            if !effectiveDryRun && parsed.failed == 0 && !parsed.cancelled && parsed.remaining == 0 {
                 NotificationCenter.default.post(name: .projectsDidChange, object: nil)
                 dismiss()
             }
         case .failure(let error):
+            if longOpSession.blocksDuplicateSubmit {
+                unresolvedRequestIsDryRun = effectiveDryRun
+            } else {
+                unresolvedRequestIsDryRun = nil
+            }
             if projectMoveIsCancelCompensationFailure(error) {
                 errorMessage = projectMoveCancelCompensationFailedMessage(
                     projectMoveErrorMessage(error)

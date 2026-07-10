@@ -40,11 +40,15 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
         case completed(Terminal)
         case join(wait: @Sendable () async throws -> Terminal)
         case fingerprintConflict(existing: String)
+        /// Admission refused: no new running entry was created for this id.
+        case capacityExceeded
     }
 
     struct Config: Sendable {
         var maxTerminalEntries: Int
         var maxCancelOnlyEntries: Int
+        /// Hard cap on concurrently running long-ops (detached producers / gate waiters).
+        var maxRunningEntries: Int
         var terminalTTL: TimeInterval
         var cancelOnlyTTL: TimeInterval
         var now: @Sendable () -> Date
@@ -52,6 +56,7 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
         static let `default` = Config(
             maxTerminalEntries: 64,
             maxCancelOnlyEntries: 32,
+            maxRunningEntries: 16,
             terminalTTL: 30 * 60,
             cancelOnlyTTL: 60,
             now: { Date() }
@@ -222,13 +227,7 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
                 entries[id] = existing
                 return .completed(terminal)
             }
-            if existing.fingerprint.isEmpty {
-                existing.fingerprint = fingerprint
-                existing.running = true
-                existing.touchedAt = config.now()
-                entries[id] = existing
-                return .proceed
-            }
+            // Existing join on an already-running entry does not consume new capacity.
             if existing.running {
                 let opId = id
                 return .join(wait: { [weak self] in
@@ -238,12 +237,23 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
                     return try await self.waitForTerminal(operationId: opId)
                 })
             }
+            // Cancel-only (or non-running) → running requires admission.
+            if !canAdmitNewRunningLocked() {
+                return .capacityExceeded
+            }
+            if existing.fingerprint.isEmpty {
+                existing.fingerprint = fingerprint
+            }
             existing.running = true
             existing.touchedAt = config.now()
             entries[id] = existing
             return .proceed
         }
 
+        // Brand-new id → running requires admission; never insert on rejection.
+        if !canAdmitNewRunningLocked() {
+            return .capacityExceeded
+        }
         entries[id] = Entry(
             fingerprint: fingerprint,
             running: true,
@@ -307,6 +317,19 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return entries[id]?.running == true
+    }
+
+    func runningCountForTests() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.values.filter(\.running).count
+    }
+
+    func hasEntryForTests(_ operationId: String) -> Bool {
+        let id = normalize(operationId)
+        lock.lock()
+        defer { lock.unlock() }
+        return entries[id] != nil
     }
 
     func cancelOnlyCountForTests() -> Int {
@@ -477,6 +500,11 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
     /// Test-only: invoke cancel path for a known waiter id (deterministic races).
     func cancelWaiterForTests(operationId: String, waiterId: UUID) {
         cancelWaiter(operationId: normalize(operationId), waiterId: waiterId)
+    }
+
+    private func canAdmitNewRunningLocked() -> Bool {
+        let running = entries.values.filter(\.running).count
+        return running < max(1, config.maxRunningEntries)
     }
 
     private func pruneLocked(now: Date) {

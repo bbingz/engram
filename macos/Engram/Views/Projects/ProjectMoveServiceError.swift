@@ -52,6 +52,10 @@ func projectMoveErrorDetails(_ error: Error) -> ProjectMoveServiceErrorDetails? 
 /// Client timeout / transport drop after the service may already have passed the
 /// commit boundary. Re-submit the same `operationId` instead of treating this as
 /// user cancel (Wave 8 long-ops).
+///
+/// Only true local transport ambiguity is reconnectable. Service-confirmed
+/// terminal failures (registry-cached with `operationTerminal`), `writerBusy`,
+/// and structured `commandFailed` must not re-enter the same-ID retry loop.
 func projectMoveIsReconnectableError(_ error: Error) -> Bool {
     if error is CancellationError {
         // Outer request detach is reconnectable — work continues server-side.
@@ -66,11 +70,18 @@ func projectMoveIsReconnectableError(_ error: Error) -> Bool {
         return text.contains("timeout") || text.contains("timed out") || text.contains("broken pipe")
     }
     switch serviceError {
-    case .serviceUnavailable, .transportClosed, .writerBusy:
+    case .serviceUnavailable, .transportClosed:
+        // Local socket / readiness ambiguity — service has not confirmed a terminal.
         return true
-    case .commandFailed(let name, let message, _, _):
-        let blob = "\(name) \(message)".lowercased()
-        return blob.contains("timeout") || blob.contains("timed out") || blob.contains("disconnect")
+    case .writerBusy:
+        // Confirmed gate rejection; same operationId would only re-read the same outcome.
+        return false
+    case .commandFailed(_, _, _, let details):
+        // Never reconnect on structured command failures (incl. operationTerminal marker).
+        if EngramServiceErrorEnvelope.hasOperationTerminalMarker(details) {
+            return false
+        }
+        return false
     default:
         return false
     }

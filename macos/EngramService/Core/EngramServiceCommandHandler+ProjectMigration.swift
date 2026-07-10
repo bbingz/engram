@@ -71,8 +71,7 @@ extension EngramServiceCommandHandler {
         do {
             try validateProjectMovePaths(src: request.src, dst: request.dst)
         } catch {
-            failOperation(operationId: operationId, error: error)
-            throw error
+            throw terminalizeAndCache(operationId: operationId, error: error)
         }
 
         return try await produceWithGate(
@@ -138,6 +137,7 @@ extension EngramServiceCommandHandler {
 
         let suggestion: ArchiveSuggestion
         do {
+            // Preflight / suggestion only — no FS mutation outside the writer gate.
             try validateProjectPathConfined(request.src, label: "source")
             suggestion = try Archive.suggestTarget(
                 src: request.src,
@@ -148,15 +148,8 @@ extension EngramServiceCommandHandler {
                 )
             )
             try validateProjectPathConfined(suggestion.dst, label: "archive destination")
-            if !request.dryRun {
-                try FileManager.default.createDirectory(
-                    atPath: (suggestion.dst as NSString).deletingLastPathComponent,
-                    withIntermediateDirectories: true
-                )
-            }
         } catch {
-            failOperation(operationId: operationId, error: error)
-            throw error
+            throw terminalizeAndCache(operationId: operationId, error: error)
         }
 
         return try await produceWithGate(
@@ -166,7 +159,14 @@ extension EngramServiceCommandHandler {
             hooks: hooks,
             map: { mapPipelineResult($0, suggestion: suggestion) }
         ) { writer in
-            try await ProjectMoveOrchestrator.run(
+            // Create archive parent dirs only after holding the writer gate.
+            if !request.dryRun {
+                try FileManager.default.createDirectory(
+                    atPath: (suggestion.dst as NSString).deletingLastPathComponent,
+                    withIntermediateDirectories: true
+                )
+            }
+            return try await ProjectMoveOrchestrator.run(
                 writer: writer,
                 options: RunProjectMoveOptions(
                     src: request.src,
@@ -274,8 +274,7 @@ extension EngramServiceCommandHandler {
                 }
             }
         } catch {
-            failOperation(operationId: operationId, error: error)
-            throw error
+            throw terminalizeAndCache(operationId: operationId, error: error)
         }
 
         guard let operationId else {
@@ -342,12 +341,13 @@ extension EngramServiceCommandHandler {
                         payload: data
                     )
                 } else {
-                    ProjectMoveBatchCancelRegistry.shared.completeWithFailure(
+                    failOperation(
                         operationId: operationId,
-                        failure: .init(
+                        error: EngramServiceError.commandFailed(
                             name: "ProjectMoveBatchEncodeError",
                             message: "failed to encode batch result",
-                            retryPolicy: "never"
+                            retryPolicy: "never",
+                            details: nil
                         )
                     )
                 }
@@ -469,6 +469,11 @@ extension EngramServiceCommandHandler {
             throw EngramServiceError.invalidRequest(
                 message: "operation_id already used with a different project migration request"
             )
+        case .capacityExceeded:
+            // Retryable admission error — do not create running/terminal entry for this id.
+            throw EngramServiceError.serviceUnavailable(
+                message: "project migration capacity exceeded; retry later"
+            )
         }
     }
 
@@ -494,29 +499,25 @@ extension EngramServiceCommandHandler {
         }
     }
 
+    /// Always return `commandFailed` so wire name + `operationTerminal` details survive
+    /// envelope encode/decode without being re-typed into reconnectable transport cases.
     private static func structuredServiceError(
         _ failure: ProjectMoveBatchCancelRegistry.CachedFailure
     ) -> EngramServiceError {
-        var details: [String: EngramServiceJSONValue]?
+        var details: [String: EngramServiceJSONValue] = [:]
         if let detailsJSON = failure.detailsJSON,
            let data = detailsJSON.data(using: .utf8),
            let obj = try? JSONDecoder().decode([String: EngramServiceJSONValue].self, from: data)
         {
             details = obj
         }
-        switch failure.name {
-        case "InvalidRequest", "invalidRequest":
-            return .invalidRequest(message: failure.message)
-        case "ServiceUnavailable", "serviceUnavailable":
-            return .serviceUnavailable(message: failure.message)
-        default:
-            return .commandFailed(
-                name: failure.name,
-                message: failure.message,
-                retryPolicy: failure.retryPolicy,
-                details: details
-            )
-        }
+        details[EngramServiceErrorEnvelope.operationTerminalDetailKey] = .bool(true)
+        return .commandFailed(
+            name: failure.name,
+            message: failure.message,
+            retryPolicy: failure.retryPolicy,
+            details: details
+        )
     }
 
     private static func completeOperation(
@@ -525,7 +526,7 @@ extension EngramServiceCommandHandler {
     ) {
         guard let operationId else { return }
         guard let data = try? JSONEncoder().encode(result) else {
-            failOperation(
+            _ = terminalizeAndCache(
                 operationId: operationId,
                 error: EngramServiceError.invalidRequest(message: "failed to encode project move result")
             )
@@ -537,63 +538,117 @@ extension EngramServiceCommandHandler {
 
     private static func failOperation(operationId: String?, error: Error) {
         guard let operationId else { return }
+        _ = terminalizeAndCache(operationId: operationId, error: error)
+    }
+
+    /// Cache a service-confirmed terminal failure and return the same-shaped error
+    /// the client will see on same-ID reconnect (includes `operationTerminal` marker).
+    @discardableResult
+    private static func terminalizeAndCache(operationId: String?, error: Error) -> Error {
+        guard let operationId else { return error }
         let failure = cachedFailure(from: error)
         ProjectMoveBatchCancelRegistry.shared.completeWithFailure(
             operationId: operationId,
             failure: failure
         )
         ProjectMoveBatchCancelRegistry.shared.clear(operationId: operationId)
+        return structuredServiceError(failure)
     }
 
     private static func cachedFailure(from error: Error) -> ProjectMoveBatchCancelRegistry.CachedFailure {
+        // If already a terminal-shaped commandFailed, preserve its payload.
         if let service = error as? EngramServiceError {
             switch service {
             case .commandFailed(let name, let message, let retryPolicy, let details):
-                let detailsJSON: String?
-                if let details,
-                   let data = try? JSONEncoder().encode(details),
-                   let s = String(data: data, encoding: .utf8)
-                {
-                    detailsJSON = s
-                } else {
-                    detailsJSON = nil
-                }
-                return .init(name: name, message: message, retryPolicy: retryPolicy, detailsJSON: detailsJSON)
+                return .init(
+                    name: name,
+                    message: message,
+                    retryPolicy: retryPolicy,
+                    detailsJSON: detailsJSONMergingTerminalMarker(details)
+                )
             case .invalidRequest(let message):
-                return .init(name: "InvalidRequest", message: message, retryPolicy: "never")
+                return .init(
+                    name: "InvalidRequest",
+                    message: message,
+                    retryPolicy: "never",
+                    detailsJSON: detailsJSONMergingTerminalMarker(nil)
+                )
             case .serviceUnavailable(let message):
-                return .init(name: "ServiceUnavailable", message: message, retryPolicy: "safe")
+                return .init(
+                    name: "ServiceUnavailable",
+                    message: message,
+                    retryPolicy: "safe",
+                    detailsJSON: detailsJSONMergingTerminalMarker(nil)
+                )
             case .transportClosed(let message):
-                return .init(name: "TransportClosed", message: message, retryPolicy: "safe")
+                return .init(
+                    name: "TransportClosed",
+                    message: message,
+                    retryPolicy: "safe",
+                    detailsJSON: detailsJSONMergingTerminalMarker(nil)
+                )
             case .writerBusy(let message):
-                return .init(name: "WriterBusy", message: message, retryPolicy: "safe")
+                return .init(
+                    name: "WriterBusy",
+                    message: message,
+                    retryPolicy: "safe",
+                    detailsJSON: detailsJSONMergingTerminalMarker(nil)
+                )
             case .unauthorized(let message):
-                return .init(name: "Unauthorized", message: message, retryPolicy: "never")
+                return .init(
+                    name: "Unauthorized",
+                    message: message,
+                    retryPolicy: "never",
+                    detailsJSON: detailsJSONMergingTerminalMarker(nil)
+                )
             case .unsupportedProvider(let provider):
-                return .init(name: "UnsupportedProvider", message: provider, retryPolicy: "never")
+                return .init(
+                    name: "UnsupportedProvider",
+                    message: provider,
+                    retryPolicy: "never",
+                    detailsJSON: detailsJSONMergingTerminalMarker(["provider": .string(provider)])
+                )
             }
         }
         if let pm = error as? ProjectMoveError {
             let policy = RetryPolicyClassifier.classify(errorName: pm.errorName).rawValue
-            var detailsJSON: String?
-            if let details = pm.errorDetails, !details.isEmpty,
-               let data = try? JSONEncoder().encode(details),
-               let s = String(data: data, encoding: .utf8)
-            {
-                detailsJSON = s
+            var details: [String: EngramServiceJSONValue] = [:]
+            if let raw = pm.errorDetails, !raw.isEmpty {
+                if let v = raw.sourceId { details["sourceId"] = .string(v) }
+                if let v = raw.oldDir { details["oldDir"] = .string(v) }
+                if let v = raw.newDir { details["newDir"] = .string(v) }
+                if let v = raw.migrationId { details["migrationId"] = .string(v) }
+                if let v = raw.state { details["state"] = .string(v) }
+                if let v = raw.sharingCwds {
+                    details["sharingCwds"] = .array(v.map { .string($0) })
+                }
             }
             return .init(
                 name: pm.errorName,
                 message: pm.errorMessage,
                 retryPolicy: policy,
-                detailsJSON: detailsJSON
+                detailsJSON: detailsJSONMergingTerminalMarker(details.isEmpty ? nil : details)
             )
         }
         return .init(
             name: String(describing: type(of: error)),
             message: error.localizedDescription,
-            retryPolicy: "never"
+            retryPolicy: "never",
+            detailsJSON: detailsJSONMergingTerminalMarker(nil)
         )
+    }
+
+    private static func detailsJSONMergingTerminalMarker(
+        _ details: [String: EngramServiceJSONValue]?
+    ) -> String? {
+        var merged = details ?? [:]
+        merged[EngramServiceErrorEnvelope.operationTerminalDetailKey] = .bool(true)
+        guard let data = try? JSONEncoder().encode(merged),
+              let s = String(data: data, encoding: .utf8)
+        else {
+            return #"{"operationTerminal":true}"#
+        }
+        return s
     }
 
     private static func parseActor(_ value: String?) -> MigrationLogActor? {
