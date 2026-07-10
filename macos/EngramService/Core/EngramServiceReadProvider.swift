@@ -499,46 +499,72 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         let requestedMode = request.mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let semanticRequested = ["semantic", "hybrid", "both"].contains(requestedMode)
         guard query.count >= 2 else {
-            let warning: String? = semanticRequested
-                ? "Semantic search is unavailable in the local service; returning keyword results only."
-                : nil
-            return EngramServiceSearchResponse(items: [], searchModes: ["keyword"], warning: warning)
+            let reason = SessionVectorSearchAvailability.SemanticDegradeReason.providerUnavailable
+            return EngramServiceSearchResponse(
+                items: [],
+                searchModes: ["keyword"],
+                warning: semanticRequested ? reason.serviceWarning : nil,
+                warningCode: semanticRequested ? reason.structuredCode : nil
+            )
         }
 
         let limit = max(1, min(request.limit, 100))
         if semanticRequested {
             do {
-                if let semantic = try await semanticSearch(
+                switch try await semanticSearch(
                     query: query,
                     request: request,
                     limit: limit,
                     requestedMode: requestedMode
                 ) {
-                    return semantic
+                case .results(let response):
+                    return response
+                case .degraded(let reason, let detail):
+                    ServiceLogger.info(
+                        "search mode '\(requestedMode)' degraded (\(reason.rawValue)); falling back to keyword",
+                        category: .reader
+                    )
+                    return try await keywordSearch(
+                        query: query,
+                        request: request,
+                        limit: limit,
+                        warning: reason.serviceWarning(detail: detail),
+                        warningCode: reason.structuredCode
+                    )
                 }
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 ServiceLogger.warn(
                     "semantic search failed; falling back to keyword: \(error.localizedDescription)",
                     category: .reader
                 )
+                let reason = SessionVectorSearchAvailability.SemanticDegradeReason.embedFailed
+                return try await keywordSearch(
+                    query: query,
+                    request: request,
+                    limit: limit,
+                    warning: reason.serviceWarning(detail: error.localizedDescription),
+                    warningCode: reason.structuredCode
+                )
             }
-            ServiceLogger.info(
-                "search mode '\(requestedMode)' requested but unavailable; falling back to keyword",
-                category: .reader
-            )
         }
 
-        let warning: String? = semanticRequested
-            ? "Semantic search is unavailable in the local service; returning keyword results only."
-            : nil
-        return try await keywordSearch(query: query, request: request, limit: limit, warning: warning)
+        return try await keywordSearch(
+            query: query,
+            request: request,
+            limit: limit,
+            warning: nil,
+            warningCode: nil
+        )
     }
 
     private func keywordSearch(
         query: String,
         request: EngramServiceSearchRequest,
         limit: Int,
-        warning: String?
+        warning: String?,
+        warningCode: String?
     ) async throws -> EngramServiceSearchResponse {
         try await read { db in
             if CJKText.containsCJK(query) || query.count < 3 {
@@ -571,7 +597,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 return EngramServiceSearchResponse(
                     items: rows.map { item(from: $0, query: query) },
                     searchModes: ["keyword"],
-                    warning: warning
+                    warning: warning,
+                    warningCode: warningCode
                 )
             }
 
@@ -637,16 +664,33 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             return EngramServiceSearchResponse(
                 items: rows.map { item(from: $0, query: query) },
                 searchModes: ["keyword"],
-                warning: warning
+                warning: warning,
+                warningCode: warningCode
             )
         }
     }
 
     private struct SemanticChunkCandidate: Sendable {
+        let rowID: Int64
         let chunkId: String
         let sessionId: String
         let text: String
         let vector: [Float]
+    }
+
+    /// Raw SQL page cursor is independent of successful vector decode.
+    private struct SemanticChunkPage: Sendable {
+        let candidates: [SemanticChunkCandidate]
+        /// Last `sc.rowid` in the raw SQL page; `nil` only when the page is empty.
+        let lastRawRowID: Int64?
+    }
+
+    private enum SemanticSearchOutcome {
+        case results(EngramServiceSearchResponse)
+        case degraded(
+            SessionVectorSearchAvailability.SemanticDegradeReason,
+            detail: String?
+        )
     }
 
     private func semanticSearch(
@@ -654,115 +698,229 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         request: EngramServiceSearchRequest,
         limit: Int,
         requestedMode: String
-    ) async throws -> EngramServiceSearchResponse? {
+    ) async throws -> SemanticSearchOutcome {
+        // Corpus gate first — distinguish missing vectors from missing provider.
+        let snapshot = try await read { db in
+            try SessionVectorSearchAvailability.probe(db: db)
+        }
+        guard snapshot.isUsable else {
+            return .degraded(.corpusMissing, detail: nil)
+        }
+
         guard let config = EmbeddingSettings.load(environment: embeddingEnvironment) else {
-            return nil
+            return .degraded(.providerUnavailable, detail: nil)
         }
-        let provider = embeddingProviderFactory(config)
-        let vectors = try await provider.embed([query])
-        guard let queryVector = vectors.first, !queryVector.isEmpty else { return nil }
 
-        let candidates = try await semanticChunkCandidates(for: request, dim: queryVector.count)
-        guard !candidates.isEmpty else { return nil }
-
-        let byChunkId = Dictionary(uniqueKeysWithValues: candidates.map { ($0.chunkId, $0) })
-        // KNN shortlist size coupled with MCP via SessionSemanticSearchPolicy.
-        let hits = VectorSearch.knn(
-            query: queryVector,
-            candidates: candidates.map { VectorSearch.Candidate(id: $0.chunkId, vector: $0.vector) },
-            topK: SessionSemanticSearchPolicy.knnTopK(limit: limit)
-        )
-        var sessionIds: [String] = []
-        var snippetBySession: [String: String] = [:]
-        var scoreBySession: [String: Double] = [:]
-        for hit in hits {
-            guard let candidate = byChunkId[hit.id], !sessionIds.contains(candidate.sessionId) else {
-                continue
+        // H07: require exact model+dimension match BEFORE generating a query embedding.
+        switch SessionVectorSearchAvailability.queryCompatibility(
+            configuredModel: config.model,
+            configuredDimension: config.dimension,
+            snapshot: snapshot
+        ) {
+        case .compatible(let model, let dimension):
+            let provider = embeddingProviderFactory(config)
+            let vectors: [[Float]]
+            do {
+                vectors = try await provider.embed([query])
+            } catch EmbeddingError.circuitOpen {
+                return .degraded(.breakerOpen, detail: nil)
+            } catch EmbeddingError.notConfigured {
+                return .degraded(.providerUnavailable, detail: nil)
+            } catch {
+                return .degraded(.embedFailed, detail: error.localizedDescription)
             }
-            sessionIds.append(candidate.sessionId)
-            snippetBySession[candidate.sessionId] = candidate.text
-            scoreBySession[candidate.sessionId] = Double(hit.score)
-            if sessionIds.count >= limit { break }
-        }
-        guard !sessionIds.isEmpty else { return nil }
-
-        let semanticItems = try await searchItems(
-            sessionIds: sessionIds,
-            query: nil,
-            snippetBySession: snippetBySession,
-            matchType: "semantic",
-            scoreBySession: scoreBySession
-        )
-
-        if requestedMode == "hybrid" || requestedMode == "both" {
-            let keyword = try await keywordSearch(query: query, request: request, limit: limit, warning: nil)
-            // RRF k coupled with MCP via SessionSemanticSearchPolicy.rrfK.
-            let fusedIds = RankFusion.rrf(
-                [keyword.items.map(\.id), semanticItems.map(\.id)],
-                k: SessionSemanticSearchPolicy.rrfK
-            )
-                .prefix(limit)
-                .map(\.id)
-            let keywordById = Dictionary(uniqueKeysWithValues: keyword.items.map { ($0.id, $0) })
-            let semanticById = Dictionary(uniqueKeysWithValues: semanticItems.map { ($0.id, $0) })
-            let fusedItems = fusedIds.compactMap { id in
-                semanticById[id] ?? keywordById[id]
+            guard let queryVector = vectors.first, !queryVector.isEmpty else {
+                return .degraded(.embedFailed, detail: "empty query embedding")
             }
-            return EngramServiceSearchResponse(
-                items: fusedItems,
-                searchModes: ["keyword", "semantic"],
-                warning: nil
+            if queryVector.count != dimension {
+                return .degraded(
+                    .modelMismatch,
+                    detail: "query embedding dim \(queryVector.count) vs stored \(dimension)"
+                )
+            }
+
+            // M09: full eligible corpus in cancellable bounded batches + constant-memory top-K.
+            let topK = SessionSemanticSearchPolicy.knnTopK(limit: limit)
+            let topChunks = try await semanticChunkTopK(
+                for: request,
+                queryVector: queryVector,
+                model: model,
+                dim: dimension,
+                topK: topK
+            )
+            guard !topChunks.isEmpty else {
+                return .degraded(.corpusMissing, detail: "no compatible semantic_chunks candidates")
+            }
+
+            var sessionIds: [String] = []
+            var snippetBySession: [String: String] = [:]
+            var scoreBySession: [String: Double] = [:]
+            for hit in topChunks {
+                guard !sessionIds.contains(hit.sessionId) else { continue }
+                sessionIds.append(hit.sessionId)
+                snippetBySession[hit.sessionId] = hit.text
+                scoreBySession[hit.sessionId] = Double(hit.score)
+                if sessionIds.count >= limit { break }
+            }
+            guard !sessionIds.isEmpty else {
+                return .degraded(.corpusMissing, detail: "no sessions above KNN shortlist")
+            }
+
+            let semanticItems = try await searchItems(
+                sessionIds: sessionIds,
+                query: nil,
+                snippetBySession: snippetBySession,
+                matchType: "semantic",
+                scoreBySession: scoreBySession
+            )
+
+            if requestedMode == "hybrid" || requestedMode == "both" {
+                let keyword = try await keywordSearch(
+                    query: query,
+                    request: request,
+                    limit: limit,
+                    warning: nil,
+                    warningCode: nil
+                )
+                let fusedIds = RankFusion.rrf(
+                    [keyword.items.map(\.id), semanticItems.map(\.id)],
+                    k: SessionSemanticSearchPolicy.rrfK
+                )
+                    .prefix(limit)
+                    .map(\.id)
+                let keywordById = Dictionary(uniqueKeysWithValues: keyword.items.map { ($0.id, $0) })
+                let semanticById = Dictionary(uniqueKeysWithValues: semanticItems.map { ($0.id, $0) })
+                let fusedItems = fusedIds.compactMap { id in
+                    semanticById[id] ?? keywordById[id]
+                }
+                return .results(EngramServiceSearchResponse(
+                    items: fusedItems,
+                    searchModes: ["keyword", "semantic"],
+                    warning: nil,
+                    warningCode: nil
+                ))
+            }
+
+            return .results(EngramServiceSearchResponse(
+                items: semanticItems,
+                searchModes: ["semantic"],
+                warning: nil,
+                warningCode: nil
+            ))
+
+        case .corpusUnavailable:
+            return .degraded(.corpusMissing, detail: nil)
+        case let .modelMismatch(cfgModel, cfgDim, storedModel, storedDim):
+            // No cosine ranking and no query embedding on model mismatch.
+            return .degraded(
+                .modelMismatch,
+                detail: "configured \(cfgModel)@\(cfgDim) vs stored \(storedModel)@\(storedDim)"
             )
         }
-
-        return EngramServiceSearchResponse(
-            items: semanticItems,
-            searchModes: ["semantic"],
-            warning: nil
-        )
     }
 
-    private func semanticChunkCandidates(
+    /// Stream every eligible semantic chunk in GRDB batches; keep only top-K
+    /// scored hits in memory. Checks cancellation between batches.
+    ///
+    /// Cursor advances from the **raw** SQL page's last rowid, not from
+    /// successfully decoded candidates — a full page of malformed BLOBs must
+    /// not terminate the scan (M09).
+    private func semanticChunkTopK(
         for request: EngramServiceSearchRequest,
-        dim: Int
-    ) async throws -> [SemanticChunkCandidate] {
+        queryVector: [Float],
+        model: String,
+        dim: Int,
+        topK: Int
+    ) async throws -> [SessionSemanticSearchPolicy.ScoredChunk] {
+        var top: [SessionSemanticSearchPolicy.ScoredChunk] = []
+        var afterRowID: Int64 = 0
+        let batchSize = SessionSemanticSearchPolicy.candidateBatchSize(requestLimit: request.limit)
+
+        while true {
+            try Task.checkCancellation()
+            let page = try await fetchSemanticChunkPage(
+                for: request,
+                model: model,
+                dim: dim,
+                afterRowID: afterRowID,
+                batchSize: batchSize
+            )
+            guard let lastRaw = page.lastRawRowID else { break }
+            afterRowID = lastRaw
+            for candidate in page.candidates {
+                let score = VectorMath.cosine(queryVector, candidate.vector)
+                SessionSemanticSearchPolicy.accumulateTopK(
+                    &top,
+                    incoming: SessionSemanticSearchPolicy.ScoredChunk(
+                        id: candidate.chunkId,
+                        score: score,
+                        sessionId: candidate.sessionId,
+                        text: candidate.text
+                    ),
+                    topK: topK
+                )
+            }
+        }
+        return top
+    }
+
+    private func fetchSemanticChunkPage(
+        for request: EngramServiceSearchRequest,
+        model: String,
+        dim: Int,
+        afterRowID: Int64,
+        batchSize: Int
+    ) async throws -> SemanticChunkPage {
         try await read { db in
-            guard try tableExists("semantic_chunks", db: db) else { return [] }
-            // Prefer embedding_meta model so we never fuse mixed-model vectors.
-            let metaModel: String? = try {
-                guard try tableExists("embedding_meta", db: db) else { return nil }
-                return try String.fetchOne(
-                    db,
-                    sql: "SELECT model FROM embedding_meta WHERE id = 1 LIMIT 1"
-                )?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            }()
+            guard try tableExists("semantic_chunks", db: db) else {
+                return SemanticChunkPage(candidates: [], lastRawRowID: nil)
+            }
             var parts = ["""
-                SELECT sc.id AS chunk_id,
+                SELECT sc.rowid AS row_id,
+                       sc.id AS chunk_id,
                        sc.session_id AS session_id,
                        sc.text AS text,
                        sc.embedding AS embedding
                 FROM semantic_chunks sc
                 JOIN sessions s ON s.id = sc.session_id
                 WHERE sc.embedding IS NOT NULL
+                  AND sc.model = ?
                   AND sc.dim = ?
+                  AND sc.rowid > ?
                   AND s.hidden_at IS NULL
                   AND \(SessionSemanticSearchPolicy.searchableTierSQL)
             """]
-            var args: [DatabaseValueConvertible] = [dim]
-            if let metaModel, !metaModel.isEmpty {
-                parts.append("AND sc.model = ?")
-                args.append(metaModel)
-            }
+            var args: [DatabaseValueConvertible] = [model, dim, afterRowID]
             appendSearchFilters(for: request, to: &parts, args: &args)
-            parts.append("ORDER BY s.start_time DESC LIMIT ?")
-            args.append(SessionSemanticSearchPolicy.candidateCap(requestLimit: request.limit))
+            // Stable full-corpus order by rowid (not recency). Pagination via rowid cursor.
+            parts.append("ORDER BY sc.rowid ASC LIMIT ?")
+            args.append(batchSize)
             let rows = try Row.fetchAll(
                 db,
                 sql: parts.joined(separator: " "),
                 arguments: StatementArguments(args)
             )
-            return rows.compactMap { row in
+            guard let lastRow = rows.last else {
+                return SemanticChunkPage(candidates: [], lastRawRowID: nil)
+            }
+            let lastRawRowID: Int64
+            if let value = lastRow["row_id"] as Int64? {
+                lastRawRowID = value
+            } else if let value = lastRow["row_id"] as Int? {
+                lastRawRowID = Int64(value)
+            } else {
+                // Malformed rowid on last row — still must not loop forever; stop.
+                return SemanticChunkPage(candidates: [], lastRawRowID: nil)
+            }
+            let candidates: [SemanticChunkCandidate] = rows.compactMap { row in
+                let rowID: Int64
+                if let value = row["row_id"] as Int64? {
+                    rowID = value
+                } else if let value = row["row_id"] as Int? {
+                    rowID = Int64(value)
+                } else {
+                    return nil
+                }
                 guard let chunkId = row["chunk_id"] as String?,
                       let sessionId = row["session_id"] as String?,
                       let text = row["text"] as String?,
@@ -771,12 +929,14 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 }
                 guard let vector = VectorMath.decode(data, expectedCount: dim) else { return nil }
                 return SemanticChunkCandidate(
+                    rowID: rowID,
                     chunkId: chunkId,
                     sessionId: sessionId,
                     text: text,
                     vector: vector
                 )
             }
+            return SemanticChunkPage(candidates: candidates, lastRawRowID: lastRawRowID)
         }
     }
 

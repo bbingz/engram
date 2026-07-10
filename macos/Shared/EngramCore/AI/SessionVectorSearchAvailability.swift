@@ -24,6 +24,121 @@ public enum SessionVectorSearchAvailability {
         public static let unavailable = Snapshot(isUsable: false)
     }
 
+    /// Why semantic/hybrid cannot run for a request (distinct user-facing reasons).
+    public enum SemanticDegradeReason: String, Sendable, Equatable {
+        case providerUnavailable
+        case corpusMissing
+        case modelMismatch
+        case breakerOpen
+        case embedFailed
+
+        public var serviceWarning: String {
+            serviceWarning(detail: nil)
+        }
+
+        public func serviceWarning(detail: String?) -> String {
+            switch self {
+            case .providerUnavailable:
+                return "Semantic search unavailable: embedding provider is not configured; returning keyword results only."
+            case .corpusMissing:
+                return "Semantic search unavailable: session embedding corpus is missing or empty; returning keyword results only."
+            case .modelMismatch:
+                if let detail, !detail.isEmpty {
+                    return "Semantic search unavailable: embedding model mismatch (\(detail)); returning keyword results only."
+                }
+                return "Semantic search unavailable: embedding model mismatch (configured model does not match embedding_meta); returning keyword results only."
+            case .breakerOpen:
+                return "Semantic search unavailable: embedding circuit breaker is open; returning keyword results only."
+            case .embedFailed:
+                if let detail, !detail.isEmpty {
+                    return "Semantic search unavailable: query embedding failed (\(detail)); returning keyword results only."
+                }
+                return "Semantic search unavailable: query embedding failed; returning keyword results only."
+            }
+        }
+
+        /// `get_memory` degrade copy — must name the actual reason (M07).
+        public var memoryWarning: String {
+            memoryWarning(detail: nil)
+        }
+
+        public func memoryWarning(detail: String?) -> String {
+            switch self {
+            case .providerUnavailable:
+                return "No embedding provider — keyword-matched insights ranked by importance and recency."
+            case .corpusMissing:
+                return "Insight embeddings are missing — keyword-matched insights ranked by importance and recency."
+            case .modelMismatch:
+                if let detail, !detail.isEmpty {
+                    return "Embedding model mismatch (\(detail)) — keyword-matched insights ranked by importance and recency."
+                }
+                return "Embedding model mismatch — keyword-matched insights ranked by importance and recency."
+            case .breakerOpen:
+                return "Embedding circuit breaker is open — keyword-matched insights ranked by importance and recency."
+            case .embedFailed:
+                if let detail, !detail.isEmpty {
+                    return "Query embedding failed (\(detail)) — keyword-matched insights ranked by importance and recency."
+                }
+                return "Query embedding failed — keyword-matched insights ranked by importance and recency."
+            }
+        }
+
+        /// Stable machine-readable code for service/MCP clients (H07 / M06 / M07).
+        public var structuredCode: String {
+            switch self {
+            case .providerUnavailable:
+                return "embeddingProviderUnavailable"
+            case .corpusMissing:
+                return "embeddingCorpusMissing"
+            case .modelMismatch:
+                // Match MCP SearchError structured code.
+                return "embeddingModelMismatch"
+            case .breakerOpen:
+                return "embeddingCircuitOpen"
+            case .embedFailed:
+                return "embeddingFailed"
+            }
+        }
+    }
+
+    /// Result of comparing the configured query embedding model against stored meta.
+    public enum QueryCompatibility: Equatable, Sendable {
+        case compatible(model: String, dimension: Int)
+        case corpusUnavailable
+        case modelMismatch(
+            configuredModel: String,
+            configuredDimension: Int,
+            storedModel: String,
+            storedDimension: Int
+        )
+    }
+
+    /// H07: require exact model **and** dimension equality before generating a
+    /// query embedding. Same-dimension different-model is a hard mismatch.
+    public static func queryCompatibility(
+        configuredModel: String,
+        configuredDimension: Int,
+        snapshot: Snapshot
+    ) -> QueryCompatibility {
+        let cfgModel = configuredModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard snapshot.isUsable,
+              let storedModel = snapshot.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !storedModel.isEmpty,
+              let storedDim = snapshot.dimension,
+              storedDim > 0 else {
+            return .corpusUnavailable
+        }
+        if cfgModel == storedModel, configuredDimension == storedDim {
+            return .compatible(model: storedModel, dimension: storedDim)
+        }
+        return .modelMismatch(
+            configuredModel: cfgModel,
+            configuredDimension: configuredDimension,
+            storedModel: storedModel,
+            storedDimension: storedDim
+        )
+    }
+
     /// Read-only probe of a database file. Missing/unreadable DB → unavailable.
     public static func probe(databasePath: String) -> Snapshot {
         do {
