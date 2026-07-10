@@ -34,18 +34,21 @@ Implemented on 2026-06-21 (branch `feat/backlog-5-followups`):
 
 Retired on 2026-06-21 — already shipped, confirmed against current main:
 
-- **Favorite toggle (symmetric browse/starred/child).** The symmetric Add/Remove
-  favorite toggle on browse, Starred, and child cards is Wave 8C / M19 evidence
-  only (`262d59a2`): session `isFavorite` / `favoriteToggleTarget` wiring —
-  see `SessionModelTests` favorite suite
+- **Cost/usage notifications.** Shipped: monthly-budget + long-session notify
+  in `SettingsView` (`monthlyBudget`, `notifyOnLongSession`) — the cost
+  dashboard's budget notifier.
+
+### Closed — Wave 8C favorite symmetry (historical)
+
+- **Favorite toggle (symmetric browse/starred/child).** Closed via Wave 8C /
+  M19 (`262d59a2`), not the 2026-06-21 cleanup retirements above. Symmetric
+  Add/Remove on browse, Starred, and child cards uses session `isFavorite` /
+  `favoriteToggleTarget` — see `SessionModelTests` favorite suite
   (`testFavoriteToggleTargetIsSymmetricNegation`,
   `testFavoriteMenuLabelReflectsAddVersusRemove`,
   `testBrowseStarredAndChildCardsWireIsFavoriteSourceTruth`). Do not re-open as
   a partial claim or attribute the symmetric toggle to the older PR #74 UX
   alignment work.
-- **Cost/usage notifications.** Shipped: monthly-budget + long-session notify
-  in `SettingsView` (`monthlyBudget`, `notifyOnLongSession`) — the cost
-  dashboard's budget notifier.
 
 The previous cleanup TODO items were completed and verified:
 

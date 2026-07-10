@@ -58,30 +58,60 @@ by this docs task):
 
 ### Coordinator main-combination commands after Wave 8 merges (recorded, not re-run here)
 
-Exact commands the coordinator ran on main after Round 3 merges (counts from
-task result for `c983a759` main-combination verification). Paths relative to
-`macos/` for `xcodebuild` unless noted. **This docs-only task did not re-run
-these commands.**
+Exact coordinator sequence after Round 3 merges (counts from main-combination
+verification on `c983a759`). This is **build-for-testing + `xcrun xctest` with
+framework staging**, not full-scheme `xcodebuild test`. **This docs-only task
+did not re-run these commands.**
 
 ```bash
-# From macos/ — Core focused combination (coordinator recorded Core 68/68)
-xcodebuild test -project Engram.xcodeproj -scheme EngramCoreTests \
-  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+# From macos/
+xcodegen generate
 
-# From macos/ — Service focused combination (coordinator recorded Service 42/42)
-xcodebuild test -project Engram.xcodeproj -scheme EngramServiceCore \
-  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+# Core 68/68 — build-for-testing, stage PackageFrameworks, xcrun xctest
+xcodebuild build-for-testing -project Engram.xcodeproj -scheme EngramCoreTests \
+  -destination 'platform=macOS' \
+  -derivedDataPath /tmp/engram-dd-main-r3a-core \
+  CODE_SIGNING_ALLOWED=NO
+# copy PackageFrameworks into EngramCoreTests.xctest Contents/Frameworks
+xcrun xctest -XCTest BatchTests,FsOpsTests,OrchestratorTests \
+  /tmp/engram-dd-main-r3a-core/Build/Products/Debug/EngramCoreTests.xctest
+# => 68/68
 
-# From macos/ — App focused combination (coordinator recorded App 29/29)
-xcodebuild test -project Engram.xcodeproj -scheme Engram \
-  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO \
+# Service 42/42 — build-for-testing, stage frameworks, xcrun xctest
+xcodebuild build-for-testing -project Engram.xcodeproj -scheme EngramServiceCore \
+  -destination 'platform=macOS' \
+  -derivedDataPath /tmp/engram-dd-main-r3a-core \
+  CODE_SIGNING_ALLOWED=NO
+# copy PackageFrameworks plus EngramCoreRead.framework, EngramCoreWrite.framework,
+# EngramServiceCore.framework into EngramServiceCoreTests.xctest Contents/MacOS
+xcrun xctest \
+  -XCTest ProjectMoveLongOpIPCTests,ProjectMoveOperationRegistryTests,ServiceLogIPCTests,ServiceTelemetryTests \
+  /tmp/engram-dd-main-r3a-core/Build/Products/Debug/EngramServiceCoreTests.xctest
+# => 42/42
+
+# App 29/29 — build-for-testing (skip UITests), stage hosted bundle, xcrun xctest
+xcodebuild build-for-testing -project Engram.xcodeproj -scheme Engram \
+  -destination 'platform=macOS' \
+  -derivedDataPath /tmp/engram-dd-main-r3a-core \
+  CODE_SIGNING_ALLOWED=NO \
   -skip-testing:EngramUITests
+# hosted bundle: Engram.app/Contents/PlugIns/EngramTests.xctest
+# copy PackageFrameworks into bundle Contents/Frameworks and Contents/MacOS
+# plus Engram.app/Contents/MacOS/Engram.debug.dylib into bundle Contents/MacOS
+xcrun xctest -XCTest ProjectLongOperationSessionTests,ProjectsMigrationTests \
+  /tmp/engram-dd-main-r3a-core/Build/Products/Debug/Engram.app/Contents/PlugIns/EngramTests.xctest
+# => 29/29
 
-# From repo root — Vitest invariants (coordinator recorded Vitest 16/16)
-npx vitest run tests/scripts/invariants-ledger.test.ts
+# From repo root — Vitest 16/16
+npm test -- --run \
+  tests/scripts/invariants-ledger.test.ts \
+  tests/scripts/swift-boundary-scripts.test.ts \
+  tests/scripts/product-boundary-scripts.test.ts
+# => 16/16
 
-# From repo root — bash ledger runner (coordinator recorded Bash ledger PASS)
-bash scripts/check-invariants-ledger.sh
+# From repo root — Bash ledger PASS
+/bin/bash scripts/check-invariants-ledger.sh
+# => PASS
 ```
 
 Recorded counts: **Core 68/68 · Service 42/42 · App 29/29 · Vitest 16/16 ·

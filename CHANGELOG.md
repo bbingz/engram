@@ -37,6 +37,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   `c983a759`/`eeab26a8` named long-op tests while preserving pass3/pass4
   provenance.
 
+### Docs: Wave 8 Round 4 evidence-command accuracy (2026-07-11)
+
+- Split Wave 8C symmetric favorite out of the 2026-06-21 “Retired” heading in
+  `docs/TODO.md` into a date-neutral historical closed section.
+- Replaced invented full-scheme `xcodebuild test` lines in the engineering-zero
+  closeout with the actual coordinator sequence: `xcodegen generate`,
+  `build-for-testing` + framework staging + `xcrun xctest` filters (68/42/29),
+  `npm test -- --run` three invariant/boundary files (16/16), and
+  `/bin/bash scripts/check-invariants-ledger.sh` (PASS). Remote CI URL still
+  none.
+
 ### Fixed: FTS optimize attempt throttle throw-safe + hybrid parity claims (2026-07-09, Codex)
 
 - `EngramDatabaseWriter.optimizeFtsIfDue` commits `fts_optimize_last_attempt`
