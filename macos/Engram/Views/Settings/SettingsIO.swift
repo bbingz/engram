@@ -18,6 +18,14 @@ func repairEngramSettingsPermissionsIfPresent(at url: URL = engramSettingsPath) 
 
 func writeEngramSettingsDataSecurely(_ data: Data, to url: URL = engramSettingsPath) throws {
     let fileManager = FileManager.default
+    try prepareEngramSettingsDirectory(for: url, fileManager: fileManager)
+
+    try EngramSettingsFileLock.withExclusiveLock(for: url) {
+        try writeEngramSettingsDataSecurelyUnlocked(data, to: url, fileManager: fileManager)
+    }
+}
+
+private func prepareEngramSettingsDirectory(for url: URL, fileManager: FileManager) throws {
     let directory = url.deletingLastPathComponent()
     try fileManager.createDirectory(
         at: directory,
@@ -25,15 +33,41 @@ func writeEngramSettingsDataSecurely(_ data: Data, to url: URL = engramSettingsP
         attributes: [.posixPermissions: 0o700]
     )
     try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-    try data.write(to: url, options: [.atomic])
+}
+
+private func writeEngramSettingsDataSecurelyUnlocked(
+    _ data: Data,
+    to url: URL,
+    fileManager: FileManager
+) throws {
+    let directory = url.deletingLastPathComponent()
+    let tempURL = directory.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+    try? fileManager.removeItem(at: tempURL)
+    guard fileManager.createFile(
+        atPath: tempURL.path,
+        contents: data,
+        attributes: [.posixPermissions: 0o600]
+    ) else {
+        throw CocoaError(.fileWriteUnknown)
+    }
+    try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tempURL.path)
+    if fileManager.fileExists(atPath: url.path) {
+        _ = try fileManager.replaceItemAt(
+            url,
+            withItemAt: tempURL,
+            options: [.usingNewMetadataOnly]
+        )
+    } else {
+        try fileManager.moveItem(at: tempURL, to: url)
+    }
     try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
 }
 
 // MARK: - Keychain Helper
 
+/// App UI facade over shared `KeychainSecretStore`. Keeps debug/unsigned-build
+/// skip policy local so Xcode runs never prompt for Keychain authorization.
 enum KeychainHelper {
-    private static let service = "com.engram.app"
-
     /// Debug/ad-hoc builds skip Keychain to avoid authorization dialogs.
     /// Detection: if the binary runs from DerivedData (Xcode build) or is not
     /// properly code-signed, Keychain access will prompt — so we skip it.
@@ -52,70 +86,43 @@ enum KeychainHelper {
 
     static func get(_ key: String) -> String? {
         if isUnsignedBuild { return nil }  // Skip Keychain in Debug — use plaintext JSON fallback
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        return KeychainSecretStore.get(key)
     }
 
     /// Save a value to the Keychain. Returns true on success.
     @discardableResult
     static func set(_ key: String, value: String) -> Bool {
         if isUnsignedBuild { return false }  // Skip Keychain in Debug
-        guard let data = value.data(using: .utf8) else { return false }
-        delete(key)
-        let attrs: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
-            kSecValueData as String: data,
-        ]
-        let status = SecItemAdd(attrs as CFDictionary, nil)
-        return status == errSecSuccess
+        return KeychainSecretStore.set(key, value: value)
     }
 
     static func delete(_ key: String) {
         if isUnsignedBuild { return }  // Skip Keychain in Debug
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
-        ]
-        SecItemDelete(query as CFDictionary)
+        KeychainSecretStore.delete(key)
     }
 }
 
 // MARK: - One-time migration from plaintext JSON to Keychain
 
 func migrateKeysToKeychainIfNeeded() {
-    guard let settings = readEngramSettings() else { return }
     let keysToMigrate: [(jsonKey: String, keychainKey: String)] = [
-        ("aiApiKey", "aiApiKey"),
-        ("titleApiKey", "titleApiKey"),
+        ("aiApiKey", KeychainSecretStore.Account.aiApiKey),
+        ("titleApiKey", KeychainSecretStore.Account.titleApiKey),
+        ("embeddingApiKey", KeychainSecretStore.Account.embeddingApiKey),
     ]
-    var needsSave = false
-    var mutable = settings
-    for entry in keysToMigrate {
-        guard let value = mutable[entry.jsonKey] as? String, !value.isEmpty else { continue }
-        if value == "@keychain" { continue }  // already migrated
-        if KeychainHelper.get(entry.keychainKey) == nil {
-            KeychainHelper.set(entry.keychainKey, value: value)
-            guard KeychainHelper.get(entry.keychainKey) == value else { continue }  // verify read-back
+    mutateEngramSettingsIfNeeded { settings in
+        var changed = false
+        for entry in keysToMigrate {
+            guard let value = settings[entry.jsonKey] as? String, !value.isEmpty else { continue }
+            if value == "@keychain" { continue }
+            if KeychainHelper.get(entry.keychainKey) != value {
+                guard KeychainHelper.set(entry.keychainKey, value: value) else { continue }
+                guard KeychainHelper.get(entry.keychainKey) == value else { continue }
+            }
+            settings[entry.jsonKey] = "@keychain"
+            changed = true
         }
-        mutable[entry.jsonKey] = "@keychain"
-        needsSave = true
-    }
-    if needsSave {
-        if let data = try? JSONSerialization.data(withJSONObject: mutable, options: [.prettyPrinted, .sortedKeys]) {
-            try? writeEngramSettingsDataSecurely(data)
-        }
+        return changed
     }
 }
 
@@ -129,14 +136,30 @@ func readEngramSettings() -> [String: Any]? {
 }
 
 func mutateEngramSettings(_ transform: (inout [String: Any]) -> Void) {
-    var settings: [String: Any] = [:]
-    if let data = try? Data(contentsOf: engramSettingsPath),
-       let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-        settings = existing
+    mutateEngramSettingsIfNeeded { settings in
+        transform(&settings)
+        return true
     }
-    transform(&settings)
-    if let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) {
-        try? writeEngramSettingsDataSecurely(data)
+}
+
+private func mutateEngramSettingsIfNeeded(
+    at url: URL = engramSettingsPath,
+    _ transform: (inout [String: Any]) -> Bool
+) {
+    let fileManager = FileManager.default
+    guard (try? prepareEngramSettingsDirectory(for: url, fileManager: fileManager)) != nil else { return }
+    try? EngramSettingsFileLock.withExclusiveLock(for: url) {
+        var settings: [String: Any] = [:]
+        if let data = try? Data(contentsOf: url),
+           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            settings = existing
+        }
+        guard transform(&settings) else { return }
+        let data = try JSONSerialization.data(
+            withJSONObject: settings,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        try writeEngramSettingsDataSecurelyUnlocked(data, to: url, fileManager: fileManager)
     }
 }
 
@@ -285,9 +308,7 @@ func removeDeprecatedSettingsKeysIfNeeded() {
     for account in DeprecatedSettings.keychainAccounts where KeychainHelper.get(account) != nil {
         KeychainHelper.delete(account)
     }
-    guard var settings = readEngramSettings() else { return }
-    guard DeprecatedSettings.scrub(&settings) else { return }
-    if let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) {
-        try? writeEngramSettingsDataSecurely(data)
+    mutateEngramSettingsIfNeeded { settings in
+        DeprecatedSettings.scrub(&settings)
     }
 }

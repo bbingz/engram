@@ -86,9 +86,13 @@ enum DiagnosticServiceStatus: Codable, Equatable, Sendable {
 }
 
 enum DiagnosticBundleComposer {
+    /// Normalized (lowercase, non-alphanumerics stripped) sensitive key aliases.
+    /// Matching uses the same normalization so `embeddingApiKey`, `embedding_api_key`,
+    /// and `Embedding-Api-Key` all redact — there is no exact-key-only bypass.
     static let sensitiveSettingsKeys: Set<String> = [
         "aiapikey",
         "titleapikey",
+        "embeddingapikey",
         "remoteoffloadtoken",
         "remoteoffloadbearertoken",
         "remoteoffloadauthtoken",
@@ -112,10 +116,15 @@ enum DiagnosticBundleComposer {
         .object(redactObject(settings))
     }
 
+    /// Lowercase + strip non-alphanumeric so aliases collapse to one form.
+    static func normalizeSensitiveKey(_ key: String) -> String {
+        String(key.lowercased().filter { $0.isLetter || $0.isNumber })
+    }
+
     private static func redactObject(_ object: [String: Any]) -> [String: DiagnosticJSONValue] {
         object.reduce(into: [:]) { result, entry in
             let key = entry.key
-            if sensitiveSettingsKeys.contains(key.lowercased()) {
+            if sensitiveSettingsKeys.contains(normalizeSensitiveKey(key)) {
                 result[key] = .string("<redacted>")
             } else {
                 result[key] = jsonValue(from: entry.value)

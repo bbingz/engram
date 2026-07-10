@@ -79,13 +79,15 @@ final class EngramServiceLauncherTests: XCTestCase {
             baseEnvironment: [
                 "PATH": "/usr/bin",
                 "ENGRAM_KEYCHAIN_aiApiKey": "inherited-summary-secret",
-                "ENGRAM_KEYCHAIN_titleApiKey": "inherited-title-secret"
+                "ENGRAM_KEYCHAIN_titleApiKey": "inherited-title-secret",
+                "ENGRAM_KEYCHAIN_embeddingApiKey": "inherited-embedding-secret"
             ],
             runtimeAISecretsPath: secretsPath,
             keychainReader: { account in
                 switch account {
                 case "aiApiKey": return "summary-secret"
                 case "titleApiKey": return "title-secret"
+                case "embeddingApiKey": return "embedding-secret"
                 default: return nil
                 }
             }
@@ -94,16 +96,19 @@ final class EngramServiceLauncherTests: XCTestCase {
         XCTAssertEqual(environment["PATH"], "/usr/bin")
         XCTAssertNil(environment["ENGRAM_KEYCHAIN_aiApiKey"])
         XCTAssertNil(environment["ENGRAM_KEYCHAIN_titleApiKey"])
+        XCTAssertNil(environment["ENGRAM_KEYCHAIN_embeddingApiKey"])
         XCTAssertFalse(environment.values.contains("inherited-summary-secret"))
         XCTAssertFalse(environment.values.contains("inherited-title-secret"))
         XCTAssertFalse(environment.values.contains("summary-secret"))
         XCTAssertFalse(environment.values.contains("title-secret"))
+        XCTAssertFalse(environment.values.contains("embedding-secret"))
         XCTAssertEqual(environment["ENGRAM_RUNTIME_AI_SECRETS_PATH"], secretsPath)
 
         let data = try Data(contentsOf: URL(fileURLWithPath: secretsPath))
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: String])
         XCTAssertEqual(object["aiApiKey"], "summary-secret")
         XCTAssertEqual(object["titleApiKey"], "title-secret")
+        XCTAssertEqual(object["embeddingApiKey"], "embedding-secret")
         let attrs = try FileManager.default.attributesOfItem(atPath: secretsPath)
         XCTAssertEqual(attrs[.posixPermissions] as? Int, 0o600)
     }
