@@ -176,3 +176,15 @@ After deploy of pass3 service binary (or rebuilt service), `status`/`telemetry` 
 4. **xcodebuild test** on Xcode-beta can hang after package resolve; use `build-for-testing` + `xcrun xctest` for reliable local gates.
 5. **OSLog live behavioral tests** skip under TCC/xctest isolation; prefer interactive Xcode host if re-enabling hard fails.
 6. **Notarization / DMG / public release** not in Wave 7 gate — local Developer ID archive + deploy already proven (`build 2026071001`); notarytool/staple still operator steps.
+
+
+## Ship / deploy (pass6 closeout)
+
+- **HEAD:** `66dd641b` (parity) on top of `32b34df9` (invalidate + self-pipe)
+- **Release:** `ENGRAM_BUILD_NUMBER=2026071003 macos/scripts/build-release.sh --local-only` → ARCHIVE SUCCEEDED
+- **Verify:** full Developer ID `release-verify` PASS
+- **Deploy:** `deploy-local.sh` → `/Applications/Engram.app` build `2026071003`
+- **Runtime:** Engram + EngramService running; `~/.engram/run/engram-service.sock` present
+- **Schedule smoke:** `state=running`, `nextScanIntervalSeconds=900`, `scheduleBackend=NSBackgroundActivityScheduler`
+- **Ledger:** 24 CONFIRMED / 19 PARTIAL (Codex accepted)
+
