@@ -145,18 +145,17 @@ final class ProjectsMigrationTests: XCTestCase {
 
     func testBatchMoveSheetKeepsCancelEnabledAndRequestsServiceCancellation() throws {
         let source = try Self.source("macos/Engram/Views/Projects/BatchMoveSheet.swift")
-        XCTAssertTrue(source.contains("cancelProjectMoveBatch(operationId:"))
-        XCTAssertTrue(source.contains("activeBatchOperationId"))
+        XCTAssertTrue(source.contains("cancelProjectMoveBatch("))
+        XCTAssertTrue(source.contains("longOpSession") || source.contains("ProjectLongOperationSession"))
         // Cancel remains enabled during execute (no .disabled(isExecuting) on Cancel).
         XCTAssertFalse(source.contains("Button(\"Cancel\") { dismiss() }\n                    .keyboardShortcut(.cancelAction)\n                    .disabled(isExecuting)"))
-        // M05: Cancel button must not cancel the awaiting task (would discard completed/remaining).
-        // onDisappear may still cancel; the execute-path Cancel must only call cancelProjectMoveBatch.
         XCTAssertFalse(
-            source.contains("cancelProjectMoveBatch(operationId: operationId)\n                        }\n                        activeTask?.cancel()"),
-            "Cancel must wait for service partial result instead of cancelling the client task"
+            source.contains("activeTask?.cancel()"),
+            "execute-path Cancel must not cancel the client task"
         )
         XCTAssertTrue(source.contains("remaining"))
         XCTAssertTrue(source.contains("cancelled"))
+        XCTAssertTrue(source.contains("ProjectLongOperationRunner") || source.contains("blocksDuplicateSubmit"))
     }
 
     func testParseBatchMoveOutcomeSurfacesCancelledAndRemaining_repro() {
@@ -186,24 +185,21 @@ final class ProjectsMigrationTests: XCTestCase {
         ] {
             let source = try Self.source(relativePath)
             XCTAssertTrue(
-                source.contains("activeOperationId"),
-                "\(relativePath) must track a stable operation id"
+                source.contains("longOpSession") || source.contains("ProjectLongOperationSession"),
+                "\(relativePath) must track a durable long-op session"
             )
             XCTAssertTrue(
                 source.contains("operationId: operationId") || source.contains("operationId: operationId,"),
                 "\(relativePath) must pass operationId on the service request"
             )
-            // Call may be multi-line: cancelProjectMoveBatch(\n operationId: operationId\n)
             XCTAssertTrue(
                 source.contains("cancelProjectMoveBatch("),
                 "\(relativePath) must request cooperative service cancel"
             )
-            // Semantic pair: cancel path must pass the tracked operation id (not a literal).
             XCTAssertTrue(
                 source.range(of: #"cancelProjectMoveBatch\([\s\S]*?operationId:\s*operationId"#, options: .regularExpression) != nil,
                 "\(relativePath) cancelProjectMoveBatch must pass operationId: operationId"
             )
-            // Cancel stays enabled during execute (no .disabled(isExecuting) on Cancel).
             XCTAssertFalse(
                 source.contains("Button(\"Cancel\") { dismiss() }\n                        .keyboardShortcut(.cancelAction)\n                        .disabled(isExecuting)"),
                 "\(relativePath) Cancel must remain enabled while executing"
@@ -214,12 +210,18 @@ final class ProjectsMigrationTests: XCTestCase {
                 "\(relativePath) must use precise cancelled-before-commit wording"
             )
             XCTAssertTrue(
-                source.contains("projectMoveIsReconnectableError")
-                    || source.contains("executeMoveWithReconnect")
-                    || source.contains("executeArchiveWithReconnect")
-                    || source.contains("executeUndoWithReconnect")
-                    || source.contains("Reconnecting"),
+                source.contains("projectMoveCancelCompensationFailedMessage")
+                    || source.contains("projectMoveIsCancelCompensationFailure"),
+                "\(relativePath) must distinguish unclean cancel compensation"
+            )
+            XCTAssertTrue(
+                source.contains("ProjectLongOperationRunner")
+                    || source.contains("projectMoveIsReconnectableError"),
                 "\(relativePath) must reconnect by operation id on transport timeout"
+            )
+            XCTAssertTrue(
+                source.contains("Resume / Check Status") || source.contains("blocksDuplicateSubmit"),
+                "\(relativePath) must expose resume / block duplicate submit"
             )
         }
     }
@@ -235,7 +237,7 @@ final class ProjectsMigrationTests: XCTestCase {
                 || source.contains("remaining (cancelled before commit"),
             "Batch partial wording must clarify completed ops stay committed"
         )
-        XCTAssertTrue(source.contains("executeBatchWithReconnect"))
+        XCTAssertTrue(source.contains("ProjectLongOperationRunner") || source.contains("longOpSession"))
     }
 
     func testProjectMoveRequestEncodesOperationId_repro() async throws {

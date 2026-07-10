@@ -19,8 +19,7 @@ struct ArchiveSheet: View {
     @State private var errorMessage: String?
     @State private var retryPolicy: String = "safe"
     @State private var activeTask: Task<Void, Never>?
-    /// Stable id for cancel / reconnect / idempotent re-submit (Wave 8 long-ops).
-    @State private var activeOperationId: String?
+    @State private var longOpSession = ProjectLongOperationSession()
     @State private var isReconnecting = false
     @State private var residualRefCount: Int?
     @State private var errorDetails: ProjectMoveServiceErrorDetails?
@@ -207,29 +206,36 @@ struct ArchiveSheet: View {
                     .buttonStyle(.borderedProminent)
                 } else {
                     Button("Cancel") {
-                        if isExecuting, let operationId = activeOperationId {
+                        if isExecuting || longOpSession.blocksDuplicateSubmit,
+                           let operationId = longOpSession.operationId
+                        {
                             Task {
                                 _ = try? await serviceClient.cancelProjectMoveBatch(
                                     operationId: operationId
                                 )
                             }
                         } else {
+                            longOpSession.reset()
                             dismiss()
                         }
                     }
                     .keyboardShortcut(.cancelAction)
-                    // Round 4 Gemini Critical: Archive physically moves
-                    // the project dir. Any editor/shell/build attached
-                    // to the old path will break on next fs access. The
-                    // Archive button now triggers a confirmationDialog;
-                    // the actual work only starts after explicit confirm.
-                    Button("Archive") { showConfirmDialog = true }
+                    if longOpSession.blocksDuplicateSubmit && !isExecuting {
+                        Button("Resume / Check Status") {
+                            activeTask = Task { await runArchive() }
+                        }
                         .keyboardShortcut(.defaultAction)
                         .buttonStyle(.borderedProminent)
-                        .disabled(
-                            selectedCwd.isEmpty || isExecuting
-                                || availableCwds.isEmpty
-                        )
+                    } else {
+                        Button("Archive") { showConfirmDialog = true }
+                            .keyboardShortcut(.defaultAction)
+                            .buttonStyle(.borderedProminent)
+                            .disabled(
+                                selectedCwd.isEmpty || isExecuting
+                                    || availableCwds.isEmpty
+                                    || longOpSession.blocksDuplicateSubmit
+                            )
+                    }
                 }
             }
         }
@@ -295,26 +301,35 @@ struct ArchiveSheet: View {
         residualRefCount = nil
         isReconnecting = false
         isExecuting = true
-        let operationId = UUID().uuidString
-        activeOperationId = operationId
         defer {
             isExecuting = false
             isReconnecting = false
             activeTask = nil
-            activeOperationId = nil
         }
-        let request = EngramServiceProjectArchiveRequest(
-            src: selectedCwd,
-            archiveTo: category.isEmpty ? nil : category,
-            dryRun: false,
-            force: false,
-            auditNote: nil,
-            actor: "app",
-            operationId: operationId
-        )
         do {
-            let res = try await executeArchiveWithReconnect(request)
-            if Task.isCancelled { return }
+            let res = try await ProjectLongOperationRunner.execute(
+                session: &longOpSession,
+                isReconnectable: { error in
+                    if projectMoveIsReconnectableError(error) {
+                        isReconnecting = true
+                        return true
+                    }
+                    return false
+                }
+            ) { operationId in
+                try await serviceClient.projectArchive(
+                    EngramServiceProjectArchiveRequest(
+                        src: selectedCwd,
+                        archiveTo: category.isEmpty ? nil : category,
+                        dryRun: false,
+                        force: false,
+                        auditNote: nil,
+                        actor: "app",
+                        operationId: operationId
+                    )
+                )
+            }
+            isReconnecting = false
             if res.state == "cancelled" {
                 errorMessage = projectMoveCancelledBeforeCommitMessage(kind: "Archive")
                 retryPolicy = "safe"
@@ -331,23 +346,20 @@ struct ArchiveSheet: View {
                 errorMessage = "Unexpected state: \(res.state)"
             }
         } catch {
-            if Task.isCancelled { return }
-            errorMessage = projectMoveErrorMessage(error)
-            retryPolicy = projectMoveRetryPolicy(error)
+            isReconnecting = false
+            if projectMoveIsCancelCompensationFailure(error) {
+                errorMessage = projectMoveCancelCompensationFailedMessage(
+                    projectMoveErrorMessage(error)
+                )
+                retryPolicy = "never"
+            } else {
+                errorMessage = projectMoveErrorMessage(error)
+                if longOpSession.blocksDuplicateSubmit {
+                    errorMessage = (errorMessage ?? "") + "\n" + projectMoveResumeAvailableMessage()
+                }
+                retryPolicy = projectMoveRetryPolicy(error)
+            }
             errorDetails = projectMoveErrorDetails(error)
-        }
-    }
-
-    private func executeArchiveWithReconnect(
-        _ request: EngramServiceProjectArchiveRequest
-    ) async throws -> EngramServiceProjectMoveResult {
-        do {
-            return try await serviceClient.projectArchive(request)
-        } catch {
-            guard projectMoveIsReconnectableError(error) else { throw error }
-            isReconnecting = true
-            defer { isReconnecting = false }
-            return try await serviceClient.projectArchive(request)
         }
     }
 }

@@ -1060,12 +1060,13 @@ final class OrchestratorTests: XCTestCase {
         let dst = tempRoot.appendingPathComponent("cancel-dst").path
         var options = makeOptions(src: src, dst: dst)
         options.shouldCancel = { true }
+        options.beginCommitIfNotCancelled = { false }
 
         do {
             _ = try await ProjectMoveOrchestrator.run(writer: writer, options: options)
             XCTFail("expected ProjectMoveCancelledError")
-        } catch is ProjectMoveCancelledError {
-            // ok — cancelled before commit
+        } catch let error as ProjectMoveCancelledError {
+            XCTAssertTrue(error.compensationSucceeded)
         } catch {
             XCTFail("expected ProjectMoveCancelledError, got \(error)")
         }
@@ -1085,29 +1086,71 @@ final class OrchestratorTests: XCTestCase {
         )
     }
 
-    func testOnPastCommitFiresOnlyAfterCommitBoundary_repro() async throws {
-        let (src, _) = try makeProjectFixture(name: "past-commit-src")
-        let dst = tempRoot.appendingPathComponent("past-commit-dst").path
-        final class Flag: @unchecked Sendable {
-            private let lock = NSLock()
-            private var value = false
-            func set() { lock.lock(); value = true; lock.unlock() }
-            func get() -> Bool { lock.lock(); defer { lock.unlock() }; return value }
-        }
-        let pastCommit = Flag()
+    func testAtomicBeginCommitPreventsCancelRaceWindow_repro() async throws {
+        // beginCommitIfNotCancelled returns false → cancel wins, no commit.
+        let (src, _) = try makeProjectFixture(name: "atomic-cancel")
+        let dst = tempRoot.appendingPathComponent("atomic-cancel-dst").path
         var options = makeOptions(src: src, dst: dst)
-        options.onPastCommit = { pastCommit.set() }
-        // Cancel is requested immediately — should stop before past-commit fires.
-        options.shouldCancel = { true }
+        options.shouldCancel = { false }
+        options.beginCommitIfNotCancelled = { false }
         do {
             _ = try await ProjectMoveOrchestrator.run(writer: writer, options: options)
-            XCTFail("expected cancel")
+            XCTFail("expected cancel at commit boundary")
         } catch is ProjectMoveCancelledError {
             // ok
         }
-        XCTAssertFalse(
-            pastCommit.get(),
-            "onPastCommit must not fire when cancelled before the commit boundary"
+        try writer.read { db in
+            let committed = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM migration_log WHERE state = 'committed'"
+            ) ?? -1
+            XCTAssertEqual(committed, 0)
+        }
+    }
+
+    func testBeginCommitTrueCompletesDespiteLaterCancelProbe_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "atomic-commit")
+        let dst = tempRoot.appendingPathComponent("atomic-commit-dst").path
+        final class Flag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var beginCalled = false
+            private var shouldCancelAfter = false
+            func markBegin() { lock.lock(); beginCalled = true; shouldCancelAfter = true; lock.unlock() }
+            func shouldCancel() -> Bool {
+                lock.lock(); defer { lock.unlock() }
+                return shouldCancelAfter
+            }
+            func began() -> Bool { lock.lock(); defer { lock.unlock() }; return beginCalled }
+        }
+        let flag = Flag()
+        var options = makeOptions(src: src, dst: dst)
+        // After beginCommit, shouldCancel flips true — must not abort Phase B/C.
+        options.shouldCancel = { flag.shouldCancel() }
+        options.beginCommitIfNotCancelled = {
+            flag.markBegin()
+            return true
+        }
+        let result = try await ProjectMoveOrchestrator.run(writer: writer, options: options)
+        XCTAssertEqual(result.state, .committed)
+        XCTAssertTrue(flag.began())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dst))
+    }
+
+    func testCancelledErrorCompensationFailedNameAndWording_repro() {
+        let clean = ProjectMoveCancelledError(compensationSucceeded: true)
+        XCTAssertEqual(clean.errorName, "ProjectMoveCancelledError")
+        XCTAssertTrue(clean.errorMessage.contains("no migration was committed"))
+
+        let dirty = ProjectMoveCancelledError(
+            compensationSucceeded: false,
+            compensationDetail: "rollback: 1 file(s) could NOT be reverted"
+        )
+        XCTAssertEqual(dirty.errorName, "ProjectMoveCancelCompensationFailedError")
+        XCTAssertTrue(dirty.errorMessage.contains("compensation was incomplete"))
+        XCTAssertFalse(dirty.errorMessage.contains("Safe to retry"))
+        XCTAssertEqual(
+            RetryPolicyClassifier.classify(errorName: dirty.errorName),
+            .never
         )
     }
 }

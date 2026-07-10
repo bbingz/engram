@@ -103,7 +103,8 @@ struct BatchMoveSheet: View {
     @State private var outcome: BatchMoveOutcome?
     @State private var errorMessage: String?
     @State private var activeTask: Task<Void, Never>?
-    @State private var activeBatchOperationId: String?
+    @State private var longOpSession = ProjectLongOperationSession()
+    @State private var isReconnecting = false
 
     /// Rows that actually have a destination to move (recorded cwd present).
     private var movableOperations: [(src: String, dst: String)] {
@@ -147,9 +148,13 @@ struct BatchMoveSheet: View {
                 if isExecuting {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text("Moving \(movableOperations.count) project(s)…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(
+                            isReconnecting
+                                ? projectMoveReconnectingMessage()
+                                : "Moving \(movableOperations.count) project(s)…"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 4)
                 }
@@ -167,14 +172,15 @@ struct BatchMoveSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") {
-                    if isExecuting, let operationId = activeBatchOperationId {
-                        // Wave 7C M05: cooperative service cancel only — do NOT
-                        // cancel the awaiting task, so completed/remaining partial
-                        // results still surface in the outcome box.
+                    if isExecuting || longOpSession.blocksDuplicateSubmit,
+                       let operationId = longOpSession.operationId
+                    {
+                        // Explicit cooperative cancel only — never cancel await task.
                         Task {
                             _ = try? await serviceClient.cancelProjectMoveBatch(operationId: operationId)
                         }
                     } else {
+                        longOpSession.reset()
                         dismiss()
                     }
                 }
@@ -182,13 +188,21 @@ struct BatchMoveSheet: View {
                 Button("Preview") {
                     activeTask = Task { await run(dryRun: true) }
                 }
-                .disabled(isExecuting || movableOperations.isEmpty)
-                Button("Move") {
-                    activeTask = Task { await run(dryRun: false) }
+                .disabled(isExecuting || movableOperations.isEmpty || longOpSession.blocksDuplicateSubmit)
+                if longOpSession.blocksDuplicateSubmit && !isExecuting {
+                    Button("Resume / Check Status") {
+                        activeTask = Task { await run(dryRun: false) }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Move") {
+                        activeTask = Task { await run(dryRun: false) }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isExecuting || movableOperations.isEmpty || longOpSession.blocksDuplicateSubmit)
                 }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .disabled(isExecuting || movableOperations.isEmpty)
             }
         }
         .padding(20)
@@ -272,26 +286,40 @@ struct BatchMoveSheet: View {
     private func run(dryRun: Bool) async {
         errorMessage = nil
         outcome = nil
+        isReconnecting = false
         isExecuting = true
-        // Stable for cancel + reconnect/idempotence on duplicate submit.
-        let operationId = UUID().uuidString
-        activeBatchOperationId = operationId
         defer {
             isExecuting = false
+            isReconnecting = false
             activeTask = nil
-            activeBatchOperationId = nil
+        }
+        // Preview is dry-run only — use a fresh session that does not block commit.
+        if dryRun {
+            longOpSession.reset()
         }
         let body = BatchMoveBody.make(operations: movableOperations, dryRun: dryRun)
-        let request = EngramServiceProjectMoveBatchRequest(
-            yaml: body,
-            dryRun: false,
-            force: false,
-            actor: "app",
-            operationId: operationId
-        )
         do {
-            let result = try await executeBatchWithReconnect(request)
-            // Always surface partial results (including cancelled + remaining).
+            let result = try await ProjectLongOperationRunner.execute(
+                session: &longOpSession,
+                isReconnectable: { error in
+                    if projectMoveIsReconnectableError(error) {
+                        isReconnecting = true
+                        return true
+                    }
+                    return false
+                }
+            ) { operationId in
+                try await serviceClient.projectMoveBatch(
+                    EngramServiceProjectMoveBatchRequest(
+                        yaml: body,
+                        dryRun: false,
+                        force: false,
+                        actor: "app",
+                        operationId: operationId
+                    )
+                )
+            }
+            isReconnecting = false
             let parsed = parseBatchMoveOutcome(result)
             outcome = parsed
             if !dryRun && parsed.failed == 0 && !parsed.cancelled && parsed.remaining == 0 {
@@ -299,21 +327,11 @@ struct BatchMoveSheet: View {
                 dismiss()
             }
         } catch {
+            isReconnecting = false
             errorMessage = projectMoveErrorMessage(error)
-        }
-    }
-
-    /// On timeout/disconnect after service may have committed some ops, re-submit
-    /// the same operationId (join/cached) instead of reporting a false cancel.
-    private func executeBatchWithReconnect(
-        _ request: EngramServiceProjectMoveBatchRequest
-    ) async throws -> EngramServiceJSONValue {
-        do {
-            return try await serviceClient.projectMoveBatch(request)
-        } catch {
-            guard projectMoveIsReconnectableError(error) else { throw error }
-            errorMessage = projectMoveReconnectingMessage()
-            return try await serviceClient.projectMoveBatch(request)
+            if longOpSession.blocksDuplicateSubmit {
+                errorMessage = (errorMessage ?? "") + "\n" + projectMoveResumeAvailableMessage()
+            }
         }
     }
 }

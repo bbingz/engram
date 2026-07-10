@@ -16,48 +16,52 @@ extension EngramServiceCommandHandler {
             category: .writer
         )
         let operationId = normalizeOperationId(request.operationId)
-        let fingerprint = "move|\(request.src)|\(request.dst)|\(request.dryRun)|\(request.force)|\(request.auditNote ?? "")"
+        let actor = parseActor(request.actor) ?? .mcp
+        let fingerprint = ProjectMoveOperationFingerprint.encode([
+            "kind": "move",
+            "src": request.src,
+            "dst": request.dst,
+            "dryRun": String(request.dryRun),
+            "force": String(request.force),
+            "auditNote": request.auditNote ?? "",
+            "actor": actor.rawValue,
+        ])
+
+        // Contract 4: validate before registration so failed preflight does not
+        // leave a running orphan. After registration every exit is terminal.
+        try validateProjectMovePaths(src: request.src, dst: request.dst)
+
         if let cached = try await resolveExistingOperation(
             operationId: operationId,
             fingerprint: fingerprint
         ) {
-            return try decodeMoveResult(cached)
+            return try materializeMoveResult(cached)
         }
 
-        do {
-            // SEC-C2: confine before any filesystem work. force never relaxes this.
-            try validateProjectMovePaths(src: request.src, dst: request.dst)
-            let homeDirectory = homeDirectoryURL()
-            let mapped = try await runPipelineSurvivingClientCancel(
-                operationId: operationId,
-                map: { mapPipelineResult($0, suggestion: nil) },
-                cancelledMap: { cancelledMoveResult(from: $0, src: request.src, dst: request.dst) }
-            ) {
-                try await ProjectMoveOrchestrator.run(
-                    writer: writer,
-                    options: RunProjectMoveOptions(
-                        src: request.src,
-                        dst: request.dst,
-                        dryRun: request.dryRun,
-                        force: request.force,
-                        archived: false,
-                        auditNote: request.auditNote,
-                        actor: parseActor(request.actor) ?? .mcp,
-                        homeDirectory: homeDirectory,
-                        rolledBackOf: nil,
-                        shouldCancel: { shouldStop(operationId: operationId) },
-                        onPastCommit: { markPastCommit(operationId: operationId) }
-                    )
+        return try await produceMoveResult(
+            operationId: operationId,
+            map: { mapPipelineResult($0, suggestion: nil) }
+        ) {
+            try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: RunProjectMoveOptions(
+                    src: request.src,
+                    dst: request.dst,
+                    dryRun: request.dryRun,
+                    force: request.force,
+                    archived: false,
+                    auditNote: request.auditNote,
+                    actor: actor,
+                    homeDirectory: homeDirectoryURL(),
+                    rolledBackOf: nil,
+                    shouldCancel: { shouldStop(operationId: operationId) },
+                    beginCommitIfNotCancelled: {
+                        ProjectMoveBatchCancelRegistry.shared.beginCommitIfNotCancelled(
+                            operationId: operationId
+                        )
+                    }
                 )
-            }
-            ServiceLogger.notice(
-                "projectMove finished migrationId=\(mapped.migrationId) state=\(mapped.state) filesPatched=\(mapped.totalFilesPatched) occurrences=\(mapped.totalOccurrences)",
-                category: .writer
             )
-            return mapped
-        } catch {
-            ServiceLogger.error("projectMove failed src=\(request.src) dst=\(request.dst)", category: .writer, error: error)
-            throw error
         }
     }
 
@@ -70,67 +74,69 @@ extension EngramServiceCommandHandler {
             category: .writer
         )
         let operationId = normalizeOperationId(request.operationId)
-        let fingerprint = "archive|\(request.src)|\(request.archiveTo ?? "")|\(request.dryRun)|\(request.force)|\(request.auditNote ?? "")"
+        let actor = parseActor(request.actor) ?? .mcp
+
+        // Preflight before registry registration (contract 4).
+        try validateProjectPathConfined(request.src, label: "source")
+        let homeDirectory = homeDirectoryURL()
+        let suggestion = try Archive.suggestTarget(
+            src: request.src,
+            options: ArchiveOptions(
+                archiveRoot: nil,
+                skipProbe: request.dryRun,
+                forceCategory: request.archiveTo
+            )
+        )
+        try validateProjectPathConfined(suggestion.dst, label: "archive destination")
+        if !request.dryRun {
+            try FileManager.default.createDirectory(
+                atPath: (suggestion.dst as NSString).deletingLastPathComponent,
+                withIntermediateDirectories: true
+            )
+        }
+
+        let fingerprint = ProjectMoveOperationFingerprint.encode([
+            "kind": "archive",
+            "src": request.src,
+            "dst": suggestion.dst,
+            "archiveTo": request.archiveTo ?? "",
+            "dryRun": String(request.dryRun),
+            "force": String(request.force),
+            "auditNote": request.auditNote ?? "",
+            "actor": actor.rawValue,
+        ])
+
         if let cached = try await resolveExistingOperation(
             operationId: operationId,
             fingerprint: fingerprint
         ) {
-            return try decodeMoveResult(cached)
+            return try materializeMoveResult(cached)
         }
 
-        do {
-            // SEC-C2: confine the caller-supplied source before resolving an
-            // archive target. force never relaxes this.
-            try validateProjectPathConfined(request.src, label: "source")
-            let homeDirectory = homeDirectoryURL()
-            let suggestion = try Archive.suggestTarget(
-                src: request.src,
-                options: ArchiveOptions(
-                    archiveRoot: nil,
-                    skipProbe: request.dryRun,
-                    forceCategory: request.archiveTo
+        return try await produceMoveResult(
+            operationId: operationId,
+            map: { mapPipelineResult($0, suggestion: suggestion) }
+        ) {
+            try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: RunProjectMoveOptions(
+                    src: request.src,
+                    dst: suggestion.dst,
+                    dryRun: request.dryRun,
+                    force: request.force,
+                    archived: true,
+                    auditNote: request.auditNote,
+                    actor: actor,
+                    homeDirectory: homeDirectory,
+                    rolledBackOf: nil,
+                    shouldCancel: { shouldStop(operationId: operationId) },
+                    beginCommitIfNotCancelled: {
+                        ProjectMoveBatchCancelRegistry.shared.beginCommitIfNotCancelled(
+                            operationId: operationId
+                        )
+                    }
                 )
             )
-            // SEC-C2: confine the resolved archive destination as well, in case a
-            // future archive-root override could escape the home directory.
-            try validateProjectPathConfined(suggestion.dst, label: "archive destination")
-            // rename(2) refuses to create intermediate parents.
-            if !request.dryRun {
-                try FileManager.default.createDirectory(
-                    atPath: (suggestion.dst as NSString).deletingLastPathComponent,
-                    withIntermediateDirectories: true
-                )
-            }
-            let mapped = try await runPipelineSurvivingClientCancel(
-                operationId: operationId,
-                map: { mapPipelineResult($0, suggestion: suggestion) },
-                cancelledMap: { cancelledMoveResult(from: $0, src: request.src, dst: suggestion.dst) }
-            ) {
-                try await ProjectMoveOrchestrator.run(
-                    writer: writer,
-                    options: RunProjectMoveOptions(
-                        src: request.src,
-                        dst: suggestion.dst,
-                        dryRun: request.dryRun,
-                        force: request.force,
-                        archived: true,
-                        auditNote: request.auditNote,
-                        actor: parseActor(request.actor) ?? .mcp,
-                        homeDirectory: homeDirectory,
-                        rolledBackOf: nil,
-                        shouldCancel: { shouldStop(operationId: operationId) },
-                        onPastCommit: { markPastCommit(operationId: operationId) }
-                    )
-                )
-            }
-            ServiceLogger.notice(
-                "projectArchive finished migrationId=\(mapped.migrationId) state=\(mapped.state) dst=\(suggestion.dst)",
-                category: .writer
-            )
-            return mapped
-        } catch {
-            ServiceLogger.error("projectArchive failed src=\(request.src)", category: .writer, error: error)
-            throw error
         }
     }
 
@@ -143,37 +149,37 @@ extension EngramServiceCommandHandler {
             category: .writer
         )
         let operationId = normalizeOperationId(request.operationId)
-        let fingerprint = "undo|\(request.migrationId)|\(request.force)"
+        let actor = parseActor(request.actor) ?? .mcp
+        let fingerprint = ProjectMoveOperationFingerprint.encode([
+            "kind": "undo",
+            "migrationId": request.migrationId,
+            "force": String(request.force),
+            "actor": actor.rawValue,
+        ])
+
         if let cached = try await resolveExistingOperation(
             operationId: operationId,
             fingerprint: fingerprint
         ) {
-            return try decodeMoveResult(cached)
+            return try materializeMoveResult(cached)
         }
 
-        do {
-            let mapped = try await runUndoSurvivingClientCancel(
-                operationId: operationId,
-                map: { mapPipelineResult($0.pipelineResult, suggestion: nil) },
-                cancelledMap: { cancelledMoveResult(from: $0, src: nil, dst: nil) }
-            ) {
-                try await ProjectMoveOrchestrator.runUndo(
-                    writer: writer,
-                    migrationId: request.migrationId,
-                    force: request.force,
-                    actor: parseActor(request.actor) ?? .mcp,
-                    shouldCancel: { shouldStop(operationId: operationId) },
-                    onPastCommit: { markPastCommit(operationId: operationId) }
-                )
-            }
-            ServiceLogger.notice(
-                "projectUndo finished migrationId=\(mapped.migrationId) state=\(mapped.state)",
-                category: .writer
+        return try await produceMoveResult(
+            operationId: operationId,
+            map: { mapPipelineResult($0.pipelineResult, suggestion: nil) }
+        ) {
+            try await ProjectMoveOrchestrator.runUndo(
+                writer: writer,
+                migrationId: request.migrationId,
+                force: request.force,
+                actor: actor,
+                shouldCancel: { shouldStop(operationId: operationId) },
+                beginCommitIfNotCancelled: {
+                    ProjectMoveBatchCancelRegistry.shared.beginCommitIfNotCancelled(
+                        operationId: operationId
+                    )
+                }
             )
-            return mapped
-        } catch {
-            ServiceLogger.error("projectUndo failed migrationId=\(request.migrationId)", category: .writer, error: error)
-            throw error
         }
     }
 
@@ -186,28 +192,45 @@ extension EngramServiceCommandHandler {
             category: .writer
         )
         let operationId = normalizeOperationId(request.operationId)
-        let fingerprint = "batch|\(request.yaml)|\(request.force)"
+
+        // Preflight parse + path confinement before registration.
+        let document = try Batch.parseJSON(Data(request.yaml.utf8))
+        for operation in document.operations {
+            try validateProjectPathConfined(operation.src, label: "source")
+            if let dst = operation.dst, !dst.isEmpty {
+                try validateProjectPathConfined(dst, label: "destination")
+            }
+        }
+
+        let fingerprint = ProjectMoveOperationFingerprint.encode([
+            "kind": "batch",
+            "yaml": request.yaml,
+            "force": String(request.force),
+            "actor": request.actor ?? "",
+        ])
+
         if let cached = try await resolveExistingOperation(
             operationId: operationId,
             fingerprint: fingerprint
         ) {
-            return try decodeJSONValue(cached)
+            return try materializeJSONValue(cached)
         }
 
-        do {
-            // Despite the field name `yaml` (kept for IPC backwards-compat),
-            // the Swift batch driver accepts JSON only.
-            let document = try Batch.parseJSON(Data(request.yaml.utf8))
-            // SEC-C2: confine every operation before the batch driver runs.
-            for operation in document.operations {
-                try validateProjectPathConfined(operation.src, label: "source")
-                if let dst = operation.dst, !dst.isEmpty {
-                    try validateProjectPathConfined(dst, label: "destination")
-                }
-            }
-            // Keep cancel flag for the duration; clear only the cancel bit after,
-            // retaining completed payload for reconnect/idempotence.
-            defer { ProjectMoveBatchCancelRegistry.shared.clear(operationId: operationId) }
+        guard let operationId else {
+            let result = await Batch.run(
+                document,
+                writer: writer,
+                overrides: BatchOverrides(
+                    homeDirectory: homeDirectoryURL(),
+                    force: request.force
+                ),
+                shouldCancel: { Task.isCancelled }
+            )
+            return encodeBatchResult(result)
+        }
+
+        // Detached producer; request only waits. Disconnect detaches waiter only.
+        Task.detached(priority: .userInitiated) {
             let result = await Batch.run(
                 document,
                 writer: writer,
@@ -216,12 +239,7 @@ extension EngramServiceCommandHandler {
                     force: request.force
                 ),
                 shouldCancel: {
-                    // Prefer registry shouldStop so post-commit cancel is ignored.
-                    // Without operationId, fall back to Task cancellation.
-                    if let operationId {
-                        return ProjectMoveBatchCancelRegistry.shared.shouldStop(operationId: operationId)
-                    }
-                    return Task.isCancelled
+                    ProjectMoveBatchCancelRegistry.shared.shouldStop(operationId: operationId)
                 }
             )
             ServiceLogger.notice(
@@ -229,15 +247,25 @@ extension EngramServiceCommandHandler {
                 category: .writer
             )
             let encoded = encodeBatchResult(result)
-            if let operationId, let data = try? JSONEncoder().encode(encoded) {
+            if let data = try? JSONEncoder().encode(encoded) {
                 ProjectMoveBatchCancelRegistry.shared.complete(operationId: operationId, payload: data)
+            } else {
+                ProjectMoveBatchCancelRegistry.shared.completeWithFailure(
+                    operationId: operationId,
+                    failure: .init(
+                        name: "ProjectMoveBatchEncodeError",
+                        message: "failed to encode batch result",
+                        retryPolicy: "never"
+                    )
+                )
             }
-            return encoded
-        } catch {
-            failOperation(operationId: operationId, error: error)
-            ServiceLogger.error("projectMoveBatch failed", category: .writer, error: error)
-            throw error
+            ProjectMoveBatchCancelRegistry.shared.clear(operationId: operationId)
         }
+
+        let terminal = try await ProjectMoveBatchCancelRegistry.shared.waitForTerminal(
+            operationId: operationId
+        )
+        return try materializeJSONValue(terminal)
     }
 
     // MARK: - Long-op helpers
@@ -248,170 +276,55 @@ extension EngramServiceCommandHandler {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    /// When `operationId` is set, run pipeline work in a detached task so a
-    /// client timeout/disconnect (request-task cancel) does not tear down work
-    /// after the commit boundary. Cooperative cancel still flows through the
-    /// registry (`shouldStop` / `requestCancel`). Reconnect re-submits the same id.
-    ///
-    /// Registry completion is performed inside the detached task so joiners still
-    /// observe a terminal payload even if this request task is cancelled mid-await.
-    private static func runPipelineSurvivingClientCancel(
-        operationId: String?,
-        map: @escaping @Sendable (PipelineResult) -> EngramServiceProjectMoveResult,
-        cancelledMap: @escaping @Sendable (ProjectMoveCancelledError) -> EngramServiceProjectMoveResult,
-        _ body: @escaping @Sendable () async throws -> PipelineResult
-    ) async throws -> EngramServiceProjectMoveResult {
-        guard let operationId else {
-            do {
-                return map(try await body())
-            } catch let error as ProjectMoveCancelledError {
-                return cancelledMap(error)
-            }
-        }
-
-        let work = Task.detached(priority: .userInitiated) {
-            () -> Result<EngramServiceProjectMoveResult, Error> in
-            do {
-                let pipeline = try await body()
-                let mapped = map(pipeline)
-                completeOperation(operationId: operationId, result: mapped)
-                return .success(mapped)
-            } catch let error as ProjectMoveCancelledError {
-                let mapped = cancelledMap(error)
-                completeOperation(operationId: operationId, result: mapped)
-                return .success(mapped)
-            } catch {
-                failOperation(operationId: operationId, error: error)
-                return .failure(error)
-            }
-        }
-
-        return try await withTaskCancellationHandler {
-            switch await work.value {
-            case .success(let result):
-                return result
-            case .failure(let error):
-                throw error
-            }
-        } onCancel: {
-            // Cooperative only — ignored after markPastCommit.
-            ProjectMoveBatchCancelRegistry.shared.requestCancel(operationId: operationId)
-        }
-    }
-
-    private static func runUndoSurvivingClientCancel(
-        operationId: String?,
-        map: @escaping @Sendable (UndoProjectMoveRunResult) -> EngramServiceProjectMoveResult,
-        cancelledMap: @escaping @Sendable (ProjectMoveCancelledError) -> EngramServiceProjectMoveResult,
-        _ body: @escaping @Sendable () async throws -> UndoProjectMoveRunResult
-    ) async throws -> EngramServiceProjectMoveResult {
-        guard let operationId else {
-            do {
-                return map(try await body())
-            } catch let error as ProjectMoveCancelledError {
-                return cancelledMap(error)
-            }
-        }
-
-        let work = Task.detached(priority: .userInitiated) {
-            () -> Result<EngramServiceProjectMoveResult, Error> in
-            do {
-                let undo = try await body()
-                let mapped = map(undo)
-                completeOperation(operationId: operationId, result: mapped)
-                return .success(mapped)
-            } catch let error as ProjectMoveCancelledError {
-                let mapped = cancelledMap(error)
-                completeOperation(operationId: operationId, result: mapped)
-                return .success(mapped)
-            } catch {
-                failOperation(operationId: operationId, error: error)
-                return .failure(error)
-            }
-        }
-
-        return try await withTaskCancellationHandler {
-            switch await work.value {
-            case .success(let result):
-                return result
-            case .failure(let error):
-                throw error
-            }
-        } onCancel: {
-            ProjectMoveBatchCancelRegistry.shared.requestCancel(operationId: operationId)
-        }
-    }
-
     private static func shouldStop(operationId: String?) -> Bool {
         ProjectMoveBatchCancelRegistry.shared.shouldStop(operationId: operationId)
     }
 
-    private static func markPastCommit(operationId: String?) {
-        ProjectMoveBatchCancelRegistry.shared.markPastCommit(operationId: operationId)
-    }
-
-    private static func resolveExistingOperation(
+    /// Produce pipeline work in a detached task and join via registry waiters.
+    /// Parent-task cancel removes only the waiter — never requestCancel (contract 2).
+    private static func produceMoveResult<Pipeline: Sendable>(
         operationId: String?,
-        fingerprint: String
-    ) async throws -> Data? {
-        guard let operationId else { return nil }
-        switch ProjectMoveBatchCancelRegistry.shared.beginOrJoin(
-            operationId: operationId,
-            fingerprint: fingerprint
-        ) {
-        case .proceed:
-            return nil
-        case .completed(let data):
-            return data
-        case .join(let wait):
-            return try await wait()
-        case .fingerprintConflict:
-            throw EngramServiceError.invalidRequest(
-                message: "operation_id already used with a different project migration request"
-            )
+        map: @escaping @Sendable (Pipeline) -> EngramServiceProjectMoveResult,
+        _ body: @escaping @Sendable () async throws -> Pipeline
+    ) async throws -> EngramServiceProjectMoveResult {
+        guard let operationId else {
+            do {
+                return map(try await body())
+            } catch let error as ProjectMoveCancelledError {
+                return try mapCancelled(error)
+            }
         }
-    }
 
-    private static func completeOperation(
-        operationId: String?,
-        result: EngramServiceProjectMoveResult
-    ) {
-        guard let operationId else { return }
-        guard let data = try? JSONEncoder().encode(result) else { return }
-        ProjectMoveBatchCancelRegistry.shared.complete(operationId: operationId, payload: data)
-        ProjectMoveBatchCancelRegistry.shared.clear(operationId: operationId)
-    }
-
-    private static func failOperation(operationId: String?, error: Error) {
-        guard let operationId else { return }
-        let message: String
-        if let pm = error as? ProjectMoveError {
-            message = pm.errorMessage
-        } else {
-            message = error.localizedDescription
+        Task.detached(priority: .userInitiated) {
+            do {
+                let pipeline = try await body()
+                let mapped = map(pipeline)
+                completeOperation(operationId: operationId, result: mapped)
+            } catch let error as ProjectMoveCancelledError {
+                do {
+                    let mapped = try mapCancelled(error)
+                    completeOperation(operationId: operationId, result: mapped)
+                } catch {
+                    failOperation(operationId: operationId, error: error)
+                }
+            } catch {
+                failOperation(operationId: operationId, error: error)
+            }
         }
-        ProjectMoveBatchCancelRegistry.shared.completeWithError(operationId: operationId, message: message)
-        ProjectMoveBatchCancelRegistry.shared.clear(operationId: operationId)
+
+        let terminal = try await ProjectMoveBatchCancelRegistry.shared.waitForTerminal(
+            operationId: operationId
+        )
+        return try materializeMoveResult(terminal)
     }
 
-    private static func decodeMoveResult(_ data: Data) throws -> EngramServiceProjectMoveResult {
-        try JSONDecoder().decode(EngramServiceProjectMoveResult.self, from: data)
-    }
-
-    private static func decodeJSONValue(_ data: Data) throws -> EngramServiceJSONValue {
-        try JSONDecoder().decode(EngramServiceJSONValue.self, from: data)
-    }
-
-    private static func cancelledMoveResult(
-        from error: ProjectMoveCancelledError,
-        src: String?,
-        dst: String?
-    ) -> EngramServiceProjectMoveResult {
-        // State "cancelled" drives precise UI wording (cancelled before commit;
-        // no migration was committed). Paths kept for logging only.
-        _ = error
-        _ = src
-        _ = dst
+    private static func mapCancelled(
+        _ error: ProjectMoveCancelledError
+    ) throws -> EngramServiceProjectMoveResult {
+        // Contract 3: only clean compensation maps to successful cancelled state.
+        guard error.compensationSucceeded else {
+            throw error
+        }
         return EngramServiceProjectMoveResult(
             migrationId: "",
             state: "cancelled",
@@ -428,6 +341,157 @@ extension EngramServiceCommandHandler {
             perSource: nil,
             skippedDirs: nil,
             suggestion: nil
+        )
+    }
+
+    private static func resolveExistingOperation(
+        operationId: String?,
+        fingerprint: String
+    ) async throws -> ProjectMoveBatchCancelRegistry.Terminal? {
+        guard let operationId else { return nil }
+        switch ProjectMoveBatchCancelRegistry.shared.beginOrJoin(
+            operationId: operationId,
+            fingerprint: fingerprint
+        ) {
+        case .proceed:
+            return nil
+        case .completed(let terminal):
+            return terminal
+        case .join(let wait):
+            return try await wait()
+        case .fingerprintConflict:
+            throw EngramServiceError.invalidRequest(
+                message: "operation_id already used with a different project migration request"
+            )
+        }
+    }
+
+    private static func materializeMoveResult(
+        _ terminal: ProjectMoveBatchCancelRegistry.Terminal
+    ) throws -> EngramServiceProjectMoveResult {
+        switch terminal {
+        case .success(let data):
+            return try JSONDecoder().decode(EngramServiceProjectMoveResult.self, from: data)
+        case .failure(let failure):
+            throw structuredServiceError(failure)
+        }
+    }
+
+    private static func materializeJSONValue(
+        _ terminal: ProjectMoveBatchCancelRegistry.Terminal
+    ) throws -> EngramServiceJSONValue {
+        switch terminal {
+        case .success(let data):
+            return try JSONDecoder().decode(EngramServiceJSONValue.self, from: data)
+        case .failure(let failure):
+            throw structuredServiceError(failure)
+        }
+    }
+
+    private static func structuredServiceError(
+        _ failure: ProjectMoveBatchCancelRegistry.CachedFailure
+    ) -> EngramServiceError {
+        var details: [String: EngramServiceJSONValue]?
+        if let detailsJSON = failure.detailsJSON,
+           let data = detailsJSON.data(using: .utf8),
+           let obj = try? JSONDecoder().decode([String: EngramServiceJSONValue].self, from: data)
+        {
+            details = obj
+        }
+        switch failure.name {
+        case "InvalidRequest", "invalidRequest":
+            return .invalidRequest(message: failure.message)
+        case "ServiceUnavailable", "serviceUnavailable":
+            return .serviceUnavailable(message: failure.message)
+        default:
+            return .commandFailed(
+                name: failure.name,
+                message: failure.message,
+                retryPolicy: failure.retryPolicy,
+                details: details
+            )
+        }
+    }
+
+    private static func completeOperation(
+        operationId: String?,
+        result: EngramServiceProjectMoveResult
+    ) {
+        guard let operationId else { return }
+        guard let data = try? JSONEncoder().encode(result) else {
+            failOperation(
+                operationId: operationId,
+                error: EngramServiceError.invalidRequest(message: "failed to encode project move result")
+            )
+            return
+        }
+        ProjectMoveBatchCancelRegistry.shared.complete(operationId: operationId, payload: data)
+        ProjectMoveBatchCancelRegistry.shared.clear(operationId: operationId)
+    }
+
+    private static func failOperation(operationId: String?, error: Error) {
+        guard let operationId else { return }
+        let failure = cachedFailure(from: error)
+        ProjectMoveBatchCancelRegistry.shared.completeWithFailure(
+            operationId: operationId,
+            failure: failure
+        )
+        ProjectMoveBatchCancelRegistry.shared.clear(operationId: operationId)
+    }
+
+    private static func cachedFailure(from error: Error) -> ProjectMoveBatchCancelRegistry.CachedFailure {
+        if let service = error as? EngramServiceError {
+            switch service {
+            case .commandFailed(let name, let message, let retryPolicy, let details):
+                let detailsJSON: String?
+                if let details,
+                   let data = try? JSONEncoder().encode(details),
+                   let s = String(data: data, encoding: .utf8)
+                {
+                    detailsJSON = s
+                } else {
+                    detailsJSON = nil
+                }
+                return .init(
+                    name: name,
+                    message: message,
+                    retryPolicy: retryPolicy,
+                    detailsJSON: detailsJSON
+                )
+            case .invalidRequest(let message):
+                return .init(name: "InvalidRequest", message: message, retryPolicy: "never")
+            case .serviceUnavailable(let message):
+                return .init(name: "ServiceUnavailable", message: message, retryPolicy: "safe")
+            case .transportClosed(let message):
+                return .init(name: "TransportClosed", message: message, retryPolicy: "safe")
+            case .writerBusy(let message):
+                return .init(name: "WriterBusy", message: message, retryPolicy: "safe")
+            case .unauthorized(let message):
+                return .init(name: "Unauthorized", message: message, retryPolicy: "never")
+            case .unsupportedProvider(let provider):
+                return .init(name: "UnsupportedProvider", message: provider, retryPolicy: "never")
+            }
+        }
+        if let pm = error as? ProjectMoveError {
+            let policy = RetryPolicyClassifier.classify(errorName: pm.errorName).rawValue
+            var detailsJSON: String?
+            if let details = pm.errorDetails, !details.isEmpty,
+               let data = try? JSONEncoder().encode(details),
+               let s = String(data: data, encoding: .utf8)
+            {
+                detailsJSON = s
+            }
+            return .init(
+                name: pm.errorName,
+                message: pm.errorMessage,
+                retryPolicy: policy,
+                detailsJSON: detailsJSON
+            )
+        }
+        return .init(
+            name: String(describing: type(of: error)),
+            message: error.localizedDescription,
+            retryPolicy: "never"
         )
     }
 
@@ -527,7 +591,6 @@ extension EngramServiceCommandHandler {
     }
 
     private static func encodeBatchResult(_ result: BatchResult) -> EngramServiceJSONValue {
-        // Keep keys snake_case to mirror Node parity.
         let completed: [EngramServiceJSONValue] = result.completed.map { pr in
             .object([
                 "migration_id": .string(pr.migrationId),
@@ -554,8 +617,6 @@ extension EngramServiceCommandHandler {
                 "archive": .bool(op.archive),
             ])
         }
-        // Wave 7C M05 / Wave 8 long-ops: explicit cancelled + remaining.
-        // Wording contract: remaining = not-yet-started (or cancelled mid-op before commit).
         let remaining: [EngramServiceJSONValue] = result.remaining.map { op in
             .object([
                 "src": .string(op.src),

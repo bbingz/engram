@@ -76,17 +76,38 @@ public struct SharedEncodingCollisionError: ProjectMoveError, Equatable {
 }
 
 /// Cooperative cancel before the DB commit boundary (Wave 8 long-ops).
-/// After `onPastCommit`, callers must ignore cancel so timeout/disconnect
-/// reconnect by operation id instead of pretending the migration stopped.
+/// After a successful `beginCommitIfNotCancelled`, cancel is ignored.
+/// When cancel runs after FS mutation, `compensationSucceeded` reports whether
+/// rollback fully restored disk state (contract 3).
 public struct ProjectMoveCancelledError: ProjectMoveError, Equatable {
-    public init() {}
+    /// True when no residual FS damage remains (or never mutated FS).
+    public let compensationSucceeded: Bool
+    /// Human-readable compensation failure summary when `compensationSucceeded` is false.
+    public let compensationDetail: String?
 
-    public var errorName: String { "ProjectMoveCancelledError" }
-    public var errorMessage: String {
-        "project-move: cancelled before commit boundary — no migration was committed"
+    public init(compensationSucceeded: Bool = true, compensationDetail: String? = nil) {
+        self.compensationSucceeded = compensationSucceeded
+        self.compensationDetail = compensationDetail
     }
+
+    public var errorName: String {
+        compensationSucceeded
+            ? "ProjectMoveCancelledError"
+            : "ProjectMoveCancelCompensationFailedError"
+    }
+
+    public var errorMessage: String {
+        if compensationSucceeded {
+            return "project-move: cancelled before commit boundary — no migration was committed"
+        }
+        let detail = compensationDetail ?? "compensation reported residual failures"
+        return "project-move: cancelled before commit but compensation was incomplete — \(detail). Do not assume disk/index are clean; inspect Migration History before retrying."
+    }
+
     public var errorDetails: ErrorDetails? {
-        ErrorDetails(state: "cancelled")
+        ErrorDetails(
+            state: compensationSucceeded ? "cancelled" : "cancelled_compensation_failed"
+        )
     }
 }
 
@@ -225,8 +246,12 @@ public struct RunProjectMoveOptions: Sendable {
     public var lockAlreadyHeld: Bool
     /// Cooperative cancel probe. Checked only before the commit boundary.
     public var shouldCancel: @Sendable () -> Bool
-    /// Invoked immediately after the DB commit succeeds (Phase C). Callers mark
-    /// the operation past-commit so later cancel/timeout cannot false-stop it.
+    /// Atomic transition into the non-interruptible commit sequence (Phase B/C).
+    /// Return `false` if cancel already won; `true` commits cancel-immunity.
+    /// Defaults to `{ !shouldCancel() }` when not supplied by the service.
+    public var beginCommitIfNotCancelled: @Sendable () -> Bool
+    /// Invoked after Phase C succeeds (optional bookkeeping; commit immunity is
+    /// established by `beginCommitIfNotCancelled`).
     public var onPastCommit: (@Sendable () -> Void)?
 
     public init(
@@ -242,6 +267,7 @@ public struct RunProjectMoveOptions: Sendable {
         rolledBackOf: String? = nil,
         lockAlreadyHeld: Bool = false,
         shouldCancel: @escaping @Sendable () -> Bool = { false },
+        beginCommitIfNotCancelled: (@Sendable () -> Bool)? = nil,
         onPastCommit: (@Sendable () -> Void)? = nil
     ) {
         self.src = src
@@ -256,6 +282,9 @@ public struct RunProjectMoveOptions: Sendable {
         self.rolledBackOf = rolledBackOf
         self.lockAlreadyHeld = lockAlreadyHeld
         self.shouldCancel = shouldCancel
+        // Capture shouldCancel for the default atomic probe without retaining self.
+        let cancelProbe = shouldCancel
+        self.beginCommitIfNotCancelled = beginCommitIfNotCancelled ?? { !cancelProbe() }
         self.onPastCommit = onPastCommit
     }
 }
@@ -280,6 +309,7 @@ public enum ProjectMoveOrchestrator {
         actor: MigrationLogActor,
         lockPath requestedLockPath: String? = nil,
         shouldCancel: @escaping @Sendable () -> Bool = { false },
+        beginCommitIfNotCancelled: (@Sendable () -> Bool)? = nil,
         onPastCommit: (@Sendable () -> Void)? = nil
     ) async throws -> UndoProjectMoveRunResult {
         if shouldCancel() {
@@ -311,6 +341,7 @@ public enum ProjectMoveOrchestrator {
                 rolledBackOf: reverse.originalMigrationId,
                 lockAlreadyHeld: true,
                 shouldCancel: shouldCancel,
+                beginCommitIfNotCancelled: beginCommitIfNotCancelled,
                 onPastCommit: onPastCommit
             )
         )
@@ -658,14 +689,13 @@ public enum ProjectMoveOrchestrator {
                 totalOccurrences += occurrences
             }
 
-            // Last cancel check before the commit boundary. After Phase C
-            // succeeds, cancel is ignored (onPastCommit) so client timeout
-            // reconnects by operation id rather than false-cancelling.
-            if options.shouldCancel() {
+            // Atomic cancel/commit boundary (contract 1): either cancel wins
+            // (no Phase B/C) or commit-started wins and later cancel is ignored.
+            if !options.beginCommitIfNotCancelled() {
                 throw ProjectMoveCancelledError()
             }
 
-            // Phase B: mark FS complete.
+            // Phase B/C are non-interruptible once beginCommitIfNotCancelled returned true.
             let detail = buildFsDoneDetail(
                 moveStrategy: moveStrategy,
                 perSource: perSource,
@@ -701,7 +731,6 @@ public enum ProjectMoveOrchestrator {
                 )
             }
 
-            // Commit boundary crossed — service continues even if client cancels.
             options.onPastCommit?()
 
             // Step 6: review scan for residual refs.
@@ -734,9 +763,10 @@ public enum ProjectMoveOrchestrator {
             // Compensation: pre-flight failures haven't touched the FS.
             // Cancel-before-FS also has nothing to reverse when physicalMoveApplied
             // is still false; cancel-after-FS runs full compensation.
+            let wasCancel = error is ProjectMoveCancelledError
             let preflightFailure = error is DirCollisionError
                 || error is SharedEncodingCollisionError
-                || (error is ProjectMoveCancelledError && !physicalMoveApplied && manifest.isEmpty)
+                || (wasCancel && !physicalMoveApplied && manifest.isEmpty)
             let report: CompensationReport
             if preflightFailure {
                 report = CompensationReport.empty
@@ -751,6 +781,26 @@ public enum ProjectMoveOrchestrator {
                     physicalMoveApplied: physicalMoveApplied
                 )
             }
+
+            // Contract 3: cancelled + clean compensation → clean cancelled error.
+            // Cancelled + residual compensation failures → partial/unsafe error.
+            if wasCancel {
+                let clean = compensationFullySucceeded(report)
+                let detail = clean ? nil : formatCompensationFailuresOnly(report)
+                let cancelError = ProjectMoveCancelledError(
+                    compensationSucceeded: clean,
+                    compensationDetail: detail
+                )
+                let combined = formatFailureWithCompensation(
+                    primary: cancelError.errorMessage,
+                    report: report
+                )
+                try? writer.write { db in
+                    try? MigrationLogStore.failMigration(db, id: migrationId, error: combined)
+                }
+                throw cancelError
+            }
+
             let combined = formatFailureWithCompensation(
                 primary: errorMessage(error),
                 report: report
@@ -1050,11 +1100,25 @@ private func compensate(
     return report
 }
 
+private func compensationFullySucceeded(_ report: CompensationReport) -> Bool {
+    report.patchFailed.isEmpty
+        && report.sqliteFailed.isEmpty
+        && report.dirRestoreErrors.isEmpty
+        && report.moveRevertError == nil
+        && report.geminiProjectsJsonRestored != .failed
+}
+
+private func formatCompensationFailuresOnly(_ report: CompensationReport) -> String {
+    formatFailureWithCompensation(primary: "", report: report)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
 private func formatFailureWithCompensation(
     primary: String,
     report: CompensationReport
 ) -> String {
-    var parts = [primary]
+    var parts: [String] = []
+    if !primary.isEmpty { parts.append(primary) }
     if !report.patchFailed.isEmpty, let first = report.patchFailed.first {
         parts.append(
             "rollback: \(report.patchFailed.count) file(s) could NOT be reverted " +

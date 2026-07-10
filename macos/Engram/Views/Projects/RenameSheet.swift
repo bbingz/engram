@@ -27,8 +27,8 @@ struct RenameSheet: View {
     @State private var errorMessage: String?
     @State private var retryPolicy: String = "safe"
     @State private var activeTask: Task<Void, Never>?
-    /// Stable id for cancel / reconnect / idempotent re-submit (Wave 8 long-ops).
-    @State private var activeOperationId: String?
+    /// Durable operation id across transient reconnects (Wave 8 long-ops).
+    @State private var longOpSession = ProjectLongOperationSession()
     /// True while reconnecting after timeout/disconnect (not a user cancel).
     @State private var isReconnecting = false
     /// Populated when the migration committed but left residual old-path
@@ -184,16 +184,18 @@ struct RenameSheet: View {
                     .buttonStyle(.borderedProminent)
                 } else {
                     Button("Cancel") {
-                        if isExecuting, let operationId = activeOperationId {
-                            // Cooperative service cancel only — do not cancel the
-                            // awaiting task so a cancelled-before-commit result
-                            // (or post-commit completion) can still surface.
+                        if isExecuting || longOpSession.blocksDuplicateSubmit,
+                           let operationId = longOpSession.operationId
+                        {
+                            // Explicit cooperative cancel only — never cancel the
+                            // awaiting task (would discard partial/reconnect state).
                             Task {
                                 _ = try? await serviceClient.cancelProjectMoveBatch(
                                     operationId: operationId
                                 )
                             }
                         } else {
+                            longOpSession.reset()
                             dismiss()
                         }
                     }
@@ -207,20 +209,27 @@ struct RenameSheet: View {
                         // Preview in this state so users don't have to
                         // move their hand to the mouse after typing.
                         .keyboardShortcut(.defaultAction)
-                        .disabled(!isPathValid)
+                        .disabled(!isPathValid || longOpSession.blocksDuplicateSubmit)
                     } else {
-                        Button("Rename") {
-                            // Duplicate-submit guard: button already disabled while executing.
-                            activeTask = Task { await runRename() }
+                        if longOpSession.blocksDuplicateSubmit && !isExecuting {
+                            Button("Resume / Check Status") {
+                                activeTask = Task { await runRename() }
+                            }
+                            .keyboardShortcut(.defaultAction)
+                            .buttonStyle(.borderedProminent)
+                        } else {
+                            Button("Rename") {
+                                activeTask = Task { await runRename() }
+                            }
+                            .keyboardShortcut(.defaultAction)
+                            .buttonStyle(.borderedProminent)
+                            .disabled(
+                                isExecuting
+                                    || isPreviewLoading
+                                    || previewStale
+                                    || longOpSession.blocksDuplicateSubmit
+                            )
                         }
-                        .keyboardShortcut(.defaultAction)
-                        .buttonStyle(.borderedProminent)
-                        // Round 4: disable on (a) executing, (b) preview
-                        // still in flight — prevents concurrent Task
-                        // spawn (code-reviewer I4) — (c) stale preview
-                        // after path edit, so user can't commit against
-                        // numbers that no longer reflect the input.
-                        .disabled(isExecuting || isPreviewLoading || previewStale)
                     }
                 }
             }
@@ -539,36 +548,41 @@ struct RenameSheet: View {
         residualRefCount = nil
         isReconnecting = false
         isExecuting = true
-        let operationId = UUID().uuidString
-        activeOperationId = operationId
         defer {
             isExecuting = false
             isReconnecting = false
             activeTask = nil
-            activeOperationId = nil
         }
-        let request = EngramServiceProjectMoveRequest(
-            src: selectedCwd,
-            dst: newPath,
-            dryRun: false,
-            force: false,
-            auditNote: nil,
-            actor: "app",
-            operationId: operationId
-        )
         do {
-            let res = try await executeMoveWithReconnect(request)
-            if Task.isCancelled { return }
+            let res = try await ProjectLongOperationRunner.execute(
+                session: &longOpSession,
+                isReconnectable: { error in
+                    if projectMoveIsReconnectableError(error) {
+                        isReconnecting = true
+                        return true
+                    }
+                    return false
+                }
+            ) { operationId in
+                try await serviceClient.projectMove(
+                    EngramServiceProjectMoveRequest(
+                        src: selectedCwd,
+                        dst: newPath,
+                        dryRun: false,
+                        force: false,
+                        auditNote: nil,
+                        actor: "app",
+                        operationId: operationId
+                    )
+                )
+            }
+            isReconnecting = false
             if res.state == "cancelled" {
                 errorMessage = projectMoveCancelledBeforeCommitMessage(kind: "Rename")
                 retryPolicy = "safe"
                 return
             }
             if res.state == "committed" {
-                // Gemini follow-up high: don't auto-dismiss if the backend
-                // flagged residual own-scope refs. Swap Rename button for
-                // a Close button so the user explicitly acknowledges the
-                // warning before the sheet closes.
                 if res.review.own.isEmpty {
                     NotificationCenter.default.post(name: .projectsDidChange, object: nil)
                     dismiss()
@@ -579,24 +593,20 @@ struct RenameSheet: View {
                 errorMessage = "Unexpected state: \(res.state)"
             }
         } catch {
-            if Task.isCancelled { return }
-            errorMessage = projectMoveErrorMessage(error)
-            retryPolicy = projectMoveRetryPolicy(error)
+            isReconnecting = false
+            if projectMoveIsCancelCompensationFailure(error) {
+                errorMessage = projectMoveCancelCompensationFailedMessage(
+                    projectMoveErrorMessage(error)
+                )
+                retryPolicy = "never"
+            } else {
+                errorMessage = projectMoveErrorMessage(error)
+                if longOpSession.blocksDuplicateSubmit {
+                    errorMessage = (errorMessage ?? "") + "\n" + projectMoveResumeAvailableMessage()
+                }
+                retryPolicy = projectMoveRetryPolicy(error)
+            }
             errorDetails = projectMoveErrorDetails(error)
-        }
-    }
-
-    private func executeMoveWithReconnect(
-        _ request: EngramServiceProjectMoveRequest
-    ) async throws -> EngramServiceProjectMoveResult {
-        do {
-            return try await serviceClient.projectMove(request)
-        } catch {
-            guard projectMoveIsReconnectableError(error) else { throw error }
-            isReconnecting = true
-            defer { isReconnecting = false }
-            // Same operationId: service joins in-flight or returns cached result.
-            return try await serviceClient.projectMove(request)
         }
     }
 }

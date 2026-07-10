@@ -93,7 +93,8 @@ public enum RetryPolicyClassifier {
              "UndoStaleError",
              "UndoNotAllowedError",
              "InvalidUtf8Error",
-             "ProjectMoveCancelledError":
+             "ProjectMoveCancelledError",
+             "ProjectMoveCancelCompensationFailedError":
             return .never
         default:
             return .never

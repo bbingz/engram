@@ -53,9 +53,12 @@ func projectMoveErrorDetails(_ error: Error) -> ProjectMoveServiceErrorDetails? 
 /// commit boundary. Re-submit the same `operationId` instead of treating this as
 /// user cancel (Wave 8 long-ops).
 func projectMoveIsReconnectableError(_ error: Error) -> Bool {
+    if error is CancellationError {
+        // Outer request detach is reconnectable — work continues server-side.
+        return true
+    }
     guard let serviceError = error as? EngramServiceError else {
         let ns = error as NSError
-        // URL/socket style timeouts sometimes surface as Cocoa/POSIX errors.
         if ns.domain == NSPOSIXErrorDomain && (ns.code == 60 || ns.code == 57 || ns.code == 54) {
             return true
         }
@@ -73,14 +76,40 @@ func projectMoveIsReconnectableError(_ error: Error) -> Bool {
     }
 }
 
-/// Precise cancelled-before-commit copy (not residual-refs, not transport failure).
+/// Precise cancelled-before-commit copy — only when compensation fully succeeded.
 func projectMoveCancelledBeforeCommitMessage(kind: String = "Migration") -> String {
     "\(kind) cancelled before commit — no files or index rows were committed. Safe to retry."
+}
+
+/// Cancel after FS mutation with incomplete compensation — never claim clean/safe.
+func projectMoveCancelCompensationFailedMessage(_ detail: String) -> String {
+    let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty {
+        return "Cancelled before commit, but rollback did not fully restore disk/index state. Do not assume it is safe to retry — open Migration History and inspect residual paths first."
+    }
+    return "Cancelled before commit, but compensation was incomplete (\(trimmed)). Do not assume disk/index are clean; inspect Migration History before retrying."
+}
+
+func projectMoveIsCancelCompensationFailure(_ error: Error) -> Bool {
+    if let serviceError = error as? EngramServiceError,
+       case .commandFailed(let name, _, _, let details) = serviceError
+    {
+        if name == "ProjectMoveCancelCompensationFailedError" { return true }
+        if case .string(let state)? = details?["state"], state == "cancelled_compensation_failed" {
+            return true
+        }
+    }
+    let text = projectMoveErrorMessage(error).lowercased()
+    return text.contains("compensation was incomplete") || text.contains("cancelled_compensation_failed")
 }
 
 /// Shown while re-submitting the same operationId after timeout/disconnect.
 func projectMoveReconnectingMessage() -> String {
     "Connection lost after the operation may have committed — reconnecting by operation id (not cancelling)…"
+}
+
+func projectMoveResumeAvailableMessage() -> String {
+    "Still tracking an unfinished operation. Resume/check status uses the same operation id — a new submit is blocked until it resolves or you reset."
 }
 
 private extension Dictionary where Key == String, Value == EngramServiceJSONValue {
