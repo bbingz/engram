@@ -35,6 +35,15 @@ public enum ServiceLogger {
         self.ring = ring
     }
 
+    /// Scoped test seam for the process-wide sink. Production installs once at
+    /// startup; tests must restore the previous sink when they finish.
+    @discardableResult
+    static func replaceRingForTests(_ newRing: ServiceLogRing?) -> ServiceLogRing? {
+        let previous = ring
+        ring = newRing
+        return previous
+    }
+
     private static func logger(for category: ServiceLogCategory) -> os.Logger {
         loggers[category]!
     }

@@ -179,15 +179,17 @@ remaining 19. No row was overturned or accepted-as-design in this closeout.
 | `ai_audit_log` desensitization design | **Moved / already on** roadmap Decision pending (12-row table) |
 | FTS full-rebuild progress UI | **Closed as not implementation-ready** — palette still excludes rebuild; product-gated UX, not an open engineering defect |
 
-## Backlog truth verification (docs-only mechanical gates)
+## Backlog truth verification (historical Round 4 docs-only gates)
 
-Commands for the independent Codex gate (run from repo root after this commit).
+Commands for the independent Codex gate over the fixed Round 4 docs range.
 These assert **exact** 43 unique terminal rows, TODO 0, follow-up 0, roadmap 12,
-exactly seven changed paths vs base, and range `git diff --check` (not a
-vacuous clean-worktree-only check).
+exactly seven docs-owned paths in `c983a759..ee98af68`, and range
+`git diff --check`. Later Task 7 commits on `main` are intentionally outside
+this historical ownership proof.
 
 ```bash
 BASE=c983a759
+DOCS_TIP=ee98af68
 LEDGER=docs/reviews/2026-07-10-wave7-remediation-closeout.md
 
 # (1) Exactly 43 unique terminal ledger IDs; zero residual-open tokens
@@ -242,7 +244,8 @@ PY
 python3 - <<'PY'
 import subprocess
 base = "c983a759"
-out = subprocess.check_output(["git","diff","--name-only",f"{base}..HEAD"], text=True)
+tip = "ee98af68"
+out = subprocess.check_output(["git","diff","--name-only",f"{base}..{tip}"], text=True)
 paths = [p for p in out.splitlines() if p.strip()]
 expected = {
   "docs/TODO.md",
@@ -259,7 +262,7 @@ print("seven paths:", sorted(paths))
 PY
 
 # (6) Range whitespace/conflict markers check (not vacuous clean-worktree only)
-git diff --check c983a759..HEAD
+git diff --check "$BASE..$DOCS_TIP"
 ```
 
 Mechanical counts expected:
@@ -269,8 +272,8 @@ Wave 7 audit ledger: 43 unique terminal / 0 residual-open
 Engineering TODO: 0
 Engineering follow-ups: 0
 Roadmap decisions: 12 visible, not misreported as implemented
-Owned paths vs c983a759: exactly 7
-git diff --check c983a759..HEAD: clean
+Historical owned paths in c983a759..ee98af68: exactly 7
+git diff --check c983a759..ee98af68: clean
 Remote CI URL: none yet (branch not pushed; Task 7 pending)
 ```
 

@@ -83,8 +83,9 @@ List historical AI coding assistant sessions. Supports filtering by tool source,
 | until | string | no | End time (ISO 8601) |
 | limit | number | no | Max results to return. Default 20, max 100 |
 | offset | number | no | Pagination offset. Default 0 |
+| include_all | boolean | no | Include single-turn and automated sessions in addition to human-driven sessions. Default `false` |
 
-**Notes:** Returns session metadata (id, source, startTime, endTime, cwd, project, model, messageCount, userMessageCount, summary). Results respect the server's `noiseFilter` setting (tier-based filtering). Limit is clamped to 100 even if a higher value is passed. **Output:** `structuredContent` is `{ sessions, total }`; declared via `outputSchema` in `tools/list`.
+**Notes:** Returns session metadata (id, source, startTime, endTime, cwd, project, model, messageCount, userMessageCount, summary). By default, results are limited to human-driven sessions with a clear human instruction. Set `include_all: true` to include single-turn and automated sessions. Limit is clamped to 100 even if a higher value is passed. **Output:** `structuredContent` is `{ sessions, total }`; declared via `outputSchema` in `tools/list`.
 
 ---
 

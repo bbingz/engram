@@ -132,6 +132,31 @@ final class OrchestratorTests: XCTestCase {
         }
     }
 
+    func testArchivedDryRunDoesNotCreateMissingDestinationParents() async throws {
+        let (src, _) = try makeProjectFixture(name: "archive-dry-run")
+        let archiveRoot = tempRoot.appendingPathComponent("_archive", isDirectory: true)
+        let dst = archiveRoot.appendingPathComponent("cold/archive-dry-run", isDirectory: true)
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: RunProjectMoveOptions(
+                src: src,
+                dst: dst.path,
+                dryRun: true,
+                archived: true,
+                homeDirectory: tempRoot,
+                lockPath: lockPath
+            )
+        )
+
+        XCTAssertEqual(result.state, .dryRun)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: archiveRoot.path),
+            "archive dry-run must not provision any destination parent"
+        )
+    }
+
     func testDryRunPreviewsGeminiProjectNameAndObservedIflowDirsWithoutSideEffects() async throws {
         let (src, _) = try makeProjectFixture(name: "WebSite_Gemini")
         let dst = tempRoot.appendingPathComponent("mac_Book_Pro_Debug").path

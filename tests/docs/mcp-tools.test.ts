@@ -13,4 +13,14 @@ describe('MCP tools documentation', () => {
 
     expect(documented).toEqual([...SOURCE_NAMES]);
   });
+
+  it('documents list_sessions human-driven defaults and include_all override', () => {
+    const doc = readFileSync(join(process.cwd(), 'docs/mcp-tools.md'), 'utf8');
+    const section =
+      doc.split('## list_sessions', 2)[1]?.split('\n---', 1)[0] ?? '';
+
+    expect(section).toContain('| include_all | boolean | no |');
+    expect(section).toContain('human-driven');
+    expect(section).not.toContain('noiseFilter');
+  });
 });

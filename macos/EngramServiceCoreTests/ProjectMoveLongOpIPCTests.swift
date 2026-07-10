@@ -22,6 +22,9 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
 
     func testHandlerPreflightFailureIsTerminalForSameOperationId_repro() async throws {
         try await withTemporaryHome { home in
+            let logRing = ServiceLogRing(capacity: 100)
+            let previousRing = ServiceLogger.replaceRingForTests(logRing)
+            defer { ServiceLogger.replaceRingForTests(previousRing) }
             let paths = try makePaths()
             try migrateDatabase(at: paths.database.path)
             let gate = try ServiceWriterGate(
@@ -83,6 +86,18 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
             }
             XCTAssertEqual(error2.name, error1.name)
             XCTAssertEqual(error2.message, error1.message)
+
+            let failureLogged = await waitUntil(timeout: 5) {
+                let messages = await logRing.snapshot(category: "writer").lines.map(\.message)
+                return messages.contains { $0.hasPrefix("projectMove failed") }
+            }
+            XCTAssertTrue(failureLogged)
+            let messages = await logRing.snapshot(category: "writer").lines.map(\.message)
+            XCTAssertEqual(
+                messages.filter { $0.hasPrefix("projectMove failed") }.count,
+                1,
+                "cached preflight failure must not replay the terminal log"
+            )
         }
     }
 
@@ -159,6 +174,9 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
                 stallWhileHoldingGate: { await stallBox.waitUntilReleased() },
                 batchRunOverride: nil
             )
+            let logRing = ServiceLogRing(capacity: 100)
+            let previousRing = ServiceLogger.replaceRingForTests(logRing)
+            defer { ServiceLogger.replaceRingForTests(previousRing) }
             let handler = EngramServiceCommandHandler(writerGate: gate, longOpHooks: hooks)
             let operationId = "gate-hold-op"
             let writeEntered = WriteEnteredFlag()
@@ -222,6 +240,19 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
                     || ProjectMoveBatchCancelRegistry.shared.hasTerminalForTests(operationId)
             }
             XCTAssertTrue(producerSettled, "producer must reach terminal before test ends")
+
+            let terminalLogged = await waitUntil(timeout: 5) {
+                let messages = await logRing.snapshot(category: "writer").lines.map(\.message)
+                return messages.contains { $0.hasPrefix("projectMove finished") }
+            }
+            XCTAssertTrue(terminalLogged, "detached producer must log its real terminal success")
+            let messages = await logRing.snapshot(category: "writer").lines.map(\.message)
+            XCTAssertEqual(messages.filter { $0.hasPrefix("projectMove finished") }.count, 1)
+            XCTAssertEqual(
+                messages.filter { $0.hasPrefix("projectMove failed") }.count,
+                0,
+                "client waiter cancellation must not be logged as operation failure"
+            )
         }
     }
 
@@ -377,6 +408,9 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
 
     func testHandlerUnsafeBatchCachesCancelUnsafeFieldsOnReconnect_repro() async throws {
         try await withTemporaryHome { home in
+            let logRing = ServiceLogRing(capacity: 100)
+            let previousRing = ServiceLogger.replaceRingForTests(logRing)
+            defer { ServiceLogger.replaceRingForTests(previousRing) }
             let paths = try makePaths()
             try migrateDatabase(at: paths.database.path)
             let gate = try ServiceWriterGate(
@@ -441,6 +475,18 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
             )
             let secondJSON = try JSONDecoder().decode(EngramServiceJSONValue.self, from: secondData)
             assertCancelUnsafe(secondJSON)
+
+            let successLogged = await waitUntil(timeout: 5) {
+                let messages = await logRing.snapshot(category: "writer").lines.map(\.message)
+                return messages.contains { $0.hasPrefix("projectMoveBatch finished") }
+            }
+            XCTAssertTrue(successLogged)
+            let messages = await logRing.snapshot(category: "writer").lines.map(\.message)
+            XCTAssertEqual(
+                messages.filter { $0.hasPrefix("projectMoveBatch finished") }.count,
+                1,
+                "same-ID reconnect must not replay the batch terminal log"
+            )
         }
     }
 

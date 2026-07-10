@@ -705,11 +705,14 @@ final class EngramServiceIPCTests: XCTestCase {
 
         for command in ["projectMove", "projectArchive", "projectUndo", "projectMoveBatch"] {
             XCTAssertTrue(migrationSource.contains("\"\(command) requested"), "\(command) must log entry")
-            XCTAssertTrue(dispatchSource.contains("\"\(command) finished"), "\(command) must log success")
-            XCTAssertTrue(dispatchSource.contains("\"\(command)\""), "\(command) must be admitted to failure logging")
+            XCTAssertFalse(
+                dispatchSource.contains("\"\(command) finished"),
+                "request waiter must not own \(command) terminal success logging"
+            )
         }
-        XCTAssertTrue(dispatchSource.contains("ServiceLogger.notice("))
-        XCTAssertTrue(dispatchSource.contains("ServiceLogger.error(\"\\(command) failed\""))
+        XCTAssertTrue(migrationSource.contains("logProjectMigrationSuccess(commandName:"))
+        XCTAssertTrue(migrationSource.contains("logProjectMigrationFailure(commandName:"))
+        XCTAssertFalse(dispatchSource.contains("logProjectMigrationFailure(command:"))
     }
 
     func testProjectMoveResultPayloadIsCappedBelowFrameLimit() throws {

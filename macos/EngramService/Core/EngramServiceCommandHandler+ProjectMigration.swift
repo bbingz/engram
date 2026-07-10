@@ -71,7 +71,9 @@ extension EngramServiceCommandHandler {
         do {
             try validateProjectMovePaths(src: request.src, dst: request.dst)
         } catch {
-            throw terminalizeAndCache(operationId: operationId, error: error)
+            let terminal = terminalizeAndCache(operationId: operationId, error: error)
+            logProjectMigrationFailure(commandName: "projectMove", error: terminal)
+            throw terminal
         }
 
         return try await produceWithGate(
@@ -149,7 +151,9 @@ extension EngramServiceCommandHandler {
             )
             try validateProjectPathConfined(suggestion.dst, label: "archive destination")
         } catch {
-            throw terminalizeAndCache(operationId: operationId, error: error)
+            let terminal = terminalizeAndCache(operationId: operationId, error: error)
+            logProjectMigrationFailure(commandName: "projectArchive", error: terminal)
+            throw terminal
         }
 
         return try await produceWithGate(
@@ -269,23 +273,31 @@ extension EngramServiceCommandHandler {
                 }
             }
         } catch {
-            throw terminalizeAndCache(operationId: operationId, error: error)
+            let terminal = terminalizeAndCache(operationId: operationId, error: error)
+            logProjectMigrationFailure(commandName: "projectMoveBatch", error: terminal)
+            throw terminal
         }
 
         guard let operationId else {
-            let gateResult = try await writerGate.performWriteCommand(name: "projectMoveBatch") { writer in
-                let result = await Batch.run(
-                    document,
-                    writer: writer,
-                    overrides: BatchOverrides(
-                        homeDirectory: homeDirectoryURL(),
-                        force: request.force
-                    ),
-                    shouldCancel: { Task.isCancelled }
-                )
-                return encodeBatchResult(result)
+            do {
+                let gateResult = try await writerGate.performWriteCommand(name: "projectMoveBatch") { writer in
+                    let result = await Batch.run(
+                        document,
+                        writer: writer,
+                        overrides: BatchOverrides(
+                            homeDirectory: homeDirectoryURL(),
+                            force: request.force
+                        ),
+                        shouldCancel: { Task.isCancelled }
+                    )
+                    return encodeBatchResult(result)
+                }
+                logProjectMigrationSuccess(commandName: "projectMoveBatch")
+                return gateResult
+            } catch {
+                logProjectMigrationFailure(commandName: "projectMoveBatch", error: error)
+                throw error
             }
-            return gateResult
         }
 
         // Producer owns the gate for its full lifetime (finding 8).
@@ -323,10 +335,6 @@ extension EngramServiceCommandHandler {
                     )
                 }
                 let batch = gateResult.value
-                ServiceLogger.notice(
-                    "projectMoveBatch finished completed=\(batch.completed.count) failed=\(batch.failed.count) cancelled=\(batch.cancelled) unsafe=\(batch.cancelUnsafe)",
-                    category: .writer
-                )
                 // Preserve cancel_unsafe / cancel_error_* in the success payload so UI
                 // never maps incomplete compensation to "safe before commit" wording.
                 let encoded = encodeBatchResult(batch)
@@ -335,19 +343,23 @@ extension EngramServiceCommandHandler {
                         operationId: operationId,
                         payload: data
                     )
-                } else {
-                    failOperation(
-                        operationId: operationId,
-                        error: EngramServiceError.commandFailed(
-                            name: "ProjectMoveBatchEncodeError",
-                            message: "failed to encode batch result",
-                            retryPolicy: "never",
-                            details: nil
-                        )
+                    logProjectMigrationSuccess(
+                        commandName: "projectMoveBatch",
+                        detail: "completed=\(batch.completed.count) failed=\(batch.failed.count) cancelled=\(batch.cancelled) unsafe=\(batch.cancelUnsafe)"
                     )
+                } else {
+                    let error = EngramServiceError.commandFailed(
+                        name: "ProjectMoveBatchEncodeError",
+                        message: "failed to encode batch result",
+                        retryPolicy: "never",
+                        details: nil
+                    )
+                    logProjectMigrationFailure(commandName: "projectMoveBatch", error: error)
+                    failOperation(operationId: operationId, error: error)
                 }
                 ProjectMoveBatchCancelRegistry.shared.clear(operationId: operationId)
             } catch {
+                logProjectMigrationFailure(commandName: "projectMoveBatch", error: error)
                 failOperation(operationId: operationId, error: error)
             }
         }
@@ -372,12 +384,19 @@ extension EngramServiceCommandHandler {
     ) async throws -> ServiceWriterGateResult<EngramServiceProjectMoveResult> {
         guard let operationId else {
             // No operation id: run under gate on the request task (legacy path).
-            return try await writerGate.performWriteCommand(name: commandName) { writer in
-                do {
-                    return map(try await body(writer))
-                } catch let error as ProjectMoveCancelledError {
-                    return try mapCancelled(error)
+            do {
+                let result = try await writerGate.performWriteCommand(name: commandName) { writer in
+                    do {
+                        return map(try await body(writer))
+                    } catch let error as ProjectMoveCancelledError {
+                        return try mapCancelled(error)
+                    }
                 }
+                logProjectMigrationSuccess(commandName: commandName)
+                return result
+            } catch {
+                logProjectMigrationFailure(commandName: commandName, error: error)
+                throw error
             }
         }
 
@@ -391,15 +410,19 @@ extension EngramServiceCommandHandler {
                     return try await body(writer)
                 }
                 let mapped = map(gateResult.value)
-                completeOperation(operationId: operationId, result: mapped)
+                try completeOperation(operationId: operationId, result: mapped)
+                logProjectMigrationSuccess(commandName: commandName)
             } catch let error as ProjectMoveCancelledError {
                 do {
                     let mapped = try mapCancelled(error)
-                    completeOperation(operationId: operationId, result: mapped)
+                    try completeOperation(operationId: operationId, result: mapped)
+                    logProjectMigrationSuccess(commandName: commandName)
                 } catch {
+                    logProjectMigrationFailure(commandName: commandName, error: error)
                     failOperation(operationId: operationId, error: error)
                 }
             } catch {
+                logProjectMigrationFailure(commandName: commandName, error: error)
                 failOperation(operationId: operationId, error: error)
             }
         }
@@ -416,6 +439,15 @@ extension EngramServiceCommandHandler {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func logProjectMigrationSuccess(commandName: String, detail: String? = nil) {
+        let suffix = detail.map { " \($0)" } ?? ""
+        ServiceLogger.notice("\(commandName) finished\(suffix)", category: .writer)
+    }
+
+    private static func logProjectMigrationFailure(commandName: String, error: Error) {
+        ServiceLogger.error("\(commandName) failed", category: .writer, error: error)
     }
 
     private static func shouldStop(operationId: String?) -> Bool {
@@ -518,14 +550,13 @@ extension EngramServiceCommandHandler {
     private static func completeOperation(
         operationId: String?,
         result: EngramServiceProjectMoveResult
-    ) {
+    ) throws {
         guard let operationId else { return }
-        guard let data = try? JSONEncoder().encode(result) else {
-            _ = terminalizeAndCache(
-                operationId: operationId,
-                error: EngramServiceError.invalidRequest(message: "failed to encode project move result")
-            )
-            return
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(result)
+        } catch {
+            throw EngramServiceError.invalidRequest(message: "failed to encode project move result")
         }
         ProjectMoveBatchCancelRegistry.shared.complete(operationId: operationId, payload: data)
         ProjectMoveBatchCancelRegistry.shared.clear(operationId: operationId)

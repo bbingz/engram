@@ -40,7 +40,7 @@
 | M07 | CONFIRMED-FIXED | `bdc95157`/`90b70690` | `testGetMemoryWarningNamesProviderFailureNotGenericProviderMissing` | get_memory warning names actual failure | — |
 | M08 | CONFIRMED-FIXED | `bdc95157`/`90b70690` | `testMCPDatabaseUsesSharedEmbeddingBreakerWithoutPrivateBypass` | shared `EmbeddingGuardrails.sharedBreaker` | — |
 | M09 | CONFIRMED-FIXED | `bdc95157`/`90b70690` | `testFullCorpusSemanticTopKPrefersOldExactMatchOutsideFormerRecencyCap` | full-corpus batched top-K; recency not eligibility | latency remains telemetry-only |
-| M10 | CONFIRMED-FIXED | `12d3c081` | README + mcp-tools notes | human-driven default / `include_all` | Full mcp-tools rewrite partial |
+| M10 | CONFIRMED-FIXED | `12d3c081` + Task 7 correction | `tests/docs/mcp-tools.test.ts` | human-driven default / `include_all`; stale `noiseFilter` claim removed | Broader reference rewrite is out of scope; audited mismatch closed |
 | M11 | CONFIRMED-FIXED | `130ed361`/`19c3ece9` | `testGetSessionRolesSchemaDocumentsUserAssistantDefault_repro` | default roles user/assistant only | — |
 | M12 | CONFIRMED-FIXED | `130ed361`/`19c3ece9` | `testExportPreservesTranscriptTooLargeStructuredCode_repro` | `transcriptTooLarge` preserved end-to-end | — |
 | M13 | CONFIRMED-FIXED | `6fe46fd7`/`d90aad5f` | `EmbeddingSettingsKeychainTests` migration suite | KeychainSecretStore + verify-before-clear migration | — |
