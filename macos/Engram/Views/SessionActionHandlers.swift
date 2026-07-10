@@ -94,13 +94,26 @@ struct SessionActionHandlers {
         }
     }
 
-    func setFavorite(_ session: Session, favorite: Bool) {
+    /// Write favorite membership, then reload list surfaces.
+    /// - Parameter completion: Invoked on the main actor with `true` after a
+    ///   successful service write + reload, or `false` on failure. Optional so
+    ///   parent/Timeline call sites can ignore it; expanded child rows use it
+    ///   to apply local `isFavorite` only after success.
+    func setFavorite(
+        _ session: Session,
+        favorite: Bool,
+        completion: (@MainActor (Bool) -> Void)? = nil
+    ) {
         Task {
             do {
                 try await serviceClient.setFavorite(sessionId: session.id, favorite: favorite)
                 onStatus(favorite ? "Added to favorites" : "Removed from favorites")
+                // Reload so Browse flips labels and Starred drops removed rows.
+                await reload()
+                completion?(true)
             } catch {
                 onStatus("Favorite failed: \(error.localizedDescription)")
+                completion?(false)
             }
         }
     }

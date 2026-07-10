@@ -45,4 +45,37 @@ final class BrowseReloadCoalescerTests: XCTestCase {
         // 401 rows (a dedup seam) rounds up to the next whole page.
         XCTAssertEqual(BrowseReloadCoalescer.refreshLimit(loadedCount: 401, pageSize: 200), 600)
     }
+
+    // MARK: - SessionsPage load generation (favorite reload vs filter change)
+
+    func testStaleFavoriteReloadDoesNotOverwriteNewerFilterLoad() {
+        // Favorite mutation on filter A starts generation 1; user switches to
+        // filter B which advances to generation 2. When A finishes last, drop it.
+        XCTAssertTrue(
+            SessionsPageView.shouldApplyLoad(resultGeneration: 2, currentGeneration: 2),
+            "newest filter-B load must apply"
+        )
+        XCTAssertFalse(
+            SessionsPageView.shouldApplyLoad(resultGeneration: 1, currentGeneration: 2),
+            "stale favorite reload for filter A must not overwrite filter B"
+        )
+    }
+
+    func testCancelledLoadDoesNotApplyEvenWhenGenerationMatches() {
+        XCTAssertFalse(
+            SessionsPageView.shouldApplyLoad(
+                resultGeneration: 3,
+                currentGeneration: 3,
+                isCancelled: true
+            ),
+            "cancelled favoriteReloadTask must not publish results"
+        )
+        XCTAssertTrue(
+            SessionsPageView.shouldApplyLoad(
+                resultGeneration: 3,
+                currentGeneration: 3,
+                isCancelled: false
+            )
+        )
+    }
 }

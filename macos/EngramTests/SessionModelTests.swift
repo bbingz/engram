@@ -235,4 +235,291 @@ final class SessionModelTests: XCTestCase {
         set.insert(c)
         XCTAssertEqual(set.count, 2)
     }
+
+    // MARK: - M19 favorite flag + toggle presentation
+
+    func testIsFavoriteDefaultsFalseOnDecode() throws {
+        let session = makeSession()
+        XCTAssertFalse(session.isFavorite)
+    }
+
+    func testApplyingFavoriteIdsMarksMatchingSessions() throws {
+        let a = makeSession(id: "a")
+        let b = makeSession(id: "b")
+        let c = makeSession(id: "c")
+        let marked = Session.applyingFavoriteIds([a, b, c], favoriteIds: ["a", "c"])
+        XCTAssertEqual(marked.map(\.id), ["a", "b", "c"])
+        XCTAssertTrue(marked[0].isFavorite)
+        XCTAssertFalse(marked[1].isFavorite)
+        XCTAssertTrue(marked[2].isFavorite)
+    }
+
+    func testFavoriteToggleTargetIsSymmetricNegation() throws {
+        var session = makeSession(id: "starred")
+        session.isFavorite = true
+        XCTAssertFalse(session.favoriteToggleTarget)
+        session.isFavorite = false
+        XCTAssertTrue(session.favoriteToggleTarget)
+    }
+
+    func testFavoriteMenuLabelReflectsAddVersusRemove() throws {
+        XCTAssertEqual(Session.favoriteMenuLabel(isFavorite: false), "Add to Favorites")
+        XCTAssertEqual(Session.favoriteMenuLabel(isFavorite: true), "Remove from Favorites")
+        XCTAssertEqual(Session.favoriteAccessibilityLabel(isFavorite: false), "Add to favorites")
+        XCTAssertEqual(Session.favoriteAccessibilityLabel(isFavorite: true), "Remove from favorites")
+    }
+
+    // MARK: - M19 production wiring (source contract)
+
+    func testBrowseStarredAndChildCardsWireIsFavoriteSourceTruth() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // EngramTests
+            .deletingLastPathComponent() // macos
+            .deletingLastPathComponent() // repo root
+
+        let sessionsPage = try String(
+            contentsOfFile: root.appendingPathComponent("macos/Engram/Views/Pages/SessionsPageView.swift").path,
+            encoding: .utf8
+        )
+        let card = try String(
+            contentsOfFile: root.appendingPathComponent("macos/Engram/Components/ExpandableSessionCard.swift").path,
+            encoding: .utf8
+        )
+        let handlers = try String(
+            contentsOfFile: root.appendingPathComponent("macos/Engram/Views/SessionActionHandlers.swift").path,
+            encoding: .utf8
+        )
+
+        // Browse + Starred: one toggle, target from session.isFavorite (not page filter).
+        XCTAssertTrue(
+            sessionsPage.contains("favorite: session.favoriteToggleTarget"),
+            "SessionsPageView must pass favoriteToggleTarget for both Browse and Starred"
+        )
+        XCTAssertFalse(
+            sessionsPage.contains("onToggleFavorite: favoritesOnly ? nil"),
+            "Starred must not drop the toggle"
+        )
+        XCTAssertTrue(
+            sessionsPage.contains("Session.applyingFavoriteIds"),
+            "parent rows must be annotated from the favorites id set"
+        )
+        XCTAssertTrue(
+            sessionsPage.contains("favoriteReloadTask"),
+            "favorite-triggered reload must be tracked so filter changes can cancel it"
+        )
+        XCTAssertTrue(
+            sessionsPage.contains("shouldApplyLoad"),
+            "load pipeline must generation-gate stale favorite reloads"
+        )
+        // Completion-aware path: page forwards @MainActor Bool completion into setFavorite.
+        XCTAssertTrue(
+            sessionsPage.contains("onToggleFavorite: { session, completion in")
+                || sessionsPage.contains("session, completion in"),
+            "SessionsPageView must accept the completion-aware onToggleFavorite signature"
+        )
+        XCTAssertTrue(
+            sessionsPage.contains("completion: completion"),
+            "SessionsPageView must forward completion into SessionActionHandlers.setFavorite"
+        )
+
+        let timelinePage = try String(
+            contentsOf: root
+                .appendingPathComponent("macos/Engram/Views/Pages/TimelinePageView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(
+            timelinePage.contains("favorite: session.favoriteToggleTarget"),
+            "Timeline must use the same symmetric favorite target"
+        )
+        XCTAssertTrue(
+            timelinePage.contains("completion: completion"),
+            "Timeline must forward completion so expanded child state updates on success"
+        )
+
+        // Child cards: same favorites-table source as parents; menu uses isFavorite.
+        XCTAssertTrue(
+            card.contains("Session.applyingFavoriteIds(confirmed, favoriteIds: favoriteIds)")
+                || (card.contains("applyingFavoriteIds") && card.contains("listFavorites")),
+            "loadChildren must annotate child rows from listFavorites, not leave isFavorite=false"
+        )
+        XCTAssertTrue(
+            card.contains("isFavorite: session.isFavorite"),
+            "parent and child menu items must read Session.isFavorite for labels/targets"
+        )
+        XCTAssertTrue(
+            card.contains("Session.favoriteMenuLabel(isFavorite: isFavorite)"),
+            "menu labels must use isFavorite (Add vs Remove), not a fixed Add string"
+        )
+        // Completion-aware: local child isFavorite updates only after service success.
+        XCTAssertTrue(
+            card.contains("@escaping @MainActor (Bool) -> Void")
+                || card.contains("@MainActor (Bool) -> Void"),
+            "onToggleFavorite must be completion-aware with a MainActor Bool result"
+        )
+        XCTAssertTrue(
+            card.contains("applyingChildFavoriteIfSucceeded") && card.contains("toggleChildFavorite"),
+            "child favorite toggle must apply local state only via success-gated helper"
+        )
+        XCTAssertFalse(
+            card.contains("Optimistically flip local child"),
+            "must not optimistically flip local child isFavorite before service success"
+        )
+
+        // Mutation path: reload then completion(true); catch → completion(false).
+        XCTAssertTrue(
+            handlers.contains("await reload()"),
+            "setFavorite success must reload list surfaces"
+        )
+        XCTAssertTrue(
+            handlers.contains("completion?(true)"),
+            "setFavorite must invoke completion(true) after successful write+reload"
+        )
+        XCTAssertTrue(
+            handlers.contains("completion?(false)"),
+            "setFavorite must invoke completion(false) on catch so child state can stay put"
+        )
+        XCTAssertTrue(
+            handlers.contains("@MainActor (Bool) -> Void"),
+            "setFavorite completion must be @MainActor (Bool) -> Void"
+        )
+    }
+
+    // MARK: - M19 expanded-child favorite local state (post-toggle)
+
+    func testApplyingChildFavoriteUpdatesConfirmedAndSuggestedForSymmetricToggle() throws {
+        var confirmed = [makeSession(id: "child-a"), makeSession(id: "child-b")]
+        confirmed[0].isFavorite = false
+        confirmed[1].isFavorite = true
+        var suggested = [makeSession(id: "child-s")]
+        suggested[0].isFavorite = false
+
+        // Add → Remove on the same confirmed child (menu must reverse immediately).
+        var result = ExpandableSessionCard.applyingChildFavorite(
+            confirmed: confirmed,
+            suggested: suggested,
+            sessionId: "child-a",
+            isFavorite: true
+        )
+        XCTAssertTrue(result.confirmed[0].isFavorite, "Add must set child-a isFavorite")
+        XCTAssertTrue(result.confirmed[1].isFavorite, "unrelated confirmed favorite unchanged")
+        XCTAssertFalse(result.suggested[0].isFavorite, "unrelated suggested row unchanged")
+        XCTAssertFalse(
+            result.confirmed[0].favoriteToggleTarget,
+            "after Add, next target must be Remove (false)"
+        )
+
+        result = ExpandableSessionCard.applyingChildFavorite(
+            confirmed: result.confirmed,
+            suggested: result.suggested,
+            sessionId: "child-a",
+            isFavorite: false
+        )
+        XCTAssertFalse(result.confirmed[0].isFavorite, "Remove must clear child-a isFavorite")
+        XCTAssertTrue(
+            result.confirmed[0].favoriteToggleTarget,
+            "after Remove, next target must be Add (true)"
+        )
+        XCTAssertTrue(result.confirmed[1].isFavorite, "sibling favorite must not flip")
+
+        // Remove → Add on a suggested child (same expanded card arrays).
+        suggested[0].isFavorite = true
+        result = ExpandableSessionCard.applyingChildFavorite(
+            confirmed: result.confirmed,
+            suggested: suggested,
+            sessionId: "child-s",
+            isFavorite: false
+        )
+        XCTAssertFalse(result.suggested[0].isFavorite)
+        result = ExpandableSessionCard.applyingChildFavorite(
+            confirmed: result.confirmed,
+            suggested: result.suggested,
+            sessionId: "child-s",
+            isFavorite: true
+        )
+        XCTAssertTrue(result.suggested[0].isFavorite)
+        XCTAssertEqual(result.confirmed.map(\.id), ["child-a", "child-b"])
+        XCTAssertEqual(result.suggested.map(\.id), ["child-s"])
+    }
+
+    func testApplyingChildFavoriteIsNoOpForUnknownId() throws {
+        var confirmed = [makeSession(id: "known")]
+        confirmed[0].isFavorite = true
+        let suggested: [Session] = []
+        let result = ExpandableSessionCard.applyingChildFavorite(
+            confirmed: confirmed,
+            suggested: suggested,
+            sessionId: "missing",
+            isFavorite: false
+        )
+        XCTAssertTrue(result.confirmed[0].isFavorite)
+        XCTAssertTrue(result.suggested.isEmpty)
+    }
+
+    /// Service-failure contract: local child state and next toggle target stay put.
+    func testApplyingChildFavoriteIfSucceededFailureLeavesOriginalStateAndTarget() throws {
+        var confirmed = [makeSession(id: "child-a"), makeSession(id: "child-b")]
+        confirmed[0].isFavorite = false
+        confirmed[1].isFavorite = true
+        var suggested = [makeSession(id: "child-s")]
+        suggested[0].isFavorite = true
+        let preToggle = confirmed[0]
+        XCTAssertTrue(preToggle.favoriteToggleTarget, "pre-toggle next target is Add (true)")
+
+        let result = ExpandableSessionCard.applyingChildFavoriteIfSucceeded(
+            confirmed: confirmed,
+            suggested: suggested,
+            preToggleSession: preToggle,
+            success: false
+        )
+        XCTAssertFalse(result.confirmed[0].isFavorite, "failure must not flip child-a")
+        XCTAssertTrue(
+            result.confirmed[0].favoriteToggleTarget,
+            "failure must leave next target unchanged (still Add)"
+        )
+        XCTAssertTrue(result.confirmed[1].isFavorite, "sibling favorite must stay")
+        XCTAssertTrue(result.suggested[0].isFavorite, "suggested favorite must stay")
+        XCTAssertEqual(result.confirmed.map(\.id), ["child-a", "child-b"])
+        XCTAssertEqual(result.suggested.map(\.id), ["child-s"])
+    }
+
+    /// Service-success contract: flip isFavorite via pre-toggle symmetric target.
+    func testApplyingChildFavoriteIfSucceededSuccessFlipsUsingPreToggleTarget() throws {
+        var confirmed = [makeSession(id: "child-a"), makeSession(id: "child-b")]
+        confirmed[0].isFavorite = false
+        confirmed[1].isFavorite = true
+        var suggested = [makeSession(id: "child-s")]
+        suggested[0].isFavorite = false
+        let preAdd = confirmed[0]
+        XCTAssertTrue(preAdd.favoriteToggleTarget)
+
+        var result = ExpandableSessionCard.applyingChildFavoriteIfSucceeded(
+            confirmed: confirmed,
+            suggested: suggested,
+            preToggleSession: preAdd,
+            success: true
+        )
+        XCTAssertTrue(result.confirmed[0].isFavorite, "success Add must set isFavorite")
+        XCTAssertFalse(
+            result.confirmed[0].favoriteToggleTarget,
+            "after successful Add, next target must be Remove"
+        )
+        XCTAssertTrue(result.confirmed[1].isFavorite)
+        XCTAssertFalse(result.suggested[0].isFavorite)
+
+        // Remove on the same child (pre-toggle captures the favorite state).
+        let preRemove = result.confirmed[0]
+        XCTAssertFalse(preRemove.favoriteToggleTarget)
+        result = ExpandableSessionCard.applyingChildFavoriteIfSucceeded(
+            confirmed: result.confirmed,
+            suggested: result.suggested,
+            preToggleSession: preRemove,
+            success: true
+        )
+        XCTAssertFalse(result.confirmed[0].isFavorite, "success Remove must clear isFavorite")
+        XCTAssertTrue(
+            result.confirmed[0].favoriteToggleTarget,
+            "after successful Remove, next target must be Add"
+        )
+        XCTAssertTrue(result.confirmed[1].isFavorite, "sibling must not flip")
+    }
 }

@@ -43,6 +43,10 @@ struct Session: FetchableRecord, Decodable, Identifiable {
     /// Newline-joined distinct human instruction set, in order. nil for
     /// non-allowlisted sources. Rendered as the "What you asked" section.
     var instructionSummary: String? = nil
+    /// App-layer favorite flag. Not a sessions-table column — populated by list
+    /// surfaces from the favorites table (or true when the Starred filter is
+    /// active). Defaults false so GRDB/JSON decode paths stay source-compatible.
+    var isFavorite: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case id, source, cwd, project, model, summary
@@ -170,6 +174,30 @@ extension Session {
         qualityScore = try c.decodeIfPresent(Int.self, forKey: .qualityScore)
         instructionCount = try c.decodeIfPresent(Int.self, forKey: .instructionCount)
         instructionSummary = try c.decodeIfPresent(String.self, forKey: .instructionSummary)
+        // Favorites live in a separate table; list surfaces set this after fetch.
+        isFavorite = false
+    }
+
+    /// Target value for a symmetric favorite toggle (`favorite: !isFavorite`).
+    var favoriteToggleTarget: Bool { !isFavorite }
+
+    /// Context-menu / button label for add vs remove.
+    static func favoriteMenuLabel(isFavorite: Bool) -> String {
+        isFavorite ? "Remove from Favorites" : "Add to Favorites"
+    }
+
+    /// Accessibility label (sentence case) for add vs remove.
+    static func favoriteAccessibilityLabel(isFavorite: Bool) -> String {
+        isFavorite ? "Remove from favorites" : "Add to favorites"
+    }
+
+    /// Annotate a fetched page with favorite membership from an id set.
+    static func applyingFavoriteIds(_ sessions: [Session], favoriteIds: Set<String>) -> [Session] {
+        sessions.map { session in
+            var copy = session
+            copy.isFavorite = favoriteIds.contains(session.id)
+            return copy
+        }
     }
 }
 

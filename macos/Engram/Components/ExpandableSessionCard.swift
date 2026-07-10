@@ -25,7 +25,11 @@ struct ExpandableSessionCard: View {
     var onRename: ((Session) -> Void)? = nil
     var onExportMarkdown: ((Session) -> Void)? = nil
     var onExportJSON: ((Session) -> Void)? = nil
-    var onToggleFavorite: ((Session) -> Void)? = nil
+    /// Favorite toggle with a main-actor success flag.
+    /// Callers invoke `completion(true)` after a successful service write/reload
+    /// and `completion(false)` on failure. Parent/Timeline sites may ignore it;
+    /// expanded child rows apply local `isFavorite` only on `true`.
+    var onToggleFavorite: ((Session, @escaping @MainActor (Bool) -> Void) -> Void)? = nil
     var isHidden = false
 
     @State private var isExpanded = false
@@ -42,6 +46,62 @@ struct ExpandableSessionCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var totalChildCount: Int { confirmedChildCount + suggestedChildCount }
+
+    /// Pure local update for expanded-child favorite membership after a toggle.
+    /// Child rows live in `@State` and are only annotated from `listFavorites` at
+    /// load, so without this the menu target cannot reverse until re-expand.
+    /// Updates confirmed and suggested arrays by session id (no-op if absent).
+    static func applyingChildFavorite(
+        confirmed: [Session],
+        suggested: [Session],
+        sessionId: String,
+        isFavorite: Bool
+    ) -> (confirmed: [Session], suggested: [Session]) {
+        func mark(_ sessions: [Session]) -> [Session] {
+            sessions.map { session in
+                guard session.id == sessionId else { return session }
+                var copy = session
+                copy.isFavorite = isFavorite
+                return copy
+            }
+        }
+        return (mark(confirmed), mark(suggested))
+    }
+
+    /// Completion-aware local child update: flip only when the service reports
+    /// success. Failure leaves both arrays and `favoriteToggleTarget` unchanged.
+    /// `preToggleSession` must be the pre-service session so the target is
+    /// `preToggleSession.favoriteToggleTarget` (symmetric `!isFavorite`).
+    static func applyingChildFavoriteIfSucceeded(
+        confirmed: [Session],
+        suggested: [Session],
+        preToggleSession: Session,
+        success: Bool
+    ) -> (confirmed: [Session], suggested: [Session]) {
+        guard success else { return (confirmed, suggested) }
+        return applyingChildFavorite(
+            confirmed: confirmed,
+            suggested: suggested,
+            sessionId: preToggleSession.id,
+            isFavorite: preToggleSession.favoriteToggleTarget
+        )
+    }
+
+    /// Invoke the page callback with the pre-toggle child session; apply local
+    /// confirmed/suggested `isFavorite` only when completion reports success.
+    private func toggleChildFavorite(_ child: Session) {
+        // Pre-toggle session preserves favoriteToggleTarget for the service write.
+        onToggleFavorite?(child) { success in
+            let updated = Self.applyingChildFavoriteIfSucceeded(
+                confirmed: children,
+                suggested: suggestedChildren,
+                preToggleSession: child,
+                success: success
+            )
+            children = updated.confirmed
+            suggestedChildren = updated.suggested
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -136,7 +196,11 @@ struct ExpandableSessionCard: View {
                     }
                     SessionWriteMenuItems(
                         isHidden: isHidden,
-                        onToggleFavorite: onToggleFavorite.map { cb in { cb(session) } },
+                        isFavorite: session.isFavorite,
+                        // Parent list reloads on success; ignore completion here.
+                        onToggleFavorite: onToggleFavorite.map { cb in
+                            { cb(session) { _ in } }
+                        },
                         onRename: onRename.map { cb in { cb(session) } },
                         onExportMarkdown: onExportMarkdown.map { cb in { cb(session) } },
                         onExportJSON: onExportJSON.map { cb in { cb(session) } },
@@ -171,7 +235,8 @@ struct ExpandableSessionCard: View {
                                 onRename: onRename.map { cb in { cb(child) } },
                                 onExportMarkdown: onExportMarkdown.map { cb in { cb(child) } },
                                 onExportJSON: onExportJSON.map { cb in { cb(child) } },
-                                onToggleFavorite: onToggleFavorite.map { cb in { cb(child) } },
+                                // Completion-aware: local isFavorite flips only after service success.
+                                onToggleFavorite: onToggleFavorite.map { _ in { toggleChildFavorite(child) } },
                                 isHidden: child.hiddenAt != nil
                             )
                         }
@@ -206,7 +271,8 @@ struct ExpandableSessionCard: View {
                                 onRename: onRename.map { cb in { cb(child) } },
                                 onExportMarkdown: onExportMarkdown.map { cb in { cb(child) } },
                                 onExportJSON: onExportJSON.map { cb in { cb(child) } },
-                                onToggleFavorite: onToggleFavorite.map { cb in { cb(child) } },
+                                // Completion-aware: local isFavorite flips only after service success.
+                                onToggleFavorite: onToggleFavorite.map { _ in { toggleChildFavorite(child) } },
                                 isHidden: child.hiddenAt != nil
                             )
                         }
@@ -279,11 +345,16 @@ struct ExpandableSessionCard: View {
                 parentId: session.id,
                 includeHidden: includeHiddenChildren
             )) ?? []
+            // Same favorites-table source as SessionsPageView parent rows — do not
+            // infer child isFavorite from the parent page filter.
+            let favoriteIds = Set((try? db.listFavorites())?.map(\.id) ?? [])
+            let annotatedConfirmed = Session.applyingFavoriteIds(confirmed, favoriteIds: favoriteIds)
+            let annotatedSuggested = Session.applyingFavoriteIds(suggested, favoriteIds: favoriteIds)
             await MainActor.run {
                 // Drop stale results from a generation that was invalidated.
                 guard generation == loadGeneration else { return }
-                children = confirmed
-                suggestedChildren = suggested
+                children = annotatedConfirmed
+                suggestedChildren = annotatedSuggested
                 isLoadingChildren = false
             }
         }
@@ -302,13 +373,15 @@ struct ExpandableSessionCard: View {
                 limit: 20,
                 offset: currentCount
             )) ?? []
+            let favoriteIds = Set((try? db.listFavorites())?.map(\.id) ?? [])
+            let annotated = Session.applyingFavoriteIds(more, favoriteIds: favoriteIds)
             await MainActor.run {
                 defer { isLoadingMore = false }
                 // Drop stale results from a generation that was invalidated.
                 guard generation == loadGeneration else { return }
                 // De-dup on append in case offsets overlap or a reload raced.
                 let existing = Set(children.map(\.id))
-                children.append(contentsOf: more.filter { !existing.contains($0.id) })
+                children.append(contentsOf: annotated.filter { !existing.contains($0.id) })
             }
         }
     }
@@ -388,6 +461,7 @@ struct CompactChildRow: View {
             }
             SessionWriteMenuItems(
                 isHidden: isHidden,
+                isFavorite: session.isFavorite,
                 onToggleFavorite: onToggleFavorite,
                 onRename: onRename,
                 onExportMarkdown: onExportMarkdown,
@@ -405,6 +479,7 @@ struct CompactChildRow: View {
 /// that pass none (e.g. SessionDetailView child rows) get an unchanged menu.
 private struct SessionWriteMenuItems: View {
     let isHidden: Bool
+    var isFavorite: Bool = false
     var onToggleFavorite: (() -> Void)? = nil
     var onRename: (() -> Void)? = nil
     var onExportMarkdown: (() -> Void)? = nil
@@ -420,9 +495,11 @@ private struct SessionWriteMenuItems: View {
         if hasAny {
             Divider()
             if let onToggleFavorite {
-                // Browse-card menu always adds (no isFavorite flag on the read
-                // model yet), so the label states what it actually does.
-                Button("Add to Favorites") { onToggleFavorite() }
+                // M19: label reflects current favorite membership (Add vs Remove).
+                Button(Session.favoriteMenuLabel(isFavorite: isFavorite)) {
+                    onToggleFavorite()
+                }
+                .accessibilityLabel(Session.favoriteAccessibilityLabel(isFavorite: isFavorite))
             }
             if let onRename {
                 Button("Rename…") { onRename() }

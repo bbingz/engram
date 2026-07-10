@@ -1,5 +1,62 @@
 // macos/Engram/Views/CommandPaletteView.swift
+import AppKit
 import SwiftUI
+
+/// H12: export is a side-channel status, never a full results replacement.
+/// Transitions: idle → inFlight → succeeded|failed → idle (clear / next export).
+enum CommandPaletteExportState: Equatable {
+    case idle
+    case inFlight(sessionId: String)
+    case succeeded(path: String)
+    case failed(message: String)
+
+    var isInFlight: Bool {
+        if case .inFlight = self { return true }
+        return false
+    }
+
+    /// Results and selection stay visible for every non-idle state.
+    var keepsResultsVisible: Bool { true }
+
+    var allowsExportAction: Bool { !isInFlight }
+
+    var statusText: String? {
+        switch self {
+        case .idle:
+            return nil
+        case .inFlight:
+            return "Exporting…"
+        case .succeeded(let path):
+            return "Exported to \((path as NSString).lastPathComponent)"
+        case .failed(let message):
+            return message
+        }
+    }
+
+    var revealPath: String? {
+        if case .succeeded(let path) = self { return path }
+        return nil
+    }
+
+    /// Begin an export. Returns false when one is already in flight (double-submit guard).
+    mutating func begin(sessionId: String) -> Bool {
+        guard !isInFlight else { return false }
+        self = .inFlight(sessionId: sessionId)
+        return true
+    }
+
+    mutating func succeed(path: String) {
+        self = .succeeded(path: path)
+    }
+
+    mutating func fail(message: String) {
+        self = .failed(message: message)
+    }
+
+    mutating func clear() {
+        self = .idle
+    }
+}
 
 struct CommandPaletteView: View {
     let onNavigate: (Screen) -> Void
@@ -18,7 +75,7 @@ struct CommandPaletteView: View {
     @State private var selectedIndex = 0
     @State private var searchTask: Task<Void, Never>? = nil
     @State private var resumeSession: Session? = nil
-    @State private var exportMessage: String? = nil
+    @State private var exportState: CommandPaletteExportState = .idle
     @FocusState private var isFocused: Bool
     @Environment(\.dismiss) private var dismiss
 
@@ -117,13 +174,41 @@ struct CommandPaletteView: View {
 
             Divider()
 
-            // Results
-            if let exportMessage {
-                Text(exportMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if !query.isEmpty && !isSearching && searchOutcome == .failed {
+            // H12: export status is a banner over the list — never replaces results.
+            if let status = exportState.statusText {
+                HStack(spacing: 8) {
+                    if exportState.isInFlight {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityIdentifier("commandPalette_exportProgress")
+                    }
+                    Text(status)
+                        .font(.caption)
+                        .foregroundStyle({
+                            if case .failed = exportState { return Color.red }
+                            return Color.secondary
+                        }() as Color)
+                        .lineLimit(2)
+                    Spacer(minLength: 4)
+                    if let path = exportState.revealPath {
+                        Button("Show in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting(
+                                [URL(fileURLWithPath: path)]
+                            )
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                        .accessibilityIdentifier("commandPalette_revealExport")
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .accessibilityIdentifier("commandPalette_exportStatus")
+                Divider()
+            }
+
+            // Results (always keep selection/list when exporting)
+            if !query.isEmpty && !isSearching && searchOutcome == .failed {
                 VStack(spacing: 6) {
                     Text("Search unavailable")
                         .font(.caption)
@@ -239,6 +324,7 @@ struct CommandPaletteView: View {
             // Secondary affordances (Resume / Export) only on the selected row.
             if isSelected {
                 ForEach(item.secondaryActions) { secondary in
+                    let isExport = secondary.id.hasSuffix("-export")
                     Button {
                         secondary.run()
                     } label: {
@@ -248,6 +334,8 @@ struct CommandPaletteView: View {
                     }
                     .buttonStyle(.plain)
                     .help(secondary.label)
+                    // H12: disable only the export affordance while one is in flight.
+                    .disabled(isExport && !exportState.allowsExportAction)
                 }
             }
         }
@@ -280,17 +368,26 @@ struct CommandPaletteView: View {
     }
 
     private func export(id: String) {
+        // Capture-and-assign so @State observes the inFlight transition.
+        var next = exportState
+        guard next.begin(sessionId: id) else { return }
+        exportState = next
         Task {
+            let terminal: CommandPaletteExportState
             do {
                 let response = try await serviceClient.exportSession(
                     EngramServiceExportSessionRequest(id: id, format: "markdown", outputHome: nil, actor: nil)
                 )
-                exportMessage = "Exported to \(response.outputPath)"
+                terminal = .succeeded(path: response.outputPath)
             } catch {
-                exportMessage = "Export failed"
+                terminal = .failed(message: "Export failed")
             }
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            exportMessage = nil
+            exportState = terminal
+            // Auto-clear only if this terminal status is still showing (no newer export).
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if exportState == terminal {
+                exportState = .idle
+            }
         }
     }
 
