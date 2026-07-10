@@ -223,7 +223,9 @@ public actor ServiceWriterGate {
         return fd
     }
 
-    private static func isLongRunningWriteCommand(_ name: String) -> Bool {
+    /// Classifies maintenance/index holders so followers skip the 60s queue timeout.
+    /// Internal for unit tests (Wave 7C H02).
+    static func isLongRunningWriteCommand(_ name: String) -> Bool {
         switch name {
         case "projectMove", "projectArchive", "projectUndo", "projectMoveBatch":
             return true

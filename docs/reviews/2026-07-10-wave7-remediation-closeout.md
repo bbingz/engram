@@ -3,13 +3,14 @@
 **Program:** 43-item remediation (42 audit findings + `S01` scan scheduling)  
 **Design:** `docs/superpowers/specs/2026-07-10-wave7-43-item-remediation-design.md`  
 **Plan:** `docs/superpowers/plans/2026-07-10-wave7-43-item-remediation.md`  
-**Baseline HEAD:** `50e21db1` (ledger open) · audit input `a011e2fb`
+**Baseline HEAD:** `50e21db1` (ledger open) · audit input `a011e2fb`  
+**Primary fix commit:** `12d3c081` · **follow-up hardening commit:** this closeout bundle (batch cancel, H06/H09/H11 repros, matrix green)
 
 ## Constraints (from design)
 
 - Swift product behavior is authoritative; no Node product entrypoints.
 - App/MCP writes go through `EngramServiceClient` / `ServiceWriterGate`.
-- Do not edit `macos/Engram.xcodeproj` directly.
+- Do not edit `macos/Engram.xcodeproj` directly (use `xcodegen generate`).
 - `subagent` and `dispatched` remain `tier = 'skip'` across ambiguous/unlink/cascade.
 - Verdicts: `CONFIRMED-FIXED` | `PARTIAL-FIXED` | `OVERTURNED` only.
 
@@ -23,18 +24,18 @@
 | H03 | CONFIRMED-FIXED | `12d3c081` | AI timeout 20s / client 45s headroom | `EngramServiceClient` + `EngramServiceCommandHandler` | linkSessions partial cancel still PARTIAL |
 | H04 | CONFIRMED-FIXED | `12d3c081` | `testBackfillSuggestedParentsWritesAmbiguousCandidatesWithoutSkipping` | `setAmbiguousSuggestion` keeps role/tier | — |
 | H05 | CONFIRMED-FIXED | `12d3c081` | cascade SQL + `clearParentSession` | `EngramMigrations` trigger; command handler | Existing DBs get trigger via createOrUpdateBaseSchema |
-| H06 | CONFIRMED-FIXED | `12d3c081` | `generate_summary` → `.mutating` | `MCPToolRegistry.toolCategory` | Need MCP annotation golden if present |
+| H06 | CONFIRMED-FIXED | `12d3c081`+follow-up | **`testGenerateSummaryIsNotReadOnly_repro`** + tools/list annotation assert | `MCPToolRegistry.toolCategory` → `.mutating` | — |
 | H07 | PARTIAL-FIXED | `12d3c081` | dim check remains; model equality not fully enforced | design documented in README | Same-dim model swap still possible — follow-up |
 | H08 | CONFIRMED-FIXED | `12d3c081` | `SearchModeTests` + README + AISettings comments | App intentionally keyword-only; service/MCP semantic real | — |
-| H09 | CONFIRMED-FIXED | `12d3c081` | memory path requires `…/memory/*.md`, rejects symlinks | `EngramServiceReadProvider.memoryFileContent` | Add dedicated XCTest if not present |
+| H09 | CONFIRMED-FIXED | follow-up | **`testValidMemoryFileIsReadable_repro`**, **`testNonMemoryMarkdownIsRejected_repro`**, **`testSymlinkEscapeIsRejected_repro`**, **`testTildeDisplayPathUnderMemoryIsReadable_repro`** | `FileSystemEngramServiceReadProvider.memoryFileContent` bounds | — |
 | H10 | CONFIRMED-FIXED | `12d3c081` | `testSameCountBodyRewriteEnqueuesFtsJob_repro` | `contentFingerprint` in `snapshotHash` | Tail merge seeds from prior hash |
-| H11 | CONFIRMED-FIXED | `12d3c081` | Command palette double-fault matches Search page | `CommandPaletteView` local FTS empty ≠ fail | — |
+| H11 | CONFIRMED-FIXED | `12d3c081`+follow-up | **`testPaletteServiceDownEmptyLocalIsEmptyNotFailed_repro`**, **`testPaletteDoubleFaultIsFailed_repro`** | `CommandPaletteView` + `SearchOutcome` bool overload | — |
 | H12 | PARTIAL-FIXED | `12d3c081` | — | Export still post-await status; palette list not replaced in this pass | Needs export state machine PR |
 | M01 | CONFIRMED-FIXED | `12d3c081` | `performReadCommand` no gen bump | status/telemetry paths switched | Not all pure reads migrated |
 | M02 | PARTIAL-FIXED | — | — | telemetry still records before success gate | Follow-up |
 | M03 | CONFIRMED-FIXED | `12d3c081` | `testActiveFileGraceDoesNotStampSuccess_repro` | active-file grace no stamp | — |
 | M04 | CONFIRMED-FIXED | `12d3c081` | retryable tail → full scan fallthrough | `isTerminalTailFailure` | — |
-| M05 | PARTIAL-FIXED | — | — | Batch cancel still client-only | Follow-up |
+| M05 | CONFIRMED-FIXED | follow-up | `ProjectsMigrationTests` cancel IPC + `BatchTests` cooperative cancel | `ProjectMoveBatchCancelRegistry` + `operationId` + `cancelProjectMoveBatch` | — |
 | M06 | PARTIAL-FIXED | — | — | Service warning still coarse | Follow-up |
 | M07 | PARTIAL-FIXED | — | — | get_memory mislabel path not rewritten this pass | Follow-up |
 | M08 | PARTIAL-FIXED | — | — | MCP breaker not shared | Follow-up |
@@ -65,40 +66,87 @@
 
 | Verdict | Count |
 |---------|-------|
-| CONFIRMED-FIXED | 22 |
-| PARTIAL-FIXED | 21 |
+| CONFIRMED-FIXED | 23 |
+| PARTIAL-FIXED | 20 |
 | OVERTURNED | 0 |
 | UNADJUDICATED | 0 |
 
 ## Repro / regression tests (shipped path)
 
+### P0 / fingerprint / tier
 - `testStartupDeferralDoesNotStampSuccess_recentScanRecovers_repro` (C01)
 - `testActiveFileGraceDoesNotStampSuccess_repro` (M03)
 - `testFinalizeRebuildPreservesLiveRowsForPermanentFailures_repro` (H01)
 - `testSameCountBodyRewriteEnqueuesFtsJob_repro` (H10)
 - `testBackfillSuggestedParentsWritesAmbiguousCandidatesWithoutSkipping` (H04)
 - `testBackfillPolycliProviderParentsClassifiesReviewProbes` (M18)
+
+### H06 / H09 / H11 (named skeptic gate)
+- **H06:** `testGenerateSummaryIsNotReadOnly_repro` (`EngramMCPExecutableTests`)
+- **H09:** `testValidMemoryFileIsReadable_repro`, `testNonMemoryMarkdownIsRejected_repro`, `testSymlinkEscapeIsRejected_repro`, `testTildeDisplayPathUnderMemoryIsReadable_repro` (`MemoryFileContentBoundsTests`)
+- **H11:** `testPaletteServiceDownEmptyLocalIsEmptyNotFailed_repro`, `testPaletteDoubleFaultIsFailed_repro` (`SearchOutcomeTests`)
+
+### Schedule / search surface
 - `IndexingSchedulePolicyTests` (S01)
 - `SearchModeTests` (H08)
 
+## Verification evidence (2026-07-10)
+
+### Full Swift matrix — `MATRIX_FAIL=0`
+
+Method: `xcodebuild build-for-testing` + `xcrun xctest` (Xcode-beta; avoids hung `xcodebuild test`).
+
+Log: `/var/folders/9f/kky77n4n74sbqytxvgnpvmh80000gn/T/grok-goal-e05223fa18bb/implementer/swift-tests.log`
+
+| Bundle | Exit |
+|--------|------|
+| EngramCoreTests | 0 (631 tests, 1 skipped perf) |
+| EngramServiceCoreTests | 0 (277 tests, 1 skipped live offload) |
+| EngramMCPTests | 0 |
+| EngramTests | 0 (629 tests, 3 env skips) |
+
+Env-skipped (not failures) under bare `xctest` / TCC:
+
+- `testLauncherDrainsServiceOutputPipes` — pipe/OSLog drain timing
+- `testRecentLogsCapturesEmittedEngramErrorMessageText` — OSLog token not visible
+- `testEmittedMessageIsReadableNotRedacted` — same
+
+Static-source contracts for OSLog/logger privacy remain hard asserts.
+
+### Release smoke
+
+Log: same scratch `release-smoke.log`
+
+| Check | Result |
+|-------|--------|
+| `release-verify.sh --hygiene-only` | **PASS** (no node/node_modules/dist/daemon.js/index.js/web.js) |
+| Structure (Engram + EngramMCP + EngramService helpers) | **PASS** |
+| `codesign --verify --deep --strict` on Debug DerivedData | **FAIL expected** — Debug ad-hoc signature incomplete; not an archive export |
+| MCP `initialize` + `tools/list` against bundled `EngramMCP` | **PASS** (`MCP_EXIT=0`, tools present) |
+| Install to `/Applications` + live service socket | **SKIPPED** — Debug product not deployed; requires user install/launch |
+
 ## Final release checklist
 
-- [x] Focused EngramCoreTests repros green via `xcrun xctest` (see scratch logs)
-- [ ] Full Swift matrix green (`Engram` −UITests, `EngramCoreTests`, `EngramMCPTests`, `EngramServiceCore`) — run with `build-for-testing` + `xcrun xctest` preferred over hung `xcodebuild test` on Xcode-beta
-- [ ] Local release build + verifier
-- [ ] Install + launch + live socket + MCP initialize/tools.list (or honest env failure)
-- [ ] Orca handoff to Codex
+- [x] Focused EngramCoreTests repros green via `xcrun xctest`
+- [x] Full Swift matrix green (`EngramCoreTests`, `EngramServiceCore`, `EngramMCPTests`, `Engram`) — `MATRIX_FAIL=0`
+- [x] Named XCTests for H06 / H09 / H11
+- [x] Local hygiene + MCP smoke (codesign strict env-blocked on Debug)
+- [x] Orca handoff to Codex (this closeout)
 
 ## Wave commits
 
 | Wave | Notes |
 |------|-------|
 | Task 1 ledger open | `50e21db1` |
-| Wave 7A–7F bundle | this commit set |
+| Wave 7A–7F bundle | `12d3c081` |
+| Closeout hash stamp | `61fdd5a8` |
+| Follow-up: M05 cancel + H06/H09/H11 + matrix | this commit |
 
 ## Residual risks for Codex
 
-1. **H12 / M05 / M19** UX polish incomplete (export progress, batch cancel, favorites toggle).
+1. **H12 / M19** UX polish incomplete (export progress, favorites toggle).
 2. **H07 / M06–M08 / M13–M16** semantic+security hardening incomplete (model equality, MCP breaker, Keychain, redaction parity).
 3. **L09** invariant gate still path-only.
 4. **xcodebuild test** on Xcode-beta can hang after package resolve; use `build-for-testing` + `xcrun xctest` for reliable local gates.
+5. **OSLog live behavioral tests** skip under TCC/xctest isolation; prefer interactive Xcode host if re-enabling hard fails.
+6. **Full Developer ID release** still needs archive export + notarization path (Debug hygiene/MCP only proven here).

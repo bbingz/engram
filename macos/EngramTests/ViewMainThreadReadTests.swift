@@ -105,8 +105,10 @@ final class ViewMainThreadReadTests: XCTestCase {
             s.contains("guard !Task.isCancelled"),
             "CommandPaletteView async callbacks must not publish stale search results after cancellation"
         )
+        // Wave 7E H11: service catch starts a do/try local FTS path (empty ≠ fail).
         XCTAssertTrue(
-            s.contains("} catch {\n                guard !Task.isCancelled else { return }\n                let sessions = (try? await Task.detached"),
+            s.contains("} catch {\n                guard !Task.isCancelled else { return }\n                // Wave 7E H11")
+                || s.contains("try await Task.detached {\n                        try db.search(query: q, limit: 10)"),
             "a cancelled service search must exit before starting the local DB fallback"
         )
         XCTAssertTrue(s.contains(".onDisappear { searchTask?.cancel(); searchTask = nil }"))
@@ -201,10 +203,16 @@ final class ViewMainThreadReadTests: XCTestCase {
         let elapsedStart = try XCTUnwrap(live.range(of: "private var elapsedText"))
         let elapsedEnd = try XCTUnwrap(live.range(of: "var body"))
         let elapsedSource = String(live[elapsedStart.lowerBound..<elapsedEnd.lowerBound])
-        XCTAssertTrue(live.contains("private static let isoFormatter"))
+        // Wave 7E L08: LiveSessionCard uses shared RelativeTimeText (not a private
+        // fractional-only ISO formatter).
+        XCTAssertTrue(
+            elapsedSource.contains("RelativeTimeText.format")
+                || live.contains("RelativeTimeText.format"),
+            "LiveSessionCard.elapsedText must reuse the shared relative-time helper"
+        )
         XCTAssertFalse(
             elapsedSource.contains("ISO8601DateFormatter()"),
-            "LiveSessionCard.elapsedText runs during body updates and must not allocate ISO8601DateFormatter per render"
+            "LiveSessionCard.elapsedText must not allocate ISO8601DateFormatter per render"
         )
 
         let replay = try source("macos/Engram/Models/ReplayState.swift")
@@ -361,9 +369,16 @@ final class ViewMainThreadReadTests: XCTestCase {
         let body = String(s[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(body.contains("let source: String = candidate[\"source\"]"))
+        // Wave 7B M18: non-probe rows (including ordinary gemini-cli) are not
+        // admitted by the candidate SQL without probe summary evidence.
         XCTAssertTrue(
-            body.contains("if source == \"gemini-cli\" {\n                        continue\n                    }\n                    try markChecked"),
-            "polycli detection must not stamp ordinary gemini-cli rows checked before suggested-parent scoring runs"
+            body.contains("isPolycliProviderSummary")
+                || body.contains("summaryMatches"),
+            "polycli admission must require probe/dispatch summary evidence"
+        )
+        XCTAssertFalse(
+            body.contains("AND trim(cwd) != ''\n                )"),
+            "bare same-cwd provider admission must stay removed (false-skip)"
         )
     }
 

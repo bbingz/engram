@@ -329,6 +329,27 @@ final class EngramMCPExecutableTests: XCTestCase {
         // so save_insight is no longer idempotent.
         XCTAssertEqual(tool("save_insight")?["annotations"]?["destructiveHint"]?.boolValue, false)
         XCTAssertEqual(tool("save_insight")?["annotations"]?["idempotentHint"]?.boolValue, false)
+        // Wave 7D H06: generate_summary mutates sessions.summary — never readOnlyHint.
+        XCTAssertEqual(
+            tool("generate_summary")?["annotations"]?["readOnlyHint"]?.boolValue,
+            false,
+            "generate_summary must not be auto-approved as read-only"
+        )
+    }
+
+    /// Wave 7D H06 (repro): tools/list must advertise generate_summary as mutating.
+    func testGenerateSummaryIsNotReadOnly_repro() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+            """
+        )
+        guard case .array(let tools)? = capture.ordered["result"]?["tools"] else {
+            return XCTFail("Expected tools/list result.tools array")
+        }
+        let generateSummary = tools.first { $0["name"]?.stringValue == "generate_summary" }
+        XCTAssertNotNil(generateSummary)
+        XCTAssertEqual(generateSummary?["annotations"]?["readOnlyHint"]?.boolValue, false)
     }
 
     /// tools/list must advertise `outputSchema` for exactly the read tools that

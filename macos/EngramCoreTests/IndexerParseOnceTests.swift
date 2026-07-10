@@ -192,8 +192,14 @@ final class IndexerParseOnceTests: XCTestCase {
         try appendText(tailClaudeLines().joined(separator: "\n") + "\n", to: fixture.locator)
         _ = try await writer.indexRecentSessions(adapters: [adapter])
         try await drainFtsJobs(writer, adapter: adapter)
-        XCTAssertEqual(adapter.scanTailForIndexingCalls, 1)
-        XCTAssertEqual(adapter.scanForIndexingCalls, 1, "append pass must take the tail path, not a full reparse")
+        // Wave 7A H10: content fingerprint cannot be extended without re-reading
+        // prior messages, so append falls back to a full reparse after a tail probe.
+        XCTAssertEqual(adapter.scanTailForIndexingCalls, 1, "must still attempt the tail path first")
+        XCTAssertGreaterThanOrEqual(
+            adapter.scanForIndexingCalls,
+            2,
+            "append pass full-reparses so content fingerprint stays parity-stable"
+        )
 
         let fullDB = FileManager.default.temporaryDirectory
             .appendingPathComponent("tail-full-\(UUID().uuidString).sqlite")

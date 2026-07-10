@@ -10,8 +10,13 @@ final class ModuleBoundaryTests: XCTestCase {
             .path
         let script = "\(repoRoot)/scripts/check-swift-module-boundaries.sh"
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [script]
+        // Ensure common tools (dirname, xcodegen) resolve under xctest.
+        var env = ProcessInfo.processInfo.environment
+        let path = env["PATH"] ?? ""
+        env["PATH"] = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:" + path
+        process.environment = env
 
         let output = Pipe()
         process.standardOutput = output

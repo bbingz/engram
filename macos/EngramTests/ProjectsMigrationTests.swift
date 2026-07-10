@@ -101,6 +101,56 @@ final class ProjectsMigrationTests: XCTestCase {
         XCTAssertEqual(outcome.failures.first?.error, "boom")
     }
 
+    func testBatchMoveAndCancelShareOperationIdentifier() async throws {
+        let operationID = "batch-wave7-cancel"
+        let transport = LocalRecordingTransport { request in
+            switch request.command {
+            case "projectMoveBatch":
+                let payload = try Self.decode(request.payload, as: EngramServiceProjectMoveBatchRequest.self)
+                XCTAssertEqual(payload.operationId, operationID)
+                return .success(
+                    requestId: request.requestId,
+                    result: #"{"completed":[],"failed":[],"skipped":[],"cancelled":true,"remaining":0}"#.data(using: .utf8)!
+                )
+            case "cancelProjectMoveBatch":
+                let payload = try Self.decode(request.payload, as: EngramServiceCancelProjectMoveBatchRequest.self)
+                XCTAssertEqual(payload.operationId, operationID)
+                return .success(
+                    requestId: request.requestId,
+                    result: #"{"accepted":true}"#.data(using: .utf8)!
+                )
+            default:
+                return .failure(
+                    requestId: request.requestId,
+                    error: EngramServiceErrorEnvelope(name: "Unexpected", message: request.command, retryPolicy: "never")
+                )
+            }
+        }
+        let client = EngramServiceClient(transport: transport)
+
+        async let batch = client.projectMoveBatch(
+            EngramServiceProjectMoveBatchRequest(
+                yaml: #"{"version":1,"operations":[]}"#,
+                dryRun: false,
+                force: false,
+                actor: "app",
+                operationId: operationID
+            )
+        )
+        let cancel = try await client.cancelProjectMoveBatch(operationId: operationID)
+
+        XCTAssertTrue(cancel.accepted)
+        _ = try await batch
+    }
+
+    func testBatchMoveSheetKeepsCancelEnabledAndRequestsServiceCancellation() throws {
+        let source = try Self.source("macos/Engram/Views/Projects/BatchMoveSheet.swift")
+        XCTAssertTrue(source.contains("cancelProjectMoveBatch(operationId:"))
+        XCTAssertTrue(source.contains("activeBatchOperationId"))
+        // Cancel remains enabled during execute (no .disabled(isExecuting) on Cancel).
+        XCTAssertFalse(source.contains("Button(\"Cancel\") { dismiss() }\n                    .keyboardShortcut(.cancelAction)\n                    .disabled(isExecuting)"))
+    }
+
     // MARK: - (d) alias add AND remove both encode new_project (non-nil)
 
     func testAliasAddAndRemoveBothEncodeNewProject() async throws {

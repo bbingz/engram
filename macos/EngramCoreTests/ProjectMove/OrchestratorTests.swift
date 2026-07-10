@@ -1020,8 +1020,8 @@ final class OrchestratorTests: XCTestCase {
 
     private static func skipIfGitMissing() throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git", "--version"]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["--version"]
         process.standardOutput = Pipe()
         process.standardError = Pipe()
         do {
@@ -1037,8 +1037,8 @@ final class OrchestratorTests: XCTestCase {
 
     private static func runGit(atPath path: String, _ args: [String]) throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git"] + args
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = args
         process.currentDirectoryURL = URL(fileURLWithPath: path, isDirectory: true)
         process.standardOutput = Pipe()
         process.standardError = Pipe()

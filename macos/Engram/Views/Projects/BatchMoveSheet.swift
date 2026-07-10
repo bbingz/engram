@@ -96,6 +96,7 @@ struct BatchMoveSheet: View {
     @State private var outcome: BatchMoveOutcome?
     @State private var errorMessage: String?
     @State private var activeTask: Task<Void, Never>?
+    @State private var activeBatchOperationId: String?
 
     /// Rows that actually have a destination to move (recorded cwd present).
     private var movableOperations: [(src: String, dst: String)] {
@@ -158,9 +159,19 @@ struct BatchMoveSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(isExecuting)
+                Button("Cancel") {
+                    if isExecuting, let operationId = activeBatchOperationId {
+                        // Wave 7C M05: keep Cancel enabled during execute and
+                        // request cooperative service-side stop between ops.
+                        Task {
+                            _ = try? await serviceClient.cancelProjectMoveBatch(operationId: operationId)
+                        }
+                        activeTask?.cancel()
+                    } else {
+                        dismiss()
+                    }
+                }
+                .keyboardShortcut(.cancelAction)
                 Button("Preview") {
                     activeTask = Task { await run(dryRun: true) }
                 }
@@ -241,7 +252,13 @@ struct BatchMoveSheet: View {
         errorMessage = nil
         outcome = nil
         isExecuting = true
-        defer { isExecuting = false; activeTask = nil }
+        let operationId = UUID().uuidString
+        activeBatchOperationId = operationId
+        defer {
+            isExecuting = false
+            activeTask = nil
+            activeBatchOperationId = nil
+        }
         let body = BatchMoveBody.make(operations: movableOperations, dryRun: dryRun)
         do {
             let result = try await serviceClient.projectMoveBatch(
@@ -249,7 +266,8 @@ struct BatchMoveSheet: View {
                     yaml: body,
                     dryRun: false,
                     force: false,
-                    actor: "app"
+                    actor: "app",
+                    operationId: operationId
                 )
             )
             if Task.isCancelled { return }

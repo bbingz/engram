@@ -403,6 +403,14 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
+            case "cancelProjectMoveBatch":
+                let payload = try decodePayload(EngramServiceCancelProjectMoveBatchRequest.self, from: request)
+                ProjectMoveBatchCancelRegistry.shared.requestCancel(operationId: payload.operationId)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(EngramServiceCancelProjectMoveBatchResponse(accepted: true)),
+                    databaseGeneration: nil
+                )
             case "setFavorite":
                 let payload = try decodePayload(EngramServiceFavoriteRequest.self, from: request)
                 let result = try await writerGate.performWriteCommand(name: request.command) { writer in

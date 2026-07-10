@@ -48,7 +48,7 @@
       "rows": [
         {
           "created_at": "<volatile>",
-          "id": "codex-session-001:1:89cd3cb21bcf114bd480ebaab1d782416d1b4ea060716344c81c141f7fd38d4f:embedding",
+          "id": "codex-session-001:1:a962b9e2cefb5051ac7fa99e2960f59dc2bbee38d712c4e3bbc2c9ac37eb6861:embedding",
           "job_kind": "embedding",
           "last_error": null,
           "retry_count": 0,
@@ -59,7 +59,7 @@
         },
         {
           "created_at": "<volatile>",
-          "id": "codex-session-001:1:89cd3cb21bcf114bd480ebaab1d782416d1b4ea060716344c81c141f7fd38d4f:fts",
+          "id": "codex-session-001:1:a962b9e2cefb5051ac7fa99e2960f59dc2bbee38d712c4e3bbc2c9ac37eb6861:fts",
           "job_kind": "fts",
           "last_error": null,
           "retry_count": 0,
@@ -111,7 +111,7 @@
           "project": "my-project",
           "quality_score": 68,
           "size_bytes": 1199,
-          "snapshot_hash": "89cd3cb21bcf114bd480ebaab1d782416d1b4ea060716344c81c141f7fd38d4f",
+          "snapshot_hash": "a962b9e2cefb5051ac7fa99e2960f59dc2bbee38d712c4e3bbc2c9ac37eb6861",
           "source": "codex",
           "source_locator": "<repo>/tests/fixtures/indexer-parity/fixture-root/codex/2026/01/15/rollout-sample.jsonl",
           "start_time": "2026-01-15T10:00:00.000Z",

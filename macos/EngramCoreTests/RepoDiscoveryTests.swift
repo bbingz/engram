@@ -117,8 +117,9 @@ final class RepoDiscoveryTests: XCTestCase {
 
         func git(_ args: [String]) throws {
             let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            p.arguments = ["git", "-C", repo.path] + args
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.arguments = ["-C", repo.path] + args
+            p.environment = ProcessInfo.processInfo.environment
             p.standardOutput = Pipe(); p.standardError = Pipe()
             try p.run(); p.waitUntilExit()
             XCTAssertEqual(p.terminationStatus, 0, "git \(args.joined(separator: " "))")
@@ -181,8 +182,9 @@ final class RepoDiscoveryTests: XCTestCase {
 
         func git(_ args: [String]) throws {
             let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            p.arguments = ["git", "-C", repo.path] + args
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.arguments = ["-C", repo.path] + args
+            p.environment = ProcessInfo.processInfo.environment
             p.standardOutput = Pipe(); p.standardError = Pipe()
             try p.run(); p.waitUntilExit()
             XCTAssertEqual(p.terminationStatus, 0, "git \(args.joined(separator: " "))")

@@ -764,18 +764,42 @@ struct EngramServiceProjectAliasRequest: Codable, Equatable, Sendable {
     }
 }
 
+/// Batch project move. Optional `operationId` enables cooperative cancel via
+/// `cancelProjectMoveBatch` between operations (Wave 7C M05).
 struct EngramServiceProjectMoveBatchRequest: Codable, Equatable, Sendable {
     let yaml: String
     let dryRun: Bool
     let force: Bool
     let actor: String?
+    let operationId: String?
+
+    init(yaml: String, dryRun: Bool, force: Bool, actor: String?, operationId: String? = nil) {
+        self.yaml = yaml
+        self.dryRun = dryRun
+        self.force = force
+        self.actor = actor
+        self.operationId = operationId
+    }
 
     enum CodingKeys: String, CodingKey {
         case yaml
         case dryRun = "dry_run"
         case force
         case actor
+        case operationId = "operation_id"
     }
+}
+
+struct EngramServiceCancelProjectMoveBatchRequest: Codable, Equatable, Sendable {
+    let operationId: String
+
+    enum CodingKeys: String, CodingKey {
+        case operationId = "operation_id"
+    }
+}
+
+struct EngramServiceCancelProjectMoveBatchResponse: Codable, Equatable, Sendable {
+    let accepted: Bool
 }
 
 struct EngramServiceFavoriteRequest: Codable, Equatable, Sendable {

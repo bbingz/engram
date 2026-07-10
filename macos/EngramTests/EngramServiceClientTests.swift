@@ -266,12 +266,14 @@ final class EngramServiceClientTests: XCTestCase {
 
         let sent = await transport.sent
         XCTAssertEqual(sent.map(\.command), ["generateSummary", "linkSessions"])
+        // Wave 7C H03: generateSummary/linkSessions use frameBoundCommandTimeout (45s)
+        // above the 30s inter-byte floor but with AI HTTP headroom below it.
         XCTAssertTrue(
             sent.allSatisfy { timeout in
                 guard let value = timeout.timeout else { return false }
-                return value > 2 && value < 30
+                return value > 2 && value <= 45
             },
-            "long synchronous commands need explicit timeouts below the 30s IPC frame deadline"
+            "long synchronous commands need explicit timeouts with AI/IPC headroom"
         )
     }
 

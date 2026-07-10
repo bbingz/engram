@@ -214,7 +214,8 @@ final class Round5RemediationTests: XCTestCase {
         let performWrite = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(source.contains("private var longRunningWriteInProgress = false"))
-        XCTAssertTrue(source.contains("private static func isLongRunningWriteCommand"))
+        // Wave 7C: classification is package-visible for unit tests.
+        XCTAssertTrue(source.contains("static func isLongRunningWriteCommand"))
         XCTAssertTrue(source.contains(#""projectMove""#))
         XCTAssertTrue(source.contains(#""projectArchive""#))
         XCTAssertTrue(source.contains(#""projectUndo""#))

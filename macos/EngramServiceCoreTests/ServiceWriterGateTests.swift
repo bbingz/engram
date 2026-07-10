@@ -3,6 +3,41 @@ import XCTest
 import EngramCoreWrite
 
 final class ServiceWriterGateTests: XCTestCase {
+    /// Wave 7C M01: pure reads through the gate must not advance databaseGeneration.
+    func testPerformReadCommandDoesNotBumpGeneration_repro() async throws {
+        let paths = try makeGatePaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+
+        let write = try await gate.performWriteCommand(name: "seed") { writer in
+            try writer.write { db in
+                try db.execute(sql: "CREATE TABLE IF NOT EXISTS t(id INTEGER PRIMARY KEY)")
+            }
+            return 1
+        }
+        XCTAssertEqual(write.databaseGeneration, 1)
+
+        let read1 = try await gate.performReadCommand(name: "periodicIndexStatus") { writer in
+            try writer.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM t") ?? -1
+            }
+        }
+        XCTAssertEqual(read1.value, 0)
+        XCTAssertEqual(read1.databaseGeneration, 1, "read must leave generation unchanged")
+
+        let read2 = try await gate.performReadCommand(name: "remoteSyncStatus") { _ in "ok" }
+        XCTAssertEqual(read2.databaseGeneration, 1)
+    }
+
+    /// Wave 7C H02: index/FTS/embed phase names are long-running for queue timeout.
+    func testIndexAndFtsNamesAreLongRunning_repro() {
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("indexRecent"))
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("initialScanIndex"))
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("periodicFtsDrain"))
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("embeddingBackfill"))
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("projectMove"))
+        XCTAssertFalse(ServiceWriterGate.isLongRunningWriteCommand("saveInsight"))
+    }
+
     func testFirstGateAcquiresLockAndConstructsOneWriter() async throws {
         let paths = try makeGatePaths()
         let factory = CountingWriterFactory()

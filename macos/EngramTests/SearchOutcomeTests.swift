@@ -75,6 +75,24 @@ final class SearchOutcomeTests: XCTestCase {
         )
     }
 
+    /// Wave 7E H11 (repro): Command palette path — service down + successful empty
+    /// local FTS is emptiness (didFail=false), not infrastructure unavailable.
+    func testPaletteServiceDownEmptyLocalIsEmptyNotFailed_repro() {
+        // Mirrors CommandPaletteView after local FTS returns [] without throwing.
+        XCTAssertEqual(
+            SearchOutcome.classify(query: "swift", isEmptyResults: true, didFail: false),
+            .empty
+        )
+    }
+
+    /// Wave 7E H11 (repro): only when local FTS also throws is the palette unavailable.
+    func testPaletteDoubleFaultIsFailed_repro() {
+        XCTAssertEqual(
+            SearchOutcome.classify(query: "swift", isEmptyResults: true, didFail: true),
+            .failed
+        )
+    }
+
     func testBoolOverloadDoubleFaultIsFailed() {
         XCTAssertEqual(
             SearchOutcome.classify(query: "swift", isEmptyResults: true, didFail: true),

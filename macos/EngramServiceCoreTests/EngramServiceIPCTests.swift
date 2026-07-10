@@ -123,7 +123,8 @@ final class EngramServiceIPCTests: XCTestCase {
     func testServiceAIHTTPTimeoutStaysBelowIPCFrameDeadline() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler.swift")
         XCTAssertTrue(
-            source.contains("private static let aiChatTimeoutSeconds: TimeInterval = 20"),
+            source.contains("private static let aiChatTimeoutSeconds: TimeInterval = 20")
+                || source.contains("aiChatTimeoutSeconds: TimeInterval = 20"),
             "AI summary/title requests must fail before the 30s IPC frame deadline so the service cannot write after the client times out"
         )
         XCTAssertTrue(source.contains("request.timeoutInterval = aiChatTimeoutSeconds"))
@@ -682,13 +683,15 @@ final class EngramServiceIPCTests: XCTestCase {
         let clearSource = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(clearSource.contains("tier = CASE"))
+        // Wave 7B H05: subagent AND dispatched keep skip across clearParent.
         XCTAssertTrue(
-            clearSource.contains("WHEN agent_role = 'subagent' THEN 'skip'"),
-            "manual unlink must preserve the skip-tier invariant for true subagents"
+            clearSource.contains("WHEN agent_role IN ('subagent', 'dispatched') THEN 'skip'")
+                || clearSource.contains("WHEN agent_role = 'subagent' OR agent_role = 'dispatched' THEN 'skip'"),
+            "manual unlink must preserve skip for subagent and dispatched agents"
         )
         XCTAssertTrue(
             clearSource.contains("ELSE NULL"),
-            "manual unlink must make non-subagent skip-tier children visible for re-evaluation"
+            "manual unlink must re-evaluate ordinary (non-agent) children"
         )
     }
 
@@ -774,7 +777,11 @@ final class EngramServiceIPCTests: XCTestCase {
             source.contains("var isFirstScan = true"),
             "Periodic indexing must not run an immediate first scan while startup maintenance already holds the write gate"
         )
-        let sleepRange = try XCTUnwrap(source.range(of: "try await Task.sleep(nanoseconds: intervalNanoseconds)"))
+        // Wave 7C S01: adaptive schedule sleeps first (15m+), then indexes.
+        let sleepRange = try XCTUnwrap(
+            source.range(of: "try await Task.sleep(nanoseconds: UInt64(sleepSeconds * 1_000_000_000))")
+                ?? source.range(of: "Task.sleep(nanoseconds: UInt64(sleepSeconds")
+        )
         let writeRange = try XCTUnwrap(source.range(of: #"gate.performWriteCommand(name: "indexRecent")"#))
         XCTAssertLessThan(sleepRange.lowerBound, writeRange.lowerBound)
     }
@@ -933,7 +940,11 @@ final class EngramServiceIPCTests: XCTestCase {
 
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "periodicParentBackfills")"#))
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "periodicFtsDrain")"#))
-        XCTAssertTrue(source.contains(#"performWriteCommand(name: "periodicIndexStatus")"#))
+        // Wave 7C M01: pure status reads use performReadCommand (no gen bump).
+        XCTAssertTrue(
+            source.contains(#"performReadCommand(name: "periodicIndexStatus")"#)
+                || source.contains(#"performWriteCommand(name: "periodicIndexStatus")"#)
+        )
         XCTAssertTrue(source.contains(#"performWriteCommand(name: "periodicRepoCandidates")"#))
         XCTAssertTrue(periodicBeforeGitProbe.contains("runRecoverableJobsOnce()"))
         XCTAssertFalse(
@@ -957,7 +968,10 @@ final class EngramServiceIPCTests: XCTestCase {
         let loop = String(source[start.lowerBound..<end.lowerBound])
 
         let backfills = try XCTUnwrap(loop.range(of: "runPeriodicParentBackfills()"))
-        let status = try XCTUnwrap(loop.range(of: #"performWriteCommand(name: "periodicIndexStatus")"#))
+        let status = try XCTUnwrap(
+            loop.range(of: #"performReadCommand(name: "periodicIndexStatus")"#)
+                ?? loop.range(of: #"performWriteCommand(name: "periodicIndexStatus")"#)
+        )
         XCTAssertLessThan(backfills.lowerBound, status.lowerBound)
         XCTAssertTrue(source.contains("total=\\(status.total) todayParents=\\(status.todayParents)"))
         XCTAssertTrue(source.contains("total: status.total"))

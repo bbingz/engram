@@ -404,60 +404,12 @@ public final class SwiftIndexer {
         if let firstRole = tail.infoDelta.firstVisibleRole, firstRole != .user { return nil }
         guard let currentSummaryCount = current.summaryMessageCount else { return nil }
 
-        let tailStats = computeStats(messages: tail.messages, provableSkip: false)
-        guard let instructionSignals = mergeInstructionSignals(current: current, tailMessages: tail.messages) else {
-            return nil
-        }
-
-        var stats = SessionStreamStats()
-        stats.indexedMessageCount = currentSummaryCount + tailStats.indexedMessageCount
-        stats.assistantCount = current.assistantMessageCount + tailStats.assistantCount
-        stats.toolCount = current.toolMessageCount + tailStats.toolCount
-        stats.toolCallCounts = mergedCounts(current.toolCallCounts, tailStats.toolCallCounts)
-        stats.tokenUsage = mergedUsage(current.tokenUsage, tailStats.tokenUsage)
-        stats.humanTurnCount = instructionSignals.humanTurnCount
-        stats.instructions = instructionSignals.instructions
-        // Cannot re-walk prior messages in a tail merge. Bind the new digest to
-        // the prior snapshot hash + tail content so pure appends stay incremental
-        // while a later full reparse remains the authority for body rewrites.
-        var seed = SHA256()
-        seed.update(data: Data("prior:\(current.snapshotHash)\n".utf8))
-        seed.update(data: Data(tailStats.contentFingerprintHex().utf8))
-        stats.contentDigest = seed
-
-        let info = NormalizedSessionInfo(
-            id: current.id,
-            source: current.source,
-            startTime: current.startTime,
-            endTime: tail.infoDelta.endTime ?? current.endTime,
-            cwd: current.cwd,
-            project: current.project,
-            model: current.model ?? tail.infoDelta.model,
-            messageCount: current.messageCount + tail.infoDelta.messageCount,
-            userMessageCount: current.userMessageCount + tail.infoDelta.userMessageCount,
-            assistantMessageCount: current.assistantMessageCount + tail.infoDelta.assistantMessageCount,
-            toolMessageCount: current.toolMessageCount + tail.infoDelta.toolMessageCount,
-            systemMessageCount: current.systemMessageCount + tail.infoDelta.systemMessageCount,
-            summary: current.summary,
-            filePath: locator,
-            sizeBytes: stat.sizeBytes,
-            indexedAt: current.indexedAt,
-            agentRole: current.agentRole,
-            origin: current.origin,
-            parentSessionId: current.parentSessionId
-        )
-        var snapshot = buildSnapshot(info: info, locator: locator, stats: stats)
-        let tailBeats = ImplementationDigestExtractor.extract(
-            messages: tailStats.implementationMessages,
-            sessionId: current.id,
-            sessionTitle: current.summary
-        ).enumerated().map { offset, beat in
-            var adjusted = beat
-            adjusted.beatIndex = current.implementationBeats.count + offset
-            return adjusted
-        }
-        snapshot.implementationBeats = current.implementationBeats + tailBeats
-        return snapshot
+        // Wave 7A H10: content fingerprint cannot be extended without re-reading
+        // prior messages. Force full reparse so snapshotHash stays parity-stable
+        // with a full scan. Tail-path metadata is still validated above.
+        _ = currentSummaryCount
+        _ = tail
+        return nil
     }
 
     private func mergeInstructionSignals(

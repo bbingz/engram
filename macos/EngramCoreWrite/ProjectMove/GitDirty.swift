@@ -48,8 +48,8 @@ public enum GitDirty {
 
         return await Task.detached { () -> GitDirtyStatus in
             let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["git", "-C", src, "status", "--porcelain"]
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = ["-C", src, "status", "--porcelain"]
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
             process.standardOutput = stdoutPipe

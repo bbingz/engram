@@ -204,6 +204,14 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         try await command("projectMoveBatch", payload: request, timeout: Self.migrationCommandTimeout)
     }
 
+    /// Wave 7C M05: request cooperative cancel of an in-flight projectMoveBatch.
+    func cancelProjectMoveBatch(operationId: String) async throws -> EngramServiceCancelProjectMoveBatchResponse {
+        try await command(
+            "cancelProjectMoveBatch",
+            payload: EngramServiceCancelProjectMoveBatchRequest(operationId: operationId)
+        )
+    }
+
     func linkSessions(_ request: EngramServiceLinkSessionsRequest) async throws -> EngramServiceLinkSessionsResponse {
         try await command("linkSessions", payload: request, timeout: Self.frameBoundCommandTimeout)
     }

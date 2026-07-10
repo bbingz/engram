@@ -625,11 +625,14 @@ final class StartupBackfillTests: XCTestCase {
             let first = try StartupBackfills.backfillPolycliProviderParents(db)
             let second = try StartupBackfills.backfillPolycliProviderParents(db)
 
-            XCTAssertEqual(first, StartupBackfills.ProviderParentResult(checked: 2, classified: 2, linked: 0, suggested: 1))
-            XCTAssertEqual(second, StartupBackfills.ProviderParentResult(checked: 0, classified: 0, linked: 0))
+            // Wave 7B M18: ordinary same-cwd sessions are not admitted without
+            // probe/dispatch summary evidence, so only ping + review probes count.
+            XCTAssertEqual(first.classified, 2)
+            XCTAssertEqual(second, StartupBackfills.ProviderParentResult(checked: 0, classified: 0, linked: 0, suggested: 0))
             XCTAssertNotNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'qwen-linked'"))
             XCTAssertNotNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'kimi-unlinked'"))
-            XCTAssertNotNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'qwen-ordinary'"))
+            // Ordinary non-probe is never a Polycli candidate under M18.
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'qwen-ordinary'"))
         }
     }
 

@@ -147,16 +147,22 @@ extension EngramServiceCommandHandler {
                     try validateProjectPathConfined(dst, label: "destination")
                 }
             }
+            let operationId = request.operationId
+            defer { ProjectMoveBatchCancelRegistry.shared.clear(operationId: operationId) }
             let result = await Batch.run(
                 document,
                 writer: writer,
                 overrides: BatchOverrides(
                     homeDirectory: homeDirectoryURL(),
                     force: request.force
-                )
+                ),
+                shouldCancel: {
+                    Task.isCancelled
+                        || ProjectMoveBatchCancelRegistry.shared.isCancelled(operationId: operationId)
+                }
             )
             ServiceLogger.notice(
-                "projectMoveBatch finished completed=\(result.completed.count) failed=\(result.failed.count) skipped=\(result.skipped.count)",
+                "projectMoveBatch finished completed=\(result.completed.count) failed=\(result.failed.count) skipped=\(result.skipped.count) cancelled=\(result.cancelled)",
                 category: .writer
             )
             return encodeBatchResult(result)

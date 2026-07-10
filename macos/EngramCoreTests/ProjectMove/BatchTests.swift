@@ -153,6 +153,24 @@ final class BatchTests: XCTestCase {
         XCTAssertTrue(result.skipped.isEmpty)
     }
 
+    func testRunCancellationStopsBeforeNextOperationAndReportsRemaining() async throws {
+        let first = BatchOperation(src: "/not-run-a", dst: "/not-run-b")
+        let second = BatchOperation(src: "/not-run-c", dst: "/not-run-d")
+        let doc = BatchDocument(operations: [first, second])
+
+        let result = await Batch.run(
+            doc,
+            writer: writer,
+            overrides: makeOverrides(),
+            shouldCancel: { true }
+        )
+
+        XCTAssertTrue(result.cancelled)
+        XCTAssertTrue(result.completed.isEmpty)
+        XCTAssertTrue(result.failed.isEmpty)
+        XCTAssertEqual(result.skipped, [first, second])
+    }
+
     func testRunSurfacesArchiveSuggestionFailureAsBatchFailure() async throws {
         // Empty fixture is "ambiguous" only when content is non-empty + no
         // git; the empty rule actually catches this as 空项目. Instead, build
@@ -273,8 +291,8 @@ final class BatchTests: XCTestCase {
 
     private static func runGit(at directory: URL, _ args: [String]) throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git"] + args
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = args
         process.currentDirectoryURL = directory
         process.standardOutput = Pipe()
         process.standardError = Pipe()

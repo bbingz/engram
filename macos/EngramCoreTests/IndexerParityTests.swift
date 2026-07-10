@@ -864,7 +864,9 @@ final class IndexerParityTests: XCTestCase {
 
         XCTAssertEqual(result.indexed, 0)
         XCTAssertEqual(adapter.streamCount, 0, "known locators with instruction signals should not be reparsed during startup backfill")
-        XCTAssertEqual(states[locator.path]?.parseStatus, .ok)
+        // Wave 7A C01: startup deferral must not invent a success parseStatus for
+        // an unparsed identity — leave state absent/dirty so later scans recover.
+        XCTAssertNil(states[locator.path], "deferral must not stamp file_index_state success")
     }
 
     func testInstructionBackfillIndexesExistingReliableRowsMissedByAdapterListing() async throws {

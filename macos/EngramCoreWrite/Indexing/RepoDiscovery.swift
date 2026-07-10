@@ -221,9 +221,24 @@ public enum RepoDiscovery {
     ) -> String? {
         guard timeoutSeconds > 0 else { return nil }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git", "-C", cwd] + args
-        process.environment = environment
+        var env = ProcessInfo.processInfo.environment
+        let inheritedPath = env["PATH"] ?? ""
+        if inheritedPath.isEmpty || !inheritedPath.split(separator: ":").contains(where: { $0 == "/usr/bin" || $0.hasSuffix("/bin") }) {
+            env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin" + (inheritedPath.isEmpty ? "" : ":\(inheritedPath)")
+        }
+        if let environment {
+            for (key, value) in environment {
+                env[key] = value
+            }
+            // Test injects a fake `git` via PATH — resolve through env.
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["git", "-C", cwd] + args
+        } else {
+            // Production / real-git tests: absolute binary, no PATH dependency.
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = ["-C", cwd] + args
+        }
+        process.environment = env
         let out = Pipe()
         let err = Pipe()
         process.standardOutput = out

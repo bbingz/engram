@@ -77,15 +77,18 @@ public struct BatchResult: Equatable, Sendable {
     public var completed: [PipelineResult]
     public var failed: [BatchOperationFailure]
     public var skipped: [BatchOperation]
+    public var cancelled: Bool
 
     public init(
         completed: [PipelineResult] = [],
         failed: [BatchOperationFailure] = [],
-        skipped: [BatchOperation] = []
+        skipped: [BatchOperation] = [],
+        cancelled: Bool = false
     ) {
         self.completed = completed
         self.failed = failed
         self.skipped = skipped
+        self.cancelled = cancelled
     }
 }
 
@@ -210,12 +213,18 @@ public enum Batch {
     public static func run(
         _ doc: BatchDocument,
         writer: EngramDatabaseWriter,
-        overrides: BatchOverrides = BatchOverrides()
+        overrides: BatchOverrides = BatchOverrides(),
+        shouldCancel: @Sendable () -> Bool = { Task.isCancelled }
     ) async -> BatchResult {
         var result = BatchResult()
         var halted = false
 
-        for op in doc.operations {
+        for (index, op) in doc.operations.enumerated() {
+            if shouldCancel() {
+                result.cancelled = true
+                result.skipped.append(contentsOf: doc.operations[index...])
+                break
+            }
             if halted {
                 result.skipped.append(op)
                 continue
