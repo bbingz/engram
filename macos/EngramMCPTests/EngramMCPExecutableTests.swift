@@ -2143,6 +2143,12 @@ final class EngramMCPExecutableTests: XCTestCase {
     /// must raise access_count so shipped MCP `get_memory` lifecycle ranking
     /// (accessBoost) prefers the accessed row — no duplicate counters, no
     /// test-only ORDER BY.
+    ///
+    /// Scenario intentionally uses an FTS-miss query so get_memory falls through
+    /// to recent lifecycle ranking (uniform relevance). Matching FTS would assign
+    /// 1.0/0.5 relevance by hit order and mask accessBoost; product weights stay
+    /// unchanged. `recordInsightAccess` also Set-dedupes IDs, so a single hot id
+    /// is the honest write (duplicates do not multi-increment).
     func testGetMemoryRanksByServiceRecordedAccessCount_diskAuditConsumer() async throws {
         let dbPath = try temporaryFixtureCopy(
             "mcp-contract.sqlite",
@@ -2163,7 +2169,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             }
             try db.execute(sql: "DELETE FROM insights")
             try db.execute(sql: "DELETE FROM insights_fts")
-            // Identical importance/recency so accessBoost alone decides order.
+            // Identical importance/recency; only service-written access_count differs.
             let rows: [(id: String, content: String)] = [
                 ("mem-cold", "disk audit access ranking shared fact about single writer"),
                 ("mem-hot", "disk audit access ranking shared fact about single writer"),
@@ -2204,14 +2210,16 @@ final class EngramMCPExecutableTests: XCTestCase {
         let client = EngramServiceClient(
             transport: UnixSocketEngramServiceTransport(socketPath: socket.path)
         )
-        // Service write path only — bump hot insight access_count.
-        try await client.recordInsightAccess(ids: ["mem-hot", "mem-hot", "mem-hot"])
+        // Service write path — single id (handler Set-dedupes; duplicates mislead).
+        try await client.recordInsightAccess(ids: ["mem-hot"])
 
         let isolatedHome = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: isolatedHome) }
+        // FTS-miss probe: no token appears in insight content, so get_memory uses
+        // recent lifecycle ranking with uniform relevance; accessBoost decides.
         let capture = try rpc(
             """
-            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"disk audit access ranking shared fact"}}}
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"zzzz-no-fts-hit-disk-audit-probe"}}}
             """,
             environment: [
                 "ENGRAM_MCP_DB_PATH": dbPath,
@@ -2226,7 +2234,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             capture.ordered["result"]?["structuredContent"]?["memories"]?.arrayValue
         )
         let ids = memories.compactMap { $0["id"]?.stringValue }
-        XCTAssertEqual(ids.first, "mem-hot", "get_memory must prefer service-accessed insight: \(ids)")
+        XCTAssertEqual(ids.first, "mem-hot", "get_memory recent ranking must prefer service-accessed insight: \(ids)")
         XCTAssertTrue(ids.contains("mem-cold"), "\(ids)")
     }
 
