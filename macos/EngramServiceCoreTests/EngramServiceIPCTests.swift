@@ -700,15 +700,16 @@ final class EngramServiceIPCTests: XCTestCase {
     }
 
     func testProjectMigrationCommandsEmitServiceLogs() throws {
-        let source = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler+ProjectMigration.swift")
+        let migrationSource = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler+ProjectMigration.swift")
+        let dispatchSource = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler.swift")
 
         for command in ["projectMove", "projectArchive", "projectUndo", "projectMoveBatch"] {
-            XCTAssertTrue(source.contains("\"\(command) requested"), "\(command) must log entry")
-            XCTAssertTrue(source.contains("\"\(command) finished"), "\(command) must log success")
-            XCTAssertTrue(source.contains("\"\(command) failed"), "\(command) must log failure")
+            XCTAssertTrue(migrationSource.contains("\"\(command) requested"), "\(command) must log entry")
+            XCTAssertTrue(dispatchSource.contains("\"\(command) finished"), "\(command) must log success")
+            XCTAssertTrue(dispatchSource.contains("\"\(command)\""), "\(command) must be admitted to failure logging")
         }
-        XCTAssertTrue(source.contains("ServiceLogger.notice("))
-        XCTAssertTrue(source.contains("ServiceLogger.error("))
+        XCTAssertTrue(dispatchSource.contains("ServiceLogger.notice("))
+        XCTAssertTrue(dispatchSource.contains("ServiceLogger.error(\"\\(command) failed\""))
     }
 
     func testProjectMoveResultPayloadIsCappedBelowFrameLimit() throws {
@@ -3888,8 +3889,10 @@ final class EngramServiceIPCTests: XCTestCase {
     func testSetSourceEnabledTogglesIngestHidesSessionsAndPreservesSettings() async throws {
         // Feature #2 slice B round-trip via a temp settings.json. ENGRAM_SETTINGS_PATH
         // points both the write (RMW) and read (disabledSources) paths at the temp file.
-        let settingsURL = URL(fileURLWithPath: "/tmp")
-            .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8)).json")
+        let settingsDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
+        let settingsURL = settingsDirectory.appendingPathComponent("settings.json")
         let seed: [String: Any] = [
             "customSetting": true,
             "aiModel": "gpt-4o-mini",
@@ -3901,7 +3904,7 @@ final class EngramServiceIPCTests: XCTestCase {
         setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
         defer {
             unsetenv("ENGRAM_SETTINGS_PATH")
-            try? FileManager.default.removeItem(at: settingsURL)
+            try? FileManager.default.removeItem(at: settingsDirectory)
         }
 
         let paths = try makeServiceIPCPaths()
@@ -4036,14 +4039,16 @@ final class EngramServiceIPCTests: XCTestCase {
     }
 
     func testSetSourceEnabledStartsFromImplicitArchivedDefaults() async throws {
-        let settingsURL = URL(fileURLWithPath: "/tmp")
-            .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8)).json")
+        let settingsDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-settings-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
+        let settingsURL = settingsDirectory.appendingPathComponent("settings.json")
         let seedData = try JSONSerialization.data(withJSONObject: ["customSetting": true])
         try seedData.write(to: settingsURL)
         setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
         defer {
             unsetenv("ENGRAM_SETTINGS_PATH")
-            try? FileManager.default.removeItem(at: settingsURL)
+            try? FileManager.default.removeItem(at: settingsDirectory)
         }
 
         let paths = try makeServiceIPCPaths()

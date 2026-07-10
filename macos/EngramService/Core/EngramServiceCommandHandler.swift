@@ -383,6 +383,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     writerGate: writerGate,
                     hooks: longOpHooks
                 )
+                ServiceLogger.notice("projectMove finished", category: .writer)
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
@@ -395,6 +396,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     writerGate: writerGate,
                     hooks: longOpHooks
                 )
+                ServiceLogger.notice("projectArchive finished", category: .writer)
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
@@ -407,6 +409,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     writerGate: writerGate,
                     hooks: longOpHooks
                 )
+                ServiceLogger.notice("projectUndo finished", category: .writer)
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
@@ -419,6 +422,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     writerGate: writerGate,
                     hooks: longOpHooks
                 )
+                ServiceLogger.notice("projectMoveBatch finished", category: .writer)
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
@@ -578,16 +582,25 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 )
             }
         } catch let error as EngramServiceError {
+            Self.logProjectMigrationFailure(command: request.command, error: error)
             return .failure(
                 requestId: request.requestId,
                 error: Self.errorEnvelope(error)
             )
         } catch {
+            Self.logProjectMigrationFailure(command: request.command, error: error)
             return .failure(
                 requestId: request.requestId,
                 error: Self.genericErrorEnvelope(error)
             )
         }
+    }
+
+    private static func logProjectMigrationFailure(command: String, error: Error) {
+        guard ["projectMove", "projectArchive", "projectUndo", "projectMoveBatch"].contains(command) else {
+            return
+        }
+        ServiceLogger.error("\(command) failed", category: .writer, error: error)
     }
 
     /// Map an otherwise-unclassified thrown error to an envelope. A FTS5/SQL
