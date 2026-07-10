@@ -200,25 +200,33 @@ if not referenced:
     sys.exit(1)
 
 for gate_id, argv in planned:
-    # One gate per line: gate_id<TAB>json-array-argv
-    print(gate_id + "\t" + json.dumps(argv))
+    # Fixed fields only (Bash 3.2-safe): gate_id + scripts/<repo-owned>.sh
+    # Never emit free-form argv JSON for shell reconstruction.
+    print(gate_id + "\t" + argv[1])
 PY
 
 # Execute each planned allowlisted gate exactly once.
-while IFS=$'\t' read -r gate_id argv_json; do
+# Stock macOS /bin/bash is 3.2 — no mapfile/arrays of arbitrary argv.
+# Schema is exactly bash + one repo-owned scripts/*.sh path.
+while IFS=$'\t' read -r gate_id script_rel; do
   if [[ -z "${gate_id:-}" ]]; then
     continue
   fi
-  # shellcheck disable=SC2207
-  mapfile -t argv < <(python3 -c 'import json,sys; print("\n".join(json.loads(sys.argv[1])))' "$argv_json")
-  if ((${#argv[@]} == 0)); then
-    echo "empty argv for gate: $gate_id" >&2
+  case "$script_rel" in
+    scripts/*/*.sh|scripts/*.sh) ;;
+    *)
+      echo "invalid planned script path for gate ${gate_id}: ${script_rel}" >&2
+      exit 1
+      ;;
+  esac
+  if [[ "$script_rel" == *..* ]]; then
+    echo "invalid planned script path for gate ${gate_id}: ${script_rel}" >&2
     exit 1
   fi
-  echo "running invariant gate: $gate_id (${argv[*]})"
+  echo "running invariant gate: $gate_id (bash $script_rel)"
   (
     cd "$ROOT_DIR"
-    "${argv[@]}"
+    bash "$script_rel"
   ) || {
     echo "invariant gate failed: $gate_id" >&2
     exit 1

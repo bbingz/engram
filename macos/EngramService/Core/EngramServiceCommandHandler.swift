@@ -619,13 +619,21 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         guard let payload = request.payload else {
             throw EngramServiceError.invalidRequest(message: "Missing payload for \(request.command)")
         }
+        return try Self.decodeJSONPayload(type, from: payload, command: request.command)
+    }
+
+    /// L02: map JSON `DecodingError` to structured InvalidRequest only.
+    /// Other errors from custom `Decodable` types rethrow unchanged.
+    static func decodeJSONPayload<T: Decodable>(
+        _ type: T.Type,
+        from data: Data,
+        command: String
+    ) throws -> T {
         do {
-            return try JSONDecoder().decode(type, from: payload)
-        } catch {
-            // L02 / payload contract: present-but-malformed JSON must surface as
-            // structured InvalidRequest, not the generic CommandFailed catch-all.
+            return try JSONDecoder().decode(type, from: data)
+        } catch let error as DecodingError {
             throw EngramServiceError.invalidRequest(
-                message: "Invalid payload for \(request.command): \(error.localizedDescription)"
+                message: "Invalid payload for \(command): \(error.localizedDescription)"
             )
         }
     }

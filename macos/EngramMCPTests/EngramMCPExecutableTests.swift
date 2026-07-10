@@ -2139,6 +2139,94 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(warning?.contains("ranked by importance and recency"), true, "\(warning ?? "nil")")
     }
 
+    /// Disk-audit product consumer E2E: service `recordInsightAccess` write path
+    /// must raise access_count so shipped MCP `get_memory` lifecycle ranking
+    /// (accessBoost) prefers the accessed row — no duplicate counters, no
+    /// test-only ORDER BY.
+    func testGetMemoryRanksByServiceRecordedAccessCount_diskAuditConsumer() async throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-disk-audit-access"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try DatabaseQueue(path: dbPath).write { db in
+            for ddl in [
+                "ALTER TABLE insights ADD COLUMN insight_type TEXT DEFAULT 'semantic'",
+                "ALTER TABLE insights ADD COLUMN superseded_by TEXT",
+                "ALTER TABLE insights ADD COLUMN last_accessed_at TEXT",
+                "ALTER TABLE insights ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0",
+            ] {
+                try? db.execute(sql: ddl)
+            }
+            try db.execute(sql: "DELETE FROM insights")
+            try db.execute(sql: "DELETE FROM insights_fts")
+            // Identical importance/recency so accessBoost alone decides order.
+            let rows: [(id: String, content: String)] = [
+                ("mem-cold", "disk audit access ranking shared fact about single writer"),
+                ("mem-hot", "disk audit access ranking shared fact about single writer"),
+            ]
+            for row in rows {
+                try db.execute(
+                    sql: """
+                    INSERT INTO insights
+                      (id, content, importance, created_at, insight_type, access_count)
+                    VALUES (?, ?, 5, '2026-06-26 00:00:00', 'semantic', 0)
+                    """,
+                    arguments: [row.id, row.content]
+                )
+                try db.execute(
+                    sql: "INSERT INTO insights_fts (insight_id, content) VALUES (?, ?)",
+                    arguments: [row.id, row.content]
+                )
+            }
+        }
+
+        let runtime = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("engram-disk-audit-run-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runtime,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: runtime) }
+        let gate = try ServiceWriterGate(databasePath: dbPath, runtimeDirectory: runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let socket = runtime.appendingPathComponent("service.sock")
+        let server = UnixSocketServiceServer(socketPath: socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: socket.path)
+        )
+        // Service write path only — bump hot insight access_count.
+        try await client.recordInsightAccess(ids: ["mem-hot", "mem-hot", "mem-hot"])
+
+        let isolatedHome = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: isolatedHome) }
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"disk audit access ranking shared fact"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_NOW": "2026-06-26T00:00:00.000Z",
+                "HOME": isolatedHome.path,
+                "ENGRAM_SETTINGS_PATH": isolatedHome.appendingPathComponent("missing-settings.json").path,
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let memories = try XCTUnwrap(
+            capture.ordered["result"]?["structuredContent"]?["memories"]?.arrayValue
+        )
+        let ids = memories.compactMap { $0["id"]?.stringValue }
+        XCTAssertEqual(ids.first, "mem-hot", "get_memory must prefer service-accessed insight: \(ids)")
+        XCTAssertTrue(ids.contains("mem-cold"), "\(ids)")
+    }
+
     func testSearchHybridNoEmbeddingMatchesGolden() throws {
         try assertToolCallMatchesGolden(
             tool: "search",

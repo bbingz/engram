@@ -213,84 +213,9 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse((row?["last_accessed_at"] as String? ?? "").isEmpty)
     }
 
-    /// Disk-audit consumer E2E: access counters already on sessions/insights must
-    /// round-trip through service IPC so a read-side consumer can rank never-
-    /// accessed vs accessed rows without a second counter scheme.
-    func testDiskAuditAccessCountersAreReadableAfterServiceRecordPaths() async throws {
-        let paths = try makeServiceIPCPaths()
-        try seedSearchFixture(at: paths.database.path)
-        try await DatabaseQueue(path: paths.database.path).write { db in
-            try db.execute(sql: """
-                CREATE TABLE insights (
-                  id TEXT PRIMARY KEY,
-                  content TEXT NOT NULL,
-                  wing TEXT,
-                  room TEXT,
-                  importance INTEGER DEFAULT 5,
-                  source_session_id TEXT,
-                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                  insight_type TEXT DEFAULT 'semantic',
-                  superseded_by TEXT,
-                  last_accessed_at TEXT,
-                  access_count INTEGER NOT NULL DEFAULT 0
-                )
-                """)
-            try db.execute(sql: """
-                INSERT INTO insights(id, content, importance, insight_type, access_count)
-                VALUES
-                  ('insight-hot', 'hot memory', 5, 'semantic', 0),
-                  ('insight-cold', 'cold memory', 5, 'semantic', 0)
-                """)
-        }
-        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
-        let handler = EngramServiceCommandHandler(writerGate: gate)
-        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
-            await handler.handle(request)
-        }
-        try server.start()
-        defer { server.stop() }
-
-        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
-        try await client.recordSessionAccess(sessionId: "s1")
-        try await client.recordInsightAccess(ids: ["insight-hot"])
-
-        let queue = try DatabaseQueue(path: paths.database.path)
-        // Disk-audit style consumer: order never-accessed last, prefer higher access_count.
-        let sessionAudit = try await queue.read { db -> [(String, Int, String?)] in
-            try Row.fetchAll(
-                db,
-                sql: """
-                SELECT id, COALESCE(access_count, 0) AS access_count, last_accessed_at
-                FROM sessions
-                ORDER BY COALESCE(access_count, 0) DESC, last_accessed_at DESC NULLS LAST, id ASC
-                """
-            ).map { row in
-                (row["id"] as String, row["access_count"] as Int, row["last_accessed_at"] as String?)
-            }
-        }
-        XCTAssertEqual(sessionAudit.first?.0, "s1")
-        XCTAssertEqual(sessionAudit.first?.1, 1)
-        XCTAssertNotNil(sessionAudit.first?.2)
-        XCTAssertTrue(sessionAudit.contains(where: { $0.0 != "s1" && $0.1 == 0 && $0.2 == nil }))
-
-        let insightAudit = try await queue.read { db -> [(String, Int, String?)] in
-            try Row.fetchAll(
-                db,
-                sql: """
-                SELECT id, COALESCE(access_count, 0) AS access_count, last_accessed_at
-                FROM insights
-                ORDER BY COALESCE(access_count, 0) DESC, last_accessed_at DESC NULLS LAST, id ASC
-                """
-            ).map { row in
-                (row["id"] as String, row["access_count"] as Int, row["last_accessed_at"] as String?)
-            }
-        }
-        XCTAssertEqual(insightAudit.map(\.0), ["insight-hot", "insight-cold"])
-        XCTAssertEqual(insightAudit[0].1, 1)
-        XCTAssertNotNil(insightAudit[0].2)
-        XCTAssertEqual(insightAudit[1].1, 0)
-        XCTAssertNil(insightAudit[1].2)
-    }
+    // Disk-audit product consumer E2E lives in EngramMCPExecutableTests
+    // (get_memory lifecycle ranking) and EngramTests (DatabaseManager accessedDesc).
+    // Ad-hoc DatabaseQueue ORDER BY is not a shipped consumer.
 
     func testSessionRelationRoundTripIsSymmetricIdempotentAndRemovable() async throws {
         let paths = try makeServiceIPCPaths()

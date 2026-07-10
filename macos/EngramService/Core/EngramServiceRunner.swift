@@ -753,13 +753,15 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         return Double(components.seconds) * 1000 + Double(components.attoseconds) / 1e15
     }
 
-    private struct InitialScanPhaseOutcome<Value> {
+    struct InitialScanPhaseOutcome<Value> {
         var value: Value?
         var failed: Bool
         var cancelled: Bool
     }
 
-    private static func runInitialScanPhase<Value>(
+    /// Runs one required initial-scan phase with writerBusy retry + failure telemetry.
+    /// Internal for focused M02 behavioral tests (operation failure → no success sample).
+    static func runInitialScanPhase<Value>(
         name: String,
         statusMonitor: ServiceStatusMonitor,
         telemetry: ServiceTelemetryCollector? = nil,
@@ -769,6 +771,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         var writerBusyRetries = 0
         let phaseClock = ContinuousClock()
         let phaseStarted = phaseClock.now
+        // Wall-clock start for span.startedAt (must reflect phase begin, not failure time).
+        let phaseWallStartedAt = Self.isoTimestamp()
         while !Task.isCancelled {
             do {
                 let value = try await operation()
@@ -797,12 +801,19 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                 await statusMonitor.recordScanFailure(message)
                 await telemetry?.recordFailedScanPhase(
                     phase: name,
-                    durationMs: Self.elapsedMs(from: phaseStarted, clock: phaseClock)
+                    durationMs: Self.elapsedMs(from: phaseStarted, clock: phaseClock),
+                    startedAt: phaseWallStartedAt
                 )
                 return InitialScanPhaseOutcome(value: nil, failed: true, cancelled: false)
             }
         }
         return InitialScanPhaseOutcome(value: nil, failed: false, cancelled: true)
+    }
+
+    static func isoTimestamp(_ date: Date = Date()) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
     }
 
     private static func isWriterBusy(_ error: Error) -> Bool {

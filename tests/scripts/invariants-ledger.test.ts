@@ -78,6 +78,18 @@ describe('invariants ledger gate script', () => {
     expect(result.stdout).toContain('invariants ledger ok');
   });
 
+  it('passes under stock macOS /bin/bash with the valid registry', () => {
+    // L09 portability: the runner must not require bash 4+ features (mapfile).
+    const pathEnv = `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ''}`;
+    const stdout = execFileSync('/bin/bash', [script], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: pathEnv },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    expect(stdout).toContain('invariants ledger ok');
+  });
+
   it('keeps enforced and verified anchors inside the checked path set', () => {
     const ledger = readFileSync(
       resolve(repoRoot, 'docs/invariants.md'),

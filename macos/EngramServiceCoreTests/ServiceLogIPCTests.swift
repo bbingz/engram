@@ -124,6 +124,46 @@ final class ServiceLogIPCTests: XCTestCase {
         XCTAssertEqual(snapshot.lines.count, 1)
     }
 
+    /// L02 narrow mapping: only DecodingError becomes InvalidRequest; custom
+    /// Decodable domain errors rethrow unchanged.
+    func testDecodeJSONPayloadMapsDecodingErrorOnly() throws {
+        struct OkPayload: Decodable {
+            let limit: Int?
+        }
+        struct DomainThrowingPayload: Decodable {
+            init(from decoder: Decoder) throws {
+                throw EngramServiceError.writerBusy(message: "domain-busy")
+            }
+        }
+
+        do {
+            _ = try EngramServiceCommandHandler.decodeJSONPayload(
+                OkPayload.self,
+                from: Data(#"{"limit":"nope"}"#.utf8),
+                command: "serviceLogs"
+            )
+            XCTFail("type mismatch must throw")
+        } catch let error as EngramServiceError {
+            guard case .invalidRequest = error else {
+                return XCTFail("DecodingError must map to invalidRequest, got \(error)")
+            }
+        }
+
+        do {
+            _ = try EngramServiceCommandHandler.decodeJSONPayload(
+                DomainThrowingPayload.self,
+                from: Data("{}".utf8),
+                command: "serviceLogs"
+            )
+            XCTFail("domain error must rethrow")
+        } catch let error as EngramServiceError {
+            guard case .writerBusy(let message) = error else {
+                return XCTFail("non-DecodingError must rethrow unchanged, got \(error)")
+            }
+            XCTAssertEqual(message, "domain-busy")
+        }
+    }
+
     // MARK: - Helpers
 
     private func makeServicePaths() throws -> (runtime: URL, socket: URL, database: URL) {

@@ -62,7 +62,12 @@ final class ServiceTelemetryTests: XCTestCase {
     /// must not be counted as a successful scan sample.
     func testFailedScanPhaseDoesNotRecordSuccessSample_repro() async {
         let collector = ServiceTelemetryCollector()
-        await collector.recordFailedScanPhase(phase: "initialScanIndex", durationMs: 42.5)
+        let startedAt = "2026-07-10T12:00:00.000Z"
+        await collector.recordFailedScanPhase(
+            phase: "initialScanIndex",
+            durationMs: 42.5,
+            startedAt: startedAt
+        )
         let snapshot = await collector.snapshot()
 
         XCTAssertEqual(snapshot.scanCount, 0, "failed phase must not increment scanCount")
@@ -76,20 +81,79 @@ final class ServiceTelemetryTests: XCTestCase {
         XCTAssertEqual(failed?.ok, false)
         XCTAssertEqual(failed?.errorName, "ScanPhaseFailed")
         XCTAssertEqual(failed?.durationMs, 42.5)
+        XCTAssertEqual(failed?.startedAt, startedAt)
 
         let latency = snapshot.commands.first(where: { $0.command == "scanPhase.initialScanIndex" })
         XCTAssertEqual(latency?.errorCount, 1)
         XCTAssertEqual(latency?.count, 1)
     }
 
+    func testFailedScanPhaseUsesSuppliedStartedAtNotRecordTime() async {
+        let collector = ServiceTelemetryCollector()
+        let startedAt = "2026-01-01T00:00:00.000Z"
+        await collector.recordFailedScanPhase(phase: "initialFtsDrain", durationMs: 7, startedAt: startedAt)
+        let snapshot = await collector.snapshot()
+        XCTAssertEqual(snapshot.spans.first?.startedAt, startedAt)
+    }
+
     func testSuccessScanSampleStillRecordsAfterFailedPhaseTelemetry() async {
         let collector = ServiceTelemetryCollector()
-        await collector.recordFailedScanPhase(phase: "initialScanOrphans", durationMs: 3)
+        await collector.recordFailedScanPhase(
+            phase: "initialScanOrphans",
+            durationMs: 3,
+            startedAt: "2026-07-10T00:00:00.000Z"
+        )
         await collector.recordScan(durationMs: 11, indexed: 2, total: 9)
         let snapshot = await collector.snapshot()
         XCTAssertEqual(snapshot.scanCount, 1)
         XCTAssertEqual(snapshot.lastScanIndexed, 2)
         XCTAssertTrue(snapshot.spans.contains(where: { $0.command == "scanPhase.initialScanOrphans" && $0.ok == false }))
+    }
+
+    /// M02 behavioral: force a required phase operation to fail through the
+    /// real `runInitialScanPhase` path (not a direct collector call or source scan).
+    func testRunInitialScanPhaseOperationFailureEmitsTelemetryWithoutSuccessSample() async throws {
+        let collector = ServiceTelemetryCollector()
+        let monitor = ServiceStatusMonitor()
+        let wallBefore = Date().addingTimeInterval(-2)
+
+        struct PhaseBoom: Error, LocalizedError {
+            var errorDescription: String? { "injected phase failure" }
+        }
+
+        let outcome = await EngramServiceRunner.runInitialScanPhase(
+            name: "initialScanIndex",
+            statusMonitor: monitor,
+            telemetry: collector,
+            maxWriterBusyRetries: 0
+        ) {
+            throw PhaseBoom()
+        }
+
+        XCTAssertTrue(outcome.failed)
+        XCTAssertFalse(outcome.cancelled)
+        XCTAssertNil(outcome.value)
+
+        let snapshot = await collector.snapshot()
+        XCTAssertEqual(snapshot.scanCount, 0, "failed phase must not write a success scan sample")
+        XCTAssertNil(snapshot.lastScanDurationMs)
+        XCTAssertNil(snapshot.lastScanAt)
+
+        let failed = try XCTUnwrap(snapshot.spans.first(where: { $0.command == "scanPhase.initialScanIndex" }))
+        XCTAssertEqual(failed.ok, false)
+        XCTAssertEqual(failed.errorName, "ScanPhaseFailed")
+        XCTAssertGreaterThan(failed.durationMs, 0)
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var started = formatter.date(from: failed.startedAt)
+        if started == nil {
+            formatter.formatOptions = [.withInternetDateTime]
+            started = formatter.date(from: failed.startedAt)
+        }
+        let startedAtDate = try XCTUnwrap(started, "startedAt must be parseable ISO-8601: \(failed.startedAt)")
+        XCTAssertGreaterThanOrEqual(startedAtDate, wallBefore.addingTimeInterval(-1))
+        XCTAssertLessThanOrEqual(startedAtDate.timeIntervalSinceNow, 1.0)
     }
 
     /// L01: stdout event encoding must go through JSONEncoder so quotes/newlines

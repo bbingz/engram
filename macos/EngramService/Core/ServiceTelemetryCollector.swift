@@ -82,10 +82,12 @@ actor ServiceTelemetryCollector {
 
     /// Distinct failure telemetry for a required initial-scan phase. Does **not**
     /// increment `scanCount` or touch the last-success scan sample (M02).
-    func recordFailedScanPhase(phase: String, durationMs: Double) {
+    /// - Parameter startedAt: Wall-clock ISO timestamp when the phase actually
+    ///   began (not when failure is recorded).
+    func recordFailedScanPhase(phase: String, durationMs: Double, startedAt: String) {
         record(span: ServiceSpan(
             command: "scanPhase.\(phase)",
-            startedAt: Self.isoNow(),
+            startedAt: startedAt,
             durationMs: durationMs,
             ok: false,
             errorName: "ScanPhaseFailed"
