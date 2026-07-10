@@ -309,9 +309,11 @@ public enum DestinationParentProvision {
     }
 
     private static func requireDirectory(atPath path: String) throws {
+        // Unqualified lstat matches FsOpsHooks.production (Swift shadows Darwin.stat
+        // as the struct type). lstat also refuses symlink parents for path safety.
         var info = stat()
         let rc = path.withCString { cPath in
-            Darwin.stat(cPath, &info)
+            lstat(cPath, &info)
         }
         guard rc == 0 else {
             throw Error.mkdirFailed(path: path, errno: errno)
