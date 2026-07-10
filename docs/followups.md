@@ -293,17 +293,19 @@ there, not a maintenance cut).
 
 ## Closed — perf-integration review findings (2026-07-04)
 
-Current active items in this section as of 2026-07-08: none. The CursorAdapter
-WAL-aware parse-cache signature and the three P3 latent issues were closed in
-the Wave 5 perf-residual closeout; older P1/Web UI entries remain below only as
-closeout evidence.
+**Historical section (closed).** As of 2026-07-08 there were **no active**
+items in this section. The CursorAdapter WAL-aware parse-cache signature and
+the three P3 latent issues were closed in the Wave 5 perf-residual closeout;
+older P1/Web UI entries remain below only as closeout evidence. Do not treat
+the narrative below as open engineering work.
 
 From the 18-agent adversarial review of the Codex-integrated 8-PR perf batch
 (base `f9a236dc..main`). The one blocking item (fts_map self-heal ownership) was
 already fixed on `main` (see `CHANGELOG.md`, new test
 `FTSIncrementalTests.testReusedRowidWithUnchangedContentIsNotMaskedByStaleMap`).
-The items below were each re-verified against real code and are left for a
-follow-up fix pass. Every behavior change here needs a matching Swift test.
+Each item below was re-verified against real code and **later closed** (see
+per-item Resolution notes). The narrative is retained as historical evidence
+only; it is not an open fix-pass list.
 
 ### P1 — oversized-transcript (>10k msgs) silent truncation makes totals/tails stale
 
@@ -318,19 +320,21 @@ follow-up fix pass. Every behavior change here needs a matching Swift test.
   `.messageLimitExceeded`; it logs a private `.notice` and returns only the
   first 10k parsed records as success. This is a *deliberate, tested* change
   (AdapterWindowedReadTests) to avoid falling back to an uncapped legacy parser.
-- **Why it's a problem:** two downstream call sites still assume "a whole read
-  either fully succeeds or throws." MCP `get_session` now computes `totalPages`
-  from a truncated total, so a client that pages to the reported last page
-  believes it read the whole session while the tail past record ~10,000 is
-  silently missing; the resume primer's "last messages" can likewise go stale.
-  Separately, `collectVisiblePageWindow` (cache-hit fast path) asks the adapter
-  for `StreamMessagesOptions(offset: 0, limit: rawLimit)`, which bypasses the
-  10k cap that `fullScanPage` used to compute the cached total — so deep paging
-  and the cached total disagree about how much content exists.
-- **Needs a decision:** silent truncation vs. surfacing it. Preferred direction:
-  thread a `truncated`/`totalKnownComplete` signal out of the adapter window so
-  MCP totals and the resume primer can report incompleteness instead of
-  quietly capping. Confirm the intended UX before implementing.
+- **Why it was a problem (historical):** two downstream call sites still assumed
+  "a whole read either fully succeeds or throws." MCP `get_session` computed
+  `totalPages` from a truncated total, so a client that paged to the reported
+  last page believed it read the whole session while the tail past record
+  ~10,000 was silently missing; the resume primer's "last messages" could
+  likewise go stale. Separately, `collectVisiblePageWindow` (cache-hit fast
+  path) asked the adapter for `StreamMessagesOptions(offset: 0, limit: rawLimit)`,
+  which bypassed the 10k cap that `fullScanPage` used to compute the cached
+  total — so deep paging and the cached total disagreed about how much content
+  existed.
+- **Decision resolved (historical):** silent truncation was replaced by an
+  explicit incompleteness signal. The preferred direction was adopted: a
+  `truncated`/`totalKnownComplete` signal is threaded out of the adapter window
+  so MCP totals and the resume primer report incompleteness instead of quietly
+  capping (see residuals resolution below).
 
 #### P1 residuals after Codex fix pass (re-verified 2026-07-05, Claude Code)
 

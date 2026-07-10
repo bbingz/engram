@@ -34,11 +34,15 @@ Implemented on 2026-06-21 (branch `feat/backlog-5-followups`):
 
 Retired on 2026-06-21 — already shipped, confirmed against current main:
 
-- **Favorite toggle from browse.** Browse favorite action shipped with PR #74
-  (`ExpandableSessionCard.onToggleFavorite`). Wave 8C / M19 (`262d59a2`) made
-  the toggle symmetric (Add/Remove) via session `isFavorite` /
-  `favoriteToggleTarget` on browse, Starred, and child cards — see
-  `SessionModelTests` favorite suite. Do not re-open as a partial claim.
+- **Favorite toggle (symmetric browse/starred/child).** The symmetric Add/Remove
+  favorite toggle on browse, Starred, and child cards is Wave 8C / M19 evidence
+  only (`262d59a2`): session `isFavorite` / `favoriteToggleTarget` wiring —
+  see `SessionModelTests` favorite suite
+  (`testFavoriteToggleTargetIsSymmetricNegation`,
+  `testFavoriteMenuLabelReflectsAddVersusRemove`,
+  `testBrowseStarredAndChildCardsWireIsFavoriteSourceTruth`). Do not re-open as
+  a partial claim or attribute the symmetric toggle to the older PR #74 UX
+  alignment work.
 - **Cost/usage notifications.** Shipped: monthly-budget + long-session notify
   in `SettingsView` (`monthlyBudget`, `notifyOnLongSession`) — the cost
   dashboard's budget notifier.

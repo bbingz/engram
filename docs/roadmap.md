@@ -52,8 +52,9 @@ correctly because `PopoverUsageSection` remains gated on real usage data.
 
 ## Open roadmap
 
-No open roadmap product items as of 2026-05-24. See the decision-pending
-table below for items parked by the 2026-07-09 plan-completion audit.
+No scheduled roadmap product items as of 2026-05-24. Twelve owner decisions
+remain in the Decision pending table below (parked by the 2026-07-09
+plan-completion audit); they are not scheduled implementation work.
 
 ## Decision pending (2026-07-09 plan-completion audit)
 

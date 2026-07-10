@@ -21,7 +21,7 @@
 | C01 | CONFIRMED-FIXED | `12d3c081` | `testStartupDeferralDoesNotStampSuccess_recentScanRecovers_repro` | `SwiftIndexer.swift` deferral `continue` without `recordFileIndexSuccess` | — |
 | H01 | CONFIRMED-FIXED | `12d3c081` | `testFinalizeRebuildPreservesLiveRowsForPermanentFailures_repro` | `FTSRebuildPolicy.finalizeRebuildIfReady` copies live→shadow before swap | — |
 | H02 | CONFIRMED-FIXED | `12d3c081` | **`testIndexAndFtsNamesAreLongRunning_repro`** | `ServiceWriterGate.isLongRunningWriteCommand` | Named-command coverage may miss exotic names |
-| H03 | CONFIRMED-FIXED | pass4 | **`testPeerDisconnectCancelsInFlightHandler_repro`** + **`testLinkSessionsCooperativeCancelReturnsRemaining_repro`** + timeout headroom | peer disconnect cancels handler task; symlink loop cooperative cancel + partial remaining | — |
+| H03 | CONFIRMED-FIXED | pass4 + `c983a759`/`eeab26a8` | **pass4:** **`testPeerDisconnectCancelsInFlightHandler_repro`** + **`testLinkSessionsCooperativeCancelReturnsRemaining_repro`** + timeout headroom; **Wave 8D current:** **`testHardTimeoutOperationWinCancelsTimerPeer_repro`**, **`testHardTimeoutTimeoutWinCancelsOperationPeer_repro`**, **`testProducerRetainsWriterGateAfterClientWaiterDetach_repro`**, **`testUnixSocketServiceServerStopCancelsInFlightClientHandlers`** | peer disconnect cancels handler task; symlink loop cooperative cancel + partial remaining; long-op hard-timeout peer cancel + waiter detach retention (Wave 8D) | — |
 | H04 | CONFIRMED-FIXED | `12d3c081` | `testBackfillSuggestedParentsWritesAmbiguousCandidatesWithoutSkipping` | `setAmbiguousSuggestion` keeps role/tier | — |
 | H05 | CONFIRMED-FIXED | `12d3c081`+follow-up | **`testClearParentPreservesDispatchedSkipTier_repro`** (IPC behavioral) + cascade SQL source lock | shipped `clearParentSession` keeps dispatched→skip | Existing DBs get trigger via createOrUpdateBaseSchema |
 | H06 | CONFIRMED-FIXED | `12d3c081`+follow-up | **`testGenerateSummaryIsNotReadOnly_repro`** + tools/list annotation assert | `MCPToolRegistry.toolCategory` → `.mutating` | — |
@@ -30,12 +30,12 @@
 | H09 | CONFIRMED-FIXED | follow-up | **`testValidMemoryFileIsReadable_repro`**, **`testNonMemoryMarkdownIsRejected_repro`**, **`testSymlinkEscapeIsRejected_repro`**, **`testTildeDisplayPathUnderMemoryIsReadable_repro`** | `FileSystemEngramServiceReadProvider.memoryFileContent` bounds | — |
 | H10 | CONFIRMED-FIXED | `12d3c081` | `testSameCountBodyRewriteEnqueuesFtsJob_repro` | `contentFingerprint` in `snapshotHash` | Tail merge seeds from prior hash |
 | H11 | CONFIRMED-FIXED | `12d3c081`+follow-up | **`testPaletteServiceDownEmptyLocalIsEmptyNotFailed_repro`**, **`testPaletteDoubleFaultIsFailed_repro`** | `CommandPaletteView` + `SearchOutcome` bool overload | — |
-| H12 | CONFIRMED-FIXED | `262d59a2`/`cfed29b5` | `CommandPaletteTests` export state machine suite | idle→inFlight→succeeded|failed; list stays visible; Finder reveal | — |
+| H12 | CONFIRMED-FIXED | `262d59a2`/`cfed29b5` | `CommandPaletteTests` export state machine suite | idle→inFlight→succeeded/failed; list stays visible; Finder reveal | — |
 | M01 | CONFIRMED-FIXED | `12d3c081` | `performReadCommand` no gen bump | status/telemetry paths switched | Not all pure reads migrated |
 | M02 | CONFIRMED-FIXED | `c87fab56`/`f1486c2f` | `testFailedScanPhaseDoesNotRecordSuccessSample_repro`; `testRunInitialScanOuterOrchestrationPhaseFailureOmitsSuccessSample` | failed phase telemetry only; no success sample | — |
 | M03 | CONFIRMED-FIXED | `12d3c081` | `testActiveFileGraceDoesNotStampSuccess_repro` | active-file grace no stamp | — |
 | M04 | CONFIRMED-FIXED | `12d3c081` | retryable tail → full scan fallthrough | `isTerminalTailFailure` | — |
-| M05 | CONFIRMED-FIXED | pass3 | **`testRunCancellationStopsBeforeNextOperationAndReportsRemaining`**, **`testParseBatchMoveOutcomeSurfacesCancelledAndRemaining_repro`** | encode `cancelled`+`remaining[]`; UI keeps partial result (no await-task cancel) | — |
+| M05 | CONFIRMED-FIXED | pass3 + `c983a759`/`eeab26a8` | **pass3:** **`testRunCancellationStopsBeforeNextOperationAndReportsRemaining`**, **`testParseBatchMoveOutcomeSurfacesCancelledAndRemaining_repro`**; **Wave 8D current:** **`testBeginCommitIfNotCancelled_cancelWins_repro`**, **`testMidOperationCancelBeforeCommitLeavesOpInRemaining_repro`**, **`testBatchCancelAtCommitBoundaryUsesBeginCommitProbe_repro`**, **`testCancelBeforeCommitThrowsProjectMoveCancelledError_repro`**, **`testHandlerUnsafeBatchCachesCancelUnsafeFieldsOnReconnect_repro`** | encode `cancelled`+`remaining[]`; UI keeps partial result (no await-task cancel); long-op cancel-before-commit + reconnect cancel_unsafe (Wave 8D) | — |
 | M06 | CONFIRMED-FIXED | `bdc95157`/`90b70690` | provider/corpus/breaker degrade tests in `SemanticSearchIntegrityTests` | distinct structured degrade reasons | — |
 | M07 | CONFIRMED-FIXED | `bdc95157`/`90b70690` | `testGetMemoryWarningNamesProviderFailureNotGenericProviderMissing` | get_memory warning names actual failure | — |
 | M08 | CONFIRMED-FIXED | `bdc95157`/`90b70690` | `testMCPDatabaseUsesSharedEmbeddingBreakerWithoutPrivateBypass` | shared `EmbeddingGuardrails.sharedBreaker` | — |
@@ -84,8 +84,8 @@
 
 ### Service / IPC (H02 / H03 / M05 / S01)
 - **H02:** `testIndexAndFtsNamesAreLongRunning_repro` (`ServiceWriterGateTests`)
-- **H03:** `testPeerDisconnectCancelsInFlightHandler_repro` (real IPC socket close) + `testLinkSessionsCooperativeCancelReturnsRemaining_repro` + timeout headroom
-- **M05:** `testRunCancellationStopsBeforeNextOperationAndReportsRemaining` + `testParseBatchMoveOutcomeSurfacesCancelledAndRemaining_repro`
+- **H03 (pass4 provenance + Wave 8D `c983a759`/`eeab26a8`):** `testPeerDisconnectCancelsInFlightHandler_repro` (real IPC socket close) + `testLinkSessionsCooperativeCancelReturnsRemaining_repro` + timeout headroom; current long-op named tests `testHardTimeoutOperationWinCancelsTimerPeer_repro`, `testHardTimeoutTimeoutWinCancelsOperationPeer_repro`, `testProducerRetainsWriterGateAfterClientWaiterDetach_repro`, `testUnixSocketServiceServerStopCancelsInFlightClientHandlers`
+- **M05 (pass3 provenance + Wave 8D `c983a759`/`eeab26a8`):** `testRunCancellationStopsBeforeNextOperationAndReportsRemaining` + `testParseBatchMoveOutcomeSurfacesCancelledAndRemaining_repro`; current long-op named tests `testBeginCommitIfNotCancelled_cancelWins_repro`, `testMidOperationCancelBeforeCommitLeavesOpInRemaining_repro`, `testBatchCancelAtCommitBoundaryUsesBeginCommitProbe_repro`, `testCancelBeforeCommitThrowsProjectMoveCancelledError_repro`, `testHandlerUnsafeBatchCachesCancelUnsafeFieldsOnReconnect_repro`
 - **S01:** `testCancelDuringWorkWaitsForWorkExit_repro` + `testRecordingSchedulerFinishesOnlyAfterWork_repro` + `testSleepSchedulerCancelDuringWorkWaitsForExit` + idle embedding gate
 
 ### H06 / H09 / H11 (named skeptic gate)
@@ -97,22 +97,30 @@
 - `IndexingSchedulePolicyTests` (S01)
 - `SearchModeTests` (H08)
 
-## Verification evidence (2026-07-10)
+## Verification evidence (2026-07-10) — historical Wave 7 / pass6 only
 
-### Full Swift matrix — `MATRIX_FAIL=0`
+> **Historical label:** the matrix, release, deploy, and scratch-log evidence
+> below is **Wave 7 / pass6 era** evidence for the remediation program. It is
+> **not** same-SHA Task 7 acceptance for the Round 4 docs closeout branch or
+> main `c983a759`. Ephemeral logs under `/var/folders/...` and `{SCRATCH}/...`
+> are **historical / unavailable** on later hosts; do not treat path presence
+> as current proof. For current residual Wave 8 evidence, see
+> `docs/reviews/2026-07-10-wave7-engineering-zero-closeout.md`.
 
-Method: `xcodebuild build-for-testing` + `xcrun xctest` (Xcode-beta; avoids hung `xcodebuild test`).
+### Historical Full Swift matrix — `MATRIX_FAIL=0` (Wave 7 pass6 era)
 
-Log: `/var/folders/9f/kky77n4n74sbqytxvgnpvmh80000gn/T/grok-goal-e05223fa18bb/implementer/swift-tests.log`
+Method (historical): `xcodebuild build-for-testing` + `xcrun xctest` (Xcode-beta; avoids hung `xcodebuild test`).
 
-| Bundle | Exit |
+Log (historical / unavailable): `/var/folders/9f/kky77n4n74sbqytxvgnpvmh80000gn/T/grok-goal-e05223fa18bb/implementer/swift-tests.log`
+
+| Bundle | Exit (historical) |
 |--------|------|
 | EngramCoreTests | 0 (631 tests, 1 skipped perf) |
 | EngramServiceCoreTests | 0 (277 tests, 1 skipped live offload) |
 | EngramMCPTests | 0 |
 | EngramTests | 0 (629 tests, 3 env skips) |
 
-Env-skipped (not failures) under bare `xctest` / TCC:
+Env-skipped (not failures) under bare `xctest` / TCC (historical note):
 
 - `testLauncherDrainsServiceOutputPipes` — pipe/OSLog drain timing
 - `testRecentLogsCapturesEmittedEngramErrorMessageText` — OSLog token not visible
@@ -120,13 +128,13 @@ Env-skipped (not failures) under bare `xctest` / TCC:
 
 Static-source contracts for OSLog/logger privacy remain hard asserts.
 
-### Release smoke (AC3 / VP4)
+### Historical release smoke (AC3 / VP4 — Wave 7 pass6 era)
 
-Log: `{SCRATCH}/release-smoke.log`
-Script: `ENGRAM_BUILD_NUMBER=2026071001 macos/scripts/build-release.sh --local-only`
+Log (historical / unavailable): `{SCRATCH}/release-smoke.log`
+Script (historical): `ENGRAM_BUILD_NUMBER=2026071001 macos/scripts/build-release.sh --local-only`
 (Developer ID export was available — produced full `EngramExport/Engram.app`, not `Engram-local-only.app`.)
 
-| Check | Result |
+| Check | Result (historical) |
 |-------|--------|
 | `build-release.sh --local-only` archive/export | **PASS** (`BUILD_RELEASE_EXIT=0`, `** ARCHIVE SUCCEEDED **`) |
 | `release-verify.sh` full Developer ID | **PASS** — hygiene, structure, version `1.0.4`/`2026071001`, codesign deep/strict, Hardened Runtime, Developer ID authority, secure timestamp |
@@ -135,25 +143,41 @@ Script: `ENGRAM_BUILD_NUMBER=2026071001 macos/scripts/build-release.sh --local-o
 | `open -a Engram` live processes | **PASS** — `PROCESS_ENGRAM=ok`, `PROCESS_SERVICE=ok` |
 | Live service socket | **PASS** — `~/.engram/run/engram-service.sock` (`SOCKET_OK`) |
 
-H05 behavioral evidence: `{SCRATCH}/h05-behavioral.log` — `testClearParentPreservesDispatchedSkipTier_repro` passed.
+H05 behavioral evidence (historical / unavailable): `{SCRATCH}/h05-behavioral.log` — `testClearParentPreservesDispatchedSkipTier_repro` passed.
 
-Pass3 (M05 remaining): prior closeout.
-Pass4 (H03 peer cancel + S01 finish-after-work): prior.
-Pass5 (S01 cancel-awaits-work): prior.
-Pass6 (non-blocking harden): `{SCRATCH}/pass6-tests.log` — **288 tests, 0 failures**; `invalidate()` awaits work; peer-disconnect self-pipe wake (no 50ms poll tail).
+Pass3 (M05 remaining): prior closeout (historical).
+Pass4 (H03 peer cancel + S01 finish-after-work): prior (historical).
+Pass5 (S01 cancel-awaits-work): prior (historical).
+Pass6 (non-blocking harden, historical / unavailable): `{SCRATCH}/pass6-tests.log` — **288 tests, 0 failures**; `invalidate()` awaits work; peer-disconnect self-pipe wake (no 50ms poll tail).
 
-### Scheduling smoke (plan step 6)
+### Historical scheduling smoke (plan step 6 — Wave 7 era)
 
-After deploy of pass3 service binary (or rebuilt service), `status`/`telemetry` must expose adaptive next-scan ≥900s (not fixed 300s). Capture in `{SCRATCH}/scheduling-smoke.log`.
+After deploy of pass3 service binary (or rebuilt service), `status`/`telemetry` must expose adaptive next-scan ≥900s (not fixed 300s). Capture in `{SCRATCH}/scheduling-smoke.log` (historical / unavailable).
 
-## Final release checklist
+## Final release checklist (historical Wave 7 / pass6 — completed then)
 
-- [x] Focused EngramCoreTests repros green via `xcrun xctest`
-- [x] Full Swift matrix green (`EngramCoreTests`, `EngramServiceCore`, `EngramMCPTests`, `Engram`) — `MATRIX_FAIL=0`
-- [x] Named XCTests for H02 / H03 / H05 / H06 / H09 / H11 + VP3 dispatched-skip + M05 remaining + S01 NS scheduler
-- [x] `build-release.sh --local-only` path produced full Developer ID archive (`EngramExport/Engram.app`, build `2026071001`) + verify + deploy + live socket + MCP smoke
-- [x] Scheduling policy exposed (telemetry/status `nextScanIntervalSeconds` ≥ 900)
-- [x] Orca handoff to Codex (this closeout)
+The checked items below are **historical Wave 7/pass6** completion marks only.
+They do **not** satisfy Task 7 same-SHA final gates for Round 4.
+
+- [x] Focused EngramCoreTests repros green via `xcrun xctest` (historical)
+- [x] Full Swift matrix green (`EngramCoreTests`, `EngramServiceCore`, `EngramMCPTests`, `Engram`) — `MATRIX_FAIL=0` (historical)
+- [x] Named XCTests for H02 / H03 / H05 / H06 / H09 / H11 + VP3 dispatched-skip + M05 remaining + S01 NS scheduler (historical)
+- [x] `build-release.sh --local-only` path produced full Developer ID archive (`EngramExport/Engram.app`, build `2026071001`) + verify + deploy + live socket + MCP smoke (historical)
+- [x] Scheduling policy exposed (telemetry/status `nextScanIntervalSeconds` ≥ 900) (historical)
+- [x] Orca handoff to Codex (this closeout) (historical)
+
+## Task 7 same-SHA checklist (pending — not claimed by Round 4 docs)
+
+Unchecked gates for independent Codex / operator Task 7 on **one** SHA
+(docs closeout tip after merge, or chosen release candidate). Round 4 docs-only
+work does **not** check these boxes.
+
+- [ ] Local full Swift matrix green on the same SHA (`EngramCoreTests`, `EngramServiceCore`, `EngramMCPTests`, `Engram`)
+- [ ] Remote **Tests** workflow green on the same SHA (push/PR required; no CI URL yet for unpushed docs branch)
+- [ ] Remote **CodeQL** workflow green on the same SHA
+- [ ] Release archive + `release-verify` on the same SHA
+- [ ] Local install (`deploy-local` or equivalent) on the same SHA
+- [ ] Runtime smoke on the same SHA (app + service processes, service socket, MCP initialize/tools/list, scheduling fields)
 
 ## Wave commits
 
@@ -185,14 +209,17 @@ After deploy of pass3 service binary (or rebuilt service), `status`/`telemetry` 
    engineering follow-ups.
 
 
-## Ship / deploy (pass6 closeout)
+## Ship / deploy (historical Wave 7 pass6 closeout — not Task 7 same-SHA)
 
-- **HEAD:** `66dd641b` (parity) on top of `32b34df9` (invalidate + self-pipe)
-- **Release:** `ENGRAM_BUILD_NUMBER=2026071003 macos/scripts/build-release.sh --local-only` → ARCHIVE SUCCEEDED
-- **Verify:** full Developer ID `release-verify` PASS
-- **Deploy:** `deploy-local.sh` → `/Applications/Engram.app` build `2026071003`
-- **Runtime:** Engram + EngramService running; `~/.engram/run/engram-service.sock` present
-- **Schedule smoke:** `state=running`, `nextScanIntervalSeconds=900`, `scheduleBackend=NSBackgroundActivityScheduler`
+> **Historical label:** pass6 ship/deploy evidence below is Wave 7-era only.
+> It is not Round 4 / main `c983a759` same-SHA Task 7 acceptance.
+
+- **HEAD (historical):** `66dd641b` (parity) on top of `32b34df9` (invalidate + self-pipe)
+- **Release (historical):** `ENGRAM_BUILD_NUMBER=2026071003 macos/scripts/build-release.sh --local-only` → ARCHIVE SUCCEEDED
+- **Verify (historical):** full Developer ID `release-verify` PASS
+- **Deploy (historical):** `deploy-local.sh` → `/Applications/Engram.app` build `2026071003`
+- **Runtime (historical):** Engram + EngramService running; `~/.engram/run/engram-service.sock` present
+- **Schedule smoke (historical):** `state=running`, `nextScanIntervalSeconds=900`, `scheduleBackend=NSBackgroundActivityScheduler`
 - **Ledger (Wave 7 pass6, historical):** 24 confirmed with 19 residual rows then open
 - **Ledger (Wave 8 + Round 4 docs):** 43 CONFIRMED — see engineering-zero closeout
 

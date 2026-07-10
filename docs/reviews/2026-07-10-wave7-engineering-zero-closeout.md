@@ -56,6 +56,40 @@ by this docs task):
 - 3B: Service telemetry/log/IPC focused suites + invariant Vitest + bash ledger runner
 - 3A: ProjectMove Core/Service/App focused suites after serial coordinator verification
 
+### Coordinator main-combination commands after Wave 8 merges (recorded, not re-run here)
+
+Exact commands the coordinator ran on main after Round 3 merges (counts from
+task result for `c983a759` main-combination verification). Paths relative to
+`macos/` for `xcodebuild` unless noted. **This docs-only task did not re-run
+these commands.**
+
+```bash
+# From macos/ — Core focused combination (coordinator recorded Core 68/68)
+xcodebuild test -project Engram.xcodeproj -scheme EngramCoreTests \
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+
+# From macos/ — Service focused combination (coordinator recorded Service 42/42)
+xcodebuild test -project Engram.xcodeproj -scheme EngramServiceCore \
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+
+# From macos/ — App focused combination (coordinator recorded App 29/29)
+xcodebuild test -project Engram.xcodeproj -scheme Engram \
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO \
+  -skip-testing:EngramUITests
+
+# From repo root — Vitest invariants (coordinator recorded Vitest 16/16)
+npx vitest run tests/scripts/invariants-ledger.test.ts
+
+# From repo root — bash ledger runner (coordinator recorded Bash ledger PASS)
+bash scripts/check-invariants-ledger.sh
+```
+
+Recorded counts: **Core 68/68 · Service 42/42 · App 29/29 · Vitest 16/16 ·
+Bash ledger PASS**.
+
+**Remote CI URL:** none yet. Branch `bbingz/wave8f-engineering-zero-docs` is
+not pushed; Task 7 remote Tests + CodeQL remain pending. Do not invent a URL.
+
 ## Residual ledger (19 rows)
 
 Columns match the zero-closeout plan residual set.
@@ -115,15 +149,55 @@ remaining 19. No row was overturned or accepted-as-design in this closeout.
 | `ai_audit_log` desensitization design | **Moved / already on** roadmap Decision pending (12-row table) |
 | FTS full-rebuild progress UI | **Closed as not implementation-ready** — palette still excludes rebuild; product-gated UX, not an open engineering defect |
 
-## Backlog truth verification (docs-only gates)
+## Backlog truth verification (docs-only mechanical gates)
 
-Commands for the independent Codex gate (run from repo root after this commit):
+Commands for the independent Codex gate (run from repo root after this commit).
+These assert **exact** 43 unique terminal rows, TODO 0, follow-up 0, roadmap 12,
+exactly seven changed paths vs base, and range `git diff --check` (not a
+vacuous clean-worktree-only check).
 
 ```bash
-# remediation ledger must not retain residual-open status tokens
-! rg -n 'PARTIAL-FIXED|UNADJUDICATED' docs/reviews/2026-07-10-wave7-remediation-closeout.md
-! rg -n '^## Open' docs/followups.md
-rg -n '^## Decision pending' docs/roadmap.md
+BASE=c983a759
+LEDGER=docs/reviews/2026-07-10-wave7-remediation-closeout.md
+
+# (1) Exactly 43 unique terminal ledger IDs; zero residual-open tokens
+! rg -n 'PARTIAL-FIXED|UNADJUDICATED' "$LEDGER"
+python3 - <<'PY'
+from pathlib import Path
+import re, sys
+text = Path("docs/reviews/2026-07-10-wave7-remediation-closeout.md").read_text()
+ids = re.findall(r'^\| (C01|H\d{2}|M\d{2}|L\d{2}|S01) \|', text, re.M)
+assert len(ids) == 43, f"row count {len(ids)}"
+assert len(set(ids)) == 43, f"unique {len(set(ids))}"
+# all terminal CONFIRMED-FIXED in the primary ledger table body
+for line in text.splitlines():
+    if re.match(r'^\| (C01|H\d{2}|M\d{2}|L\d{2}|S01) \|', line):
+        assert "CONFIRMED-FIXED" in line, line
+print("terminal unique:", len(set(ids)))
+PY
+
+# (2) Engineering TODO open count == 0
+python3 - <<'PY'
+from pathlib import Path
+import re
+text = Path("docs/TODO.md").read_text()
+open_sec = text.split("## Open",1)[1].split("## ",1)[0]
+# no checklist open items or bullet tasks under Open
+assert "No open TODO items" in open_sec
+assert not re.search(r'^- \[ \]', open_sec, re.M)
+print("TODO open: 0")
+PY
+
+# (3) Engineering follow-up open implementation-ready count == 0
+python3 - <<'PY'
+from pathlib import Path
+text = Path("docs/followups.md").read_text()
+assert "Open implementation-ready engineering follow-ups: 0" in text
+assert "## Open\n" not in text and not text.startswith("## Open\n")
+print("follow-up open: 0")
+PY
+
+# (4) Roadmap Decision pending == exactly 12 rows
 python3 - <<'PY'
 from pathlib import Path
 import re
@@ -133,16 +207,41 @@ rows = [l for l in body.splitlines() if l.startswith("| ") and not l.startswith(
 assert len(rows) == 12, len(rows)
 print("roadmap decisions:", len(rows))
 PY
-git diff --check
+
+# (5) Exactly seven owned paths changed vs base (docs closeout ownership)
+python3 - <<'PY'
+import subprocess
+base = "c983a759"
+out = subprocess.check_output(["git","diff","--name-only",f"{base}..HEAD"], text=True)
+paths = [p for p in out.splitlines() if p.strip()]
+expected = {
+  "docs/TODO.md",
+  "docs/followups.md",
+  "docs/roadmap.md",
+  "docs/reviews/2026-07-10-wave7-remediation-closeout.md",
+  "docs/reviews/2026-07-10-wave7-engineering-zero-closeout.md",
+  "CHANGELOG.md",
+  ".memory",
+}
+assert set(paths) == expected, (paths, expected)
+assert len(paths) == 7, len(paths)
+print("seven paths:", sorted(paths))
+PY
+
+# (6) Range whitespace/conflict markers check (not vacuous clean-worktree only)
+git diff --check c983a759..HEAD
 ```
 
 Mechanical counts expected:
 
 ```text
-Wave 7 audit ledger: 43 terminal / 0 residual-open
+Wave 7 audit ledger: 43 unique terminal / 0 residual-open
 Engineering TODO: 0
 Engineering follow-ups: 0
 Roadmap decisions: 12 visible, not misreported as implemented
+Owned paths vs c983a759: exactly 7
+git diff --check c983a759..HEAD: clean
+Remote CI URL: none yet (branch not pushed; Task 7 pending)
 ```
 
 ## Explicit non-claims (Task 7 out of scope here)
@@ -150,12 +249,14 @@ Roadmap decisions: 12 visible, not misreported as implemented
 This docs-only closeout does **not** assert:
 
 - Full Swift matrix green on the closeout SHA
-- Remote Tests + CodeQL green on the closeout SHA
+- Remote Tests + CodeQL green on the closeout SHA (**no CI URL yet** — branch unpushed)
 - Release archive / `release-verify` / notarization
 - Local install, launch, socket, MCP, or scheduling smoke
 
 Implementation merges already recorded focused suite evidence under their own
-SHAs. Final same-SHA release acceptance remains Task 7 / Codex.
+SHAs (see coordinator commands above). Final same-SHA release acceptance
+remains Task 7 / Codex — see the unchecked Task 7 checklist in
+`docs/reviews/2026-07-10-wave7-remediation-closeout.md`.
 
 ## Residual risks for Codex
 

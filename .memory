@@ -2,7 +2,7 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-06): 93 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-11): 95 dated entries; regenerate after adding sections -->
 - [2026-07-11 - Wave 8 Round 4 engineering-zero durable closeout (Grok)](#2026-07-11---wave-8-round-4-engineering-zero-durable-closeout-grok)
 - [2026-07-07 - Orca comparative study: verified adoption backlog + 5 real bugs found (Fable/Claude)](#2026-07-07---orca-comparative-study-verified-adoption-backlog--5-real-bugs-found-fableclaude)
 - [2026-07-06 - Feature-cut Top 10 completed + low residual cleanup merged (Codex)](#2026-07-06---feature-cut-top-10-completed--low-residual-cleanup-merged-codex)
@@ -104,8 +104,8 @@
 
 - Docs-only closeout on branch `bbingz/wave8f-engineering-zero-docs` from main
   `c983a759`. Touched only durable surfaces: TODO, followups, roadmap, Wave 7
-  remediation ledger, new engineering-zero closeout review, CHANGELOG, .memory
-  (plus short MEMO note).
+  remediation ledger, new engineering-zero closeout review, CHANGELOG, .memory.
+  No MEMO.md change in this closeout.
 - Terminal tallies: Wave 7 ledger 43 CONFIRMED / 0 residual-open; engineering
   TODO 0; implementation-ready follow-ups 0; roadmap Decision pending still
   exactly 12 rows.
