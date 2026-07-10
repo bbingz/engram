@@ -149,32 +149,42 @@ final class ProjectsMigrationTests: XCTestCase {
         XCTAssertTrue(source.contains("longOpSession") || source.contains("ProjectLongOperationSession"))
         // Cancel remains enabled during execute (no .disabled(isExecuting) on Cancel).
         XCTAssertFalse(source.contains("Button(\"Cancel\") { dismiss() }\n                    .keyboardShortcut(.cancelAction)\n                    .disabled(isExecuting)"))
-        // Cancel button must request cooperative service cancel for the operation id.
+
+        // Structurally bound to the Cancel button closure only — no [\s\S]* scan
+        // that can cross into later scopes (e.g. guarded onDisappear).
+        let cancelBody = try Self.swiftClosureBody(
+            in: source,
+            afterMarker: "Button(\"Cancel\") {"
+        )
         XCTAssertTrue(
-            source.range(
-                of: #"Button\("Cancel"\)[\s\S]*?cancelProjectMoveBatch\([\s\S]*?operationId:\s*operationId"#,
-                options: .regularExpression
-            ) != nil,
+            cancelBody.contains("cancelProjectMoveBatch(")
+                && cancelBody.contains("operationId: operationId"),
             "in-flight Cancel must call cancelProjectMoveBatch with the active operationId"
         )
-        // Cancel button body must not cancel the local client Task (would tear down
-        // the await / connection instead of cooperative cancel + partial results).
         XCTAssertFalse(
-            source.range(
-                of: #"Button\("Cancel"\)[\s\S]*?activeTask\?\.cancel\(\)"#,
-                options: .regularExpression
-            ) != nil,
+            cancelBody.contains("activeTask?.cancel()"),
             "execute-path Cancel must not cancel the client task"
         )
-        // onDisappear must not unconditionally cancel in-flight migration awaits.
-        XCTAssertFalse(
-            source.contains(".onDisappear { activeTask?.cancel() }"),
-            "onDisappear must guard !isExecuting before cancelling preview/idle tasks"
+
+        // onDisappear is a separate scope: must not unconditionally cancel awaits.
+        let disappearBody = try Self.swiftClosureBody(
+            in: source,
+            afterMarker: ".onDisappear {"
         )
         XCTAssertTrue(
-            source.contains("guard !isExecuting else { return }"),
+            disappearBody.contains("guard !isExecuting else { return }"),
             "onDisappear must preserve in-flight migration awaits"
         )
+        // Guarded cancel of idle/preview tasks is OK after the isExecuting guard.
+        XCTAssertTrue(
+            disappearBody.contains("activeTask?.cancel()"),
+            "onDisappear may still cancel non-executing tasks after the guard"
+        )
+        XCTAssertFalse(
+            source.contains(".onDisappear { activeTask?.cancel() }"),
+            "onDisappear must not unconditionally cancel in-flight migration awaits"
+        )
+
         XCTAssertTrue(source.contains("remaining"))
         XCTAssertTrue(source.contains("cancelled"))
         XCTAssertTrue(source.contains("ProjectLongOperationRunner") || source.contains("blocksDuplicateSubmit"))
@@ -454,6 +464,63 @@ final class ProjectsMigrationTests: XCTestCase {
 
     private static func source(_ relativePath: String) throws -> String {
         try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
+    /// Extract the body of a `{ ... }` that begins immediately after `marker`.
+    /// Brace-balanced; ignores braces inside string literals so later scopes
+    /// (e.g. `.onDisappear`) cannot leak into a Cancel-button assertion.
+    private static func swiftClosureBody(in source: String, afterMarker marker: String) throws -> String {
+        guard let markerRange = source.range(of: marker) else {
+            throw NSError(
+                domain: "ProjectsMigrationTests",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "marker not found: \(marker)"]
+            )
+        }
+        let start = markerRange.upperBound
+        var depth = 1
+        var index = start
+        var inString = false
+        var stringDelim: Character = "\""
+        var escaped = false
+        while index < source.endIndex {
+            let ch = source[index]
+            let next = source.index(after: index)
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if ch == "\\" {
+                    escaped = true
+                } else if ch == stringDelim {
+                    inString = false
+                }
+                index = next
+                continue
+            }
+            if ch == "\"" || ch == "#" {
+                // Rough handling: "..." or #"..."# / multiline; treat " as string start.
+                if ch == "\"" {
+                    inString = true
+                    stringDelim = "\""
+                }
+                index = next
+                continue
+            }
+            if ch == "{" {
+                depth += 1
+            } else if ch == "}" {
+                depth -= 1
+                if depth == 0 {
+                    return String(source[start..<index])
+                }
+            }
+            index = next
+        }
+        throw NSError(
+            domain: "ProjectsMigrationTests",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: "unbalanced braces after marker: \(marker)"]
+        )
     }
 }
 
