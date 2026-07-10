@@ -624,8 +624,8 @@ final class ProjectsMigrationTests: XCTestCase {
         XCTAssertTrue(provision.contains("Darwin.mkdir"))
         XCTAssertTrue(provision.contains("Darwin.rmdir"))
         XCTAssertFalse(
-            provision.contains("FileManager.default.removeItem(")
-                || provision.range(of: #"\bremoveItem\s*\("#, options: .regularExpression) != nil,
+            provision.contains(".removeItem(at")
+                || provision.range(of: #"\.removeItem\s*\(\s*at(Path)?:"#, options: .regularExpression) != nil,
             "provision must not call recursive removeItem"
         )
     }

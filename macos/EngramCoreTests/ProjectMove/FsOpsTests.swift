@@ -135,10 +135,10 @@ final class FsOpsTests: XCTestCase {
             segment.contains("FileManager.default.createDirectory"),
             "must not use FileManager createDirectory"
         )
-        // Call forms only — comments may mention FileManager.removeItem.
+        // Real Swift call sites only — not prose like "FileManager.removeItem (which…)".
         XCTAssertFalse(
-            segment.contains("FileManager.default.removeItem(")
-                || segment.range(of: #"\bremoveItem\s*\("#, options: .regularExpression) != nil,
+            segment.contains(".removeItem(at")
+                || segment.range(of: #"\.removeItem\s*\(\s*at(Path)?:"#, options: .regularExpression) != nil,
             "must not call recursive removeItem"
         )
         XCTAssertFalse(
