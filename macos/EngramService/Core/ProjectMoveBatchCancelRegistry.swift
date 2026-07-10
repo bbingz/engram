@@ -80,6 +80,9 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
     private var config: Config
+    /// Instance-scoped test seams for deterministic waiter registration races.
+    private var testBeforeWaiterRegister: (@Sendable () async -> Void)?
+    private var testOnWaiterRegistered: (@Sendable () -> Void)?
 
     init(config: Config = .default) {
         self.config = config
@@ -89,6 +92,21 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
         lock.lock()
         self.config = config
         lock.unlock()
+    }
+
+    /// Install instance-scoped waiter barriers (nil = production no-op).
+    func installWaiterTestSeamsForTests(
+        beforeRegister: (@Sendable () async -> Void)? = nil,
+        onRegistered: (@Sendable () -> Void)? = nil
+    ) {
+        lock.lock()
+        testBeforeWaiterRegister = beforeRegister
+        testOnWaiterRegistered = onRegistered
+        lock.unlock()
+    }
+
+    func clearWaiterTestSeamsForTests() {
+        installWaiterTestSeamsForTests(beforeRegister: nil, onRegistered: nil)
     }
 
     // MARK: - Explicit cancel
@@ -305,6 +323,18 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
         return entries[id]?.terminal != nil
     }
 
+    /// Count of waiters currently parked in `.registered` for an operation.
+    func registeredWaiterCountForTests(_ operationId: String) -> Int {
+        let id = normalize(operationId)
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = entries[id] else { return 0 }
+        return entry.waiters.values.reduce(0) { count, state in
+            if case .registered = state { return count + 1 }
+            return count
+        }
+    }
+
     // MARK: - Internals
 
     private func completeTerminal(operationId: String?, terminal: Terminal) {
@@ -341,8 +371,19 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
     func waitForTerminal(operationId: String) async throws -> Terminal {
         let id = normalize(operationId)
         let waiterId = UUID()
+
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Terminal, Error>) in
+            // Barrier inside cancellation handler so Task.cancel() is observed
+            // as pendingCancel before register (deterministic cancel-before-register).
+            let before: (@Sendable () async -> Void)?
+            lock.lock()
+            before = testBeforeWaiterRegister
+            lock.unlock()
+            if let before {
+                await before()
+            }
+
+            return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Terminal, Error>) in
                 lock.lock()
                 // Cancel arrived before register → exactly-once cancel resume.
                 if case .pendingCancel? = entries[id]?.waiters[waiterId] {
@@ -353,7 +394,6 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
                     return
                 }
                 if Task.isCancelled {
-                    // Mark finished without parking.
                     if entries[id] != nil {
                         entries[id]?.waiters[waiterId] = .finished
                         entries[id]?.waiters.removeValue(forKey: waiterId)
@@ -363,7 +403,7 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
                     return
                 }
                 if let terminal = entries[id]?.terminal {
-                    // Terminal-before-cancel / terminal already present: no waiter parked.
+                    // Terminal already present: resume success, no waiter parked.
                     lock.unlock()
                     cont.resume(returning: terminal)
                     return
@@ -375,7 +415,6 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
                     )
                     return
                 }
-                // Register under lock; if pendingCancel raced in, honor cancel.
                 if case .pendingCancel? = entries[id]?.waiters[waiterId] {
                     entries[id]?.waiters[waiterId] = .finished
                     entries[id]?.waiters.removeValue(forKey: waiterId)
@@ -385,7 +424,9 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
                 }
                 entries[id]?.waiters[waiterId] = .registered(cont)
                 entries[id]?.touchedAt = config.now()
+                let onRegistered = testOnWaiterRegistered
                 lock.unlock()
+                onRegistered?()
             }
         } onCancel: { [weak self] in
             self?.cancelWaiter(operationId: id, waiterId: waiterId)
@@ -395,9 +436,11 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
     private func cancelWaiter(operationId: String, waiterId: UUID) {
         lock.lock()
         guard var entry = entries[operationId] else {
-            // No entry yet — still record pending cancel on a synthetic path:
-            // create cancel-only reservation so register can observe pendingCancel.
-            // Without entry, just no-op: register will see Task.isCancelled or missing.
+            lock.unlock()
+            return
+        }
+        // Cancellation after terminal resolution is a no-op (no pendingCancel insert).
+        if entry.terminal != nil {
             lock.unlock()
             return
         }
@@ -410,17 +453,21 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
             lock.unlock()
             cont.resume(throwing: CancellationError())
         case .finished:
-            // Exactly-once: terminal or prior cancel already resumed.
             lock.unlock()
         case .pendingCancel:
             lock.unlock()
         case .none:
-            // Cancel-before-register.
+            // Cancel-before-register only when still running (no terminal).
             entry.waiters[waiterId] = .pendingCancel
             entry.touchedAt = config.now()
             entries[operationId] = entry
             lock.unlock()
         }
+    }
+
+    /// Test-only: invoke cancel path for a known waiter id (deterministic races).
+    func cancelWaiterForTests(operationId: String, waiterId: UUID) {
+        cancelWaiter(operationId: normalize(operationId), waiterId: waiterId)
     }
 
     private func pruneLocked(now: Date) {

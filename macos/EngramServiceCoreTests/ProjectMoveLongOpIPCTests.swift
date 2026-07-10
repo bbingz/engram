@@ -7,11 +7,11 @@ import EngramCoreWrite
 /// Behavioral long-op IPC/handler tests (hard-gate regression coverage).
 final class ProjectMoveLongOpIPCTests: XCTestCase {
     override func tearDown() {
-        ProjectMoveBatchCancelRegistry.shared.remove(operationId: "preflight-op")
-        ProjectMoveBatchCancelRegistry.shared.remove(operationId: "preflight-conflict")
-        ProjectMoveBatchCancelRegistry.shared.remove(operationId: "preflight-cache")
-        ProjectMoveBatchCancelRegistry.shared.remove(operationId: "gate-hold-op")
-        ProjectMoveBatchCancelRegistry.shared.remove(operationId: "batch-unsafe-op")
+        for id in [
+            "preflight-cache", "preflight-conflict", "gate-hold-op", "batch-unsafe-op",
+        ] {
+            ProjectMoveBatchCancelRegistry.shared.remove(operationId: id)
+        }
         super.tearDown()
     }
 
@@ -28,13 +28,13 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
             let handler = EngramServiceCommandHandler(writerGate: gate)
             let operationId = "preflight-cache"
 
-            // Symlink under HOME that resolves outside → first preflight fails.
-            let link = home.appendingPathComponent("escape-link", isDirectory: false)
+            // Symlink under HOME that resolves outside — use link.path itself.
+            let link = home.appendingPathComponent("escape-link")
             try FileManager.default.createSymbolicLink(
                 atPath: link.path,
                 withDestinationPath: "/etc"
             )
-            let src = link.appendingPathComponent("passwd-dir").path
+            let src = link.path
             let dst = home.appendingPathComponent(".claude/projects/elsewhere").path
 
             let request = EngramServiceRequestEnvelope(
@@ -52,12 +52,16 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
 
             let first = await handler.handle(request)
             guard case .failure(_, let error1) = first else {
-                return XCTFail("first invalid projectMove must fail confinement")
+                return XCTFail("first invalid projectMove must fail confinement, got success")
             }
             XCTAssertEqual(error1.name, "InvalidRequest")
+            XCTAssertTrue(
+                error1.message.contains("outside the home directory"),
+                error1.message
+            )
 
-            // Path would now pass validation if re-run, but same-ID must return cache.
-            try? FileManager.default.removeItem(at: link)
+            // Replace link so the same src path would pass confinement if re-run.
+            try FileManager.default.removeItem(at: link)
             let inside = home.appendingPathComponent(".claude/projects/inside", isDirectory: true)
             try FileManager.default.createDirectory(at: inside, withIntermediateDirectories: true)
             try FileManager.default.createSymbolicLink(
@@ -65,12 +69,14 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
                 withDestinationPath: inside.path
             )
 
-            // Race second request against timeout — must not hang on re-run.
+            // Second same-ID request must return original cached failure (timeout race).
             let second = await withTimeout(seconds: 2) {
                 await handler.handle(request)
             }
             guard case .failure(_, let error2)? = second else {
-                return XCTFail("second request must return cached failure within timeout (got \(String(describing: second)))")
+                return XCTFail(
+                    "second request must return cached failure within timeout (got \(String(describing: second)))"
+                )
             }
             XCTAssertEqual(error2.name, error1.name)
             XCTAssertEqual(error2.message, error1.message)
@@ -126,7 +132,7 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
         }
     }
 
-    // MARK: - Producer gate ownership after waiter detach
+    // MARK: - Producer gate ownership
 
     func testProducerRetainsWriterGateAfterClientWaiterDetach_repro() async throws {
         try await withTemporaryHome { home in
@@ -142,15 +148,13 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
                 queueTimeoutNanoseconds: 0
             )
             let stallBox = StallBox()
-            // Always release stall on all exits (finding E).
-            defer {
-                Task { await stallBox.release() }
-            }
+            defer { Task { await stallBox.release() } }
 
             let producerHoldsGate = expectation(description: "producer holds gate")
             let hooks = ProjectMoveLongOpHooks(
                 onProducerHoldsGate: { producerHoldsGate.fulfill() },
-                stallWhileHoldingGate: { await stallBox.waitUntilReleased() }
+                stallWhileHoldingGate: { await stallBox.waitUntilReleased() },
+                batchRunOverride: nil
             )
             let handler = EngramServiceCommandHandler(writerGate: gate, longOpHooks: hooks)
             let operationId = "gate-hold-op"
@@ -169,17 +173,13 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
                 ))
             )
 
-            let clientTask = Task {
-                await handler.handle(request)
-            }
-
+            let clientTask = Task { await handler.handle(request) }
             await fulfillment(of: [producerHoldsGate], timeout: 5)
 
             clientTask.cancel()
-            try await Task.sleep(nanoseconds: 30_000_000)
+            try await Task.sleep(nanoseconds: 20_000_000)
             XCTAssertFalse(
-                ProjectMoveBatchCancelRegistry.shared.shouldStop(operationId: operationId),
-                "waiter detach must not request cooperative cancel"
+                ProjectMoveBatchCancelRegistry.shared.shouldStop(operationId: operationId)
             )
 
             let writeFinished = expectation(description: "unrelated write finished")
@@ -191,15 +191,13 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
                 writeFinished.fulfill()
             }
 
-            // Wait until the unrelated writer is *queued*, not a fixed sleep.
             let queued = await waitUntil(timeout: 5) {
                 await gate.queuedWriteWaiterCountForTesting() >= 1
             }
             XCTAssertTrue(queued, "unrelated writer must enqueue behind producer-held gate")
-            XCTAssertFalse(writeEntered.value, "queued writer must not have entered the gate body")
+            XCTAssertFalse(writeEntered.value)
 
             await stallBox.release()
-
             await fulfillment(of: [writeFinished], timeout: 5)
             XCTAssertTrue(writeEntered.value)
             _ = await clientTask.result
@@ -207,68 +205,99 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
         }
     }
 
-    // MARK: - Unsafe batch encode/cache/reconnect + UI parse
+    // MARK: - Unsafe batch via real handler encode + same-ID reconnect
 
-    func testUnsafeBatchResultCachesCancelUnsafeFields_repro() async throws {
-        // Service encode path: inject via registry complete with encoded batch payload.
-        let operationId = "batch-unsafe-op"
-        let encoded: EngramServiceJSONValue = .object([
-            "completed": .array([]),
-            "failed": .array([
-                .object([
-                    "src": .string("/a"),
-                    "dst": .string("/b"),
-                    "archive": .bool(false),
-                    "error": .string("project-move: cancelled before commit but compensation was incomplete — rollback"),
-                ]),
-            ]),
-            "skipped": .array([]),
-            "remaining": .array([.object(["src": .string("/a"), "dst": .string("/b"), "archive": .bool(false)])]),
-            "cancelled": .bool(true),
-            "cancel_unsafe": .bool(true),
-            "cancel_error_name": .string("ProjectMoveCancelCompensationFailedError"),
-            "cancel_error_message": .string("project-move: cancelled before commit but compensation was incomplete — rollback"),
-        ])
-        let data = try JSONEncoder().encode(encoded)
-        _ = ProjectMoveBatchCancelRegistry.shared.beginOrJoin(
-            operationId: operationId,
-            fingerprint: ProjectMoveOperationFingerprint.encode([
-                "kind": "batch",
-                "yaml": "{}",
-                "force": "false",
-                "actor": "",
-            ])
-        )
-        ProjectMoveBatchCancelRegistry.shared.complete(operationId: operationId, payload: data)
+    func testHandlerUnsafeBatchCachesCancelUnsafeFieldsOnReconnect_repro() async throws {
+        try await withTemporaryHome { _ in
+            let paths = try makePaths()
+            try migrateDatabase(at: paths.database.path)
+            let gate = try ServiceWriterGate(
+                databasePath: paths.database.path,
+                runtimeDirectory: paths.runtime
+            )
+            let operationId = "batch-unsafe-op"
+            let unsafeResult = BatchResult(
+                completed: [],
+                failed: [
+                    BatchOperationFailure(
+                        operation: BatchOperation(src: "/a", dst: "/b"),
+                        error: "project-move: cancelled before commit but compensation was incomplete — rollback"
+                    ),
+                ],
+                skipped: [],
+                remaining: [BatchOperation(src: "/a", dst: "/b")],
+                cancelled: true,
+                cancelUnsafe: true,
+                cancelErrorName: "ProjectMoveCancelCompensationFailedError",
+                cancelErrorMessage:
+                    "project-move: cancelled before commit but compensation was incomplete — rollback"
+            )
+            let hooks = ProjectMoveLongOpHooks(
+                onProducerHoldsGate: nil,
+                stallWhileHoldingGate: nil,
+                batchRunOverride: { _, _, _ in unsafeResult }
+            )
+            let handler = EngramServiceCommandHandler(writerGate: gate, longOpHooks: hooks)
 
-        // Same-ID reconnect via beginOrJoin returns cached payload.
-        switch ProjectMoveBatchCancelRegistry.shared.beginOrJoin(
-            operationId: operationId,
-            fingerprint: ProjectMoveOperationFingerprint.encode([
-                "kind": "batch",
-                "yaml": "{}",
-                "force": "false",
-                "actor": "",
-            ])
-        ) {
-        case .completed(.success(let payload)):
-            let decoded = try JSONDecoder().decode(EngramServiceJSONValue.self, from: payload)
-            guard case .object(let root) = decoded else {
-                return XCTFail("expected object")
+            let yaml = #"{"version":1,"operations":[{"src":"/a","dst":"/b"}]}"#
+            let request = EngramServiceRequestEnvelope(
+                command: "projectMoveBatch",
+                payload: try JSONEncoder().encode(EngramServiceProjectMoveBatchRequest(
+                    yaml: yaml,
+                    dryRun: false,
+                    force: false,
+                    actor: "test",
+                    operationId: operationId
+                ))
+            )
+
+            let first = await handler.handle(request)
+            let firstData = try assertSuccessData(first)
+            let firstJSON = try JSONDecoder().decode(EngramServiceJSONValue.self, from: firstData)
+            assertCancelUnsafe(firstJSON)
+
+            // Same-ID reconnect must return cached encoded payload (handler path, not manual registry).
+            let second = await withTimeout(seconds: 2) {
+                await handler.handle(request)
             }
-            guard case .bool(true)? = root["cancel_unsafe"] else {
-                return XCTFail("cancel_unsafe must round-trip")
-            }
-            guard case .string(let name)? = root["cancel_error_name"] else {
-                return XCTFail("cancel_error_name required")
-            }
-            XCTAssertEqual(name, "ProjectMoveCancelCompensationFailedError")
-        default:
-            XCTFail("expected cached success payload")
+            let secondData = try assertSuccessData(
+                try XCTUnwrap(second, "reconnect must complete within timeout")
+            )
+            let secondJSON = try JSONDecoder().decode(EngramServiceJSONValue.self, from: secondData)
+            assertCancelUnsafe(secondJSON)
         }
     }
 
     // MARK: - Helpers
+
+    private func assertSuccessData(
+        _ response: EngramServiceResponseEnvelope
+    ) throws -> Data {
+        guard case .success(_, let data, _) = response else {
+            if case .failure(_, let error) = response {
+                XCTFail("expected success, got \(error.name): \(error.message)")
+            }
+            throw NSError(domain: "test", code: 1)
+        }
+        return data
+    }
+
+    private func assertCancelUnsafe(_ value: EngramServiceJSONValue) {
+        guard case .object(let root) = value else {
+            return XCTFail("expected object")
+        }
+        guard case .bool(true)? = root["cancel_unsafe"] else {
+            return XCTFail("cancel_unsafe missing")
+        }
+        guard case .string(let name)? = root["cancel_error_name"] else {
+            return XCTFail("cancel_error_name missing")
+        }
+        XCTAssertEqual(name, "ProjectMoveCancelCompensationFailedError")
+        guard case .string(let message)? = root["cancel_error_message"] else {
+            return XCTFail("cancel_error_message missing")
+        }
+        XCTAssertTrue(message.contains("compensation was incomplete"))
+    }
 
     private func withTemporaryHome<T>(_ body: (URL) async throws -> T) async rethrows -> T {
         let home = URL(fileURLWithPath: "/tmp", isDirectory: true)

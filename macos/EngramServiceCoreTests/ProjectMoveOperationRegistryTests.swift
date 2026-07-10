@@ -118,10 +118,16 @@ final class ProjectMoveOperationRegistryTests: XCTestCase {
         let id = "parked-waiter"
         _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"k":"1"}"#)
 
+        let registered = expectation(description: "waiter registered")
+        reg.installWaiterTestSeamsForTests(onRegistered: { registered.fulfill() })
+        defer { reg.clearWaiterTestSeamsForTests() }
+
         let parked = Task {
             try await reg.waitForTerminal(operationId: id)
         }
-        try await Task.sleep(nanoseconds: 30_000_000)
+        await fulfillment(of: [registered], timeout: 2)
+        XCTAssertEqual(reg.registeredWaiterCountForTests(id), 1)
+
         parked.cancel()
         do {
             _ = try await parked.value
@@ -130,6 +136,9 @@ final class ProjectMoveOperationRegistryTests: XCTestCase {
             // ok
         }
         XCTAssertFalse(reg.shouldStop(operationId: id))
+        XCTAssertEqual(reg.registeredWaiterCountForTests(id), 0)
+        XCTAssertEqual(reg.waiterStateCountForTests(), 0)
+
         let payload = Data("terminal".utf8)
         reg.complete(operationId: id, payload: payload)
         switch reg.beginOrJoin(operationId: id, fingerprint: #"{"k":"1"}"#) {
@@ -140,43 +149,67 @@ final class ProjectMoveOperationRegistryTests: XCTestCase {
         }
     }
 
-    func testWaiterImmediateCancelRace_repro() async throws {
+    func testCancelBeforeRegisterIsDeterministic_repro() async throws {
         let reg = makeRegistry()
-        let id = "waiter-race"
+        let id = "cancel-before-reg"
         _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"k":"1"}"#)
+
+        let enteredBarrier = expectation(description: "entered before-register barrier")
+        let releaseBarrier = StallRelease()
+        reg.installWaiterTestSeamsForTests(
+            beforeRegister: {
+                enteredBarrier.fulfill()
+                await releaseBarrier.wait()
+            }
+        )
+        defer { reg.clearWaiterTestSeamsForTests() }
+
         let waiter = Task {
             try await reg.waitForTerminal(operationId: id)
         }
+        await fulfillment(of: [enteredBarrier], timeout: 2)
+        // Still not registered.
+        XCTAssertEqual(reg.registeredWaiterCountForTests(id), 0)
+
         waiter.cancel()
+        // Allow onCancel to record pendingCancel before release.
+        try await Task.sleep(nanoseconds: 20_000_000)
+        await releaseBarrier.open()
+
         do {
             _ = try await waiter.value
-            XCTFail("must throw CancellationError")
+            XCTFail("must throw CancellationError exactly once")
         } catch is CancellationError {
             // ok
         }
-        XCTAssertFalse(reg.shouldStop(operationId: id))
-        reg.complete(operationId: id, payload: Data("done".utf8))
+        XCTAssertEqual(reg.waiterStateCountForTests(), 0)
+        XCTAssertFalse(reg.shouldStop(operationId: id), "waiter cancel is not operation cancel")
+        reg.complete(operationId: id, payload: Data("ok".utf8))
         switch reg.beginOrJoin(operationId: id, fingerprint: #"{"k":"1"}"#) {
         case .completed(.success):
             break
         default:
-            XCTFail("producer terminal remains after waiter detach")
+            XCTFail("terminal still available after cancel-before-register")
         }
     }
 
-    func testTerminalBeforeCancelIsNoOpExactlyOnce_repro() async throws {
+    func testCancelAfterTerminalIsNoOpZeroWaiterState_repro() async throws {
         let reg = makeRegistry()
         let id = "term-before-cancel"
         _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"k":"1"}"#)
         reg.complete(operationId: id, payload: Data("done".utf8))
-        // Wait after terminal: returns immediately.
+
         let terminal = try await reg.waitForTerminal(operationId: id)
         guard case .success(let data) = terminal else {
             return XCTFail("expected success")
         }
         XCTAssertEqual(data, Data("done".utf8))
-        // Residual cancel must not leave unbounded waiter state.
         XCTAssertEqual(reg.waiterStateCountForTests(), 0)
+
+        // Simulate cancel after terminal resolution — must not insert pendingCancel.
+        reg.cancelWaiterForTests(operationId: id, waiterId: UUID())
+        XCTAssertEqual(reg.waiterStateCountForTests(), 0)
+        XCTAssertTrue(reg.hasTerminalForTests(id))
     }
 
     func testUnknownCancelReservationsAreBounded_repro() {
@@ -186,5 +219,25 @@ final class ProjectMoveOperationRegistryTests: XCTestCase {
             reg.requestCancel(operationId: "unknown-\(i)")
         }
         XCTAssertLessThanOrEqual(reg.cancelOnlyCountForTests(), 5)
+    }
+}
+
+/// Async barrier for cancel-before-register tests.
+private actor StallRelease {
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if opened { return }
+        await withCheckedContinuation { cont in
+            waiters.append(cont)
+        }
+    }
+
+    func open() {
+        opened = true
+        let pending = waiters
+        waiters = []
+        for w in pending { w.resume() }
     }
 }

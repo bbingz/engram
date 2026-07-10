@@ -7,8 +7,24 @@ struct ProjectMoveLongOpHooks: Sendable {
     var onProducerHoldsGate: (@Sendable () -> Void)?
     /// Awaited while the gate is held, before the real pipeline body.
     var stallWhileHoldingGate: (@Sendable () async -> Void)?
+    /// When set, replaces `Batch.run` inside the batch producer (real encode/cache path).
+    var batchRunOverride: (@Sendable (
+        _ document: BatchDocument,
+        _ writer: EngramDatabaseWriter,
+        _ overrides: BatchOverrides
+    ) async -> BatchResult)?
 
-    static let none = ProjectMoveLongOpHooks(onProducerHoldsGate: nil, stallWhileHoldingGate: nil)
+    init(
+        onProducerHoldsGate: (@Sendable () -> Void)? = nil,
+        stallWhileHoldingGate: (@Sendable () async -> Void)? = nil,
+        batchRunOverride: (@Sendable (BatchDocument, EngramDatabaseWriter, BatchOverrides) async -> BatchResult)? = nil
+    ) {
+        self.onProducerHoldsGate = onProducerHoldsGate
+        self.stallWhileHoldingGate = stallWhileHoldingGate
+        self.batchRunOverride = batchRunOverride
+    }
+
+    static let none = ProjectMoveLongOpHooks()
 }
 
 extension EngramServiceCommandHandler {
@@ -286,13 +302,17 @@ extension EngramServiceCommandHandler {
                     if let stall = hooks.stallWhileHoldingGate {
                         await stall()
                     }
+                    let overrides = BatchOverrides(
+                        homeDirectory: homeDirectoryURL(),
+                        force: request.force
+                    )
+                    if let batchOverride = hooks.batchRunOverride {
+                        return await batchOverride(document, writer, overrides)
+                    }
                     return await Batch.run(
                         document,
                         writer: writer,
-                        overrides: BatchOverrides(
-                            homeDirectory: homeDirectoryURL(),
-                            force: request.force
-                        ),
+                        overrides: overrides,
                         shouldCancel: {
                             ProjectMoveBatchCancelRegistry.shared.shouldStop(operationId: operationId)
                         },
