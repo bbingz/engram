@@ -2149,7 +2149,10 @@ final class EngramMCPExecutableTests: XCTestCase {
             prefix: "engram-mcp-disk-audit-access"
         )
         defer { try? FileManager.default.removeItem(atPath: dbPath) }
-        try DatabaseQueue(path: dbPath).write { db in
+        // Bind the queue so the async GRDB write lifetime is explicit (async test
+        // context selects DatabaseQueue.write as async).
+        let seedQueue = try DatabaseQueue(path: dbPath)
+        try await seedQueue.write { db in
             for ddl in [
                 "ALTER TABLE insights ADD COLUMN insight_type TEXT DEFAULT 'semantic'",
                 "ALTER TABLE insights ADD COLUMN superseded_by TEXT",
