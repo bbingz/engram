@@ -244,14 +244,19 @@ final class Round5RemediationTests: XCTestCase {
     }
 
     func testBatchArchiveDryRunDoesNotCreateDestinationParents() throws {
-        let source = try source("EngramCoreWrite/ProjectMove/Batch.swift")
-        let archiveStart = try XCTUnwrap(source.range(of: "} else if op.archive {"))
-        let archiveEnd = try XCTUnwrap(source.range(of: "} else {", options: [], range: archiveStart.lowerBound..<source.endIndex))
-        let archiveBranch = String(source[archiveStart.lowerBound..<archiveEnd.lowerBound])
+        let batch = try source("EngramCoreWrite/ProjectMove/Batch.swift")
+        let archiveStart = try XCTUnwrap(batch.range(of: "} else if op.archive {"))
+        let archiveEnd = try XCTUnwrap(batch.range(of: "} else {", options: [], range: archiveStart.lowerBound..<batch.endIndex))
+        let archiveBranch = String(batch[archiveStart.lowerBound..<archiveEnd.lowerBound])
 
         XCTAssertTrue(archiveBranch.contains("skipProbe: doc.defaults.dryRun"))
-        XCTAssertTrue(archiveBranch.contains("if !doc.defaults.dryRun"))
-        XCTAssertTrue(archiveBranch.contains("FileManager.default.createDirectory"))
+        XCTAssertFalse(batch.contains("FileManager.default.createDirectory"))
+
+        let orchestrator = try source("EngramCoreWrite/ProjectMove/Orchestrator.swift")
+        let dryRunReturn = try XCTUnwrap(orchestrator.range(of: "if options.dryRun {"))
+        let parentProvision = try XCTUnwrap(orchestrator.range(of: "DestinationParentProvision.ensure("))
+        XCTAssertLessThan(dryRunReturn.lowerBound, parentProvision.lowerBound)
+        XCTAssertTrue(orchestrator.contains("if options.archived {"))
     }
 
     func testBatchResultEncodesOperationProjectPaths() throws {
