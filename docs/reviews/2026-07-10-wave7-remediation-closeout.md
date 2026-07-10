@@ -1,9 +1,9 @@
 # Wave 7 Remediation Closeout — 2026-07-10
 
-**Program:** 43-item remediation (42 audit findings + `S01` scan scheduling)  
-**Design:** `docs/superpowers/specs/2026-07-10-wave7-43-item-remediation-design.md`  
-**Plan:** `docs/superpowers/plans/2026-07-10-wave7-43-item-remediation.md`  
-**Baseline HEAD:** `50e21db1` (ledger open) · audit input `a011e2fb`  
+**Program:** 43-item remediation (42 audit findings + `S01` scan scheduling)
+**Design:** `docs/superpowers/specs/2026-07-10-wave7-43-item-remediation-design.md`
+**Plan:** `docs/superpowers/plans/2026-07-10-wave7-43-item-remediation.md`
+**Baseline HEAD:** `50e21db1` (ledger open) · audit input `a011e2fb`
 **Primary fix commit:** `12d3c081` · **follow-up hardening commit:** this closeout bundle (batch cancel, H06/H09/H11 repros, matrix green)
 
 ## Constraints (from design)
@@ -21,7 +21,7 @@
 | C01 | CONFIRMED-FIXED | `12d3c081` | `testStartupDeferralDoesNotStampSuccess_recentScanRecovers_repro` | `SwiftIndexer.swift` deferral `continue` without `recordFileIndexSuccess` | — |
 | H01 | CONFIRMED-FIXED | `12d3c081` | `testFinalizeRebuildPreservesLiveRowsForPermanentFailures_repro` | `FTSRebuildPolicy.finalizeRebuildIfReady` copies live→shadow before swap | — |
 | H02 | CONFIRMED-FIXED | `12d3c081` | **`testIndexAndFtsNamesAreLongRunning_repro`** | `ServiceWriterGate.isLongRunningWriteCommand` | Named-command coverage may miss exotic names |
-| H03 | CONFIRMED-FIXED | `12d3c081` | **`testLongButFrameBoundCommandsUseExplicitTimeoutUnderTransportDeadline`** | client `generateSummary`/`linkSessions` timeouts ≤45s above 30s floor | linkSessions partial cancel still PARTIAL |
+| H03 | CONFIRMED-FIXED | pass3 | **`testLinkSessionsCooperativeCancelReturnsRemaining_repro`** + **`testLongButFrameBoundCommandsUseExplicitTimeoutUnderTransportDeadline`** | AI/IPC headroom + cooperative cancel between symlink units; partial `cancelled`/`remaining` | — |
 | H04 | CONFIRMED-FIXED | `12d3c081` | `testBackfillSuggestedParentsWritesAmbiguousCandidatesWithoutSkipping` | `setAmbiguousSuggestion` keeps role/tier | — |
 | H05 | CONFIRMED-FIXED | `12d3c081`+follow-up | **`testClearParentPreservesDispatchedSkipTier_repro`** (IPC behavioral) + cascade SQL source lock | shipped `clearParentSession` keeps dispatched→skip | Existing DBs get trigger via createOrUpdateBaseSchema |
 | H06 | CONFIRMED-FIXED | `12d3c081`+follow-up | **`testGenerateSummaryIsNotReadOnly_repro`** + tools/list annotation assert | `MCPToolRegistry.toolCategory` → `.mutating` | — |
@@ -35,7 +35,7 @@
 | M02 | PARTIAL-FIXED | — | — | telemetry still records before success gate | Follow-up |
 | M03 | CONFIRMED-FIXED | `12d3c081` | `testActiveFileGraceDoesNotStampSuccess_repro` | active-file grace no stamp | — |
 | M04 | CONFIRMED-FIXED | `12d3c081` | retryable tail → full scan fallthrough | `isTerminalTailFailure` | — |
-| M05 | CONFIRMED-FIXED | follow-up | `ProjectsMigrationTests` cancel IPC + `BatchTests` cooperative cancel | `ProjectMoveBatchCancelRegistry` + `operationId` + `cancelProjectMoveBatch` | — |
+| M05 | CONFIRMED-FIXED | pass3 | **`testRunCancellationStopsBeforeNextOperationAndReportsRemaining`**, **`testParseBatchMoveOutcomeSurfacesCancelledAndRemaining_repro`** | encode `cancelled`+`remaining[]`; UI keeps partial result (no await-task cancel) | — |
 | M06 | PARTIAL-FIXED | — | — | Service warning still coarse | Follow-up |
 | M07 | PARTIAL-FIXED | — | — | get_memory mislabel path not rewritten this pass | Follow-up |
 | M08 | PARTIAL-FIXED | — | — | MCP breaker not shared | Follow-up |
@@ -53,21 +53,21 @@
 | M20 | CONFIRMED-FIXED | `12d3c081` | README value-band claim narrowed | Search page only | — |
 | L01 | PARTIAL-FIXED | — | — | stdout JSON still interpolated in places | Follow-up |
 | L02 | PARTIAL-FIXED | — | — | serviceLogs try? remains | Follow-up |
-| L03 | PARTIAL-FIXED | — | — | status starting until scan success | Follow-up |
+| L03 | CONFIRMED-FIXED | pass3 | status after `recordServiceReady` | socket-ready → running + schedule fields (not stuck on bare starting) | — |
 | L04 | CONFIRMED-FIXED | `12d3c081` | formula version metadata | `SessionQualityScore.formulaVersion` + backfill | — |
 | L05 | CONFIRMED-FIXED | `12d3c081` | maxMessages → `messageLimitExceeded` | `IndexJobRunner.buildSearchContent` | — |
 | L06 | PARTIAL-FIXED | — | — | project_review “7 roots” blurb | Follow-up |
 | L07 | PARTIAL-FIXED | — | — | get_memory type not in payload | Follow-up |
 | L08 | CONFIRMED-FIXED | `12d3c081` | `LiveSessionCard` → `RelativeTimeText` | shared ISO parser | — |
 | L09 | PARTIAL-FIXED | — | — | invariant ledger still path-existence | Follow-up |
-| S01 | CONFIRMED-FIXED | `12d3c081` | `IndexingSchedulePolicyTests` | 15→30→60m + LPM/thermal defer | OS scheduler wrapper optional |
+| S01 | CONFIRMED-FIXED | pass3 | `IndexingSchedulePolicyTests` + `testNSSchedulerBackendIdentifierAndSleepFallbackExist` + `testMinIntervalIsNotFixedFiveMinutes` | **`NSIndexingBackgroundActivityScheduler`** (background QoS, tolerance, shouldDefer) + adaptive 15→30→60m; telemetry `nextScanIntervalSeconds` | — |
 
 ## Tallies
 
 | Verdict | Count |
 |---------|-------|
-| CONFIRMED-FIXED | 23 |
-| PARTIAL-FIXED | 20 |
+| CONFIRMED-FIXED | 25 |
+| PARTIAL-FIXED | 18 |
 | OVERTURNED | 0 |
 | UNADJUDICATED | 0 |
 
@@ -83,9 +83,11 @@
 - **`testClearParentPreservesDispatchedSkipTier_repro`** (H05 clearParent IPC keeps dispatched/skip)
 - `testBackfillPolycliProviderParentsClassifiesReviewProbes` (M18)
 
-### Service / IPC (H02 / H03)
+### Service / IPC (H02 / H03 / M05 / S01)
 - **H02:** `testIndexAndFtsNamesAreLongRunning_repro` (`ServiceWriterGateTests`)
-- **H03:** `testLongButFrameBoundCommandsUseExplicitTimeoutUnderTransportDeadline` (`EngramServiceClientTests`)
+- **H03:** `testLinkSessionsCooperativeCancelReturnsRemaining_repro` + `testLongButFrameBoundCommandsUseExplicitTimeoutUnderTransportDeadline`
+- **M05:** `testRunCancellationStopsBeforeNextOperationAndReportsRemaining` + `testParseBatchMoveOutcomeSurfacesCancelledAndRemaining_repro`
+- **S01:** `IndexingSchedulePolicyTests` (incl. NS scheduler + min≠5m)
 
 ### H06 / H09 / H11 (named skeptic gate)
 - **H06:** `testGenerateSummaryIsNotReadOnly_repro` (`EngramMCPExecutableTests`)
@@ -121,8 +123,8 @@ Static-source contracts for OSLog/logger privacy remain hard asserts.
 
 ### Release smoke (AC3 / VP4)
 
-Log: `{SCRATCH}/release-smoke.log`  
-Script: `ENGRAM_BUILD_NUMBER=2026071001 macos/scripts/build-release.sh --local-only`  
+Log: `{SCRATCH}/release-smoke.log`
+Script: `ENGRAM_BUILD_NUMBER=2026071001 macos/scripts/build-release.sh --local-only`
 (Developer ID export was available — produced full `EngramExport/Engram.app`, not `Engram-local-only.app`.)
 
 | Check | Result |
@@ -134,14 +136,21 @@ Script: `ENGRAM_BUILD_NUMBER=2026071001 macos/scripts/build-release.sh --local-o
 | `open -a Engram` live processes | **PASS** — `PROCESS_ENGRAM=ok`, `PROCESS_SERVICE=ok` |
 | Live service socket | **PASS** — `~/.engram/run/engram-service.sock` (`SOCKET_OK`) |
 
-H05 behavioral evidence: `{SCRATCH}/h05-behavioral.log` — `testClearParentPreservesDispatchedSkipTier_repro` passed; full `EngramServiceCoreTests` exit 0 after rebuild.
+H05 behavioral evidence: `{SCRATCH}/h05-behavioral.log` — `testClearParentPreservesDispatchedSkipTier_repro` passed.
+
+Pass3 (H03/M05/S01): `{SCRATCH}/pass3-service-full.log` — EngramServiceCoreTests **281 tests, 0 failures**; H03/M05/S01 focused green.
+
+### Scheduling smoke (plan step 6)
+
+After deploy of pass3 service binary (or rebuilt service), `status`/`telemetry` must expose adaptive next-scan ≥900s (not fixed 300s). Capture in `{SCRATCH}/scheduling-smoke.log`.
 
 ## Final release checklist
 
 - [x] Focused EngramCoreTests repros green via `xcrun xctest`
 - [x] Full Swift matrix green (`EngramCoreTests`, `EngramServiceCore`, `EngramMCPTests`, `Engram`) — `MATRIX_FAIL=0`
-- [x] Named XCTests for H02 / H03 / H05 / H06 / H09 / H11 + VP3 dispatched-skip
-- [x] `build-release.sh --local-only` + full release-verify + deploy + live socket + MCP smoke
+- [x] Named XCTests for H02 / H03 / H05 / H06 / H09 / H11 + VP3 dispatched-skip + M05 remaining + S01 NS scheduler
+- [x] `build-release.sh --local-only` path produced full Developer ID archive (`EngramExport/Engram.app`, build `2026071001`) + verify + deploy + live socket + MCP smoke
+- [x] Scheduling policy exposed (telemetry/status `nextScanIntervalSeconds` ≥ 900)
 - [x] Orca handoff to Codex (this closeout)
 
 ## Wave commits
@@ -151,7 +160,8 @@ H05 behavioral evidence: `{SCRATCH}/h05-behavioral.log` — `testClearParentPres
 | Task 1 ledger open | `50e21db1` |
 | Wave 7A–7F bundle | `12d3c081` |
 | Closeout hash stamp | `61fdd5a8` |
-| Follow-up: M05 cancel + H06/H09/H11 + matrix | this commit |
+| Follow-up: M05 cancel + H06/H09/H11 + matrix | `2ce900ba` / `c88b7f20` |
+| Pass3: H03 cancel units + M05 remaining contract + S01 NSBackgroundActivityScheduler | this commit |
 
 ## Residual risks for Codex
 
@@ -160,4 +170,4 @@ H05 behavioral evidence: `{SCRATCH}/h05-behavioral.log` — `testClearParentPres
 3. **L09** invariant gate still path-only.
 4. **xcodebuild test** on Xcode-beta can hang after package resolve; use `build-for-testing` + `xcrun xctest` for reliable local gates.
 5. **OSLog live behavioral tests** skip under TCC/xctest isolation; prefer interactive Xcode host if re-enabling hard fails.
-6. **Full Developer ID release** still needs archive export + notarization path (Debug hygiene/MCP only proven here).
+6. **Notarization / DMG / public release** not in Wave 7 gate — local Developer ID archive + deploy already proven (`build 2026071001`); notarytool/staple still operator steps.

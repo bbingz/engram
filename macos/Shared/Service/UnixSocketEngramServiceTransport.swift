@@ -149,7 +149,7 @@ final class UnixSocketEngramServiceTransport: EngramServiceTransport, Sendable {
 
     private static func event(from status: EngramServiceStatus) -> EngramServiceEvent {
         switch status {
-        case .running(let total, let todayParents):
+        case .running(let total, let todayParents, _):
             return EngramServiceEvent(event: "indexed", total: total, todayParents: todayParents)
         case .degraded(let message):
             return EngramServiceEvent(event: "warning", message: message)

@@ -295,10 +295,20 @@ extension EngramServiceCommandHandler {
                 "archive": .bool(op.archive),
             ])
         }
+        // Wave 7C M05: explicit cancelled + remaining contract (not only completed/failed/skipped).
+        let remaining: [EngramServiceJSONValue] = result.remaining.map { op in
+            .object([
+                "src": .string(op.src),
+                "dst": op.dst.map { .string($0) } ?? .null,
+                "archive": .bool(op.archive),
+            ])
+        }
         return .object([
             "completed": .array(completed),
             "failed": .array(failed),
             "skipped": .array(skipped),
+            "remaining": .array(remaining),
+            "cancelled": .bool(result.cancelled),
         ])
     }
 }

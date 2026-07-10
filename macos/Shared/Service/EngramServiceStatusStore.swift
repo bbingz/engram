@@ -48,7 +48,7 @@ final class EngramServiceStatusStore {
             return String(localized: "Stopped")
         case .starting:
             return String(localized: "Starting...")
-        case .running(let total, _):
+        case .running(let total, _, _):
             return String(localized: "\(total) sessions indexed")
         case .degraded(let message):
             return String(localized: "Degraded: \(message)")
@@ -82,7 +82,7 @@ final class EngramServiceStatusStore {
         // change so the idle status poll becomes free. (lastEventAt has no
         // observers, so its unconditional update costs nothing.)
         if status != newStatus { status = newStatus }
-        if case .running(let total, let todayParents) = newStatus {
+        if case .running(let total, let todayParents, _) = newStatus {
             if totalSessions != total { totalSessions = total }
             if todayParentSessions != todayParents { todayParentSessions = todayParents }
         }

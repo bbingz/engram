@@ -216,7 +216,7 @@ final class UnixSocketTransportTests: XCTestCase {
 
         let statuses = try await [first, second]
         XCTAssertEqual(Set(statuses.map { status in
-            if case .running(let total, _) = status { return total }
+            if case .running(let total, _, _) = status { return total }
             return -1
         }), [11])
     }

@@ -46,4 +46,19 @@ final class IndexingSchedulePolicyTests: XCTestCase {
         XCTAssertFalse(IndexingSchedulePolicy.shouldDefer(conditions: .init(lowPower: false, thermal: .nominal)))
         XCTAssertFalse(IndexingSchedulePolicy.shouldDefer(conditions: .init(thermal: .fair)))
     }
+
+    func testNSSchedulerBackendIdentifierAndSleepFallbackExist() throws {
+        // Production path uses NSBackgroundActivityScheduler; sleep fallback is for tests/hosts.
+        let ns = NSIndexingBackgroundActivityScheduler()
+        XCTAssertEqual(NSIndexingBackgroundActivityScheduler.identifier, "com.engram.service.periodic-index")
+        ns.invalidate()
+        let sleep = SleepIndexingBackgroundActivityScheduler()
+        sleep.invalidate()
+    }
+
+    func testMinIntervalIsNotFixedFiveMinutes() {
+        XCTAssertGreaterThanOrEqual(IndexingSchedulePolicy.minInterval, 15 * 60)
+        XCTAssertNotEqual(IndexingSchedulePolicy.minInterval, 5 * 60)
+        XCTAssertEqual(IndexingSchedulePolicy().nextInterval(), 15 * 60)
+    }
 }

@@ -168,7 +168,8 @@ final class BatchTests: XCTestCase {
         XCTAssertTrue(result.cancelled)
         XCTAssertTrue(result.completed.isEmpty)
         XCTAssertTrue(result.failed.isEmpty)
-        XCTAssertEqual(result.skipped, [first, second])
+        XCTAssertTrue(result.skipped.isEmpty, "cancel must not mis-label remaining as skipped")
+        XCTAssertEqual(result.remaining, [first, second])
     }
 
     func testRunSurfacesArchiveSuggestionFailureAsBatchFailure() async throws {

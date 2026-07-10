@@ -23,6 +23,13 @@ actor ServiceTelemetryCollector {
     private var scanCount: Int = 0
     private var lastScanAt: String?
 
+    // Wave 7C S01 schedule visibility (adaptive 15→30→60m, not fixed 5m).
+    private var nextScanIntervalSeconds: Int?
+    private var scheduleTargetIntervalSeconds: Int?
+    private var scheduleMinIntervalSeconds: Int? = Int(IndexingSchedulePolicy.minInterval)
+    private var scheduleConsecutiveIdleScans: Int?
+    private var scheduleBackend: String?
+
     init(
         spanCapacity: Int = 200,
         latencyWindow: Int = 100,
@@ -31,6 +38,20 @@ actor ServiceTelemetryCollector {
         self.spanCapacity = max(1, spanCapacity)
         self.latencyWindow = max(1, latencyWindow)
         self.embeddingBreaker = embeddingBreaker
+    }
+
+    func recordSchedule(
+        nextScanIntervalSeconds: Int,
+        targetIntervalSeconds: Int,
+        consecutiveIdleScans: Int,
+        minIntervalSeconds: Int = Int(IndexingSchedulePolicy.minInterval),
+        backend: String
+    ) {
+        self.nextScanIntervalSeconds = nextScanIntervalSeconds
+        self.scheduleTargetIntervalSeconds = targetIntervalSeconds
+        self.scheduleConsecutiveIdleScans = consecutiveIdleScans
+        self.scheduleMinIntervalSeconds = minIntervalSeconds
+        self.scheduleBackend = backend
     }
 
     func record(span: ServiceSpan) {
@@ -94,7 +115,12 @@ actor ServiceTelemetryCollector {
             lastScanAt: lastScanAt,
             commands: commands,
             spans: orderedSpans,
-            embeddingBreakers: breakers
+            embeddingBreakers: breakers,
+            nextScanIntervalSeconds: nextScanIntervalSeconds,
+            scheduleTargetIntervalSeconds: scheduleTargetIntervalSeconds,
+            scheduleMinIntervalSeconds: scheduleMinIntervalSeconds,
+            scheduleConsecutiveIdleScans: scheduleConsecutiveIdleScans,
+            scheduleBackend: scheduleBackend
         )
     }
 

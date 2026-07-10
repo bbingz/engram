@@ -109,7 +109,7 @@ struct GeneralSettingsSection: View {
             Text("Stopped")
         case .starting:
             Text("Starting...")
-        case .running(let total, _):
+        case .running(let total, _, _):
             Text("\(total) sessions indexed")
         case .degraded(let message):
             Text("Degraded: \(message)")

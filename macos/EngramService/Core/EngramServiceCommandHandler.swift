@@ -494,8 +494,14 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 // outside the gate. The per-path symlink logic is idempotent
                 // (createDirectory withIntermediateDirectories + remove-then-
                 // recreate per file), so concurrent calls are self-correcting.
+                // Wave 7C H03: cooperative cancel between symlink units so a
+                // client deadline does not leave unbounded FS work running.
                 let payload = try decodePayload(EngramServiceLinkSessionsRequest.self, from: request)
-                let value = try Self.linkSessions(payload, databasePath: writerGate.databasePath)
+                let value = try Self.linkSessions(
+                    payload,
+                    databasePath: writerGate.databasePath,
+                    shouldCancel: { Task.isCancelled }
+                )
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(value)
@@ -1902,9 +1908,12 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         return generated
     }
 
-    private static func linkSessions(
+    /// Wave 7C H03: filesystem symlink batch with cooperative cancel between units.
+    /// `shouldCancel` is injectable for tests; production passes `Task.isCancelled`.
+    static func linkSessions(
         _ request: EngramServiceLinkSessionsRequest,
-        databasePath: String
+        databasePath: String,
+        shouldCancel: () -> Bool = { Task.isCancelled }
     ) throws -> EngramServiceLinkSessionsResponse {
         let normalizedTargetDir = trimTrailingSlash(request.targetDir)
         guard normalizedTargetDir.hasPrefix("/") else {
@@ -1947,8 +1956,15 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         var skipped = 0
         var errors: [String] = []
         var createdDirs = Set<String>()
+        var remaining = 0
+        var cancelled = false
 
-        for row in rows {
+        for (index, row) in rows.enumerated() {
+            if shouldCancel() {
+                cancelled = true
+                remaining = rows.count - index
+                break
+            }
             let source = row["source"] as String? ?? "unknown"
             let filePath = row["file_path"] as String? ?? ""
             guard isAllowedSessionFilePath(filePath, source: source) else {
@@ -1993,7 +2009,9 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             errors: errors,
             targetDir: normalizedTargetDir,
             projectNames: projectNames,
-            truncated: rows.count == 10_000 ? true : nil
+            truncated: rows.count == 10_000 ? true : nil,
+            cancelled: cancelled ? true : nil,
+            remaining: cancelled ? remaining : nil
         )
     }
 

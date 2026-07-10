@@ -47,7 +47,8 @@ enum EngramServiceJSONValue: Codable, Equatable, Sendable {
 enum EngramServiceStatus: Codable, Equatable, Sendable {
     case stopped
     case starting
-    case running(total: Int, todayParents: Int)
+    /// `nextScanIntervalSeconds` is the adaptive S01 target (900/1800/3600), never a fixed 300.
+    case running(total: Int, todayParents: Int, nextScanIntervalSeconds: Int? = nil)
     case degraded(message: String)
     case error(message: String)
 
@@ -56,6 +57,7 @@ enum EngramServiceStatus: Codable, Equatable, Sendable {
         case total
         case todayParents
         case message
+        case nextScanIntervalSeconds
     }
 
     init(from decoder: Decoder) throws {
@@ -68,7 +70,8 @@ enum EngramServiceStatus: Codable, Equatable, Sendable {
         case "running":
             self = .running(
                 total: try container.decode(Int.self, forKey: .total),
-                todayParents: try container.decodeIfPresent(Int.self, forKey: .todayParents) ?? 0
+                todayParents: try container.decodeIfPresent(Int.self, forKey: .todayParents) ?? 0,
+                nextScanIntervalSeconds: try container.decodeIfPresent(Int.self, forKey: .nextScanIntervalSeconds)
             )
         case "degraded":
             self = .degraded(message: try container.decode(String.self, forKey: .message))
@@ -90,10 +93,11 @@ enum EngramServiceStatus: Codable, Equatable, Sendable {
             try container.encode("stopped", forKey: .state)
         case .starting:
             try container.encode("starting", forKey: .state)
-        case .running(let total, let todayParents):
+        case .running(let total, let todayParents, let nextScanIntervalSeconds):
             try container.encode("running", forKey: .state)
             try container.encode(total, forKey: .total)
             try container.encode(todayParents, forKey: .todayParents)
+            try container.encodeIfPresent(nextScanIntervalSeconds, forKey: .nextScanIntervalSeconds)
         case .degraded(let message):
             try container.encode("degraded", forKey: .state)
             try container.encode(message, forKey: .message)
@@ -860,6 +864,30 @@ struct EngramServiceLinkSessionsResponse: Codable, Equatable, Sendable {
     let targetDir: String
     let projectNames: [String]
     let truncated: Bool?
+    /// Wave 7C H03: true when cooperative cancel stopped mid-batch; partial counts remain valid.
+    let cancelled: Bool?
+    /// Symlink candidates not attempted after cancel (deterministic partial result).
+    let remaining: Int?
+
+    init(
+        created: Int,
+        skipped: Int,
+        errors: [String],
+        targetDir: String,
+        projectNames: [String],
+        truncated: Bool? = nil,
+        cancelled: Bool? = nil,
+        remaining: Int? = nil
+    ) {
+        self.created = created
+        self.skipped = skipped
+        self.errors = errors
+        self.targetDir = targetDir
+        self.projectNames = projectNames
+        self.truncated = truncated
+        self.cancelled = cancelled
+        self.remaining = remaining
+    }
 }
 
 struct EngramServiceExportSessionRequest: Codable, Equatable, Sendable {
@@ -1092,6 +1120,12 @@ struct ServiceTelemetrySnapshot: Codable, Equatable, Sendable {
     /// Ephemeral per-provider embedding circuit-breaker counters (process memory
     /// only; resets on restart). Empty when no embed traffic has run.
     let embeddingBreakers: [EmbeddingBreakerTelemetry]
+    /// Wave 7C S01: adaptive schedule visibility for smoke/gates (not fixed 5m).
+    let nextScanIntervalSeconds: Int?
+    let scheduleTargetIntervalSeconds: Int?
+    let scheduleMinIntervalSeconds: Int?
+    let scheduleConsecutiveIdleScans: Int?
+    let scheduleBackend: String?
 
     init(
         lastScanDurationMs: Double?,
@@ -1101,7 +1135,12 @@ struct ServiceTelemetrySnapshot: Codable, Equatable, Sendable {
         lastScanAt: String?,
         commands: [ServiceCommandLatency],
         spans: [ServiceSpan],
-        embeddingBreakers: [EmbeddingBreakerTelemetry] = []
+        embeddingBreakers: [EmbeddingBreakerTelemetry] = [],
+        nextScanIntervalSeconds: Int? = nil,
+        scheduleTargetIntervalSeconds: Int? = nil,
+        scheduleMinIntervalSeconds: Int? = nil,
+        scheduleConsecutiveIdleScans: Int? = nil,
+        scheduleBackend: String? = nil
     ) {
         self.lastScanDurationMs = lastScanDurationMs
         self.lastScanIndexed = lastScanIndexed
@@ -1111,6 +1150,11 @@ struct ServiceTelemetrySnapshot: Codable, Equatable, Sendable {
         self.commands = commands
         self.spans = spans
         self.embeddingBreakers = embeddingBreakers
+        self.nextScanIntervalSeconds = nextScanIntervalSeconds
+        self.scheduleTargetIntervalSeconds = scheduleTargetIntervalSeconds
+        self.scheduleMinIntervalSeconds = scheduleMinIntervalSeconds
+        self.scheduleConsecutiveIdleScans = scheduleConsecutiveIdleScans
+        self.scheduleBackend = scheduleBackend
     }
 }
 

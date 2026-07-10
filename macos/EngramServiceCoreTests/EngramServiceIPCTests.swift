@@ -777,13 +777,19 @@ final class EngramServiceIPCTests: XCTestCase {
             source.contains("var isFirstScan = true"),
             "Periodic indexing must not run an immediate first scan while startup maintenance already holds the write gate"
         )
-        // Wave 7C S01: adaptive schedule sleeps first (15m+), then indexes.
-        let sleepRange = try XCTUnwrap(
-            source.range(of: "try await Task.sleep(nanoseconds: UInt64(sleepSeconds * 1_000_000_000))")
-                ?? source.range(of: "Task.sleep(nanoseconds: UInt64(sleepSeconds")
+        // Wave 7C S01: NSBackgroundActivityScheduler opportunity wait before indexRecent
+        // (adaptive 15m+ interval; not an immediate first scan).
+        XCTAssertTrue(
+            source.contains("NSIndexingBackgroundActivityScheduler")
+                || source.contains("waitForOpportunity"),
+            "periodic loop must use background activity scheduling, not an immediate first scan"
+        )
+        let waitRange = try XCTUnwrap(
+            source.range(of: "waitForOpportunity(")
+                ?? source.range(of: "activityScheduler.waitForOpportunity")
         )
         let writeRange = try XCTUnwrap(source.range(of: #"gate.performWriteCommand(name: "indexRecent")"#))
-        XCTAssertLessThan(sleepRange.lowerBound, writeRange.lowerBound)
+        XCTAssertLessThan(waitRange.lowerBound, writeRange.lowerBound)
     }
 
     func testRunnerPeriodicScanUsesEnabledAdapters() throws {
@@ -3153,6 +3159,71 @@ final class EngramServiceIPCTests: XCTestCase {
 
         let rejected = try await client.dismissAmbiguousSuggestion(sessionId: "s2")
         XCTAssertEqual(rejected, EngramServiceLinkResponse(ok: false, error: "not-ambiguous"))
+    }
+
+    /// Wave 7C H03 (repro): linkSessions stops between units and returns partial remaining.
+    func testLinkSessionsCooperativeCancelReturnsRemaining_repro() throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let home = paths.runtime.appendingPathComponent("home", isDirectory: true)
+        let sessionsDir = home.appendingPathComponent(".codex/sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+        let homeScope = ServiceCoreTestHomeScope(home: home)
+        defer { homeScope.restore() }
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        // Point fixture rows at real files under the scoped home so path confinement allows them.
+        try queue.write { db in
+            for i in 1...6 {
+                let file = sessionsDir.appendingPathComponent("rollout-\(i).jsonl")
+                try "{}\n".write(to: file, atomically: true, encoding: .utf8)
+                if i <= 2 {
+                    try db.execute(
+                        sql: "UPDATE sessions SET file_path = ? WHERE id = ?",
+                        arguments: [file.path, "s\(i)"]
+                    )
+                } else {
+                    try db.execute(
+                        sql: """
+                            INSERT INTO sessions (
+                              id, source, start_time, cwd, project, model, message_count,
+                              user_message_count, assistant_message_count, file_path, size_bytes,
+                              indexed_at
+                            ) VALUES (
+                              ?, 'codex', '2026-04-23T10:0\(i):00Z', '/tmp/engram', 'engram',
+                              'gpt-5.4', 1, 1, 0, ?, 10,
+                              '2026-04-23T10:0\(i):00Z'
+                            )
+                            """,
+                        arguments: ["s\(i)", file.path]
+                    )
+                }
+            }
+        }
+
+        let target = home.appendingPathComponent("engram", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+
+        var checks = 0
+        let response = try EngramServiceCommandHandler.linkSessions(
+            EngramServiceLinkSessionsRequest(targetDir: target.path, actor: "test"),
+            databasePath: paths.database.path,
+            shouldCancel: {
+                checks += 1
+                // Cancel after the first unit is observed (second check).
+                return checks > 1
+            }
+        )
+
+        XCTAssertEqual(response.cancelled, true)
+        XCTAssertNotNil(response.remaining)
+        XCTAssertGreaterThan(response.remaining ?? 0, 0)
+        // At most one symlink unit completed before cancel (created or skipped/errors).
+        XCTAssertLessThan(
+            response.created + response.skipped + response.errors.count,
+            6,
+            "must not finish the full candidate set after cancel"
+        )
     }
 
     func testFileSystemProviderReportsRecentlyModifiedLiveSessions() async throws {

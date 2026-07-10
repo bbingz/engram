@@ -284,6 +284,7 @@
 		7137061A9F640389773525DC /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6BFDA0AA7A37ACDDE63D1D9 /* Theme.swift */; };
 		71887F5355982E47D58ADF03 /* ProjectMoveServiceError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00372ABCF53467F7C69B071F /* ProjectMoveServiceError.swift */; };
 		72717239A8D52718C1C37149 /* CommandCodeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = CECC3C3E504230086600D35A /* CommandCodeAdapter.swift */; };
+		727C0B678D71E538ED31ABC9 /* IndexingBackgroundActivityScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92EA949A88296A44589A0692 /* IndexingBackgroundActivityScheduler.swift */; };
 		731C8548521F93731F7D5638 /* WorkGraphScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = B573C84157B60E6150907386 /* WorkGraphScreen.swift */; };
 		738F041C0DBA29A2ED7EE61D /* SessionCostPricingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78F61A95BC3E7FCD6BB71326 /* SessionCostPricingTests.swift */; };
 		739DF90BE2E1E1B519E3896D /* ServiceErrorPresenterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3BEA650EF933B7CB2DC8734 /* ServiceErrorPresenterTests.swift */; };
@@ -1080,6 +1081,7 @@
 		91B1C100EBF7E0BE588DAD83 /* EngramDatabaseIndexer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramDatabaseIndexer.swift; sourceTree = "<group>"; };
 		91B6CAB1D9889FF36210C27E /* RetryPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RetryPolicy.swift; sourceTree = "<group>"; };
 		926B3C0260A07A71774FB824 /* PopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverView.swift; sourceTree = "<group>"; };
+		92EA949A88296A44589A0692 /* IndexingBackgroundActivityScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexingBackgroundActivityScheduler.swift; sourceTree = "<group>"; };
 		934EBFE453FFD59097C93962 /* ParentDetection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParentDetection.swift; sourceTree = "<group>"; };
 		945AA96DE6742404DD39E2FE /* EngramCLIResumeCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramCLIResumeCommand.swift; sourceTree = "<group>"; };
 		949F3B9D319F2BE562AABCBB /* SourceCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceCatalog.swift; sourceTree = "<group>"; };
@@ -1511,6 +1513,7 @@
 				463F349060E8E6995EFB0EEE /* EngramServiceCommandHandler+RemoteSync.swift */,
 				1544BE45F851B69E9F5DD3EE /* EngramServiceReadProvider.swift */,
 				DCDC3A01172C6C8CC0250ADD /* EngramServiceRunner.swift */,
+				92EA949A88296A44589A0692 /* IndexingBackgroundActivityScheduler.swift */,
 				5E9C7B5F0F14C680A5AD0F87 /* IndexingSchedulePolicy.swift */,
 				D88EEA17C45FBA32FDC3AE97 /* ProjectMoveBatchCancelRegistry.swift */,
 				8BC135C73C19B10ACDFCFAD6 /* RemoteSyncCoordinator.swift */,
@@ -2892,6 +2895,7 @@
 				07506A72516C1330D7EF9B9E /* EngramServiceRunner.swift in Sources */,
 				044F04E1BC1B9D009E80F8D4 /* EngramServiceStatusStore.swift in Sources */,
 				B384F617854BA88D92DC8866 /* EngramServiceTransport.swift in Sources */,
+				727C0B678D71E538ED31ABC9 /* IndexingBackgroundActivityScheduler.swift in Sources */,
 				5B67CF48F76339B8AEAE35BA /* IndexingSchedulePolicy.swift in Sources */,
 				B7662B20AE259445939E223D /* LiveSyncDisabledSources.swift in Sources */,
 				77367829BEE31987036D05ED /* MockEngramServiceClient.swift in Sources */,

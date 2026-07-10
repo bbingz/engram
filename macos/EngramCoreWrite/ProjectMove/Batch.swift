@@ -76,18 +76,23 @@ public struct BatchOperationFailure: Equatable, Sendable {
 public struct BatchResult: Equatable, Sendable {
     public var completed: [PipelineResult]
     public var failed: [BatchOperationFailure]
+    /// Ops skipped after a hard failure when `stopOnError` is true (not cancel).
     public var skipped: [BatchOperation]
+    /// Ops never started because cooperative cancel fired (Wave 7C M05 remaining).
+    public var remaining: [BatchOperation]
     public var cancelled: Bool
 
     public init(
         completed: [PipelineResult] = [],
         failed: [BatchOperationFailure] = [],
         skipped: [BatchOperation] = [],
+        remaining: [BatchOperation] = [],
         cancelled: Bool = false
     ) {
         self.completed = completed
         self.failed = failed
         self.skipped = skipped
+        self.remaining = remaining
         self.cancelled = cancelled
     }
 }
@@ -221,8 +226,9 @@ public enum Batch {
 
         for (index, op) in doc.operations.enumerated() {
             if shouldCancel() {
+                // M05: remaining = not-yet-started units; distinct from stopOnError skipped.
                 result.cancelled = true
-                result.skipped.append(contentsOf: doc.operations[index...])
+                result.remaining.append(contentsOf: Array(doc.operations[index...]))
                 break
             }
             if halted {

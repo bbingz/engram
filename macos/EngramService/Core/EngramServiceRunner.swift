@@ -106,6 +106,17 @@ public enum EngramServiceRunner {
 
         ServiceLogger.notice("service ready, listening on \(socketBasename)", category: .runner)
         writeStdoutLine(#"{"event":"ready","socket":"\#(socketPath)"}"#)
+        await statusMonitor.recordServiceReady()
+        // Publish initial S01 schedule before the first sleep so status/telemetry
+        // smoke never sees a fixed 5-minute interval (min is 15m).
+        let initialInterval = Int(IndexingSchedulePolicy.minInterval)
+        await statusMonitor.recordSchedule(nextScanIntervalSeconds: initialInterval)
+        await telemetry.recordSchedule(
+            nextScanIntervalSeconds: initialInterval,
+            targetIntervalSeconds: initialInterval,
+            consecutiveIdleScans: 0,
+            backend: "NSBackgroundActivityScheduler"
+        )
 
         // V2: run startup maintenance once, detached so it does not block the
         // health probe / ready emission. Runs through the gate so writes are
@@ -329,18 +340,39 @@ public enum EngramServiceRunner {
         telemetry: ServiceTelemetryCollector? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits],
-        remoteSync: RemoteSyncCoordinator? = nil
+        remoteSync: RemoteSyncCoordinator? = nil,
+        activityScheduler: IndexingBackgroundActivityScheduling = NSIndexingBackgroundActivityScheduler()
     ) async {
-        // Wave 7C S01: adaptive 15→30→60m idle backoff (was fixed 5m).
+        // Wave 7C S01: adaptive 15→30→60m idle backoff + NSBackgroundActivityScheduler
+        // (background QoS, tolerance, shouldDefer). Was fixed 5m Task.sleep.
         var schedule = IndexingSchedulePolicy()
+        defer { activityScheduler.invalidate() }
 
         while !Task.isCancelled {
             let sleepSeconds = schedule.nextInterval()
-            do {
-                try await Task.sleep(nanoseconds: UInt64(sleepSeconds * 1_000_000_000))
-            } catch {
+            await statusMonitor.recordSchedule(nextScanIntervalSeconds: Int(sleepSeconds))
+            await telemetry?.recordSchedule(
+                nextScanIntervalSeconds: Int(sleepSeconds),
+                targetIntervalSeconds: Int(schedule.targetInterval),
+                consecutiveIdleScans: schedule.consecutiveIdleScans,
+                backend: "NSBackgroundActivityScheduler"
+            )
+
+            let tolerance = min(5 * 60.0, sleepSeconds * 0.25)
+            let opportunity = await activityScheduler.waitForOpportunity(
+                interval: sleepSeconds,
+                tolerance: tolerance
+            )
+            switch opportunity {
+            case .cancelled:
+                break
+            case .deferred:
+                // OS asked to defer; keep schedule, wait again.
+                continue
+            case .run:
                 break
             }
+            if case .cancelled = opportunity { break }
 
             // Defer discretionary work under Low Power / serious thermal pressure.
             let processInfo = ProcessInfo.processInfo

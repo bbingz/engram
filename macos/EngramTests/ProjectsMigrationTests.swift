@@ -149,6 +149,31 @@ final class ProjectsMigrationTests: XCTestCase {
         XCTAssertTrue(source.contains("activeBatchOperationId"))
         // Cancel remains enabled during execute (no .disabled(isExecuting) on Cancel).
         XCTAssertFalse(source.contains("Button(\"Cancel\") { dismiss() }\n                    .keyboardShortcut(.cancelAction)\n                    .disabled(isExecuting)"))
+        // M05: Cancel button must not cancel the awaiting task (would discard completed/remaining).
+        // onDisappear may still cancel; the execute-path Cancel must only call cancelProjectMoveBatch.
+        XCTAssertFalse(
+            source.contains("cancelProjectMoveBatch(operationId: operationId)\n                        }\n                        activeTask?.cancel()"),
+            "Cancel must wait for service partial result instead of cancelling the client task"
+        )
+        XCTAssertTrue(source.contains("remaining"))
+        XCTAssertTrue(source.contains("cancelled"))
+    }
+
+    func testParseBatchMoveOutcomeSurfacesCancelledAndRemaining_repro() {
+        let json: EngramServiceJSONValue = .object([
+            "completed": .array([.object(["src": .string("/a")])]),
+            "failed": .array([]),
+            "skipped": .array([]),
+            "remaining": .array([
+                .object(["src": .string("/b")]),
+                .object(["src": .string("/c")]),
+            ]),
+            "cancelled": .bool(true),
+        ])
+        let outcome = parseBatchMoveOutcome(json)
+        XCTAssertEqual(outcome.completed, 1)
+        XCTAssertEqual(outcome.remaining, 2)
+        XCTAssertTrue(outcome.cancelled)
     }
 
     // MARK: - (d) alias add AND remove both encode new_project (non-nil)

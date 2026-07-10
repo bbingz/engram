@@ -28,12 +28,17 @@ struct BatchMoveOutcome: Equatable {
     var completed: Int = 0
     var failed: Int = 0
     var skipped: Int = 0
+    /// Ops not started after cooperative cancel (Wave 7C M05).
+    var remaining: Int = 0
+    var cancelled: Bool = false
     var failures: [(src: String, error: String)] = []
 
     static func == (lhs: BatchMoveOutcome, rhs: BatchMoveOutcome) -> Bool {
         lhs.completed == rhs.completed
             && lhs.failed == rhs.failed
             && lhs.skipped == rhs.skipped
+            && lhs.remaining == rhs.remaining
+            && lhs.cancelled == rhs.cancelled
             && lhs.failures.map(\.src) == rhs.failures.map(\.src)
             && lhs.failures.map(\.error) == rhs.failures.map(\.error)
     }
@@ -71,6 +76,8 @@ func parseBatchMoveOutcome(_ value: EngramServiceJSONValue) -> BatchMoveOutcome 
     guard case .object(let root) = value else { return outcome }
     if case .array(let items)? = root["completed"] { outcome.completed = items.count }
     if case .array(let items)? = root["skipped"] { outcome.skipped = items.count }
+    if case .array(let items)? = root["remaining"] { outcome.remaining = items.count }
+    if case .bool(let cancelled)? = root["cancelled"] { outcome.cancelled = cancelled }
     if case .array(let items)? = root["failed"] {
         outcome.failed = items.count
         for item in items {
@@ -161,12 +168,12 @@ struct BatchMoveSheet: View {
                 Spacer()
                 Button("Cancel") {
                     if isExecuting, let operationId = activeBatchOperationId {
-                        // Wave 7C M05: keep Cancel enabled during execute and
-                        // request cooperative service-side stop between ops.
+                        // Wave 7C M05: cooperative service cancel only — do NOT
+                        // cancel the awaiting task, so completed/remaining partial
+                        // results still surface in the outcome box.
                         Task {
                             _ = try? await serviceClient.cancelProjectMoveBatch(operationId: operationId)
                         }
-                        activeTask?.cancel()
                     } else {
                         dismiss()
                     }
@@ -217,7 +224,10 @@ struct BatchMoveSheet: View {
     @ViewBuilder
     private func outcomeBox(_ outcome: BatchMoveOutcome) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("\(outcome.completed) completed · \(outcome.failed) failed · \(outcome.skipped) skipped")
+            let cancelPart = outcome.cancelled
+                ? " · \(outcome.remaining) remaining (cancelled)"
+                : (outcome.remaining > 0 ? " · \(outcome.remaining) remaining" : "")
+            Text("\(outcome.completed) completed · \(outcome.failed) failed · \(outcome.skipped) skipped\(cancelPart)")
                 .font(.caption.weight(.medium))
             ForEach(Array(outcome.failures.enumerated()), id: \.offset) { _, failure in
                 Text("• \(failure.src): \(failure.error)")
@@ -270,15 +280,14 @@ struct BatchMoveSheet: View {
                     operationId: operationId
                 )
             )
-            if Task.isCancelled { return }
+            // Always surface partial results (including cancelled + remaining).
             let parsed = parseBatchMoveOutcome(result)
             outcome = parsed
-            if !dryRun && parsed.failed == 0 {
+            if !dryRun && parsed.failed == 0 && !parsed.cancelled && parsed.remaining == 0 {
                 NotificationCenter.default.post(name: .projectsDidChange, object: nil)
                 dismiss()
             }
         } catch {
-            if Task.isCancelled { return }
             errorMessage = projectMoveErrorMessage(error)
         }
     }
