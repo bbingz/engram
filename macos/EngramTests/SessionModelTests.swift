@@ -322,6 +322,20 @@ final class SessionModelTests: XCTestCase {
             "SessionsPageView must forward completion into SessionActionHandlers.setFavorite"
         )
 
+        let timelinePage = try String(
+            contentsOf: root
+                .appendingPathComponent("macos/Engram/Views/Pages/TimelinePageView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(
+            timelinePage.contains("favorite: session.favoriteToggleTarget"),
+            "Timeline must use the same symmetric favorite target"
+        )
+        XCTAssertTrue(
+            timelinePage.contains("completion: completion"),
+            "Timeline must forward completion so expanded child state updates on success"
+        )
+
         // Child cards: same favorites-table source as parents; menu uses isFavorite.
         XCTAssertTrue(
             card.contains("Session.applyingFavoriteIds(confirmed, favoriteIds: favoriteIds)")

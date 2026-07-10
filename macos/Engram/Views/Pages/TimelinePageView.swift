@@ -268,9 +268,12 @@ struct TimelinePageView: View {
                                         onRename: { beginRename($0) },
                                         onExportMarkdown: { handlers.export($0, format: "markdown") },
                                         onExportJSON: { handlers.export($0, format: "json") },
-                                        // Timeline may ignore completion (parent list reload only).
-                                        onToggleFavorite: { session, _ in
-                                            handlers.setFavorite(session, favorite: true)
+                                        onToggleFavorite: { session, completion in
+                                            handlers.setFavorite(
+                                                session,
+                                                favorite: session.favoriteToggleTarget,
+                                                completion: completion
+                                            )
                                         },
                                         isHidden: session.hiddenAt != nil
                                     )
