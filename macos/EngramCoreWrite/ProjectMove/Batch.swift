@@ -219,7 +219,7 @@ public enum Batch {
         _ doc: BatchDocument,
         writer: EngramDatabaseWriter,
         overrides: BatchOverrides = BatchOverrides(),
-        shouldCancel: @Sendable () -> Bool = { Task.isCancelled }
+        shouldCancel: @escaping @Sendable () -> Bool = { Task.isCancelled }
     ) async -> BatchResult {
         var result = BatchResult()
         var halted = false
