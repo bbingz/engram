@@ -9,19 +9,22 @@ final class ProjectLongOperationSessionTests: XCTestCase {
         XCTAssertTrue(session.blocksDuplicateSubmit)
 
         var attempts = 0
-        do {
-            _ = try await ProjectLongOperationRunner.execute(
-                session: &session,
-                isReconnectable: { _ in true }
-            ) { operationId in
-                XCTAssertEqual(operationId, "stable-id")
-                attempts += 1
-                if attempts < 3 {
-                    throw EngramServiceError.transportClosed(message: "timeout")
-                }
-                return "ok"
+        let executeResult = await ProjectLongOperationRunner.execute(
+            session: session,
+            isReconnectable: { _ in true }
+        ) { operationId in
+            XCTAssertEqual(operationId, "stable-id")
+            attempts += 1
+            if attempts < 3 {
+                throw EngramServiceError.transportClosed(message: "timeout")
             }
-        } catch {
+            return "ok"
+        }
+        session = executeResult.session
+        switch executeResult.result {
+        case .success(let value):
+            XCTAssertEqual(value, "ok")
+        case .failure(let error):
             XCTFail("should succeed after transient retries: \(error)")
         }
         XCTAssertEqual(attempts, 3)
@@ -32,16 +35,15 @@ final class ProjectLongOperationSessionTests: XCTestCase {
     func testExhaustedRetriesRetainIdForResume_repro() async {
         var session = ProjectLongOperationSession(maxTransientRetries: 1)
         _ = session.beginOrReuseOperationId(mint: { "keep-me" })
-        do {
-            _ = try await ProjectLongOperationRunner.execute(
-                session: &session,
-                isReconnectable: { _ in true }
-            ) { _ in
-                throw EngramServiceError.serviceUnavailable(message: "timeout")
-            }
-            XCTFail("expected throw")
-        } catch {
-            // exhausted
+        let executeResult = await ProjectLongOperationRunner.execute(
+            session: session,
+            isReconnectable: { _ in true }
+        ) { _ in
+            throw EngramServiceError.serviceUnavailable(message: "timeout")
+        }
+        session = executeResult.session
+        guard case .failure = executeResult.result else {
+            return XCTFail("expected throw")
         }
         XCTAssertEqual(session.operationId, "keep-me")
         XCTAssertTrue(session.blocksDuplicateSubmit)
@@ -51,19 +53,32 @@ final class ProjectLongOperationSessionTests: XCTestCase {
     func testNonReconnectableClearsId_repro() async {
         var session = ProjectLongOperationSession()
         _ = session.beginOrReuseOperationId(mint: { "gone" })
-        do {
-            _ = try await ProjectLongOperationRunner.execute(
-                session: &session,
-                isReconnectable: projectMoveIsReconnectableError
-            ) { _ in
-                throw EngramServiceError.invalidRequest(message: "bad path")
-            }
-            XCTFail("expected throw")
-        } catch {
-            // ok
+        let executeResult = await ProjectLongOperationRunner.execute(
+            session: session,
+            isReconnectable: projectMoveIsReconnectableError
+        ) { _ in
+            throw EngramServiceError.invalidRequest(message: "bad path")
+        }
+        session = executeResult.session
+        guard case .failure = executeResult.result else {
+            return XCTFail("expected throw")
         }
         XCTAssertNil(session.operationId)
         XCTAssertFalse(session.blocksDuplicateSubmit)
+    }
+
+    func testExecuteDoesNotRequireInoutAcrossAwait_repro() async {
+        // Copy-in / copy-out: original value is unchanged until caller assigns.
+        let original = ProjectLongOperationSession(maxTransientRetries: 1)
+        let executeResult = await ProjectLongOperationRunner.execute(
+            session: original,
+            isReconnectable: { _ in false }
+        ) { _ in
+            "done"
+        }
+        XCTAssertNil(original.operationId)
+        XCTAssertNil(executeResult.session.operationId)
+        XCTAssertEqual(try? executeResult.result.get(), "done")
     }
 
     func testCancelledBeforeCommitWordingIsPrecise_repro() {

@@ -7,6 +7,10 @@ import Foundation
 /// - Clears only on terminal success, terminal non-reconnectable failure, or
 ///   explicit `reset()`.
 /// - Blocks a second concurrent submit while unresolved.
+///
+/// Value type by design: SwiftUI `@State` must not be passed `inout` across
+/// `async` suspension. Runners copy the session, return an updated copy, and
+/// the view assigns it back on the main actor after the await completes.
 struct ProjectLongOperationSession: Equatable, Sendable {
     private(set) var operationId: String?
     private(set) var unresolved: Bool = false
@@ -71,28 +75,36 @@ struct ProjectLongOperationSession: Equatable, Sendable {
     }
 }
 
+/// Pure value outcome: updated session is always returned (no inout across await).
+struct ProjectLongOperationExecuteResult<T> {
+    let session: ProjectLongOperationSession
+    let result: Result<T, Error>
+}
+
 enum ProjectLongOperationRunner {
-    /// Run `operation` with durable operation id + bounded reconnect loop.
+    /// Copy-in / copy-out reconnect loop. Does not hold `inout` across suspension,
+    /// so SwiftUI `@State` can assign `longOpSession = executeResult.session` after await.
     static func execute<T>(
-        session: inout ProjectLongOperationSession,
+        session: ProjectLongOperationSession,
         isReconnectable: (Error) -> Bool,
         operation: (String) async throws -> T
-    ) async throws -> T {
-        let operationId = session.beginOrReuseOperationId()
+    ) async -> ProjectLongOperationExecuteResult<T> {
+        var next = session
+        let operationId = next.beginOrReuseOperationId()
         while true {
             do {
                 let value = try await operation(operationId)
-                session.noteTerminalSuccess()
-                return value
+                next.noteTerminalSuccess()
+                return ProjectLongOperationExecuteResult(session: next, result: .success(value))
             } catch {
-                if isReconnectable(error), session.noteTransientFailure() {
+                if isReconnectable(error), next.noteTransientFailure() {
                     continue
                 }
                 if !isReconnectable(error) {
-                    session.noteTerminalFailure()
+                    next.noteTerminalFailure()
                 }
                 // Exhausted retries: keep operationId for explicit Resume.
-                throw error
+                return ProjectLongOperationExecuteResult(session: next, result: .failure(error))
             }
         }
     }

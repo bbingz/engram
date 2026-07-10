@@ -327,46 +327,40 @@ struct UndoSheet: View {
             isReconnecting = false
             activeTask = nil
         }
-        do {
-            let res = try await ProjectLongOperationRunner.execute(
-                session: &longOpSession,
-                isReconnectable: { error in
-                    if projectMoveIsReconnectableError(error) {
-                        isReconnecting = true
-                        return true
-                    }
-                    return false
-                }
-            ) { operationId in
-                try await serviceClient.projectUndo(
-                    EngramServiceProjectUndoRequest(
-                        migrationId: id,
-                        force: false,
-                        actor: "app",
-                        operationId: operationId
-                    )
+        isReconnecting = longOpSession.operationId != nil
+        let executeResult = await ProjectLongOperationRunner.execute(
+            session: longOpSession,
+            isReconnectable: projectMoveIsReconnectableError
+        ) { operationId in
+            try await serviceClient.projectUndo(
+                EngramServiceProjectUndoRequest(
+                    migrationId: id,
+                    force: false,
+                    actor: "app",
+                    operationId: operationId
                 )
-            }
-            isReconnecting = false
+            )
+        }
+        longOpSession = executeResult.session
+        isReconnecting = false
+        switch executeResult.result {
+        case .success(let res):
             if res.state == "cancelled" {
                 errorMessage = projectMoveCancelledBeforeCommitMessage(kind: "Undo")
                 retryPolicy = "safe"
-                return
-            }
-            if res.state == "committed" {
+            } else if res.state == "committed" {
                 if !res.review.own.isEmpty {
                     errorMessage =
                         "Undo committed, but \(res.review.own.count) file(s) still reference the undone path. Re-run undo to retry, or open Migration History to review."
                     retryPolicy = "never"
-                    return
+                } else {
+                    NotificationCenter.default.post(name: .projectsDidChange, object: nil)
+                    dismiss()
                 }
-                NotificationCenter.default.post(name: .projectsDidChange, object: nil)
-                dismiss()
             } else {
                 errorMessage = "Unexpected state: \(res.state)"
             }
-        } catch {
-            isReconnecting = false
+        case .failure(let error):
             if projectMoveIsCancelCompensationFailure(error) {
                 errorMessage = projectMoveCancelCompensationFailedMessage(
                     projectMoveErrorMessage(error)

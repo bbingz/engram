@@ -553,36 +553,31 @@ struct RenameSheet: View {
             isReconnecting = false
             activeTask = nil
         }
-        do {
-            let res = try await ProjectLongOperationRunner.execute(
-                session: &longOpSession,
-                isReconnectable: { error in
-                    if projectMoveIsReconnectableError(error) {
-                        isReconnecting = true
-                        return true
-                    }
-                    return false
-                }
-            ) { operationId in
-                try await serviceClient.projectMove(
-                    EngramServiceProjectMoveRequest(
-                        src: selectedCwd,
-                        dst: newPath,
-                        dryRun: false,
-                        force: false,
-                        auditNote: nil,
-                        actor: "app",
-                        operationId: operationId
-                    )
+        isReconnecting = longOpSession.operationId != nil
+        let executeResult = await ProjectLongOperationRunner.execute(
+            session: longOpSession,
+            isReconnectable: projectMoveIsReconnectableError
+        ) { operationId in
+            try await serviceClient.projectMove(
+                EngramServiceProjectMoveRequest(
+                    src: selectedCwd,
+                    dst: newPath,
+                    dryRun: false,
+                    force: false,
+                    auditNote: nil,
+                    actor: "app",
+                    operationId: operationId
                 )
-            }
-            isReconnecting = false
+            )
+        }
+        longOpSession = executeResult.session
+        isReconnecting = false
+        switch executeResult.result {
+        case .success(let res):
             if res.state == "cancelled" {
                 errorMessage = projectMoveCancelledBeforeCommitMessage(kind: "Rename")
                 retryPolicy = "safe"
-                return
-            }
-            if res.state == "committed" {
+            } else if res.state == "committed" {
                 if res.review.own.isEmpty {
                     NotificationCenter.default.post(name: .projectsDidChange, object: nil)
                     dismiss()
@@ -592,8 +587,7 @@ struct RenameSheet: View {
             } else {
                 errorMessage = "Unexpected state: \(res.state)"
             }
-        } catch {
-            isReconnecting = false
+        case .failure(let error):
             if projectMoveIsCancelCompensationFailure(error) {
                 errorMessage = projectMoveCancelCompensationFailedMessage(
                     projectMoveErrorMessage(error)

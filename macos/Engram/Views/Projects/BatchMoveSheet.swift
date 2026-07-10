@@ -298,36 +298,33 @@ struct BatchMoveSheet: View {
             longOpSession.reset()
         }
         let body = BatchMoveBody.make(operations: movableOperations, dryRun: dryRun)
-        do {
-            let result = try await ProjectLongOperationRunner.execute(
-                session: &longOpSession,
-                isReconnectable: { error in
-                    if projectMoveIsReconnectableError(error) {
-                        isReconnecting = true
-                        return true
-                    }
-                    return false
-                }
-            ) { operationId in
-                try await serviceClient.projectMoveBatch(
-                    EngramServiceProjectMoveBatchRequest(
-                        yaml: body,
-                        dryRun: false,
-                        force: false,
-                        actor: "app",
-                        operationId: operationId
-                    )
+        // Resume path (existing id) shows reconnect copy; no inout across await.
+        isReconnecting = longOpSession.operationId != nil
+        let executeResult = await ProjectLongOperationRunner.execute(
+            session: longOpSession,
+            isReconnectable: projectMoveIsReconnectableError
+        ) { operationId in
+            try await serviceClient.projectMoveBatch(
+                EngramServiceProjectMoveBatchRequest(
+                    yaml: body,
+                    dryRun: false,
+                    force: false,
+                    actor: "app",
+                    operationId: operationId
                 )
-            }
-            isReconnecting = false
+            )
+        }
+        longOpSession = executeResult.session
+        isReconnecting = false
+        switch executeResult.result {
+        case .success(let result):
             let parsed = parseBatchMoveOutcome(result)
             outcome = parsed
             if !dryRun && parsed.failed == 0 && !parsed.cancelled && parsed.remaining == 0 {
                 NotificationCenter.default.post(name: .projectsDidChange, object: nil)
                 dismiss()
             }
-        } catch {
-            isReconnecting = false
+        case .failure(let error):
             errorMessage = projectMoveErrorMessage(error)
             if longOpSession.blocksDuplicateSubmit {
                 errorMessage = (errorMessage ?? "") + "\n" + projectMoveResumeAvailableMessage()
