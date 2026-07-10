@@ -213,6 +213,85 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse((row?["last_accessed_at"] as String? ?? "").isEmpty)
     }
 
+    /// Disk-audit consumer E2E: access counters already on sessions/insights must
+    /// round-trip through service IPC so a read-side consumer can rank never-
+    /// accessed vs accessed rows without a second counter scheme.
+    func testDiskAuditAccessCountersAreReadableAfterServiceRecordPaths() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        try await DatabaseQueue(path: paths.database.path).write { db in
+            try db.execute(sql: """
+                CREATE TABLE insights (
+                  id TEXT PRIMARY KEY,
+                  content TEXT NOT NULL,
+                  wing TEXT,
+                  room TEXT,
+                  importance INTEGER DEFAULT 5,
+                  source_session_id TEXT,
+                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                  insight_type TEXT DEFAULT 'semantic',
+                  superseded_by TEXT,
+                  last_accessed_at TEXT,
+                  access_count INTEGER NOT NULL DEFAULT 0
+                )
+                """)
+            try db.execute(sql: """
+                INSERT INTO insights(id, content, importance, insight_type, access_count)
+                VALUES
+                  ('insight-hot', 'hot memory', 5, 'semantic', 0),
+                  ('insight-cold', 'cold memory', 5, 'semantic', 0)
+                """)
+        }
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        try await client.recordSessionAccess(sessionId: "s1")
+        try await client.recordInsightAccess(ids: ["insight-hot"])
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        // Disk-audit style consumer: order never-accessed last, prefer higher access_count.
+        let sessionAudit = try await queue.read { db -> [(String, Int, String?)] in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT id, COALESCE(access_count, 0) AS access_count, last_accessed_at
+                FROM sessions
+                ORDER BY COALESCE(access_count, 0) DESC, last_accessed_at DESC NULLS LAST, id ASC
+                """
+            ).map { row in
+                (row["id"] as String, row["access_count"] as Int, row["last_accessed_at"] as String?)
+            }
+        }
+        XCTAssertEqual(sessionAudit.first?.0, "s1")
+        XCTAssertEqual(sessionAudit.first?.1, 1)
+        XCTAssertNotNil(sessionAudit.first?.2)
+        XCTAssertTrue(sessionAudit.contains(where: { $0.0 != "s1" && $0.1 == 0 && $0.2 == nil }))
+
+        let insightAudit = try await queue.read { db -> [(String, Int, String?)] in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT id, COALESCE(access_count, 0) AS access_count, last_accessed_at
+                FROM insights
+                ORDER BY COALESCE(access_count, 0) DESC, last_accessed_at DESC NULLS LAST, id ASC
+                """
+            ).map { row in
+                (row["id"] as String, row["access_count"] as Int, row["last_accessed_at"] as String?)
+            }
+        }
+        XCTAssertEqual(insightAudit.map(\.0), ["insight-hot", "insight-cold"])
+        XCTAssertEqual(insightAudit[0].1, 1)
+        XCTAssertNotNil(insightAudit[0].2)
+        XCTAssertEqual(insightAudit[1].1, 0)
+        XCTAssertNil(insightAudit[1].2)
+    }
+
     func testSessionRelationRoundTripIsSymmetricIdempotentAndRemovable() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -927,6 +1006,59 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(source.contains("isWriterBusy(error)"))
         XCTAssertTrue(source.contains("retrying startup phase"))
         XCTAssertTrue(source.contains("startup phase failed"))
+    }
+
+    /// M02: success scan telemetry must only run when every required phase succeeded.
+    func testRunnerInitialScanRecordsSuccessTelemetryOnlyWhenNoPhaseFailed() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let start = try XCTUnwrap(source.range(of: "private static func runInitialScan("))
+        let end = try XCTUnwrap(source.range(of: "private static func elapsedMs", options: [], range: start.lowerBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(
+            body.contains("if failedPhaseCount == 0"),
+            "success telemetry gate must key off failedPhaseCount"
+        )
+        XCTAssertTrue(
+            body.contains("recordScan("),
+            "successful initial scan still records a scan sample"
+        )
+        // recordScan must live inside the failedPhaseCount == 0 branch, not after it.
+        let successGate = try XCTUnwrap(body.range(of: "if failedPhaseCount == 0"))
+        let afterGate = body[successGate.lowerBound...]
+        XCTAssertTrue(afterGate.contains("recordScan("))
+        XCTAssertTrue(
+            afterGate.contains("recordScanSuccess()"),
+            "status success stays paired with success-only scan telemetry"
+        )
+
+        let phaseStart = try XCTUnwrap(source.range(of: "private static func runInitialScanPhase"))
+        let phaseBody = String(source[phaseStart.lowerBound...])
+        XCTAssertTrue(
+            phaseBody.contains("recordFailedScanPhase("),
+            "failed phases must emit distinct failure telemetry"
+        )
+    }
+
+    /// L01: fatal/ready/checkpoint stdout lines must use structured encoding, not string interpolation of errors.
+    func testRunnerStdoutEventsUseStructuredJSONEncoderNotInterpolation() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        XCTAssertFalse(
+            source.contains(#"writeStdoutLine(#"{"event":"fatal""#),
+            "fatal events must not interpolate error text into JSON"
+        )
+        XCTAssertFalse(
+            source.contains(#"writeStdoutLine(#"{"event":"ready""#),
+            "ready events must not interpolate socket paths into raw JSON strings"
+        )
+        XCTAssertFalse(
+            source.contains(#"writeStdoutLine(#"{"event":"checkpoint""#),
+            "checkpoint events must not interpolate error text into JSON"
+        )
+        XCTAssertTrue(source.contains("encodeStdoutJSON(") || source.contains("emit(Service"))
+        XCTAssertTrue(source.contains("ServiceFatalEvent") || source.contains("event: \"fatal\""))
+        XCTAssertTrue(source.contains("ServiceReadyEvent") || source.contains("event: \"ready\""))
+        XCTAssertTrue(source.contains("ServiceCheckpointEvent") || source.contains("event: \"checkpoint\""))
     }
 
     func testRunnerBackfillsInstructionSignalsBeforeHeavyStartupIndex() throws {

@@ -80,6 +80,18 @@ actor ServiceTelemetryCollector {
         lastScanAt = Self.isoNow()
     }
 
+    /// Distinct failure telemetry for a required initial-scan phase. Does **not**
+    /// increment `scanCount` or touch the last-success scan sample (M02).
+    func recordFailedScanPhase(phase: String, durationMs: Double) {
+        record(span: ServiceSpan(
+            command: "scanPhase.\(phase)",
+            startedAt: Self.isoNow(),
+            durationMs: durationMs,
+            ok: false,
+            errorName: "ScanPhaseFailed"
+        ))
+    }
+
     func snapshot() -> ServiceTelemetrySnapshot {
         let commands = commandCounts.keys.sorted().map { command -> ServiceCommandLatency in
             let samples = commandSamples[command] ?? []

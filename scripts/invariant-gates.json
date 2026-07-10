@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "description": "Allowlisted registry from invariant ID to repository gate IDs. Gate argv is fixed here; markdown never becomes shell.",
+  "gates": {
+    "ledger-paths": {
+      "description": "Backticked repo-relative anchors in the ledger still exist on disk.",
+      "type": "ledger-paths"
+    },
+    "app-mcp-cli-direct-writes": {
+      "description": "App, MCP, and CLI product surfaces do not open direct SQLite writers.",
+      "type": "argv",
+      "argv": ["bash", "scripts/check-app-mcp-cli-direct-writes.sh"]
+    },
+    "indexing-test-double-boundaries": {
+      "description": "Indexing test doubles stay out of product target sources.",
+      "type": "argv",
+      "argv": ["bash", "scripts/check-indexing-test-double-boundaries.sh"]
+    },
+    "stage3-daemon-cutover": {
+      "description": "Migrated Stage 3 surfaces no longer use legacy daemon transport.",
+      "type": "argv",
+      "argv": ["bash", "scripts/check-stage3-daemon-cutover.sh"]
+    },
+    "swift-module-boundaries": {
+      "description": "Swift module import boundaries stay enforced.",
+      "type": "argv",
+      "argv": ["bash", "scripts/check-swift-module-boundaries.sh"]
+    },
+    "swift-conventions": {
+      "description": "Swift convention gate (nonisolated reads, no hashValue cache keys).",
+      "type": "argv",
+      "argv": ["bash", "scripts/check-swift-conventions.sh"]
+    }
+  },
+  "invariants": {
+    "1": ["ledger-paths", "app-mcp-cli-direct-writes"],
+    "2": ["ledger-paths"],
+    "3": ["ledger-paths"],
+    "4": ["ledger-paths"],
+    "5": ["ledger-paths"],
+    "6": ["ledger-paths"],
+    "7": ["ledger-paths"],
+    "8": ["ledger-paths"],
+    "9": ["ledger-paths"],
+    "10": ["ledger-paths"],
+    "11": ["ledger-paths"],
+    "12": ["ledger-paths", "app-mcp-cli-direct-writes"],
+    "13": ["ledger-paths"]
+  }
+}

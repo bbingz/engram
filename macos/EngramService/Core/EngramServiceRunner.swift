@@ -71,7 +71,7 @@ public enum EngramServiceRunner {
             ServiceLogger.notice("schema migration complete", category: .runner)
         } catch {
             ServiceLogger.error("fatal: schema migration failed", category: .runner, error: error)
-            writeStdoutLine(#"{"event":"fatal","stage":"migrate","error":"\#(error.localizedDescription)"}"#)
+            emit(ServiceFatalEvent(stage: "migrate", error: error.localizedDescription))
             exit(70) // EX_SOFTWARE
         }
 
@@ -105,7 +105,7 @@ public enum EngramServiceRunner {
         try server.start()
 
         ServiceLogger.notice("service ready, listening on \(socketBasename)", category: .runner)
-        writeStdoutLine(#"{"event":"ready","socket":"\#(socketPath)"}"#)
+        emit(ServiceReadyEvent(socket: socketPath))
         await statusMonitor.recordServiceReady()
         // Publish initial S01 schedule before the first sleep so status/telemetry
         // smoke never sees a fixed 5-minute interval (min is 15m).
@@ -189,14 +189,14 @@ public enum EngramServiceRunner {
                 do {
                     try await gate.checkpointWal()
                     ServiceLogger.info("wal checkpoint succeeded (mode=PASSIVE)", category: .checkpoint)
-                    writeStdoutLine(#"{"event":"checkpoint","mode":"PASSIVE","ok":true}"#)
+                    emit(ServiceCheckpointEvent(mode: "PASSIVE", ok: true, error: nil))
                 } catch {
                     ServiceLogger.error(
                         "wal checkpoint failed (mode=PASSIVE)",
                         category: .checkpoint,
                         error: error
                     )
-                    writeStdoutLine(#"{"event":"checkpoint","mode":"PASSIVE","ok":false,"error":"\#(error.localizedDescription)"}"#)
+                    emit(ServiceCheckpointEvent(mode: "PASSIVE", ok: false, error: error.localizedDescription))
                 }
             }
         }
@@ -571,7 +571,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
 
         let usageParserBackfillCheck = await runInitialScanPhase(
             name: "usageParserBackfillCheck",
-            statusMonitor: statusMonitor
+            statusMonitor: statusMonitor,
+            telemetry: telemetry
         ) {
             try await gate.performWriteCommand(name: "usageParserBackfillCheck") { writer in
                 try writer.read { db in
@@ -593,7 +594,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         // out with WriterBusy.
         let instructionBackfillPhase = await runInitialScanPhase(
             name: "initialInstructionBackfill",
-            statusMonitor: statusMonitor
+            statusMonitor: statusMonitor,
+            telemetry: telemetry
         ) {
             try await gate.performWriteCommand(name: "initialInstructionBackfill") { writer in
                 try await writer.indexInstructionBackfillSessions(adapters: startupAdapters).indexed
@@ -605,7 +607,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
 
         let implementationBackfillPhase = await runInitialScanPhase(
             name: "initialImplementationBeatBackfill",
-            statusMonitor: statusMonitor
+            statusMonitor: statusMonitor,
+            telemetry: telemetry
         ) {
             try await gate.performWriteCommand(name: "initialImplementationBeatBackfill") { writer in
                 try await writer.indexImplementationBeatBackfillSessions(adapters: startupAdapters).indexed
@@ -617,7 +620,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
 
         let indexedPhase = await runInitialScanPhase(
             name: "initialScanIndex",
-            statusMonitor: statusMonitor
+            statusMonitor: statusMonitor,
+            telemetry: telemetry
         ) {
             try await gate.performWriteCommand(name: "initialScanIndex") { writer in
                 try await StartupBackfills.runStartupIndex(
@@ -631,7 +635,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
 
         let backfillsPhase = await runInitialScanPhase(
             name: "initialScanBackfills",
-            statusMonitor: statusMonitor
+            statusMonitor: statusMonitor,
+            telemetry: telemetry
         ) {
             try await gate.performWriteCommand(name: "initialScanBackfills") { writer in
                 try await StartupBackfills.runStartupMaintenanceAndParents(
@@ -648,7 +653,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
 
         let orphanPhase = await runInitialScanPhase(
             name: "initialScanOrphans",
-            statusMonitor: statusMonitor
+            statusMonitor: statusMonitor,
+            telemetry: telemetry
         ) {
             try await gate.performWriteCommand(name: "initialScanOrphans") { writer in
                 try await StartupBackfills.runStartupOrphanScan(
@@ -670,7 +676,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         while !Task.isCancelled {
             let drainPhase = await runInitialScanPhase(
                 name: "initialFtsDrain",
-                statusMonitor: statusMonitor
+                statusMonitor: statusMonitor,
+                telemetry: telemetry
             ) {
                 try await gate.performWriteCommand(name: "initialFtsDrain") { writer in
                     try await IndexJobRunner(writer: writer, adapters: enabledAdapters)
@@ -704,7 +711,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         if usageParserBackfillNeeded {
             let markPhase = await runInitialScanPhase(
                 name: "usageParserBackfillMark",
-                statusMonitor: statusMonitor
+                statusMonitor: statusMonitor,
+                telemetry: telemetry
             ) {
                 try await gate.performWriteCommand(name: "usageParserBackfillMark") { writer in
                     try writer.write { db in
@@ -716,19 +724,19 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             if markPhase.failed { failedPhaseCount += 1 }
         }
 
-        // Record the initial scan into telemetry (Codex flagged: don't miss the
-        // first scan). Best-effort total via a gated indexStatus read; a failure
-        // here must not affect scan success accounting.
-        let initialTotal = (try? await gate.performReadCommand(name: "initialScanTelemetryStatus") { writer in
-            try writer.indexStatus()
-        }.value.total) ?? 0
-        await telemetry?.recordScan(
-            durationMs: Self.elapsedMs(from: scanStarted, clock: scanClock),
-            indexed: indexed,
-            total: initialTotal
-        )
-
+        // M02: only record a success scan sample when every required phase
+        // succeeded. Failed phases already recorded distinct failure telemetry.
         if failedPhaseCount == 0 {
+            // Best-effort total via a gated indexStatus read; a failure here
+            // must not affect scan success accounting.
+            let initialTotal = (try? await gate.performReadCommand(name: "initialScanTelemetryStatus") { writer in
+                try writer.indexStatus()
+            }.value.total) ?? 0
+            await telemetry?.recordScan(
+                durationMs: Self.elapsedMs(from: scanStarted, clock: scanClock),
+                indexed: indexed,
+                total: initialTotal
+            )
             ServiceLogger.notice("initial startup scan complete", category: .runner)
             await statusMonitor.recordScanSuccess()
         } else {
@@ -754,10 +762,13 @@ private final class IndexingScheduleBox: @unchecked Sendable {
     private static func runInitialScanPhase<Value>(
         name: String,
         statusMonitor: ServiceStatusMonitor,
+        telemetry: ServiceTelemetryCollector? = nil,
         maxWriterBusyRetries: Int = 3,
         operation: () async throws -> Value
     ) async -> InitialScanPhaseOutcome<Value> {
         var writerBusyRetries = 0
+        let phaseClock = ContinuousClock()
+        let phaseStarted = phaseClock.now
         while !Task.isCancelled {
             do {
                 let value = try await operation()
@@ -784,6 +795,10 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                 ServiceLogger.error("startup phase failed: \(message)", category: .runner, error: error)
                 emit(ServiceIndexErrorEvent(error: message))
                 await statusMonitor.recordScanFailure(message)
+                await telemetry?.recordFailedScanPhase(
+                    phase: name,
+                    durationMs: Self.elapsedMs(from: phaseStarted, clock: phaseClock)
+                )
                 return InitialScanPhaseOutcome(value: nil, failed: true, cancelled: false)
             }
         }
@@ -1004,10 +1019,23 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         fflush(stdout)
     }
 
+    /// L01: encode stdout events with `JSONEncoder` so error/path text is always
+    /// correctly escaped. Exposed for focused unit tests of escaping behavior.
+    static func encodeStdoutJSON<T: Encodable>(_ value: T) throws -> String {
+        let data = try JSONEncoder().encode(value)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw EngramServiceError.commandFailed(
+                name: "StdoutEncodeFailed",
+                message: "JSONEncoder produced non-UTF8 stdout payload",
+                retryPolicy: "never",
+                details: nil
+            )
+        }
+        return text
+    }
+
     private static func emit<T: Encodable>(_ value: T) {
-        guard let data = try? JSONEncoder().encode(value),
-              let text = String(data: data, encoding: .utf8)
-        else {
+        guard let text = try? encodeStdoutJSON(value) else {
             return
         }
         writeStdoutLine(text)
@@ -1162,6 +1190,37 @@ private struct ServiceIndexEvent: Encodable {
 private struct ServiceIndexErrorEvent: Encodable {
     let event = "index_error"
     let error: String
+}
+
+private struct ServiceFatalEvent: Encodable {
+    let event = "fatal"
+    let stage: String
+    let error: String
+}
+
+private struct ServiceReadyEvent: Encodable {
+    let event = "ready"
+    let socket: String
+}
+
+private struct ServiceCheckpointEvent: Encodable {
+    let event = "checkpoint"
+    let mode: String
+    let ok: Bool
+    let error: String?
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(event, forKey: .event)
+        try container.encode(mode, forKey: .mode)
+        try container.encode(ok, forKey: .ok)
+        // Omit null error on success so the line stays compact; failures always include error.
+        try container.encodeIfPresent(error, forKey: .error)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case event, mode, ok, error
+    }
 }
 
 struct ServiceUsageEvent: Encodable {

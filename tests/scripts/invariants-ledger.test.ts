@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = resolve(import.meta.dirname, '../..');
 const script = resolve(repoRoot, 'scripts/check-invariants-ledger.sh');
+const defaultGates = resolve(repoRoot, 'scripts/invariant-gates.json');
 const checkedPathPrefixes = [
   'macos/',
   'src/',
@@ -17,17 +18,64 @@ const checkedPathPrefixes = [
 ];
 const checkedRootPaths = ['AGENTS.md', 'CLAUDE.md'];
 
-function runScript(args: string[] = [], cwd = repoRoot): string {
-  return execFileSync('bash', [script, ...args], {
-    cwd,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+function runScript(
+  args: string[] = [],
+  cwd = repoRoot,
+): { stdout: string; stderr: string; status: number | null } {
+  try {
+    const stdout = execFileSync('bash', [script, ...args], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return { stdout, stderr: '', status: 0 };
+  } catch (error) {
+    const err = error as {
+      status?: number | null;
+      stdout?: string;
+      stderr?: string;
+    };
+    return {
+      stdout: err.stdout ?? '',
+      stderr: err.stderr ?? '',
+      status: err.status ?? 1,
+    };
+  }
+}
+
+function writeMinimalLedger(dir: string, extraLines: string[] = []): string {
+  const ledger = join(dir, 'invariants.md');
+  writeFileSync(
+    ledger,
+    [
+      '# Invariants',
+      '',
+      '## 1. Fixture',
+      '',
+      '- **Statement** - Fixture invariant.',
+      '- **Enforced by** - `scripts/check-invariants-ledger.sh`.',
+      '- **Verified by** - `tests/scripts/invariants-ledger.test.ts`.',
+      ...extraLines,
+    ].join('\n'),
+    'utf8',
+  );
+  return ledger;
+}
+
+function writeGates(
+  dir: string,
+  registry: Record<string, unknown>,
+): string {
+  const path = join(dir, 'invariant-gates.json');
+  writeFileSync(path, `${JSON.stringify(registry, null, 2)}\n`, 'utf8');
+  return path;
 }
 
 describe('invariants ledger gate script', () => {
-  it('passes for the repo invariants ledger', () => {
-    expect(runScript()).toContain('invariants ledger ok');
+  it('passes for the repo invariants ledger with allowlisted gates', () => {
+    const result = runScript();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('invariants ledger ok');
   });
 
   it('keeps enforced and verified anchors inside the checked path set', () => {
@@ -67,7 +115,11 @@ describe('invariants ledger gate script', () => {
       ].join('\n'),
     );
 
-    expect(() => runScript([ledger])).toThrow(/docs\/does-not-exist\.md/);
+    const result = runScript([ledger, defaultGates]);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toMatch(
+      /docs\/does-not-exist\.md/,
+    );
   });
 
   it('strips line suffixes and reports every missing path', () => {
@@ -83,8 +135,125 @@ describe('invariants ledger gate script', () => {
       ].join('\n'),
     );
 
-    expect(() => runScript([ledger])).toThrow(
+    const result = runScript([ledger, defaultGates]);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toMatch(
       /docs\/missing-one\.md[\s\S]*tests\/missing-two\.ts/,
     );
+  });
+
+  it('fails when the gates registry is missing', () => {
+    const tempDir = mkdtempSync(resolve(tmpdir(), 'engram-invariants-gates-'));
+    const ledger = writeMinimalLedger(tempDir);
+    const missingGates = join(tempDir, 'missing-gates.json');
+    const result = runScript([ledger, missingGates]);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toMatch(
+      /invariant gates registry not found/,
+    );
+  });
+
+  it('fails when the gates registry is invalid JSON', () => {
+    const tempDir = mkdtempSync(resolve(tmpdir(), 'engram-invariants-gates-'));
+    const ledger = writeMinimalLedger(tempDir);
+    const gates = join(tempDir, 'invariant-gates.json');
+    writeFileSync(gates, '{not-json', 'utf8');
+    const result = runScript([ledger, gates]);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toMatch(
+      /invalid invariant gates registry JSON/,
+    );
+  });
+
+  it('fails when an invariant references an unknown gate id', () => {
+    const tempDir = mkdtempSync(resolve(tmpdir(), 'engram-invariants-gates-'));
+    // Point ledger paths at real repo files via absolute-style relative paths
+    // checked under ROOT_DIR of the script invocation (repo root).
+    const ledger = writeMinimalLedger(tempDir);
+    const gates = writeGates(tempDir, {
+      version: 1,
+      gates: {
+        'ledger-paths': { type: 'ledger-paths' },
+      },
+      invariants: {
+        '1': ['ledger-paths', 'not-a-real-gate'],
+      },
+    });
+    const result = runScript([ledger, gates]);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toMatch(
+      /unknown gate id ['"]not-a-real-gate['"]/,
+    );
+  });
+
+  it('fails a present-but-behaviorally-invalid fixture even when paths exist (L09)', () => {
+    // Old path-existence-only gate would pass: every backticked path exists.
+    // New gate must still fail because the allowlisted behavioral script exits 1.
+    const tempDir = mkdtempSync(resolve(tmpdir(), 'engram-invariants-beh-'));
+    const ledger = writeMinimalLedger(tempDir);
+    const gates = writeGates(tempDir, {
+      version: 1,
+      gates: {
+        'ledger-paths': { type: 'ledger-paths' },
+        'failing-behavior': {
+          type: 'argv',
+          argv: ['bash', 'scripts/test-support/always-fail-invariant-gate.sh'],
+        },
+      },
+      invariants: {
+        '1': ['ledger-paths', 'failing-behavior'],
+      },
+    });
+
+    const result = runScript([ledger, gates]);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toMatch(
+      /invariant gate failed: failing-behavior|behaviorally invalid fixture/,
+    );
+  });
+
+  it('rejects gate argv that escapes the scripts/ allowlist (no arbitrary shell)', () => {
+    const tempDir = mkdtempSync(resolve(tmpdir(), 'engram-invariants-escape-'));
+    const ledger = writeMinimalLedger(tempDir);
+    const gates = writeGates(tempDir, {
+      version: 1,
+      gates: {
+        'ledger-paths': { type: 'ledger-paths' },
+        evil: {
+          type: 'argv',
+          argv: ['bash', '-c', 'echo pwned'],
+        },
+      },
+      invariants: {
+        '1': ['ledger-paths', 'evil'],
+      },
+    });
+    const result = runScript([ledger, gates]);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toMatch(
+      /must reference a scripts\/ command|outside allowlisted/,
+    );
+  });
+
+  it('loads the default registry and never shells markdown content', () => {
+    const registry = JSON.parse(readFileSync(defaultGates, 'utf8')) as {
+      gates: Record<string, { type?: string; argv?: string[] }>;
+      invariants: Record<string, string[]>;
+    };
+    expect(Object.keys(registry.gates).length).toBeGreaterThan(0);
+    expect(Object.keys(registry.invariants).length).toBeGreaterThan(0);
+    for (const [gateId, spec] of Object.entries(registry.gates)) {
+      if (spec.type === 'ledger-paths') continue;
+      expect(spec.type).toBe('argv');
+      expect(Array.isArray(spec.argv)).toBe(true);
+      expect(spec.argv?.some((part) => part.startsWith('scripts/'))).toBe(true);
+      expect(gateId).not.toMatch(/[`$]/);
+    }
+    // Markdown is not an execution source: registry maps IDs to gate IDs only.
+    for (const gateIds of Object.values(registry.invariants)) {
+      for (const gateId of gateIds) {
+        expect(registry.gates[gateId]).toBeDefined();
+      }
+    }
   });
 });

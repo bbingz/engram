@@ -71,6 +71,59 @@ final class ServiceLogIPCTests: XCTestCase {
         XCTAssertFalse(ServiceCapabilityToken.requiresToken("serviceLogs"))
     }
 
+    /// L02: malformed serviceLogs payloads must fail closed with invalidRequest
+    /// instead of silently applying defaults via try?.
+    func testServiceLogsMalformedPayloadReturnsInvalidRequest_repro() async throws {
+        let paths = try makeServicePaths()
+        try seedSessionsFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate, logRing: ServiceLogRing())
+
+        let malformed = EngramServiceRequestEnvelope(
+            command: "serviceLogs",
+            payload: Data(#"{"limit":"not-a-number"}"#.utf8)
+        )
+        let response = await handler.handle(malformed)
+        guard case .error(_, let error, _) = response else {
+            return XCTFail("malformed serviceLogs payload must return error, not success defaults")
+        }
+        XCTAssertEqual(error.name, "InvalidRequest")
+        XCTAssertFalse(error.message.isEmpty)
+    }
+
+    func testServiceLogsNonJSONPayloadReturnsInvalidRequest() async throws {
+        let paths = try makeServicePaths()
+        try seedSessionsFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate, logRing: ServiceLogRing())
+
+        let response = await handler.handle(
+            EngramServiceRequestEnvelope(command: "serviceLogs", payload: Data("not-json".utf8))
+        )
+        guard case .error(_, let error, _) = response else {
+            return XCTFail("non-JSON serviceLogs payload must return InvalidRequest")
+        }
+        XCTAssertEqual(error.name, "InvalidRequest")
+    }
+
+    func testServiceLogsEmptyObjectPayloadStillSucceedsWithDefaults() async throws {
+        let paths = try makeServicePaths()
+        try seedSessionsFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let ring = ServiceLogRing(capacity: 10)
+        await ring.record(level: "info", category: "runner", message: "hello")
+        let handler = EngramServiceCommandHandler(writerGate: gate, logRing: ring)
+
+        let response = await handler.handle(
+            EngramServiceRequestEnvelope(command: "serviceLogs", payload: Data("{}".utf8))
+        )
+        guard case .success(_, let data, _) = response else {
+            return XCTFail("valid empty object payload must still succeed")
+        }
+        let snapshot = try JSONDecoder().decode(ServiceLogSnapshot.self, from: data)
+        XCTAssertEqual(snapshot.lines.count, 1)
+    }
+
     // MARK: - Helpers
 
     private func makeServicePaths() throws -> (runtime: URL, socket: URL, database: URL) {

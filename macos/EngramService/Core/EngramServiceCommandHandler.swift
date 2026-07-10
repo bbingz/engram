@@ -159,7 +159,13 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 // READ command: returns the sanitized in-process log ring. No
                 // capability token (it never mutates state); the ring sanitizes
                 // every line before storage so this surfaces no raw paths/ids.
-                let payload = try? decodePayload(EngramServiceServiceLogsRequest.self, from: request)
+                // Missing payload → defaults; present-but-malformed → invalidRequest (L02).
+                let payload: EngramServiceServiceLogsRequest?
+                if request.payload == nil {
+                    payload = nil
+                } else {
+                    payload = try decodePayload(EngramServiceServiceLogsRequest.self, from: request)
+                }
                 let snapshot = await logRing?.snapshot(
                     level: payload?.level,
                     category: payload?.category,

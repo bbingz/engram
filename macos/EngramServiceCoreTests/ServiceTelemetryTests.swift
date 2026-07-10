@@ -58,6 +58,87 @@ final class ServiceTelemetryTests: XCTestCase {
         XCTAssertNotNil(snapshot.lastScanAt)
     }
 
+    /// M02: a failed initial-scan phase must emit distinct failure telemetry and
+    /// must not be counted as a successful scan sample.
+    func testFailedScanPhaseDoesNotRecordSuccessSample_repro() async {
+        let collector = ServiceTelemetryCollector()
+        await collector.recordFailedScanPhase(phase: "initialScanIndex", durationMs: 42.5)
+        let snapshot = await collector.snapshot()
+
+        XCTAssertEqual(snapshot.scanCount, 0, "failed phase must not increment scanCount")
+        XCTAssertNil(snapshot.lastScanDurationMs)
+        XCTAssertNil(snapshot.lastScanAt)
+        XCTAssertEqual(snapshot.lastScanIndexed, 0)
+        XCTAssertEqual(snapshot.lastScanTotal, 0)
+
+        let failed = snapshot.spans.first(where: { $0.command == "scanPhase.initialScanIndex" })
+        XCTAssertNotNil(failed, "failed phase must appear as distinct span telemetry")
+        XCTAssertEqual(failed?.ok, false)
+        XCTAssertEqual(failed?.errorName, "ScanPhaseFailed")
+        XCTAssertEqual(failed?.durationMs, 42.5)
+
+        let latency = snapshot.commands.first(where: { $0.command == "scanPhase.initialScanIndex" })
+        XCTAssertEqual(latency?.errorCount, 1)
+        XCTAssertEqual(latency?.count, 1)
+    }
+
+    func testSuccessScanSampleStillRecordsAfterFailedPhaseTelemetry() async {
+        let collector = ServiceTelemetryCollector()
+        await collector.recordFailedScanPhase(phase: "initialScanOrphans", durationMs: 3)
+        await collector.recordScan(durationMs: 11, indexed: 2, total: 9)
+        let snapshot = await collector.snapshot()
+        XCTAssertEqual(snapshot.scanCount, 1)
+        XCTAssertEqual(snapshot.lastScanIndexed, 2)
+        XCTAssertTrue(snapshot.spans.contains(where: { $0.command == "scanPhase.initialScanOrphans" && $0.ok == false }))
+    }
+
+    /// L01: stdout event encoding must go through JSONEncoder so quotes/newlines
+    /// in error text cannot break the JSON line.
+    func testStdoutEventEncodingEscapesQuotesAndControlCharacters() throws {
+        struct Event: Encodable {
+            let event: String
+            let stage: String
+            let error: String
+        }
+        let rawError = "migrate failed: path \"/tmp/a\"\nnext line\t\u{0008}"
+        let line = try EngramServiceRunner.encodeStdoutJSON(
+            Event(event: "fatal", stage: "migrate", error: rawError)
+        )
+        let data = try XCTUnwrap(line.data(using: .utf8))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["event"] as? String, "fatal")
+        XCTAssertEqual(object["stage"] as? String, "migrate")
+        XCTAssertEqual(object["error"] as? String, rawError)
+        XCTAssertFalse(line.contains("\n"), "structured stdout must be a single JSON line")
+        XCTAssertTrue(line.contains("\\n") || line.contains("\\u000a") || (object["error"] as? String) == rawError)
+    }
+
+    func testStdoutCheckpointEventEncodingIncludesOptionalError() throws {
+        struct Checkpoint: Encodable {
+            let event: String
+            let mode: String
+            let ok: Bool
+            let error: String?
+        }
+        let okLine = try EngramServiceRunner.encodeStdoutJSON(
+            Checkpoint(event: "checkpoint", mode: "PASSIVE", ok: true, error: nil)
+        )
+        let okObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(okLine.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(okObject["ok"] as? Bool, true)
+        XCTAssertNil(okObject["error"])
+
+        let failLine = try EngramServiceRunner.encodeStdoutJSON(
+            Checkpoint(event: "checkpoint", mode: "PASSIVE", ok: false, error: "boom \"x\"")
+        )
+        let failObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(failLine.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(failObject["ok"] as? Bool, false)
+        XCTAssertEqual(failObject["error"] as? String, "boom \"x\"")
+    }
+
     // MARK: - Handler dispatch instrumentation
 
     func testHandlerRecordsSpanOnDispatchAndExcludesStatusAndTelemetry() async throws {
