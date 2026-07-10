@@ -133,6 +133,6 @@ describe('UI workflow gates', () => {
     const workflow = readFileSync(workflowPath, 'utf8');
 
     expect(workflow).not.toContain('SCREENSHOT_FAIL_ON_SIZE_MISMATCH: "0"');
-    expect(workflow).toContain('${{ runner.temp }}/screenshots/*.png');
+    expect(workflow).toContain(`\${{ runner.temp }}/screenshots/*.png`);
   });
 });

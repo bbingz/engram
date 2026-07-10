@@ -62,10 +62,7 @@ function writeMinimalLedger(dir: string, extraLines: string[] = []): string {
   return ledger;
 }
 
-function writeGates(
-  dir: string,
-  registry: Record<string, unknown>,
-): string {
+function writeGates(dir: string, registry: Record<string, unknown>): string {
   const path = join(dir, 'invariant-gates.json');
   writeFileSync(path, `${JSON.stringify(registry, null, 2)}\n`, 'utf8');
   return path;
