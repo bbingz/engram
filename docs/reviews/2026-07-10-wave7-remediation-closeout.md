@@ -20,10 +20,10 @@
 |----|---------|------------|-------|----------|---------------|
 | C01 | CONFIRMED-FIXED | `12d3c081` | `testStartupDeferralDoesNotStampSuccess_recentScanRecovers_repro` | `SwiftIndexer.swift` deferral `continue` without `recordFileIndexSuccess` | — |
 | H01 | CONFIRMED-FIXED | `12d3c081` | `testFinalizeRebuildPreservesLiveRowsForPermanentFailures_repro` | `FTSRebuildPolicy.finalizeRebuildIfReady` copies live→shadow before swap | — |
-| H02 | CONFIRMED-FIXED | `12d3c081` | source: `isLongRunningWriteCommand` covers index/fts/embed | `ServiceWriterGate.swift` | Named-command coverage may miss exotic names |
-| H03 | CONFIRMED-FIXED | `12d3c081` | AI timeout 20s / client 45s headroom | `EngramServiceClient` + `EngramServiceCommandHandler` | linkSessions partial cancel still PARTIAL |
+| H02 | CONFIRMED-FIXED | `12d3c081` | **`testIndexAndFtsNamesAreLongRunning_repro`** | `ServiceWriterGate.isLongRunningWriteCommand` | Named-command coverage may miss exotic names |
+| H03 | CONFIRMED-FIXED | `12d3c081` | **`testLongButFrameBoundCommandsUseExplicitTimeoutUnderTransportDeadline`** | client `generateSummary`/`linkSessions` timeouts ≤45s above 30s floor | linkSessions partial cancel still PARTIAL |
 | H04 | CONFIRMED-FIXED | `12d3c081` | `testBackfillSuggestedParentsWritesAmbiguousCandidatesWithoutSkipping` | `setAmbiguousSuggestion` keeps role/tier | — |
-| H05 | CONFIRMED-FIXED | `12d3c081` | cascade SQL + `clearParentSession` | `EngramMigrations` trigger; command handler | Existing DBs get trigger via createOrUpdateBaseSchema |
+| H05 | CONFIRMED-FIXED | `12d3c081`+follow-up | **`testClearParentPreservesDispatchedSkipTier_repro`** (IPC behavioral) + cascade SQL source lock | shipped `clearParentSession` keeps dispatched→skip | Existing DBs get trigger via createOrUpdateBaseSchema |
 | H06 | CONFIRMED-FIXED | `12d3c081`+follow-up | **`testGenerateSummaryIsNotReadOnly_repro`** + tools/list annotation assert | `MCPToolRegistry.toolCategory` → `.mutating` | — |
 | H07 | PARTIAL-FIXED | `12d3c081` | dim check remains; model equality not fully enforced | design documented in README | Same-dim model swap still possible — follow-up |
 | H08 | CONFIRMED-FIXED | `12d3c081` | `SearchModeTests` + README + AISettings comments | App intentionally keyword-only; service/MCP semantic real | — |
@@ -73,13 +73,19 @@
 
 ## Repro / regression tests (shipped path)
 
-### P0 / fingerprint / tier
+### P0 / fingerprint / tier / dispatched-skip (VP3)
 - `testStartupDeferralDoesNotStampSuccess_recentScanRecovers_repro` (C01)
 - `testActiveFileGraceDoesNotStampSuccess_repro` (M03)
 - `testFinalizeRebuildPreservesLiveRowsForPermanentFailures_repro` (H01)
 - `testSameCountBodyRewriteEnqueuesFtsJob_repro` (H10)
 - `testBackfillSuggestedParentsWritesAmbiguousCandidatesWithoutSkipping` (H04)
+- **`testReindexPreservesDispatchedSkipClassificationOnContentChange`** (VP3 dispatched-skip retention on re-index)
+- **`testClearParentPreservesDispatchedSkipTier_repro`** (H05 clearParent IPC keeps dispatched/skip)
 - `testBackfillPolycliProviderParentsClassifiesReviewProbes` (M18)
+
+### Service / IPC (H02 / H03)
+- **H02:** `testIndexAndFtsNamesAreLongRunning_repro` (`ServiceWriterGateTests`)
+- **H03:** `testLongButFrameBoundCommandsUseExplicitTimeoutUnderTransportDeadline` (`EngramServiceClientTests`)
 
 ### H06 / H09 / H11 (named skeptic gate)
 - **H06:** `testGenerateSummaryIsNotReadOnly_repro` (`EngramMCPExecutableTests`)
@@ -113,24 +119,29 @@ Env-skipped (not failures) under bare `xctest` / TCC:
 
 Static-source contracts for OSLog/logger privacy remain hard asserts.
 
-### Release smoke
+### Release smoke (AC3 / VP4)
 
-Log: same scratch `release-smoke.log`
+Log: `{SCRATCH}/release-smoke.log`  
+Script: `ENGRAM_BUILD_NUMBER=2026071001 macos/scripts/build-release.sh --local-only`  
+(Developer ID export was available — produced full `EngramExport/Engram.app`, not `Engram-local-only.app`.)
 
 | Check | Result |
 |-------|--------|
-| `release-verify.sh --hygiene-only` | **PASS** (no node/node_modules/dist/daemon.js/index.js/web.js) |
-| Structure (Engram + EngramMCP + EngramService helpers) | **PASS** |
-| `codesign --verify --deep --strict` on Debug DerivedData | **FAIL expected** — Debug ad-hoc signature incomplete; not an archive export |
-| MCP `initialize` + `tools/list` against bundled `EngramMCP` | **PASS** (`MCP_EXIT=0`, tools present) |
-| Install to `/Applications` + live service socket | **SKIPPED** — Debug product not deployed; requires user install/launch |
+| `build-release.sh --local-only` archive/export | **PASS** (`BUILD_RELEASE_EXIT=0`, `** ARCHIVE SUCCEEDED **`) |
+| `release-verify.sh` full Developer ID | **PASS** — hygiene, structure, version `1.0.4`/`2026071001`, codesign deep/strict, Hardened Runtime, Developer ID authority, secure timestamp |
+| MCP `initialize` + `tools/list` on release `EngramMCP` | **PASS** (`MCP_TOOLS_LIST=ok`) |
+| `deploy-local.sh` → `/Applications/Engram.app` | **PASS** (`DEPLOY_EXIT=0`) |
+| `open -a Engram` live processes | **PASS** — `PROCESS_ENGRAM=ok`, `PROCESS_SERVICE=ok` |
+| Live service socket | **PASS** — `~/.engram/run/engram-service.sock` (`SOCKET_OK`) |
+
+H05 behavioral evidence: `{SCRATCH}/h05-behavioral.log` — `testClearParentPreservesDispatchedSkipTier_repro` passed; full `EngramServiceCoreTests` exit 0 after rebuild.
 
 ## Final release checklist
 
 - [x] Focused EngramCoreTests repros green via `xcrun xctest`
 - [x] Full Swift matrix green (`EngramCoreTests`, `EngramServiceCore`, `EngramMCPTests`, `Engram`) — `MATRIX_FAIL=0`
-- [x] Named XCTests for H06 / H09 / H11
-- [x] Local hygiene + MCP smoke (codesign strict env-blocked on Debug)
+- [x] Named XCTests for H02 / H03 / H05 / H06 / H09 / H11 + VP3 dispatched-skip
+- [x] `build-release.sh --local-only` + full release-verify + deploy + live socket + MCP smoke
 - [x] Orca handoff to Codex (this closeout)
 
 ## Wave commits

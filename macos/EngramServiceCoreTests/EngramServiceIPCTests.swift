@@ -3073,6 +3073,59 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(unlinkedState.linkSource, "manual")
     }
 
+    /// Wave 7B H05 (repro): clearParent through the shipped IPC handler must keep
+    /// `dispatched` children at `tier=skip` (not NULL re-eval).
+    func testClearParentPreservesDispatchedSkipTier_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE sessions
+                    SET parent_session_id = 's1',
+                        link_source = 'path',
+                        agent_role = 'dispatched',
+                        tier = 'skip'
+                    WHERE id = 's2'
+                    """
+            )
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let unlinked = try await client.clearParentSession(sessionId: "s2")
+        XCTAssertEqual(unlinked, EngramServiceLinkResponse(ok: true, error: nil))
+
+        try await queue.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT parent_session_id, agent_role, tier, link_source
+                    FROM sessions WHERE id = 's2'
+                    """
+            )
+            XCTAssertNil(row?["parent_session_id"] as String?)
+            XCTAssertEqual(row?["agent_role"] as String?, "dispatched")
+            XCTAssertEqual(
+                row?["tier"] as String?,
+                "skip",
+                "dispatched children must stay skip after clearParent (not NULL re-eval)"
+            )
+            XCTAssertEqual(row?["link_source"] as String?, "manual")
+        }
+    }
+
     func testDismissAmbiguousSuggestionRoundTripThroughClient() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
