@@ -25,11 +25,11 @@ clients can type-check the JSON without guessing.
 | `project_timeline` | object | `project`, `timeline[]`, `total` | — |
 | `project_list_migrations` | **array** | migration log rows | nullable `finishedAt` / `rolledBackOf` / `auditNote` / `error`; `detail` object or null |
 | `live_sessions` | object | `sessions[]`, `count`, `note` | MCP mode always returns empty sessions + unavailable note |
-| `get_memory` | object | `memories[]` | `warning`, `message`, or `retrieval` depending on path |
+| `get_memory` | object | `memories[]` (each item includes returned `type`) | top-level `type` when a type filter is requested; `warning`, `message`, or `retrieval` depending on path |
 | `search` | object | `results[]`, `query`, `searchModes[]` | `warning`, `insightResults[]` |
 | `get_insights` | object | `content[]` (`type`/`text` items) | — |
 | `project_review` | object | `own[]`, `other[]` | `truncated.{own,other}` when caps apply |
-| `get_session` | object | `session`, `messages[]`, `totalPages`, `currentPage` | `totalKnownComplete`, `truncated`, `truncatedAt` |
+| `get_session` | object | `session`, `messages[]`, `totalPages`, `currentPage`, `redacted` | `totalKnownComplete`, `truncated`, `truncatedAt` |
 | `handoff` | object | `brief`, `sessionCount` | — |
 | `project_recover` | **array** | recover diagnosis rows with nested `fs` | nullable `finishedAt` / `error` / `fs.probeError` |
 
