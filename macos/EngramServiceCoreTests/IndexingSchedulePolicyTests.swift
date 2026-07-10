@@ -96,4 +96,52 @@ final class IndexingSchedulePolicyTests: XCTestCase {
         XCTAssertFalse(ran)
         XCTAssertEqual(recorder.workInvocations, 0)
     }
+
+    /// S01 cancel contract: cancelling performWhenDue mid-work must wait for
+    /// work to exit before returning `.cancelled` (no orphaned scan Task).
+    func testCancelDuringWorkWaitsForWorkExit_repro() async {
+        let recorder = RecordingIndexingBackgroundActivityScheduler()
+        recorder.workDelayNanoseconds = 80_000_000 // 80ms
+
+        let workStarted = expectation(description: "work started")
+        let workExited = expectation(description: "work exited")
+        workStarted.expectedFulfillmentCount = 1
+
+        let performTask = Task { () -> IndexingActivityOpportunity in
+            await recorder.performWhenDue(interval: 0.001, tolerance: 0) {
+                workStarted.fulfill()
+                // Cooperative cancel: sleep is cancelled by Task cancellation.
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                workExited.fulfill()
+            }
+        }
+
+        await fulfillment(of: [workStarted], timeout: 1)
+        performTask.cancel()
+        let outcome = await performTask.value
+
+        XCTAssertEqual(outcome, .cancelled)
+        // performWhenDue must not return until work has exited.
+        await fulfillment(of: [workExited], timeout: 1)
+        XCTAssertTrue(
+            recorder.lastCancelWaitedForWork,
+            "cancel path must await active work before returning .cancelled"
+        )
+    }
+
+    func testSleepSchedulerCancelDuringWorkWaitsForExit() async {
+        let sleep = SleepIndexingBackgroundActivityScheduler()
+        let workExited = expectation(description: "sleep work exited")
+        let performTask = Task { () -> IndexingActivityOpportunity in
+            await sleep.performWhenDue(interval: 0.001, tolerance: 0) {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                workExited.fulfill()
+            }
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        performTask.cancel()
+        let outcome = await performTask.value
+        XCTAssertEqual(outcome, .cancelled)
+        await fulfillment(of: [workExited], timeout: 1)
+    }
 }

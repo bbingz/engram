@@ -60,7 +60,7 @@
 | L07 | PARTIAL-FIXED | — | — | get_memory type not in payload | Follow-up |
 | L08 | CONFIRMED-FIXED | `12d3c081` | `LiveSessionCard` → `RelativeTimeText` | shared ISO parser | — |
 | L09 | PARTIAL-FIXED | — | — | invariant ledger still path-existence | Follow-up |
-| S01 | CONFIRMED-FIXED | pass4 | **`testRecordingSchedulerFinishesOnlyAfterWork_repro`** + policy tests | activity `.finished` only **after** scan work; idle skips embedding; adaptive 15→30→60m; backend from scheduler | — |
+| S01 | CONFIRMED-FIXED | pass5 | **`testCancelDuringWorkWaitsForWorkExit_repro`** + **`testRecordingSchedulerFinishesOnlyAfterWork_repro`** + sleep cancel-wait | activity `.finished` after work; **cancel awaits work exit** (tracked Task, no orphan scan); idle skips embedding | — |
 
 ## Tallies
 
@@ -87,7 +87,7 @@
 - **H02:** `testIndexAndFtsNamesAreLongRunning_repro` (`ServiceWriterGateTests`)
 - **H03:** `testPeerDisconnectCancelsInFlightHandler_repro` (real IPC socket close) + `testLinkSessionsCooperativeCancelReturnsRemaining_repro` + timeout headroom
 - **M05:** `testRunCancellationStopsBeforeNextOperationAndReportsRemaining` + `testParseBatchMoveOutcomeSurfacesCancelledAndRemaining_repro`
-- **S01:** `testRecordingSchedulerFinishesOnlyAfterWork_repro` + `testMinIntervalIsNotFixedFiveMinutes` + idle embedding gate
+- **S01:** `testCancelDuringWorkWaitsForWorkExit_repro` + `testRecordingSchedulerFinishesOnlyAfterWork_repro` + `testSleepSchedulerCancelDuringWorkWaitsForExit` + idle embedding gate
 
 ### H06 / H09 / H11 (named skeptic gate)
 - **H06:** `testGenerateSummaryIsNotReadOnly_repro` (`EngramMCPExecutableTests`)
@@ -139,7 +139,8 @@ Script: `ENGRAM_BUILD_NUMBER=2026071001 macos/scripts/build-release.sh --local-o
 H05 behavioral evidence: `{SCRATCH}/h05-behavioral.log` — `testClearParentPreservesDispatchedSkipTier_repro` passed.
 
 Pass3 (M05 remaining): prior closeout.
-Pass4 (H03 peer cancel + S01 activity lifetime): `{SCRATCH}/pass4-tests.log` — EngramServiceCoreTests **284 tests, 0 failures**; peer-disconnect cancel + activity-after-work PASS.
+Pass4 (H03 peer cancel + S01 finish-after-work): prior.
+Pass5 (S01 cancel-awaits-work): `{SCRATCH}/pass5-tests.log` — EngramServiceCoreTests **286 tests, 0 failures**; cancel-during-work waits for exit PASS.
 
 ### Scheduling smoke (plan step 6)
 
@@ -163,7 +164,8 @@ After deploy of pass3 service binary (or rebuilt service), `status`/`telemetry` 
 | Closeout hash stamp | `61fdd5a8` |
 | Follow-up: M05 cancel + H06/H09/H11 + matrix | `2ce900ba` / `c88b7f20` |
 | Pass3: M05 remaining + initial S01 shell | `6b301b86` |
-| Pass4: H03 peer-disconnect cancel + S01 finish-after-work + idle embed skip | this commit |
+| Pass4: H03 peer-disconnect + S01 finish-after-work + idle embed | `f5d9fa79` |
+| Pass5: S01 cancel path awaits active work Task exit | this commit |
 
 ## Residual risks for Codex
 
