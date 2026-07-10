@@ -326,11 +326,88 @@ final class SessionModelTests: XCTestCase {
             card.contains("Session.favoriteMenuLabel(isFavorite: isFavorite)"),
             "menu labels must use isFavorite (Add vs Remove), not a fixed Add string"
         )
+        // Post-toggle: local @State children must flip isFavorite so the next
+        // menu action can reverse without re-expand / full page reload of child rows.
+        XCTAssertTrue(
+            card.contains("applyingChildFavorite") && card.contains("toggleChildFavorite"),
+            "child favorite toggle must update local expanded-child state"
+        )
 
         // Mutation path reloads so labels flip / Starred rows drop.
         XCTAssertTrue(
             handlers.contains("await reload()"),
             "setFavorite success must reload list surfaces"
         )
+    }
+
+    // MARK: - M19 expanded-child favorite local state (post-toggle)
+
+    func testApplyingChildFavoriteUpdatesConfirmedAndSuggestedForSymmetricToggle() throws {
+        var confirmed = [makeSession(id: "child-a"), makeSession(id: "child-b")]
+        confirmed[0].isFavorite = false
+        confirmed[1].isFavorite = true
+        var suggested = [makeSession(id: "child-s")]
+        suggested[0].isFavorite = false
+
+        // Add → Remove on the same confirmed child (menu must reverse immediately).
+        var result = ExpandableSessionCard.applyingChildFavorite(
+            confirmed: confirmed,
+            suggested: suggested,
+            sessionId: "child-a",
+            isFavorite: true
+        )
+        XCTAssertTrue(result.confirmed[0].isFavorite, "Add must set child-a isFavorite")
+        XCTAssertTrue(result.confirmed[1].isFavorite, "unrelated confirmed favorite unchanged")
+        XCTAssertFalse(result.suggested[0].isFavorite, "unrelated suggested row unchanged")
+        XCTAssertFalse(
+            result.confirmed[0].favoriteToggleTarget,
+            "after Add, next target must be Remove (false)"
+        )
+
+        result = ExpandableSessionCard.applyingChildFavorite(
+            confirmed: result.confirmed,
+            suggested: result.suggested,
+            sessionId: "child-a",
+            isFavorite: false
+        )
+        XCTAssertFalse(result.confirmed[0].isFavorite, "Remove must clear child-a isFavorite")
+        XCTAssertTrue(
+            result.confirmed[0].favoriteToggleTarget,
+            "after Remove, next target must be Add (true)"
+        )
+        XCTAssertTrue(result.confirmed[1].isFavorite, "sibling favorite must not flip")
+
+        // Remove → Add on a suggested child (same expanded card arrays).
+        suggested[0].isFavorite = true
+        result = ExpandableSessionCard.applyingChildFavorite(
+            confirmed: result.confirmed,
+            suggested: suggested,
+            sessionId: "child-s",
+            isFavorite: false
+        )
+        XCTAssertFalse(result.suggested[0].isFavorite)
+        result = ExpandableSessionCard.applyingChildFavorite(
+            confirmed: result.confirmed,
+            suggested: result.suggested,
+            sessionId: "child-s",
+            isFavorite: true
+        )
+        XCTAssertTrue(result.suggested[0].isFavorite)
+        XCTAssertEqual(result.confirmed.map(\.id), ["child-a", "child-b"])
+        XCTAssertEqual(result.suggested.map(\.id), ["child-s"])
+    }
+
+    func testApplyingChildFavoriteIsNoOpForUnknownId() throws {
+        var confirmed = [makeSession(id: "known")]
+        confirmed[0].isFavorite = true
+        let suggested: [Session] = []
+        let result = ExpandableSessionCard.applyingChildFavorite(
+            confirmed: confirmed,
+            suggested: suggested,
+            sessionId: "missing",
+            isFavorite: false
+        )
+        XCTAssertTrue(result.confirmed[0].isFavorite)
+        XCTAssertTrue(result.suggested.isEmpty)
     }
 }

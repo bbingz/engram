@@ -43,6 +43,46 @@ struct ExpandableSessionCard: View {
 
     private var totalChildCount: Int { confirmedChildCount + suggestedChildCount }
 
+    /// Pure local update for expanded-child favorite membership after a toggle.
+    /// Child rows live in `@State` and are only annotated from `listFavorites` at
+    /// load, so without this the menu target cannot reverse until re-expand.
+    /// Updates confirmed and suggested arrays by session id (no-op if absent).
+    static func applyingChildFavorite(
+        confirmed: [Session],
+        suggested: [Session],
+        sessionId: String,
+        isFavorite: Bool
+    ) -> (confirmed: [Session], suggested: [Session]) {
+        func mark(_ sessions: [Session]) -> [Session] {
+            sessions.map { session in
+                guard session.id == sessionId else { return session }
+                var copy = session
+                copy.isFavorite = isFavorite
+                return copy
+            }
+        }
+        return (mark(confirmed), mark(suggested))
+    }
+
+    /// Optimistically flip local child `isFavorite`, then invoke the page callback
+    /// with the pre-toggle session so `favoriteToggleTarget` stays correct.
+    private func toggleChildFavorite(_ child: Session) {
+        let next = child.favoriteToggleTarget
+        let updated = Self.applyingChildFavorite(
+            confirmed: children,
+            suggested: suggestedChildren,
+            sessionId: child.id,
+            isFavorite: next
+        )
+        children = updated.confirmed
+        suggestedChildren = updated.suggested
+        // Callback contract is fire-and-forget `(Session) -> Void` — no failure
+        // signal to roll back. Parent pages reload on success for their own lists;
+        // local child state is the source of truth for the expanded menu until
+        // the next loadChildren / loadMoreChildren annotation.
+        onToggleFavorite?(child)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Parent row
@@ -172,7 +212,8 @@ struct ExpandableSessionCard: View {
                                 onRename: onRename.map { cb in { cb(child) } },
                                 onExportMarkdown: onExportMarkdown.map { cb in { cb(child) } },
                                 onExportJSON: onExportJSON.map { cb in { cb(child) } },
-                                onToggleFavorite: onToggleFavorite.map { cb in { cb(child) } },
+                                // Optimistic local flip so Add/Remove reverses without re-expand.
+                                onToggleFavorite: onToggleFavorite.map { _ in { toggleChildFavorite(child) } },
                                 isHidden: child.hiddenAt != nil
                             )
                         }
@@ -207,7 +248,8 @@ struct ExpandableSessionCard: View {
                                 onRename: onRename.map { cb in { cb(child) } },
                                 onExportMarkdown: onExportMarkdown.map { cb in { cb(child) } },
                                 onExportJSON: onExportJSON.map { cb in { cb(child) } },
-                                onToggleFavorite: onToggleFavorite.map { cb in { cb(child) } },
+                                // Optimistic local flip so Add/Remove reverses without re-expand.
+                                onToggleFavorite: onToggleFavorite.map { _ in { toggleChildFavorite(child) } },
                                 isHidden: child.hiddenAt != nil
                             )
                         }
