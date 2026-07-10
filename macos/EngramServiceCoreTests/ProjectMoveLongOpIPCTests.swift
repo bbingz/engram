@@ -537,6 +537,72 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
         await fulfillment(of: [loserFinished], timeout: 2)
     }
 
+    /// Cancel-before-store is sticky: store applies pending cancel immediately.
+    func testCancelHandleBoxCancelBeforeStore_repro() {
+        let box = CancelHandleBox()
+        box.cancel()
+        XCTAssertTrue(box.cancelRequestedForTests)
+        XCTAssertTrue(box.isCancelledOrPendingForTests)
+
+        let task = Task<Void, Never> {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        box.store(task)
+        XCTAssertTrue(task.isCancelled, "store after cancel must cancel the task immediately")
+        XCTAssertTrue(box.isCancelledOrPendingForTests)
+    }
+
+    /// Operation win must cancel the timer peer (no leftover sleep until deadline).
+    func testHardTimeoutOperationWinCancelsTimerPeer_repro() async {
+        let control = HardTimeout.Control()
+        // Long deadline would outlive the test if the timer peer were not cancelled.
+        let result = await HardTimeout.race(
+            seconds: 60,
+            operation: { 42 },
+            control: control
+        )
+        XCTAssertEqual(result, 42)
+        XCTAssertTrue(
+            control.timer.cancelRequestedForTests,
+            "operation win must request timer cancel"
+        )
+        XCTAssertTrue(
+            control.timer.isCancelledOrPendingForTests,
+            "timer handle must reflect cancel (incl. cancel-before-store)"
+        )
+        XCTAssertFalse(
+            control.operation.cancelRequestedForTests,
+            "winning operation is not cancelled by itself"
+        )
+    }
+
+    /// Timeout win must cancel the operation peer.
+    func testHardTimeoutTimeoutWinCancelsOperationPeer_repro() async {
+        let control = HardTimeout.Control()
+        let opStarted = expectation(description: "operation started")
+        let opSawCancel = expectation(description: "operation observed cancel")
+        let result = await HardTimeout.race(
+            seconds: 0.05,
+            operation: {
+                opStarted.fulfill()
+                // Cooperative cancel observation (not a fixed wall-clock sole proof).
+                while !Task.isCancelled {
+                    await Task.yield()
+                }
+                opSawCancel.fulfill()
+                return 1
+            },
+            control: control
+        )
+        XCTAssertNil(result, "timeout must win")
+        XCTAssertTrue(
+            control.operation.cancelRequestedForTests,
+            "timeout win must request operation cancel"
+        )
+        XCTAssertTrue(control.operation.isCancelledOrPendingForTests)
+        await fulfillment(of: [opStarted, opSawCancel], timeout: 2)
+    }
+
     private func waitUntil(
         timeout: Double,
         _ predicate: @escaping @Sendable () async -> Bool
@@ -551,28 +617,112 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
 }
 
 /// Exactly-once one-shot race used by long-op IPC tests.
+/// Winner always cancels the peer so no unstructured timer/op outlives the race.
 enum HardTimeout {
+    /// Test seam: peer cancel handles for deterministic assertions.
+    final class Control: @unchecked Sendable {
+        let timer = CancelHandleBox()
+        let operation = CancelHandleBox()
+    }
+
     static func race<T: Sendable>(
         seconds: Double,
-        operation: @escaping @Sendable () async -> T
+        operation: @escaping @Sendable () async -> T,
+        control: Control? = nil
     ) async -> T? {
-        await withCheckedContinuation { (cont: CheckedContinuation<T?, Never>) in
+        let peers = control ?? Control()
+        return await withCheckedContinuation { (cont: CheckedContinuation<T?, Never>) in
             let box = OnceResumeBox<T?>()
+
             let op = Task {
                 let value = await operation()
                 if box.complete(with: value) {
+                    // Operation won — cancel timer so it does not sleep until deadline.
+                    peers.timer.cancel()
                     cont.resume(returning: value)
                 }
             }
-            Task {
-                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            peers.operation.store(op)
+
+            let timer = Task {
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                } catch is CancellationError {
+                    // Cancelled by operation win (or cancel-before-store) — exit quietly.
+                    return
+                } catch {
+                    return
+                }
+                if Task.isCancelled { return }
                 if box.complete(with: nil) {
-                    op.cancel()
+                    peers.operation.cancel()
                     cont.resume(returning: nil)
                 }
             }
+            peers.timer.store(timer)
         }
     }
+}
+
+/// Lock-protected cancel handle: cancel-before-store records pending and applies on store.
+final class CancelHandleBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var holder: AnyCancellableTask?
+    private var pendingCancel = false
+    private var cancelRequested = false
+
+    func store<Success, Failure: Error>(_ task: Task<Success, Failure>) {
+        let wrapped = AnyCancellableTask(task)
+        lock.lock()
+        holder = wrapped
+        let apply = pendingCancel
+        if apply {
+            pendingCancel = false
+            cancelRequested = true
+        }
+        lock.unlock()
+        if apply {
+            wrapped.cancel()
+        }
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelRequested = true
+        if let holder {
+            lock.unlock()
+            holder.cancel()
+            return
+        }
+        pendingCancel = true
+        lock.unlock()
+    }
+
+    var cancelRequestedForTests: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return cancelRequested
+    }
+
+    var isCancelledOrPendingForTests: Bool {
+        lock.lock(); defer { lock.unlock() }
+        if pendingCancel { return true }
+        if let holder { return holder.isCancelled }
+        return cancelRequested
+    }
+}
+
+/// Type-erased Task cancel / isCancelled for peer handles.
+private final class AnyCancellableTask: @unchecked Sendable {
+    private let _cancel: () -> Void
+    private let _isCancelled: () -> Bool
+
+    init<Success, Failure: Error>(_ task: Task<Success, Failure>) {
+        _cancel = { task.cancel() }
+        _isCancelled = { task.isCancelled }
+    }
+
+    func cancel() { _cancel() }
+    var isCancelled: Bool { _isCancelled() }
 }
 
 private final class OnceResumeBox<T: Sendable>: @unchecked Sendable {
