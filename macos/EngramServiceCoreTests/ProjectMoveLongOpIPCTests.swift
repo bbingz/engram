@@ -519,15 +519,18 @@ final class ProjectMoveLongOpIPCTests: XCTestCase {
     func testWithTimeoutReturnsEvenWhenChildIgnoresCancellation_repro() async {
         let start = Date()
         let result: Int? = await withTimeout(seconds: 0.15) {
-            // Ignore cancellation and hang forever — helper must still return.
-            while true {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            // Cancellation-insensitive finite wait: Task.cancel must not hot-spin.
+            // Dispatch asyncAfter ignores cooperative cancellation; loser ends ~0.75s later.
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global().asyncAfter(deadline: .now() + 0.75) {
+                    cont.resume()
+                }
             }
             return 1
         }
         let elapsed = Date().timeIntervalSince(start)
         XCTAssertNil(result, "timeout must win")
-        XCTAssertLessThan(elapsed, 1.0, "helper must not await the hanging child")
+        XCTAssertLessThan(elapsed, 0.5, "helper must not await the hanging child")
     }
 
     private func waitUntil(
