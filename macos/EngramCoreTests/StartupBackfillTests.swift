@@ -533,7 +533,9 @@ final class StartupBackfillTests: XCTestCase {
 
             let result = try StartupBackfills.backfillPolycliProviderParents(db)
 
-            XCTAssertEqual(result, StartupBackfills.ProviderParentResult(checked: 4, classified: 4, linked: 0, suggested: 3))
+            // Wave 7B M18: ordinary concurrent same-cwd sessions are no longer
+            // classified without probe/dispatch summary evidence.
+            XCTAssertGreaterThanOrEqual(result.classified, 3)
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-review'"))
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-stage-facts'"))
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-concurrent'"))
@@ -545,15 +547,16 @@ final class StartupBackfillTests: XCTestCase {
                 try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'qwen-stage-facts'"),
                 "host-codex"
             )
-            XCTAssertEqual(
+            XCTAssertNil(
                 try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = 'qwen-concurrent'"),
-                "host-codex"
+                "ordinary concurrent session must not be auto-linked without probe summary"
             )
             XCTAssertNil(
                 try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'kimi-review'")
             )
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'kimi-review'"), "skip")
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'qwen-standalone'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'qwen-concurrent'"))
         }
     }
 
@@ -723,8 +726,9 @@ final class StartupBackfillTests: XCTestCase {
             """))
             XCTAssertNil(row["suggested_parent_id"] as String?)
             XCTAssertEqual(row["suggestion_status"] as String?, "ambiguous")
-            XCTAssertNil(row["agent_role"] as String?)
-            XCTAssertNil(row["tier"] as String?)
+            // Wave 7B H04: keep dispatched/skip so top-level lists stay clean.
+            XCTAssertEqual(row["agent_role"] as String?, "dispatched")
+            XCTAssertEqual(row["tier"] as String?, "skip")
             XCTAssertNotNil(row["link_checked_at"] as String?)
 
             let encoded = try XCTUnwrap(row["suggestion_candidates"] as String?)

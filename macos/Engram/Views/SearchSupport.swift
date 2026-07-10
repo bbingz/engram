@@ -3,11 +3,12 @@ import SwiftUI
 enum SearchMode: String, CaseIterable {
     case hybrid, keyword, semantic
 
-    /// Modes the current Swift service can actually serve. Historical embedding
-    /// rows may exist, but there is no Swift vector query path yet, so the UI
-    /// stays keyword-only until semantic search ships end-to-end.
+    /// App UI is intentionally keyword-only. Service and MCP can run
+    /// semantic/hybrid when session vectors are usable (wave-6); mode pills and
+    /// settings for embeddings are a deliberate non-goal for the app surface.
     static func availableModes(embeddingAvailable: Bool) -> [SearchMode] {
-        [.keyword]
+        _ = embeddingAvailable
+        return [.keyword]
     }
 }
 

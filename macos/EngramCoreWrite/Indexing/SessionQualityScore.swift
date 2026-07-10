@@ -4,6 +4,10 @@ import Foundation
 /// (turn ratio / tool / density / project / volume). Used by incremental
 /// snapshot indexing and startup score backfill — must stay bit-identical.
 public enum SessionQualityScore {
+    /// Bump when the formula changes so startup can recompute non-zero scores.
+    public static let formulaVersion = "1"
+    public static let formulaVersionMetadataKey = "quality_score_formula_version"
+
     public static func compute(
         userCount: Int,
         assistantCount: Int,

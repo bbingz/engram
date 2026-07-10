@@ -7,11 +7,6 @@ struct LiveSessionCard: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isPulsing = false
-    private static let isoFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
 
     private var levelColor: Color {
         switch session.activityLevel {
@@ -30,13 +25,8 @@ struct LiveSessionCard: View {
     }
 
     private var elapsedText: String {
-        // Use lastModifiedAt for "how long ago was it active"
-        guard let date = Self.isoFormatter.date(from: session.lastModifiedAt) else { return "" }
-        let seconds = Int(Date().timeIntervalSince(date))
-        if seconds < 60 { return "just now" }
-        if seconds < 3600 { return "\(seconds / 60)m ago" }
-        if seconds < 86400 { return "\(seconds / 3600)h ago" }
-        return "\(seconds / 86400)d ago"
+        // Wave 7E L08: shared fractional-or-whole-second ISO parser.
+        RelativeTimeText.format(session.lastModifiedAt, style: .agoWithSeconds)
     }
 
     var body: some View {

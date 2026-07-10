@@ -10,12 +10,10 @@ struct AISettingsSection: View {
     @State private var aiApiKey: String = ""
     @State private var aiModel: String = "gpt-4o-mini"
 
-    // NOTE (advertised-but-inert removal): the Embeddings controls (provider /
-    // model / dimension / Ollama URL) were removed here. No Swift runtime code
-    // constructs an embedding client, loads sqlite-vec, or reads these settings —
-    // semantic search/embeddings are not implemented — so the controls promised a
-    // capability that silently no-ops. Do not re-add until a real embedding path
-    // ships. (Defect: false UI promise, not a missing backend.)
+    // NOTE: Embeddings controls (provider/model/dimension) are intentionally
+    // omitted from the app Settings UI. The service/MCP runtime does implement
+    // embedding + semantic search when configured (ENGRAM_EMBEDDING_* / settings
+    // keys + SessionVectorSearchAvailability). App search stays keyword-only.
 
     // Prompt template
     @State private var summaryLanguage: String = "中文"

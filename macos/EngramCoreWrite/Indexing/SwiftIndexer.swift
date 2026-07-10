@@ -206,17 +206,26 @@ public final class SwiftIndexer {
                         try upsertFileIndexStateIsolated(fileState, source: fileState.source, locator: fileState.locator)
                         continue
                     case .failure(let failure):
-                        try recordFileIndexFailure(
-                            source: adapter.source,
-                            locator: locator,
-                            stat: currentStat,
-                            failure: failure,
-                            previous: knownParseState
-                        )
+                        // Terminal parser limits stay recorded and skip full reparse.
+                        // Retryable tail failures fall through to a full scan in the
+                        // same pass (Wave 7A / M04) instead of poisoning the identity.
+                        if Self.isTerminalTailFailure(failure) {
+                            try recordFileIndexFailure(
+                                source: adapter.source,
+                                locator: locator,
+                                stat: currentStat,
+                                failure: failure,
+                                previous: knownParseState
+                            )
+                            Self.log.error(
+                                "session tail parse failed: source=\(adapter.source.rawValue, privacy: .private) reason=\(failure.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
+                            )
+                            continue
+                        }
                         Self.log.error(
-                            "session tail parse failed: source=\(adapter.source.rawValue, privacy: .private) reason=\(failure.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
+                            "session tail parse retryable; falling back to full scan: source=\(adapter.source.rawValue, privacy: .private) reason=\(failure.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
                         )
-                        continue
+                        break
                     case .fallback:
                         break
                     }
@@ -225,12 +234,14 @@ public final class SwiftIndexer {
                    let currentFile = currentStat?.legacyState,
                    let indexed = knownIndexedState {
                     if !needsInstructionBackfill {
+                        // Wave 7A C01/M03: deferral must NOT stamp file_index_state
+                        // success for an unparsed (or actively-writing) identity.
+                        // Leaving the prior parse state dirty lets a later recent
+                        // scan see the identity mismatch and reparse.
                         if skipKnownFileLocators {
-                            try recordFileIndexSuccess(source: adapter.source, locator: locator, stat: currentStat)
                             continue
                         }
                         if currentFile.modifiedAt > activeFileCutoff {
-                            try recordFileIndexSuccess(source: adapter.source, locator: locator, stat: currentStat)
                             continue
                         }
                         if indexed.sizeBytes == currentFile.sizeBytes,
@@ -406,6 +417,13 @@ public final class SwiftIndexer {
         stats.tokenUsage = mergedUsage(current.tokenUsage, tailStats.tokenUsage)
         stats.humanTurnCount = instructionSignals.humanTurnCount
         stats.instructions = instructionSignals.instructions
+        // Cannot re-walk prior messages in a tail merge. Bind the new digest to
+        // the prior snapshot hash + tail content so pure appends stay incremental
+        // while a later full reparse remains the authority for body rewrites.
+        var seed = SHA256()
+        seed.update(data: Data("prior:\(current.snapshotHash)\n".utf8))
+        seed.update(data: Data(tailStats.contentFingerprintHex().utf8))
+        stats.contentDigest = seed
 
         let info = NormalizedSessionInfo(
             id: current.id,
@@ -569,6 +587,23 @@ public final class SwiftIndexer {
         var instructions: [String] = []
         var seenInstructionKeys: Set<String> = []
         var implementationMessages: [NormalizedMessage] = []
+        /// Running SHA-256 over role + normalized searchable content (Wave 7A H10).
+        var contentDigest = SHA256()
+
+        mutating func absorbSearchableContent(role: NormalizedMessageRole, content: String) {
+            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            guard role == .user || role == .assistant else { return }
+            var hasher = contentDigest
+            let line = "\(role.rawValue)\n\(trimmed)\n"
+            hasher.update(data: Data(line.utf8))
+            contentDigest = hasher
+        }
+
+        func contentFingerprintHex() -> String {
+            var hasher = contentDigest
+            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        }
 
         mutating func addUsage(_ usage: TokenUsage) {
             let current = tokenUsage ?? TokenUsage(inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0)
@@ -578,6 +613,18 @@ public final class SwiftIndexer {
                 cacheReadTokens: (current.cacheReadTokens ?? 0) + (usage.cacheReadTokens ?? 0),
                 cacheCreationTokens: (current.cacheCreationTokens ?? 0) + (usage.cacheCreationTokens ?? 0)
             )
+        }
+    }
+
+    /// Terminal tail failures stay recorded; retryable ones fall through to full parse.
+    private static func isTerminalTailFailure(_ failure: ParserFailure) -> Bool {
+        switch failure {
+        case .fileMissing, .fileTooLarge, .unsupportedVirtualLocator,
+             .invalidUtf8, .malformedJSON, .messageLimitExceeded, .lineTooLarge, .noVisibleMessages:
+            return true
+        case .truncatedJSON, .truncatedJSONL, .malformedToolCall, .deeplyNestedRecord,
+             .fileModifiedDuringParse, .sqliteUnreadable, .grpcUnavailable:
+            return false
         }
     }
 
@@ -627,6 +674,7 @@ public final class SwiftIndexer {
                 stats.toolCount += 1
             }
             guard !content.isEmpty else { continue }
+            stats.absorbSearchableContent(role: message.role, content: content)
             stats.indexedMessageCount += 1
             if message.role == .user {
                 // Substantive human turn (passed role/system-injection/non-empty
@@ -688,7 +736,11 @@ public final class SwiftIndexer {
             source: info.source,
             authoritativeNode: authoritativeNode,
             syncVersion: 1,
-            snapshotHash: snapshotHash(info: info, summaryMessageCount: summaryMessageCount),
+            snapshotHash: snapshotHash(
+                info: info,
+                summaryMessageCount: summaryMessageCount,
+                contentFingerprint: stats.contentFingerprintHex()
+            ),
             indexedAt: Self.iso8601.string(from: Date()),
             sourceLocator: locator,
             sizeBytes: info.sizeBytes,
@@ -717,7 +769,11 @@ public final class SwiftIndexer {
         )
     }
 
-    private func snapshotHash(info: NormalizedSessionInfo, summaryMessageCount: Int) -> String {
+    private func snapshotHash(
+        info: NormalizedSessionInfo,
+        summaryMessageCount: Int,
+        contentFingerprint: String
+    ) -> String {
         var fields: [(String, String)] = [
             ("cwd", jsonString(info.cwd))
         ]
@@ -730,6 +786,8 @@ public final class SwiftIndexer {
         fields.append(("systemMessageCount", "\(info.systemMessageCount)"))
         if let summary = info.summary { fields.append(("summary", jsonString(summary))) }
         fields.append(("summaryMessageCount", "\(summaryMessageCount)"))
+        // Wave 7A H10: body rewrites with stable counts must change the hash.
+        fields.append(("contentFingerprint", jsonString(contentFingerprint)))
 
         let json = "{\(fields.map { "\"\($0.0)\":\($0.1)" }.joined(separator: ","))}"
         let digest = SHA256.hash(data: Data(json.utf8))

@@ -109,6 +109,28 @@ public actor ServiceWriterGate {
         }
     }
 
+    /// Wave 7C M01: pure reads through the gate must not bump databaseGeneration.
+    public func performReadCommand<Value: Sendable>(
+        name: String,
+        operation: @Sendable (EngramDatabaseWriter) async throws -> Value
+    ) async throws -> ServiceWriterGateResult<Value> {
+        _ = name
+        let timeout = longRunningWriteInProgress ? nil : queueTimeoutNanoseconds
+        try await writeSemaphore.wait(timeoutNanoseconds: timeout)
+        writeInProgress = true
+        do {
+            try Task.checkCancellation()
+            let value = try await operation(writer)
+            writeInProgress = false
+            await writeSemaphore.signal()
+            return ServiceWriterGateResult(value: value, databaseGeneration: databaseGeneration)
+        } catch {
+            writeInProgress = false
+            await writeSemaphore.signal()
+            throw error
+        }
+    }
+
     public func checkpointWal() async throws {
         try await writeSemaphore.wait()
         do {
@@ -209,7 +231,26 @@ public actor ServiceWriterGate {
         // rather than hit the 60s WriterBusy timeout while it runs.
         case "remoteVacuum", "userDataBackup":
             return true
+        // Wave 7C H02: multi-minute index/backfill/FTS/embed phases hold the gate
+        // under healthy progress — do not false-timeout followers at 60s.
+        case "initialScanIndex",
+             "initialScanBackfills",
+             "indexRecent",
+             "indexAll",
+             "periodicFtsDrain",
+             "ftsOptimize",
+             "embeddingBackfill",
+             "embeddingDrain",
+             "parentBackfill",
+             "startupBackfills":
+            return true
         default:
+            // Prefix match for runner-owned maintenance names.
+            if name.hasPrefix("index") || name.hasPrefix("fts") || name.hasPrefix("embed")
+                || name.hasPrefix("backfill") || name.hasPrefix("initialScan")
+            {
+                return true
+            }
             return false
         }
     }

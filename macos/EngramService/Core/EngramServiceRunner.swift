@@ -331,13 +331,33 @@ public enum EngramServiceRunner {
         tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits],
         remoteSync: RemoteSyncCoordinator? = nil
     ) async {
-        let intervalNanoseconds: UInt64 = 5 * 60 * 1_000_000_000
+        // Wave 7C S01: adaptive 15→30→60m idle backoff (was fixed 5m).
+        var schedule = IndexingSchedulePolicy()
 
         while !Task.isCancelled {
+            let sleepSeconds = schedule.nextInterval()
             do {
-                try await Task.sleep(nanoseconds: intervalNanoseconds)
+                try await Task.sleep(nanoseconds: UInt64(sleepSeconds * 1_000_000_000))
             } catch {
                 break
+            }
+
+            // Defer discretionary work under Low Power / serious thermal pressure.
+            let processInfo = ProcessInfo.processInfo
+            let conditions = IndexingSchedulePolicy.SystemConditions(
+                lowPower: processInfo.isLowPowerModeEnabled,
+                thermal: {
+                    switch processInfo.thermalState {
+                    case .nominal: return .nominal
+                    case .fair: return .fair
+                    case .serious: return .serious
+                    case .critical: return .critical
+                    @unknown default: return .fair
+                    }
+                }()
+            )
+            if IndexingSchedulePolicy.shouldDefer(conditions: conditions) {
+                continue
             }
 
             let disabled = readDisabledSources(environment: environment)
@@ -355,6 +375,7 @@ public enum EngramServiceRunner {
                 let scan = try await gate.performWriteCommand(name: "indexRecent") { writer in
                     try await writer.indexRecentSessions(adapters: recentAdapters)
                 }.value
+                schedule.recordScan(.init(indexed: scan.indexed, failed: false))
                 // Run parent-link / dispatch detection on the freshly indexed
                 // sessions so agent children created mid-run are grouped under
                 // their parent (and skip-tiered) without waiting for a restart.
@@ -409,7 +430,7 @@ public enum EngramServiceRunner {
                 // 5-min loop never rewrites the whole index every tick.
                 // Isolated: failure must not kill the rest of the cycle.
                 await runPeriodicFtsOptimizeBestEffort(gate: gate)
-                let status = try await gate.performWriteCommand(name: "periodicIndexStatus") { writer in
+                let status = try await gate.performReadCommand(name: "periodicIndexStatus") { writer in
                     try writer.indexStatus()
                 }.value
                 // Refresh git_repos from session cwds (replaces removed Node
@@ -648,7 +669,7 @@ public enum EngramServiceRunner {
         // Record the initial scan into telemetry (Codex flagged: don't miss the
         // first scan). Best-effort total via a gated indexStatus read; a failure
         // here must not affect scan success accounting.
-        let initialTotal = (try? await gate.performWriteCommand(name: "initialScanTelemetryStatus") { writer in
+        let initialTotal = (try? await gate.performReadCommand(name: "initialScanTelemetryStatus") { writer in
             try writer.indexStatus()
         }.value.total) ?? 0
         await telemetry?.recordScan(

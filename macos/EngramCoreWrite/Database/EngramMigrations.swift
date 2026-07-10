@@ -80,17 +80,23 @@ enum EngramMigrations {
             AFTER DELETE ON sessions
             BEGIN
               -- Confirmed children: orphan the link and reset tier for re-evaluation,
-              -- but preserve 'skip' for true subagents (accessed via parent, never independently).
+              -- but preserve 'skip' for subagent and dispatched agents (Wave 7B H05).
               UPDATE sessions
                 SET parent_session_id = NULL,
                     link_source = NULL,
-                    tier = CASE WHEN agent_role = 'subagent' THEN 'skip' ELSE NULL END
+                    tier = CASE
+                      WHEN agent_role IN ('subagent', 'dispatched') THEN 'skip'
+                      ELSE NULL
+                    END
                 WHERE parent_session_id = OLD.id;
               -- Suggested (advisory) children: clear the suggestion and likewise reset
-              -- tier for re-evaluation, preserving 'skip' for true subagents.
+              -- tier for re-evaluation, preserving 'skip' for subagent/dispatched.
               UPDATE sessions
                 SET suggested_parent_id = NULL,
-                    tier = CASE WHEN agent_role = 'subagent' THEN 'skip' ELSE NULL END
+                    tier = CASE
+                      WHEN agent_role IN ('subagent', 'dispatched') THEN 'skip'
+                      ELSE NULL
+                    END
                 WHERE suggested_parent_id = OLD.id;
             END;
 

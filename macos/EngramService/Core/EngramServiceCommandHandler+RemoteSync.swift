@@ -72,7 +72,7 @@ extension EngramServiceCommandHandler {
     /// Read-only status: offload counts + pending queue depths + config (no token).
     static func remoteSyncStatus(writerGate: ServiceWriterGate) async throws -> EngramServiceRemoteSyncStatusResponse {
         let config = RemoteSyncConfig.read(environment: ProcessInfo.processInfo.environment)
-        let counts = try await writerGate.performWriteCommand(name: "remoteSyncStatus") { writer in
+        let counts = try await writerGate.performReadCommand(name: "remoteSyncStatus") { writer in
             try writer.read { db -> [Int] in
                 [
                     try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE COALESCE(offload_state, 'local') = 'local'") ?? 0,

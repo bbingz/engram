@@ -1221,7 +1221,8 @@ enum MCPToolRegistry {
              "project_recover":
             return .readOnly
         case "generate_summary":
-            return .longRunningRead
+            // Wave 7D H06: persists sessions.summary — must not advertise readOnlyHint.
+            return .mutating
         case "save_insight",
              "delete_insight",
              "hide_session",

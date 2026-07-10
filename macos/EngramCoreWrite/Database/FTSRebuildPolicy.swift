@@ -104,6 +104,15 @@ public enum FTSRebuildPolicy {
         guard try tableExists(db, rebuildTable) else { return false }
         guard try recoverableFtsJobCount(db) == 0 else { return false }
 
+        // Wave 7A H01: before swap, copy live FTS rows for eligible sessions that
+        // never made it into the shadow table (failed_permanent / not_applicable /
+        // never-replayed). Permanent job failures must not delete searchable content.
+        try copyMissingLiveFtsRowsIntoRebuild(db)
+        guard try eligibleSessionsMissingRebuildContent(db) == 0 else {
+            // Still incomplete — keep live table serving search; leave rebuild pending.
+            return false
+        }
+
         if try tableExists(db, activeTable) {
             try db.execute(sql: "DROP TABLE IF EXISTS sessions_fts_old")
             try db.execute(sql: "ALTER TABLE \(activeTable) RENAME TO sessions_fts_old")
@@ -118,6 +127,55 @@ public enum FTSRebuildPolicy {
         // one full per-session replace on the next re-index, which restores hashes).
         try backfillFtsMap(db)
         return true
+    }
+
+    /// Eligible = non-skip, non-deleted/orphan sessions that currently have live
+    /// FTS content. Skip-tier and purged sessions are intentionally omitted.
+    private static func eligibleSessionSQLPredicate(alias: String = "s") -> String {
+        """
+        COALESCE(\(alias).tier, 'normal') != 'skip'
+        AND \(alias).hidden_at IS NULL
+        AND \(alias).orphan_status IS NULL
+        """
+    }
+
+    private static func copyMissingLiveFtsRowsIntoRebuild(_ db: GRDB.Database) throws {
+        guard try tableExists(db, activeTable), try tableExists(db, rebuildTable) else { return }
+        guard try tableExists(db, "sessions") else { return }
+        try db.execute(sql: """
+            INSERT INTO \(rebuildTable)(session_id, content)
+            SELECT live.session_id, live.content
+            FROM \(activeTable) AS live
+            INNER JOIN sessions AS s ON s.id = live.session_id
+            WHERE \(eligibleSessionSQLPredicate())
+              AND NOT EXISTS (
+                SELECT 1 FROM \(rebuildTable) AS shadow
+                WHERE shadow.session_id = live.session_id
+              )
+            """)
+    }
+
+    private static func eligibleSessionsMissingRebuildContent(_ db: GRDB.Database) throws -> Int {
+        guard try tableExists(db, "sessions") else { return 0 }
+        // Only require shadow content for sessions that already had live rows —
+        // brand-new sessions without any FTS yet should not block finalize.
+        guard try tableExists(db, activeTable) else { return 0 }
+        return try Int.fetchOne(
+            db,
+            sql: """
+            SELECT COUNT(*)
+            FROM sessions AS s
+            WHERE \(eligibleSessionSQLPredicate())
+              AND EXISTS (
+                SELECT 1 FROM \(activeTable) AS live
+                WHERE live.session_id = s.id
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM \(rebuildTable) AS shadow
+                WHERE shadow.session_id = s.id
+              )
+            """
+        ) ?? 0
     }
 
     /// Populate `fts_map` from the current `sessions_fts` rows in one cheap scan (no

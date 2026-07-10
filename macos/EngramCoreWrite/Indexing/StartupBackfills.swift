@@ -500,19 +500,28 @@ public enum StartupBackfills {
     }
 
     public static func backfillScores(_ db: Database) throws -> Int {
+        let storedVersion = try String.fetchOne(
+            db,
+            sql: "SELECT value FROM metadata WHERE key = ?",
+            arguments: [SessionQualityScore.formulaVersionMetadataKey]
+        )
+        let recomputeAll = storedVersion != SessionQualityScore.formulaVersion
+        let scorePredicate = recomputeAll
+            ? "1 = 1"
+            : "(quality_score IS NULL OR quality_score = 0)"
         let rows = try Row.fetchAll(
             db,
             sql: """
             SELECT id, user_message_count, assistant_message_count, tool_message_count, system_message_count,
                    start_time, end_time, project
             FROM sessions
-            WHERE (quality_score IS NULL OR quality_score = 0)
+            WHERE \(scorePredicate)
               AND tier != 'skip'
               AND (user_message_count > 0 OR assistant_message_count > 0)
             """
         )
-        guard !rows.isEmpty else { return 0 }
 
+        var updated = 0
         for row in rows {
             let score = SessionQualityScore.compute(
                 userCount: row["user_message_count"],
@@ -524,8 +533,21 @@ public enum StartupBackfills {
                 project: row["project"]
             )
             try db.execute(sql: "UPDATE sessions SET quality_score = ? WHERE id = ?", arguments: [score, row["id"]])
+            updated += 1
         }
-        return rows.count
+        if recomputeAll || updated > 0 {
+            try db.execute(
+                sql: """
+                INSERT INTO metadata(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                arguments: [
+                    SessionQualityScore.formulaVersionMetadataKey,
+                    SessionQualityScore.formulaVersion
+                ]
+            )
+        }
+        return updated
     }
 
     public static func backfillCosts(_ db: Database) throws -> Int {
@@ -1405,10 +1427,9 @@ public enum StartupBackfills {
                   AND (lower(summary) LIKE '%review%' OR lower(summary) LIKE '%re-review%')
                 )
                 OR lower(summary) LIKE 'no tools.%stage %'
-                OR (
-                  source IN ('copilot', 'gemini-cli', 'kimi', 'opencode', 'pi', 'qwen')
-                  AND trim(cwd) != ''
-                )
+                -- Wave 7B M18: do NOT admit bare same-cwd provider sessions.
+                -- Concurrent timing alone is insufficient without probe/dispatch
+                -- summary evidence (false-skip of ordinary human sessions).
               )
             ORDER BY start_time DESC
             LIMIT 1000
@@ -1436,17 +1457,10 @@ public enum StartupBackfills {
                 childCwd: childCwd
             )
 
+            // Require explicit probe/dispatch summary evidence before classifying.
             if !summaryMatches {
-                guard let best = scored.first,
-                      best.score >= 7,
-                      try isConcurrentProviderChild(db, childStartTime: childStartTime, parentId: best.parentId)
-                else {
-                    if source == "gemini-cli" {
-                        continue
-                    }
-                    try markChecked(db, sessionId: id)
-                    continue
-                }
+                try markChecked(db, sessionId: id)
+                continue
             }
 
             checked += 1
@@ -1723,18 +1737,12 @@ public enum StartupBackfills {
         let payload = candidates.map { StoredSuggestionCandidate(id: $0.parentId, score: $0.score) }
         let data = try JSONEncoder().encode(payload)
         let encoded = String(decoding: data, as: UTF8.self)
+        // Wave 7B H04: ambiguous suggestions must not un-skip dispatched agents.
+        // Clear only relationship/suggestion fields; keep agent_role and skip tier.
         try db.execute(
             sql: """
             UPDATE sessions
             SET suggested_parent_id = NULL,
-                agent_role = CASE
-                    WHEN agent_role = 'dispatched' AND tier = 'skip' THEN NULL
-                    ELSE agent_role
-                END,
-                tier = CASE
-                    WHEN agent_role = 'dispatched' AND tier = 'skip' THEN NULL
-                    ELSE tier
-                END,
                 suggestion_status = 'ambiguous',
                 suggestion_candidates = ?,
                 link_checked_at = datetime('now')

@@ -585,6 +585,142 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(adapter.streamCount, firstStreamCount, "startup all-scan must not reparse known modified locators")
     }
 
+    /// Wave 7A C01: startup deferral must not stamp success for a grown identity,
+    /// and a subsequent recent scan must reparse the changed file.
+    func testStartupDeferralDoesNotStampSuccess_recentScanRecovers_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-deferral-recover-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("session.jsonl")
+        try "hello\n".write(to: locator, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)],
+            ofItemAtPath: locator.path
+        )
+        let adapter = CountingSyntheticFileSessionAdapter(
+            locator: locator.path,
+            userContent: "hello",
+            assistantContent: "first"
+        )
+
+        let first = try await writer.indexAllSessions(adapters: [adapter])
+        XCTAssertEqual(first.indexed, 1)
+        let afterFirst = adapter.streamCount
+
+        try "hello\nlater change\n".write(to: locator, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 2_000)],
+            ofItemAtPath: locator.path
+        )
+
+        // Startup all-scan still defers (no reparse) but must leave identity dirty.
+        let deferred = try await writer.indexAllSessions(adapters: [adapter])
+        XCTAssertEqual(deferred.indexed, 0)
+        XCTAssertEqual(adapter.streamCount, afterFirst)
+
+        let grownStat = FileIndexStat.directFileStat(locator: locator.path)
+        let parseState = try writer.knownFileIndexStates(source: .codex, locators: [locator.path])[locator.path]
+        if let parseState, let grownStat {
+            XCTAssertFalse(
+                parseState.sameFileIdentity(as: grownStat),
+                "deferral must not advance file_index_state to the unparsed grown identity"
+            )
+        }
+
+        // Recent scan (skipKnownFileLocators: false) recovers content.
+        let recovered = try await writer.indexRecentSessions(adapters: [adapter])
+        XCTAssertGreaterThan(adapter.streamCount, afterFirst, "recent scan must reparse the grown file")
+        XCTAssertGreaterThanOrEqual(recovered.indexed, 0)
+    }
+
+    /// Wave 7A M03: active-file grace defers without stamping success.
+    func testActiveFileGraceDoesNotStampSuccess_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("active-file-grace-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("session.jsonl")
+        try "hello\n".write(to: locator, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)],
+            ofItemAtPath: locator.path
+        )
+        let adapter = CountingSyntheticFileSessionAdapter(locator: locator.path)
+
+        _ = try await writer.indexAllSessions(adapters: [adapter])
+
+        // New locator never seen in file_index_state: simulate by deleting state,
+        // keeping the sessions row so knownIndexedState still resolves.
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM file_index_state WHERE locator = ?", arguments: [locator.path])
+        }
+        try "hello\nstill writing\n".write(to: locator, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: locator.path)
+
+        let streamBefore = adapter.streamCount
+        let recent = try await writer.indexRecentSessions(adapters: [adapter])
+        XCTAssertEqual(recent.indexed, 0)
+        XCTAssertEqual(adapter.streamCount, streamBefore, "hot file grace defers parse")
+
+        let parseState = try writer.knownFileIndexStates(source: .codex, locators: [locator.path])[locator.path]
+        XCTAssertNil(parseState, "active-file grace must not insert a success row for an unparsed identity")
+    }
+
+    /// Wave 7A H10: same message counts + same summary but different body text
+    /// must produce different snapshotHash values (content fingerprint).
+    func testSameCountBodyRewriteEnqueuesFtsJob_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("body-rewrite-fts-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locatorA = root.appendingPathComponent("a.jsonl")
+        let locatorB = root.appendingPathComponent("b.jsonl")
+        try "a\n".write(to: locatorA, atomically: true, encoding: .utf8)
+        try "b\n".write(to: locatorB, atomically: true, encoding: .utf8)
+
+        // Two locators, identical metadata counts/summary in parseSessionInfo,
+        // different user body text → content fingerprint must diverge.
+        let adapterA = CountingSyntheticFileSessionAdapter(
+            locator: locatorA.path,
+            sessionId: "body-a",
+            userContent: "alpha body",
+            assistantContent: "done"
+        )
+        let adapterB = CountingSyntheticFileSessionAdapter(
+            locator: locatorB.path,
+            sessionId: "body-b",
+            userContent: "beta body rewritten",
+            assistantContent: "done"
+        )
+        _ = try await writer.indexRecentSessions(adapters: [adapterA])
+        _ = try await writer.indexRecentSessions(adapters: [adapterB])
+
+        let hashA = try writer.read { db in
+            try String.fetchOne(db, sql: "SELECT snapshot_hash FROM sessions WHERE id = 'body-a'")
+        }
+        let hashB = try writer.read { db in
+            try String.fetchOne(db, sql: "SELECT snapshot_hash FROM sessions WHERE id = 'body-b'")
+        }
+        XCTAssertNotNil(hashA)
+        XCTAssertNotNil(hashB)
+        XCTAssertNotEqual(hashA, hashB, "body text must participate in snapshotHash")
+
+        let pendingFts = try writer.read { db in
+            try Int.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*) FROM session_index_jobs
+                WHERE session_id IN ('body-a', 'body-b') AND job_kind = 'fts' AND status = 'pending'
+                """
+            ) ?? 0
+        }
+        XCTAssertGreaterThan(pendingFts, 0, "new sessions must enqueue FTS")
+    }
+
     func testFileIndexDecisionSkipsTerminalFailureUntilFileChanges() {
         let now = Date(timeIntervalSince1970: 2_000)
         let stat = FileIndexStat(
@@ -1858,6 +1994,7 @@ private final class CountingSyntheticFileSessionAdapter: SessionAdapter {
     let source: SourceName = .codex
     let locator: String
     let listedLocators: [String]
+    let sessionId: String
     let userContent: String
     let assistantContent: String
     var streamCount = 0
@@ -1865,11 +2002,13 @@ private final class CountingSyntheticFileSessionAdapter: SessionAdapter {
     init(
         locator: String,
         listedLocators: [String]? = nil,
+        sessionId: String = "startup-skip",
         userContent: String = "hello",
         assistantContent: String = "done"
     ) {
         self.locator = locator
         self.listedLocators = listedLocators ?? [locator]
+        self.sessionId = sessionId
         self.userContent = userContent
         self.assistantContent = assistantContent
     }
@@ -1885,7 +2024,7 @@ private final class CountingSyntheticFileSessionAdapter: SessionAdapter {
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
         .success(
             NormalizedSessionInfo(
-                id: "startup-skip",
+                id: sessionId,
                 source: source,
                 startTime: "2026-04-24T00:00:00Z",
                 cwd: "/repo",

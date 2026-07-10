@@ -236,11 +236,21 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         source: SessionContentSource
     ) async throws -> [String] {
         var contents: [String] = []
+        // Wave 7A L05: match ParserLimits.default.maxMessages (10_000) so
+        // truncate-and-succeed adapters cannot mark FTS completed with incomplete
+        // keyword coverage. Keep the constant local — ParserLimits is internal to
+        // EngramCore.
+        let maxMessages = 10_000
         let stream = try await adapter.streamMessages(locator: source.locator, options: StreamMessagesOptions())
+        var visibleCount = 0
         for try await message in stream {
             guard message.role == .user || message.role == .assistant else { continue }
             let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
+            visibleCount += 1
+            if visibleCount > maxMessages {
+                throw ParserFailure.messageLimitExceeded
+            }
             contents.append(message.content)
         }
         return contents

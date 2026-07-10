@@ -167,18 +167,45 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
     static let memoryFileContentCap = 200 * 1024
 
     func memoryFileContent(_ request: EngramServiceMemoryFileContentRequest) async throws -> EngramServiceMemoryFileContentResponse {
-        // Resolve the ~-display path the list emitted back to an absolute path
-        // and confine it under ~/.claude/projects/*/memory so a malicious path
-        // can't read arbitrary files. Read the full body capped at ~200 KiB,
-        // appending a marker when truncated.
+        // Wave 7D H09: resolve canonical path under ~/.claude/projects/*/memory/,
+        // reject symlinks and non-regular files before reading. Cap body ~200 KiB.
         let resolved = resolveDisplayPath(request.path)
-        let memoryRoot = homeDirectory
+        let projectsRoot = homeDirectory
             .appendingPathComponent(".claude/projects", isDirectory: true)
-            .standardizedFileURL.path
-        let standardized = URL(fileURLWithPath: resolved).standardizedFileURL
-        guard standardized.path.hasPrefix(memoryRoot + "/"),
-              standardized.pathExtension == "md",
-              (try? standardized.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+            .resolvingSymlinksInPath()
+        let candidate = URL(fileURLWithPath: resolved)
+        // Refuse symlink hops before open: lstat the path itself.
+        var isSymlink = false
+        if let values = try? candidate.resourceValues(forKeys: [.isSymbolicLinkKey]),
+           values.isSymbolicLink == true {
+            isSymlink = true
+        }
+        guard !isSymlink else {
+            return EngramServiceMemoryFileContentResponse(path: request.path, content: "", truncated: false)
+        }
+        let standardized = candidate.resolvingSymlinksInPath()
+        let standardizedPath = standardized.path
+        let projectsRootPath = projectsRoot.path
+        // Must live under ~/.claude/projects/<project>/memory/*.md
+        guard standardizedPath.hasPrefix(projectsRootPath + "/"),
+              standardized.pathExtension == "md" else {
+            return EngramServiceMemoryFileContentResponse(path: request.path, content: "", truncated: false)
+        }
+        let relative = String(standardizedPath.dropFirst(projectsRootPath.count + 1))
+        let parts = relative.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        // Expect: <projectId>/memory/<file.md>  (projectId may contain path segments
+        // only if nested under projects; require a "memory" path component before file).
+        guard parts.count >= 3,
+              parts[parts.count - 2] == "memory",
+              !parts.dropLast().contains("..") else {
+            return EngramServiceMemoryFileContentResponse(path: request.path, content: "", truncated: false)
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: standardizedPath, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              let values = try? standardized.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              values.isSymbolicLink != true,
+              values.isRegularFile == true,
               let content = try? String(contentsOf: standardized, encoding: .utf8) else {
             return EngramServiceMemoryFileContentResponse(path: request.path, content: "", truncated: false)
         }

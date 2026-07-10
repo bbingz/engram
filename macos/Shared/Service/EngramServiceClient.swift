@@ -7,7 +7,9 @@ import Observation
 final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
     private static let migrationCommandTimeout: TimeInterval = 10 * 60
     private static let bulkAICommandTimeout: TimeInterval = 10 * 60
-    private static let frameBoundCommandTimeout: TimeInterval = 25
+    /// IPC budget for AI-bound RPCs. Must exceed provider HTTP timeout so the
+    /// client does not fail while the service still persists results (Wave 7C H03).
+    private static let frameBoundCommandTimeout: TimeInterval = 45
 
     @ObservationIgnored
     private let transport: any EngramServiceTransport

@@ -739,7 +739,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                         link_source = 'manual',
                         link_checked_at = datetime('now'),
                         tier = CASE
-                            WHEN agent_role = 'subagent' THEN 'skip'
+                            WHEN agent_role IN ('subagent', 'dispatched') THEN 'skip'
                             ELSE NULL
                         END
                     WHERE id = ?
@@ -755,10 +755,15 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         writer: EngramDatabaseWriter
     ) throws -> EmptyEncodableResult {
         try writer.write { db in
+            // Wave 7B M17: sticky dismiss — mark manual so resetStaleDetections
+            // and suggested-parent backfills do not recreate the suggestion.
             try db.execute(
                 sql: """
                     UPDATE sessions
                     SET suggested_parent_id = NULL,
+                        suggestion_status = NULL,
+                        suggestion_candidates = NULL,
+                        link_source = 'manual',
                         link_checked_at = datetime('now')
                     WHERE id = ?
                       AND suggested_parent_id = ?
@@ -2696,7 +2701,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     }
 
     enum ServiceAIClient {
-        private static let aiChatTimeoutSeconds: TimeInterval = 25
+        // Provider timeout must leave headroom under client frameBoundCommandTimeout (45s).
+        private static let aiChatTimeoutSeconds: TimeInterval = 20
 
         static let defaultSummaryTemplate = """
         请用不超过 {{maxSentences}} 句话，以 {{language}} 总结以下 AI 编程对话的核心内容。

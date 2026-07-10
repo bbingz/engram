@@ -326,18 +326,17 @@ struct CommandPaletteView: View {
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                let sessions = (try? await Task.detached {
-                    try db.search(query: q, limit: 10)
-                }.value)
-                guard !Task.isCancelled else { return }
-                // Double-fault: service threw AND local FTS threw (nil) or returned
-                // nothing. Surface a real failure state instead of "No results".
-                if sessions?.isEmpty ?? true {
-                    searchFailed = true
-                    sessionResults = []
-                } else {
+                // Wave 7E H11: match Search page double-fault semantics —
+                // service failure + successful empty local FTS is empty results,
+                // not infrastructure failure. Only when local FTS itself throws
+                // (nil) do we mark search unavailable.
+                do {
+                    let sessions = try await Task.detached {
+                        try db.search(query: q, limit: 10)
+                    }.value
+                    guard !Task.isCancelled else { return }
                     searchFailed = false
-                    sessionResults = (sessions ?? []).map { session in
+                    sessionResults = sessions.map { session in
                         SessionHit(
                             id: session.id,
                             title: session.displayTitle,
@@ -345,6 +344,10 @@ struct CommandPaletteView: View {
                             date: session.displayDate
                         )
                     }
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    searchFailed = true
+                    sessionResults = []
                 }
             }
             guard !Task.isCancelled else { return }

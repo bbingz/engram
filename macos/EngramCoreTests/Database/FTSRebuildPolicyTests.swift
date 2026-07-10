@@ -143,6 +143,50 @@ final class FTSRebuildPolicyTests: XCTestCase {
         }
     }
 
+    /// Wave 7A H01: permanent/N/A FTS jobs must not cause live keyword rows to
+    /// disappear when a rebuild finalizes. Missing shadow rows are copied from live.
+    func testFinalizeRebuildPreservesLiveRowsForPermanentFailures_repro() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("finalize-preserve-permanent.sqlite"))
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, cwd, file_path, size_bytes, sync_version, indexed_at, tier)
+                VALUES
+                  ('ok', 'codex', '2026-01-01T00:00:00.000Z', '/tmp/p', '/tmp/ok.jsonl', 42, 1, '2026-05-01T00:00:00Z', 'normal'),
+                  ('perm', 'codex', '2026-01-01T00:00:00.000Z', '/tmp/p', '/tmp/perm.jsonl', 43, 1, '2026-05-01T00:00:00Z', 'normal');
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES ('ok', 'ok live'), ('perm', 'permanent live keyword');
+                INSERT INTO session_index_jobs(id, session_id, job_kind, target_sync_version, status)
+                VALUES
+                  ('ok:1::fts', 'ok', 'fts', 1, 'completed'),
+                  ('perm:1::fts', 'perm', 'fts', 1, 'failed_permanent');
+                INSERT INTO metadata(key, value) VALUES ('fts_version', '2')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """)
+            try FTSRebuildPolicy.apply(db)
+            // Only the recoverable job is rebuilt into the shadow table.
+            try db.execute(sql: "INSERT INTO sessions_fts_rebuild(session_id, content) VALUES ('ok', 'ok rebuilt')")
+            try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE id = 'ok:1::fts'")
+            // Permanent failure remains non-recoverable and is never reopened.
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_index_jobs WHERE status = 'failed_permanent'") ?? 0,
+                1
+            )
+            XCTAssertTrue(try FTSRebuildPolicy.finalizeRebuildIfReady(db))
+            let rows = try Row.fetchAll(
+                db,
+                sql: "SELECT session_id, content FROM sessions_fts ORDER BY session_id, content"
+            )
+            let bySession = Dictionary(grouping: rows, by: { $0["session_id"] as String })
+            XCTAssertEqual(bySession["ok"]?.map { $0["content"] as String }, ["ok rebuilt"])
+            XCTAssertEqual(
+                bySession["perm"]?.map { $0["content"] as String },
+                ["permanent live keyword"],
+                "live keyword rows for permanent-failure sessions must survive rebuild swap"
+            )
+        }
+    }
+
     func testInterruptedRebuildApplyResumesExistingShadowTable() throws {
         let writer = try EngramDatabaseWriter(path: databasePath("resume-fts.sqlite"))
         try writer.migrate()

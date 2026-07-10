@@ -123,7 +123,7 @@ final class EngramServiceIPCTests: XCTestCase {
     func testServiceAIHTTPTimeoutStaysBelowIPCFrameDeadline() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceCommandHandler.swift")
         XCTAssertTrue(
-            source.contains("private static let aiChatTimeoutSeconds: TimeInterval = 25"),
+            source.contains("private static let aiChatTimeoutSeconds: TimeInterval = 20"),
             "AI summary/title requests must fail before the 30s IPC frame deadline so the service cannot write after the client times out"
         )
         XCTAssertTrue(source.contains("request.timeoutInterval = aiChatTimeoutSeconds"))
