@@ -128,13 +128,17 @@ final class ServiceTelemetryTests: XCTestCase {
 
         let collector = ServiceTelemetryCollector()
         let monitor = ServiceStatusMonitor()
-        // Empty HOME + all sources disabled keeps residual phases cheap after inject.
+        // Empty HOME + all shipped source IDs disabled keeps residual phases cheap
+        // after inject. Explicit list (EngramServiceCoreTests cannot use
+        // SessionAdapterFactory); keep complete enough that no default adapter runs.
         let emptyHome = paths.runtime.deletingLastPathComponent()
             .appendingPathComponent("empty-home", isDirectory: true)
         try FileManager.default.createDirectory(at: emptyHome, withIntermediateDirectories: true)
-        let disabledAll = SessionAdapterFactory.defaultAdapters()
-            .map(\.source.rawValue)
-            .joined(separator: ",")
+        let disabledAll = [
+            "codex", "claude-code", "copilot", "gemini-cli", "opencode", "iflow",
+            "qwen", "qoder", "kimi", "minimax", "lobsterai", "commandcode",
+            "cline", "cursor", "vscode", "antigravity", "windsurf",
+        ].joined(separator: ",")
 
         await EngramServiceRunner.runInitialScan(
             gate: gate,
