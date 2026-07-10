@@ -862,7 +862,7 @@ final class EngramServiceIPCTests: XCTestCase {
             source.range(of: "private static func runOnePeriodicIndexCycle(")
                 ?? source.range(of: "private static func runIndexingLoop(")
         )
-        let end = try XCTUnwrap(source.range(of: "private static func runInitialScan(", options: [], range: start.lowerBound..<source.endIndex))
+        let end = try XCTUnwrap(source.range(of: "static func runInitialScan(", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(body.contains("let disabled = readDisabledSources(environment: environment)"))
@@ -910,7 +910,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
     func testRunnerInitialScanPhasesAreFaultIsolatedAndRetryWriterBusy() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
-        let start = try XCTUnwrap(source.range(of: "private static func runInitialScan("))
+        let start = try XCTUnwrap(source.range(of: "static func runInitialScan("))
         let end = try XCTUnwrap(source.range(of: "@discardableResult", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
@@ -931,38 +931,6 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(source.contains("isWriterBusy(error)"))
         XCTAssertTrue(source.contains("retrying startup phase"))
         XCTAssertTrue(source.contains("startup phase failed"))
-    }
-
-    /// M02: success scan telemetry must only run when every required phase succeeded.
-    func testRunnerInitialScanRecordsSuccessTelemetryOnlyWhenNoPhaseFailed() throws {
-        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
-        let start = try XCTUnwrap(source.range(of: "private static func runInitialScan("))
-        let end = try XCTUnwrap(source.range(of: "private static func elapsedMs", options: [], range: start.lowerBound..<source.endIndex))
-        let body = String(source[start.lowerBound..<end.lowerBound])
-
-        XCTAssertTrue(
-            body.contains("if failedPhaseCount == 0"),
-            "success telemetry gate must key off failedPhaseCount"
-        )
-        XCTAssertTrue(
-            body.contains("recordScan("),
-            "successful initial scan still records a scan sample"
-        )
-        // recordScan must live inside the failedPhaseCount == 0 branch, not after it.
-        let successGate = try XCTUnwrap(body.range(of: "if failedPhaseCount == 0"))
-        let afterGate = body[successGate.lowerBound...]
-        XCTAssertTrue(afterGate.contains("recordScan("))
-        XCTAssertTrue(
-            afterGate.contains("recordScanSuccess()"),
-            "status success stays paired with success-only scan telemetry"
-        )
-
-        let phaseStart = try XCTUnwrap(source.range(of: "private static func runInitialScanPhase"))
-        let phaseBody = String(source[phaseStart.lowerBound...])
-        XCTAssertTrue(
-            phaseBody.contains("recordFailedScanPhase("),
-            "failed phases must emit distinct failure telemetry"
-        )
     }
 
     /// L01: fatal/ready/checkpoint stdout lines must use structured encoding, not string interpolation of errors.
@@ -988,7 +956,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
     func testRunnerBackfillsInstructionSignalsBeforeHeavyStartupIndex() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
-        let start = try XCTUnwrap(source.range(of: "private static func runInitialScan("))
+        let start = try XCTUnwrap(source.range(of: "static func runInitialScan("))
         let end = try XCTUnwrap(source.range(of: "private static func elapsedMs", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
@@ -1012,7 +980,7 @@ final class EngramServiceIPCTests: XCTestCase {
 
     func testRunnerInitialScanSchedulesInsightEmbeddingBackfillOutsideMainWritePhases() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
-        let start = try XCTUnwrap(source.range(of: "private static func runInitialScan("))
+        let start = try XCTUnwrap(source.range(of: "static func runInitialScan("))
         let end = try XCTUnwrap(source.range(of: "private static func elapsedMs", options: [], range: start.lowerBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
 

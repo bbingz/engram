@@ -128,7 +128,8 @@ public enum EngramServiceRunner {
                 statusMonitor: statusMonitor,
                 telemetry: telemetry,
                 environment: environment,
-                tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) }
+                tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) },
+                testHooks: InitialScanTestHooks()
             )
             // First product caller of observability retention. Restart-cadence
             // prune is adequate (the legacy metrics writer is dormant, so this
@@ -543,15 +544,32 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         adapters.filter { !disabledSources.contains($0.source.rawValue) }
     }
 
+    /// Test hooks for outer initial-scan orchestration (M02). Production uses defaults.
+    struct InitialScanTestHooks: Sendable {
+        /// When set, the required phase with this name fails before its operation runs.
+        var failPhaseNamed: String? = nil
+
+        init(failPhaseNamed: String? = nil) {
+            self.failPhaseNamed = failPhaseNamed
+        }
+    }
+
+    struct InitialScanInjectedPhaseFailure: Error, LocalizedError {
+        let phase: String
+        var errorDescription: String? { "injected failure for phase \(phase)" }
+    }
+
     /// V2 composition root: runs the startup scan once, draining the FTS
     /// backlog. Builds real conformers over the unit-tested static funcs and
     /// runs through the gate so writes serialize with command dispatch.
-    private static func runInitialScan(
+    /// Internal for M02 behavioral tests of success-scan gating after phase failure.
+    static func runInitialScan(
         gate: ServiceWriterGate,
         statusMonitor: ServiceStatusMonitor,
         telemetry: ServiceTelemetryCollector? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits]
+        tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits] = { [:] },
+        testHooks: InitialScanTestHooks = InitialScanTestHooks()
     ) async {
         let scanClock = ContinuousClock()
         let scanStarted = scanClock.now
@@ -572,7 +590,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         let usageParserBackfillCheck = await runInitialScanPhase(
             name: "usageParserBackfillCheck",
             statusMonitor: statusMonitor,
-            telemetry: telemetry
+            telemetry: telemetry,
+            testHooks: testHooks
         ) {
             try await gate.performWriteCommand(name: "usageParserBackfillCheck") { writer in
                 try writer.read { db in
@@ -595,7 +614,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         let instructionBackfillPhase = await runInitialScanPhase(
             name: "initialInstructionBackfill",
             statusMonitor: statusMonitor,
-            telemetry: telemetry
+            telemetry: telemetry,
+            testHooks: testHooks
         ) {
             try await gate.performWriteCommand(name: "initialInstructionBackfill") { writer in
                 try await writer.indexInstructionBackfillSessions(adapters: startupAdapters).indexed
@@ -608,7 +628,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         let implementationBackfillPhase = await runInitialScanPhase(
             name: "initialImplementationBeatBackfill",
             statusMonitor: statusMonitor,
-            telemetry: telemetry
+            telemetry: telemetry,
+            testHooks: testHooks
         ) {
             try await gate.performWriteCommand(name: "initialImplementationBeatBackfill") { writer in
                 try await writer.indexImplementationBeatBackfillSessions(adapters: startupAdapters).indexed
@@ -621,7 +642,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         let indexedPhase = await runInitialScanPhase(
             name: "initialScanIndex",
             statusMonitor: statusMonitor,
-            telemetry: telemetry
+            telemetry: telemetry,
+            testHooks: testHooks
         ) {
             try await gate.performWriteCommand(name: "initialScanIndex") { writer in
                 try await StartupBackfills.runStartupIndex(
@@ -636,7 +658,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         let backfillsPhase = await runInitialScanPhase(
             name: "initialScanBackfills",
             statusMonitor: statusMonitor,
-            telemetry: telemetry
+            telemetry: telemetry,
+            testHooks: testHooks
         ) {
             try await gate.performWriteCommand(name: "initialScanBackfills") { writer in
                 try await StartupBackfills.runStartupMaintenanceAndParents(
@@ -654,7 +677,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         let orphanPhase = await runInitialScanPhase(
             name: "initialScanOrphans",
             statusMonitor: statusMonitor,
-            telemetry: telemetry
+            telemetry: telemetry,
+            testHooks: testHooks
         ) {
             try await gate.performWriteCommand(name: "initialScanOrphans") { writer in
                 try await StartupBackfills.runStartupOrphanScan(
@@ -677,7 +701,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             let drainPhase = await runInitialScanPhase(
                 name: "initialFtsDrain",
                 statusMonitor: statusMonitor,
-                telemetry: telemetry
+                telemetry: telemetry,
+                testHooks: testHooks
             ) {
                 try await gate.performWriteCommand(name: "initialFtsDrain") { writer in
                     try await IndexJobRunner(writer: writer, adapters: enabledAdapters)
@@ -712,7 +737,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             let markPhase = await runInitialScanPhase(
                 name: "usageParserBackfillMark",
                 statusMonitor: statusMonitor,
-                telemetry: telemetry
+                telemetry: telemetry,
+                testHooks: testHooks
             ) {
                 try await gate.performWriteCommand(name: "usageParserBackfillMark") { writer in
                     try writer.write { db in
@@ -765,6 +791,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         name: String,
         statusMonitor: ServiceStatusMonitor,
         telemetry: ServiceTelemetryCollector? = nil,
+        testHooks: InitialScanTestHooks = InitialScanTestHooks(),
         maxWriterBusyRetries: Int = 3,
         operation: () async throws -> Value
     ) async -> InitialScanPhaseOutcome<Value> {
@@ -775,6 +802,9 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         let phaseWallStartedAt = Self.isoTimestamp()
         while !Task.isCancelled {
             do {
+                if testHooks.failPhaseNamed == name {
+                    throw InitialScanInjectedPhaseFailure(phase: name)
+                }
                 let value = try await operation()
                 return InitialScanPhaseOutcome(value: value, failed: false, cancelled: false)
             } catch is CancellationError {

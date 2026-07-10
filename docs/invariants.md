@@ -1,6 +1,6 @@
 # Invariants
 
-Invariants are properties that must survive every change; each entry names where the property is enforced and which test verifies it. PRs touching an invariant must keep these anchors current; `scripts/check-invariants-ledger.sh` only checks that backticked repo paths still exist, while humans remain responsible for checking the meaning.
+Invariants are properties that must survive every change; each entry names where the property is enforced and which test verifies it. PRs touching an invariant must keep these anchors current. `scripts/check-invariants-ledger.sh` validates backticked repo paths and runs allowlisted behavioral gates from `scripts/invariant-gates.json` (exact `["bash","scripts/<repo-owned>.sh"]` argv only — never markdown-to-shell). Humans remain responsible for checking semantic meaning beyond the executable gates.
 
 ## 1. Single-Writer Discipline
 

@@ -2139,16 +2139,14 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(warning?.contains("ranked by importance and recency"), true, "\(warning ?? "nil")")
     }
 
-    /// Disk-audit product consumer E2E: service `recordInsightAccess` write path
-    /// must raise access_count so shipped MCP `get_memory` lifecycle ranking
-    /// (accessBoost) prefers the accessed row — no duplicate counters, no
-    /// test-only ORDER BY.
+    /// Disk-audit product consumer E2E: service `recordInsightAccess` must
+    /// causally reverse shipped MCP `get_memory` lifecycle ranking.
     ///
-    /// Scenario intentionally uses an FTS-miss query so get_memory falls through
-    /// to recent lifecycle ranking (uniform relevance). Matching FTS would assign
-    /// 1.0/0.5 relevance by hit order and mask accessBoost; product weights stay
-    /// unchanged. `recordInsightAccess` also Set-dedupes IDs, so a single hot id
-    /// is the honest write (duplicates do not multi-increment).
+    /// - FTS-miss query → recent ranking with uniform relevance.
+    /// - Pre-seed mem-cold with access_count=1 so it ranks first before the write.
+    /// - Service write bumps mem-hot twice (Set-dedupes per call) so accessBoost
+    ///   overtakes cold; post-write order must flip. A no-op access write fails
+    ///   the post-assert because cold would remain first.
     func testGetMemoryRanksByServiceRecordedAccessCount_diskAuditConsumer() async throws {
         let dbPath = try temporaryFixtureCopy(
             "mcp-contract.sqlite",
@@ -2169,19 +2167,20 @@ final class EngramMCPExecutableTests: XCTestCase {
             }
             try db.execute(sql: "DELETE FROM insights")
             try db.execute(sql: "DELETE FROM insights_fts")
-            // Identical importance/recency; only service-written access_count differs.
-            let rows: [(id: String, content: String)] = [
-                ("mem-cold", "disk audit access ranking shared fact about single writer"),
-                ("mem-hot", "disk audit access ranking shared fact about single writer"),
+            // Identical importance/recency; cold starts with higher access so it
+            // wins pre-write ranking (uniform relevance path).
+            let rows: [(id: String, content: String, access: Int)] = [
+                ("mem-cold", "disk audit access ranking shared fact about single writer", 1),
+                ("mem-hot", "disk audit access ranking shared fact about single writer", 0),
             ]
             for row in rows {
                 try db.execute(
                     sql: """
                     INSERT INTO insights
                       (id, content, importance, created_at, insight_type, access_count)
-                    VALUES (?, ?, 5, '2026-06-26 00:00:00', 'semantic', 0)
+                    VALUES (?, ?, 5, '2026-06-26 00:00:00', 'semantic', ?)
                     """,
-                    arguments: [row.id, row.content]
+                    arguments: [row.id, row.content, row.access]
                 )
                 try db.execute(
                     sql: "INSERT INTO insights_fts (insight_id, content) VALUES (?, ?)",
@@ -2210,32 +2209,49 @@ final class EngramMCPExecutableTests: XCTestCase {
         let client = EngramServiceClient(
             transport: UnixSocketEngramServiceTransport(socketPath: socket.path)
         )
-        // Service write path — single id (handler Set-dedupes; duplicates mislead).
-        try await client.recordInsightAccess(ids: ["mem-hot"])
 
         let isolatedHome = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: isolatedHome) }
-        // FTS-miss probe: no token appears in insight content, so get_memory uses
-        // recent lifecycle ranking with uniform relevance; accessBoost decides.
-        let capture = try rpc(
+        let mcpEnv: [String: String] = [
+            "ENGRAM_MCP_DB_PATH": dbPath,
+            "ENGRAM_MCP_NOW": "2026-06-26T00:00:00.000Z",
+            "HOME": isolatedHome.path,
+            "ENGRAM_SETTINGS_PATH": isolatedHome.appendingPathComponent("missing-settings.json").path,
+        ]
+        // FTS-miss probe: recent lifecycle ranking with uniform relevance.
+        let missQuery = "zzzz-no-fts-hit-disk-audit-probe"
+        let getMemoryRPC = """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"\(missQuery)"}}}
             """
-            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"zzzz-no-fts-hit-disk-audit-probe"}}}
-            """,
-            environment: [
-                "ENGRAM_MCP_DB_PATH": dbPath,
-                "ENGRAM_MCP_NOW": "2026-06-26T00:00:00.000Z",
-                "HOME": isolatedHome.path,
-                "ENGRAM_SETTINGS_PATH": isolatedHome.appendingPathComponent("missing-settings.json").path,
-            ]
-        )
 
-        XCTAssertNil(capture.response.error)
-        let memories = try XCTUnwrap(
-            capture.ordered["result"]?["structuredContent"]?["memories"]?.arrayValue
+        let before = try rpc(getMemoryRPC, environment: mcpEnv)
+        XCTAssertNil(before.response.error)
+        let beforeIds = try XCTUnwrap(
+            before.ordered["result"]?["structuredContent"]?["memories"]?.arrayValue
+        ).compactMap { $0["id"]?.stringValue }
+        XCTAssertEqual(
+            beforeIds.first,
+            "mem-cold",
+            "pre-write baseline must rank seeded cold access ahead of hot: \(beforeIds)"
         )
-        let ids = memories.compactMap { $0["id"]?.stringValue }
-        XCTAssertEqual(ids.first, "mem-hot", "get_memory recent ranking must prefer service-accessed insight: \(ids)")
-        XCTAssertTrue(ids.contains("mem-cold"), "\(ids)")
+        XCTAssertNotEqual(beforeIds.first, "mem-hot")
+
+        // Service write path — two separate calls (Set-dedupes within one call).
+        // hot access_count: 0→1→2 overtakes cold's seeded 1.
+        try await client.recordInsightAccess(ids: ["mem-hot"])
+        try await client.recordInsightAccess(ids: ["mem-hot"])
+
+        let after = try rpc(getMemoryRPC, environment: mcpEnv)
+        XCTAssertNil(after.response.error)
+        let afterIds = try XCTUnwrap(
+            after.ordered["result"]?["structuredContent"]?["memories"]?.arrayValue
+        ).compactMap { $0["id"]?.stringValue }
+        XCTAssertEqual(
+            afterIds.first,
+            "mem-hot",
+            "post service-access get_memory must reverse ranking to prefer hot: \(afterIds)"
+        )
+        XCTAssertTrue(afterIds.contains("mem-cold"), "\(afterIds)")
     }
 
     func testSearchHybridNoEmbeddingMatchesGolden() throws {

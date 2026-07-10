@@ -110,50 +110,58 @@ final class ServiceTelemetryTests: XCTestCase {
         XCTAssertTrue(snapshot.spans.contains(where: { $0.command == "scanPhase.initialScanOrphans" && $0.ok == false }))
     }
 
-    /// M02 behavioral: force a required phase operation to fail through the
-    /// real `runInitialScanPhase` path (not a direct collector call or source scan).
-    func testRunInitialScanPhaseOperationFailureEmitsTelemetryWithoutSuccessSample() async throws {
+    /// M02 behavioral: outer `runInitialScan` orchestration with a required
+    /// phase failure must not record a success scan sample. Would fail if
+    /// finalize always called `recordScan` regardless of `failedPhaseCount`.
+    func testRunInitialScanOuterOrchestrationPhaseFailureOmitsSuccessSample() async throws {
+        let paths = try makeServicePaths()
+        // Touch the DB file so EngramDatabaseWriter can open it.
+        FileManager.default.createFile(atPath: paths.database.path, contents: nil)
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime
+        )
+        _ = try await gate.performWriteCommand(name: "migrate") { writer in
+            try writer.migrate()
+            try writer.verifySchemaPresent()
+        }
+
         let collector = ServiceTelemetryCollector()
         let monitor = ServiceStatusMonitor()
-        let wallBefore = Date().addingTimeInterval(-2)
+        // Empty HOME + all sources disabled keeps residual phases cheap after inject.
+        let emptyHome = paths.runtime.deletingLastPathComponent()
+            .appendingPathComponent("empty-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: emptyHome, withIntermediateDirectories: true)
+        let disabledAll = SessionAdapterFactory.defaultAdapters()
+            .map(\.source.rawValue)
+            .joined(separator: ",")
 
-        struct PhaseBoom: Error, LocalizedError {
-            var errorDescription: String? { "injected phase failure" }
-        }
-
-        let outcome = await EngramServiceRunner.runInitialScanPhase(
-            name: "initialScanIndex",
+        await EngramServiceRunner.runInitialScan(
+            gate: gate,
             statusMonitor: monitor,
             telemetry: collector,
-            maxWriterBusyRetries: 0
-        ) {
-            throw PhaseBoom()
-        }
-
-        XCTAssertTrue(outcome.failed)
-        XCTAssertFalse(outcome.cancelled)
-        XCTAssertNil(outcome.value)
+            environment: [
+                "HOME": emptyHome.path,
+                "ENGRAM_DISABLED_SOURCES": disabledAll,
+            ],
+            tokenLimitsProvider: { [:] },
+            testHooks: .init(failPhaseNamed: "usageParserBackfillCheck")
+        )
 
         let snapshot = await collector.snapshot()
-        XCTAssertEqual(snapshot.scanCount, 0, "failed phase must not write a success scan sample")
+        XCTAssertEqual(
+            snapshot.scanCount,
+            0,
+            "outer runInitialScan must not record success when a required phase failed"
+        )
         XCTAssertNil(snapshot.lastScanDurationMs)
         XCTAssertNil(snapshot.lastScanAt)
-
-        let failed = try XCTUnwrap(snapshot.spans.first(where: { $0.command == "scanPhase.initialScanIndex" }))
+        let failed = try XCTUnwrap(
+            snapshot.spans.first(where: { $0.command == "scanPhase.usageParserBackfillCheck" }),
+            "injected required phase must emit distinct failure telemetry"
+        )
         XCTAssertEqual(failed.ok, false)
         XCTAssertEqual(failed.errorName, "ScanPhaseFailed")
-        XCTAssertGreaterThan(failed.durationMs, 0)
-
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var started = formatter.date(from: failed.startedAt)
-        if started == nil {
-            formatter.formatOptions = [.withInternetDateTime]
-            started = formatter.date(from: failed.startedAt)
-        }
-        let startedAtDate = try XCTUnwrap(started, "startedAt must be parseable ISO-8601: \(failed.startedAt)")
-        XCTAssertGreaterThanOrEqual(startedAtDate, wallBefore.addingTimeInterval(-1))
-        XCTAssertLessThanOrEqual(startedAtDate.timeIntervalSinceNow, 1.0)
     }
 
     /// L01: stdout event encoding must go through JSONEncoder so quotes/newlines
