@@ -449,8 +449,8 @@ public enum ProjectMoveOrchestrator {
         var skippedDirs: [SkippedDirEntry] = []
         var moveStrategy: MoveResult.Strategy = .rename
         var physicalMoveApplied = false
-        /// Destination-parent dirs created by this run (deepest first).
-        var createdDestinationParents: [String] = []
+        /// Dirfd-pinned archive parent provision (mkdirat-owned segments only).
+        var destinationParentToken: DestinationParentToken?
         var geminiProjectsPlan: GeminiProjectsJsonUpdatePlan?
         var geminiProjectsApplied = false
         var sqlitePatches: [OpenCodeSQLitePatchResult] = []
@@ -575,9 +575,9 @@ public enum ProjectMoveOrchestrator {
             // Step 0.9: archive destinations live under `_archive/<category>/…`
             // which may not exist yet. Provision only when `archived` so plain
             // renames keep their historical "parent must already exist" behavior.
-            // mkdir-only ownership tracking: only segments this call created.
+            // Dirfd-pinned token: only mkdirat==0 segments; cleanup via unlinkat.
             if options.archived {
-                createdDestinationParents = try DestinationParentProvision.ensure(
+                destinationParentToken = try DestinationParentProvision.ensure(
                     destinationPath: dst
                 )
             }
@@ -752,6 +752,10 @@ public enum ProjectMoveOrchestrator {
                 homeDirectory: options.homeDirectory
             )
 
+            // Success: keep created parents; only release dirfd pins.
+            destinationParentToken?.release()
+            destinationParentToken = nil
+
             return PipelineResult(
                 migrationId: migrationId,
                 state: .committed,
@@ -793,9 +797,9 @@ public enum ProjectMoveOrchestrator {
                     physicalMoveApplied: physicalMoveApplied
                 )
             }
-            // Always drop empty destination parents we created on this attempt
-            // (including after a successful physical-move reverse). Never recurse.
-            DestinationParentProvision.removeEmptyCreated(createdDestinationParents)
+            // Drop empty destination parents we created (dirfd-pinned unlinkat).
+            destinationParentToken?.cleanup()
+            destinationParentToken = nil
 
             // Contract 3: cancelled + clean compensation → clean cancelled error.
             // Cancelled + residual compensation failures → partial/unsafe error.

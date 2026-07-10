@@ -608,8 +608,14 @@ final class ProjectsMigrationTests: XCTestCase {
             "orchestrator must provision destination parents"
         )
         XCTAssertTrue(
-            orchestrator.contains("DestinationParentProvision.removeEmptyCreated"),
-            "orchestrator must tear down empty parents it created on failure/cancel"
+            orchestrator.contains("destinationParentToken?.cleanup()")
+                || orchestrator.contains("destinationParentToken?.cleanup("),
+            "orchestrator must cleanup token on failure/cancel"
+        )
+        XCTAssertTrue(
+            orchestrator.contains("destinationParentToken?.release()")
+                || orchestrator.contains("destinationParentToken?.release("),
+            "orchestrator must release token on success without deleting parents"
         )
         XCTAssertTrue(
             orchestrator.contains("if options.archived"),
@@ -620,9 +626,12 @@ final class ProjectsMigrationTests: XCTestCase {
         guard let mark = fsOps.range(of: "public enum DestinationParentProvision") else {
             return XCTFail("DestinationParentProvision missing")
         }
-        let provision = String(fsOps[mark.lowerBound...].prefix(3500))
-        XCTAssertTrue(provision.contains("Darwin.mkdir"))
-        XCTAssertTrue(provision.contains("Darwin.rmdir"))
+        let start = fsOps.index(mark.lowerBound, offsetBy: -800, limitedBy: fsOps.startIndex)
+            ?? fsOps.startIndex
+        let provision = String(fsOps[start...].prefix(6000))
+        XCTAssertTrue(provision.contains("mkdirat"))
+        XCTAssertTrue(provision.contains("unlinkat"))
+        XCTAssertTrue(provision.contains("openat"))
         XCTAssertFalse(
             provision.contains(".removeItem(at")
                 || provision.range(of: #"\.removeItem\s*\(\s*at(Path)?:"#, options: .regularExpression) != nil,

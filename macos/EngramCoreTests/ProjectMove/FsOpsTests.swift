@@ -26,27 +26,29 @@ final class FsOpsTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    // MARK: - Destination parent provision (POSIX mkdir/rmdir)
+    // MARK: - Destination parent provision (dirfd-pinned mkdirat/unlinkat)
 
     func testDestinationParentProvisionCreatesOnlyMissingAndRemovesEmpty_repro() throws {
         let leaf = tmpRoot.appendingPathComponent("a/b/c/proj").path
         let parent = (leaf as NSString).deletingLastPathComponent
         XCTAssertFalse(FileManager.default.fileExists(atPath: parent))
 
-        let created = try DestinationParentProvision.ensure(destinationPath: leaf)
-        XCTAssertFalse(created.isEmpty)
+        let token = try DestinationParentProvision.ensure(destinationPath: leaf)
+        XCTAssertGreaterThan(token.ownedCountForTests, 0)
         XCTAssertTrue(FileManager.default.fileExists(atPath: parent))
-        // Deepest first for teardown.
-        XCTAssertEqual(created.first, parent)
 
-        // Second ensure: EEXIST paths are not owned (empty created list).
+        // Second ensure: existing segments not owned.
         let again = try DestinationParentProvision.ensure(destinationPath: leaf)
-        XCTAssertTrue(again.isEmpty, "EEXIST must not be recorded as created-by-us")
+        XCTAssertEqual(again.ownedCountForTests, 0, "EEXIST/existing must not be owned")
+        again.release()
+        XCTAssertTrue(again.isClosedForTests)
 
-        DestinationParentProvision.removeEmptyCreated(created)
+        token.cleanup()
+        XCTAssertTrue(token.isClosedForTests)
+        XCTAssertEqual(token.ownedCountForTests, 0)
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: parent),
-            "rmdir must remove empty shells we created"
+            "unlinkat must remove empty shells we created"
         )
     }
 
@@ -59,21 +61,20 @@ final class FsOpsTests: XCTestCase {
             encoding: .utf8
         )
         let nested = preexisting.appendingPathComponent("new-child/proj").path
-        let created = try DestinationParentProvision.ensure(destinationPath: nested)
-        XCTAssertFalse(created.contains(preexisting.path))
-        XCTAssertTrue(created.contains(preexisting.appendingPathComponent("new-child").path))
+        let token = try DestinationParentProvision.ensure(destinationPath: nested)
+        XCTAssertEqual(token.ownedCountForTests, 1, "only new-child is owned")
 
-        // Concurrent content before teardown: rmdir must fail safely (ENOTEMPTY).
         let child = preexisting.appendingPathComponent("new-child")
         try "other".write(
             to: child.appendingPathComponent("other.txt"),
             atomically: true,
             encoding: .utf8
         )
-        DestinationParentProvision.removeEmptyCreated(created)
+        token.cleanup()
+        XCTAssertTrue(token.isClosedForTests)
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: child.path),
-            "rmdir must not remove non-empty dir (ENOTEMPTY)"
+            "unlinkat must not remove non-empty dir (ENOTEMPTY)"
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: preexisting.path))
         XCTAssertTrue(
@@ -84,23 +85,18 @@ final class FsOpsTests: XCTestCase {
     }
 
     func testDestinationParentProvisionEEXISTDoesNotClaimOwnership_repro() throws {
-        // Simulate "another process created the empty dir first": pre-create,
-        // then ensure must not list it as created-by-us, and teardown of that
-        // empty list must not remove the foreign empty directory.
         let foreignParent = tmpRoot.appendingPathComponent("foreign-empty", isDirectory: true)
         try FileManager.default.createDirectory(at: foreignParent, withIntermediateDirectories: true)
         let leaf = foreignParent.appendingPathComponent("proj").path
 
-        let created = try DestinationParentProvision.ensure(destinationPath: leaf)
-        XCTAssertFalse(
-            created.contains(foreignParent.path),
-            "EEXIST empty dir must not be attributed to this call"
-        )
-        DestinationParentProvision.removeEmptyCreated(created)
+        let token = try DestinationParentProvision.ensure(destinationPath: leaf)
+        XCTAssertEqual(token.ownedCountForTests, 0, "pre-existing parent not owned")
+        token.cleanup()
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: foreignParent.path),
             "foreign empty parent must survive when we never owned it"
         )
+        XCTAssertTrue(token.isClosedForTests)
     }
 
     func testDestinationParentProvisionRejectsFileAtSegment_repro() throws {
@@ -114,8 +110,62 @@ final class FsOpsTests: XCTestCase {
         }
     }
 
-    func testDestinationParentProvisionSourceUsesPosixAtomicSemantics_repro() throws {
-        // Source-level contract: mkdir/rmdir only — never FileManager races.
+    /// Ancestor rename + symlink rebind must not redirect cleanup into the replacement tree.
+    func testDestinationParentProvisionCleanupSurvivesAncestorRebind_repro() throws {
+        let originalRoot = tmpRoot.appendingPathComponent("orig-root", isDirectory: true)
+        let leaf = originalRoot.appendingPathComponent("a/b/proj").path
+        let ownedDeep = originalRoot.appendingPathComponent("a/b").path
+
+        let token = try DestinationParentProvision.ensure(destinationPath: leaf)
+        XCTAssertGreaterThan(token.ownedCountForTests, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ownedDeep))
+
+        // Rebind: rename original tree, put a symlink at the old path to an evil tree.
+        let movedRoot = tmpRoot.appendingPathComponent("moved-root", isDirectory: true)
+        try FileManager.default.moveItem(at: originalRoot, to: movedRoot)
+        let evilRoot = tmpRoot.appendingPathComponent("evil-root", isDirectory: true)
+        let evilDeep = evilRoot.appendingPathComponent("a/b", isDirectory: true)
+        try FileManager.default.createDirectory(at: evilDeep, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: originalRoot.path,
+            withDestinationPath: evilRoot.path
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: evilDeep.path))
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: movedRoot.appendingPathComponent("a/b").path)
+        )
+
+        token.cleanup()
+        XCTAssertTrue(token.isClosedForTests)
+        XCTAssertEqual(token.ownedCountForTests, 0)
+
+        // Pinned unlinkat removes empties in the original (moved) tree only.
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: movedRoot.appendingPathComponent("a/b").path),
+            "owned empty dir in original tree must be removed via pinned FD"
+        )
+        // Replacement tree must be untouched.
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: evilDeep.path),
+            "replacement tree must not be deleted after ancestor rebind"
+        )
+    }
+
+    func testDestinationParentProvisionReleaseClosesWithoutDelete_repro() throws {
+        let leaf = tmpRoot.appendingPathComponent("keep-on-success/x/proj").path
+        let parent = (leaf as NSString).deletingLastPathComponent
+        let token = try DestinationParentProvision.ensure(destinationPath: leaf)
+        XCTAssertGreaterThan(token.ownedCountForTests, 0)
+        token.release()
+        XCTAssertTrue(token.isClosedForTests)
+        XCTAssertEqual(token.ownedCountForTests, 0)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: parent),
+            "release keeps created parents"
+        )
+    }
+
+    func testDestinationParentProvisionSourceUsesDirfdSemantics_repro() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // ProjectMove/
             .deletingLastPathComponent() // EngramCoreTests/
@@ -125,25 +175,28 @@ final class FsOpsTests: XCTestCase {
         guard let mark = source.range(of: "public enum DestinationParentProvision") else {
             return XCTFail("DestinationParentProvision not found")
         }
-        let body = String(source[mark.lowerBound...])
-        // Bound roughly to next top-level after the enum (best-effort).
-        let segment = String(body.prefix(3500))
-        XCTAssertTrue(segment.contains("Darwin.mkdir"), "must create with mkdir")
-        XCTAssertTrue(segment.contains("Darwin.rmdir"), "must tear down with rmdir")
-        XCTAssertTrue(segment.contains("EEXIST"), "must handle EEXIST without ownership")
+        // Include DestinationParentToken + provision (~6k).
+        let start = source.index(mark.lowerBound, offsetBy: -800, limitedBy: source.startIndex)
+            ?? source.startIndex
+        let segment = String(source[start...].prefix(6000))
+        XCTAssertTrue(segment.contains("mkdirat"), "must create with mkdirat")
+        XCTAssertTrue(segment.contains("unlinkat"), "must tear down with unlinkat")
+        XCTAssertTrue(segment.contains("openat"), "must walk with openat")
+        XCTAssertTrue(segment.contains("F_DUPFD_CLOEXEC") || segment.contains("fcntl"),
+                      "must pin parent FD")
         XCTAssertFalse(
             segment.contains("FileManager.default.createDirectory"),
             "must not use FileManager createDirectory"
         )
-        // Real Swift call sites only — not prose like "FileManager.removeItem (which…)".
         XCTAssertFalse(
             segment.contains(".removeItem(at")
                 || segment.range(of: #"\.removeItem\s*\(\s*at(Path)?:"#, options: .regularExpression) != nil,
             "must not call recursive removeItem"
         )
+        // Path-based cleanup is forbidden (TOCTOU under ancestor rebind).
         XCTAssertFalse(
-            segment.contains("contentsOfDirectory"),
-            "must not TOCTOU empty-check before delete"
+            segment.range(of: #"Darwin\.rmdir\s*\("#, options: .regularExpression) != nil,
+            "must not path-based rmdir for cleanup"
         )
     }
 

@@ -218,109 +218,253 @@ public enum SafeMoveDir {
     }
 }
 
-// MARK: - Destination parent provision (compensatable)
+// MARK: - Destination parent provision (dirfd-pinned, compensatable)
 
-/// Creates missing destination-parent directories using POSIX `mkdir`/`rmdir`
-/// so concurrent creators cannot be mis-attributed or recursively deleted.
+/// macOS/Darwin `AT_REMOVEDIR` for `unlinkat` (empty-directory only).
+/// Defined explicitly so Swift does not need a platform module import dance.
+private let engramATRemovedir: Int32 = 0x0080
+
+/// Pinned ownership token for destination-parent directories created by
+/// `DestinationParentProvision.ensure`.
 ///
-/// - **Create (shallow→deep):** `mkdir(path, 0o755)`. Only `return 0` is
-///   recorded as "created by this call". `EEXIST` is not recorded (and the
-///   path must already be a directory). Other errno values throw.
-/// - **Teardown (deepest→shallow):** `rmdir` only — fails safely on
-///   `ENOTEMPTY` / concurrent writers. Never `FileManager.removeItem`
-///   (which is recursive and races with concurrent writes).
+/// Owned entries store a **dup'd parent dirfd + basename**, never a re-parsed
+/// path. Cleanup uses `unlinkat(parentFD, name, AT_REMOVEDIR)` so ancestor
+/// rename/symlink rebinding cannot redirect deletion into another tree.
+public final class DestinationParentToken: @unchecked Sendable {
+    fileprivate struct OwnedEntry {
+        /// Dup'd O_DIRECTORY fd of the parent that held `name` at creation.
+        let parentFD: Int32
+        /// Single path component (no slashes).
+        let name: String
+    }
+
+    private let lock = NSLock()
+    /// Shallow→deep creation order; cleanup walks reversed (deepest first).
+    private var owned: [OwnedEntry] = []
+    private var closed = false
+
+    fileprivate init(owned: [OwnedEntry]) {
+        self.owned = owned
+    }
+
+    /// Test seam: number of mkdirat-owned segments still pinned.
+    public var ownedCountForTests: Int {
+        lock.lock(); defer { lock.unlock() }
+        return owned.count
+    }
+
+    /// Test seam: whether all parent FDs have been closed.
+    public var isClosedForTests: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return closed
+    }
+
+    /// Failure/cancel path: remove empty owned dirs deepest-first, then close FDs.
+    public func cleanup() {
+        lock.lock()
+        let entries = owned
+        owned = []
+        let alreadyClosed = closed
+        closed = true
+        lock.unlock()
+        // Deepest first.
+        for entry in entries.reversed() {
+            _ = entry.name.withCString { cName in
+                unlinkat(entry.parentFD, cName, engramATRemovedir)
+            }
+            // ENOTEMPTY / races fail safely — never escalate to removeItem.
+            if !alreadyClosed {
+                close(entry.parentFD)
+            }
+        }
+    }
+
+    /// Success path: close pinned FDs without deleting directories.
+    public func release() {
+        lock.lock()
+        let entries = owned
+        owned = []
+        let alreadyClosed = closed
+        closed = true
+        lock.unlock()
+        guard !alreadyClosed else { return }
+        for entry in entries {
+            close(entry.parentFD)
+        }
+    }
+
+    deinit {
+        // Leak-safety only: close FDs; do not delete (token may outlive success).
+        lock.lock()
+        let entries = owned
+        owned = []
+        let alreadyClosed = closed
+        closed = true
+        lock.unlock()
+        guard !alreadyClosed else { return }
+        for entry in entries {
+            close(entry.parentFD)
+        }
+    }
+}
+
+/// Creates missing destination-parent directories with dirfd-pinned ownership.
+///
+/// - Walk is absolute, symlink-following for *existing* segments (`openat`
+///   without `O_NOFOLLOW`) so macOS `/var` → `/private/var` works.
+/// - **Ownership** is recorded only when `mkdirat` returns 0, as
+///   `(dup(parentFD), basename)` — never a path string.
+/// - **Cleanup** uses `unlinkat(AT_REMOVEDIR)` on the pinned parent FD only.
 public enum DestinationParentProvision {
     public enum Error: Swift.Error, Equatable, LocalizedError {
         case mkdirFailed(path: String, errno: Int32)
         case existsButNotDirectory(path: String)
+        case openFailed(path: String, errno: Int32)
 
         public var errorDescription: String? {
             switch self {
             case .mkdirFailed(let path, let code):
-                return "mkdir \(path) failed: \(String(cString: strerror(code))) (\(code))"
+                return "mkdirat \(path) failed: \(String(cString: strerror(code))) (\(code))"
             case .existsButNotDirectory(let path):
                 return "path exists but is not a directory: \(path)"
+            case .openFailed(let path, let code):
+                return "openat \(path) failed: \(String(cString: strerror(code))) (\(code))"
             }
         }
     }
 
+    private static let openDirFlags: Int32 = O_RDONLY | O_DIRECTORY | O_CLOEXEC
+
     /// Ensure the parent directory of `destinationPath` exists.
-    /// - Returns: newly created path components, deepest-first (teardown order).
+    /// - Returns: a token owning only segments this call created via mkdirat.
     @discardableResult
-    public static func ensure(destinationPath: String) throws -> [String] {
+    public static func ensure(destinationPath: String) throws -> DestinationParentToken {
         let parent = (destinationPath as NSString).deletingLastPathComponent
-        guard !parent.isEmpty, parent != "/", parent != "." else { return [] }
+        guard !parent.isEmpty, parent != "/", parent != "." else {
+            return DestinationParentToken(owned: [])
+        }
         return try ensureDirectory(atPath: parent)
     }
 
-    /// Ensure `path` exists as a directory via per-segment `mkdir`.
-    /// Returns only segments this call created (deepest first).
-    public static func ensureDirectory(atPath path: String) throws -> [String] {
-        let standardized = (path as NSString).standardizingPath
-        guard !standardized.isEmpty, standardized != "/", standardized != "." else {
-            return []
+    /// Ensure `path` exists as a directory via per-segment openat/mkdirat.
+    public static func ensureDirectory(atPath path: String) throws -> DestinationParentToken {
+        let absolute = absolutePath(path)
+        guard !absolute.isEmpty, absolute != "/", absolute != "." else {
+            return DestinationParentToken(owned: [])
         }
 
-        // Build shallow→deep chain of absolute path prefixes.
-        var chain: [String] = []
-        var cursor = standardized
-        while !cursor.isEmpty, cursor != "/", cursor != "." {
-            chain.append(cursor)
-            let next = (cursor as NSString).deletingLastPathComponent
-            if next == cursor { break }
-            cursor = next
+        let components = pathComponents(absolute)
+        guard !components.isEmpty else {
+            return DestinationParentToken(owned: [])
         }
-        chain.reverse() // root-most → leaf
 
-        var createdShallowToDeep: [String] = []
-        for candidate in chain {
-            let rc = candidate.withCString { cPath in
-                Darwin.mkdir(cPath, 0o755)
+        // Start at filesystem root; openat follows symlinks on existing segments.
+        var parentFD = open("/", openDirFlags)
+        guard parentFD >= 0 else {
+            throw Error.openFailed(path: "/", errno: errno)
+        }
+
+        var owned: [DestinationParentToken.OwnedEntry] = []
+        var logical = ""
+        var transferred = false
+        defer {
+            if !transferred {
+                if parentFD >= 0 {
+                    close(parentFD)
+                    parentFD = -1
+                }
+                if !owned.isEmpty {
+                    DestinationParentToken(owned: owned).cleanup()
+                    owned = []
+                }
             }
-            if rc == 0 {
-                // Atomically ours — only mkdir success is recorded.
-                createdShallowToDeep.append(candidate)
+        }
+
+        for name in components {
+            logical += "/" + name
+            // Try enter existing directory (follows symlink parents like /var).
+            let existing = name.withCString { cName in
+                openat(parentFD, cName, openDirFlags)
+            }
+            if existing >= 0 {
+                close(parentFD)
+                parentFD = existing
                 continue
             }
-            let code = errno
-            if code == EEXIST {
-                // Concurrent/pre-existing: never claim ownership; must be a dir.
-                try requireDirectory(atPath: candidate)
+            let openErr = errno
+            if openErr != ENOENT {
+                if openErr == ENOTDIR {
+                    throw Error.existsButNotDirectory(path: logical)
+                }
+                throw Error.openFailed(path: logical, errno: openErr)
+            }
+
+            // Missing: create under pinned parent FD.
+            let mk = name.withCString { cName in
+                mkdirat(parentFD, cName, 0o755)
+            }
+            if mk == 0 {
+                // Only mkdirat success claims ownership — pin parent FD + basename.
+                let pin = fcntl(parentFD, F_DUPFD_CLOEXEC, 0)
+                if pin < 0 {
+                    let code = errno
+                    _ = name.withCString { cName in
+                        unlinkat(parentFD, cName, engramATRemovedir)
+                    }
+                    throw Error.openFailed(path: logical, errno: code)
+                }
+                owned.append(.init(parentFD: pin, name: name))
+                let child = name.withCString { cName in
+                    openat(parentFD, cName, openDirFlags)
+                }
+                if child < 0 {
+                    throw Error.openFailed(path: logical, errno: errno)
+                }
+                close(parentFD)
+                parentFD = child
                 continue
             }
-            // Roll back segments we created on this attempt before propagating.
-            removeEmptyCreated(createdShallowToDeep.reversed())
-            throw Error.mkdirFailed(path: candidate, errno: code)
-        }
-        // Teardown order is deepest-first.
-        return createdShallowToDeep.reversed()
-    }
 
-    /// Best-effort: `rmdir` each path deepest-first. Empty-dir only;
-    /// `ENOTEMPTY` / races fail safely without recursive delete.
-    public static func removeEmptyCreated(_ created: [String]) {
-        for path in created {
-            _ = path.withCString { cPath in
-                Darwin.rmdir(cPath)
+            let mkErr = errno
+            if mkErr == EEXIST {
+                // Concurrent creator — never claim ownership; enter dir.
+                let raced = name.withCString { cName in
+                    openat(parentFD, cName, openDirFlags)
+                }
+                if raced < 0 {
+                    let code = errno
+                    if code == ENOTDIR {
+                        throw Error.existsButNotDirectory(path: logical)
+                    }
+                    throw Error.openFailed(path: logical, errno: code)
+                }
+                close(parentFD)
+                parentFD = raced
+                continue
             }
-            // Ignore ENOTEMPTY, ENOENT, EEXIST, ENOTDIR, etc. — never escalate
-            // to FileManager.removeItem (recursive).
+
+            throw Error.mkdirFailed(path: logical, errno: mkErr)
         }
+
+        // Walk complete: close the leaf walk FD; ownership pins remain in token.
+        close(parentFD)
+        parentFD = -1
+        let token = DestinationParentToken(owned: owned)
+        owned = []
+        transferred = true
+        return token
     }
 
-    private static func requireDirectory(atPath path: String) throws {
-        // Follow symlinks (macOS `/var` → `/private/var` is a legitimate dir).
-        // Do not use lstat here — it would reject symlink path components and
-        // break all temp paths under /var. Ownership is still only from mkdir==0.
-        // FileManager.fileExists(isDirectory:) follows symlinks safely and avoids
-        // Swift's Darwin.stat struct-shadowing compile issue.
-        var isDir: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
-        guard exists else {
-            throw Error.mkdirFailed(path: path, errno: ENOENT)
+    private static func absolutePath(_ path: String) -> String {
+        if path.hasPrefix("/") {
+            return (path as NSString).standardizingPath
         }
-        guard isDir.boolValue else {
-            throw Error.existsButNotDirectory(path: path)
-        }
+        let cwd = FileManager.default.currentDirectoryPath
+        return ((cwd as NSString).appendingPathComponent(path) as NSString).standardizingPath
+    }
+
+    /// Absolute path components without the root slash (e.g. `/a/b` → `["a","b"]`).
+    private static func pathComponents(_ absolute: String) -> [String] {
+        absolute.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
     }
 }
