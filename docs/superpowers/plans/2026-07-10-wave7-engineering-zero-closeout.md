@@ -354,3 +354,80 @@ Runtime smoke: verified
 | 6 | final release | Codex | CI + live runtime | Same-SHA green evidence |
 
 Do not stack all changes into one branch. Merge each wave into `main` before creating the next branch so later work starts from reviewed state.
+
+## Parallel Execution DAG
+
+Use two implementation agents with cross-review. Each round uses isolated worktrees and disjoint production/test ownership. Do not start a later round until both branches in the current round are reviewed and merged.
+
+### Round 0: Contract freeze (Codex, serial, 2-4 hours)
+
+Before parallel edits, lock these names and payloads in the residual ledger:
+
+- semantic incompatibility code: `embeddingModelMismatch`;
+- semantic availability reasons: provider unavailable, corpus missing, model mismatch, breaker open;
+- transcript request: explicit raw opt-in, redacted by default;
+- transcript response: whether redaction was applied;
+- export UI states: `idle`, `inFlight`, `succeeded`, `failed`;
+- invariant registry schema: invariant ID to allowlisted gate ID, never markdown to shell.
+
+This round prevents both agents from inventing incompatible DTOs while working in parallel.
+
+### Round 1: Semantic versus secret storage (parallel)
+
+| Lane | Primary | Scope | Exclusive production ownership | Exclusive test ownership |
+|------|---------|-------|--------------------------------|--------------------------|
+| 1A | Grok | H07, M06-M09 | `EngramServiceReadProvider.swift`, `MCPDatabase.swift`, `SessionVectorSearchAvailability.swift`, `SessionSemanticSearchPolicy.swift`, `EmbeddingCircuitBreaker.swift` | semantic/model/breaker tests |
+| 1B | Codex | M13-M15 | `EmbeddingSettings.swift`, new `KeychainSecretStore.swift`, `SettingsIO.swift`, `DiagnosticBundleComposer.swift`, settings-write helper extracted from `EngramServiceCommandHandler.swift` | Keychain, diagnostic, permission tests |
+
+Interface rule: lane 1B preserves the public `EmbeddingSettings.load(...) -> EmbeddingConfig?` signature. Lane 1A consumes it but does not edit `EmbeddingSettings.swift`.
+
+Review/merge order:
+
+1. Grok reviews 1B for migration-loss and Keychain fallback errors.
+2. Codex reviews 1A for fail-open model mixing and hidden recency caps.
+3. Merge 1B first, rebase 1A, rerun focused semantic tests, then merge 1A.
+
+### Round 2: MCP/transcript contracts versus app UX (parallel)
+
+| Lane | Primary | Scope | Exclusive production ownership | Exclusive test ownership |
+|------|---------|-------|--------------------------------|--------------------------|
+| 2A | Grok | M11, M12, M16, L06, L07 | `MCPToolRegistry.swift`, `MCPToolRegistry+ProjectResults.swift`, `MCPTranscriptTools.swift`, `MCPTranscriptReader.swift`, `TranscriptExportService.swift`, `docs/mcp-tools.md` | MCP goldens and export contract tests |
+| 2B | Codex | H12, M19 | `CommandPaletteView.swift`, `SessionActionHandlers.swift`, `SessionsPageView.swift`, `ExpandableSessionCard.swift`, `Session.swift` | command-palette, session-model, favorite tests |
+
+Review/merge order:
+
+1. Codex reviews 2A for schema compatibility and redaction bypasses.
+2. Grok reviews 2B for state loss, duplicate export, and incorrect favorite labels.
+3. Merge 2A, then 2B. These lanes have no intended production-file overlap.
+
+### Round 3: Long operations versus service/gates (parallel)
+
+| Lane | Primary | Scope | Exclusive production ownership | Exclusive test ownership |
+|------|---------|-------|--------------------------------|--------------------------|
+| 3A | Grok | long migration follow-up | project sheets, `ProjectMoveBatchCancelRegistry.swift`, `EngramServiceCommandHandler+ProjectMigration.swift`, ProjectMove domain files | ProjectMove and migration IPC tests |
+| 3B | Codex | M02, L01, L02, L09, disk-audit evidence | `EngramServiceRunner.swift`, `ServiceTelemetryCollector.swift`, base `EngramServiceCommandHandler.swift`, invariant scripts/registry | telemetry, service-log, invariant tests |
+
+Conflict rule: lane 3A edits only the `+ProjectMigration` extension, never the base command-handler file owned by 3B.
+
+Review/merge order:
+
+1. Codex reviews 3A cancellation/commit boundaries.
+2. Grok reviews 3B gate safety and telemetry truth.
+3. Merge either order after both reviews because ownership is disjoint.
+
+### Round 4: Backlog and release closeout (serial)
+
+Codex reconciles ledger/TODO/follow-ups/roadmap and runs final local verification. Grok performs one read-only adversarial pass against the closeout claims. Only then run remote CI, release build, install, and runtime smoke.
+
+## Acceleration Rules
+
+1. **Parallelize investigation, tests, and coding; serialize heavy builds.** On the shared Mac, allow only one local `xcodebuild`/archive at a time. Concurrent Swift builds compete for DerivedData and disk bandwidth, defeating the scan-I/O work just shipped.
+2. **Use focused RED/GREEN commands per lane.** Agents run `-only-testing` or direct `xcrun xctest` filters during implementation. Run the full Swift matrix once per merged round and once at final acceptance, not from every worktree.
+3. **Keep separate DerivedData per worktree when compilation is unavoidable.** Set `LANE=1a` (or the active lane ID) and use `-derivedDataPath "/tmp/engram-dd-$LANE"` while sharing the SPM download cache.
+4. **Review as soon as a branch is ready.** The other agent stops implementing its own branch only at a clean test boundary, reviews the peer diff, then resumes. Do not wait for both branches to finish before starting review.
+5. **Freeze cross-lane DTOs in Round 0.** Any contract change after freeze requires both branch owners to acknowledge it before code changes continue.
+6. **No shared hotspot edits.** `MCPDatabase.swift`, `MCPTranscriptTools.swift`, `EngramServiceCommandHandler.swift`, and `SessionActionHandlers.swift` each have exactly one owner per round.
+7. **Merge small terminal commits.** Each finding or tightly coupled finding set ends with its regression test and ledger update. This keeps rebase conflicts local and makes rollback possible.
+8. **Use CI selectively.** Open draft PRs early for remote cache warming, but require full Tests + CodeQL only on the round integration SHA and final SHA.
+
+With two implementation agents, this changes the critical path from four large sequential waves to three parallel rounds plus closeout. Expected elapsed time is approximately 4-6 working days instead of 8-12, with M09 full-corpus performance and reconnectable project migration as the two schedule-risk items.
