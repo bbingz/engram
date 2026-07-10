@@ -66,8 +66,8 @@
 
 | Verdict | Count |
 |---------|-------|
-| CONFIRMED-FIXED | 25 |
-| PARTIAL-FIXED | 18 |
+| CONFIRMED-FIXED | 24 |
+| PARTIAL-FIXED | 19 |
 | OVERTURNED | 0 |
 | UNADJUDICATED | 0 |
 
