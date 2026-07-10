@@ -1,5 +1,6 @@
 import XCTest
 @testable import EngramServiceCore
+import EngramCoreRead
 
 final class TranscriptExportServiceTests: XCTestCase {
     func testRedactionCoversCommonTokenFamilies() {
@@ -16,7 +17,9 @@ final class TranscriptExportServiceTests: XCTestCase {
         -----END PRIVATE KEY-----
         """
         let redacted = TranscriptExportService.redactSensitiveContent(input)
+        let shared = TranscriptRedactionPolicy.redact(input)
 
+        XCTAssertEqual(redacted, shared, "export facade must match shared transcript redaction policy")
         XCTAssertFalse(redacted.contains("sk-abcdefghij0123456789"))
         XCTAssertFalse(redacted.contains("ghp_1234567890abcdefghij"))
         XCTAssertFalse(redacted.contains("xoxb-1234567890-abcdefghij"))

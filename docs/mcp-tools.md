@@ -62,13 +62,11 @@ Error results may include `structuredContent` with `code` / `message` (and relat
 |------|------------|---------|-----------------|
 | `searchFailed` | `search` | Keyword lookup failed (generic message) or a usable-mode semantic request failed mid-flight (embed/provider/candidates). | Retry once. For semantic failures, check embedding provider/env and that `semantic_chunks` match `embedding_meta`. |
 | `searchModeUnavailable` | `search` | `mode` was `semantic`, `hybrid`, or `both` but `SessionVectorSearchAvailability` says session vectors are not usable (or metadata is missing). | Use `mode: "keyword"`, or configure embeddings and wait for session chunk backfill until `tools/list` advertises semantic/hybrid. |
-| `transcriptTooLarge` | `get_session` | The transcript file exceeds `ENGRAM_MAX_FULL_JSON_TRANSCRIPT_BYTES`, or 10 MiB by default; guarded sources can fail before pagination can help. | Reduce the source transcript below the configured limit or restart MCP with a higher `ENGRAM_MAX_FULL_JSON_TRANSCRIPT_BYTES`, then retry. |
+| `transcriptTooLarge` | `get_session`, `export` | The transcript file exceeds `ENGRAM_MAX_FULL_JSON_TRANSCRIPT_BYTES`, or 10 MiB by default; guarded sources can fail before pagination can help. Export preserves the same structured code through service IPC. | Reduce the source transcript below the configured limit or restart MCP with a higher `ENGRAM_MAX_FULL_JSON_TRANSCRIPT_BYTES`, then retry. |
 | `serviceUnavailable` | `save_insight`, `delete_insight`, `hide_session`, `export`, `generate_summary`, `link_sessions`, mutating `manage_project_alias`, `project_move`, `project_archive`, `project_undo`, and `project_move_batch` | Mutating, operational, and long-running read tools fail closed when the EngramService socket is unavailable. Read-only tools continue to work. | Launch Engram.app or otherwise start EngramService, then retry. For `delete_insight` and `hide_session`, `dry_run: true` remains read-only. For `manage_project_alias`, `action: "list"` remains read-only. For project move/archive/undo/batch, even dry-runs require the service. |
 | `cancelled` | Any in-flight `tools/call` cancelled by the MCP client | The client sent `notifications/cancelled` for that request id. | Re-run the tool only if the work is still needed; for operational tools, inspect state first with `project_list_migrations` or `project_recover`. |
 | No structured code (`invalidArguments`) | Schema validation and required-argument checks | Invalid or missing parameter. The MCP result is an error but `structuredContent.code` is omitted. | Fix the parameter name, type, enum value, range, or required field from the message and retry. |
 | No structured code (service error flattening) | Any uncaught `EngramServiceError` escaping a handler | The stdio bridge flattens the service error message; service error name, code, and retry policy do not reach the MCP wire. | Treat the text as authoritative, check service status/logs if needed, and retry only when the underlying condition is resolved. |
-| No structured code on export size drift | `export` | `export` uses the same transcript size guard as `get_session`, but currently rethrows size failures as a service `invalidRequest`, so no `transcriptTooLarge` code reaches the client. | Retry `export` only after the source transcript is below the configured size limit or MCP is restarted with a higher limit. |
-
 ---
 
 ## list_sessions
@@ -100,9 +98,10 @@ Read the full conversation content of a single session. Supports pagination for 
 |------|------|----------|-------------|
 | id | string | **yes** | Session ID |
 | page | number | no | Page number, starting from 1. Default 1 |
-| roles | string[] | no | Only return messages from specified roles. Enum per item: `user`, `assistant`. Default: all roles |
+| roles | string[] | no | Only return messages from specified roles. Enum per item: `user`, `assistant`. Default (omit or empty): visible **user/assistant** messages only — never tool/system or “all roles”. |
+| include_raw | boolean | no | When `true`, return unredacted message content (local-only opt-in). Default `false`: secrets are redacted with the same policy as `export`. Response includes `redacted: true/false`. |
 
-**Notes:** Page size is fixed at 50 messages. Response includes `totalPages` and `currentPage` for navigation. Returns an error if the session ID is not found or the source adapter is unsupported. **Output:** `structuredContent` is `{ session, messages, totalPages, currentPage }` plus optional truncation flags; declared via `outputSchema`.
+**Notes:** Page size is fixed at 50 messages. Response includes `totalPages`, `currentPage`, and `redacted` for navigation and redaction state. Returns an error if the session ID is not found or the source adapter is unsupported. **Output:** `structuredContent` is `{ session, messages, totalPages, currentPage, redacted }` plus optional truncation flags; declared via `outputSchema`.
 
 ---
 
@@ -246,7 +245,7 @@ Retrieve curated insights and memories from past sessions. Use `save_insight` to
 | query | string | **yes** | What to remember (e.g. "user's coding preferences") |
 | type | string | no | Optional insight type filter. Enum: `episodic`, `semantic`, `procedural`. Applied on both keyword/FTS and hybrid semantic paths. Invalid values return an error. Missing/NULL stored types are treated as `semantic`. |
 
-**Notes:** Returns up to 10 matching insights with id, content, wing, room, importance, and distance placeholder. The Swift product path uses insight FTS keyword search (and hybrid semantic retrieval when embeddings are usable), then falls back to recent insights. If no memories exist, suggests using `save_insight`. **Output:** `structuredContent` is `{ memories }` plus optional `warning` / `message` / `retrieval`; declared via `outputSchema`.
+**Notes:** Returns up to 10 matching insights with id, content, wing, room, importance, distance placeholder, and `type` (missing/NULL stored types surface as `semantic`). When a `type` filter is requested, the same value is echoed at the top level of `structuredContent`. The Swift product path uses insight FTS keyword search (and hybrid semantic retrieval when embeddings are usable), then falls back to recent insights. If no memories exist, suggests using `save_insight`. **Output:** `structuredContent` is `{ memories }` plus optional `type` / `warning` / `message` / `retrieval`; declared via `outputSchema`.
 
 ---
 
@@ -491,7 +490,7 @@ Diagnose stuck or failed migrations.
 
 ## project_review
 
-Scan AI session roots for residual references to an old project path.
+Scan AI session roots for residual references to an old project path. The tools/list description reports the live root count from the same scanner list used at runtime (not a hardcoded number).
 
 **Parameters:**
 

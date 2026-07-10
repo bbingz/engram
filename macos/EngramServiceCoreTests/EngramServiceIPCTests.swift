@@ -2609,8 +2609,13 @@ final class EngramServiceIPCTests: XCTestCase {
             )
             XCTFail("Oversized gemini-cli JSON transcripts must be rejected before export")
         } catch let error as EngramServiceError {
-            guard case .invalidRequest(let message) = error else {
-                return XCTFail("Expected invalidRequest, got \(error)")
+            // M12: size failures must preserve transcriptTooLarge, not collapse to invalidRequest.
+            guard case .commandFailed(let name, let message, _, let details) = error else {
+                return XCTFail("Expected commandFailed(transcriptTooLarge), got \(error)")
+            }
+            XCTAssertEqual(name, "transcriptTooLarge", "\(error)")
+            if case .string(let code)? = details?["code"] {
+                XCTAssertEqual(code, "transcriptTooLarge")
             }
             XCTAssertTrue(message.contains("gemini-cli transcript is too large"), message)
             XCTAssertFalse(message.contains(largeBody), "error must not echo transcript contents")

@@ -16,7 +16,7 @@ enum MCPOutputSchemas {
         #"{"type":"object","additionalProperties":false,"required":["id","source","startTime","endTime","cwd","project","model","messageCount","userMessageCount","assistantMessageCount","toolMessageCount","systemMessageCount","summary","filePath","sizeBytes","indexedAt","agentRole","origin","summaryMessageCount","tier","qualityScore","parentSessionId","suggestedParentId"],"properties":{"id":{"type":"string"},"source":{"type":"string"},"startTime":{"type":"string"},"endTime":{"type":["string","null"]},"cwd":{"type":"string"},"project":{"type":["string","null"]},"model":{"type":["string","null"]},"messageCount":{"type":"integer"},"userMessageCount":{"type":"integer"},"assistantMessageCount":{"type":"integer"},"toolMessageCount":{"type":"integer"},"systemMessageCount":{"type":"integer"},"summary":{"type":["string","null"]},"filePath":{"type":"string"},"sizeBytes":{"type":"integer"},"indexedAt":{"type":["string","null"]},"agentRole":{"type":["string","null"]},"origin":{"type":["string","null"]},"summaryMessageCount":{"type":["integer","null"]},"tier":{"type":["string","null"]},"qualityScore":{"type":["integer","null"]},"parentSessionId":{"type":["string","null"]},"suggestedParentId":{"type":["string","null"]}}}"#
 
     private static let memoryItem =
-        #"{"type":"object","additionalProperties":false,"required":["id","content","wing","room","importance","distance"],"properties":{"id":{"type":"string"},"content":{"type":"string"},"wing":{"type":["string","null"]},"room":{"type":["string","null"]},"importance":{"type":"integer"},"distance":{"type":"number"}}}"#
+        #"{"type":"object","additionalProperties":false,"required":["id","content","wing","room","importance","distance","type"],"properties":{"id":{"type":"string"},"content":{"type":"string"},"wing":{"type":["string","null"]},"room":{"type":["string","null"]},"importance":{"type":"integer"},"distance":{"type":"number"},"type":{"type":"string"}}}"#
 
     static let listSessions = j(
         #"{"type":"object","additionalProperties":false,"required":["sessions","total"],"properties":{"sessions":{"type":"array","items":\#(listSessionItem)},"total":{"type":"integer"}}}"#
@@ -51,7 +51,7 @@ enum MCPOutputSchemas {
     )
 
     static let getMemory = j(
-        #"{"type":"object","additionalProperties":false,"required":["memories"],"properties":{"memories":{"type":"array","items":\#(memoryItem)},"warning":{"type":"string"},"message":{"type":"string"},"retrieval":{"type":"string"}}}"#
+        #"{"type":"object","additionalProperties":false,"required":["memories"],"properties":{"memories":{"type":"array","items":\#(memoryItem)},"type":{"type":"string"},"warning":{"type":"string"},"message":{"type":"string"},"retrieval":{"type":"string"}}}"#
     )
 
     static let search = j(
@@ -67,7 +67,7 @@ enum MCPOutputSchemas {
     )
 
     static let getSession = j(
-        #"{"type":"object","additionalProperties":false,"required":["session","messages","totalPages","currentPage"],"properties":{"session":\#(fullSession),"totalPages":{"type":"integer"},"currentPage":{"type":"integer"},"totalKnownComplete":{"type":"boolean"},"truncated":{"type":"boolean"},"truncatedAt":{"type":"integer"},"messages":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["role","content"],"properties":{"role":{"type":"string"},"content":{"type":"string"},"timestamp":{"type":"string"}}}}}}"#
+        #"{"type":"object","additionalProperties":false,"required":["session","messages","totalPages","currentPage","redacted"],"properties":{"session":\#(fullSession),"totalPages":{"type":"integer"},"currentPage":{"type":"integer"},"redacted":{"type":"boolean"},"totalKnownComplete":{"type":"boolean"},"truncated":{"type":"boolean"},"truncatedAt":{"type":"integer"},"messages":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["role","content"],"properties":{"role":{"type":"string"},"content":{"type":"string"},"timestamp":{"type":"string"}}}}}}"#
     )
 
     static let handoff = j(
