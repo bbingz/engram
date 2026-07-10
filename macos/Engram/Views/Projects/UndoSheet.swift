@@ -37,6 +37,35 @@ private func humanizeMigrationTimestamp(_ raw: String) -> String {
     return migrationHumanFormatter.localizedString(for: date, relativeTo: Date())
 }
 
+/// Pure selection navigation for Undo list — frozen while a long-op is unresolved.
+enum UndoMigrationSelection {
+    /// Returns the next selected migration id, or `nil` when navigation is blocked
+    /// (executing / unresolved long-op / empty selectable set).
+    static func nextSelectedId(
+        direction: MoveCommandDirection,
+        selectedId: String?,
+        migrations: [EngramServiceMigrationLogEntry],
+        disabledIds: Set<String>,
+        isExecuting: Bool,
+        blocksDuplicateSubmit: Bool
+    ) -> String? {
+        guard !isExecuting, !blocksDuplicateSubmit else { return nil }
+        let selectable = migrations.filter { !disabledIds.contains($0.id) }
+        guard !selectable.isEmpty else { return nil }
+        let current = selectedId.flatMap { id in selectable.firstIndex { $0.id == id } } ?? 0
+        let nextIndex: Int
+        switch direction {
+        case .up, .left:
+            nextIndex = max(current - 1, 0)
+        case .down, .right:
+            nextIndex = min(current + 1, selectable.count - 1)
+        @unknown default:
+            nextIndex = current
+        }
+        return selectable[nextIndex].id
+    }
+}
+
 struct UndoSheet: View {
     @Environment(EngramServiceClient.self) var serviceClient
     @Environment(\.dismiss) var dismiss
@@ -48,6 +77,8 @@ struct UndoSheet: View {
     @State private var errorMessage: String?
     @State private var retryPolicy: String = "safe"
     @State private var activeTask: Task<Void, Never>?
+    @State private var longOpSession = ProjectLongOperationSession()
+    @State private var isReconnecting = false
     @FocusState private var focusedMigrationId: String?
     /// IDs where retry_policy: 'never' came back (UndoStale etc.) — these
     /// can't be retried, so the UI disables the row. Codex minor #5.
@@ -96,9 +127,13 @@ struct UndoSheet: View {
                     HStack(spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("Reversing migration — restoring files and directories…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(
+                            isReconnecting
+                                ? projectMoveReconnectingMessage()
+                                : "Reversing migration — restoring files and directories…"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 4)
                 }
@@ -138,19 +173,40 @@ struct UndoSheet: View {
                     Button("Close") { dismiss() }
                         .keyboardShortcut(.defaultAction)
                 } else {
-                    Button("Cancel") { dismiss() }
-                        .keyboardShortcut(.cancelAction)
-                        .disabled(isExecuting)
-                    Button("Undo") {
-                        activeTask = Task { await runUndo() }
+                    Button("Cancel") {
+                        if isExecuting || longOpSession.blocksDuplicateSubmit,
+                           let operationId = longOpSession.operationId
+                        {
+                            Task {
+                                _ = try? await serviceClient.cancelProjectMoveBatch(
+                                    operationId: operationId
+                                )
+                            }
+                        } else {
+                            longOpSession.reset()
+                            dismiss()
+                        }
                     }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(
-                        selectedMigrationId == nil
-                            || isExecuting
-                            || (selectedMigrationId.map { disabledMigrationIds.contains($0) } ?? false)
-                    )
+                    .keyboardShortcut(.cancelAction)
+                    if longOpSession.blocksDuplicateSubmit && !isExecuting {
+                        Button("Resume / Check Status") {
+                            activeTask = Task { await runUndo() }
+                        }
+                        .keyboardShortcut(.defaultAction)
+                        .buttonStyle(.borderedProminent)
+                    } else {
+                        Button("Undo") {
+                            activeTask = Task { await runUndo() }
+                        }
+                        .keyboardShortcut(.defaultAction)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(
+                            selectedMigrationId == nil
+                                || isExecuting
+                                || longOpSession.blocksDuplicateSubmit
+                                || (selectedMigrationId.map { disabledMigrationIds.contains($0) } ?? false)
+                        )
+                    }
                 }
             }
         }
@@ -162,7 +218,11 @@ struct UndoSheet: View {
             await loadMigrations()
         }
         .onMoveCommand(perform: moveSelection)
-        .onDisappear { activeTask?.cancel() }
+        .onDisappear {
+            // Keep commit-path awaits alive for cooperative cancel / reconnect.
+            guard !isExecuting else { return }
+            activeTask?.cancel()
+        }
     }
 
     @ViewBuilder
@@ -238,7 +298,7 @@ struct UndoSheet: View {
         .buttonStyle(.plain)
         .focusable(!disabledMigrationIds.contains(m.id))
         .focused($focusedMigrationId, equals: m.id)
-        .disabled(isExecuting || disabledMigrationIds.contains(m.id))
+        .disabled(isExecuting || longOpSession.blocksDuplicateSubmit || disabledMigrationIds.contains(m.id))
         .accessibilityIdentifier("undo_migrationRow_\(index)")
         .accessibilityLabel(
             disabledMigrationIds.contains(m.id)
@@ -272,20 +332,16 @@ struct UndoSheet: View {
     }
 
     private func moveSelection(_ direction: MoveCommandDirection) {
-        guard !isExecuting else { return }
-        let selectable = migrations.filter { !disabledMigrationIds.contains($0.id) }
-        guard !selectable.isEmpty else { return }
-        let current = selectedMigrationId.flatMap { id in selectable.firstIndex { $0.id == id } } ?? 0
-        let nextIndex: Int
-        switch direction {
-        case .up, .left:
-            nextIndex = max(current - 1, 0)
-        case .down, .right:
-            nextIndex = min(current + 1, selectable.count - 1)
-        @unknown default:
-            nextIndex = current
+        guard let next = UndoMigrationSelection.nextSelectedId(
+            direction: direction,
+            selectedId: selectedMigrationId,
+            migrations: migrations,
+            disabledIds: disabledMigrationIds,
+            isExecuting: isExecuting,
+            blocksDuplicateSubmit: longOpSession.blocksDuplicateSubmit
+        ) else {
+            return
         }
-        let next = selectable[nextIndex].id
         selectedMigrationId = next
         focusedMigrationId = next
     }
@@ -293,41 +349,63 @@ struct UndoSheet: View {
     private func runUndo() async {
         guard let id = selectedMigrationId else { return }
         errorMessage = nil
+        isReconnecting = false
         isExecuting = true
-        defer { isExecuting = false; activeTask = nil }
-        do {
-            let res = try await serviceClient.projectUndo(
+        defer {
+            isExecuting = false
+            isReconnecting = false
+            activeTask = nil
+        }
+        let prepared = ProjectLongOperationRunner.prepare(session: longOpSession)
+        longOpSession = prepared.session
+        isReconnecting = prepared.session.transientFailures > 0
+        let executeResult = await ProjectLongOperationRunner.execute(
+            session: longOpSession,
+            operationId: prepared.operationId,
+            isReconnectable: projectMoveIsReconnectableError
+        ) { operationId in
+            try await serviceClient.projectUndo(
                 EngramServiceProjectUndoRequest(
                     migrationId: id,
                     force: false,
-                    actor: "app"
+                    actor: "app",
+                    operationId: operationId
                 )
             )
-            if Task.isCancelled { return }
-            if res.state == "committed" {
+        }
+        longOpSession = executeResult.session
+        isReconnecting = false
+        switch executeResult.result {
+        case .success(let res):
+            if res.state == "cancelled" {
+                errorMessage = projectMoveCancelledBeforeCommitMessage(kind: "Undo")
+                retryPolicy = "safe"
+            } else if res.state == "committed" {
                 if !res.review.own.isEmpty {
-                    // Gemini follow-up: surface residual refs instead of
-                    // silently closing. Undo usually has zero (it's a
-                    // reverse move), but a half-failed reverse can leave
-                    // some behind.
                     errorMessage =
                         "Undo committed, but \(res.review.own.count) file(s) still reference the undone path. Re-run undo to retry, or open Migration History to review."
                     retryPolicy = "never"
-                    return
+                } else {
+                    NotificationCenter.default.post(name: .projectsDidChange, object: nil)
+                    dismiss()
                 }
-                NotificationCenter.default.post(name: .projectsDidChange, object: nil)
-                dismiss()
             } else {
                 errorMessage = "Unexpected state: \(res.state)"
             }
-        } catch {
-            if Task.isCancelled { return }
-            errorMessage = projectMoveErrorMessage(error)
-            retryPolicy = projectMoveRetryPolicy(error)
-            // Codex minor #5: on a 'never' policy (UndoStale, etc.), mark
-            // this specific migration as disabled so the user can't retry
-            // the same stale row. They can still try a different one.
-            if retryPolicy == "never" {
+        case .failure(let error):
+            if projectMoveIsCancelCompensationFailure(error) {
+                errorMessage = projectMoveCancelCompensationFailedMessage(
+                    projectMoveErrorMessage(error)
+                )
+                retryPolicy = "never"
+            } else {
+                errorMessage = projectMoveErrorMessage(error)
+                if longOpSession.blocksDuplicateSubmit {
+                    errorMessage = (errorMessage ?? "") + "\n" + projectMoveResumeAvailableMessage()
+                }
+                retryPolicy = projectMoveRetryPolicy(error)
+            }
+            if retryPolicy == "never" && !projectMoveIsCancelCompensationFailure(error) {
                 disabledMigrationIds.insert(id)
                 disabledReasons[id] = errorMessage ?? "Undo failed"
                 selectedMigrationId = nil

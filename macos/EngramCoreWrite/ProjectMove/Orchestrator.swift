@@ -75,6 +75,42 @@ public struct SharedEncodingCollisionError: ProjectMoveError, Equatable {
     }
 }
 
+/// Cooperative cancel before the DB commit boundary (Wave 8 long-ops).
+/// After a successful `beginCommitIfNotCancelled`, cancel is ignored.
+/// When cancel runs after FS mutation, `compensationSucceeded` reports whether
+/// rollback fully restored disk state (contract 3).
+public struct ProjectMoveCancelledError: ProjectMoveError, Equatable {
+    /// True when no residual FS damage remains (or never mutated FS).
+    public let compensationSucceeded: Bool
+    /// Human-readable compensation failure summary when `compensationSucceeded` is false.
+    public let compensationDetail: String?
+
+    public init(compensationSucceeded: Bool = true, compensationDetail: String? = nil) {
+        self.compensationSucceeded = compensationSucceeded
+        self.compensationDetail = compensationDetail
+    }
+
+    public var errorName: String {
+        compensationSucceeded
+            ? "ProjectMoveCancelledError"
+            : "ProjectMoveCancelCompensationFailedError"
+    }
+
+    public var errorMessage: String {
+        if compensationSucceeded {
+            return "project-move: cancelled before commit boundary — no migration was committed"
+        }
+        let detail = compensationDetail ?? "compensation reported residual failures"
+        return "project-move: cancelled before commit but compensation was incomplete — \(detail). Do not assume disk/index are clean; inspect Migration History before retrying."
+    }
+
+    public var errorDetails: ErrorDetails? {
+        ErrorDetails(
+            state: compensationSucceeded ? "cancelled" : "cancelled_compensation_failed"
+        )
+    }
+}
+
 public enum OrchestratorError: ProjectMoveError, Equatable {
     case missingPaths(src: String, dst: String)
     case sameSourceAndDest(path: String)
@@ -170,7 +206,7 @@ public struct SkippedDirEntry: Equatable, Sendable {
 }
 
 public enum PipelineState: String, Equatable, Sendable {
-    case committed, dryRun = "dry-run", failed
+    case committed, dryRun = "dry-run", failed, cancelled
 }
 
 public struct PipelineResult: Equatable, Sendable {
@@ -208,6 +244,15 @@ public struct RunProjectMoveOptions: Sendable {
     /// share one project-move lock, so runUndo acquires it before validation
     /// and then invokes the normal pipeline without reacquiring.
     public var lockAlreadyHeld: Bool
+    /// Cooperative cancel probe. Checked only before the commit boundary.
+    public var shouldCancel: @Sendable () -> Bool
+    /// Atomic transition into the non-interruptible commit sequence (Phase B/C).
+    /// Return `false` if cancel already won; `true` commits cancel-immunity.
+    /// Defaults to `{ !shouldCancel() }` when not supplied by the service.
+    public var beginCommitIfNotCancelled: @Sendable () -> Bool
+    /// Invoked after Phase C succeeds (optional bookkeeping; commit immunity is
+    /// established by `beginCommitIfNotCancelled`).
+    public var onPastCommit: (@Sendable () -> Void)?
 
     public init(
         src: String,
@@ -220,7 +265,10 @@ public struct RunProjectMoveOptions: Sendable {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         lockPath: String? = nil,
         rolledBackOf: String? = nil,
-        lockAlreadyHeld: Bool = false
+        lockAlreadyHeld: Bool = false,
+        shouldCancel: @escaping @Sendable () -> Bool = { false },
+        beginCommitIfNotCancelled: (@Sendable () -> Bool)? = nil,
+        onPastCommit: (@Sendable () -> Void)? = nil
     ) {
         self.src = src
         self.dst = dst
@@ -233,6 +281,11 @@ public struct RunProjectMoveOptions: Sendable {
         self.lockPath = lockPath
         self.rolledBackOf = rolledBackOf
         self.lockAlreadyHeld = lockAlreadyHeld
+        self.shouldCancel = shouldCancel
+        // Capture shouldCancel for the default atomic probe without retaining self.
+        let cancelProbe = shouldCancel
+        self.beginCommitIfNotCancelled = beginCommitIfNotCancelled ?? { !cancelProbe() }
+        self.onPastCommit = onPastCommit
     }
 }
 
@@ -254,8 +307,14 @@ public enum ProjectMoveOrchestrator {
         migrationId: String,
         force: Bool,
         actor: MigrationLogActor,
-        lockPath requestedLockPath: String? = nil
+        lockPath requestedLockPath: String? = nil,
+        shouldCancel: @escaping @Sendable () -> Bool = { false },
+        beginCommitIfNotCancelled: (@Sendable () -> Bool)? = nil,
+        onPastCommit: (@Sendable () -> Void)? = nil
     ) async throws -> UndoProjectMoveRunResult {
+        if shouldCancel() {
+            throw ProjectMoveCancelledError()
+        }
         let lockPath = requestedLockPath ?? MigrationLock.defaultLockPath()
         try MigrationLock.acquire(migrationId: "undo-\(migrationId)", lockPath: lockPath)
         defer { MigrationLock.release(lockPath: lockPath) }
@@ -265,6 +324,9 @@ public enum ProjectMoveOrchestrator {
             log: GRDBMigrationLogReader(writer: writer),
             sessions: GRDBSessionByIdReader(writer: writer)
         )
+        if shouldCancel() {
+            throw ProjectMoveCancelledError()
+        }
         let pipelineResult = try await run(
             writer: writer,
             options: RunProjectMoveOptions(
@@ -277,7 +339,10 @@ public enum ProjectMoveOrchestrator {
                 actor: actor,
                 lockPath: lockPath,
                 rolledBackOf: reverse.originalMigrationId,
-                lockAlreadyHeld: true
+                lockAlreadyHeld: true,
+                shouldCancel: shouldCancel,
+                beginCommitIfNotCancelled: beginCommitIfNotCancelled,
+                onPastCommit: onPastCommit
             )
         )
         return UndoProjectMoveRunResult(reverse: reverse, pipelineResult: pipelineResult)
@@ -316,12 +381,20 @@ public enum ProjectMoveOrchestrator {
 
         // Dry-run: read-only scan + plan, no FS or DB side effects.
         if options.dryRun {
+            if options.shouldCancel() {
+                throw ProjectMoveCancelledError()
+            }
             return try buildDryRunPlan(
                 src: src,
                 dst: dst,
                 git: git,
                 homeDirectory: options.homeDirectory
             )
+        }
+
+        // Cancel before any lock/log write — nothing to compensate.
+        if options.shouldCancel() {
+            throw ProjectMoveCancelledError()
         }
 
         let migrationId = UUID().uuidString
@@ -376,6 +449,8 @@ public enum ProjectMoveOrchestrator {
         var skippedDirs: [SkippedDirEntry] = []
         var moveStrategy: MoveResult.Strategy = .rename
         var physicalMoveApplied = false
+        /// Dirfd-pinned archive parent provision (mkdirat-owned segments only).
+        var destinationParentToken: DestinationParentToken?
         var geminiProjectsPlan: GeminiProjectsJsonUpdatePlan?
         var geminiProjectsApplied = false
         var sqlitePatches: [OpenCodeSQLitePatchResult] = []
@@ -386,6 +461,11 @@ public enum ProjectMoveOrchestrator {
         defer { try? FileManager.default.removeItem(atPath: patchBackupRoot) }
 
         do {
+            // Cancel after intent row exists but before FS mutation.
+            if options.shouldCancel() {
+                throw ProjectMoveCancelledError()
+            }
+
             let roots = SessionSources.roots(homeDirectory: options.homeDirectory)
 
             // Step 0.5: per-source rename plans. If session content proves the
@@ -490,6 +570,16 @@ public enum ProjectMoveOrchestrator {
                         sharingCwds: conflicts
                     )
                 }
+            }
+
+            // Step 0.9: archive destinations live under `_archive/<category>/…`
+            // which may not exist yet. Provision only when `archived` so plain
+            // renames keep their historical "parent must already exist" behavior.
+            // Dirfd-pinned token: only mkdirat==0 segments; cleanup via unlinkat.
+            if options.archived {
+                destinationParentToken = try DestinationParentProvision.ensure(
+                    destinationPath: dst
+                )
             }
 
             // Step 1: physical move
@@ -611,7 +701,13 @@ public enum ProjectMoveOrchestrator {
                 totalOccurrences += occurrences
             }
 
-            // Phase B: mark FS complete.
+            // Atomic cancel/commit boundary (contract 1): either cancel wins
+            // (no Phase B/C) or commit-started wins and later cancel is ignored.
+            if !options.beginCommitIfNotCancelled() {
+                throw ProjectMoveCancelledError()
+            }
+
+            // Phase B/C are non-interruptible once beginCommitIfNotCancelled returned true.
             let detail = buildFsDoneDetail(
                 moveStrategy: moveStrategy,
                 perSource: perSource,
@@ -647,12 +743,18 @@ public enum ProjectMoveOrchestrator {
                 )
             }
 
+            options.onPastCommit?()
+
             // Step 6: review scan for residual refs.
             let review = ReviewScan.run(
                 oldPath: src,
                 newPath: dst,
                 homeDirectory: options.homeDirectory
             )
+
+            // Success: keep created parents; only release dirfd pins.
+            destinationParentToken?.release()
+            destinationParentToken = nil
 
             return PipelineResult(
                 migrationId: migrationId,
@@ -675,8 +777,12 @@ public enum ProjectMoveOrchestrator {
             )
         } catch {
             // Compensation: pre-flight failures haven't touched the FS.
+            // Cancel-before-FS also has nothing to reverse when physicalMoveApplied
+            // is still false; cancel-after-FS runs full compensation.
+            let wasCancel = error is ProjectMoveCancelledError
             let preflightFailure = error is DirCollisionError
                 || error is SharedEncodingCollisionError
+                || (wasCancel && !physicalMoveApplied && manifest.isEmpty)
             let report: CompensationReport
             if preflightFailure {
                 report = CompensationReport.empty
@@ -691,6 +797,29 @@ public enum ProjectMoveOrchestrator {
                     physicalMoveApplied: physicalMoveApplied
                 )
             }
+            // Drop empty destination parents we created (dirfd-pinned unlinkat).
+            destinationParentToken?.cleanup()
+            destinationParentToken = nil
+
+            // Contract 3: cancelled + clean compensation → clean cancelled error.
+            // Cancelled + residual compensation failures → partial/unsafe error.
+            if wasCancel {
+                let clean = compensationFullySucceeded(report)
+                let detail = clean ? nil : formatCompensationFailuresOnly(report)
+                let cancelError = ProjectMoveCancelledError(
+                    compensationSucceeded: clean,
+                    compensationDetail: detail
+                )
+                let combined = formatFailureWithCompensation(
+                    primary: cancelError.errorMessage,
+                    report: report
+                )
+                try? writer.write { db in
+                    try? MigrationLogStore.failMigration(db, id: migrationId, error: combined)
+                }
+                throw cancelError
+            }
+
             let combined = formatFailureWithCompensation(
                 primary: errorMessage(error),
                 report: report
@@ -990,11 +1119,25 @@ private func compensate(
     return report
 }
 
+private func compensationFullySucceeded(_ report: CompensationReport) -> Bool {
+    report.patchFailed.isEmpty
+        && report.sqliteFailed.isEmpty
+        && report.dirRestoreErrors.isEmpty
+        && report.moveRevertError == nil
+        && report.geminiProjectsJsonRestored != .failed
+}
+
+private func formatCompensationFailuresOnly(_ report: CompensationReport) -> String {
+    formatFailureWithCompensation(primary: "", report: report)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
 private func formatFailureWithCompensation(
     primary: String,
     report: CompensationReport
 ) -> String {
-    var parts = [primary]
+    var parts: [String] = []
+    if !primary.isEmpty { parts.append(primary) }
     if !report.patchFailed.isEmpty, let first = report.patchFailed.first {
         parts.append(
             "rollback: \(report.patchFailed.count) file(s) could NOT be reverted " +

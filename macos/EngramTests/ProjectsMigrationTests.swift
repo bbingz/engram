@@ -145,18 +145,49 @@ final class ProjectsMigrationTests: XCTestCase {
 
     func testBatchMoveSheetKeepsCancelEnabledAndRequestsServiceCancellation() throws {
         let source = try Self.source("macos/Engram/Views/Projects/BatchMoveSheet.swift")
-        XCTAssertTrue(source.contains("cancelProjectMoveBatch(operationId:"))
-        XCTAssertTrue(source.contains("activeBatchOperationId"))
+        XCTAssertTrue(source.contains("cancelProjectMoveBatch("))
+        XCTAssertTrue(source.contains("longOpSession") || source.contains("ProjectLongOperationSession"))
         // Cancel remains enabled during execute (no .disabled(isExecuting) on Cancel).
         XCTAssertFalse(source.contains("Button(\"Cancel\") { dismiss() }\n                    .keyboardShortcut(.cancelAction)\n                    .disabled(isExecuting)"))
-        // M05: Cancel button must not cancel the awaiting task (would discard completed/remaining).
-        // onDisappear may still cancel; the execute-path Cancel must only call cancelProjectMoveBatch.
-        XCTAssertFalse(
-            source.contains("cancelProjectMoveBatch(operationId: operationId)\n                        }\n                        activeTask?.cancel()"),
-            "Cancel must wait for service partial result instead of cancelling the client task"
+
+        // Structurally bound to the Cancel button closure only — no [\s\S]* scan
+        // that can cross into later scopes (e.g. guarded onDisappear).
+        let cancelBody = try Self.swiftClosureBody(
+            in: source,
+            afterMarker: "Button(\"Cancel\") {"
         )
+        XCTAssertTrue(
+            cancelBody.contains("cancelProjectMoveBatch(")
+                && cancelBody.contains("operationId: operationId"),
+            "in-flight Cancel must call cancelProjectMoveBatch with the active operationId"
+        )
+        XCTAssertFalse(
+            cancelBody.contains("activeTask?.cancel()"),
+            "execute-path Cancel must not cancel the client task"
+        )
+
+        // onDisappear is a separate scope: must not unconditionally cancel awaits.
+        let disappearBody = try Self.swiftClosureBody(
+            in: source,
+            afterMarker: ".onDisappear {"
+        )
+        XCTAssertTrue(
+            disappearBody.contains("guard !isExecuting else { return }"),
+            "onDisappear must preserve in-flight migration awaits"
+        )
+        // Guarded cancel of idle/preview tasks is OK after the isExecuting guard.
+        XCTAssertTrue(
+            disappearBody.contains("activeTask?.cancel()"),
+            "onDisappear may still cancel non-executing tasks after the guard"
+        )
+        XCTAssertFalse(
+            source.contains(".onDisappear { activeTask?.cancel() }"),
+            "onDisappear must not unconditionally cancel in-flight migration awaits"
+        )
+
         XCTAssertTrue(source.contains("remaining"))
         XCTAssertTrue(source.contains("cancelled"))
+        XCTAssertTrue(source.contains("ProjectLongOperationRunner") || source.contains("blocksDuplicateSubmit"))
     }
 
     func testParseBatchMoveOutcomeSurfacesCancelledAndRemaining_repro() {
@@ -174,6 +205,438 @@ final class ProjectsMigrationTests: XCTestCase {
         XCTAssertEqual(outcome.completed, 1)
         XCTAssertEqual(outcome.remaining, 2)
         XCTAssertTrue(outcome.cancelled)
+    }
+
+    // MARK: - Wave 8 long-ops: rename/archive/undo operationId + cancel + reconnect
+
+    func testAllProjectSheetsAssignPrepareSessionBeforeExecuteAwait_repro() throws {
+        for relativePath in [
+            "macos/Engram/Views/Projects/BatchMoveSheet.swift",
+            "macos/Engram/Views/Projects/RenameSheet.swift",
+            "macos/Engram/Views/Projects/ArchiveSheet.swift",
+            "macos/Engram/Views/Projects/UndoSheet.swift",
+        ] {
+            let source = try Self.source(relativePath)
+            // Structurally: prepare() then assign to longOpSession before execute(.
+            let prepareIdx = source.range(of: "ProjectLongOperationRunner.prepare(")
+            let assignIdx = source.range(of: "longOpSession = prepared.session")
+            let executeIdx = source.range(of: "ProjectLongOperationRunner.execute(")
+            XCTAssertNotNil(prepareIdx, "\(relativePath) must call prepare()")
+            XCTAssertNotNil(assignIdx, "\(relativePath) must assign prepared.session to longOpSession")
+            XCTAssertNotNil(executeIdx, "\(relativePath) must call execute()")
+            let p = try XCTUnwrap(prepareIdx).lowerBound
+            let a = try XCTUnwrap(assignIdx).lowerBound
+            let e = try XCTUnwrap(executeIdx).lowerBound
+            XCTAssertTrue(
+                p < a && a < e,
+                "\(relativePath) must assign prepare result to longOpSession before execute await"
+            )
+        }
+    }
+
+    func testUnresolvedSessionFreezesRequestAffectingControls_repro() throws {
+        // Batch row path fields freeze.
+        let batch = try Self.source("macos/Engram/Views/Projects/BatchMoveSheet.swift")
+        XCTAssertTrue(
+            batch.contains(".disabled(isExecuting || longOpSession.blocksDuplicateSubmit)"),
+            "BatchMoveSheet row TextField must freeze under unresolved long-op session"
+        )
+        // Rename path freezes.
+        let rename = try Self.source("macos/Engram/Views/Projects/RenameSheet.swift")
+        XCTAssertTrue(
+            rename.contains(".disabled(isExecuting || longOpSession.blocksDuplicateSubmit)"),
+            "RenameSheet path field must freeze under unresolved session"
+        )
+        // Archive category freezes.
+        let archive = try Self.source("macos/Engram/Views/Projects/ArchiveSheet.swift")
+        XCTAssertTrue(
+            archive.contains(".disabled(isExecuting || longOpSession.blocksDuplicateSubmit)"),
+            "ArchiveSheet category/source must freeze under unresolved session"
+        )
+        // Undo row selection freezes.
+        let undo = try Self.source("macos/Engram/Views/Projects/UndoSheet.swift")
+        XCTAssertTrue(
+            undo.contains("longOpSession.blocksDuplicateSubmit"),
+            "UndoSheet migration rows must freeze under unresolved session"
+        )
+    }
+
+    func testParseBatchMoveOutcomeSurfacesCancelUnsafeFieldsAndWording_repro() {
+        let json: EngramServiceJSONValue = .object([
+            "completed": .array([]),
+            "failed": .array([
+                .object([
+                    "src": .string("/a"),
+                    "error": .string("project-move: cancelled before commit but compensation was incomplete"),
+                ]),
+            ]),
+            "skipped": .array([]),
+            "remaining": .array([.object(["src": .string("/a")])]),
+            "cancelled": .bool(true),
+            "cancel_unsafe": .bool(true),
+            "cancel_error_name": .string("ProjectMoveCancelCompensationFailedError"),
+            "cancel_error_message": .string(
+                "project-move: cancelled before commit but compensation was incomplete — rollback"
+            ),
+        ])
+        let outcome = parseBatchMoveOutcome(json)
+        XCTAssertTrue(outcome.cancelled)
+        XCTAssertTrue(outcome.cancelUnsafe)
+        XCTAssertEqual(outcome.cancelErrorName, "ProjectMoveCancelCompensationFailedError")
+        XCTAssertTrue(outcome.cancelErrorMessage?.contains("compensation was incomplete") == true)
+        let message = projectMoveCancelCompensationFailedMessage(outcome.cancelErrorMessage ?? "")
+        XCTAssertFalse(message.contains("Safe to retry"))
+    }
+
+    func testRenameArchiveUndoSheetsWireOperationIdAndCooperativeCancel_repro() throws {
+        for relativePath in [
+            "macos/Engram/Views/Projects/RenameSheet.swift",
+            "macos/Engram/Views/Projects/ArchiveSheet.swift",
+            "macos/Engram/Views/Projects/UndoSheet.swift",
+        ] {
+            let source = try Self.source(relativePath)
+            XCTAssertTrue(
+                source.contains("longOpSession") || source.contains("ProjectLongOperationSession"),
+                "\(relativePath) must track a durable long-op session"
+            )
+            XCTAssertTrue(
+                source.contains("operationId: operationId") || source.contains("operationId: operationId,"),
+                "\(relativePath) must pass operationId on the service request"
+            )
+            XCTAssertTrue(
+                source.contains("cancelProjectMoveBatch("),
+                "\(relativePath) must request cooperative service cancel"
+            )
+            XCTAssertTrue(
+                source.range(of: #"cancelProjectMoveBatch\([\s\S]*?operationId:\s*operationId"#, options: .regularExpression) != nil,
+                "\(relativePath) cancelProjectMoveBatch must pass operationId: operationId"
+            )
+            XCTAssertFalse(
+                source.contains("Button(\"Cancel\") { dismiss() }\n                        .keyboardShortcut(.cancelAction)\n                        .disabled(isExecuting)"),
+                "\(relativePath) Cancel must remain enabled while executing"
+            )
+            XCTAssertTrue(
+                source.contains("projectMoveCancelledBeforeCommitMessage")
+                    || source.contains("cancelled before commit"),
+                "\(relativePath) must use precise cancelled-before-commit wording"
+            )
+            XCTAssertTrue(
+                source.contains("projectMoveCancelCompensationFailedMessage")
+                    || source.contains("projectMoveIsCancelCompensationFailure"),
+                "\(relativePath) must distinguish unclean cancel compensation"
+            )
+            XCTAssertTrue(
+                source.contains("ProjectLongOperationRunner")
+                    || source.contains("projectMoveIsReconnectableError"),
+                "\(relativePath) must reconnect by operation id on transport timeout"
+            )
+            XCTAssertTrue(
+                source.contains("Resume / Check Status") || source.contains("blocksDuplicateSubmit"),
+                "\(relativePath) must expose resume / block duplicate submit"
+            )
+        }
+    }
+
+    func testBatchOutcomeWordingDistinguishesCancelledBeforeCommit_repro() throws {
+        let source = try Self.source("macos/Engram/Views/Projects/BatchMoveSheet.swift")
+        XCTAssertTrue(
+            source.contains("cancelled before commit"),
+            "Batch outcome must say cancelled before commit, not a vague cancelled label"
+        )
+        XCTAssertTrue(
+            source.contains("completed stay committed")
+                || source.contains("remaining (cancelled before commit"),
+            "Batch partial wording must clarify completed ops stay committed"
+        )
+        XCTAssertTrue(source.contains("ProjectLongOperationRunner") || source.contains("longOpSession"))
+    }
+
+    func testProjectMoveRequestEncodesOperationId_repro() async throws {
+        let operationID = "rename-op-1"
+        let transport = LocalRecordingTransport { request in
+            XCTAssertEqual(request.command, "projectMove")
+            let payload = try Self.decode(request.payload, as: EngramServiceProjectMoveRequest.self)
+            XCTAssertEqual(payload.operationId, operationID)
+            return .success(
+                requestId: request.requestId,
+                result: #"{"migrationId":"","state":"cancelled","ccDirRenamed":false,"totalFilesPatched":0,"totalOccurrences":0,"sessionsUpdated":0,"aliasCreated":false,"review":{"own":[],"other":[]}}"#.data(using: .utf8)!
+            )
+        }
+        let client = EngramServiceClient(transport: transport)
+        let res = try await client.projectMove(
+            EngramServiceProjectMoveRequest(
+                src: "/a",
+                dst: "/b",
+                dryRun: false,
+                force: false,
+                auditNote: nil,
+                actor: "app",
+                operationId: operationID
+            )
+        )
+        XCTAssertEqual(res.state, "cancelled")
+    }
+
+    func testReconnectableErrorHelper_repro() {
+        XCTAssertTrue(
+            projectMoveIsReconnectableError(
+                EngramServiceError.transportClosed(message: "socket closed")
+            )
+        )
+        XCTAssertTrue(
+            projectMoveIsReconnectableError(
+                EngramServiceError.serviceUnavailable(message: "timeout waiting")
+            )
+        )
+        XCTAssertFalse(
+            projectMoveIsReconnectableError(
+                EngramServiceError.invalidRequest(message: "bad path")
+            )
+        )
+        // WriterBusy / commandFailed text-matching must never reconnect.
+        XCTAssertFalse(
+            projectMoveIsReconnectableError(
+                EngramServiceError.writerBusy(message: "timeout waiting for lock")
+            )
+        )
+        XCTAssertFalse(
+            projectMoveIsReconnectableError(
+                EngramServiceError.commandFailed(
+                    name: "SomeError",
+                    message: "timeout disconnect",
+                    retryPolicy: "safe",
+                    details: nil
+                )
+            )
+        )
+        XCTAssertFalse(
+            projectMoveIsReconnectableError(
+                EngramServiceError.commandFailed(
+                    name: "WriterBusy",
+                    message: "writer busy",
+                    retryPolicy: "safe",
+                    details: [EngramServiceErrorEnvelope.operationTerminalDetailKey: .bool(true)]
+                )
+            )
+        )
+        XCTAssertTrue(
+            projectMoveCancelledBeforeCommitMessage(kind: "Rename")
+                .contains("cancelled before commit")
+        )
+    }
+
+    func testBatchResumeIdentityPreservesDryRunFingerprint_repro() {
+        // Preview resume must keep dry_run=true so YAML fingerprint matches.
+        XCTAssertTrue(
+            BatchMoveResumeIdentity.effectiveDryRun(
+                isResume: true,
+                requestedDryRun: false,
+                savedDryRun: true
+            ),
+            "Resume of preview must re-issue dryRun true"
+        )
+        XCTAssertFalse(
+            BatchMoveResumeIdentity.effectiveDryRun(
+                isResume: true,
+                requestedDryRun: true,
+                savedDryRun: false
+            ),
+            "Resume of commit must re-issue dryRun false"
+        )
+        XCTAssertTrue(
+            BatchMoveResumeIdentity.effectiveDryRun(
+                isResume: false,
+                requestedDryRun: true,
+                savedDryRun: nil
+            )
+        )
+        XCTAssertFalse(
+            BatchMoveResumeIdentity.shouldResetSessionForPreview(
+                isResume: true,
+                effectiveDryRun: true
+            ),
+            "resume must not reset session (would mint a new id)"
+        )
+        XCTAssertTrue(
+            BatchMoveResumeIdentity.shouldResetSessionForPreview(
+                isResume: false,
+                effectiveDryRun: true
+            )
+        )
+        XCTAssertFalse(
+            BatchMoveResumeIdentity.shouldResetSessionForPreview(
+                isResume: false,
+                effectiveDryRun: false
+            )
+        )
+
+        let previewBody = BatchMoveBody.make(operations: [(src: "/a", dst: "/b")], dryRun: true)
+        let commitBody = BatchMoveBody.make(operations: [(src: "/a", dst: "/b")], dryRun: false)
+        XCTAssertNotEqual(previewBody, commitBody, "preview/commit fingerprints must differ")
+        let previewDefaults = try? Self.defaults(in: previewBody)
+        XCTAssertEqual(previewDefaults?["dry_run"] as? Bool, true)
+    }
+
+    func testBatchMoveSheetResumeUsesSavedDryRunNotHardCodedCommit_repro() throws {
+        let source = try Self.source("macos/Engram/Views/Projects/BatchMoveSheet.swift")
+        // Resume button must not hard-code run(dryRun: false).
+        let resumeBody = try Self.swiftClosureBody(
+            in: source,
+            afterMarker: "Button(\"Resume / Check Status\") {"
+        )
+        XCTAssertTrue(
+            resumeBody.contains("unresolvedRequestIsDryRun") || resumeBody.contains("resumeDryRun"),
+            "Resume must use saved dry-run identity"
+        )
+        XCTAssertFalse(
+            resumeBody.contains("await run(dryRun: false)"),
+            "Resume must not hard-code commit mode"
+        )
+        // run() must consult BatchMoveResumeIdentity / unresolvedRequestIsDryRun.
+        XCTAssertTrue(source.contains("BatchMoveResumeIdentity.effectiveDryRun"))
+        XCTAssertTrue(source.contains("unresolvedRequestIsDryRun"))
+        XCTAssertTrue(
+            source.contains("shouldResetSessionForPreview"),
+            "fresh preview reset must be gated so resume is not destroyed"
+        )
+    }
+
+    func testUndoSelectionFrozenWhileUnresolvedLongOp_repro() {
+        let m1 = EngramServiceMigrationLogEntry(
+            id: "m1",
+            oldPath: "/a",
+            newPath: "/b",
+            oldBasename: "a",
+            newBasename: "b",
+            state: "committed",
+            startedAt: "2026-01-01T00:00:00Z",
+            finishedAt: "2026-01-01T00:00:01Z",
+            archived: false,
+            auditNote: nil,
+            actor: "app",
+            detail: nil
+        )
+        let m2 = EngramServiceMigrationLogEntry(
+            id: "m2",
+            oldPath: "/c",
+            newPath: "/d",
+            oldBasename: "c",
+            newBasename: "d",
+            state: "committed",
+            startedAt: "2026-01-01T00:00:00Z",
+            finishedAt: "2026-01-01T00:00:01Z",
+            archived: false,
+            auditNote: nil,
+            actor: "app",
+            detail: nil
+        )
+        // Normal navigation works.
+        XCTAssertEqual(
+            UndoMigrationSelection.nextSelectedId(
+                direction: .down,
+                selectedId: "m1",
+                migrations: [m1, m2],
+                disabledIds: [],
+                isExecuting: false,
+                blocksDuplicateSubmit: false
+            ),
+            "m2"
+        )
+        // Unresolved long-op freezes selection (must not change migrationId).
+        XCTAssertNil(
+            UndoMigrationSelection.nextSelectedId(
+                direction: .down,
+                selectedId: "m1",
+                migrations: [m1, m2],
+                disabledIds: [],
+                isExecuting: false,
+                blocksDuplicateSubmit: true
+            )
+        )
+        XCTAssertNil(
+            UndoMigrationSelection.nextSelectedId(
+                direction: .down,
+                selectedId: "m1",
+                migrations: [m1, m2],
+                disabledIds: [],
+                isExecuting: true,
+                blocksDuplicateSubmit: false
+            )
+        )
+    }
+
+    func testArchiveParentCreationOwnedByOrchestratorNotHandler_repro() throws {
+        let handler = try Self.source(
+            "macos/EngramService/Core/EngramServiceCommandHandler+ProjectMigration.swift"
+        )
+        guard let archiveRange = handler.range(of: "static func projectArchive(") else {
+            return XCTFail("projectArchive not found")
+        }
+        let afterArchive = handler[archiveRange.lowerBound...]
+        guard let produceRange = afterArchive.range(of: "produceWithGate(") else {
+            return XCTFail("produceWithGate not found in projectArchive")
+        }
+        let preflight = String(afterArchive[..<produceRange.lowerBound])
+        XCTAssertFalse(
+            preflight.contains("FileManager.default.createDirectory"),
+            "archive preflight must not mutate FS before holding the writer gate"
+        )
+        let gateBody = try Self.swiftClosureBody(
+            in: String(afterArchive),
+            afterMarker: ") { writer in"
+        )
+        XCTAssertFalse(
+            gateBody.contains("FileManager.default.createDirectory"),
+            "handler must not create archive parents; orchestrator owns compensatable provision"
+        )
+        XCTAssertTrue(
+            gateBody.contains("ProjectMoveOrchestrator.run"),
+            "orchestrator must remain inside the gated body"
+        )
+
+        let batch = try Self.source("macos/EngramCoreWrite/ProjectMove/Batch.swift")
+        XCTAssertFalse(
+            batch.contains("SafeMoveDir requires the dst's parent to exist"),
+            "batch must not pre-create archive parents outside orchestrator compensation"
+        )
+
+        let orchestrator = try Self.source(
+            "macos/EngramCoreWrite/ProjectMove/Orchestrator.swift"
+        )
+        XCTAssertTrue(
+            orchestrator.contains("DestinationParentProvision.ensure"),
+            "orchestrator must provision destination parents"
+        )
+        XCTAssertTrue(
+            orchestrator.contains("destinationParentToken?.cleanup()")
+                || orchestrator.contains("destinationParentToken?.cleanup("),
+            "orchestrator must cleanup token on failure/cancel"
+        )
+        XCTAssertTrue(
+            orchestrator.contains("destinationParentToken?.release()")
+                || orchestrator.contains("destinationParentToken?.release("),
+            "orchestrator must release token on success without deleting parents"
+        )
+        XCTAssertTrue(
+            orchestrator.contains("if options.archived"),
+            "parent provision must be archive-only so plain renames keep prior behavior"
+        )
+
+        let fsOps = try Self.source("macos/EngramCoreWrite/ProjectMove/FsOps.swift")
+        guard let mark = fsOps.range(of: "public enum DestinationParentProvision") else {
+            return XCTFail("DestinationParentProvision missing")
+        }
+        let start = fsOps.index(mark.lowerBound, offsetBy: -800, limitedBy: fsOps.startIndex)
+            ?? fsOps.startIndex
+        let provision = String(fsOps[start...].prefix(6000))
+        XCTAssertTrue(provision.contains("mkdirat"))
+        XCTAssertTrue(provision.contains("unlinkat"))
+        XCTAssertTrue(provision.contains("openat"))
+        XCTAssertFalse(
+            provision.contains(".removeItem(at")
+                || provision.range(of: #"\.removeItem\s*\(\s*at(Path)?:"#, options: .regularExpression) != nil,
+            "provision must not call recursive removeItem"
+        )
     }
 
     // MARK: - (d) alias add AND remove both encode new_project (non-nil)
@@ -320,6 +783,63 @@ final class ProjectsMigrationTests: XCTestCase {
 
     private static func source(_ relativePath: String) throws -> String {
         try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
+    /// Extract the body of a `{ ... }` that begins immediately after `marker`.
+    /// Brace-balanced; ignores braces inside string literals so later scopes
+    /// (e.g. `.onDisappear`) cannot leak into a Cancel-button assertion.
+    private static func swiftClosureBody(in source: String, afterMarker marker: String) throws -> String {
+        guard let markerRange = source.range(of: marker) else {
+            throw NSError(
+                domain: "ProjectsMigrationTests",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "marker not found: \(marker)"]
+            )
+        }
+        let start = markerRange.upperBound
+        var depth = 1
+        var index = start
+        var inString = false
+        var stringDelim: Character = "\""
+        var escaped = false
+        while index < source.endIndex {
+            let ch = source[index]
+            let next = source.index(after: index)
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if ch == "\\" {
+                    escaped = true
+                } else if ch == stringDelim {
+                    inString = false
+                }
+                index = next
+                continue
+            }
+            if ch == "\"" || ch == "#" {
+                // Rough handling: "..." or #"..."# / multiline; treat " as string start.
+                if ch == "\"" {
+                    inString = true
+                    stringDelim = "\""
+                }
+                index = next
+                continue
+            }
+            if ch == "{" {
+                depth += 1
+            } else if ch == "}" {
+                depth -= 1
+                if depth == 0 {
+                    return String(source[start..<index])
+                }
+            }
+            index = next
+        }
+        throw NSError(
+            domain: "ProjectsMigrationTests",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: "unbalanced braces after marker: \(marker)"]
+        )
     }
 }
 

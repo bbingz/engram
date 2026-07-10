@@ -172,6 +172,135 @@ final class BatchTests: XCTestCase {
         XCTAssertEqual(result.remaining, [first, second])
     }
 
+    /// Mid-op cancel (shouldCancel true once the orchestrator runs) must put
+    /// the current op into remaining — not completed — and mark cancelled.
+    func testMidOperationCancelBeforeCommitLeavesOpInRemaining_repro() async throws {
+        let first = BatchOperation(src: "/will-cancel", dst: "/will-cancel-dst")
+        let second = BatchOperation(src: "/after", dst: "/after-dst")
+        let doc = BatchDocument(operations: [first, second])
+
+        // Always-true shouldCancel is also checked inside the orchestrator;
+        // the top-of-loop check fires first so both ops remain. This asserts
+        // the remaining contract wording: remaining = not committed.
+        let result = await Batch.run(
+            doc,
+            writer: writer,
+            overrides: makeOverrides(),
+            shouldCancel: { true }
+        )
+        XCTAssertTrue(result.cancelled)
+        XCTAssertTrue(result.completed.isEmpty, "cancelled-before-commit ops must not appear completed")
+        XCTAssertEqual(result.remaining.count, 2)
+        XCTAssertTrue(result.skipped.isEmpty)
+    }
+
+    /// Cancel at the atomic commit boundary (not top-of-loop) via beginCommitIfNotCancelled.
+    func testBatchCancelAtCommitBoundaryUsesBeginCommitProbe_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "boundary-src")
+        let dst = tempRoot.appendingPathComponent("boundary-dst").path
+        let doc = BatchDocument(operations: [
+            BatchOperation(src: src, dst: dst),
+            BatchOperation(src: "/later", dst: "/later-dst"),
+        ])
+        // shouldCancel stays false so top-of-loop continues; commit probe rejects.
+        let result = await Batch.run(
+            doc,
+            writer: writer,
+            overrides: makeOverrides(),
+            shouldCancel: { false },
+            beginCommitIfNotCancelled: { false }
+        )
+        XCTAssertTrue(result.cancelled)
+        XCTAssertTrue(result.completed.isEmpty)
+        XCTAssertEqual(result.remaining.count, 2, "current + later ops remain when commit boundary cancels")
+        XCTAssertFalse(result.cancelUnsafe)
+    }
+
+    /// Item 1 commits; cancel after endItemCommitWindow; item 2 remains unstarted.
+    func testBatchCancelAfterFirstItemCommitsStopsBeforeSecond_repro() async throws {
+        let (src1, _) = try makeProjectFixture(name: "item1")
+        let dst1 = tempRoot.appendingPathComponent("item1-dst").path
+        let op1 = BatchOperation(src: src1, dst: dst1)
+        let op2 = BatchOperation(src: "/later", dst: "/later-dst")
+        let doc = BatchDocument(operations: [op1, op2])
+
+        let cancelAfterFirst = CancelAfterFirstBox()
+        let dryCompleted = PipelineResult(
+            migrationId: "m1",
+            state: .committed,
+            src: src1,
+            dst: dst1,
+            moveStrategy: .rename,
+            ccDirRenamed: false,
+            renamedDirs: [],
+            skippedDirs: [],
+            perSource: [],
+            totalFilesPatched: 0,
+            totalOccurrences: 0,
+            sessionsUpdated: 0,
+            aliasCreated: false,
+            review: ReviewResult(own: [], other: []),
+            git: GitDirtyStatus(isGitRepo: false, dirty: false, untrackedOnly: false, porcelain: ""),
+            manifest: [],
+            error: nil
+        )
+
+        let result = await Batch.run(
+            doc,
+            writer: writer,
+            overrides: BatchOverrides(
+                homeDirectory: tempRoot,
+                lockPath: tempRoot.appendingPathComponent("lock").path,
+                force: true,
+                runOperation: { op, _, _ in
+                    if op.src == src1 {
+                        await cancelAfterFirst.markFirstDone()
+                        return dryCompleted
+                    }
+                    XCTFail("second op must not start after cancel")
+                    return dryCompleted
+                }
+            ),
+            shouldCancel: { cancelAfterFirst.shouldCancel },
+            beginCommitIfNotCancelled: { true },
+            endItemCommitWindow: {
+                // After first item settles, arm cancel so next top-of-loop stops.
+                cancelAfterFirst.armCancel()
+            }
+        )
+        XCTAssertEqual(result.completed.count, 1)
+        XCTAssertTrue(result.cancelled)
+        XCTAssertEqual(result.remaining, [op2])
+    }
+
+    /// Batch.run itself catches ProjectMoveCancelledError(compensationSucceeded:false).
+    func testBatchRunCatchesUnsafeCompensationError_repro() async throws {
+        let op1 = BatchOperation(src: "/a", dst: "/b")
+        let op2 = BatchOperation(src: "/c", dst: "/d")
+        let doc = BatchDocument(operations: [op1, op2])
+        let result = await Batch.run(
+            doc,
+            writer: writer,
+            overrides: BatchOverrides(
+                homeDirectory: tempRoot,
+                runOperation: { _, _, _ in
+                    throw ProjectMoveCancelledError(
+                        compensationSucceeded: false,
+                        compensationDetail: "rollback: 1 file failed"
+                    )
+                }
+            ),
+            shouldCancel: { false },
+            beginCommitIfNotCancelled: { true }
+        )
+        XCTAssertTrue(result.cancelled)
+        XCTAssertTrue(result.cancelUnsafe)
+        XCTAssertEqual(result.cancelErrorName, "ProjectMoveCancelCompensationFailedError")
+        XCTAssertTrue(result.cancelErrorMessage?.contains("compensation was incomplete") == true)
+        XCTAssertEqual(result.remaining.count, 2)
+        XCTAssertEqual(result.failed.count, 1)
+    }
+
     func testRunSurfacesArchiveSuggestionFailureAsBatchFailure() async throws {
         // Empty fixture is "ambiguous" only when content is non-empty + no
         // git; the empty rule actually catches this as 空项目. Instead, build
@@ -194,9 +323,13 @@ final class BatchTests: XCTestCase {
             BatchOperation(src: src, archive: true)
         ])
         let result = await Batch.run(doc, writer: writer, overrides: makeOverrides())
-        XCTAssertEqual(result.completed.count, 1, "got failures: \(result.failed.map(\.error))")
-        XCTAssertEqual(result.failed.count, 0)
-        let archivedPath = result.completed[0]
+        guard let archivedPath = result.completed.first else {
+            XCTFail(
+                "expected 1 completed archive; failures=\(result.failed.map(\.error))"
+            )
+            return
+        }
+        XCTAssertEqual(result.failed.count, 0, "failures: \(result.failed.map(\.error))")
         XCTAssertEqual(archivedPath.state, .committed)
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: archivedPath.renamedDirs.first?.newDir ?? archivedPath.migrationId)
@@ -306,5 +439,19 @@ final class BatchTests: XCTestCase {
                 userInfo: [NSLocalizedDescriptionKey: "git \(args.joined(separator: " ")) failed"]
             )
         }
+    }
+}
+
+/// Box for cancel-after-first batch test.
+private final class CancelAfterFirstBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _shouldCancel = false
+    var shouldCancel: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _shouldCancel
+    }
+    func markFirstDone() async {}
+    func armCancel() {
+        lock.lock(); _shouldCancel = true; lock.unlock()
     }
 }

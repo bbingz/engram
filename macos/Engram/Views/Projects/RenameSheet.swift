@@ -27,6 +27,10 @@ struct RenameSheet: View {
     @State private var errorMessage: String?
     @State private var retryPolicy: String = "safe"
     @State private var activeTask: Task<Void, Never>?
+    /// Durable operation id across transient reconnects (Wave 8 long-ops).
+    @State private var longOpSession = ProjectLongOperationSession()
+    /// True while reconnecting after timeout/disconnect (not a user cancel).
+    @State private var isReconnecting = false
     /// Populated when the migration committed but left residual old-path
     /// references in the user's own scope (review.own non-empty). Gemini
     /// follow-up high: previously the UI silently closed on any committed
@@ -95,6 +99,7 @@ struct RenameSheet: View {
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
+                    .disabled(isExecuting || longOpSession.blocksDuplicateSubmit)
                 } else {
                     Text("Source path:")
                         .font(.caption)
@@ -110,7 +115,7 @@ struct RenameSheet: View {
                 TextField("/absolute/path/to/new/location", text: $newPath)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
-                    .disabled(isExecuting)
+                    .disabled(isExecuting || longOpSession.blocksDuplicateSubmit)
                     .accessibilityLabel("New project path")
                     .accessibilityHint("Enter the full destination path; ~/… is accepted.")
 
@@ -131,9 +136,13 @@ struct RenameSheet: View {
                     HStack(spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("Renaming — patching files and renaming dirs…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(
+                            isReconnecting
+                                ? projectMoveReconnectingMessage()
+                                : "Renaming — patching files and renaming dirs…"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 4)
                 }
@@ -175,9 +184,23 @@ struct RenameSheet: View {
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button("Cancel") { dismiss() }
-                        .keyboardShortcut(.cancelAction)
-                        .disabled(isExecuting)
+                    Button("Cancel") {
+                        if isExecuting || longOpSession.blocksDuplicateSubmit,
+                           let operationId = longOpSession.operationId
+                        {
+                            // Explicit cooperative cancel only — never cancel the
+                            // awaiting task (would discard partial/reconnect state).
+                            Task {
+                                _ = try? await serviceClient.cancelProjectMoveBatch(
+                                    operationId: operationId
+                                )
+                            }
+                        } else {
+                            longOpSession.reset()
+                            dismiss()
+                        }
+                    }
+                    .keyboardShortcut(.cancelAction)
 
                     if previewResult?.state != "dry-run" {
                         Button("Preview") {
@@ -187,19 +210,27 @@ struct RenameSheet: View {
                         // Preview in this state so users don't have to
                         // move their hand to the mouse after typing.
                         .keyboardShortcut(.defaultAction)
-                        .disabled(!isPathValid)
+                        .disabled(!isPathValid || longOpSession.blocksDuplicateSubmit)
                     } else {
-                        Button("Rename") {
-                            activeTask = Task { await runRename() }
+                        if longOpSession.blocksDuplicateSubmit && !isExecuting {
+                            Button("Resume / Check Status") {
+                                activeTask = Task { await runRename() }
+                            }
+                            .keyboardShortcut(.defaultAction)
+                            .buttonStyle(.borderedProminent)
+                        } else {
+                            Button("Rename") {
+                                activeTask = Task { await runRename() }
+                            }
+                            .keyboardShortcut(.defaultAction)
+                            .buttonStyle(.borderedProminent)
+                            .disabled(
+                                isExecuting
+                                    || isPreviewLoading
+                                    || previewStale
+                                    || longOpSession.blocksDuplicateSubmit
+                            )
                         }
-                        .keyboardShortcut(.defaultAction)
-                        .buttonStyle(.borderedProminent)
-                        // Round 4: disable on (a) executing, (b) preview
-                        // still in flight — prevents concurrent Task
-                        // spawn (code-reviewer I4) — (c) stale preview
-                        // after path edit, so user can't commit against
-                        // numbers that no longer reflect the input.
-                        .disabled(isExecuting || isPreviewLoading || previewStale)
                     }
                 }
             }
@@ -214,7 +245,11 @@ struct RenameSheet: View {
             guard nativeProjectMigrationCommandsEnabled else { return }
             await loadCwds()
         }
-        .onDisappear { activeTask?.cancel() }
+        .onDisappear {
+            // Keep commit-path awaits alive for cooperative cancel / reconnect.
+            guard !isExecuting else { return }
+            activeTask?.cancel()
+        }
         // Round 4: instead of hard-clearing the preview (abrupt visual
         // jump), flag it stale and render dimmed with an inline notice.
         // Rename button also gates on `!previewStale` so the user can't
@@ -516,25 +551,42 @@ struct RenameSheet: View {
         errorMessage = nil
         errorDetails = nil
         residualRefCount = nil
+        isReconnecting = false
         isExecuting = true
-        defer { isExecuting = false; activeTask = nil }
-        do {
-            let res = try await serviceClient.projectMove(
+        defer {
+            isExecuting = false
+            isReconnecting = false
+            activeTask = nil
+        }
+        // Publish operationId before await so Cancel can call service cancel.
+        let prepared = ProjectLongOperationRunner.prepare(session: longOpSession)
+        longOpSession = prepared.session
+        isReconnecting = prepared.session.transientFailures > 0
+        let executeResult = await ProjectLongOperationRunner.execute(
+            session: longOpSession,
+            operationId: prepared.operationId,
+            isReconnectable: projectMoveIsReconnectableError
+        ) { operationId in
+            try await serviceClient.projectMove(
                 EngramServiceProjectMoveRequest(
                     src: selectedCwd,
                     dst: newPath,
                     dryRun: false,
                     force: false,
                     auditNote: nil,
-                    actor: "app"
+                    actor: "app",
+                    operationId: operationId
                 )
             )
-            if Task.isCancelled { return }
-            if res.state == "committed" {
-                // Gemini follow-up high: don't auto-dismiss if the backend
-                // flagged residual own-scope refs. Swap Rename button for
-                // a Close button so the user explicitly acknowledges the
-                // warning before the sheet closes.
+        }
+        longOpSession = executeResult.session
+        isReconnecting = false
+        switch executeResult.result {
+        case .success(let res):
+            if res.state == "cancelled" {
+                errorMessage = projectMoveCancelledBeforeCommitMessage(kind: "Rename")
+                retryPolicy = "safe"
+            } else if res.state == "committed" {
                 if res.review.own.isEmpty {
                     NotificationCenter.default.post(name: .projectsDidChange, object: nil)
                     dismiss()
@@ -544,10 +596,19 @@ struct RenameSheet: View {
             } else {
                 errorMessage = "Unexpected state: \(res.state)"
             }
-        } catch {
-            if Task.isCancelled { return }
-            errorMessage = projectMoveErrorMessage(error)
-            retryPolicy = projectMoveRetryPolicy(error)
+        case .failure(let error):
+            if projectMoveIsCancelCompensationFailure(error) {
+                errorMessage = projectMoveCancelCompensationFailedMessage(
+                    projectMoveErrorMessage(error)
+                )
+                retryPolicy = "never"
+            } else {
+                errorMessage = projectMoveErrorMessage(error)
+                if longOpSession.blocksDuplicateSubmit {
+                    errorMessage = (errorMessage ?? "") + "\n" + projectMoveResumeAvailableMessage()
+                }
+                retryPolicy = projectMoveRetryPolicy(error)
+            }
             errorDetails = projectMoveErrorDetails(error)
         }
     }

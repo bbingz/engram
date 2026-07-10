@@ -31,6 +31,9 @@ struct BatchMoveOutcome: Equatable {
     /// Ops not started after cooperative cancel (Wave 7C M05).
     var remaining: Int = 0
     var cancelled: Bool = false
+    var cancelUnsafe: Bool = false
+    var cancelErrorName: String?
+    var cancelErrorMessage: String?
     var failures: [(src: String, error: String)] = []
 
     static func == (lhs: BatchMoveOutcome, rhs: BatchMoveOutcome) -> Bool {
@@ -39,6 +42,9 @@ struct BatchMoveOutcome: Equatable {
             && lhs.skipped == rhs.skipped
             && lhs.remaining == rhs.remaining
             && lhs.cancelled == rhs.cancelled
+            && lhs.cancelUnsafe == rhs.cancelUnsafe
+            && lhs.cancelErrorName == rhs.cancelErrorName
+            && lhs.cancelErrorMessage == rhs.cancelErrorMessage
             && lhs.failures.map(\.src) == rhs.failures.map(\.src)
             && lhs.failures.map(\.error) == rhs.failures.map(\.error)
     }
@@ -69,6 +75,31 @@ enum BatchMoveBody {
     }
 }
 
+/// Resume must re-issue the *same* dry-run identity that minted the operationId.
+/// Preview YAML fingerprints include `defaults.dry_run`; Commit omits it.
+enum BatchMoveResumeIdentity {
+    /// When resuming an unresolved long-op, use the saved dry-run mode; otherwise
+    /// the button-requested mode.
+    static func effectiveDryRun(
+        isResume: Bool,
+        requestedDryRun: Bool,
+        savedDryRun: Bool?
+    ) -> Bool {
+        if isResume, let savedDryRun {
+            return savedDryRun
+        }
+        return requestedDryRun
+    }
+
+    /// Fresh Preview may reset session identity; Resume must not.
+    static func shouldResetSessionForPreview(
+        isResume: Bool,
+        effectiveDryRun: Bool
+    ) -> Bool {
+        !isResume && effectiveDryRun
+    }
+}
+
 /// Hand-pattern-match the bare EngramServiceJSONValue (no accessors) into
 /// completed/failed/skipped counts and failed src+error lines.
 func parseBatchMoveOutcome(_ value: EngramServiceJSONValue) -> BatchMoveOutcome {
@@ -78,6 +109,9 @@ func parseBatchMoveOutcome(_ value: EngramServiceJSONValue) -> BatchMoveOutcome 
     if case .array(let items)? = root["skipped"] { outcome.skipped = items.count }
     if case .array(let items)? = root["remaining"] { outcome.remaining = items.count }
     if case .bool(let cancelled)? = root["cancelled"] { outcome.cancelled = cancelled }
+    if case .bool(let unsafe)? = root["cancel_unsafe"] { outcome.cancelUnsafe = unsafe }
+    if case .string(let name)? = root["cancel_error_name"] { outcome.cancelErrorName = name }
+    if case .string(let message)? = root["cancel_error_message"] { outcome.cancelErrorMessage = message }
     if case .array(let items)? = root["failed"] {
         outcome.failed = items.count
         for item in items {
@@ -103,7 +137,10 @@ struct BatchMoveSheet: View {
     @State private var outcome: BatchMoveOutcome?
     @State private var errorMessage: String?
     @State private var activeTask: Task<Void, Never>?
-    @State private var activeBatchOperationId: String?
+    @State private var longOpSession = ProjectLongOperationSession()
+    @State private var isReconnecting = false
+    /// Dry-run mode that minted the current unresolved operationId (Preview vs Commit).
+    @State private var unresolvedRequestIsDryRun: Bool?
 
     /// Rows that actually have a destination to move (recorded cwd present).
     private var movableOperations: [(src: String, dst: String)] {
@@ -147,9 +184,13 @@ struct BatchMoveSheet: View {
                 if isExecuting {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text("Moving \(movableOperations.count) project(s)…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(
+                            isReconnecting
+                                ? projectMoveReconnectingMessage()
+                                : "Moving \(movableOperations.count) project(s)…"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 4)
                 }
@@ -167,14 +208,15 @@ struct BatchMoveSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") {
-                    if isExecuting, let operationId = activeBatchOperationId {
-                        // Wave 7C M05: cooperative service cancel only — do NOT
-                        // cancel the awaiting task, so completed/remaining partial
-                        // results still surface in the outcome box.
+                    if isExecuting || longOpSession.blocksDuplicateSubmit,
+                       let operationId = longOpSession.operationId
+                    {
+                        // Explicit cooperative cancel only — never cancel await task.
                         Task {
                             _ = try? await serviceClient.cancelProjectMoveBatch(operationId: operationId)
                         }
                     } else {
+                        longOpSession.reset()
                         dismiss()
                     }
                 }
@@ -182,13 +224,23 @@ struct BatchMoveSheet: View {
                 Button("Preview") {
                     activeTask = Task { await run(dryRun: true) }
                 }
-                .disabled(isExecuting || movableOperations.isEmpty)
-                Button("Move") {
-                    activeTask = Task { await run(dryRun: false) }
+                .disabled(isExecuting || movableOperations.isEmpty || longOpSession.blocksDuplicateSubmit)
+                if longOpSession.blocksDuplicateSubmit && !isExecuting {
+                    Button("Resume / Check Status") {
+                        // Re-issue original dry-run identity (Preview stays Preview).
+                        let resumeDryRun = unresolvedRequestIsDryRun ?? false
+                        activeTask = Task { await run(dryRun: resumeDryRun) }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Move") {
+                        activeTask = Task { await run(dryRun: false) }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isExecuting || movableOperations.isEmpty || longOpSession.blocksDuplicateSubmit)
                 }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .disabled(isExecuting || movableOperations.isEmpty)
             }
         }
         .padding(20)
@@ -198,7 +250,13 @@ struct BatchMoveSheet: View {
             guard nativeProjectMigrationCommandsEnabled else { return }
             await loadCwds()
         }
-        .onDisappear { activeTask?.cancel() }
+        .onDisappear {
+            // Never cancel an in-flight migration await — Cancel uses cooperative
+            // service cancel only; tearing down the client task would look like
+            // peer disconnect and discard partial/reconnect results.
+            guard !isExecuting else { return }
+            activeTask?.cancel()
+        }
     }
 
     @ViewBuilder
@@ -216,7 +274,7 @@ struct BatchMoveSheet: View {
                 TextField("/absolute/path/to/new/location", text: row.newPath)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.caption, design: .monospaced))
-                    .disabled(isExecuting)
+                    .disabled(isExecuting || longOpSession.blocksDuplicateSubmit)
             }
         }
     }
@@ -224,9 +282,20 @@ struct BatchMoveSheet: View {
     @ViewBuilder
     private func outcomeBox(_ outcome: BatchMoveOutcome) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            let cancelPart = outcome.cancelled
-                ? " · \(outcome.remaining) remaining (cancelled)"
-                : (outcome.remaining > 0 ? " · \(outcome.remaining) remaining" : "")
+            // Precise wording: cancelled ⇒ remaining ops never started (or
+            // stopped before that op's commit). completed stay committed.
+            let cancelPart: String = {
+                if outcome.cancelled {
+                    if outcome.remaining > 0 {
+                        return " · \(outcome.remaining) remaining (cancelled before commit; completed stay committed)"
+                    }
+                    return " · cancelled before commit"
+                }
+                if outcome.remaining > 0 {
+                    return " · \(outcome.remaining) remaining"
+                }
+                return ""
+            }()
             Text("\(outcome.completed) completed · \(outcome.failed) failed · \(outcome.skipped) skipped\(cancelPart)")
                 .font(.caption.weight(.medium))
             ForEach(Array(outcome.failures.enumerated()), id: \.offset) { _, failure in
@@ -261,17 +330,41 @@ struct BatchMoveSheet: View {
     private func run(dryRun: Bool) async {
         errorMessage = nil
         outcome = nil
+        isReconnecting = false
         isExecuting = true
-        let operationId = UUID().uuidString
-        activeBatchOperationId = operationId
         defer {
             isExecuting = false
+            isReconnecting = false
             activeTask = nil
-            activeBatchOperationId = nil
         }
-        let body = BatchMoveBody.make(operations: movableOperations, dryRun: dryRun)
-        do {
-            let result = try await serviceClient.projectMoveBatch(
+        let isResume = longOpSession.blocksDuplicateSubmit
+        let effectiveDryRun = BatchMoveResumeIdentity.effectiveDryRun(
+            isResume: isResume,
+            requestedDryRun: dryRun,
+            savedDryRun: unresolvedRequestIsDryRun
+        )
+        // Fresh Preview may mint a new id; Resume must keep the unresolved one.
+        // Unconditional reset would destroy preview identity before resume.
+        if BatchMoveResumeIdentity.shouldResetSessionForPreview(
+            isResume: isResume,
+            effectiveDryRun: effectiveDryRun
+        ) {
+            longOpSession.reset()
+            unresolvedRequestIsDryRun = nil
+        }
+        let body = BatchMoveBody.make(operations: movableOperations, dryRun: effectiveDryRun)
+        // Publish operationId to @State BEFORE any await so in-flight Cancel works.
+        let prepared = ProjectLongOperationRunner.prepare(session: longOpSession)
+        longOpSession = prepared.session
+        isReconnecting = prepared.session.transientFailures > 0
+        // Remember the request mode that minted this operationId for Resume.
+        unresolvedRequestIsDryRun = effectiveDryRun
+        let executeResult = await ProjectLongOperationRunner.execute(
+            session: longOpSession,
+            operationId: prepared.operationId,
+            isReconnectable: projectMoveIsReconnectableError
+        ) { operationId in
+            try await serviceClient.projectMoveBatch(
                 EngramServiceProjectMoveBatchRequest(
                     yaml: body,
                     dryRun: false,
@@ -280,15 +373,40 @@ struct BatchMoveSheet: View {
                     operationId: operationId
                 )
             )
-            // Always surface partial results (including cancelled + remaining).
+        }
+        longOpSession = executeResult.session
+        isReconnecting = false
+        switch executeResult.result {
+        case .success(let result):
+            // Terminal success: clear identity so Commit after Preview mints a new id.
+            unresolvedRequestIsDryRun = nil
             let parsed = parseBatchMoveOutcome(result)
             outcome = parsed
-            if !dryRun && parsed.failed == 0 && !parsed.cancelled && parsed.remaining == 0 {
+            if parsed.cancelUnsafe {
+                errorMessage = projectMoveCancelCompensationFailedMessage(
+                    parsed.cancelErrorMessage ?? ""
+                )
+            }
+            if !effectiveDryRun && parsed.failed == 0 && !parsed.cancelled && parsed.remaining == 0 {
                 NotificationCenter.default.post(name: .projectsDidChange, object: nil)
                 dismiss()
             }
-        } catch {
-            errorMessage = projectMoveErrorMessage(error)
+        case .failure(let error):
+            if longOpSession.blocksDuplicateSubmit {
+                unresolvedRequestIsDryRun = effectiveDryRun
+            } else {
+                unresolvedRequestIsDryRun = nil
+            }
+            if projectMoveIsCancelCompensationFailure(error) {
+                errorMessage = projectMoveCancelCompensationFailedMessage(
+                    projectMoveErrorMessage(error)
+                )
+            } else {
+                errorMessage = projectMoveErrorMessage(error)
+                if longOpSession.blocksDuplicateSubmit {
+                    errorMessage = (errorMessage ?? "") + "\n" + projectMoveResumeAvailableMessage()
+                }
+            }
         }
     }
 }

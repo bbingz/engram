@@ -19,6 +19,8 @@ struct ArchiveSheet: View {
     @State private var errorMessage: String?
     @State private var retryPolicy: String = "safe"
     @State private var activeTask: Task<Void, Never>?
+    @State private var longOpSession = ProjectLongOperationSession()
+    @State private var isReconnecting = false
     @State private var residualRefCount: Int?
     @State private var errorDetails: ProjectMoveServiceErrorDetails?
     @State private var showConfirmDialog: Bool = false
@@ -70,6 +72,7 @@ struct ArchiveSheet: View {
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
+                    .disabled(isExecuting || longOpSession.blocksDuplicateSubmit)
                 } else {
                     Text("Source path:")
                         .font(.caption)
@@ -88,7 +91,7 @@ struct ArchiveSheet: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
-                .disabled(isExecuting)
+                .disabled(isExecuting || longOpSession.blocksDuplicateSubmit)
 
                 // Round 4 Gemini Minor: previously hardcoded ~/-Code-/_archive/
                 // which is wrong for any user whose projects live elsewhere.
@@ -106,9 +109,13 @@ struct ArchiveSheet: View {
                     HStack(spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("Archiving — moving files and updating index…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(
+                            isReconnecting
+                                ? projectMoveReconnectingMessage()
+                                : "Archiving — moving files and updating index…"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 4)
                 }
@@ -199,21 +206,37 @@ struct ArchiveSheet: View {
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button("Cancel") { dismiss() }
-                        .keyboardShortcut(.cancelAction)
-                        .disabled(isExecuting)
-                    // Round 4 Gemini Critical: Archive physically moves
-                    // the project dir. Any editor/shell/build attached
-                    // to the old path will break on next fs access. The
-                    // Archive button now triggers a confirmationDialog;
-                    // the actual work only starts after explicit confirm.
-                    Button("Archive") { showConfirmDialog = true }
+                    Button("Cancel") {
+                        if isExecuting || longOpSession.blocksDuplicateSubmit,
+                           let operationId = longOpSession.operationId
+                        {
+                            Task {
+                                _ = try? await serviceClient.cancelProjectMoveBatch(
+                                    operationId: operationId
+                                )
+                            }
+                        } else {
+                            longOpSession.reset()
+                            dismiss()
+                        }
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    if longOpSession.blocksDuplicateSubmit && !isExecuting {
+                        Button("Resume / Check Status") {
+                            activeTask = Task { await runArchive() }
+                        }
                         .keyboardShortcut(.defaultAction)
                         .buttonStyle(.borderedProminent)
-                        .disabled(
-                            selectedCwd.isEmpty || isExecuting
-                                || availableCwds.isEmpty
-                        )
+                    } else {
+                        Button("Archive") { showConfirmDialog = true }
+                            .keyboardShortcut(.defaultAction)
+                            .buttonStyle(.borderedProminent)
+                            .disabled(
+                                selectedCwd.isEmpty || isExecuting
+                                    || availableCwds.isEmpty
+                                    || longOpSession.blocksDuplicateSubmit
+                            )
+                    }
                 }
             }
         }
@@ -224,7 +247,11 @@ struct ArchiveSheet: View {
             guard nativeProjectMigrationCommandsEnabled else { return }
             await loadCwds()
         }
-        .onDisappear { activeTask?.cancel() }
+        .onDisappear {
+            // Keep commit-path awaits alive for cooperative cancel / reconnect.
+            guard !isExecuting else { return }
+            activeTask?.cancel()
+        }
         .confirmationDialog(
             "Archive project?",
             isPresented: $showConfirmDialog,
@@ -277,21 +304,41 @@ struct ArchiveSheet: View {
         errorMessage = nil
         errorDetails = nil
         residualRefCount = nil
+        isReconnecting = false
         isExecuting = true
-        defer { isExecuting = false; activeTask = nil }
-        do {
-            let res = try await serviceClient.projectArchive(
+        defer {
+            isExecuting = false
+            isReconnecting = false
+            activeTask = nil
+        }
+        let prepared = ProjectLongOperationRunner.prepare(session: longOpSession)
+        longOpSession = prepared.session
+        isReconnecting = prepared.session.transientFailures > 0
+        let executeResult = await ProjectLongOperationRunner.execute(
+            session: longOpSession,
+            operationId: prepared.operationId,
+            isReconnectable: projectMoveIsReconnectableError
+        ) { operationId in
+            try await serviceClient.projectArchive(
                 EngramServiceProjectArchiveRequest(
                     src: selectedCwd,
                     archiveTo: category.isEmpty ? nil : category,
                     dryRun: false,
                     force: false,
                     auditNote: nil,
-                    actor: "app"
+                    actor: "app",
+                    operationId: operationId
                 )
             )
-            if Task.isCancelled { return }
-            if res.state == "committed" {
+        }
+        longOpSession = executeResult.session
+        isReconnecting = false
+        switch executeResult.result {
+        case .success(let res):
+            if res.state == "cancelled" {
+                errorMessage = projectMoveCancelledBeforeCommitMessage(kind: "Archive")
+                retryPolicy = "safe"
+            } else if res.state == "committed" {
                 if res.review.own.isEmpty {
                     NotificationCenter.default.post(name: .projectsDidChange, object: nil)
                     dismiss()
@@ -301,10 +348,19 @@ struct ArchiveSheet: View {
             } else {
                 errorMessage = "Unexpected state: \(res.state)"
             }
-        } catch {
-            if Task.isCancelled { return }
-            errorMessage = projectMoveErrorMessage(error)
-            retryPolicy = projectMoveRetryPolicy(error)
+        case .failure(let error):
+            if projectMoveIsCancelCompensationFailure(error) {
+                errorMessage = projectMoveCancelCompensationFailedMessage(
+                    projectMoveErrorMessage(error)
+                )
+                retryPolicy = "never"
+            } else {
+                errorMessage = projectMoveErrorMessage(error)
+                if longOpSession.blocksDuplicateSubmit {
+                    errorMessage = (errorMessage ?? "") + "\n" + projectMoveResumeAvailableMessage()
+                }
+                retryPolicy = projectMoveRetryPolicy(error)
+            }
             errorDetails = projectMoveErrorDetails(error)
         }
     }

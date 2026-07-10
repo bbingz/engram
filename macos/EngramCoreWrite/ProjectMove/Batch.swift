@@ -81,19 +81,30 @@ public struct BatchResult: Equatable, Sendable {
     /// Ops never started because cooperative cancel fired (Wave 7C M05 remaining).
     public var remaining: [BatchOperation]
     public var cancelled: Bool
+    /// True when cancel hit after FS mutation and compensation did not fully succeed.
+    public var cancelUnsafe: Bool
+    /// Structured cancel error name when `cancelUnsafe` (preserves identity for UI).
+    public var cancelErrorName: String?
+    public var cancelErrorMessage: String?
 
     public init(
         completed: [PipelineResult] = [],
         failed: [BatchOperationFailure] = [],
         skipped: [BatchOperation] = [],
         remaining: [BatchOperation] = [],
-        cancelled: Bool = false
+        cancelled: Bool = false,
+        cancelUnsafe: Bool = false,
+        cancelErrorName: String? = nil,
+        cancelErrorMessage: String? = nil
     ) {
         self.completed = completed
         self.failed = failed
         self.skipped = skipped
         self.remaining = remaining
         self.cancelled = cancelled
+        self.cancelUnsafe = cancelUnsafe
+        self.cancelErrorName = cancelErrorName
+        self.cancelErrorMessage = cancelErrorMessage
     }
 }
 
@@ -109,15 +120,19 @@ public struct BatchOverrides: Sendable {
     public var homeDirectory: URL
     public var lockPath: String?
     public var force: Bool
+    /// Test seam: when set, replaces `ProjectMoveOrchestrator.run` per operation.
+    public var runOperation: (@Sendable (_ op: BatchOperation, _ src: String, _ dst: String) async throws -> PipelineResult)?
 
     public init(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         lockPath: String? = nil,
-        force: Bool = false
+        force: Bool = false,
+        runOperation: (@Sendable (BatchOperation, String, String) async throws -> PipelineResult)? = nil
     ) {
         self.homeDirectory = homeDirectory
         self.lockPath = lockPath
         self.force = force
+        self.runOperation = runOperation
     }
 }
 
@@ -219,10 +234,14 @@ public enum Batch {
         _ doc: BatchDocument,
         writer: EngramDatabaseWriter,
         overrides: BatchOverrides = BatchOverrides(),
-        shouldCancel: @Sendable () -> Bool = { Task.isCancelled }
+        shouldCancel: @escaping @Sendable () -> Bool = { Task.isCancelled },
+        beginCommitIfNotCancelled: (@Sendable () -> Bool)? = nil,
+        endItemCommitWindow: (@Sendable () -> Void)? = nil
     ) async -> BatchResult {
         var result = BatchResult()
         var halted = false
+        let commitProbe = beginCommitIfNotCancelled ?? { !shouldCancel() }
+        let endWindow = endItemCommitWindow ?? {}
 
         for (index, op) in doc.operations.enumerated() {
             if shouldCancel() {
@@ -252,13 +271,8 @@ public enum Batch {
                         options: ArchiveOptions(skipProbe: doc.defaults.dryRun, forceCategory: op.archiveTo)
                     )
                     dst = suggestion.dst
-                    if !doc.defaults.dryRun {
-                        // SafeMoveDir requires the dst's parent to exist.
-                        try FileManager.default.createDirectory(
-                            atPath: (dst as NSString).deletingLastPathComponent,
-                            withIntermediateDirectories: true
-                        )
-                    }
+                    // Destination-parent creation is owned by the orchestrator
+                    // (compensatable empty-dir teardown on cancel/failure).
                 } catch {
                     result.failed.append(
                         BatchOperationFailure(operation: op, error: errorText(error))
@@ -275,26 +289,50 @@ public enum Batch {
             }
 
             do {
-                let pipelineResult = try await ProjectMoveOrchestrator.run(
-                    writer: writer,
-                    options: RunProjectMoveOptions(
-                        src: src,
-                        dst: dst,
-                        dryRun: doc.defaults.dryRun,
-                        force: overrides.force,
-                        archived: op.archive,
-                        auditNote: op.note,
-                        actor: .batch,
-                        homeDirectory: overrides.homeDirectory,
-                        lockPath: overrides.lockPath
+                let pipelineResult: PipelineResult
+                if let inject = overrides.runOperation {
+                    pipelineResult = try await inject(op, src, dst)
+                } else {
+                    pipelineResult = try await ProjectMoveOrchestrator.run(
+                        writer: writer,
+                        options: RunProjectMoveOptions(
+                            src: src,
+                            dst: dst,
+                            dryRun: doc.defaults.dryRun,
+                            force: overrides.force,
+                            archived: op.archive,
+                            auditNote: op.note,
+                            actor: .batch,
+                            homeDirectory: overrides.homeDirectory,
+                            lockPath: overrides.lockPath,
+                            shouldCancel: shouldCancel,
+                            beginCommitIfNotCancelled: commitProbe
+                        )
                     )
-                )
+                }
                 result.completed.append(pipelineResult)
+                // Re-open cancel window so a cancel after this item stops before the next.
+                endWindow()
+            } catch let cancel as ProjectMoveCancelledError {
+                // Preserve unsafe compensation identity.
+                result.cancelled = true
+                result.remaining.append(contentsOf: Array(doc.operations[index...]))
+                if !cancel.compensationSucceeded {
+                    result.cancelUnsafe = true
+                    result.cancelErrorName = cancel.errorName
+                    result.cancelErrorMessage = cancel.errorMessage
+                    result.failed.append(
+                        BatchOperationFailure(operation: op, error: cancel.errorMessage)
+                    )
+                }
+                endWindow()
+                break
             } catch {
                 result.failed.append(
                     BatchOperationFailure(operation: op, error: errorText(error))
                 )
                 if doc.defaults.stopOnError { halted = true }
+                endWindow()
             }
         }
         return result

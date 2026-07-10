@@ -1211,6 +1211,33 @@ struct EngramServiceProjectMoveRequest: Codable, Equatable, Sendable {
     let force: Bool
     let auditNote: String?
     let actor: String?
+    /// Stable client operation id for cancel/reconnect/idempotence (Wave 8 long-ops).
+    let operationId: String?
+
+    init(
+        src: String,
+        dst: String,
+        dryRun: Bool,
+        force: Bool,
+        auditNote: String?,
+        actor: String?,
+        operationId: String? = nil
+    ) {
+        self.src = src
+        self.dst = dst
+        self.dryRun = dryRun
+        self.force = force
+        self.auditNote = auditNote
+        self.actor = actor
+        self.operationId = operationId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case src, dst, force, actor
+        case dryRun = "dry_run"
+        case auditNote = "audit_note"
+        case operationId = "operation_id"
+    }
 }
 
 struct EngramServiceProjectArchiveRequest: Codable, Equatable, Sendable {
@@ -1220,12 +1247,60 @@ struct EngramServiceProjectArchiveRequest: Codable, Equatable, Sendable {
     let force: Bool
     let auditNote: String?
     let actor: String?
+    /// Stable client operation id for cancel/reconnect/idempotence (Wave 8 long-ops).
+    let operationId: String?
+
+    init(
+        src: String,
+        archiveTo: String?,
+        dryRun: Bool,
+        force: Bool,
+        auditNote: String?,
+        actor: String?,
+        operationId: String? = nil
+    ) {
+        self.src = src
+        self.archiveTo = archiveTo
+        self.dryRun = dryRun
+        self.force = force
+        self.auditNote = auditNote
+        self.actor = actor
+        self.operationId = operationId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case src, force, actor
+        case archiveTo = "archive_to"
+        case dryRun = "dry_run"
+        case auditNote = "audit_note"
+        case operationId = "operation_id"
+    }
 }
 
 struct EngramServiceProjectUndoRequest: Codable, Equatable, Sendable {
     let migrationId: String
     let force: Bool
     let actor: String?
+    /// Stable client operation id for cancel/reconnect/idempotence (Wave 8 long-ops).
+    let operationId: String?
+
+    init(
+        migrationId: String,
+        force: Bool,
+        actor: String?,
+        operationId: String? = nil
+    ) {
+        self.migrationId = migrationId
+        self.force = force
+        self.actor = actor
+        self.operationId = operationId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case force, actor
+        case migrationId = "migration_id"
+        case operationId = "operation_id"
+    }
 }
 
 struct EngramServiceProjectMoveResult: Codable, Equatable, Sendable {
