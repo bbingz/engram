@@ -5,7 +5,8 @@ enum MCPTranscriptTools {
         database: MCPDatabase,
         id: String,
         page: Int,
-        roles: [String]?
+        roles: [String]?,
+        includeRaw: Bool = false
     ) async throws -> OrderedJSONValue {
         guard let session = try database.sessionRecord(id: id) else {
             throw MCPToolError.invalidArguments("Session not found: \(id)")
@@ -25,11 +26,14 @@ enum MCPTranscriptTools {
             throw MCPToolError.transcriptTooLarge(error.localizedDescription)
         }
 
+        // M16: default redaction matches export; raw requires explicit include_raw.
+        let redact = !includeRaw
         var entries: [(String, OrderedJSONValue)] = [
             ("session", session.orderedJSONValue),
-            ("messages", .array(messagePage.messages.map(messageJSON))),
+            ("messages", .array(messagePage.messages.map { messageJSON($0, redact: redact) })),
             ("totalPages", .int(messagePage.totalPages)),
             ("currentPage", .int(messagePage.currentPage)),
+            ("redacted", .bool(redact)),
         ]
         if !messagePage.totalKnownComplete {
             entries.append(("totalKnownComplete", .bool(false)))
@@ -319,10 +323,13 @@ private let localDateTime: DateFormatter = {
     return formatter
 }()
 
-private func messageJSON(_ message: MCPTranscriptMessage) -> OrderedJSONValue {
+private func messageJSON(_ message: MCPTranscriptMessage, redact: Bool) -> OrderedJSONValue {
+    let content = redact
+        ? TranscriptRedactionPolicy.redact(message.content)
+        : message.content
     var entries: [(String, OrderedJSONValue)] = [
         ("role", .string(message.role)),
-        ("content", .string(message.content)),
+        ("content", .string(content)),
     ]
     if let timestamp = message.timestamp {
         entries.append(("timestamp", .string(timestamp)))

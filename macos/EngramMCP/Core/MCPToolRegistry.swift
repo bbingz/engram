@@ -469,7 +469,7 @@ enum MCPToolRegistry {
         ),
         MCPToolDefinition(
             name: "project_review",
-            description: "Scan all 7 AI session roots for residual references to an old project path. Classifies hits into `own` (in the migrated project's own spaces — real leftovers) vs `other` (historical mentions in unrelated conversations — left alone by design).",
+            description: "Scan all \(MCPFileTools.projectReviewSourceRootCount) AI session roots for residual references to an old project path. Classifies hits into `own` (in the migrated project's own spaces — real leftovers) vs `other` (historical mentions in unrelated conversations — left alone by design).",
             inputSchema: .object([
                 "type": .string("object"),
                 "required": .array([.string("old_path"), .string("new_path")]),
@@ -494,7 +494,7 @@ enum MCPToolRegistry {
         ),
         MCPToolDefinition(
             name: "get_session",
-            description: "读取单个会话的完整对话内容。大会话支持分页（每页 50 条消息）。",
+            description: "读取单个会话的完整对话内容。大会话支持分页（每页 50 条消息）。默认只返回 user/assistant 可见消息，并对消息内容做敏感信息脱敏；include_raw=true 可选择返回未脱敏原文（仅本地）。",
             inputSchema: .object([
                 "type": .string("object"),
                 "required": .array([.string("id")]),
@@ -518,7 +518,12 @@ enum MCPToolRegistry {
                                 .string("assistant"),
                             ]),
                         ]),
-                        "description": .string("只返回指定角色的消息，默认只返回 user/assistant 可见消息"),
+                        "description": .string("Only return messages for these roles. Enum: user, assistant. Default (omit or empty): visible user/assistant messages only — never tool or system roles."),
+                    ]),
+                    "include_raw": .object([
+                        "type": .string("boolean"),
+                        "description": .string("When true, return unredacted message content (local-only opt-in). Default false: secrets redacted with the same policy as export."),
+                        "default": .bool(false),
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
@@ -1013,22 +1018,37 @@ enum MCPToolRegistry {
                 database: database,
                 id: try requiredString("id", in: arguments),
                 page: clampedInt(arguments["page"], default: 1, min: 1, max: maxSessionPage),
-                roles: arguments["roles"]?.arrayValue?.compactMap(\.stringValue)
+                roles: arguments["roles"]?.arrayValue?.compactMap(\.stringValue),
+                includeRaw: arguments["include_raw"]?.boolValue == true
             )
             return .toolSuccess(structured)
         case "export":
             let serviceClient = makeServiceClient(config: config)
             defer { serviceClient.close() }
-            let response = try await serviceClient.exportSession(
-                EngramServiceExportSessionRequest(
-                    id: try requiredString("id", in: arguments),
-                    format: arguments["format"]?.stringValue ?? "markdown",
-                    outputHome: ProcessInfo.processInfo.environment["HOME"],
-                    actor: "mcp"
+            do {
+                let response = try await serviceClient.exportSession(
+                    EngramServiceExportSessionRequest(
+                        id: try requiredString("id", in: arguments),
+                        format: arguments["format"]?.stringValue ?? "markdown",
+                        outputHome: ProcessInfo.processInfo.environment["HOME"],
+                        actor: "mcp"
+                    )
                 )
-            )
-            let structured = orderedExportSessionResult(from: response)
-            return .toolSuccess(structured)
+                let structured = orderedExportSessionResult(from: response)
+                return .toolSuccess(structured)
+            } catch let error as EngramServiceError {
+                // M12: surface transcriptTooLarge from service commandFailed name/details.
+                if case .commandFailed(let name, let message, _, let details) = error {
+                    let code = details?["code"].flatMap { value -> String? in
+                        if case .string(let code) = value { return code }
+                        return nil
+                    } ?? name
+                    if code == "transcriptTooLarge" || name == "transcriptTooLarge" {
+                        return .toolError(message: message, code: "transcriptTooLarge")
+                    }
+                }
+                throw error
+            }
         case "handoff":
             let database = try MCPDatabase(path: config.dbPath)
             let structured = try MCPTranscriptTools.handoff(

@@ -25,7 +25,16 @@ enum TranscriptExportService {
                 source: session.source
             )
         } catch let error as TranscriptSizeGuardError {
-            throw EngramServiceError.invalidRequest(message: error.localizedDescription)
+            // Preserve the stable transcriptTooLarge code through service IPC and
+            // MCP (M12). Do not collapse size failures into InvalidRequest.
+            throw EngramServiceError.commandFailed(
+                name: error.code,
+                message: error.localizedDescription,
+                retryPolicy: "never",
+                details: [
+                    "code": .string(error.code),
+                ]
+            )
         }
         let home = try outputHome(from: request.outputHome)
         let outputDir = try outputDirectory(in: home)
@@ -212,35 +221,10 @@ enum TranscriptExportService {
         return String(grouped.reversed())
     }
 
-    // Compile the secret-redaction patterns once per process instead of once
-    // per message per request. redactSensitiveContent() is called across MCP and
-    // export transcript reads, so rebuilding 8 NSRegularExpressions on each call
-    // was pure repeated work. compactMap preserves the previous behavior of
-    // silently skipping any pattern that fails to compile.
-    private static let compiledRedactionPatterns: [NSRegularExpression] = {
-        let patterns = [
-            #"(?i)\b(api[_-]?key|authorization|bearer|password|secret|credential|token)\b\s*[:=]\s*["']?[A-Za-z0-9_\-+=/.]{10,}["']?"#,
-            #"(?i)\bAuthorization:\s*Bearer\s+[A-Za-z0-9_\-+=/.]{10,}"#,
-            #"\b(sk-[A-Za-z0-9_\-]{10,}|ghp_[A-Za-z0-9_]{10,}|xox[baprs]-[A-Za-z0-9-]{10,})\b"#,
-            #"\b(github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9_]{20,}|ghu_[A-Za-z0-9_]{20,}|ghs_[A-Za-z0-9_]{20,}|ghr_[A-Za-z0-9_]{20,})\b"#,
-            #"\b(AKIA|ASIA)[0-9A-Z]{16}\b"#,
-            #"\bnpm_[A-Za-z0-9]{10,}\b"#,
-            #"\bxoxe-[A-Za-z0-9-]{10,}\b"#,
-            #"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"#,
-        ]
-        return patterns.compactMap { try? NSRegularExpression(pattern: $0) }
-    }()
-
+    /// Facade over the shared transcript redaction policy so export, service
+    /// reads, and MCP stay byte-identical on secret patterns (M16).
     static func redactSensitiveContent(_ content: String) -> String {
-        compiledRedactionPatterns.reduce(content) { current, regex in
-            let range = NSRange(current.startIndex..<current.endIndex, in: current)
-            return regex.stringByReplacingMatches(
-                in: current,
-                options: [],
-                range: range,
-                withTemplate: "[REDACTED]"
-            )
-        }
+        TranscriptRedactionPolicy.redact(content)
     }
 }
 

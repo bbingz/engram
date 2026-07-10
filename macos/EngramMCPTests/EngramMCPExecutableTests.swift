@@ -1081,6 +1081,59 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertFalse(description.contains("~/codex-exports"), description)
     }
 
+    /// M11: tools/list roles schema must advertise user/assistant default, not "all roles".
+    func testGetSessionRolesSchemaDocumentsUserAssistantDefault_repro() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+            """
+        )
+        guard case .array(let tools)? = capture.ordered["result"]?["tools"],
+              let getSession = tools.first(where: { $0["name"]?.stringValue == "get_session" })
+        else {
+            return XCTFail("Expected get_session in tools/list")
+        }
+        let roles = getSession["inputSchema"]?["properties"]?["roles"]
+        let description = roles?["description"]?.stringValue ?? ""
+        // Reject the historical overclaim "Default: all roles" while allowing
+        // accurate user/assistant default language.
+        XCTAssertFalse(
+            description.range(of: #"default:\s*all roles"#, options: [.regularExpression, .caseInsensitive]) != nil,
+            description
+        )
+        XCTAssertTrue(description.contains("user"), description)
+        XCTAssertTrue(description.contains("assistant"), description)
+        let enumValues = roles?["items"]?["enum"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        XCTAssertEqual(Set(enumValues), Set(["user", "assistant"]), "\(enumValues)")
+        // M16: raw content requires explicit include_raw.
+        let includeRaw = getSession["inputSchema"]?["properties"]?["include_raw"]
+        XCTAssertEqual(includeRaw?["type"]?.stringValue, "boolean")
+        XCTAssertEqual(includeRaw?["default"]?.boolValue, false)
+    }
+
+    /// L06: project_review description root count must match the scanner list
+    /// (sourceRoots currently has 10 entries; never hardcode the stale "7").
+    func testProjectReviewDescriptionUsesScannerRootCount_repro() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+            """
+        )
+        guard case .array(let tools)? = capture.ordered["result"]?["tools"],
+              let review = tools.first(where: { $0["name"]?.stringValue == "project_review" })
+        else {
+            return XCTFail("Expected project_review in tools/list")
+        }
+        let description = review["description"]?.stringValue ?? ""
+        XCTAssertFalse(description.contains("all 7 AI session roots"), description)
+        // Count is derived from MCPFileTools.projectReviewSourceRootCount at runtime.
+        XCTAssertTrue(
+            description.range(of: #"all \d+ AI session roots"#, options: .regularExpression) != nil,
+            description
+        )
+        XCTAssertTrue(description.contains("all 10 AI session roots"), description)
+    }
+
     func testMCPDatabaseRetriesTransientMissingFTSTables() throws {
         let dbPath = try temporaryFixtureCopy(
             "mcp-contract.sqlite",
@@ -1504,12 +1557,20 @@ final class EngramMCPExecutableTests: XCTestCase {
     }
 
     func testGetMemoryMatchesGolden() throws {
+        // Isolate HOME/settings so a developer machine with embedding env/config
+        // cannot change the degrade warning (provider vs corpus) and break goldens.
+        let isolatedHome = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: isolatedHome) }
         try assertToolCallMatchesGolden(
             tool: "get_memory",
             arguments: """
             {"query":"single writer daemon HTTP"}
             """,
-            goldenFixture: "mcp-golden/get_memory.keyword.json"
+            goldenFixture: "mcp-golden/get_memory.keyword.json",
+            environment: [
+                "HOME": isolatedHome.path,
+                "ENGRAM_SETTINGS_PATH": isolatedHome.appendingPathComponent("missing-settings.json").path,
+            ]
         )
     }
 
@@ -1562,11 +1623,13 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
 
         XCTAssertNil(capture.response.error)
-        let memories = try XCTUnwrap(
-            capture.ordered["result"]?["structuredContent"]?["memories"]?.arrayValue
-        )
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        // L07: requested type is echoed; each memory carries returned type.
+        XCTAssertEqual(structured["type"]?.stringValue, "episodic")
+        let memories = try XCTUnwrap(structured["memories"]?.arrayValue)
         let ids = memories.compactMap { $0["id"]?.stringValue }
         XCTAssertEqual(ids, ["mem-episodic"], "\(ids)")
+        XCTAssertEqual(memories.first?["type"]?.stringValue, "episodic")
     }
 
     func testGetMemoryWithoutTypeStillReturnsAllTypes() throws {
@@ -1618,11 +1681,14 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
 
         XCTAssertNil(capture.response.error)
-        let memories = try XCTUnwrap(
-            capture.ordered["result"]?["structuredContent"]?["memories"]?.arrayValue
-        )
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        // No type filter: top-level type omitted; each memory still reports its type.
+        XCTAssertNil(structured["type"])
+        let memories = try XCTUnwrap(structured["memories"]?.arrayValue)
         let ids = Set(memories.compactMap { $0["id"]?.stringValue })
         XCTAssertEqual(ids, Set(["all-episodic", "all-semantic", "all-procedural"]), "\(ids)")
+        let types = Set(memories.compactMap { $0["type"]?.stringValue })
+        XCTAssertEqual(types, Set(["episodic", "semantic", "procedural"]), "\(types)")
     }
 
     func testGetMemoryRejectsInvalidType() throws {
@@ -2691,6 +2757,106 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(messages.count, 3, "empty roles must not filter out every message")
         let roles = messages.compactMap { $0["role"]?.stringValue }
         XCTAssertEqual(roles, ["user", "assistant", "user"])
+        // Default redaction applied even when roles is empty (M16).
+        XCTAssertEqual(
+            capture.ordered["result"]?["structuredContent"]?["redacted"]?.boolValue,
+            true
+        )
+    }
+
+    /// M16: default get_session redacts secrets; include_raw=true is the only unredacted opt-in.
+    func testGetSessionRedactsSecretsByDefaultAndAllowsRawOptIn_repro() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transcript = root.appendingPathComponent("secret-session.jsonl")
+        let secret = "sk-abcdefghij0123456789"
+        try """
+        {"timestamp":"2026-04-23T01:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"token \(secret) please"}]}}
+        {"timestamp":"2026-04-23T01:00:01Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"ok"}]}}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-redact-session-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: transcript.path,
+            messageCount: 2,
+            userMessageCount: 1,
+            assistantMessageCount: 1,
+            toolMessageCount: 0
+        )
+
+        let redactedCapture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":1}}}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": dbPath]
+        )
+        let redactedStructured = try XCTUnwrap(redactedCapture.ordered["result"]?["structuredContent"])
+        XCTAssertEqual(redactedStructured["redacted"]?.boolValue, true)
+        let redactedText = redactedStructured["messages"]?.arrayValue?
+            .compactMap { $0["content"]?.stringValue }
+            .joined(separator: "\n") ?? ""
+        XCTAssertFalse(redactedText.contains(secret), redactedText)
+        XCTAssertTrue(redactedText.contains("[REDACTED]"), redactedText)
+
+        let rawCapture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":1,"include_raw":true}}}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": dbPath]
+        )
+        let rawStructured = try XCTUnwrap(rawCapture.ordered["result"]?["structuredContent"])
+        XCTAssertEqual(rawStructured["redacted"]?.boolValue, false)
+        let rawText = rawStructured["messages"]?.arrayValue?
+            .compactMap { $0["content"]?.stringValue }
+            .joined(separator: "\n") ?? ""
+        XCTAssertTrue(rawText.contains(secret), rawText)
+    }
+
+    /// M12: MCP export must preserve transcriptTooLarge from service size failures.
+    func testExportPreservesTranscriptTooLargeStructuredCode_repro() throws {
+        let server = try MockServiceSocketServer { request in
+            switch request.command {
+            case "status":
+                return try request.success(
+                    .object([
+                        "state": .string("running"),
+                        "total": .int(0),
+                        "todayParents": .int(0),
+                    ])
+                )
+            case "exportSession":
+                return try request.failure(
+                    name: "transcriptTooLarge",
+                    message: "gemini-cli transcript is too large (512 bytes; limit 128 bytes)",
+                    retryPolicy: "never"
+                )
+            default:
+                throw NSError(domain: "MockServiceSocketServer", code: 104)
+            }
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"export","arguments":{"id":"mcp-transcript-01","format":"json"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["isError"]?.boolValue, true, "\(result)")
+        XCTAssertEqual(result["structuredContent"]?["code"]?.stringValue, "transcriptTooLarge")
+        let text = result["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+        XCTAssertTrue(text.contains("too large"), text)
     }
 
     func testGetSessionPaginatesLargeCodexTranscript() throws {

@@ -495,10 +495,11 @@ final class MCPDatabase {
                             storedDim: insightMeta.dimension
                         )
                         if !hybrid.isEmpty {
-                            return .object([
-                                ("memories", .array(hybrid.map { memoryObject(from: $0.row, distance: Double($0.distance)) })),
-                                ("retrieval", .string("hybrid")),
-                            ])
+                            return memoryResult(
+                                memories: hybrid.map { memoryObject(from: $0.row, distance: Double($0.distance)) },
+                                type: insightType,
+                                extra: [("retrieval", .string("hybrid"))]
+                            )
                         }
                         // Empty hybrid is not a provider failure — fall through without
                         // mislabeling as providerUnavailable.
@@ -535,41 +536,62 @@ final class MCPDatabase {
         if lifecycleAware {
             if let ranked = try? rankedActiveInsights(query: query, fromRecent: false, type: insightType),
                !ranked.isEmpty {
-                return .object([
-                    ("memories", .array(ranked.map { memoryObject(from: $0, distance: 0) })),
-                    ("warning", .string(warning)),
-                ])
+                return memoryResult(
+                    memories: ranked.map { memoryObject(from: $0, distance: 0) },
+                    type: insightType,
+                    extra: [("warning", .string(warning))]
+                )
             }
             if let ranked = try? rankedActiveInsights(query: query, fromRecent: true, type: insightType),
                !ranked.isEmpty {
-                return .object([
-                    ("memories", .array(ranked.map { memoryObject(from: $0, distance: 0) })),
-                    ("warning", .string(warning)),
-                ])
+                return memoryResult(
+                    memories: ranked.map { memoryObject(from: $0, distance: 0) },
+                    type: insightType,
+                    extra: [("warning", .string(warning))]
+                )
             }
-            return Self.emptyMemoryResult
+            return Self.emptyMemoryResult(type: insightType)
         }
 
         if let matches = try? searchInsightsFTS(query: query, limit: 10), !matches.isEmpty {
             let filtered = filterInsights(matches, byType: insightType)
             if !filtered.isEmpty {
-                return .object([
-                    ("memories", .array(filtered.map { memoryObject(from: $0, distance: 0) })),
-                    ("warning", .string(warning)),
-                ])
+                return memoryResult(
+                    memories: filtered.map { memoryObject(from: $0, distance: 0) },
+                    type: insightType,
+                    extra: [("warning", .string(warning))]
+                )
             }
         }
 
         let recent = try listInsightsByWing(wing: nil, limit: 10)
         let filteredRecent = filterInsights(recent, byType: insightType)
         if !filteredRecent.isEmpty {
-            return .object([
-                ("memories", .array(filteredRecent.map { memoryObject(from: $0, distance: 0) })),
-                ("warning", .string(warning)),
-            ])
+            return memoryResult(
+                memories: filteredRecent.map { memoryObject(from: $0, distance: 0) },
+                type: insightType,
+                extra: [("warning", .string(warning))]
+            )
         }
 
-        return Self.emptyMemoryResult
+        return Self.emptyMemoryResult(type: insightType)
+    }
+
+    /// Build a get_memory structured payload with returned memory `type` fields
+    /// and optional requested type filter (L07).
+    private func memoryResult(
+        memories: [OrderedJSONValue],
+        type: String?,
+        extra: [(String, OrderedJSONValue)] = []
+    ) -> OrderedJSONValue {
+        var entries: [(String, OrderedJSONValue)] = [
+            ("memories", .array(memories)),
+        ]
+        if let type {
+            entries.append(("type", .string(type)))
+        }
+        entries.append(contentsOf: extra)
+        return .object(entries)
     }
 
     /// Allowed `insight_type` values (same set as save_insight / half-life switch).
@@ -594,10 +616,16 @@ final class MCPDatabase {
         return rows.filter { (stringValue($0["insight_type"]) ?? "semantic") == type }
     }
 
-    private static let emptyMemoryResult: OrderedJSONValue = .object([
-        ("memories", .array([])),
-        ("message", .string("No memories found. Use save_insight to add knowledge that persists across sessions.")),
-    ])
+    private static func emptyMemoryResult(type: String? = nil) -> OrderedJSONValue {
+        var entries: [(String, OrderedJSONValue)] = [
+            ("memories", .array([])),
+            ("message", .string("No memories found. Use save_insight to add knowledge that persists across sessions.")),
+        ]
+        if let type {
+            entries.insert(("type", .string(type)), at: 1)
+        }
+        return .object(entries)
+    }
 
     /// True when the `sessions` table carries the human-driven signal columns.
     /// A read-only MCP over an un-migrated DB then skips the human-driven filter.
@@ -2261,13 +2289,16 @@ private func migrationObject(from row: Row) -> OrderedJSONValue {
 }
 
 private func memoryObject(from row: Row, distance: Double) -> OrderedJSONValue {
-    .object([
+    // Missing/NULL insight_type is treated as semantic (same as the filter path).
+    let type = stringValue(row["insight_type"]) ?? "semantic"
+    return .object([
         ("id", .string(stringValue(row["id"]) ?? "")),
         ("content", .string(stringValue(row["content"]) ?? "")),
         ("wing", valueOrNull(stringValue(row["wing"]))),
         ("room", valueOrNull(stringValue(row["room"]))),
         ("importance", .int(intValue(row["importance"]))),
         ("distance", .double(distance)),
+        ("type", .string(type)),
     ])
 }
 

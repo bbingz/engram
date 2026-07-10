@@ -1,6 +1,13 @@
 import Foundation
 
 enum MCPFileTools {
+    /// Single source of truth for how many AI session roots `project_review`
+    /// scans. tools/list descriptions must derive the count from this, not
+    /// hardcode a stale number (L06).
+    static var projectReviewSourceRootCount: Int {
+        sourceRoots(home: "").count
+    }
+
     static func projectReview(
         oldPath: String,
         newPath: String,
