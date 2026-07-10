@@ -84,7 +84,7 @@ final class ServiceLogIPCTests: XCTestCase {
             payload: Data(#"{"limit":"not-a-number"}"#.utf8)
         )
         let response = await handler.handle(malformed)
-        guard case .error(_, let error, _) = response else {
+        guard case .failure(_, let error) = response else {
             return XCTFail("malformed serviceLogs payload must return error, not success defaults")
         }
         XCTAssertEqual(error.name, "InvalidRequest")
@@ -100,7 +100,7 @@ final class ServiceLogIPCTests: XCTestCase {
         let response = await handler.handle(
             EngramServiceRequestEnvelope(command: "serviceLogs", payload: Data("not-json".utf8))
         )
-        guard case .error(_, let error, _) = response else {
+        guard case .failure(_, let error) = response else {
             return XCTFail("non-JSON serviceLogs payload must return InvalidRequest")
         }
         XCTAssertEqual(error.name, "InvalidRequest")
