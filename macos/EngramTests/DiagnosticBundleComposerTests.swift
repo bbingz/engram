@@ -17,15 +17,18 @@ final class DiagnosticBundleComposerTests: XCTestCase {
         let titleSecret = "title-test-diagnostic-secret"
         let remoteToken = "remote-offload-token-secret"
         let nestedSecret = "nested-title-secret"
+        let embeddingSecret = "sk-embedding-diagnostic-secret"
         let data = try DiagnosticBundleComposer.compose(input: makeInput(settings: [
             "aiApiKey": aiSecret,
             "titleApiKey": titleSecret,
+            "embeddingApiKey": embeddingSecret,
             "remoteOffloadToken": remoteToken,
             "usageTokenLimits": [
                 "codex": ["fiveHourTokens": 10_000],
             ],
             "nested": [
                 "titleApiKey": nestedSecret,
+                "embeddingApiKey": "nested-embedding-secret",
             ],
         ]))
         let json = try XCTUnwrap(String(data: data, encoding: .utf8))
@@ -34,9 +37,31 @@ final class DiagnosticBundleComposerTests: XCTestCase {
         XCTAssertFalse(json.contains(titleSecret))
         XCTAssertFalse(json.contains(remoteToken))
         XCTAssertFalse(json.contains(nestedSecret))
+        XCTAssertFalse(json.contains(embeddingSecret))
+        XCTAssertFalse(json.contains("nested-embedding-secret"))
         XCTAssertTrue(json.contains(#""<redacted>""#))
         XCTAssertTrue(json.contains("usageTokenLimits"))
         XCTAssertTrue(json.contains("fiveHourTokens"))
+    }
+
+    /// M14: embeddingApiKey and normalized aliases must redact; non-secret keys stay visible.
+    func testComposeRedactsEmbeddingApiKeyAliasesWithoutExactKeyBypass() throws {
+        let camel = "sk-embedding-camel-secret"
+        let snake = "sk-embedding-snake-secret"
+        let spaced = "sk-embedding-spaced-secret"
+        let data = try DiagnosticBundleComposer.compose(input: makeInput(settings: [
+            "embeddingApiKey": camel,
+            "embedding_api_key": snake,
+            "Embedding-Api-Key": spaced,
+            "noiseFilter": "hide-skip",
+        ]))
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+
+        XCTAssertFalse(json.contains(camel), "camelCase embeddingApiKey must redact")
+        XCTAssertFalse(json.contains(snake), "snake_case alias must redact")
+        XCTAssertFalse(json.contains(spaced), "hyphenated alias must redact")
+        XCTAssertTrue(json.contains("hide-skip"), "non-secret keys must not be redacted by alias normalization")
+        XCTAssertTrue(json.contains(#""<redacted>""#))
     }
 
     func testServiceUnreachableStillProducesValidJSON() throws {

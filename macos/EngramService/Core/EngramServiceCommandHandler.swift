@@ -1007,31 +1007,31 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         enabled: Bool,
         settingsURL: URL
     ) throws {
-        var object: [String: Any] = [:]
-        if let data = try? Data(contentsOf: settingsURL),
-           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            object = parsed
-        }
-        var disabled = (object["disabledSources"] as? [Any])?
-            .compactMap { $0 as? String } ?? []
-        if object[ArchivedDefaultOffSources.settingsMigrationKey] as? Bool != true {
-            for sourceID in ArchivedDefaultOffSources.orderedIDs where !disabled.contains(sourceID) {
-                disabled.append(sourceID)
+        try SecureSettingsFileWriter.mutateJSON(at: settingsURL) { object in
+            var disabled = (object["disabledSources"] as? [Any])?
+                .compactMap { $0 as? String } ?? []
+            if object[ArchivedDefaultOffSources.settingsMigrationKey] as? Bool != true {
+                for sourceID in ArchivedDefaultOffSources.orderedIDs where !disabled.contains(sourceID) {
+                    disabled.append(sourceID)
+                }
             }
+            if enabled {
+                disabled.removeAll { $0 == source }
+            } else if !disabled.contains(source) {
+                disabled.append(source)
+            }
+            object["disabledSources"] = disabled
+            object[ArchivedDefaultOffSources.settingsMigrationKey] = true
         }
-        if enabled {
-            disabled.removeAll { $0 == source }
-        } else if !disabled.contains(source) {
-            disabled.append(source)
-        }
-        object["disabledSources"] = disabled
-        object[ArchivedDefaultOffSources.settingsMigrationKey] = true
-        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-        try FileManager.default.createDirectory(
-            at: settingsURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try data.write(to: settingsURL, options: [.atomic])
+    }
+
+    /// Test seam for M15 permission coverage without spinning a full IPC server.
+    static func writeDisabledSourcesForTests(
+        source: String,
+        enabled: Bool,
+        settingsURL: URL
+    ) throws {
+        try updateDisabledSourcesSetting(source: source, enabled: enabled, settingsURL: settingsURL)
     }
 
     /// Current per-source ingest opt-out set (read path, no token required).

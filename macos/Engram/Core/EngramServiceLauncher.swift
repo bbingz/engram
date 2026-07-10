@@ -97,7 +97,7 @@ final class EngramServiceLauncher {
         keychainReader: (String) -> String?
     ) -> Bool {
         var secrets: [String: String] = [:]
-        for account in ["aiApiKey", "titleApiKey"] {
+        for account in ["aiApiKey", "titleApiKey", "embeddingApiKey"] {
             if let value = keychainReader(account), !value.isEmpty {
                 secrets[account] = value
             }
