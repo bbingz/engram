@@ -1052,4 +1052,62 @@ final class OrchestratorTests: XCTestCase {
             )
         }
     }
+
+    // MARK: - Wave 8 long-ops: cancel before commit boundary
+
+    func testCancelBeforeCommitThrowsProjectMoveCancelledError_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "cancel-src")
+        let dst = tempRoot.appendingPathComponent("cancel-dst").path
+        var options = makeOptions(src: src, dst: dst)
+        options.shouldCancel = { true }
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(writer: writer, options: options)
+            XCTFail("expected ProjectMoveCancelledError")
+        } catch is ProjectMoveCancelledError {
+            // ok — cancelled before commit
+        } catch {
+            XCTFail("expected ProjectMoveCancelledError, got \(error)")
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src), "src must remain after pre-commit cancel")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst), "dst must not exist after pre-commit cancel")
+        try writer.read { db in
+            let committed = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM migration_log WHERE state = 'committed'"
+            ) ?? -1
+            XCTAssertEqual(committed, 0, "no committed migration after pre-commit cancel")
+        }
+        XCTAssertEqual(
+            RetryPolicyClassifier.classify(errorName: ProjectMoveCancelledError().errorName),
+            .never
+        )
+    }
+
+    func testOnPastCommitFiresOnlyAfterCommitBoundary_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "past-commit-src")
+        let dst = tempRoot.appendingPathComponent("past-commit-dst").path
+        final class Flag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = false
+            func set() { lock.lock(); value = true; lock.unlock() }
+            func get() -> Bool { lock.lock(); defer { lock.unlock() }; return value }
+        }
+        let pastCommit = Flag()
+        var options = makeOptions(src: src, dst: dst)
+        options.onPastCommit = { pastCommit.set() }
+        // Cancel is requested immediately — should stop before past-commit fires.
+        options.shouldCancel = { true }
+        do {
+            _ = try await ProjectMoveOrchestrator.run(writer: writer, options: options)
+            XCTFail("expected cancel")
+        } catch is ProjectMoveCancelledError {
+            // ok
+        }
+        XCTAssertFalse(
+            pastCommit.get(),
+            "onPastCommit must not fire when cancelled before the commit boundary"
+        )
+    }
 }

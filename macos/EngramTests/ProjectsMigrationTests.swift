@@ -176,6 +176,110 @@ final class ProjectsMigrationTests: XCTestCase {
         XCTAssertTrue(outcome.cancelled)
     }
 
+    // MARK: - Wave 8 long-ops: rename/archive/undo operationId + cancel + reconnect
+
+    func testRenameArchiveUndoSheetsWireOperationIdAndCooperativeCancel_repro() throws {
+        for relativePath in [
+            "macos/Engram/Views/Projects/RenameSheet.swift",
+            "macos/Engram/Views/Projects/ArchiveSheet.swift",
+            "macos/Engram/Views/Projects/UndoSheet.swift",
+        ] {
+            let source = try Self.source(relativePath)
+            XCTAssertTrue(
+                source.contains("activeOperationId"),
+                "\(relativePath) must track a stable operation id"
+            )
+            XCTAssertTrue(
+                source.contains("operationId: operationId") || source.contains("operationId: operationId,"),
+                "\(relativePath) must pass operationId on the service request"
+            )
+            XCTAssertTrue(
+                source.contains("cancelProjectMoveBatch(operationId:"),
+                "\(relativePath) must request cooperative service cancel"
+            )
+            // Cancel stays enabled during execute (no .disabled(isExecuting) on Cancel).
+            XCTAssertFalse(
+                source.contains("Button(\"Cancel\") { dismiss() }\n                        .keyboardShortcut(.cancelAction)\n                        .disabled(isExecuting)"),
+                "\(relativePath) Cancel must remain enabled while executing"
+            )
+            XCTAssertTrue(
+                source.contains("projectMoveCancelledBeforeCommitMessage")
+                    || source.contains("cancelled before commit"),
+                "\(relativePath) must use precise cancelled-before-commit wording"
+            )
+            XCTAssertTrue(
+                source.contains("projectMoveIsReconnectableError")
+                    || source.contains("executeMoveWithReconnect")
+                    || source.contains("executeArchiveWithReconnect")
+                    || source.contains("executeUndoWithReconnect")
+                    || source.contains("Reconnecting"),
+                "\(relativePath) must reconnect by operation id on transport timeout"
+            )
+        }
+    }
+
+    func testBatchOutcomeWordingDistinguishesCancelledBeforeCommit_repro() throws {
+        let source = try Self.source("macos/Engram/Views/Projects/BatchMoveSheet.swift")
+        XCTAssertTrue(
+            source.contains("cancelled before commit"),
+            "Batch outcome must say cancelled before commit, not a vague cancelled label"
+        )
+        XCTAssertTrue(
+            source.contains("completed stay committed")
+                || source.contains("remaining (cancelled before commit"),
+            "Batch partial wording must clarify completed ops stay committed"
+        )
+        XCTAssertTrue(source.contains("executeBatchWithReconnect"))
+    }
+
+    func testProjectMoveRequestEncodesOperationId_repro() async throws {
+        let operationID = "rename-op-1"
+        let transport = LocalRecordingTransport { request in
+            XCTAssertEqual(request.command, "projectMove")
+            let payload = try Self.decode(request.payload, as: EngramServiceProjectMoveRequest.self)
+            XCTAssertEqual(payload.operationId, operationID)
+            return .success(
+                requestId: request.requestId,
+                result: #"{"migrationId":"","state":"cancelled","ccDirRenamed":false,"totalFilesPatched":0,"totalOccurrences":0,"sessionsUpdated":0,"aliasCreated":false,"review":{"own":[],"other":[]}}"#.data(using: .utf8)!
+            )
+        }
+        let client = EngramServiceClient(transport: transport)
+        let res = try await client.projectMove(
+            EngramServiceProjectMoveRequest(
+                src: "/a",
+                dst: "/b",
+                dryRun: false,
+                force: false,
+                auditNote: nil,
+                actor: "app",
+                operationId: operationID
+            )
+        )
+        XCTAssertEqual(res.state, "cancelled")
+    }
+
+    func testReconnectableErrorHelper_repro() {
+        XCTAssertTrue(
+            projectMoveIsReconnectableError(
+                EngramServiceError.transportClosed(message: "socket closed")
+            )
+        )
+        XCTAssertTrue(
+            projectMoveIsReconnectableError(
+                EngramServiceError.serviceUnavailable(message: "timeout waiting")
+            )
+        )
+        XCTAssertFalse(
+            projectMoveIsReconnectableError(
+                EngramServiceError.invalidRequest(message: "bad path")
+            )
+        )
+        XCTAssertTrue(
+            projectMoveCancelledBeforeCommitMessage(kind: "Rename")
+                .contains("cancelled before commit")
+        )
+    }
+
     // MARK: - (d) alias add AND remove both encode new_project (non-nil)
 
     func testAliasAddAndRemoveBothEncodeNewProject() async throws {

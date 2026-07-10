@@ -286,10 +286,18 @@ public enum Batch {
                         auditNote: op.note,
                         actor: .batch,
                         homeDirectory: overrides.homeDirectory,
-                        lockPath: overrides.lockPath
+                        lockPath: overrides.lockPath,
+                        // Mid-op cancel before that op's commit; between-ops cancel
+                        // is handled at the top of the loop.
+                        shouldCancel: shouldCancel
                     )
                 )
                 result.completed.append(pipelineResult)
+            } catch is ProjectMoveCancelledError {
+                // Current op was not committed; treat as cancel with this op + rest remaining.
+                result.cancelled = true
+                result.remaining.append(contentsOf: Array(doc.operations[index...]))
+                break
             } catch {
                 result.failed.append(
                     BatchOperationFailure(operation: op, error: errorText(error))

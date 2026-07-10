@@ -19,6 +19,9 @@ struct ArchiveSheet: View {
     @State private var errorMessage: String?
     @State private var retryPolicy: String = "safe"
     @State private var activeTask: Task<Void, Never>?
+    /// Stable id for cancel / reconnect / idempotent re-submit (Wave 8 long-ops).
+    @State private var activeOperationId: String?
+    @State private var isReconnecting = false
     @State private var residualRefCount: Int?
     @State private var errorDetails: ProjectMoveServiceErrorDetails?
     @State private var showConfirmDialog: Bool = false
@@ -106,9 +109,13 @@ struct ArchiveSheet: View {
                     HStack(spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("Archiving — moving files and updating index…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(
+                            isReconnecting
+                                ? projectMoveReconnectingMessage()
+                                : "Archiving — moving files and updating index…"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 4)
                 }
@@ -199,9 +206,18 @@ struct ArchiveSheet: View {
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button("Cancel") { dismiss() }
-                        .keyboardShortcut(.cancelAction)
-                        .disabled(isExecuting)
+                    Button("Cancel") {
+                        if isExecuting, let operationId = activeOperationId {
+                            Task {
+                                _ = try? await serviceClient.cancelProjectMoveBatch(
+                                    operationId: operationId
+                                )
+                            }
+                        } else {
+                            dismiss()
+                        }
+                    }
+                    .keyboardShortcut(.cancelAction)
                     // Round 4 Gemini Critical: Archive physically moves
                     // the project dir. Any editor/shell/build attached
                     // to the old path will break on next fs access. The
@@ -277,20 +293,33 @@ struct ArchiveSheet: View {
         errorMessage = nil
         errorDetails = nil
         residualRefCount = nil
+        isReconnecting = false
         isExecuting = true
-        defer { isExecuting = false; activeTask = nil }
+        let operationId = UUID().uuidString
+        activeOperationId = operationId
+        defer {
+            isExecuting = false
+            isReconnecting = false
+            activeTask = nil
+            activeOperationId = nil
+        }
+        let request = EngramServiceProjectArchiveRequest(
+            src: selectedCwd,
+            archiveTo: category.isEmpty ? nil : category,
+            dryRun: false,
+            force: false,
+            auditNote: nil,
+            actor: "app",
+            operationId: operationId
+        )
         do {
-            let res = try await serviceClient.projectArchive(
-                EngramServiceProjectArchiveRequest(
-                    src: selectedCwd,
-                    archiveTo: category.isEmpty ? nil : category,
-                    dryRun: false,
-                    force: false,
-                    auditNote: nil,
-                    actor: "app"
-                )
-            )
+            let res = try await executeArchiveWithReconnect(request)
             if Task.isCancelled { return }
+            if res.state == "cancelled" {
+                errorMessage = projectMoveCancelledBeforeCommitMessage(kind: "Archive")
+                retryPolicy = "safe"
+                return
+            }
             if res.state == "committed" {
                 if res.review.own.isEmpty {
                     NotificationCenter.default.post(name: .projectsDidChange, object: nil)
@@ -306,6 +335,19 @@ struct ArchiveSheet: View {
             errorMessage = projectMoveErrorMessage(error)
             retryPolicy = projectMoveRetryPolicy(error)
             errorDetails = projectMoveErrorDetails(error)
+        }
+    }
+
+    private func executeArchiveWithReconnect(
+        _ request: EngramServiceProjectArchiveRequest
+    ) async throws -> EngramServiceProjectMoveResult {
+        do {
+            return try await serviceClient.projectArchive(request)
+        } catch {
+            guard projectMoveIsReconnectableError(error) else { throw error }
+            isReconnecting = true
+            defer { isReconnecting = false }
+            return try await serviceClient.projectArchive(request)
         }
     }
 }

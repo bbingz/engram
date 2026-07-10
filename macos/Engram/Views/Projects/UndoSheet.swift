@@ -48,6 +48,9 @@ struct UndoSheet: View {
     @State private var errorMessage: String?
     @State private var retryPolicy: String = "safe"
     @State private var activeTask: Task<Void, Never>?
+    /// Stable id for cancel / reconnect / idempotent re-submit (Wave 8 long-ops).
+    @State private var activeOperationId: String?
+    @State private var isReconnecting = false
     @FocusState private var focusedMigrationId: String?
     /// IDs where retry_policy: 'never' came back (UndoStale etc.) — these
     /// can't be retried, so the UI disables the row. Codex minor #5.
@@ -96,9 +99,13 @@ struct UndoSheet: View {
                     HStack(spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("Reversing migration — restoring files and directories…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(
+                            isReconnecting
+                                ? projectMoveReconnectingMessage()
+                                : "Reversing migration — restoring files and directories…"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 4)
                 }
@@ -138,9 +145,18 @@ struct UndoSheet: View {
                     Button("Close") { dismiss() }
                         .keyboardShortcut(.defaultAction)
                 } else {
-                    Button("Cancel") { dismiss() }
-                        .keyboardShortcut(.cancelAction)
-                        .disabled(isExecuting)
+                    Button("Cancel") {
+                        if isExecuting, let operationId = activeOperationId {
+                            Task {
+                                _ = try? await serviceClient.cancelProjectMoveBatch(
+                                    operationId: operationId
+                                )
+                            }
+                        } else {
+                            dismiss()
+                        }
+                    }
+                    .keyboardShortcut(.cancelAction)
                     Button("Undo") {
                         activeTask = Task { await runUndo() }
                     }
@@ -293,17 +309,30 @@ struct UndoSheet: View {
     private func runUndo() async {
         guard let id = selectedMigrationId else { return }
         errorMessage = nil
+        isReconnecting = false
         isExecuting = true
-        defer { isExecuting = false; activeTask = nil }
+        let operationId = UUID().uuidString
+        activeOperationId = operationId
+        defer {
+            isExecuting = false
+            isReconnecting = false
+            activeTask = nil
+            activeOperationId = nil
+        }
+        let request = EngramServiceProjectUndoRequest(
+            migrationId: id,
+            force: false,
+            actor: "app",
+            operationId: operationId
+        )
         do {
-            let res = try await serviceClient.projectUndo(
-                EngramServiceProjectUndoRequest(
-                    migrationId: id,
-                    force: false,
-                    actor: "app"
-                )
-            )
+            let res = try await executeUndoWithReconnect(request)
             if Task.isCancelled { return }
+            if res.state == "cancelled" {
+                errorMessage = projectMoveCancelledBeforeCommitMessage(kind: "Undo")
+                retryPolicy = "safe"
+                return
+            }
             if res.state == "committed" {
                 if !res.review.own.isEmpty {
                     // Gemini follow-up: surface residual refs instead of
@@ -327,11 +356,25 @@ struct UndoSheet: View {
             // Codex minor #5: on a 'never' policy (UndoStale, etc.), mark
             // this specific migration as disabled so the user can't retry
             // the same stale row. They can still try a different one.
+            // Cancelled-before-commit uses retryPolicy "safe" and must stay retryable.
             if retryPolicy == "never" {
                 disabledMigrationIds.insert(id)
                 disabledReasons[id] = errorMessage ?? "Undo failed"
                 selectedMigrationId = nil
             }
+        }
+    }
+
+    private func executeUndoWithReconnect(
+        _ request: EngramServiceProjectUndoRequest
+    ) async throws -> EngramServiceProjectMoveResult {
+        do {
+            return try await serviceClient.projectUndo(request)
+        } catch {
+            guard projectMoveIsReconnectableError(error) else { throw error }
+            isReconnecting = true
+            defer { isReconnecting = false }
+            return try await serviceClient.projectUndo(request)
         }
     }
 }

@@ -172,6 +172,28 @@ final class BatchTests: XCTestCase {
         XCTAssertEqual(result.remaining, [first, second])
     }
 
+    /// Mid-op cancel (shouldCancel true once the orchestrator runs) must put
+    /// the current op into remaining — not completed — and mark cancelled.
+    func testMidOperationCancelBeforeCommitLeavesOpInRemaining_repro() async throws {
+        let first = BatchOperation(src: "/will-cancel", dst: "/will-cancel-dst")
+        let second = BatchOperation(src: "/after", dst: "/after-dst")
+        let doc = BatchDocument(operations: [first, second])
+
+        // Always-true shouldCancel is also checked inside the orchestrator;
+        // the top-of-loop check fires first so both ops remain. This asserts
+        // the remaining contract wording: remaining = not committed.
+        let result = await Batch.run(
+            doc,
+            writer: writer,
+            overrides: makeOverrides(),
+            shouldCancel: { true }
+        )
+        XCTAssertTrue(result.cancelled)
+        XCTAssertTrue(result.completed.isEmpty, "cancelled-before-commit ops must not appear completed")
+        XCTAssertEqual(result.remaining.count, 2)
+        XCTAssertTrue(result.skipped.isEmpty)
+    }
+
     func testRunSurfacesArchiveSuggestionFailureAsBatchFailure() async throws {
         // Empty fixture is "ambiguous" only when content is non-empty + no
         // git; the empty rule actually catches this as 空项目. Instead, build

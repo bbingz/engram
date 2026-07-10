@@ -49,6 +49,40 @@ func projectMoveErrorDetails(_ error: Error) -> ProjectMoveServiceErrorDetails? 
     return nil
 }
 
+/// Client timeout / transport drop after the service may already have passed the
+/// commit boundary. Re-submit the same `operationId` instead of treating this as
+/// user cancel (Wave 8 long-ops).
+func projectMoveIsReconnectableError(_ error: Error) -> Bool {
+    guard let serviceError = error as? EngramServiceError else {
+        let ns = error as NSError
+        // URL/socket style timeouts sometimes surface as Cocoa/POSIX errors.
+        if ns.domain == NSPOSIXErrorDomain && (ns.code == 60 || ns.code == 57 || ns.code == 54) {
+            return true
+        }
+        let text = error.localizedDescription.lowercased()
+        return text.contains("timeout") || text.contains("timed out") || text.contains("broken pipe")
+    }
+    switch serviceError {
+    case .serviceUnavailable, .transportClosed, .writerBusy:
+        return true
+    case .commandFailed(let name, let message, _, _):
+        let blob = "\(name) \(message)".lowercased()
+        return blob.contains("timeout") || blob.contains("timed out") || blob.contains("disconnect")
+    default:
+        return false
+    }
+}
+
+/// Precise cancelled-before-commit copy (not residual-refs, not transport failure).
+func projectMoveCancelledBeforeCommitMessage(kind: String = "Migration") -> String {
+    "\(kind) cancelled before commit — no files or index rows were committed. Safe to retry."
+}
+
+/// Shown while re-submitting the same operationId after timeout/disconnect.
+func projectMoveReconnectingMessage() -> String {
+    "Connection lost after the operation may have committed — reconnecting by operation id (not cancelling)…"
+}
+
 private extension Dictionary where Key == String, Value == EngramServiceJSONValue {
     func stringValue(for key: String) -> String? {
         guard case .string(let value)? = self[key] else { return nil }

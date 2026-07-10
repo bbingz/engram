@@ -224,9 +224,20 @@ struct BatchMoveSheet: View {
     @ViewBuilder
     private func outcomeBox(_ outcome: BatchMoveOutcome) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            let cancelPart = outcome.cancelled
-                ? " · \(outcome.remaining) remaining (cancelled)"
-                : (outcome.remaining > 0 ? " · \(outcome.remaining) remaining" : "")
+            // Precise wording: cancelled ⇒ remaining ops never started (or
+            // stopped before that op's commit). completed stay committed.
+            let cancelPart: String = {
+                if outcome.cancelled {
+                    if outcome.remaining > 0 {
+                        return " · \(outcome.remaining) remaining (cancelled before commit; completed stay committed)"
+                    }
+                    return " · cancelled before commit"
+                }
+                if outcome.remaining > 0 {
+                    return " · \(outcome.remaining) remaining"
+                }
+                return ""
+            }()
             Text("\(outcome.completed) completed · \(outcome.failed) failed · \(outcome.skipped) skipped\(cancelPart)")
                 .font(.caption.weight(.medium))
             ForEach(Array(outcome.failures.enumerated()), id: \.offset) { _, failure in
@@ -262,6 +273,7 @@ struct BatchMoveSheet: View {
         errorMessage = nil
         outcome = nil
         isExecuting = true
+        // Stable for cancel + reconnect/idempotence on duplicate submit.
         let operationId = UUID().uuidString
         activeBatchOperationId = operationId
         defer {
@@ -270,16 +282,15 @@ struct BatchMoveSheet: View {
             activeBatchOperationId = nil
         }
         let body = BatchMoveBody.make(operations: movableOperations, dryRun: dryRun)
+        let request = EngramServiceProjectMoveBatchRequest(
+            yaml: body,
+            dryRun: false,
+            force: false,
+            actor: "app",
+            operationId: operationId
+        )
         do {
-            let result = try await serviceClient.projectMoveBatch(
-                EngramServiceProjectMoveBatchRequest(
-                    yaml: body,
-                    dryRun: false,
-                    force: false,
-                    actor: "app",
-                    operationId: operationId
-                )
-            )
+            let result = try await executeBatchWithReconnect(request)
             // Always surface partial results (including cancelled + remaining).
             let parsed = parseBatchMoveOutcome(result)
             outcome = parsed
@@ -289,6 +300,20 @@ struct BatchMoveSheet: View {
             }
         } catch {
             errorMessage = projectMoveErrorMessage(error)
+        }
+    }
+
+    /// On timeout/disconnect after service may have committed some ops, re-submit
+    /// the same operationId (join/cached) instead of reporting a false cancel.
+    private func executeBatchWithReconnect(
+        _ request: EngramServiceProjectMoveBatchRequest
+    ) async throws -> EngramServiceJSONValue {
+        do {
+            return try await serviceClient.projectMoveBatch(request)
+        } catch {
+            guard projectMoveIsReconnectableError(error) else { throw error }
+            errorMessage = projectMoveReconnectingMessage()
+            return try await serviceClient.projectMoveBatch(request)
         }
     }
 }

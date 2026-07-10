@@ -27,6 +27,10 @@ struct RenameSheet: View {
     @State private var errorMessage: String?
     @State private var retryPolicy: String = "safe"
     @State private var activeTask: Task<Void, Never>?
+    /// Stable id for cancel / reconnect / idempotent re-submit (Wave 8 long-ops).
+    @State private var activeOperationId: String?
+    /// True while reconnecting after timeout/disconnect (not a user cancel).
+    @State private var isReconnecting = false
     /// Populated when the migration committed but left residual old-path
     /// references in the user's own scope (review.own non-empty). Gemini
     /// follow-up high: previously the UI silently closed on any committed
@@ -131,9 +135,13 @@ struct RenameSheet: View {
                     HStack(spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("Renaming — patching files and renaming dirs…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(
+                            isReconnecting
+                                ? projectMoveReconnectingMessage()
+                                : "Renaming — patching files and renaming dirs…"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 4)
                 }
@@ -175,9 +183,21 @@ struct RenameSheet: View {
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
                 } else {
-                    Button("Cancel") { dismiss() }
-                        .keyboardShortcut(.cancelAction)
-                        .disabled(isExecuting)
+                    Button("Cancel") {
+                        if isExecuting, let operationId = activeOperationId {
+                            // Cooperative service cancel only — do not cancel the
+                            // awaiting task so a cancelled-before-commit result
+                            // (or post-commit completion) can still surface.
+                            Task {
+                                _ = try? await serviceClient.cancelProjectMoveBatch(
+                                    operationId: operationId
+                                )
+                            }
+                        } else {
+                            dismiss()
+                        }
+                    }
+                    .keyboardShortcut(.cancelAction)
 
                     if previewResult?.state != "dry-run" {
                         Button("Preview") {
@@ -190,6 +210,7 @@ struct RenameSheet: View {
                         .disabled(!isPathValid)
                     } else {
                         Button("Rename") {
+                            // Duplicate-submit guard: button already disabled while executing.
                             activeTask = Task { await runRename() }
                         }
                         .keyboardShortcut(.defaultAction)
@@ -516,20 +537,33 @@ struct RenameSheet: View {
         errorMessage = nil
         errorDetails = nil
         residualRefCount = nil
+        isReconnecting = false
         isExecuting = true
-        defer { isExecuting = false; activeTask = nil }
+        let operationId = UUID().uuidString
+        activeOperationId = operationId
+        defer {
+            isExecuting = false
+            isReconnecting = false
+            activeTask = nil
+            activeOperationId = nil
+        }
+        let request = EngramServiceProjectMoveRequest(
+            src: selectedCwd,
+            dst: newPath,
+            dryRun: false,
+            force: false,
+            auditNote: nil,
+            actor: "app",
+            operationId: operationId
+        )
         do {
-            let res = try await serviceClient.projectMove(
-                EngramServiceProjectMoveRequest(
-                    src: selectedCwd,
-                    dst: newPath,
-                    dryRun: false,
-                    force: false,
-                    auditNote: nil,
-                    actor: "app"
-                )
-            )
+            let res = try await executeMoveWithReconnect(request)
             if Task.isCancelled { return }
+            if res.state == "cancelled" {
+                errorMessage = projectMoveCancelledBeforeCommitMessage(kind: "Rename")
+                retryPolicy = "safe"
+                return
+            }
             if res.state == "committed" {
                 // Gemini follow-up high: don't auto-dismiss if the backend
                 // flagged residual own-scope refs. Swap Rename button for
@@ -549,6 +583,20 @@ struct RenameSheet: View {
             errorMessage = projectMoveErrorMessage(error)
             retryPolicy = projectMoveRetryPolicy(error)
             errorDetails = projectMoveErrorDetails(error)
+        }
+    }
+
+    private func executeMoveWithReconnect(
+        _ request: EngramServiceProjectMoveRequest
+    ) async throws -> EngramServiceProjectMoveResult {
+        do {
+            return try await serviceClient.projectMove(request)
+        } catch {
+            guard projectMoveIsReconnectableError(error) else { throw error }
+            isReconnecting = true
+            defer { isReconnecting = false }
+            // Same operationId: service joins in-flight or returns cached result.
+            return try await serviceClient.projectMove(request)
         }
     }
 }

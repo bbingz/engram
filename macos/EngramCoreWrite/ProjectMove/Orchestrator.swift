@@ -75,6 +75,21 @@ public struct SharedEncodingCollisionError: ProjectMoveError, Equatable {
     }
 }
 
+/// Cooperative cancel before the DB commit boundary (Wave 8 long-ops).
+/// After `onPastCommit`, callers must ignore cancel so timeout/disconnect
+/// reconnect by operation id instead of pretending the migration stopped.
+public struct ProjectMoveCancelledError: ProjectMoveError, Equatable {
+    public init() {}
+
+    public var errorName: String { "ProjectMoveCancelledError" }
+    public var errorMessage: String {
+        "project-move: cancelled before commit boundary — no migration was committed"
+    }
+    public var errorDetails: ErrorDetails? {
+        ErrorDetails(state: "cancelled")
+    }
+}
+
 public enum OrchestratorError: ProjectMoveError, Equatable {
     case missingPaths(src: String, dst: String)
     case sameSourceAndDest(path: String)
@@ -170,7 +185,7 @@ public struct SkippedDirEntry: Equatable, Sendable {
 }
 
 public enum PipelineState: String, Equatable, Sendable {
-    case committed, dryRun = "dry-run", failed
+    case committed, dryRun = "dry-run", failed, cancelled
 }
 
 public struct PipelineResult: Equatable, Sendable {
@@ -208,6 +223,11 @@ public struct RunProjectMoveOptions: Sendable {
     /// share one project-move lock, so runUndo acquires it before validation
     /// and then invokes the normal pipeline without reacquiring.
     public var lockAlreadyHeld: Bool
+    /// Cooperative cancel probe. Checked only before the commit boundary.
+    public var shouldCancel: @Sendable () -> Bool
+    /// Invoked immediately after the DB commit succeeds (Phase C). Callers mark
+    /// the operation past-commit so later cancel/timeout cannot false-stop it.
+    public var onPastCommit: (@Sendable () -> Void)?
 
     public init(
         src: String,
@@ -220,7 +240,9 @@ public struct RunProjectMoveOptions: Sendable {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         lockPath: String? = nil,
         rolledBackOf: String? = nil,
-        lockAlreadyHeld: Bool = false
+        lockAlreadyHeld: Bool = false,
+        shouldCancel: @escaping @Sendable () -> Bool = { false },
+        onPastCommit: (@Sendable () -> Void)? = nil
     ) {
         self.src = src
         self.dst = dst
@@ -233,6 +255,8 @@ public struct RunProjectMoveOptions: Sendable {
         self.lockPath = lockPath
         self.rolledBackOf = rolledBackOf
         self.lockAlreadyHeld = lockAlreadyHeld
+        self.shouldCancel = shouldCancel
+        self.onPastCommit = onPastCommit
     }
 }
 
@@ -254,8 +278,13 @@ public enum ProjectMoveOrchestrator {
         migrationId: String,
         force: Bool,
         actor: MigrationLogActor,
-        lockPath requestedLockPath: String? = nil
+        lockPath requestedLockPath: String? = nil,
+        shouldCancel: @escaping @Sendable () -> Bool = { false },
+        onPastCommit: (@Sendable () -> Void)? = nil
     ) async throws -> UndoProjectMoveRunResult {
+        if shouldCancel() {
+            throw ProjectMoveCancelledError()
+        }
         let lockPath = requestedLockPath ?? MigrationLock.defaultLockPath()
         try MigrationLock.acquire(migrationId: "undo-\(migrationId)", lockPath: lockPath)
         defer { MigrationLock.release(lockPath: lockPath) }
@@ -265,6 +294,9 @@ public enum ProjectMoveOrchestrator {
             log: GRDBMigrationLogReader(writer: writer),
             sessions: GRDBSessionByIdReader(writer: writer)
         )
+        if shouldCancel() {
+            throw ProjectMoveCancelledError()
+        }
         let pipelineResult = try await run(
             writer: writer,
             options: RunProjectMoveOptions(
@@ -277,7 +309,9 @@ public enum ProjectMoveOrchestrator {
                 actor: actor,
                 lockPath: lockPath,
                 rolledBackOf: reverse.originalMigrationId,
-                lockAlreadyHeld: true
+                lockAlreadyHeld: true,
+                shouldCancel: shouldCancel,
+                onPastCommit: onPastCommit
             )
         )
         return UndoProjectMoveRunResult(reverse: reverse, pipelineResult: pipelineResult)
@@ -316,12 +350,20 @@ public enum ProjectMoveOrchestrator {
 
         // Dry-run: read-only scan + plan, no FS or DB side effects.
         if options.dryRun {
+            if options.shouldCancel() {
+                throw ProjectMoveCancelledError()
+            }
             return try buildDryRunPlan(
                 src: src,
                 dst: dst,
                 git: git,
                 homeDirectory: options.homeDirectory
             )
+        }
+
+        // Cancel before any lock/log write — nothing to compensate.
+        if options.shouldCancel() {
+            throw ProjectMoveCancelledError()
         }
 
         let migrationId = UUID().uuidString
@@ -386,6 +428,11 @@ public enum ProjectMoveOrchestrator {
         defer { try? FileManager.default.removeItem(atPath: patchBackupRoot) }
 
         do {
+            // Cancel after intent row exists but before FS mutation.
+            if options.shouldCancel() {
+                throw ProjectMoveCancelledError()
+            }
+
             let roots = SessionSources.roots(homeDirectory: options.homeDirectory)
 
             // Step 0.5: per-source rename plans. If session content proves the
@@ -611,6 +658,13 @@ public enum ProjectMoveOrchestrator {
                 totalOccurrences += occurrences
             }
 
+            // Last cancel check before the commit boundary. After Phase C
+            // succeeds, cancel is ignored (onPastCommit) so client timeout
+            // reconnects by operation id rather than false-cancelling.
+            if options.shouldCancel() {
+                throw ProjectMoveCancelledError()
+            }
+
             // Phase B: mark FS complete.
             let detail = buildFsDoneDetail(
                 moveStrategy: moveStrategy,
@@ -647,6 +701,9 @@ public enum ProjectMoveOrchestrator {
                 )
             }
 
+            // Commit boundary crossed — service continues even if client cancels.
+            options.onPastCommit?()
+
             // Step 6: review scan for residual refs.
             let review = ReviewScan.run(
                 oldPath: src,
@@ -675,8 +732,11 @@ public enum ProjectMoveOrchestrator {
             )
         } catch {
             // Compensation: pre-flight failures haven't touched the FS.
+            // Cancel-before-FS also has nothing to reverse when physicalMoveApplied
+            // is still false; cancel-after-FS runs full compensation.
             let preflightFailure = error is DirCollisionError
                 || error is SharedEncodingCollisionError
+                || (error is ProjectMoveCancelledError && !physicalMoveApplied && manifest.isEmpty)
             let report: CompensationReport
             if preflightFailure {
                 report = CompensationReport.empty
