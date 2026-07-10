@@ -7,6 +7,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Docs: Wave 8 Round 4 engineering-zero durable closeout (2026-07-11)
+
+- Reconciled seven durable surfaces only (no source/tests/scripts):
+  `docs/TODO.md`, `docs/followups.md`, `docs/roadmap.md`,
+  `docs/reviews/2026-07-10-wave7-remediation-closeout.md`,
+  new `docs/reviews/2026-07-10-wave7-engineering-zero-closeout.md`,
+  `CHANGELOG.md`, and `.memory`.
+- Wave 7 ledger tallies: **43 CONFIRMED-FIXED / 0 residual-open**, using merged
+  Wave 8 evidence through main `c983a759` (semantic/secret, MCP/transcript,
+  export/favorites, telemetry/invariants, long project ops).
+- Engineering TODO and implementation-ready follow-ups: **0 open**. Roadmap
+  Decision pending remains **exactly 12** product rows (engineering zero ≠
+  roadmap zero). Final CI/release/runtime Task 7 is **not** claimed here.
+
 ### Fixed: FTS optimize attempt throttle throw-safe + hybrid parity claims (2026-07-09, Codex)
 
 - `EngramDatabaseWriter.optimizeFtsIfDue` commits `fts_optimize_last_attempt`

@@ -12,7 +12,7 @@
 - App/MCP writes go through `EngramServiceClient` / `ServiceWriterGate`.
 - Do not edit `macos/Engram.xcodeproj` directly (use `xcodegen generate`).
 - `subagent` and `dispatched` remain `tier = 'skip'` across ambiguous/unlink/cascade.
-- Verdicts: `CONFIRMED-FIXED` | `PARTIAL-FIXED` | `OVERTURNED` only.
+- Verdicts (terminal only): `CONFIRMED-FIXED` | `OVERTURNED` | `ACCEPTED-DESIGN`.
 
 ## Ledger
 
@@ -25,51 +25,50 @@
 | H04 | CONFIRMED-FIXED | `12d3c081` | `testBackfillSuggestedParentsWritesAmbiguousCandidatesWithoutSkipping` | `setAmbiguousSuggestion` keeps role/tier | — |
 | H05 | CONFIRMED-FIXED | `12d3c081`+follow-up | **`testClearParentPreservesDispatchedSkipTier_repro`** (IPC behavioral) + cascade SQL source lock | shipped `clearParentSession` keeps dispatched→skip | Existing DBs get trigger via createOrUpdateBaseSchema |
 | H06 | CONFIRMED-FIXED | `12d3c081`+follow-up | **`testGenerateSummaryIsNotReadOnly_repro`** + tools/list annotation assert | `MCPToolRegistry.toolCategory` → `.mutating` | — |
-| H07 | PARTIAL-FIXED | `12d3c081` | dim check remains; model equality not fully enforced | design documented in README | Same-dim model swap still possible — follow-up |
+| H07 | CONFIRMED-FIXED | `bdc95157`/`90b70690` | `testSemanticSearchRejectsSameDimensionDifferentModelWithoutEmbedding`; MCP model-mismatch structured code | model+dim equality before embed; fail-closed `embeddingModelMismatch` | Wave 8A full-corpus path independent |
 | H08 | CONFIRMED-FIXED | `12d3c081` | `SearchModeTests` + README + AISettings comments | App intentionally keyword-only; service/MCP semantic real | — |
 | H09 | CONFIRMED-FIXED | follow-up | **`testValidMemoryFileIsReadable_repro`**, **`testNonMemoryMarkdownIsRejected_repro`**, **`testSymlinkEscapeIsRejected_repro`**, **`testTildeDisplayPathUnderMemoryIsReadable_repro`** | `FileSystemEngramServiceReadProvider.memoryFileContent` bounds | — |
 | H10 | CONFIRMED-FIXED | `12d3c081` | `testSameCountBodyRewriteEnqueuesFtsJob_repro` | `contentFingerprint` in `snapshotHash` | Tail merge seeds from prior hash |
 | H11 | CONFIRMED-FIXED | `12d3c081`+follow-up | **`testPaletteServiceDownEmptyLocalIsEmptyNotFailed_repro`**, **`testPaletteDoubleFaultIsFailed_repro`** | `CommandPaletteView` + `SearchOutcome` bool overload | — |
-| H12 | PARTIAL-FIXED | `12d3c081` | — | Export still post-await status; palette list not replaced in this pass | Needs export state machine PR |
+| H12 | CONFIRMED-FIXED | `262d59a2`/`cfed29b5` | `CommandPaletteTests` export state machine suite | idle→inFlight→succeeded|failed; list stays visible; Finder reveal | — |
 | M01 | CONFIRMED-FIXED | `12d3c081` | `performReadCommand` no gen bump | status/telemetry paths switched | Not all pure reads migrated |
-| M02 | PARTIAL-FIXED | — | — | telemetry still records before success gate | Follow-up |
+| M02 | CONFIRMED-FIXED | `c87fab56`/`f1486c2f` | `testFailedScanPhaseDoesNotRecordSuccessSample_repro`; `testRunInitialScanOuterOrchestrationPhaseFailureOmitsSuccessSample` | failed phase telemetry only; no success sample | — |
 | M03 | CONFIRMED-FIXED | `12d3c081` | `testActiveFileGraceDoesNotStampSuccess_repro` | active-file grace no stamp | — |
 | M04 | CONFIRMED-FIXED | `12d3c081` | retryable tail → full scan fallthrough | `isTerminalTailFailure` | — |
 | M05 | CONFIRMED-FIXED | pass3 | **`testRunCancellationStopsBeforeNextOperationAndReportsRemaining`**, **`testParseBatchMoveOutcomeSurfacesCancelledAndRemaining_repro`** | encode `cancelled`+`remaining[]`; UI keeps partial result (no await-task cancel) | — |
-| M06 | PARTIAL-FIXED | — | — | Service warning still coarse | Follow-up |
-| M07 | PARTIAL-FIXED | — | — | get_memory mislabel path not rewritten this pass | Follow-up |
-| M08 | PARTIAL-FIXED | — | — | MCP breaker not shared | Follow-up |
-| M09 | PARTIAL-FIXED | docs | README candidate-cap honesty | KNN still recency-capped | Documented |
+| M06 | CONFIRMED-FIXED | `bdc95157`/`90b70690` | provider/corpus/breaker degrade tests in `SemanticSearchIntegrityTests` | distinct structured degrade reasons | — |
+| M07 | CONFIRMED-FIXED | `bdc95157`/`90b70690` | `testGetMemoryWarningNamesProviderFailureNotGenericProviderMissing` | get_memory warning names actual failure | — |
+| M08 | CONFIRMED-FIXED | `bdc95157`/`90b70690` | `testMCPDatabaseUsesSharedEmbeddingBreakerWithoutPrivateBypass` | shared `EmbeddingGuardrails.sharedBreaker` | — |
+| M09 | CONFIRMED-FIXED | `bdc95157`/`90b70690` | `testFullCorpusSemanticTopKPrefersOldExactMatchOutsideFormerRecencyCap` | full-corpus batched top-K; recency not eligibility | latency remains telemetry-only |
 | M10 | CONFIRMED-FIXED | `12d3c081` | README + mcp-tools notes | human-driven default / `include_all` | Full mcp-tools rewrite partial |
-| M11 | PARTIAL-FIXED | — | — | roles default docs not fully rewritten | Follow-up |
-| M12 | PARTIAL-FIXED | — | — | export size code still invalidRequest | Follow-up |
-| M13 | PARTIAL-FIXED | — | — | embeddingApiKey Keychain not completed | Follow-up |
-| M14 | PARTIAL-FIXED | — | — | diagnostic redaction set not expanded | Follow-up |
-| M15 | PARTIAL-FIXED | — | — | service settings 0600 not forced | Follow-up |
-| M16 | PARTIAL-FIXED | — | — | MCP transcript still unredacted by design note | Follow-up product decision |
+| M11 | CONFIRMED-FIXED | `130ed361`/`19c3ece9` | `testGetSessionRolesSchemaDocumentsUserAssistantDefault_repro` | default roles user/assistant only | — |
+| M12 | CONFIRMED-FIXED | `130ed361`/`19c3ece9` | `testExportPreservesTranscriptTooLargeStructuredCode_repro` | `transcriptTooLarge` preserved end-to-end | — |
+| M13 | CONFIRMED-FIXED | `6fe46fd7`/`d90aad5f` | `EmbeddingSettingsKeychainTests` migration suite | KeychainSecretStore + verify-before-clear migration | — |
+| M14 | CONFIRMED-FIXED | `6fe46fd7`/`d90aad5f` | `testComposeRedactsEmbeddingApiKeyAliasesWithoutExactKeyBypass` | embeddingApiKey + aliases redacted | — |
+| M15 | CONFIRMED-FIXED | `6fe46fd7`/`d90aad5f` | `SecureSettingsFileWriterTests` 0600 create/update | atomic temp+rename; final mode 0600 | — |
+| M16 | CONFIRMED-FIXED | `130ed361`/`19c3ece9` | `testGetSessionRedactsSecretsByDefaultAndAllowsRawOptIn_repro` | default redaction matches export; `include_raw` opt-in | — |
 | M17 | CONFIRMED-FIXED | `12d3c081` | dismiss sets `link_source=manual` | `dismissSuggestion` | — |
 | M18 | CONFIRMED-FIXED | `12d3c081` | `testBackfillPolycliProviderParentsClassifiesReviewProbes` | bare cwd admission removed | — |
-| M19 | PARTIAL-FIXED | — | — | favorites still add-only on browse | Follow-up |
+| M19 | CONFIRMED-FIXED | `262d59a2`/`cfed29b5` | `SessionModelTests` favorite toggle suite | symmetric browse/starred toggle + labels | — |
 | M20 | CONFIRMED-FIXED | `12d3c081` | README value-band claim narrowed | Search page only | — |
-| L01 | PARTIAL-FIXED | — | — | stdout JSON still interpolated in places | Follow-up |
-| L02 | PARTIAL-FIXED | — | — | serviceLogs try? remains | Follow-up |
+| L01 | CONFIRMED-FIXED | `c87fab56`/`f1486c2f` | `testStdoutEventEncodingEscapesQuotesAndControlCharacters` | JSONEncoder structured stdout | — |
+| L02 | CONFIRMED-FIXED | `c87fab56`/`f1486c2f` | `testServiceLogsMalformedPayloadReturnsInvalidRequest_repro` | malformed serviceLogs → invalidRequest | — |
 | L03 | CONFIRMED-FIXED | pass3 | status after `recordServiceReady` | socket-ready → running + schedule fields (not stuck on bare starting) | — |
 | L04 | CONFIRMED-FIXED | `12d3c081` | formula version metadata | `SessionQualityScore.formulaVersion` + backfill | — |
 | L05 | CONFIRMED-FIXED | `12d3c081` | maxMessages → `messageLimitExceeded` | `IndexJobRunner.buildSearchContent` | — |
-| L06 | PARTIAL-FIXED | — | — | project_review “7 roots” blurb | Follow-up |
-| L07 | PARTIAL-FIXED | — | — | get_memory type not in payload | Follow-up |
+| L06 | CONFIRMED-FIXED | `130ed361`/`19c3ece9` | `testProjectReviewDescriptionUsesScannerRootCount_repro` | scanner-derived root count | — |
+| L07 | CONFIRMED-FIXED | `130ed361`/`19c3ece9` | `testGetMemoryTypeFilterReturnsOnlyRequestedType` + golden | type present in structured get_memory payload | — |
 | L08 | CONFIRMED-FIXED | `12d3c081` | `LiveSessionCard` → `RelativeTimeText` | shared ISO parser | — |
-| L09 | PARTIAL-FIXED | — | — | invariant ledger still path-existence | Follow-up |
+| L09 | CONFIRMED-FIXED | `c87fab56`/`f1486c2f` | `tests/scripts/invariants-ledger.test.ts` + `invariant-gates.json` | allowlisted executable gates; no markdown shell | — |
 | S01 | CONFIRMED-FIXED | pass6 | **`testCancelDuringWorkWaitsForWorkExit_repro`** + **`testInvalidateDuringWorkWaitsForExit_repro`** + finish-after-work | activity finish-after-work; cancel **and async invalidate** await work exit; idle skips embedding | — |
 
 ## Tallies
 
 | Verdict | Count |
 |---------|-------|
-| CONFIRMED-FIXED | 24 |
-| PARTIAL-FIXED | 19 |
+| CONFIRMED-FIXED | 43 |
 | OVERTURNED | 0 |
-| UNADJUDICATED | 0 |
+| ACCEPTED-DESIGN | 0 |
 
 ## Repro / regression tests (shipped path)
 
@@ -170,12 +169,20 @@ After deploy of pass3 service binary (or rebuilt service), `status`/`telemetry` 
 
 ## Residual risks for Codex
 
-1. **H12 / M19** UX polish incomplete (export progress, favorites toggle).
-2. **H07 / M06–M08 / M13–M16** semantic+security hardening incomplete (model equality, MCP breaker, Keychain, redaction parity).
-3. **L09** invariant gate still path-only.
-4. **xcodebuild test** on Xcode-beta can hang after package resolve; use `build-for-testing` + `xcrun xctest` for reliable local gates.
-5. **OSLog live behavioral tests** skip under TCC/xctest isolation; prefer interactive Xcode host if re-enabling hard fails.
-6. **Notarization / DMG / public release** not in Wave 7 gate — local Developer ID archive + deploy already proven (`build 2026071001`); notarytool/staple still operator steps.
+1. **Wave 8 closed all 19 PARTIAL rows** on main through `c983a759`. See
+   `docs/reviews/2026-07-10-wave7-engineering-zero-closeout.md` for residual
+   evidence, named tests, and merge SHAs.
+2. **xcodebuild test** on Xcode-beta can hang after package resolve; use
+   `build-for-testing` + `xcrun xctest` for reliable local gates.
+3. **OSLog live behavioral tests** skip under TCC/xctest isolation; prefer
+   interactive Xcode host if re-enabling hard fails.
+4. **Task 7 final CI/release/runtime** on a single SHA is **not** claimed by the
+   Round 4 docs-only closeout. Engineering-zero backlog/ledger truth is separate
+   from release acceptance.
+5. **Notarization / DMG / public release** remain operator steps outside the
+   Wave 7/8 engineering defect ledger.
+6. **Roadmap Decision pending (12 rows)** remain product decisions — not
+   engineering follow-ups.
 
 
 ## Ship / deploy (pass6 closeout)
@@ -186,5 +193,27 @@ After deploy of pass3 service binary (or rebuilt service), `status`/`telemetry` 
 - **Deploy:** `deploy-local.sh` → `/Applications/Engram.app` build `2026071003`
 - **Runtime:** Engram + EngramService running; `~/.engram/run/engram-service.sock` present
 - **Schedule smoke:** `state=running`, `nextScanIntervalSeconds=900`, `scheduleBackend=NSBackgroundActivityScheduler`
-- **Ledger:** 24 CONFIRMED / 19 PARTIAL (Codex accepted)
+- **Ledger (Wave 7 pass6, historical):** 24 confirmed with 19 residual rows then open
+- **Ledger (Wave 8 + Round 4 docs):** 43 CONFIRMED — see engineering-zero closeout
 
+
+## Wave 8 residual closure (2026-07-10/11)
+
+All 19 residual Wave 7 rows above were promoted to `CONFIRMED-FIXED` using
+merged Wave 8 evidence on main tip `c983a759`:
+
+| Merge | Closes |
+|-------|--------|
+| `6fe46fd7` wave8a secret hygiene | M13 M14 M15 |
+| `bdc95157` wave8a semantic integrity | H07 M06 M07 M08 M09 |
+| `130ed361` wave8b MCP transcript contracts | M11 M12 M16 L06 L07 |
+| `262d59a2` wave8c export favorite UX | H12 M19 |
+| `c87fab56` wave8e telemetry and executable invariants | M02 L01 L02 L09 |
+| `c983a759` wave8d long project operations | long-migration cancel/reconnect follow-up (not a ledger ID; backlog only) |
+
+Detailed residual table, named tests, and backlog reconciliation live in
+`docs/reviews/2026-07-10-wave7-engineering-zero-closeout.md`.
+
+**Verdict policy reminder:** terminal states only —
+`CONFIRMED-FIXED` | `OVERTURNED` | `ACCEPTED-DESIGN`. No residual or
+unadjudicated rows remain in this ledger.

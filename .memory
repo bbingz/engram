@@ -3,6 +3,7 @@
 ## Index
 
 <!-- AUTO-INDEX (rebuilt 2026-07-06): 93 dated entries; regenerate after adding sections -->
+- [2026-07-11 - Wave 8 Round 4 engineering-zero durable closeout (Grok)](#2026-07-11---wave-8-round-4-engineering-zero-durable-closeout-grok)
 - [2026-07-07 - Orca comparative study: verified adoption backlog + 5 real bugs found (Fable/Claude)](#2026-07-07---orca-comparative-study-verified-adoption-backlog--5-real-bugs-found-fableclaude)
 - [2026-07-06 - Feature-cut Top 10 completed + low residual cleanup merged (Codex)](#2026-07-06---feature-cut-top-10-completed--low-residual-cleanup-merged-codex)
 - [2026-07-06 - Stale screenshot baselines: check provenance before trusting SSIM failures (Fable/Claude)](#2026-07-06---stale-screenshot-baselines-check-provenance-before-trusting-ssim-failures-fableclaude)
@@ -98,6 +99,24 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-11 - Wave 8 Round 4 engineering-zero durable closeout (Grok)
+
+- Docs-only closeout on branch `bbingz/wave8f-engineering-zero-docs` from main
+  `c983a759`. Touched only durable surfaces: TODO, followups, roadmap, Wave 7
+  remediation ledger, new engineering-zero closeout review, CHANGELOG, .memory
+  (plus short MEMO note).
+- Terminal tallies: Wave 7 ledger 43 CONFIRMED / 0 residual-open; engineering
+  TODO 0; implementation-ready follow-ups 0; roadmap Decision pending still
+  exactly 12 rows.
+- Residual 19 Wave 7 rows closed from merged Wave 8 evidence (not re-implemented
+  here): H07/H12, M02/M06-M09/M11-M16/M19, L01/L02/L06/L07/L09 with named
+  regression tests cited in
+  `docs/reviews/2026-07-10-wave7-engineering-zero-closeout.md`.
+- Explicit non-claim: Task 7 final CI + CodeQL + release + install + runtime
+  smoke on one SHA remains for independent Codex gate. Engineering-zero backlog
+  truth ≠ roadmap zero.
+
 
 ## 2026-07-07 - Orca comparative study: verified adoption backlog + 5 real bugs found (Fable/Claude)
 

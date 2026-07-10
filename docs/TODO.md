@@ -5,8 +5,13 @@ verification and low-priority follow-ups belong in `docs/followups.md`.
 
 ## Open
 
-No open TODO items as of 2026-06-21. All 2026-06-15 UX-flow-alignment (PR #74)
-follow-ups are resolved — see "Closed in cleanup".
+No open TODO items as of 2026-07-11 (Wave 8 Round 4 durable closeout).
+
+Historical note: as of 2026-06-21 all 2026-06-15 UX-flow-alignment (PR #74)
+follow-ups were already resolved — see "Closed in cleanup". Wave 8 closed the
+remaining Wave 7 residual engineering defects on main through `c983a759`; this
+file still has zero open engineering tasks. Product-direction work stays in
+`docs/roadmap.md` Decision pending (12 rows), not here.
 
 ## Closed in cleanup
 
@@ -29,8 +34,11 @@ Implemented on 2026-06-21 (branch `feat/backlog-5-followups`):
 
 Retired on 2026-06-21 — already shipped, confirmed against current main:
 
-- **Favorite toggle from browse.** Shipped with PR #74: session actions incl.
-  favorite on the browse pages (`ExpandableSessionCard.onToggleFavorite`).
+- **Favorite toggle from browse.** Browse favorite action shipped with PR #74
+  (`ExpandableSessionCard.onToggleFavorite`). Wave 8C / M19 (`262d59a2`) made
+  the toggle symmetric (Add/Remove) via session `isFavorite` /
+  `favoriteToggleTarget` on browse, Starred, and child cards — see
+  `SessionModelTests` favorite suite. Do not re-open as a partial claim.
 - **Cost/usage notifications.** Shipped: monthly-budget + long-session notify
   in `SettingsView` (`monthlyBudget`, `notifyOnLongSession`) — the cost
   dashboard's budget notifier.
