@@ -1691,6 +1691,15 @@ final class EngramServiceIPCTests: XCTestCase {
                   dim INTEGER,
                   created_at TEXT NOT NULL DEFAULT (datetime('now'))
                 );
+                CREATE TABLE embedding_meta (
+                  id INTEGER PRIMARY KEY CHECK (id = 1),
+                  provider TEXT,
+                  model TEXT,
+                  dimension INTEGER,
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                INSERT INTO embedding_meta (id, provider, model, dimension)
+                VALUES (1, 'test', 'probe', 3);
                 """)
             try db.execute(
                 sql: """

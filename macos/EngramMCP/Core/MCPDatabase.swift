@@ -467,21 +467,42 @@ final class MCPDatabase {
         let lifecycleAware = (try? insightsHasLifecycleColumns()) == true
 
         // Hybrid keyword + semantic when an embedding provider is configured and
-        // embeddings exist. The query-embedding network call is strictly opt-in;
-        // any failure (no key, unreachable, malformed) degrades to keyword below.
-        if let config = EmbeddingSettings.load(), (try? hasInsightEmbeddings()) == true {
-            if let hybrid = try? await semanticMemory(
-                query: query,
-                config: config,
-                lifecycleAware: lifecycleAware,
-                type: insightType
-            ), !hybrid.isEmpty {
-                return .object([
-                    ("memories", .array(hybrid.map { memoryObject(from: $0.row, distance: Double($0.distance)) })),
-                    ("retrieval", .string("hybrid")),
-                ])
+        // embeddings exist. Any failure degrades to keyword with a warning that
+        // names the *actual* reason (M07) — never a blanket "No embedding provider"
+        // when the provider was present.
+        var degradeReason: SessionVectorSearchAvailability.SemanticDegradeReason?
+        var degradeDetail: String?
+        if let config = EmbeddingSettings.load() {
+            if (try? hasInsightEmbeddings()) == true {
+                do {
+                    let hybrid = try await semanticMemory(
+                        query: query,
+                        config: config,
+                        lifecycleAware: lifecycleAware,
+                        type: insightType
+                    )
+                    if !hybrid.isEmpty {
+                        return .object([
+                            ("memories", .array(hybrid.map { memoryObject(from: $0.row, distance: Double($0.distance)) })),
+                            ("retrieval", .string("hybrid")),
+                        ])
+                    }
+                } catch EmbeddingError.circuitOpen {
+                    degradeReason = .breakerOpen
+                } catch EmbeddingError.notConfigured {
+                    degradeReason = .providerUnavailable
+                } catch {
+                    degradeReason = .embedFailed
+                    degradeDetail = error.localizedDescription
+                }
+            } else {
+                degradeReason = .corpusMissing
             }
+        } else {
+            degradeReason = .providerUnavailable
         }
+
+        let warning = (degradeReason ?? .providerUnavailable).memoryWarning(detail: degradeDetail)
 
         // When the writer has applied the memory-lifecycle migration, rank by
         // importance + recency decay + access and exclude superseded rows. On an
@@ -492,14 +513,14 @@ final class MCPDatabase {
                !ranked.isEmpty {
                 return .object([
                     ("memories", .array(ranked.map { memoryObject(from: $0, distance: 0) })),
-                    ("warning", .string("No embedding provider — keyword-matched insights ranked by importance and recency.")),
+                    ("warning", .string(warning)),
                 ])
             }
             if let ranked = try? rankedActiveInsights(query: query, fromRecent: true, type: insightType),
                !ranked.isEmpty {
                 return .object([
                     ("memories", .array(ranked.map { memoryObject(from: $0, distance: 0) })),
-                    ("warning", .string("No embedding provider — recent insights ranked by importance and recency.")),
+                    ("warning", .string(warning)),
                 ])
             }
             return Self.emptyMemoryResult
@@ -510,7 +531,7 @@ final class MCPDatabase {
             if !filtered.isEmpty {
                 return .object([
                     ("memories", .array(filtered.map { memoryObject(from: $0, distance: 0) })),
-                    ("warning", .string("No embedding provider — showing keyword-matched insights only.")),
+                    ("warning", .string(warning)),
                 ])
             }
         }
@@ -520,7 +541,7 @@ final class MCPDatabase {
         if !filteredRecent.isEmpty {
             return .object([
                 ("memories", .array(filteredRecent.map { memoryObject(from: $0, distance: 0) })),
-                ("warning", .string("No embedding provider — showing recent insights only.")),
+                ("warning", .string(warning)),
             ])
         }
 
@@ -672,14 +693,17 @@ final class MCPDatabase {
 
     /// Embed the query, KNN over stored insight embeddings, fuse with the FTS
     /// keyword ranking via RRF, then drop superseded rows (and optional type).
-    /// Top 10.
+    /// Top 10. Uses `EmbeddingGuardrails.sharedBreaker` (M08) — no private bypass.
     private func semanticMemory(
         query: String,
         config: EmbeddingConfig,
         lifecycleAware: Bool,
         type: String?
     ) async throws -> [(row: Row, distance: Float)] {
-        let client = OpenAICompatibleEmbeddingClient(config: config)
+        let client = EmbeddingGuardrails.guardedProvider(
+            for: config,
+            breaker: EmbeddingGuardrails.sharedBreaker
+        )
         let vectors = try await client.embed([query])
         guard let queryVector = vectors.first, !queryVector.isEmpty else { return [] }
 
@@ -767,6 +791,14 @@ final class MCPDatabase {
     enum SearchError: Error, LocalizedError {
         case modeUnavailable(String)
         case semanticFailed(String)
+        /// H07: configured query model/dim does not exactly match embedding_meta.
+        case embeddingModelMismatch(
+            configuredModel: String,
+            storedModel: String,
+            configuredDimension: Int,
+            storedDimension: Int
+        )
+        case breakerOpen
 
         var errorDescription: String? {
             switch self {
@@ -774,6 +806,10 @@ final class MCPDatabase {
                 return "Search mode '\(mode)' is unavailable; session embeddings are not usable. Configure an embedding provider and wait for semantic_chunks backfill, or use mode 'keyword'."
             case .semanticFailed(let detail):
                 return "Semantic search failed: \(detail)"
+            case let .embeddingModelMismatch(cfgModel, storedModel, cfgDim, storedDim):
+                return "Embedding model mismatch: configured \(cfgModel) (dim \(cfgDim)) does not match stored \(storedModel) (dim \(storedDim)). Rebuild embeddings or align the configured model."
+            case .breakerOpen:
+                return "Semantic search unavailable: embedding circuit breaker is open. Retry after cooldown or use mode 'keyword'."
             }
         }
 
@@ -783,6 +819,10 @@ final class MCPDatabase {
                 return "searchModeUnavailable"
             case .semanticFailed:
                 return "searchFailed"
+            case .embeddingModelMismatch:
+                return "embeddingModelMismatch"
+            case .breakerOpen:
+                return "embeddingCircuitOpen"
             }
         }
     }
@@ -949,7 +989,7 @@ final class MCPDatabase {
 
     /// Session semantic/hybrid path — mirrors EngramServiceReadProvider
     /// (brute-force cosine KNN + optional RRF). Coupling constants:
-    /// `SessionSemanticSearchPolicy`.
+    /// `SessionSemanticSearchPolicy`. Full eligible corpus, not recency-capped.
     private func semanticOrHybridSearch(
         query: String,
         originalQuery: String,
@@ -963,7 +1003,8 @@ final class MCPDatabase {
         guard !query.isEmpty else {
             throw SearchError.semanticFailed("query is empty")
         }
-        guard let metaModel = availability.model,
+        guard availability.isUsable,
+              let metaModel = availability.model,
               let metaDim = availability.dimension,
               metaDim > 0 else {
             throw SearchError.modeUnavailable(mode)
@@ -971,18 +1012,36 @@ final class MCPDatabase {
         guard let config = EmbeddingSettings.load() else {
             throw SearchError.modeUnavailable(mode)
         }
-        // Never search when the configured provider dim disagrees with stored
-        // vectors — mixing dimensions yields garbage cosine scores.
-        if config.dimension != metaDim {
-            throw SearchError.semanticFailed(
-                "embedding dimension \(config.dimension) does not match stored vectors (\(metaDim))"
+
+        // H07: exact model+dimension match before any query embedding or cosine.
+        switch SessionVectorSearchAvailability.queryCompatibility(
+            configuredModel: config.model,
+            configuredDimension: config.dimension,
+            snapshot: availability
+        ) {
+        case .compatible:
+            break
+        case .corpusUnavailable:
+            throw SearchError.modeUnavailable(mode)
+        case let .modelMismatch(cfgModel, cfgDim, storedModel, storedDim):
+            throw SearchError.embeddingModelMismatch(
+                configuredModel: cfgModel,
+                storedModel: storedModel,
+                configuredDimension: cfgDim,
+                storedDimension: storedDim
             )
         }
 
-        let client = OpenAICompatibleEmbeddingClient(config: config)
+        // M08: shared process breaker — no private OpenAI client bypass.
+        let client = EmbeddingGuardrails.guardedProvider(
+            for: config,
+            breaker: EmbeddingGuardrails.sharedBreaker
+        )
         let vectors: [[Float]]
         do {
             vectors = try await client.embed([query])
+        } catch EmbeddingError.circuitOpen {
+            throw SearchError.breakerOpen
         } catch {
             throw SearchError.semanticFailed(error.localizedDescription)
         }
@@ -990,41 +1049,38 @@ final class MCPDatabase {
             throw SearchError.semanticFailed("empty query embedding")
         }
         if queryVector.count != metaDim {
-            throw SearchError.semanticFailed(
-                "query embedding dim \(queryVector.count) does not match stored vectors (\(metaDim))"
+            throw SearchError.embeddingModelMismatch(
+                configuredModel: config.model,
+                storedModel: metaModel,
+                configuredDimension: queryVector.count,
+                storedDimension: metaDim
             )
         }
 
-        let candidates = try semanticChunkCandidates(
+        // M09: full corpus in cancellable bounded batches + constant-memory top-K.
+        let topK = SessionSemanticSearchPolicy.knnTopK(limit: limit)
+        let topChunks = try await semanticChunkTopK(
             source: source,
             project: project,
             since: since,
             model: metaModel,
             dim: metaDim,
-            requestLimit: limit
+            queryVector: queryVector,
+            requestLimit: limit,
+            topK: topK
         )
-        guard !candidates.isEmpty else {
+        guard !topChunks.isEmpty else {
             throw SearchError.semanticFailed("no compatible semantic_chunks candidates")
         }
-
-        let byChunkId = Dictionary(uniqueKeysWithValues: candidates.map { ($0.chunkId, $0) })
-        let hits = VectorSearch.knn(
-            query: queryVector,
-            candidates: candidates.map { VectorSearch.Candidate(id: $0.chunkId, vector: $0.vector) },
-            topK: SessionSemanticSearchPolicy.knnTopK(limit: limit)
-        )
 
         var semanticSessionIds: [String] = []
         var snippetBySession: [String: String] = [:]
         var scoreBySession: [String: Double] = [:]
-        for hit in hits {
-            guard let candidate = byChunkId[hit.id],
-                  !semanticSessionIds.contains(candidate.sessionId) else {
-                continue
-            }
-            semanticSessionIds.append(candidate.sessionId)
-            snippetBySession[candidate.sessionId] = candidate.text
-            scoreBySession[candidate.sessionId] = Double(hit.score)
+        for hit in topChunks {
+            guard !semanticSessionIds.contains(hit.sessionId) else { continue }
+            semanticSessionIds.append(hit.sessionId)
+            snippetBySession[hit.sessionId] = hit.text
+            scoreBySession[hit.sessionId] = Double(hit.score)
             if semanticSessionIds.count >= limit { break }
         }
         guard !semanticSessionIds.isEmpty else {
@@ -1089,19 +1145,66 @@ final class MCPDatabase {
     }
 
     private struct SemanticChunkCandidate {
+        let rowID: Int64
         let chunkId: String
         let sessionId: String
         let text: String
         let vector: [Float]
     }
 
-    private func semanticChunkCandidates(
+    /// Full-corpus stream: page by rowid, accumulate constant-memory top-K.
+    private func semanticChunkTopK(
         source: String?,
         project: String?,
         since: String?,
         model: String,
         dim: Int,
-        requestLimit: Int
+        queryVector: [Float],
+        requestLimit: Int,
+        topK: Int
+    ) async throws -> [SessionSemanticSearchPolicy.ScoredChunk] {
+        var top: [SessionSemanticSearchPolicy.ScoredChunk] = []
+        var afterRowID: Int64 = 0
+        let batchSize = SessionSemanticSearchPolicy.candidateBatchSize(requestLimit: requestLimit)
+
+        while true {
+            try Task.checkCancellation()
+            let batch = try fetchSemanticChunkBatch(
+                source: source,
+                project: project,
+                since: since,
+                model: model,
+                dim: dim,
+                afterRowID: afterRowID,
+                batchSize: batchSize
+            )
+            if batch.isEmpty { break }
+            afterRowID = batch.last!.rowID
+            for candidate in batch {
+                let score = VectorMath.cosine(queryVector, candidate.vector)
+                SessionSemanticSearchPolicy.accumulateTopK(
+                    &top,
+                    incoming: SessionSemanticSearchPolicy.ScoredChunk(
+                        id: candidate.chunkId,
+                        score: score,
+                        sessionId: candidate.sessionId,
+                        text: candidate.text
+                    ),
+                    topK: topK
+                )
+            }
+        }
+        return top
+    }
+
+    private func fetchSemanticChunkBatch(
+        source: String?,
+        project: String?,
+        since: String?,
+        model: String,
+        dim: Int,
+        afterRowID: Int64,
+        batchSize: Int
     ) throws -> [SemanticChunkCandidate] {
         let expandedProjects = try project.map { try resolveProjectAliases([$0]) } ?? []
         return try queue.read { db in
@@ -1109,11 +1212,12 @@ final class MCPDatabase {
                 "sc.embedding IS NOT NULL",
                 "sc.model = ?",
                 "sc.dim = ?",
+                "sc.rowid > ?",
                 "s.hidden_at IS NULL",
                 "s.orphan_status IS NULL",
                 SessionSemanticSearchPolicy.searchableTierSQL,
             ]
-            var values: [DatabaseValueConvertible?] = [model, dim]
+            var values: [DatabaseValueConvertible?] = [model, dim, afterRowID]
 
             if let source {
                 conditions.append("s.source = ?")
@@ -1133,21 +1237,30 @@ final class MCPDatabase {
                 conditions.append("s.start_time >= ?")
                 values.append(since)
             }
-            values.append(SessionSemanticSearchPolicy.candidateCap(requestLimit: requestLimit))
+            values.append(batchSize)
 
             let sql = """
-            SELECT sc.id AS chunk_id,
+            SELECT sc.rowid AS row_id,
+                   sc.id AS chunk_id,
                    sc.session_id AS session_id,
                    sc.text AS text,
                    sc.embedding AS embedding
             FROM semantic_chunks sc
             JOIN sessions s ON s.id = sc.session_id
             WHERE \(conditions.joined(separator: " AND "))
-            ORDER BY s.start_time DESC
+            ORDER BY sc.rowid ASC
             LIMIT ?
             """
             let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
             return rows.compactMap { row in
+                let rowID: Int64
+                if let value = row["row_id"] as Int64? {
+                    rowID = value
+                } else if let value = row["row_id"] as Int? {
+                    rowID = Int64(value)
+                } else {
+                    return nil
+                }
                 guard let chunkId = stringValue(row["chunk_id"]),
                       let sessionId = stringValue(row["session_id"]),
                       let text = stringValue(row["text"]),
@@ -1156,6 +1269,7 @@ final class MCPDatabase {
                 }
                 guard let vector = VectorMath.decode(data, expectedCount: dim) else { return nil }
                 return SemanticChunkCandidate(
+                    rowID: rowID,
                     chunkId: chunkId,
                     sessionId: sessionId,
                     text: text,
