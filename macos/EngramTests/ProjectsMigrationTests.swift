@@ -193,9 +193,15 @@ final class ProjectsMigrationTests: XCTestCase {
                 source.contains("operationId: operationId") || source.contains("operationId: operationId,"),
                 "\(relativePath) must pass operationId on the service request"
             )
+            // Call may be multi-line: cancelProjectMoveBatch(\n operationId: operationId\n)
             XCTAssertTrue(
-                source.contains("cancelProjectMoveBatch(operationId:"),
+                source.contains("cancelProjectMoveBatch("),
                 "\(relativePath) must request cooperative service cancel"
+            )
+            // Semantic pair: cancel path must pass the tracked operation id (not a literal).
+            XCTAssertTrue(
+                source.range(of: #"cancelProjectMoveBatch\([\s\S]*?operationId:\s*operationId"#, options: .regularExpression) != nil,
+                "\(relativePath) cancelProjectMoveBatch must pass operationId: operationId"
             )
             // Cancel stays enabled during execute (no .disabled(isExecuting) on Cancel).
             XCTAssertFalse(
