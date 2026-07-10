@@ -309,16 +309,17 @@ public enum DestinationParentProvision {
     }
 
     private static func requireDirectory(atPath path: String) throws {
-        // Unqualified lstat matches FsOpsHooks.production (Swift shadows Darwin.stat
-        // as the struct type). lstat also refuses symlink parents for path safety.
-        var info = stat()
-        let rc = path.withCString { cPath in
-            lstat(cPath, &info)
+        // Follow symlinks (macOS `/var` → `/private/var` is a legitimate dir).
+        // Do not use lstat here — it would reject symlink path components and
+        // break all temp paths under /var. Ownership is still only from mkdir==0.
+        // FileManager.fileExists(isDirectory:) follows symlinks safely and avoids
+        // Swift's Darwin.stat struct-shadowing compile issue.
+        var isDir: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
+        guard exists else {
+            throw Error.mkdirFailed(path: path, errno: ENOENT)
         }
-        guard rc == 0 else {
-            throw Error.mkdirFailed(path: path, errno: errno)
-        }
-        guard (info.st_mode & S_IFMT) == S_IFDIR else {
+        guard isDir.boolValue else {
             throw Error.existsButNotDirectory(path: path)
         }
     }

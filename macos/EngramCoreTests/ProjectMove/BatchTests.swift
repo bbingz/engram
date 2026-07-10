@@ -323,9 +323,13 @@ final class BatchTests: XCTestCase {
             BatchOperation(src: src, archive: true)
         ])
         let result = await Batch.run(doc, writer: writer, overrides: makeOverrides())
-        XCTAssertEqual(result.completed.count, 1, "got failures: \(result.failed.map(\.error))")
-        XCTAssertEqual(result.failed.count, 0)
-        let archivedPath = result.completed[0]
+        guard let archivedPath = result.completed.first else {
+            XCTFail(
+                "expected 1 completed archive; failures=\(result.failed.map(\.error))"
+            )
+            return
+        }
+        XCTAssertEqual(result.failed.count, 0, "failures: \(result.failed.map(\.error))")
         XCTAssertEqual(archivedPath.state, .committed)
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: archivedPath.renamedDirs.first?.newDir ?? archivedPath.migrationId)
