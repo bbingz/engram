@@ -311,6 +311,16 @@ final class SessionModelTests: XCTestCase {
             sessionsPage.contains("shouldApplyLoad"),
             "load pipeline must generation-gate stale favorite reloads"
         )
+        // Completion-aware path: page forwards @MainActor Bool completion into setFavorite.
+        XCTAssertTrue(
+            sessionsPage.contains("onToggleFavorite: { session, completion in")
+                || sessionsPage.contains("session, completion in"),
+            "SessionsPageView must accept the completion-aware onToggleFavorite signature"
+        )
+        XCTAssertTrue(
+            sessionsPage.contains("completion: completion"),
+            "SessionsPageView must forward completion into SessionActionHandlers.setFavorite"
+        )
 
         // Child cards: same favorites-table source as parents; menu uses isFavorite.
         XCTAssertTrue(
@@ -326,17 +336,37 @@ final class SessionModelTests: XCTestCase {
             card.contains("Session.favoriteMenuLabel(isFavorite: isFavorite)"),
             "menu labels must use isFavorite (Add vs Remove), not a fixed Add string"
         )
-        // Post-toggle: local @State children must flip isFavorite so the next
-        // menu action can reverse without re-expand / full page reload of child rows.
+        // Completion-aware: local child isFavorite updates only after service success.
         XCTAssertTrue(
-            card.contains("applyingChildFavorite") && card.contains("toggleChildFavorite"),
-            "child favorite toggle must update local expanded-child state"
+            card.contains("@escaping @MainActor (Bool) -> Void")
+                || card.contains("@MainActor (Bool) -> Void"),
+            "onToggleFavorite must be completion-aware with a MainActor Bool result"
+        )
+        XCTAssertTrue(
+            card.contains("applyingChildFavoriteIfSucceeded") && card.contains("toggleChildFavorite"),
+            "child favorite toggle must apply local state only via success-gated helper"
+        )
+        XCTAssertFalse(
+            card.contains("Optimistically flip local child"),
+            "must not optimistically flip local child isFavorite before service success"
         )
 
-        // Mutation path reloads so labels flip / Starred rows drop.
+        // Mutation path: reload then completion(true); catch → completion(false).
         XCTAssertTrue(
             handlers.contains("await reload()"),
             "setFavorite success must reload list surfaces"
+        )
+        XCTAssertTrue(
+            handlers.contains("completion?(true)"),
+            "setFavorite must invoke completion(true) after successful write+reload"
+        )
+        XCTAssertTrue(
+            handlers.contains("completion?(false)"),
+            "setFavorite must invoke completion(false) on catch so child state can stay put"
+        )
+        XCTAssertTrue(
+            handlers.contains("@MainActor (Bool) -> Void"),
+            "setFavorite completion must be @MainActor (Bool) -> Void"
         )
     }
 
@@ -409,5 +439,73 @@ final class SessionModelTests: XCTestCase {
         )
         XCTAssertTrue(result.confirmed[0].isFavorite)
         XCTAssertTrue(result.suggested.isEmpty)
+    }
+
+    /// Service-failure contract: local child state and next toggle target stay put.
+    func testApplyingChildFavoriteIfSucceededFailureLeavesOriginalStateAndTarget() throws {
+        var confirmed = [makeSession(id: "child-a"), makeSession(id: "child-b")]
+        confirmed[0].isFavorite = false
+        confirmed[1].isFavorite = true
+        var suggested = [makeSession(id: "child-s")]
+        suggested[0].isFavorite = true
+        let preToggle = confirmed[0]
+        XCTAssertTrue(preToggle.favoriteToggleTarget, "pre-toggle next target is Add (true)")
+
+        let result = ExpandableSessionCard.applyingChildFavoriteIfSucceeded(
+            confirmed: confirmed,
+            suggested: suggested,
+            preToggleSession: preToggle,
+            success: false
+        )
+        XCTAssertFalse(result.confirmed[0].isFavorite, "failure must not flip child-a")
+        XCTAssertTrue(
+            result.confirmed[0].favoriteToggleTarget,
+            "failure must leave next target unchanged (still Add)"
+        )
+        XCTAssertTrue(result.confirmed[1].isFavorite, "sibling favorite must stay")
+        XCTAssertTrue(result.suggested[0].isFavorite, "suggested favorite must stay")
+        XCTAssertEqual(result.confirmed.map(\.id), ["child-a", "child-b"])
+        XCTAssertEqual(result.suggested.map(\.id), ["child-s"])
+    }
+
+    /// Service-success contract: flip isFavorite via pre-toggle symmetric target.
+    func testApplyingChildFavoriteIfSucceededSuccessFlipsUsingPreToggleTarget() throws {
+        var confirmed = [makeSession(id: "child-a"), makeSession(id: "child-b")]
+        confirmed[0].isFavorite = false
+        confirmed[1].isFavorite = true
+        var suggested = [makeSession(id: "child-s")]
+        suggested[0].isFavorite = false
+        let preAdd = confirmed[0]
+        XCTAssertTrue(preAdd.favoriteToggleTarget)
+
+        var result = ExpandableSessionCard.applyingChildFavoriteIfSucceeded(
+            confirmed: confirmed,
+            suggested: suggested,
+            preToggleSession: preAdd,
+            success: true
+        )
+        XCTAssertTrue(result.confirmed[0].isFavorite, "success Add must set isFavorite")
+        XCTAssertFalse(
+            result.confirmed[0].favoriteToggleTarget,
+            "after successful Add, next target must be Remove"
+        )
+        XCTAssertTrue(result.confirmed[1].isFavorite)
+        XCTAssertFalse(result.suggested[0].isFavorite)
+
+        // Remove on the same child (pre-toggle captures the favorite state).
+        let preRemove = result.confirmed[0]
+        XCTAssertFalse(preRemove.favoriteToggleTarget)
+        result = ExpandableSessionCard.applyingChildFavoriteIfSucceeded(
+            confirmed: result.confirmed,
+            suggested: result.suggested,
+            preToggleSession: preRemove,
+            success: true
+        )
+        XCTAssertFalse(result.confirmed[0].isFavorite, "success Remove must clear isFavorite")
+        XCTAssertTrue(
+            result.confirmed[0].favoriteToggleTarget,
+            "after successful Remove, next target must be Add"
+        )
+        XCTAssertTrue(result.confirmed[1].isFavorite, "sibling must not flip")
     }
 }

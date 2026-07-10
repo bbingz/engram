@@ -25,7 +25,11 @@ struct ExpandableSessionCard: View {
     var onRename: ((Session) -> Void)? = nil
     var onExportMarkdown: ((Session) -> Void)? = nil
     var onExportJSON: ((Session) -> Void)? = nil
-    var onToggleFavorite: ((Session) -> Void)? = nil
+    /// Favorite toggle with a main-actor success flag.
+    /// Callers invoke `completion(true)` after a successful service write/reload
+    /// and `completion(false)` on failure. Parent/Timeline sites may ignore it;
+    /// expanded child rows apply local `isFavorite` only on `true`.
+    var onToggleFavorite: ((Session, @escaping @MainActor (Bool) -> Void) -> Void)? = nil
     var isHidden = false
 
     @State private var isExpanded = false
@@ -64,23 +68,39 @@ struct ExpandableSessionCard: View {
         return (mark(confirmed), mark(suggested))
     }
 
-    /// Optimistically flip local child `isFavorite`, then invoke the page callback
-    /// with the pre-toggle session so `favoriteToggleTarget` stays correct.
-    private func toggleChildFavorite(_ child: Session) {
-        let next = child.favoriteToggleTarget
-        let updated = Self.applyingChildFavorite(
-            confirmed: children,
-            suggested: suggestedChildren,
-            sessionId: child.id,
-            isFavorite: next
+    /// Completion-aware local child update: flip only when the service reports
+    /// success. Failure leaves both arrays and `favoriteToggleTarget` unchanged.
+    /// `preToggleSession` must be the pre-service session so the target is
+    /// `preToggleSession.favoriteToggleTarget` (symmetric `!isFavorite`).
+    static func applyingChildFavoriteIfSucceeded(
+        confirmed: [Session],
+        suggested: [Session],
+        preToggleSession: Session,
+        success: Bool
+    ) -> (confirmed: [Session], suggested: [Session]) {
+        guard success else { return (confirmed, suggested) }
+        return applyingChildFavorite(
+            confirmed: confirmed,
+            suggested: suggested,
+            sessionId: preToggleSession.id,
+            isFavorite: preToggleSession.favoriteToggleTarget
         )
-        children = updated.confirmed
-        suggestedChildren = updated.suggested
-        // Callback contract is fire-and-forget `(Session) -> Void` — no failure
-        // signal to roll back. Parent pages reload on success for their own lists;
-        // local child state is the source of truth for the expanded menu until
-        // the next loadChildren / loadMoreChildren annotation.
-        onToggleFavorite?(child)
+    }
+
+    /// Invoke the page callback with the pre-toggle child session; apply local
+    /// confirmed/suggested `isFavorite` only when completion reports success.
+    private func toggleChildFavorite(_ child: Session) {
+        // Pre-toggle session preserves favoriteToggleTarget for the service write.
+        onToggleFavorite?(child) { success in
+            let updated = Self.applyingChildFavoriteIfSucceeded(
+                confirmed: children,
+                suggested: suggestedChildren,
+                preToggleSession: child,
+                success: success
+            )
+            children = updated.confirmed
+            suggestedChildren = updated.suggested
+        }
     }
 
     var body: some View {
@@ -177,7 +197,10 @@ struct ExpandableSessionCard: View {
                     SessionWriteMenuItems(
                         isHidden: isHidden,
                         isFavorite: session.isFavorite,
-                        onToggleFavorite: onToggleFavorite.map { cb in { cb(session) } },
+                        // Parent list reloads on success; ignore completion here.
+                        onToggleFavorite: onToggleFavorite.map { cb in
+                            { cb(session) { _ in } }
+                        },
                         onRename: onRename.map { cb in { cb(session) } },
                         onExportMarkdown: onExportMarkdown.map { cb in { cb(session) } },
                         onExportJSON: onExportJSON.map { cb in { cb(session) } },
@@ -212,7 +235,7 @@ struct ExpandableSessionCard: View {
                                 onRename: onRename.map { cb in { cb(child) } },
                                 onExportMarkdown: onExportMarkdown.map { cb in { cb(child) } },
                                 onExportJSON: onExportJSON.map { cb in { cb(child) } },
-                                // Optimistic local flip so Add/Remove reverses without re-expand.
+                                // Completion-aware: local isFavorite flips only after service success.
                                 onToggleFavorite: onToggleFavorite.map { _ in { toggleChildFavorite(child) } },
                                 isHidden: child.hiddenAt != nil
                             )
@@ -248,7 +271,7 @@ struct ExpandableSessionCard: View {
                                 onRename: onRename.map { cb in { cb(child) } },
                                 onExportMarkdown: onExportMarkdown.map { cb in { cb(child) } },
                                 onExportJSON: onExportJSON.map { cb in { cb(child) } },
-                                // Optimistic local flip so Add/Remove reverses without re-expand.
+                                // Completion-aware: local isFavorite flips only after service success.
                                 onToggleFavorite: onToggleFavorite.map { _ in { toggleChildFavorite(child) } },
                                 isHidden: child.hiddenAt != nil
                             )

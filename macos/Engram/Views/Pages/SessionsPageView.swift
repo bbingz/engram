@@ -206,8 +206,14 @@ struct SessionsPageView: View {
                                 onExportMarkdown: { handlers.export($0, format: "markdown") },
                                 onExportJSON: { handlers.export($0, format: "json") },
                                 // M19: one toggle for Browse and Starred — target is !isFavorite.
-                                onToggleFavorite: { session in
-                                    handlers.setFavorite(session, favorite: session.favoriteToggleTarget)
+                                // Completion reports service success so expanded children can
+                                // update local isFavorite only after write+reload succeed.
+                                onToggleFavorite: { session, completion in
+                                    handlers.setFavorite(
+                                        session,
+                                        favorite: session.favoriteToggleTarget,
+                                        completion: completion
+                                    )
                                 },
                                 isHidden: session.hiddenAt != nil
                             )
