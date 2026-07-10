@@ -138,7 +138,8 @@ final class ProjectMoveOperationRegistryTests: XCTestCase {
     func testPreflightFailureTerminalBlocksForeverJoin_repro() {
         let reg = makeRegistry()
         let id = "preflight"
-        // Handler now registers first then fails — simulate that path.
+        // Handler path is covered by ProjectMoveLongOpIPCTests; this asserts
+        // registry terminal semantics used by that path.
         _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"kind":"move"}"#)
         reg.completeWithFailure(
             operationId: id,
@@ -149,6 +150,73 @@ final class ProjectMoveOperationRegistryTests: XCTestCase {
             XCTAssertEqual(f.name, "InvalidRequest")
         default:
             XCTFail("same-id reconnect must get terminal failure, not hang")
+        }
+    }
+
+    // MARK: - Bounded terminal lifecycle (restored)
+
+    func testTerminalTTLEvictionPreservesRunning_repro() {
+        var clock = Date(timeIntervalSince1970: 1_000)
+        let reg = makeRegistry(maxTerminal: 10, terminalTTL: 10, now: { clock })
+        _ = reg.beginOrJoin(operationId: "done", fingerprint: #"{"k":"1"}"#)
+        reg.complete(operationId: "done", payload: Data("x".utf8))
+        _ = reg.beginOrJoin(operationId: "run", fingerprint: #"{"k":"2"}"#)
+        XCTAssertEqual(reg.entryCountForTests(), 2)
+
+        clock = clock.addingTimeInterval(11)
+        _ = reg.beginOrJoin(operationId: "fresh", fingerprint: #"{"k":"3"}"#)
+        XCTAssertTrue(reg.isRunningForTests("run"), "running must never be TTL-evicted")
+        switch reg.beginOrJoin(operationId: "done", fingerprint: #"{"k":"1"}"#) {
+        case .proceed:
+            break // expired terminal treated as new begin
+        default:
+            XCTFail("expired terminal should not remain as completed")
+        }
+    }
+
+    func testLRUTerminalCapPreservesRunningAndWaiters_repro() async throws {
+        var clock = Date(timeIntervalSince1970: 5_000)
+        let reg = makeRegistry(maxTerminal: 2, terminalTTL: 10_000, now: { clock })
+        for i in 0..<3 {
+            let id = "t\(i)"
+            _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"i":"\#(i)"}"#)
+            reg.complete(operationId: id, payload: Data("\(i)".utf8))
+            clock = clock.addingTimeInterval(1)
+        }
+        _ = reg.beginOrJoin(operationId: "runner", fingerprint: #"{"k":"r"}"#)
+        XCTAssertTrue(reg.isRunningForTests("runner"))
+        // At most 2 terminals + 1 running
+        XCTAssertLessThanOrEqual(reg.entryCountForTests(), 3)
+    }
+
+    func testParkedWaiterDetachDoesNotCancelAndReconnectSeesTerminal_repro() async throws {
+        let reg = makeRegistry()
+        let id = "parked-waiter"
+        _ = reg.beginOrJoin(operationId: id, fingerprint: #"{"k":"1"}"#)
+
+        let parked = Task {
+            try await reg.waitForTerminal(operationId: id)
+        }
+        // Allow waiter to park under the lock.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        parked.cancel()
+        do {
+            _ = try await parked.value
+            XCTFail("parked cancel must throw")
+        } catch is CancellationError {
+            // ok
+        }
+        XCTAssertFalse(
+            reg.shouldStop(operationId: id),
+            "parked waiter detach must not request operation cancel"
+        )
+        let payload = Data("terminal".utf8)
+        reg.complete(operationId: id, payload: payload)
+        switch reg.beginOrJoin(operationId: id, fingerprint: #"{"k":"1"}"#) {
+        case .completed(.success(let data)):
+            XCTAssertEqual(data, payload)
+        default:
+            XCTFail("reconnect must see completed terminal after parked detach")
         }
     }
 }

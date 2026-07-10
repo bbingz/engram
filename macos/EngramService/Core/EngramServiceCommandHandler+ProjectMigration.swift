@@ -1,6 +1,20 @@
 import Foundation
 import EngramCoreWrite
 
+/// Narrow test seams for long-op producer / writer-gate ownership.
+/// Default nil is inert in production.
+enum ProjectMoveLongOpTestHooks {
+    /// Fired once the detached producer has entered `performWriteCommand` (holds the gate).
+    nonisolated(unsafe) static var onProducerHoldsGate: (@Sendable () -> Void)?
+    /// Awaited while the gate is held, before the real pipeline body.
+    nonisolated(unsafe) static var stallWhileHoldingGate: (@Sendable () async -> Void)?
+
+    static func reset() {
+        onProducerHoldsGate = nil
+        stallWhileHoldingGate = nil
+    }
+}
+
 extension EngramServiceCommandHandler {
     private static let projectMovePayloadListLimit = 100
     private static let projectMovePayloadIssueLimit = 25
@@ -342,7 +356,11 @@ extension EngramServiceCommandHandler {
         Task.detached(priority: .userInitiated) {
             do {
                 let gateResult = try await writerGate.performWriteCommand(name: commandName) { writer in
-                    try await body(writer)
+                    ProjectMoveLongOpTestHooks.onProducerHoldsGate?()
+                    if let stall = ProjectMoveLongOpTestHooks.stallWhileHoldingGate {
+                        await stall()
+                    }
+                    return try await body(writer)
                 }
                 let mapped = map(gateResult.value)
                 completeOperation(operationId: operationId, result: mapped)

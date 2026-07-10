@@ -209,6 +209,31 @@ final class ProjectsMigrationTests: XCTestCase {
 
     // MARK: - Wave 8 long-ops: rename/archive/undo operationId + cancel + reconnect
 
+    func testAllProjectSheetsAssignPrepareSessionBeforeExecuteAwait_repro() throws {
+        for relativePath in [
+            "macos/Engram/Views/Projects/BatchMoveSheet.swift",
+            "macos/Engram/Views/Projects/RenameSheet.swift",
+            "macos/Engram/Views/Projects/ArchiveSheet.swift",
+            "macos/Engram/Views/Projects/UndoSheet.swift",
+        ] {
+            let source = try Self.source(relativePath)
+            // Structurally: prepare() then assign to longOpSession before execute(.
+            let prepareIdx = source.range(of: "ProjectLongOperationRunner.prepare(")
+            let assignIdx = source.range(of: "longOpSession = prepared.session")
+            let executeIdx = source.range(of: "ProjectLongOperationRunner.execute(")
+            XCTAssertNotNil(prepareIdx, "\(relativePath) must call prepare()")
+            XCTAssertNotNil(assignIdx, "\(relativePath) must assign prepared.session to longOpSession")
+            XCTAssertNotNil(executeIdx, "\(relativePath) must call execute()")
+            let p = try XCTUnwrap(prepareIdx).lowerBound
+            let a = try XCTUnwrap(assignIdx).lowerBound
+            let e = try XCTUnwrap(executeIdx).lowerBound
+            XCTAssertTrue(
+                p < a && a < e,
+                "\(relativePath) must assign prepare result to longOpSession before execute await"
+            )
+        }
+    }
+
     func testRenameArchiveUndoSheetsWireOperationIdAndCooperativeCancel_repro() throws {
         for relativePath in [
             "macos/Engram/Views/Projects/RenameSheet.swift",
