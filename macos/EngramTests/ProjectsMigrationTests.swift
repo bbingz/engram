@@ -623,7 +623,11 @@ final class ProjectsMigrationTests: XCTestCase {
         let provision = String(fsOps[mark.lowerBound...].prefix(3500))
         XCTAssertTrue(provision.contains("Darwin.mkdir"))
         XCTAssertTrue(provision.contains("Darwin.rmdir"))
-        XCTAssertFalse(provision.contains("removeItem"))
+        XCTAssertFalse(
+            provision.contains("FileManager.default.removeItem(")
+                || provision.range(of: #"\bremoveItem\s*\("#, options: .regularExpression) != nil,
+            "provision must not call recursive removeItem"
+        )
     }
 
     // MARK: - (d) alias add AND remove both encode new_project (non-nil)

@@ -135,9 +135,11 @@ final class FsOpsTests: XCTestCase {
             segment.contains("FileManager.default.createDirectory"),
             "must not use FileManager createDirectory"
         )
+        // Call forms only — comments may mention FileManager.removeItem.
         XCTAssertFalse(
-            segment.contains("removeItem"),
-            "must not use recursive removeItem"
+            segment.contains("FileManager.default.removeItem(")
+                || segment.range(of: #"\bremoveItem\s*\("#, options: .regularExpression) != nil,
+            "must not call recursive removeItem"
         )
         XCTAssertFalse(
             segment.contains("contentsOfDirectory"),
