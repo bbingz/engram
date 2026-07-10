@@ -17,49 +17,49 @@
 
 | ID | Verdict | Fix commit | Tests | Evidence | Residual risk |
 |----|---------|------------|-------|----------|---------------|
-| C01 | CONFIRMED-FIXED | wave7-bundle | `testStartupDeferralDoesNotStampSuccess_recentScanRecovers_repro` | `SwiftIndexer.swift` deferral `continue` without `recordFileIndexSuccess` | — |
-| H01 | CONFIRMED-FIXED | wave7-bundle | `testFinalizeRebuildPreservesLiveRowsForPermanentFailures_repro` | `FTSRebuildPolicy.finalizeRebuildIfReady` copies live→shadow before swap | — |
-| H02 | CONFIRMED-FIXED | wave7-bundle | source: `isLongRunningWriteCommand` covers index/fts/embed | `ServiceWriterGate.swift` | Named-command coverage may miss exotic names |
-| H03 | CONFIRMED-FIXED | wave7-bundle | AI timeout 20s / client 45s headroom | `EngramServiceClient` + `EngramServiceCommandHandler` | linkSessions partial cancel still PARTIAL |
-| H04 | CONFIRMED-FIXED | wave7-bundle | `testBackfillSuggestedParentsWritesAmbiguousCandidatesWithoutSkipping` | `setAmbiguousSuggestion` keeps role/tier | — |
-| H05 | CONFIRMED-FIXED | wave7-bundle | cascade SQL + `clearParentSession` | `EngramMigrations` trigger; command handler | Existing DBs get trigger via createOrUpdateBaseSchema |
-| H06 | CONFIRMED-FIXED | wave7-bundle | `generate_summary` → `.mutating` | `MCPToolRegistry.toolCategory` | Need MCP annotation golden if present |
-| H07 | PARTIAL-FIXED | wave7-bundle | dim check remains; model equality not fully enforced | design documented in README | Same-dim model swap still possible — follow-up |
-| H08 | CONFIRMED-FIXED | wave7-bundle | `SearchModeTests` + README + AISettings comments | App intentionally keyword-only; service/MCP semantic real | — |
-| H09 | CONFIRMED-FIXED | wave7-bundle | memory path requires `…/memory/*.md`, rejects symlinks | `EngramServiceReadProvider.memoryFileContent` | Add dedicated XCTest if not present |
-| H10 | CONFIRMED-FIXED | wave7-bundle | `testSameCountBodyRewriteEnqueuesFtsJob_repro` | `contentFingerprint` in `snapshotHash` | Tail merge seeds from prior hash |
-| H11 | CONFIRMED-FIXED | wave7-bundle | Command palette double-fault matches Search page | `CommandPaletteView` local FTS empty ≠ fail | — |
-| H12 | PARTIAL-FIXED | wave7-bundle | — | Export still post-await status; palette list not replaced in this pass | Needs export state machine PR |
-| M01 | CONFIRMED-FIXED | wave7-bundle | `performReadCommand` no gen bump | status/telemetry paths switched | Not all pure reads migrated |
+| C01 | CONFIRMED-FIXED | `12d3c081` | `testStartupDeferralDoesNotStampSuccess_recentScanRecovers_repro` | `SwiftIndexer.swift` deferral `continue` without `recordFileIndexSuccess` | — |
+| H01 | CONFIRMED-FIXED | `12d3c081` | `testFinalizeRebuildPreservesLiveRowsForPermanentFailures_repro` | `FTSRebuildPolicy.finalizeRebuildIfReady` copies live→shadow before swap | — |
+| H02 | CONFIRMED-FIXED | `12d3c081` | source: `isLongRunningWriteCommand` covers index/fts/embed | `ServiceWriterGate.swift` | Named-command coverage may miss exotic names |
+| H03 | CONFIRMED-FIXED | `12d3c081` | AI timeout 20s / client 45s headroom | `EngramServiceClient` + `EngramServiceCommandHandler` | linkSessions partial cancel still PARTIAL |
+| H04 | CONFIRMED-FIXED | `12d3c081` | `testBackfillSuggestedParentsWritesAmbiguousCandidatesWithoutSkipping` | `setAmbiguousSuggestion` keeps role/tier | — |
+| H05 | CONFIRMED-FIXED | `12d3c081` | cascade SQL + `clearParentSession` | `EngramMigrations` trigger; command handler | Existing DBs get trigger via createOrUpdateBaseSchema |
+| H06 | CONFIRMED-FIXED | `12d3c081` | `generate_summary` → `.mutating` | `MCPToolRegistry.toolCategory` | Need MCP annotation golden if present |
+| H07 | PARTIAL-FIXED | `12d3c081` | dim check remains; model equality not fully enforced | design documented in README | Same-dim model swap still possible — follow-up |
+| H08 | CONFIRMED-FIXED | `12d3c081` | `SearchModeTests` + README + AISettings comments | App intentionally keyword-only; service/MCP semantic real | — |
+| H09 | CONFIRMED-FIXED | `12d3c081` | memory path requires `…/memory/*.md`, rejects symlinks | `EngramServiceReadProvider.memoryFileContent` | Add dedicated XCTest if not present |
+| H10 | CONFIRMED-FIXED | `12d3c081` | `testSameCountBodyRewriteEnqueuesFtsJob_repro` | `contentFingerprint` in `snapshotHash` | Tail merge seeds from prior hash |
+| H11 | CONFIRMED-FIXED | `12d3c081` | Command palette double-fault matches Search page | `CommandPaletteView` local FTS empty ≠ fail | — |
+| H12 | PARTIAL-FIXED | `12d3c081` | — | Export still post-await status; palette list not replaced in this pass | Needs export state machine PR |
+| M01 | CONFIRMED-FIXED | `12d3c081` | `performReadCommand` no gen bump | status/telemetry paths switched | Not all pure reads migrated |
 | M02 | PARTIAL-FIXED | — | — | telemetry still records before success gate | Follow-up |
-| M03 | CONFIRMED-FIXED | wave7-bundle | `testActiveFileGraceDoesNotStampSuccess_repro` | active-file grace no stamp | — |
-| M04 | CONFIRMED-FIXED | wave7-bundle | retryable tail → full scan fallthrough | `isTerminalTailFailure` | — |
+| M03 | CONFIRMED-FIXED | `12d3c081` | `testActiveFileGraceDoesNotStampSuccess_repro` | active-file grace no stamp | — |
+| M04 | CONFIRMED-FIXED | `12d3c081` | retryable tail → full scan fallthrough | `isTerminalTailFailure` | — |
 | M05 | PARTIAL-FIXED | — | — | Batch cancel still client-only | Follow-up |
 | M06 | PARTIAL-FIXED | — | — | Service warning still coarse | Follow-up |
 | M07 | PARTIAL-FIXED | — | — | get_memory mislabel path not rewritten this pass | Follow-up |
 | M08 | PARTIAL-FIXED | — | — | MCP breaker not shared | Follow-up |
 | M09 | PARTIAL-FIXED | docs | README candidate-cap honesty | KNN still recency-capped | Documented |
-| M10 | CONFIRMED-FIXED | wave7-bundle | README + mcp-tools notes | human-driven default / `include_all` | Full mcp-tools rewrite partial |
+| M10 | CONFIRMED-FIXED | `12d3c081` | README + mcp-tools notes | human-driven default / `include_all` | Full mcp-tools rewrite partial |
 | M11 | PARTIAL-FIXED | — | — | roles default docs not fully rewritten | Follow-up |
 | M12 | PARTIAL-FIXED | — | — | export size code still invalidRequest | Follow-up |
 | M13 | PARTIAL-FIXED | — | — | embeddingApiKey Keychain not completed | Follow-up |
 | M14 | PARTIAL-FIXED | — | — | diagnostic redaction set not expanded | Follow-up |
 | M15 | PARTIAL-FIXED | — | — | service settings 0600 not forced | Follow-up |
 | M16 | PARTIAL-FIXED | — | — | MCP transcript still unredacted by design note | Follow-up product decision |
-| M17 | CONFIRMED-FIXED | wave7-bundle | dismiss sets `link_source=manual` | `dismissSuggestion` | — |
-| M18 | CONFIRMED-FIXED | wave7-bundle | `testBackfillPolycliProviderParentsClassifiesReviewProbes` | bare cwd admission removed | — |
+| M17 | CONFIRMED-FIXED | `12d3c081` | dismiss sets `link_source=manual` | `dismissSuggestion` | — |
+| M18 | CONFIRMED-FIXED | `12d3c081` | `testBackfillPolycliProviderParentsClassifiesReviewProbes` | bare cwd admission removed | — |
 | M19 | PARTIAL-FIXED | — | — | favorites still add-only on browse | Follow-up |
-| M20 | CONFIRMED-FIXED | wave7-bundle | README value-band claim narrowed | Search page only | — |
+| M20 | CONFIRMED-FIXED | `12d3c081` | README value-band claim narrowed | Search page only | — |
 | L01 | PARTIAL-FIXED | — | — | stdout JSON still interpolated in places | Follow-up |
 | L02 | PARTIAL-FIXED | — | — | serviceLogs try? remains | Follow-up |
 | L03 | PARTIAL-FIXED | — | — | status starting until scan success | Follow-up |
-| L04 | CONFIRMED-FIXED | wave7-bundle | formula version metadata | `SessionQualityScore.formulaVersion` + backfill | — |
-| L05 | CONFIRMED-FIXED | wave7-bundle | maxMessages → `messageLimitExceeded` | `IndexJobRunner.buildSearchContent` | — |
+| L04 | CONFIRMED-FIXED | `12d3c081` | formula version metadata | `SessionQualityScore.formulaVersion` + backfill | — |
+| L05 | CONFIRMED-FIXED | `12d3c081` | maxMessages → `messageLimitExceeded` | `IndexJobRunner.buildSearchContent` | — |
 | L06 | PARTIAL-FIXED | — | — | project_review “7 roots” blurb | Follow-up |
 | L07 | PARTIAL-FIXED | — | — | get_memory type not in payload | Follow-up |
-| L08 | CONFIRMED-FIXED | wave7-bundle | `LiveSessionCard` → `RelativeTimeText` | shared ISO parser | — |
+| L08 | CONFIRMED-FIXED | `12d3c081` | `LiveSessionCard` → `RelativeTimeText` | shared ISO parser | — |
 | L09 | PARTIAL-FIXED | — | — | invariant ledger still path-existence | Follow-up |
-| S01 | CONFIRMED-FIXED | wave7-bundle | `IndexingSchedulePolicyTests` | 15→30→60m + LPM/thermal defer | OS scheduler wrapper optional |
+| S01 | CONFIRMED-FIXED | `12d3c081` | `IndexingSchedulePolicyTests` | 15→30→60m + LPM/thermal defer | OS scheduler wrapper optional |
 
 ## Tallies
 
