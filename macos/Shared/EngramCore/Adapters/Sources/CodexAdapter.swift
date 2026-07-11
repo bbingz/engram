@@ -456,9 +456,10 @@ enum JSONLAdapterSupport {
     }
 }
 
-final class CodexAdapter: SessionAdapter, Sendable {
+final class CodexAdapter: SessionAdapter, ExactArchiveSourceAdapter, Sendable {
     let source: SourceName = .codex
     private let sessionRoots: [URL]
+    private let archiveReplayUsesNamedRoots: Bool
     private let limits: ParserLimits
 
     init(
@@ -467,7 +468,9 @@ final class CodexAdapter: SessionAdapter, Sendable {
             .path,
         limits: ParserLimits = .default
     ) {
-        self.sessionRoots = Self.expandSessionRoots(URL(fileURLWithPath: sessionsRoot))
+        let requestedRoot = URL(fileURLWithPath: sessionsRoot)
+        self.sessionRoots = Self.expandSessionRoots(requestedRoot)
+        self.archiveReplayUsesNamedRoots = requestedRoot.lastPathComponent == "sessions"
         self.limits = limits
     }
 
@@ -483,6 +486,31 @@ final class CodexAdapter: SessionAdapter, Sendable {
                 }
             }
             .sorted()
+    }
+
+    func archiveSourceDescriptor(locator: String) async throws -> ArchiveSourceDescriptor {
+        let sourceURL = URL(fileURLWithPath: locator).standardizedFileURL
+        for declaredRoot in sessionRoots {
+            let physicalRoot = declaredRoot.resolvingSymlinksInPath().standardizedFileURL
+            guard let relative = try? ArchiveSourceDescriptor.relativePath(
+                path: sourceURL,
+                under: physicalRoot
+            ) else {
+                continue
+            }
+            let replayRelativePath = archiveReplayUsesNamedRoots
+                ? "\(declaredRoot.lastPathComponent)/\(relative)"
+                : relative
+            return try ArchiveSourceDescriptor.singleFile(
+                locator: locator,
+                sourceURL: sourceURL,
+                replayRelativePath: replayRelativePath
+            )
+        }
+        throw ArchiveSourceDescriptorError.pathOutsideRoot(
+            path: sourceURL.path,
+            root: sessionRoots.map(\.path).joined(separator: ":")
+        )
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {

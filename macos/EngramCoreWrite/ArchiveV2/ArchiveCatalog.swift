@@ -78,6 +78,16 @@ public struct ArchiveCapture: Equatable, Sendable {
     public let capturedAt: String
 }
 
+public struct ArchiveCaptureCursor: Equatable, Sendable {
+    public let capturedAt: String
+    public let captureID: String
+
+    public init(capturedAt: String, captureID: String) {
+        self.capturedAt = capturedAt
+        self.captureID = captureID
+    }
+}
+
 public struct ArchiveBinding: Equatable, Sendable {
     public let manifestSHA256: String
     public let sessionID: String
@@ -419,6 +429,97 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 """,
                 arguments: [sessionID]
             ).map(Self.binding(from:))
+        }
+    }
+
+    public func capture(captureID: String) throws -> ArchiveCapture? {
+        guard ArchiveV2Hash.isValidSHA256(captureID) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "captureID")
+        }
+        return try pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM archive_captures WHERE capture_id = ?",
+                arguments: [captureID]
+            ).map(Self.capture(from:))
+        }
+    }
+
+    /// Persisted unbound work is queried from the catalog rather than process
+    /// memory so a crash after capture cannot strand a replayable generation.
+    public func unboundCaptures(limit: Int) throws -> [ArchiveCapture] {
+        guard limit > 0 else {
+            throw ArchiveCatalogError.invalidLimit(limit)
+        }
+        guard let boundary = try unboundCaptureBoundary() else { return [] }
+        return try unboundCaptures(limit: limit, after: nil, through: boundary)
+    }
+
+    public func unboundCaptureBoundary() throws -> ArchiveCaptureCursor? {
+        try pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT c.captured_at, c.capture_id
+                FROM archive_captures AS c
+                LEFT JOIN archive_session_bindings AS b
+                  ON b.capture_id = c.capture_id
+                WHERE b.capture_id IS NULL
+                ORDER BY c.captured_at DESC, c.capture_id DESC
+                LIMIT 1
+                """
+            ) else {
+                return nil
+            }
+            return ArchiveCaptureCursor(
+                capturedAt: row["captured_at"],
+                captureID: row["capture_id"]
+            )
+        }
+    }
+
+    public func unboundCaptures(
+        limit: Int,
+        after cursor: ArchiveCaptureCursor?,
+        through boundary: ArchiveCaptureCursor
+    ) throws -> [ArchiveCapture] {
+        guard limit > 0 else {
+            throw ArchiveCatalogError.invalidLimit(limit)
+        }
+        try Self.validateTimestamp(boundary.capturedAt, field: "boundary.capturedAt")
+        guard ArchiveV2Hash.isValidSHA256(boundary.captureID) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "boundary.captureID")
+        }
+        if let cursor {
+            try Self.validateTimestamp(cursor.capturedAt, field: "cursor.capturedAt")
+            guard ArchiveV2Hash.isValidSHA256(cursor.captureID) else {
+                throw ArchiveCatalogError.invalidSHA256(field: "cursor.captureID")
+            }
+        }
+        return try pool.read { db in
+            let lowerBoundSQL: String
+            var arguments = StatementArguments()
+            if let cursor {
+                lowerBoundSQL = """
+                  AND (c.captured_at > ? OR (c.captured_at = ? AND c.capture_id > ?))
+                """
+                arguments += [cursor.capturedAt, cursor.capturedAt, cursor.captureID]
+            } else {
+                lowerBoundSQL = ""
+            }
+            arguments += [boundary.capturedAt, boundary.capturedAt, boundary.captureID, limit]
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT c.*
+                FROM archive_captures AS c
+                LEFT JOIN archive_session_bindings AS b
+                  ON b.capture_id = c.capture_id
+                WHERE b.capture_id IS NULL
+                \(lowerBoundSQL)
+                  AND (c.captured_at < ? OR (c.captured_at = ? AND c.capture_id <= ?))
+                ORDER BY c.captured_at ASC, c.capture_id ASC
+                LIMIT ?
+                """, arguments: arguments)
+            return try rows.map(Self.capture(from:))
         }
     }
 

@@ -1,6 +1,6 @@
 import Foundation
 
-final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, ModificationFilteredSessionAdapter, Sendable {
+final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, ModificationFilteredSessionAdapter, ExactArchiveSourceAdapter, Sendable {
     let source: SourceName = .claudeCode
     private let projectsRoot: URL
     private let limits: ParserLimits
@@ -52,6 +52,20 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             }
         }
         return locators.sorted()
+    }
+
+    func archiveSourceDescriptor(locator: String) async throws -> ArchiveSourceDescriptor {
+        let sourceURL = URL(fileURLWithPath: locator).standardizedFileURL
+        let replayRoot = projectsRoot.resolvingSymlinksInPath().standardizedFileURL
+        let relativePath = try ArchiveSourceDescriptor.relativePath(
+            path: sourceURL,
+            under: replayRoot
+        )
+        return try ArchiveSourceDescriptor.singleFile(
+            locator: locator,
+            sourceURL: sourceURL,
+            replayRelativePath: relativePath
+        )
     }
 
     func listSessionLocators(modifiedSince: Date, fileManager: FileManager) async throws -> [String] {
