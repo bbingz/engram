@@ -62,6 +62,11 @@ public struct EngramRemoteServerConfig: Sendable {
         case missingArchiveRoot
         case archiveRootMustBeAbsolute
         case archiveBindAddressRejected
+        case missingArchiveToken
+        case missingArchiveKey
+        case badArchiveKey
+        case archiveCredentialsMustBeDistinct
+        case storeRootsMustBeDisjoint
 
         public var description: String {
             switch self {
@@ -83,6 +88,16 @@ public struct EngramRemoteServerConfig: Sendable {
                 return "ENGRAM_REMOTE_ARCHIVE_ROOT must be an absolute path."
             case .archiveBindAddressRejected:
                 return "Archive v2 requires a literal loopback or Tailscale bind address."
+            case .missingArchiveToken:
+                return "ENGRAM_REMOTE_ARCHIVE_TOKEN is required when archive v2 is enabled."
+            case .missingArchiveKey:
+                return "ENGRAM_REMOTE_ARCHIVE_AT_REST_KEY is required when archive v2 is enabled (base64 of 32 random bytes)."
+            case .badArchiveKey:
+                return "ENGRAM_REMOTE_ARCHIVE_AT_REST_KEY must be base64 of exactly 32 bytes."
+            case .archiveCredentialsMustBeDistinct:
+                return "Archive v2 token and at-rest key must be distinct from legacy v1 credentials."
+            case .storeRootsMustBeDisjoint:
+                return "Legacy v1 and archive v2 store roots must be disjoint."
             }
         }
     }
@@ -142,11 +157,26 @@ public struct EngramRemoteServerConfig: Sendable {
             guard Self.isAllowedArchiveBindAddress(host) else {
                 throw ConfigError.archiveBindAddressRejected
             }
+            guard let archiveToken = env["ENGRAM_REMOTE_ARCHIVE_TOKEN"],
+                  !archiveToken.isEmpty else {
+                throw ConfigError.missingArchiveToken
+            }
+            guard let archiveKeyB64 = env["ENGRAM_REMOTE_ARCHIVE_AT_REST_KEY"],
+                  !archiveKeyB64.isEmpty else {
+                throw ConfigError.missingArchiveKey
+            }
+            guard let archiveKeyData = Data(base64Encoded: archiveKeyB64),
+                  archiveKeyData.count == 32 else {
+                throw ConfigError.badArchiveKey
+            }
+            guard archiveToken != token, archiveKeyData != keyData else {
+                throw ConfigError.archiveCredentialsMustBeDistinct
+            }
             archiveV2 = EngramRemoteArchiveConfig(
                 serverID: serverID,
                 root: URL(fileURLWithPath: archiveRootPath, isDirectory: true).standardizedFileURL,
-                bearerToken: token,
-                atRestKey: SymmetricKey(data: keyData)
+                bearerToken: archiveToken,
+                atRestKey: SymmetricKey(data: archiveKeyData)
             )
         } else {
             archiveV2 = nil

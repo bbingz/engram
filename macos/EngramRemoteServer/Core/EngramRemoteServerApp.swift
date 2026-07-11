@@ -19,6 +19,15 @@ public final class EngramRemoteServerApp: Sendable {
     private let archiveStore: ArchiveStore?
 
     public init(config: EngramRemoteServerConfig) throws {
+        if let archive = config.archiveV2 {
+            guard archive.bearerToken != config.bearerToken,
+                  !Self.keysEqual(archive.atRestKey, config.atRestKey) else {
+                throw EngramRemoteServerConfig.ConfigError.archiveCredentialsMustBeDistinct
+            }
+            guard Self.storeRootsAreDisjoint(config.storeRoot, archive.root) else {
+                throw EngramRemoteServerConfig.ConfigError.storeRootsMustBeDisjoint
+            }
+        }
         self.config = config
         self.store = try BlobStore(root: config.storeRoot, key: config.atRestKey)
         if let archive = config.archiveV2 {
@@ -173,6 +182,93 @@ public final class EngramRemoteServerApp: Sendable {
         var diff: UInt8 = 0
         for (x, y) in zip(a, b) { diff |= x ^ y }
         return diff == 0
+    }
+
+    private static func keysEqual(_ lhs: SymmetricKey, _ rhs: SymmetricKey) -> Bool {
+        let lhsBytes = lhs.withUnsafeBytes { Data($0) }
+        let rhsBytes = rhs.withUnsafeBytes { Data($0) }
+        guard lhsBytes.count == rhsBytes.count else { return false }
+        var diff: UInt8 = 0
+        for (left, right) in zip(lhsBytes, rhsBytes) {
+            diff |= left ^ right
+        }
+        return diff == 0
+    }
+
+    private static func storeRootsAreDisjoint(_ lhs: URL, _ rhs: URL) -> Bool {
+        let standardizedLHS = lhs.standardizedFileURL
+        let standardizedRHS = rhs.standardizedFileURL
+        let standardizedComparisonIsCaseSensitive = comparisonIsCaseSensitive(
+            standardizedLHS,
+            standardizedRHS
+        )
+        guard !pathsOverlap(
+            standardizedLHS,
+            standardizedRHS,
+            caseSensitive: standardizedComparisonIsCaseSensitive
+        ) else { return false }
+
+        let resolvedLHS = standardizedLHS.resolvingSymlinksInPath().standardizedFileURL
+        let resolvedRHS = standardizedRHS.resolvingSymlinksInPath().standardizedFileURL
+        let resolvedComparisonIsCaseSensitive = comparisonIsCaseSensitive(
+            resolvedLHS,
+            resolvedRHS
+        )
+        return !pathsOverlap(
+            resolvedLHS,
+            resolvedRHS,
+            caseSensitive: resolvedComparisonIsCaseSensitive
+        )
+    }
+
+    private static func pathsOverlap(
+        _ lhs: URL,
+        _ rhs: URL,
+        caseSensitive: Bool
+    ) -> Bool {
+        let lhsComponents = comparablePathComponents(lhs, caseSensitive: caseSensitive)
+        let rhsComponents = comparablePathComponents(rhs, caseSensitive: caseSensitive)
+        if lhsComponents.count <= rhsComponents.count {
+            return Array(rhsComponents.prefix(lhsComponents.count)) == lhsComponents
+        }
+        return Array(lhsComponents.prefix(rhsComponents.count)) == rhsComponents
+    }
+
+    private static func comparablePathComponents(
+        _ url: URL,
+        caseSensitive: Bool
+    ) -> [String] {
+        url.pathComponents.map { component in
+            let canonical = component.precomposedStringWithCanonicalMapping
+            guard !caseSensitive else { return canonical }
+            return canonical.folding(
+                options: [.caseInsensitive],
+                locale: Locale(identifier: "en_US_POSIX")
+            )
+        }
+    }
+
+    private static func comparisonIsCaseSensitive(_ lhs: URL, _ rhs: URL) -> Bool {
+        guard let lhsIsCaseSensitive = volumeSupportsCaseSensitiveNames(at: lhs),
+              let rhsIsCaseSensitive = volumeSupportsCaseSensitiveNames(at: rhs) else {
+            return false
+        }
+        return lhsIsCaseSensitive && rhsIsCaseSensitive
+    }
+
+    private static func volumeSupportsCaseSensitiveNames(at url: URL) -> Bool? {
+        var candidate = url.standardizedFileURL
+        while true {
+            if FileManager.default.fileExists(atPath: candidate.path),
+               let values = try? candidate.resourceValues(
+                   forKeys: [.volumeSupportsCaseSensitiveNamesKey]
+               ), let supportsCaseSensitiveNames = values.volumeSupportsCaseSensitiveNames {
+                return supportsCaseSensitiveNames
+            }
+            let parent = candidate.deletingLastPathComponent().standardizedFileURL
+            guard parent.path != candidate.path else { return nil }
+            candidate = parent
+        }
     }
 
     // MARK: - Responses

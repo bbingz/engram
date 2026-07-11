@@ -5,6 +5,7 @@ import XCTest
 
 final class ArchiveConfigTests: XCTestCase {
     private let keyData = Data(repeating: 0x5a, count: 32)
+    private let archiveKeyData = Data(repeating: 0xa5, count: 32)
 
     func testLegacyEnvironmentKeepsArchiveDisabledAndV1FieldsUnchanged() throws {
         let config = try EngramRemoteServerConfig.fromEnvironment([
@@ -81,8 +82,8 @@ final class ArchiveConfigTests: XCTestCase {
             let archive = try XCTUnwrap(config.archiveV2)
             XCTAssertEqual(archive.serverID, "hq")
             XCTAssertEqual(archive.root.path, "/tmp/engram-archive-v2")
-            XCTAssertEqual(archive.bearerToken, "legacy-token")
-            XCTAssertEqual(keyBytes(archive.atRestKey), keyData)
+            XCTAssertEqual(archive.bearerToken, "archive-token")
+            XCTAssertEqual(keyBytes(archive.atRestKey), archiveKeyData)
         }
 
         let rejected = [
@@ -109,6 +110,282 @@ final class ArchiveConfigTests: XCTestCase {
                 }
             }
         }
+    }
+
+    func testEnabledArchiveRequiresIndependentCredentials() throws {
+        var missingToken = enabledEnvironment(host: "127.0.0.1")
+        missingToken.removeValue(forKey: "ENGRAM_REMOTE_ARCHIVE_TOKEN")
+        XCTAssertThrowsError(try EngramRemoteServerConfig.fromEnvironment(missingToken)) { error in
+            guard case EngramRemoteServerConfig.ConfigError.missingArchiveToken = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(
+                String(describing: error),
+                "ENGRAM_REMOTE_ARCHIVE_TOKEN is required when archive v2 is enabled."
+            )
+        }
+
+        var missingKey = enabledEnvironment(host: "127.0.0.1")
+        missingKey.removeValue(forKey: "ENGRAM_REMOTE_ARCHIVE_AT_REST_KEY")
+        XCTAssertThrowsError(try EngramRemoteServerConfig.fromEnvironment(missingKey)) { error in
+            guard case EngramRemoteServerConfig.ConfigError.missingArchiveKey = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(
+                String(describing: error),
+                "ENGRAM_REMOTE_ARCHIVE_AT_REST_KEY is required when archive v2 is enabled (base64 of 32 random bytes)."
+            )
+        }
+
+        var badKey = enabledEnvironment(host: "127.0.0.1")
+        badKey["ENGRAM_REMOTE_ARCHIVE_AT_REST_KEY"] = "not-a-32-byte-base64-key"
+        XCTAssertThrowsError(try EngramRemoteServerConfig.fromEnvironment(badKey)) { error in
+            guard case EngramRemoteServerConfig.ConfigError.badArchiveKey = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(
+                String(describing: error),
+                "ENGRAM_REMOTE_ARCHIVE_AT_REST_KEY must be base64 of exactly 32 bytes."
+            )
+        }
+
+        var reusedToken = enabledEnvironment(host: "127.0.0.1")
+        reusedToken["ENGRAM_REMOTE_ARCHIVE_TOKEN"] = reusedToken["ENGRAM_REMOTE_TOKEN"]
+        XCTAssertThrowsError(try EngramRemoteServerConfig.fromEnvironment(reusedToken)) { error in
+            guard case EngramRemoteServerConfig.ConfigError.archiveCredentialsMustBeDistinct = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(
+                String(describing: error),
+                "Archive v2 token and at-rest key must be distinct from legacy v1 credentials."
+            )
+        }
+
+        var reusedKey = enabledEnvironment(host: "127.0.0.1")
+        reusedKey["ENGRAM_REMOTE_ARCHIVE_AT_REST_KEY"] = reusedKey["ENGRAM_REMOTE_AT_REST_KEY"]
+        XCTAssertThrowsError(try EngramRemoteServerConfig.fromEnvironment(reusedKey)) { error in
+            guard case EngramRemoteServerConfig.ConfigError.archiveCredentialsMustBeDistinct = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(
+                String(describing: error),
+                "Archive v2 token and at-rest key must be distinct from legacy v1 credentials."
+            )
+        }
+
+        let config = try EngramRemoteServerConfig.fromEnvironment(
+            enabledEnvironment(host: "127.0.0.1")
+        )
+        let archive = try XCTUnwrap(config.archiveV2)
+        XCTAssertEqual(archive.bearerToken, "archive-token")
+        XCTAssertEqual(keyBytes(archive.atRestKey), archiveKeyData)
+    }
+
+    func testProgrammaticAppRejectsSharedArchiveCredentials() throws {
+        let base = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let reusedToken = programmaticConfig(
+            base: base,
+            archiveToken: "legacy-token",
+            archiveKeyData: archiveKeyData
+        )
+        XCTAssertThrowsError(try EngramRemoteServerApp(config: reusedToken)) { error in
+            guard case EngramRemoteServerConfig.ConfigError.archiveCredentialsMustBeDistinct = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(
+                String(describing: error),
+                "Archive v2 token and at-rest key must be distinct from legacy v1 credentials."
+            )
+        }
+
+        let reusedKey = programmaticConfig(
+            base: base,
+            archiveToken: "archive-token",
+            archiveKeyData: keyData
+        )
+        XCTAssertThrowsError(try EngramRemoteServerApp(config: reusedKey)) { error in
+            guard case EngramRemoteServerConfig.ConfigError.archiveCredentialsMustBeDistinct = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(
+                String(describing: error),
+                "Archive v2 token and at-rest key must be distinct from legacy v1 credentials."
+            )
+        }
+    }
+
+    func testProgrammaticAppRejectsOverlappingStoreRootsBeforeConstruction() throws {
+        let base = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let untouchedLegacy = base.appendingPathComponent("untouched", isDirectory: true)
+        let untouchedArchive = untouchedLegacy.appendingPathComponent("archive", isDirectory: true)
+        XCTAssertThrowsError(
+            try EngramRemoteServerApp(
+                config: programmaticConfig(
+                    base: base,
+                    legacyRoot: untouchedLegacy,
+                    archiveRoot: untouchedArchive
+                )
+            )
+        ) { error in
+            guard case EngramRemoteServerConfig.ConfigError.storeRootsMustBeDisjoint = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(
+                String(describing: error),
+                "Legacy v1 and archive v2 store roots must be disjoint."
+            )
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: untouchedLegacy.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: untouchedArchive.path))
+
+        let legacy = base.appendingPathComponent("legacy", isDirectory: true)
+        let child = legacy.appendingPathComponent("archive", isDirectory: true)
+        for (v1Root, v2Root) in [
+            (legacy, legacy),
+            (legacy, child),
+            (child, legacy),
+            (legacy, legacy.appendingPathComponent("../legacy", isDirectory: true)),
+        ] {
+            XCTAssertThrowsError(
+                try EngramRemoteServerApp(
+                    config: programmaticConfig(
+                        base: base,
+                        legacyRoot: v1Root,
+                        archiveRoot: v2Root
+                    )
+                )
+            ) { error in
+                guard case EngramRemoteServerConfig.ConfigError.storeRootsMustBeDisjoint = error else {
+                    return XCTFail("unexpected error: \(error)")
+                }
+                XCTAssertEqual(
+                    String(describing: error),
+                    "Legacy v1 and archive v2 store roots must be disjoint."
+                )
+            }
+        }
+
+        let real = base.appendingPathComponent("real", isDirectory: true)
+        let alias = base.appendingPathComponent("alias", isDirectory: true)
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: real)
+        XCTAssertThrowsError(
+            try EngramRemoteServerApp(
+                config: programmaticConfig(
+                    base: base,
+                    legacyRoot: real,
+                    archiveRoot: alias
+                )
+            )
+        ) { error in
+            guard case EngramRemoteServerConfig.ConfigError.storeRootsMustBeDisjoint = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(
+                String(describing: error),
+                "Legacy v1 and archive v2 store roots must be disjoint."
+            )
+        }
+    }
+
+    func testProgrammaticAppAllowsSiblingPrefixStoreRoots() throws {
+        let base = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        XCTAssertNoThrow(
+            try EngramRemoteServerApp(
+                config: programmaticConfig(
+                    base: base,
+                    legacyRoot: base.appendingPathComponent("store", isDirectory: true),
+                    archiveRoot: base.appendingPathComponent("store-v2", isDirectory: true)
+                )
+            )
+        )
+    }
+
+    func testProgrammaticAppUsesTargetVolumeCaseSensitivityForRootIsolation() throws {
+        let base = temporaryDirectory()
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let values = try base.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+        let supportsCaseSensitiveNames = try XCTUnwrap(values.volumeSupportsCaseSensitiveNames)
+        let caseOnlySameA = base.appendingPathComponent("SameCase", isDirectory: true)
+        let caseOnlySameB = base.appendingPathComponent("samecase", isDirectory: true)
+        let caseOnlyAncestorA = base.appendingPathComponent("AncestorCase", isDirectory: true)
+        let caseOnlyAncestorB = base
+            .appendingPathComponent("ancestorcase", isDirectory: true)
+            .appendingPathComponent("archive", isDirectory: true)
+
+        if supportsCaseSensitiveNames {
+            XCTAssertNoThrow(
+                try EngramRemoteServerApp(
+                    config: programmaticConfig(
+                        base: base,
+                        legacyRoot: caseOnlySameA,
+                        archiveRoot: caseOnlySameB
+                    )
+                )
+            )
+            XCTAssertNoThrow(
+                try EngramRemoteServerApp(
+                    config: programmaticConfig(
+                        base: base,
+                        legacyRoot: caseOnlyAncestorA,
+                        archiveRoot: caseOnlyAncestorB
+                    )
+                )
+            )
+        } else {
+            for (v1Root, v2Root) in [
+                (caseOnlySameA, caseOnlySameB),
+                (caseOnlyAncestorA, caseOnlyAncestorB),
+            ] {
+                XCTAssertThrowsError(
+                    try EngramRemoteServerApp(
+                        config: programmaticConfig(
+                            base: base,
+                            legacyRoot: v1Root,
+                            archiveRoot: v2Root
+                        )
+                    )
+                ) { error in
+                    guard case EngramRemoteServerConfig.ConfigError.storeRootsMustBeDisjoint = error else {
+                        return XCTFail("unexpected error: \(error)")
+                    }
+                }
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: caseOnlySameA.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: caseOnlyAncestorA.path))
+        }
+    }
+
+    func testProgrammaticAppCanonicalizesUnicodeRootComponents() throws {
+        let base = temporaryDirectory()
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let precomposed = base.appendingPathComponent("caf\u{00E9}", isDirectory: true)
+        let decomposed = base.appendingPathComponent("cafe\u{0301}", isDirectory: true)
+        XCTAssertThrowsError(
+            try EngramRemoteServerApp(
+                config: programmaticConfig(
+                    base: base,
+                    legacyRoot: precomposed,
+                    archiveRoot: decomposed
+                )
+            )
+        ) { error in
+            guard case EngramRemoteServerConfig.ConfigError.storeRootsMustBeDisjoint = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: precomposed.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: decomposed.path))
     }
 
     func testArchiveServerIDIsAStableSafeToken() {
@@ -163,7 +440,38 @@ final class ArchiveConfigTests: XCTestCase {
             "ENGRAM_REMOTE_ARCHIVE_ENABLED": "1",
             "ENGRAM_REMOTE_ARCHIVE_SERVER_ID": "hq",
             "ENGRAM_REMOTE_ARCHIVE_ROOT": "/tmp/engram-archive-v2",
+            "ENGRAM_REMOTE_ARCHIVE_TOKEN": "archive-token",
+            "ENGRAM_REMOTE_ARCHIVE_AT_REST_KEY": archiveKeyData.base64EncodedString(),
         ]) { _, new in new }
+    }
+
+    private func programmaticConfig(
+        base: URL,
+        legacyRoot: URL? = nil,
+        archiveRoot: URL? = nil,
+        archiveToken: String = "archive-token",
+        archiveKeyData: Data? = nil
+    ) -> EngramRemoteServerConfig {
+        let v1Root = legacyRoot ?? base.appendingPathComponent("legacy", isDirectory: true)
+        let v2Root = archiveRoot ?? base.appendingPathComponent("archive", isDirectory: true)
+        return EngramRemoteServerConfig(
+            host: "127.0.0.1",
+            port: 0,
+            storeRoot: v1Root,
+            bearerToken: "legacy-token",
+            atRestKey: SymmetricKey(data: keyData),
+            archiveV2: EngramRemoteArchiveConfig(
+                serverID: "hq",
+                root: v2Root,
+                bearerToken: archiveToken,
+                atRestKey: SymmetricKey(data: archiveKeyData ?? self.archiveKeyData)
+            )
+        )
+    }
+
+    private func temporaryDirectory() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-archive-config-\(UUID().uuidString)", isDirectory: true)
     }
 
     private func keyBytes(_ key: SymmetricKey) -> Data {

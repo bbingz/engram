@@ -9,7 +9,8 @@ import XCTest
 @testable import EngramRemoteServerCore
 
 final class ArchiveRouteTests: XCTestCase {
-    private static let token = "archive-route-secret"
+    private static let archiveToken = "archive-route-secret"
+    private static let legacyToken = "legacy-route-secret"
 
     private var tempDir: URL!
     private var archiveKey: SymmetricKey!
@@ -45,6 +46,13 @@ final class ArchiveRouteTests: XCTestCase {
         let digest = ArchiveV2Hash.sha256(Data("route-auth".utf8))
         let enabled = Application(router: try makeRemoteApp().buildRouter())
         try await enabled.test(.router) { client in
+            let legacyCredentialResponse = try await client.execute(
+                uri: "/v2/archive/machines",
+                method: .get,
+                headers: Self.headers(token: Self.legacyToken)
+            )
+            XCTAssertEqual(legacyCredentialResponse.status.code, 401)
+
             let protectedRoutes: [(HTTPRequest.Method, String)] = [
                 (.put, "/v2/archive/objects/\(digest)"),
                 (.head, "/v2/archive/objects/\(digest)"),
@@ -140,7 +148,7 @@ final class ArchiveRouteTests: XCTestCase {
                 body: ByteBuffer(data: oversized)
             )
             XCTAssertEqual(response.status.code, 413)
-            self.assertSafeError(response, forbidden: [Self.token, tempDir.path])
+            self.assertSafeError(response, forbidden: [Self.archiveToken, tempDir.path])
 
             let tiny = Data("actual-body".utf8)
             response = try await client.execute(
@@ -150,7 +158,7 @@ final class ArchiveRouteTests: XCTestCase {
                 body: ByteBuffer(data: tiny)
             )
             XCTAssertEqual(response.status.code, 422)
-            self.assertSafeError(response, forbidden: [Self.token, tempDir.path, "actual-body"])
+            self.assertSafeError(response, forbidden: [Self.archiveToken, tempDir.path, "actual-body"])
 
             response = try await client.execute(
                 uri: "/v2/archive/objects/not-a-digest",
@@ -175,7 +183,7 @@ final class ArchiveRouteTests: XCTestCase {
                 body: ByteBuffer(data: tiny)
             )
             XCTAssertEqual(response.status.code, 415)
-            self.assertSafeError(response, forbidden: [Self.token, tempDir.path, "actual-body"])
+            self.assertSafeError(response, forbidden: [Self.archiveToken, tempDir.path, "actual-body"])
 
             let absentDigest = ArchiveV2Hash.sha256(Data("absent".utf8))
             response = try await client.execute(
@@ -206,7 +214,7 @@ final class ArchiveRouteTests: XCTestCase {
                 body: ByteBuffer(data: manifest)
             )
             XCTAssertEqual(response.status.code, 409, "referenced object is absent")
-            self.assertSafeError(response, forbidden: [Self.token, tempDir.path, "canonical archive source"])
+            self.assertSafeError(response, forbidden: [Self.archiveToken, tempDir.path, "canonical archive source"])
 
             response = try await client.execute(
                 uri: "/v2/archive/objects/\(rawDigest)",
@@ -313,7 +321,7 @@ final class ArchiveRouteTests: XCTestCase {
                 headers: Self.headers()
             )
             XCTAssertEqual(response.status.code, 422)
-            self.assertSafeError(response, forbidden: [Self.token, tempDir.path])
+            self.assertSafeError(response, forbidden: [Self.archiveToken, tempDir.path])
         }
     }
 
@@ -348,7 +356,7 @@ final class ArchiveRouteTests: XCTestCase {
             XCTAssertEqual(response.status.code, 409)
             self.assertSafeError(
                 response,
-                forbidden: [Self.token, tempDir.path, "corrupt envelope"]
+                forbidden: [Self.archiveToken, tempDir.path, "corrupt envelope"]
             )
         }
     }
@@ -501,7 +509,7 @@ final class ArchiveRouteTests: XCTestCase {
                 body: ByteBuffer(data: raw)
             )
             XCTAssertEqual(response.status.code, 409)
-            self.assertSafeError(response, forbidden: [Self.token, tempDir.path, "wrong-key-protected"])
+            self.assertSafeError(response, forbidden: [Self.archiveToken, tempDir.path, "wrong-key-protected"])
 
             let receiptResponse = try await client.execute(
                 uri: "/v2/archive/receipts/\(manifestDigest)",
@@ -509,7 +517,7 @@ final class ArchiveRouteTests: XCTestCase {
                 headers: Self.headers()
             )
             XCTAssertEqual(receiptResponse.status.code, 409)
-            self.assertSafeError(receiptResponse, forbidden: [Self.token, tempDir.path])
+            self.assertSafeError(receiptResponse, forbidden: [Self.archiveToken, tempDir.path])
         }
 
         let correctKeyRestart = Application(router: try makeRemoteApp().buildRouter())
@@ -524,7 +532,7 @@ final class ArchiveRouteTests: XCTestCase {
 
         let app = Application(router: try makeRemoteApp().buildRouter())
         try await app.test(.router) { client in
-            let secretPath = "invalid-\(Self.token)-digest"
+            let secretPath = "invalid-\(Self.archiveToken)-digest"
             let response = try await client.execute(
                 uri: "/v2/archive/objects/\(secretPath)",
                 method: .get,
@@ -535,7 +543,7 @@ final class ArchiveRouteTests: XCTestCase {
             XCTAssertLessThanOrEqual(response.body.readableBytes, ArchiveV2ProtocolLimits.maxErrorBytes)
             let body = String(decoding: Self.data(response), as: UTF8.self)
             XCTAssertNoThrow(try JSONSerialization.jsonObject(with: Self.data(response)))
-            XCTAssertFalse(body.contains(Self.token))
+            XCTAssertFalse(body.contains(Self.archiveToken))
             XCTAssertFalse(body.contains(secretPath))
             XCTAssertFalse(body.contains(tempDir.path))
         }
@@ -585,7 +593,7 @@ final class ArchiveRouteTests: XCTestCase {
             ? EngramRemoteArchiveConfig(
                 serverID: "archive-route-test-server",
                 root: tempDir.appendingPathComponent("archive", isDirectory: true),
-                bearerToken: Self.token,
+                bearerToken: Self.archiveToken,
                 atRestKey: overrideArchiveKey ?? archiveKey
             )
             : nil
@@ -594,14 +602,17 @@ final class ArchiveRouteTests: XCTestCase {
                 host: "127.0.0.1",
                 port: 0,
                 storeRoot: tempDir.appendingPathComponent("legacy", isDirectory: true),
-                bearerToken: Self.token,
+                bearerToken: Self.legacyToken,
                 atRestKey: legacyKey,
                 archiveV2: archive
             )
         )
     }
 
-    private static func headers(contentType: String? = nil) -> HTTPFields {
+    private static func headers(
+        contentType: String? = nil,
+        token: String = archiveToken
+    ) -> HTTPFields {
         var headers: HTTPFields = [.authorization: "Bearer \(token)"]
         if let contentType {
             headers[.contentType] = contentType
