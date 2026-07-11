@@ -183,8 +183,10 @@ Required when v2 is enabled:
 - `ENGRAM_REMOTE_ARCHIVE_ENABLED=1`
 - `ENGRAM_REMOTE_ARCHIVE_SERVER_ID=<stable-id>`
 - `ENGRAM_REMOTE_ARCHIVE_ROOT=<absolute-path>`
-- existing bearer token mechanism, with a token distinct per server
-- existing at-rest AES key mechanism, with a key distinct per server
+- `ENGRAM_REMOTE_ARCHIVE_TOKEN=<new-v2-token>`; it must differ from the legacy v1 token
+- `ENGRAM_REMOTE_ARCHIVE_AT_REST_KEY=<base64-32-byte-new-v2-key>`; it must differ from the legacy v1 key
+
+The archive root must also be physically disjoint from the legacy root. Validation is fail-closed across lexical aliases, POSIX symlinks, case/Unicode aliases, and filesystem identities such as APFS firmlinks before either store is created.
 
 Recommended deployment IDs are `hq` and `m1`. The server binds only to a Tailscale-reachable interface or loopback behind Tailscale Serve; public binding is outside the supported runbook.
 
@@ -324,20 +326,27 @@ pending -> uploadingObjects -> uploadingManifest -> requestingReceipt
 ```
 
 - States are persisted independently by `(manifestSHA256, replicaID)` and retain the owning capture ID.
+- The only supported current replica IDs are exactly `hq` and `m1`; both must be configured with distinct normalized origins and token values.
+- `archive_replica_receipts.claim_generation` is a monotonic compare-and-set lease. Claim, transition, heartbeat, retry, quarantine, recovery, and verification updates match both expected state and generation so an old worker cannot win an ABA race.
 - A failure on one replica never re-uploads a verified replica.
-- Retry is exponential with jitter and a 24-hour cap.
+- Retry uses full jitter with a 60-second base and a 24-hour cap. Request timeout is 30 seconds and resource timeout is 120 seconds.
 - Cancellation does not increment attempts.
 - Work left in an in-flight state for more than ten minutes is recovered to retry.
 - Hash/schema/protocol contradictions quarantine that replica entry; network and 5xx failures retry.
 - Dual durability is a derived condition requiring two currently configured, distinct replica IDs with verified receipts for the same bound manifest digest.
 - Replication never changes `sessions.offload_state`, FTS rows, summaries, local CAS, legacy queue rows, or database vacuum state.
 - Every cycle reconciles all policy-eligible bindings that lack either currently configured replica row; it does not enqueue only bindings produced in the current process lifetime. Claims and state transitions are compare-and-set so stale workers cannot regress `verified` work.
+- `runOnce(limit:)` counts claimed replica rows, not manifests. Manual retry changes only quarantined rows for the selected current replica (or both current replicas when no ID is supplied), resets attempts to zero, and advances `claim_generation`.
+- Object, manifest, and receipt PUT accept server `201` first-publication or verified idempotent/racing `200`; neither is durability evidence. Only a subsequent independent GET of the canonical receipt can produce `verified`.
+- `ArchiveServerReceipt.storedAt` is validated in the shared wire model as canonical fractional-second UTC ISO-8601, not only by server-private code.
 
 Legacy v1 offload and v2 archive may coexist because their storage, protocol, credentials, tables, and coordinators are disjoint. Tests must prove v2 activity cannot invoke legacy purge/delete paths.
 
 ### Remote policy
 
 Remote replication is fail-closed when project root is absent or ambiguous. Each binding persists a normalized project-root snapshot (or an explicit excluded or unknown eligibility state) so restart reconciliation can safely decide whether to seed replica work. Configured absolute project-root exclusions prevent remote upload while retaining local capture. This is an ingestion policy, because an immutable remote archive cannot promise retroactive erasure.
+
+Task 5 owns the schema and fail-closed mechanics: `archive_session_bindings.project_root_snapshot`, `remote_eligibility = unknown|eligible|excluded`, an `unknown -> eligible|excluded` compare-and-set, and reconciliation that selects only `eligible`. Existing and Task 3 bindings default to `unknown` and are never uploaded. Task 6 alone derives the trusted normalized project root/exclusion result from the gated index snapshot and writes that policy snapshot.
 
 ## Read and Recovery Behavior
 

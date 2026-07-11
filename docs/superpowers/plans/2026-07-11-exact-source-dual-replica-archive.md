@@ -342,13 +342,22 @@ public actor ArchiveReplicationCoordinator {
 
 There is deliberately no delete method.
 
+Frozen Task 5 constants and semantics:
+
+- the current replica set is exactly `hq` plus `m1`; `runOnce(limit:)` counts replica rows;
+- request/resource timeouts are 30/120 seconds;
+- retry is 60-second-base full jitter capped at 24 hours;
+- first/idempotent concurrent PUT may return `201`/`200`, but only independent receipt GET is durable proof;
+- manual retry touches only quarantined rows for the selected current replica (or both when nil), resets attempts, and increments `claim_generation`;
+- schema v2 adds binding `project_root_snapshot`, fail-closed `remote_eligibility`, and receipt-row `claim_generation`. Task 5 reconciles only `eligible`; Task 6 derives and records eligibility from its gated snapshot.
+
 - [ ] **Step 1: RED — transport confinement**
 
-Test HTTPS `.ts.net` plus policy-allowed literal Tailscale IPv4 `100.64.0.0/10` and IPv6 `fd7a:115c:a1e0::/48`. Loopback exists only behind an internal test override. Refuse every public host even over HTTPS, RFC1918/link-local, `.local`, wildcard/zone-scoped addresses, malformed `.ts.net`, bare names, userinfo/query/fragment/non-root paths, and normalized duplicate origins. Require distinct replica IDs, origins, loaded token values, and exactly two replicas. Prove redirects are never followed and the redirect target never receives Authorization. Do not reuse legacy `isPrivateHost`.
+Test HTTPS `.ts.net` plus policy-allowed literal Tailscale IPv4 `100.64.0.0/10` and IPv6 `fd7a:115c:a1e0::/48`. Loopback exists only behind an internal test override. Refuse every public host even over HTTPS, RFC1918/link-local, `.local`, wildcard/zone-scoped addresses, malformed `.ts.net`, bare names, userinfo/query/fragment/non-root paths, and normalized duplicate origins. Require replica IDs exactly `hq` and `m1`, distinct normalized origins, and loaded non-empty distinct token values. Prove redirects are never followed and the redirect target never receives Authorization. Do not reuse legacy `isPrivateHost`.
 
 - [ ] **Step 2: GREEN — HTTP backend and credentials**
 
-Own an ephemeral no-cookie/no-cache/no-credential/no-proxy session with a no-redirect delegate; inject only a bounded low-level transport/test protocol, not an arbitrary redirect-following session. Store tokens under Keychain service `com.engram.remote-archive-v2`, accounts `replica:<id>`, using update-first writes. Never reuse the v1 credential account.
+Own an ephemeral no-cookie/no-cache/no-credential/no-proxy session with a no-redirect delegate, `waitsForConnectivity=false`, 30-second request timeout, and 120-second resource timeout; inject only a bounded low-level transport/test protocol, not an arbitrary redirect-following session. Store tokens under Keychain service `com.engram.remote-archive-v2`, accounts `replica:<id>`, using update-first writes. Never reuse the v1 credential account. Move canonical fractional-second UTC validation for receipt `storedAt` into the shared wire model.
 
 - [ ] **Step 3: RED — dual state machine**
 
@@ -364,10 +373,12 @@ With two fake replicas, prove:
 - verified hq is not re-uploaded when m1 retries;
 - a stale worker cannot regress verified state, and restart reconciliation seeds any missing replica row for every eligible historical binding;
 - no legacy remote backend, offload queue, FTS mutation, or vacuum method is invoked.
+- migrated/new bindings remain `remote_eligibility=unknown` and seed nothing until Task 6 records a trusted `eligible` snapshot;
+- stale recovery and manual retry invalidate prior workers by advancing monotonic `claim_generation`.
 
 - [ ] **Step 4: GREEN — replication**
 
-Use verified HEAD to upload only missing objects, then the manifest, request a receipt, fetch it independently, require exact canonical bytes plus every binding field and canonical timestamp, then atomically persist. HEAD/PUT success is never durability evidence. Use compare-and-set claims/transitions, retry only the failed replica, classify auth/protocol contradictions as quarantine and transient network/408/429/5xx as bounded jittered retry, and derive dual durability only from both configured verified rows for the same bound manifest.
+Use verified HEAD to upload only missing objects, then the manifest, request a receipt, fetch it independently, require exact canonical bytes plus every binding field and canonical timestamp, then atomically persist. Accept verified first/idempotent PUT statuses `201`/`200`, but HEAD/PUT success is never durability evidence. Use state-plus-generation compare-and-set claims/transitions and heartbeat each uploaded chunk, retry only the failed replica with 60-second-base full jitter, classify auth/protocol contradictions as quarantine and transient network/408/429/5xx as bounded retry, and derive dual durability only from both current configured verified rows for the same bound manifest.
 
 - [ ] **Step 5: Verify and commit**
 
