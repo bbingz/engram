@@ -81,6 +81,8 @@
 **Files:**
 
 - Create: `macos/scripts/package-remote-server.sh`
+- Create: `macos/EngramRemoteServer/Packaging/run-engram-remote.zsh.template`
+- Create: `macos/EngramRemoteServer/Packaging/com.engram.remote-server.plist.template`
 - Create: `tests/scripts/remote-server-package.test.ts`
 - Modify: `.github/workflows/test.yml`
 - Modify: `docs/remote-offload.md`
@@ -88,12 +90,12 @@
 
 **Interfaces:**
 
-- Command: `macos/scripts/package-remote-server.sh --products-dir <Release-products> --output-dir <new-empty-dir> --source-commit <40-hex-sha>`.
-- Output: `bin/EngramRemoteServer`, `Frameworks/EngramRemoteServerCore.framework`, optional `Frameworks/libswiftCompatibilitySpan.dylib` when the built executable needs it, `SHA256SUMS`, and `BUILD-METADATA.json`.
+- Command: `macos/scripts/package-remote-server.sh --derived-data <abs-dir> --configuration Release --arch arm64 --source-revision <40-hex-sha> --output <new-empty-dir>` plus a non-mutating `--verify-only <bundle>` mode.
+- Output: arm64 `bin/EngramRemoteServer`, adjacent `bin/swift-nio_NIOPosix.bundle`, `Frameworks/EngramRemoteServerCore.framework`, required `Frameworks/libswiftCompatibilitySpan.dylib`, owner-only wrapper/LaunchAgent templates, `SHA256SUMS`, and `BUILD-METADATA.json`.
 
 - [ ] **Step 1: Write failing script tests**
 
-  Require strict argument parsing, a new/empty output directory, binary plus framework presence, arm64 support, framework-relative rpath, dependency closure, framework/dylib-before-executable ad-hoc signing, deep strict verification, deterministic sorted SHA-256 manifest, and no credential/environment handling. Require CI to invoke the packager after a Release server build.
+  Require strict argument parsing, Release-only packaging, a new/empty output directory, fixed executable/framework/resource-bundle presence, arm64 support, framework-relative rpath, `swift-stdlib-tool` dependency closure, dylib/framework-before-executable ad-hoc signing, deep strict verification, deterministic sorted SHA-256 manifest, and no credential/environment handling. Require the wrapper/plist templates to contain no token/key or plist `EnvironmentVariables`. Require CI to invoke build → package → verify-only → clean-environment `keygen` after a Release server build.
 
 - [ ] **Step 2: Observe RED**
 
@@ -107,7 +109,7 @@
 
 - [ ] **Step 3: Implement packaging and documentation**
 
-  The script must use `ditto` for the framework, preserve its symlinks, copy only required compatibility dylibs, sign nested code before the executable, run `codesign --verify --deep --strict`, run `lipo -verify_arch arm64`, validate `@executable_path/../Frameworks`, and emit hashes without secrets.
+  The script must use `ditto` for the framework and NIO resource bundle, preserve and validate framework symlinks, use active-Xcode `swift-stdlib-tool --print` rather than `find | head` to resolve runtime dylibs, thin to arm64 before signing, sign nested dylib/framework before the executable, run `codesign --verify --deep --strict`, run `lipo -verify_arch arm64`, validate `@executable_path/../Frameworks`, verify sorted hashes, and emit metadata without secrets.
 
   Update the v2 runbook to use:
 
@@ -127,7 +129,94 @@
 
 ---
 
-### Task 3: Deploy the HQ Canary and M1 Replica
+### Task 3: Ship a Capability-Protected Archive Operator
+
+**Files:**
+
+- Create: `macos/Shared/Service/EngramCLIArchiveCommand.swift`
+- Create: `macos/EngramService/Core/ArchiveV2CredentialProvisioner.swift`
+- Create: `macos/scripts/copy-cli-helper.sh`
+- Create: `macos/EngramTests/EngramCLIArchiveCommandTests.swift`
+- Create: `macos/EngramServiceCoreTests/ArchiveV2OperatorIPCTests.swift`
+- Modify: `macos/EngramCLI/main.swift`
+- Modify: `macos/EngramService/Core/EngramServiceCommandHandler.swift`
+- Modify: `macos/EngramService/Core/EngramServiceCommandHandler+ArchiveV2.swift`
+- Modify: `macos/Shared/Service/EngramServiceModels.swift`
+- Modify: `macos/Shared/Service/EngramServiceClient.swift`
+- Modify: `macos/Shared/Service/ServiceCapabilityToken.swift`
+- Modify: `macos/project.yml`
+- Modify: `macos/scripts/release-verify.sh`
+- Modify: `tests/scripts/build-release-script.test.ts`
+
+**Interfaces:**
+
+- Bundled executable: `/Applications/Engram.app/Contents/Helpers/EngramCLI`.
+- Commands: `archive status`, `archive retry --replica hq|m1|all`, and `archive token set --replica hq|m1 --stdin`.
+- New protected IPC: `archiveV2StoreToken`.
+
+- [ ] **Step 1: Write failing parser, secret, IPC, and bundle tests**
+
+  Prove archive commands are parsed before the existing resume/MCP fallback; unknown archive subcommands return usage. `token set` must reject a TTY, token arguments, token environment variables, embedded newlines/NUL, non-canonical base64, and decoded lengths other than 32 bytes. Require `archiveV2StoreToken` to be capability-protected, accept only `hq|m1`, never echo the token, reject a duplicate pair, and return only replica ID, stored/pair-ready/restart-required booleans. Require the release bundle to contain a signed `Contents/Helpers/EngramCLI`.
+
+- [ ] **Step 2: Observe RED**
+
+  Run focused `EngramCLIArchiveCommandTests`, `ArchiveV2OperatorIPCTests`, and the build/release script Vitest. Expected: missing parser/DTO/handler/helper assertions fail before production edits.
+
+- [ ] **Step 3: Implement service-side credential provisioning**
+
+  Add an actor that serializes writes through the existing update-or-add `ArchiveCredentialStore`, validates canonical base64 decoding to exactly 32 bytes, checks the other replica token before and after writing, never deletes, and returns only bounded booleans. Expose it through the peer-euid-checked Unix socket with capability-token protection. Saving reports `serviceRestartRequired=true` because settings/backends/resolver are frozen at startup.
+
+- [ ] **Step 4: Implement and bundle EngramCLI**
+
+  Read at most one bounded token line from non-TTY stdin, send it only over the default product socket, then clear the in-memory buffer. Do not provide a socket override for archive commands. Add the CLI target as an unlinked app dependency, copy/sign it before outer app signing, and make `release-verify.sh` require it.
+
+- [ ] **Step 5: Verify, review, and commit**
+
+  Run focused tests, EngramTests, EngramServiceCore, app build, release verification, XcodeGen drift, safety gate, script matrix, and `git diff --check`. Commit with `feat(archive): ship protected operator commands`, then require Orca Opus + Grok SPEC PASS/CODE APPROVED before Task 4.
+
+---
+
+### Task 4: Add a Zero-Mutation Remote Recovery Probe
+
+**Files:**
+
+- Modify: `macos/Shared/Service/EngramCLIArchiveCommand.swift`
+- Modify: `macos/EngramService/Core/ArchiveTranscriptResolver.swift`
+- Modify: `macos/EngramService/Core/EngramServiceCommandHandler.swift`
+- Modify: `macos/EngramService/Core/EngramServiceCommandHandler+ArchiveV2.swift`
+- Modify: `macos/Shared/Service/EngramServiceModels.swift`
+- Modify: `macos/Shared/Service/EngramServiceClient.swift`
+- Modify: `macos/Shared/Service/ServiceCapabilityToken.swift`
+- Modify: `macos/EngramCLI/main.swift`
+- Modify: `macos/EngramServiceCoreTests/ArchiveTranscriptResolverTests.swift`
+- Modify: `macos/EngramServiceCoreTests/ArchiveV2OperatorIPCTests.swift`
+- Modify: `macos/EngramTests/EngramCLIArchiveCommandTests.swift`
+
+**Interfaces:**
+
+- CLI: `EngramCLI archive probe-remote --session-id <bounded-id> [--json]`.
+- Protected IPC: `archiveV2RemoteRecoveryProbe`.
+- Response: exactly `tier`, `receiptSHA256`, `manifestSHA256`, `wholeSourceSHA256`.
+
+- [ ] **Step 1: Write failing remote-only resolver and IPC tests**
+
+  Prove the probe accepts only session ID, never accepts URL/path/digest/replica/skip flags, never reads or mutates live source/local CAS/catalog state, and shares the production HQ→M1 remote-selection helper. HQ success returns `tier=hq`; HQ transport/absence/integrity failure falls through to M1; cancellation does not advance; parser is not invoked; checked temp cleanup must succeed before a proof returns.
+
+- [ ] **Step 2: Observe RED**
+
+  Run focused resolver/operator/CLI tests and require missing API failures caused by the new assertions.
+
+- [ ] **Step 3: Implement digest-only proof**
+
+  Lock the latest bound manifest for the session, require the persisted per-replica verified receipt, independently GET and compare canonical receipt bytes/digest/identity, GET and verify manifest, stream and verify every object plus whole-source digest into an owner-only temporary file, then checked-clean it. Return only `hq|m1` and the three digests; do not return session ID, paths, origins, bytes, object lists, or remote error bodies.
+
+- [ ] **Step 4: Verify, review, and commit**
+
+  Run focused tests, full Service/Engram/CLI coverage, safety/static/build gates, and `git diff --check`. Commit with `feat(archive): add remote recovery probe`, then require Orca Opus + Grok SPEC PASS/CODE APPROVED before production deployment.
+
+---
+
+### Task 5: Deploy the HQ Canary and M1 Replica
 
 **Files/Systems:**
 
@@ -162,7 +251,7 @@
 
 ---
 
-### Task 4: Activate the Client and Prove Production Recovery
+### Task 6: Activate the Client and Prove Production Recovery
 
 **Files/Systems:**
 
@@ -177,7 +266,7 @@
 
 - [ ] **Step 2: Store tokens without argv/history exposure**
 
-  Stream each token from its own server over the verified SSH channel into a local Security-framework helper or interactive `security ... -w` prompt; never interpolate it into a command string or argument. Verify both Keychain items exist and differ without printing them.
+  Stream each token from its own server over the verified SSH channel into `EngramCLI archive token set --replica <id> --stdin`; never interpolate it into a command string or argument. Verify both Keychain items exist and differ without printing them, then restart the service as required.
 
 - [ ] **Step 3: Install and enable**
 
@@ -189,7 +278,7 @@
 
 - [ ] **Step 5: HQ-to-M1 fallback proof**
 
-  Disable only the HQ client origin or temporarily stop only HQ after recording its rollback handle; read the same archived session through M1; restore HQ immediately; verify ordinary indexing and local reads remained available throughout.
+  Run `EngramCLI archive probe-remote` with both replicas available and require `tier=hq`. Stop only HQ after recording its rollback handle; run the same session probe and require `tier=m1` with equal manifest and whole-source digests but the M1 receipt digest; restore HQ immediately. The probe must not move/delete live sources or local CAS, and ordinary indexing/local reads must remain available throughout.
 
 - [ ] **Step 6: Final review, PR, and closeout**
 
