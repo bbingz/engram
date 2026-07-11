@@ -34,6 +34,9 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let removeSessionRelationResult: Result<EngramServiceLinkResponse, Error>
     let relatedSessionsResult: Result<[String], Error>
     let triggerSyncResult: Result<EngramServiceTriggerSyncResponse, Error>
+    let archiveV2StatusResult: Result<EngramServiceArchiveV2StatusResponse, Error>
+    let archiveV2RetryResult: Result<EngramServiceArchiveV2RetryResponse, Error>
+    let archiveReadSessionPageResult: Result<EngramServiceArchiveReadSessionPageResponse, Error>
     let refreshUsageResult: Result<EngramServiceRefreshUsageResponse, Error>
     let regenerateAllTitlesResult: Result<EngramServiceRegenerateTitlesResponse, Error>
     let projectMigrationsResult: Result<EngramServiceProjectMigrationsResponse, Error>
@@ -88,6 +91,9 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         removeSessionRelation: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         relatedSessions: [String] = [],
         triggerSync: EngramServiceTriggerSyncResponse = EngramServiceTriggerSyncResponse(results: []),
+        archiveV2Status: EngramServiceArchiveV2StatusResponse = MockEngramServiceClient.defaultArchiveV2Status,
+        archiveV2Retry: EngramServiceArchiveV2RetryResponse = MockEngramServiceClient.defaultArchiveV2Retry,
+        archiveReadSessionPage: EngramServiceArchiveReadSessionPageResponse = MockEngramServiceClient.defaultArchiveReadSessionPage,
         refreshUsage: EngramServiceRefreshUsageResponse = EngramServiceRefreshUsageResponse(snapshotCount: 0, sources: []),
         regenerateAllTitles: EngramServiceRegenerateTitlesResponse = EngramServiceRegenerateTitlesResponse(
             status: "started",
@@ -138,6 +144,9 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.removeSessionRelationResult = .success(removeSessionRelation)
         self.relatedSessionsResult = .success(relatedSessions)
         self.triggerSyncResult = .success(triggerSync)
+        self.archiveV2StatusResult = .success(archiveV2Status)
+        self.archiveV2RetryResult = .success(archiveV2Retry)
+        self.archiveReadSessionPageResult = .success(archiveReadSessionPage)
         self.refreshUsageResult = .success(refreshUsage)
         self.regenerateAllTitlesResult = .success(regenerateAllTitles)
         self.projectMigrationsResult = .success(projectMigrations)
@@ -257,6 +266,22 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         try triggerSyncResult.get()
     }
 
+    func archiveV2Status() async throws -> EngramServiceArchiveV2StatusResponse {
+        try archiveV2StatusResult.get()
+    }
+
+    func archiveV2Retry(
+        _ request: EngramServiceArchiveV2RetryRequest
+    ) async throws -> EngramServiceArchiveV2RetryResponse {
+        try archiveV2RetryResult.get()
+    }
+
+    func archiveReadSessionPage(
+        _ request: EngramServiceArchiveReadSessionPageRequest
+    ) async throws -> EngramServiceArchiveReadSessionPageResponse {
+        try archiveReadSessionPageResult.get()
+    }
+
     func refreshUsage() async throws -> EngramServiceRefreshUsageResponse {
         try refreshUsageResult.get()
     }
@@ -326,6 +351,59 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     }
 
     func close() {}
+
+    private static let defaultArchiveV2Status = try! EngramServiceArchiveV2StatusResponse(
+        enabled: false,
+        localCaptureEnabled: false,
+        remoteReplicationEnabled: false,
+        configurationError: nil,
+        capturedCount: 0,
+        boundCount: 0,
+        unboundCount: 0,
+        remotePolicyUnknownCount: 0,
+        remotePolicyEligibleCount: 0,
+        remotePolicyExcludedCount: 0,
+        unsupportedLocatorCount: 0,
+        unsafeLocatorCount: 0,
+        replicas: [
+            try! EngramServiceArchiveV2ReplicaStatus(
+                replicaID: "hq",
+                queuedCount: 0,
+                retryingCount: 0,
+                quarantinedCount: 0,
+                verifiedCount: 0
+            ),
+            try! EngramServiceArchiveV2ReplicaStatus(
+                replicaID: "m1",
+                queuedCount: 0,
+                retryingCount: 0,
+                quarantinedCount: 0,
+                verifiedCount: 0
+            ),
+        ],
+        singleReplicaVerifiedCount: 0,
+        dualReplicaVerifiedCount: 0,
+        latestReceipts: [],
+        lastCaptureError: nil,
+        lastReplicationError: nil,
+        cycleRunning: false,
+        cycleCoalesced: false
+    )
+
+    private static let defaultArchiveV2Retry = try! EngramServiceArchiveV2RetryResponse(
+        accepted: true,
+        resetRows: 0,
+        error: nil
+    )
+
+    private static let defaultArchiveReadSessionPage = try! EngramServiceArchiveReadSessionPageResponse(
+        messages: [],
+        totalPages: 1,
+        currentPage: 1,
+        totalKnownComplete: true,
+        truncatedAt: nil,
+        responseBudgetTruncated: false
+    )
 
     private static let defaultProjectMoveResult = EngramServiceProjectMoveResult(
         migrationId: "mock",

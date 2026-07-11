@@ -26,10 +26,42 @@ public struct ArchiveCaptureCycleItem: Equatable, Sendable {
 public struct ArchiveCaptureCycleResult: Equatable, Sendable {
     public let items: [ArchiveCaptureCycleItem]
     public let captures: [ArchiveCaptureResult]
+    public let processed: Int
+    public let hasMore: Bool
+    public let continuation: String?
+    public let failures: [ArchiveCaptureCycleItem]
 
-    public init(items: [ArchiveCaptureCycleItem], captures: [ArchiveCaptureResult]) {
+    public init(
+        items: [ArchiveCaptureCycleItem],
+        captures: [ArchiveCaptureResult],
+        processed: Int? = nil,
+        hasMore: Bool = false,
+        continuation: String? = nil
+    ) {
         self.items = items
         self.captures = captures
+        self.processed = processed ?? items.filter { !$0.locator.isEmpty }.count
+        self.hasMore = hasMore
+        self.continuation = continuation
+        failures = items.filter { $0.diagnostic != nil }
+    }
+}
+
+public enum ArchiveCaptureCoordinatorError: Error, Equatable, Sendable {
+    case invalidBudget(Int)
+    case invalidCaptureContinuation
+    case invalidBindingContinuation
+}
+
+public enum ArchiveCaptureCursorScope: String, CaseIterable, Equatable, Sendable {
+    case full
+    case recent
+
+    fileprivate var metadataKey: ArchiveCursorKey {
+        switch self {
+        case .full: .captureFull
+        case .recent: .captureRecent
+        }
     }
 }
 
@@ -165,18 +197,40 @@ public struct ArchiveBindingCycleItem: Equatable, Sendable {
 public struct ArchiveBindingCycleResult: Equatable, Sendable {
     public let items: [ArchiveBindingCycleItem]
     public let bindings: [ArchiveBinding]
+    public let processed: Int
+    public let hasMore: Bool
+    public let continuation: String?
+    public let failures: [ArchiveBindingCycleItem]
 
-    public init(items: [ArchiveBindingCycleItem], bindings: [ArchiveBinding]) {
+    public init(
+        items: [ArchiveBindingCycleItem],
+        bindings: [ArchiveBinding],
+        processed: Int? = nil,
+        hasMore: Bool = false,
+        continuation: String? = nil
+    ) {
         self.items = items
         self.bindings = bindings
+        self.processed = processed ?? items.count
+        self.hasMore = hasMore
+        self.continuation = continuation
+        failures = items.filter { item in
+            if case .bound = item.disposition { return false }
+            return true
+        }
     }
 }
 
 struct ArchiveCaptureCoordinatorTestHooks: Sendable {
     let afterCaptureRecorded: (@Sendable (ArchiveCaptureResult) -> Void)?
+    let afterBindingRowAdvanced: (@Sendable (ArchiveCapture) -> Void)?
 
-    init(_ afterCaptureRecorded: (@Sendable (ArchiveCaptureResult) -> Void)? = nil) {
+    init(
+        _ afterCaptureRecorded: (@Sendable (ArchiveCaptureResult) -> Void)? = nil,
+        afterBindingRowAdvanced: (@Sendable (ArchiveCapture) -> Void)? = nil
+    ) {
         self.afterCaptureRecorded = afterCaptureRecorded
+        self.afterBindingRowAdvanced = afterBindingRowAdvanced
     }
 }
 
@@ -186,10 +240,59 @@ public actor ArchiveCaptureCoordinator {
         let locator: String
     }
 
+    private struct SourceCaptureProgress: Codable, Equatable {
+        let source: String
+        var locatorSetDigest: String?
+        var lastLocator: String?
+        var sweepUpperBound: String?
+        var wrapEnd: String?
+        var didWrap: Bool
+        var exhaustedDigest: String?
+    }
+
+    private struct CaptureProgress: Codable, Equatable {
+        let schemaVersion: Int
+        var sources: [SourceCaptureProgress]
+        var nextSourceIndex: Int
+    }
+
+    private struct LocatorSnapshot: Equatable {
+        let locator: String
+        let key: String
+    }
+
+    private struct PersistedCaptureCursor: Codable, Equatable {
+        let capturedAt: String
+        let captureID: String
+
+        init(_ cursor: ArchiveCaptureCursor) {
+            capturedAt = cursor.capturedAt
+            captureID = cursor.captureID
+        }
+
+        var value: ArchiveCaptureCursor {
+            ArchiveCaptureCursor(capturedAt: capturedAt, captureID: captureID)
+        }
+    }
+
+    private struct LockedBindingBatch: Codable, Equatable {
+        let end: PersistedCaptureCursor
+        let count: Int
+        let captureIDsSHA256: String
+    }
+
+    private struct BindingProgress: Codable, Equatable {
+        let schemaVersion: Int
+        var boundary: PersistedCaptureCursor?
+        var after: PersistedCaptureCursor?
+        var lockedBatch: LockedBindingBatch?
+    }
+
     private let cas: ImmutableArchiveCAS
     private let catalog: ArchiveCatalog
     private let unboundBatchLimit: Int
     private let testHooks: ArchiveCaptureCoordinatorTestHooks
+    private var expectedBindingBatchFingerprint: String?
 
     public init(
         cas: ImmutableArchiveCAS,
@@ -214,18 +317,62 @@ public actor ArchiveCaptureCoordinator {
         self.catalog = catalog
         self.unboundBatchLimit = max(unboundBatchLimit, 1)
         self.testHooks = testHooks
+        expectedBindingBatchFingerprint = nil
     }
 
     public func capture(
         adapters: [any SessionAdapter]
     ) async throws -> ArchiveCaptureCycleResult {
+        try await capture(
+            adapters: adapters,
+            locatorBudget: Int.max,
+            cursorScope: .full
+        )
+    }
+
+    public func capture(
+        adapters: [any SessionAdapter],
+        locatorBudget: Int,
+        cursorScope: ArchiveCaptureCursorScope = .full
+    ) async throws -> ArchiveCaptureCycleResult {
+        guard locatorBudget >= 0 else {
+            throw ArchiveCaptureCoordinatorError.invalidBudget(locatorBudget)
+        }
         let machineID = try catalog.machineID()
         var items: [ArchiveCaptureCycleItem] = []
         var captures: [ArchiveCaptureResult] = []
+        var progress = try captureProgress(
+            for: adapters,
+            cursorScope: cursorScope
+        )
+        if locatorBudget == 0 {
+            let payload = try ArchiveCanonicalJSON.encode(progress)
+            _ = try catalog.storeArchiveCursorCheckpoint(
+                payload,
+                for: cursorScope.metadataKey
+            )
+            return ArchiveCaptureCycleResult(
+                items: [],
+                captures: [],
+                processed: 0,
+                hasMore: !adapters.isEmpty,
+                continuation: adapters.isEmpty ? nil : ArchiveV2Hash.sha256(payload)
+            )
+        }
 
-        for adapter in adapters {
+        var exactAdapters: [Int: any ExactArchiveSourceAdapter] = [:]
+        var locatorSnapshots: [Int: [LocatorSnapshot]] = [:]
+        var unavailableSources = Set<Int>()
+        for (sourceIndex, adapter) in adapters.enumerated() {
             try Task.checkCancellation()
             guard let exactAdapter = adapter as? any ExactArchiveSourceAdapter else {
+                let emptyDigest = try Self.locatorSetDigest([])
+                progress.sources[sourceIndex].locatorSetDigest = emptyDigest
+                progress.sources[sourceIndex].lastLocator = nil
+                progress.sources[sourceIndex].sweepUpperBound = nil
+                progress.sources[sourceIndex].wrapEnd = nil
+                progress.sources[sourceIndex].didWrap = true
+                progress.sources[sourceIndex].exhaustedDigest = emptyDigest
                 items.append(
                     ArchiveCaptureCycleItem(
                         source: adapter.source,
@@ -237,12 +384,34 @@ public actor ArchiveCaptureCoordinator {
                 )
                 continue
             }
-            let locators: [String]
             do {
-                locators = try await adapter.listSessionLocators()
+                let listed = try await adapter.listSessionLocators()
+                let snapshots = Self.stableLocatorSnapshots(listed)
+                let digest = try Self.locatorSetDigest(snapshots)
+                var sourceProgress = progress.sources[sourceIndex]
+                if sourceProgress.locatorSetDigest == nil
+                    || (sourceProgress.locatorSetDigest != digest
+                        && sourceProgress.exhaustedDigest == sourceProgress.locatorSetDigest) {
+                    Self.startSweep(
+                        &sourceProgress,
+                        digest: digest,
+                        snapshots: snapshots
+                    )
+                }
+                if snapshots.isEmpty {
+                    sourceProgress.lastLocator = nil
+                    sourceProgress.sweepUpperBound = nil
+                    sourceProgress.wrapEnd = nil
+                    sourceProgress.didWrap = true
+                    sourceProgress.exhaustedDigest = sourceProgress.locatorSetDigest
+                }
+                progress.sources[sourceIndex] = sourceProgress
+                exactAdapters[sourceIndex] = exactAdapter
+                locatorSnapshots[sourceIndex] = snapshots
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                unavailableSources.insert(sourceIndex)
                 items.append(
                     ArchiveCaptureCycleItem(
                         source: adapter.source,
@@ -252,101 +421,155 @@ public actor ArchiveCaptureCoordinator {
                         diagnostic: String(describing: error)
                     )
                 )
-                continue
-            }
-
-            for locator in locators {
-                try Task.checkCancellation()
-                if ArchiveLocatorClassifier.isVirtual(locator) {
-                    items.append(
-                        ArchiveCaptureCycleItem(
-                            source: adapter.source,
-                            locator: locator,
-                            classification: .unsupportedVirtual,
-                            captureID: nil,
-                            diagnostic: nil
-                        )
-                    )
-                    continue
-                }
-                let descriptor: ArchiveSourceDescriptor
-                do {
-                    descriptor = try await exactAdapter.archiveSourceDescriptor(locator: locator)
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    items.append(
-                        ArchiveCaptureCycleItem(
-                            source: adapter.source,
-                            locator: locator,
-                            classification: .unsafe("descriptor rejected"),
-                            captureID: nil,
-                            diagnostic: String(describing: error)
-                        )
-                    )
-                    continue
-                }
-                try Task.checkCancellation()
-                let classification = ArchiveLocatorClassifier.classify(
-                    descriptor: descriptor,
-                    enumeratedLocator: locator
-                )
-                guard case .declaredSingleFile = classification else {
-                    items.append(
-                        ArchiveCaptureCycleItem(
-                            source: adapter.source,
-                            locator: locator,
-                            classification: classification,
-                            captureID: nil,
-                            diagnostic: nil
-                        )
-                    )
-                    continue
-                }
-
-                do {
-                    let result = try ExactSourceCapturer(
-                        cas: cas,
-                        catalog: catalog,
-                        descriptor: descriptor
-                    ).capture(
-                        source: adapter.source,
-                        locator: locator,
-                        machineID: machineID
-                    )
-                    captures.append(result)
-                    items.append(
-                        ArchiveCaptureCycleItem(
-                            source: adapter.source,
-                            locator: locator,
-                            classification: classification,
-                            captureID: result.capture.captureID,
-                            diagnostic: nil
-                        )
-                    )
-                    testHooks.afterCaptureRecorded?(result)
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    items.append(
-                        ArchiveCaptureCycleItem(
-                            source: adapter.source,
-                            locator: locator,
-                            classification: classification,
-                            captureID: nil,
-                            diagnostic: String(describing: error)
-                        )
-                    )
-                }
             }
         }
+
+        var processed = 0
+        while processed < locatorBudget,
+              let sourceIndex = Self.nextCaptureSource(
+                  in: progress,
+                  availableSources: Set(locatorSnapshots.keys)
+              ) {
+            try Task.checkCancellation()
+            progress.nextSourceIndex = adapters.isEmpty
+                ? 0
+                : (sourceIndex + 1) % adapters.count
+            let adapter = adapters[sourceIndex]
+            guard let exactAdapter = exactAdapters[sourceIndex],
+                  let snapshots = locatorSnapshots[sourceIndex] else {
+                continue
+            }
+            guard let selection = Self.nextLocator(
+                in: snapshots,
+                progress: &progress.sources[sourceIndex]
+            ) else {
+                let currentDigest = try Self.locatorSetDigest(snapshots)
+                if progress.sources[sourceIndex].locatorSetDigest != currentDigest {
+                    Self.startSweep(
+                        &progress.sources[sourceIndex],
+                        digest: currentDigest,
+                        snapshots: snapshots
+                    )
+                }
+                continue
+            }
+            processed += 1
+            let outcome = try await captureLocator(
+                adapter: adapter,
+                exactAdapter: exactAdapter,
+                locator: selection.snapshot.locator,
+                machineID: machineID
+            )
+            items.append(outcome.item)
+            if let capture = outcome.capture {
+                captures.append(capture)
+            }
+            progress.sources[sourceIndex].lastLocator = selection.snapshot.key
+            Self.finishSweepIfAtCurrentBoundary(
+                &progress.sources[sourceIndex],
+                snapshots: snapshots
+            )
+            let currentDigest = try Self.locatorSetDigest(snapshots)
+            if progress.sources[sourceIndex].exhaustedDigest
+                == progress.sources[sourceIndex].locatorSetDigest,
+               progress.sources[sourceIndex].locatorSetDigest != currentDigest {
+                Self.startSweep(
+                    &progress.sources[sourceIndex],
+                    digest: currentDigest,
+                    snapshots: snapshots
+                )
+            }
+            // A capture may already be durable when cancellation arrives (for
+            // example, the service is shutting down immediately after the CAS
+            // and catalog write). Persist the fair cursor for that exact row
+            // before observing cancellation so restart never spends the same
+            // bounded budget at the old head and starves later sources.
+            try persistCaptureProgress(progress, cursorScope: cursorScope)
+            try Task.checkCancellation()
+        }
         try Task.checkCancellation()
-        return ArchiveCaptureCycleResult(items: items, captures: captures)
+        let hasMore = !unavailableSources.isEmpty || progress.sources.contains { source in
+            source.locatorSetDigest == nil || source.exhaustedDigest != source.locatorSetDigest
+        }
+        if !hasMore {
+            progress = Self.initialCaptureProgress(for: adapters)
+        }
+        let payload = try persistCaptureProgress(
+            progress,
+            cursorScope: cursorScope
+        )
+        return ArchiveCaptureCycleResult(
+            items: items,
+            captures: captures,
+            processed: processed,
+            hasMore: hasMore,
+            continuation: hasMore ? ArchiveV2Hash.sha256(payload) : nil
+        )
+    }
+
+    @discardableResult
+    private func persistCaptureProgress(
+        _ progress: CaptureProgress,
+        cursorScope: ArchiveCaptureCursorScope
+    ) throws -> Data {
+        let payload = try ArchiveCanonicalJSON.encode(progress)
+        _ = try catalog.storeArchiveCursorCheckpoint(
+            payload,
+            for: cursorScope.metadataKey
+        )
+        return payload
+    }
+
+    public func bindingTargets(rowBudget: Int) throws -> [ArchiveCapture] {
+        guard rowBudget >= 0 else {
+            throw ArchiveCaptureCoordinatorError.invalidBudget(rowBudget)
+        }
+        guard rowBudget > 0 else { return [] }
+        try Task.checkCancellation()
+        var progress = try bindingProgress()
+        if progress.boundary == nil {
+            progress.boundary = try catalog.unboundCaptureBoundary().map(
+                PersistedCaptureCursor.init
+            )
+            try persistBindingProgress(progress)
+        }
+        guard let boundary = progress.boundary?.value else { return [] }
+
+        if progress.lockedBatch != nil {
+            let targets = try lockedBindingTargets(progress)
+            expectedBindingBatchFingerprint = try Self.bindingBatchFingerprint(
+                progress.lockedBatch
+            )
+            return targets
+        }
+        let targets = try catalog.unboundCaptures(
+            limit: min(unboundBatchLimit, rowBudget),
+            after: progress.after?.value,
+            through: boundary
+        )
+        guard !targets.isEmpty else { return [] }
+        progress.lockedBatch = try Self.lockedBatch(for: targets)
+        try persistBindingProgress(progress)
+        expectedBindingBatchFingerprint = try Self.bindingBatchFingerprint(
+            progress.lockedBatch
+        )
+        try Task.checkCancellation()
+        return targets
     }
 
     public func bind(
         _ sessions: [ArchiveSessionIdentity]
     ) throws -> ArchiveBindingCycleResult {
+        try bind(sessions, rowBudget: Int.max)
+    }
+
+    public func bind(
+        _ sessions: [ArchiveSessionIdentity],
+        rowBudget: Int
+    ) throws -> ArchiveBindingCycleResult {
+        guard rowBudget >= 0 else {
+            throw ArchiveCaptureCoordinatorError.invalidBudget(rowBudget)
+        }
         try Task.checkCancellation()
         var grouped: [BindingKey: [ArchiveSessionIdentity]] = [:]
         for session in sessions {
@@ -357,145 +580,634 @@ public actor ArchiveCaptureCoordinator {
 
         var items: [ArchiveBindingCycleItem] = []
         var bindings: [ArchiveBinding] = []
-        guard let boundary = try catalog.unboundCaptureBoundary() else {
-            try Task.checkCancellation()
-            return ArchiveBindingCycleResult(items: [], bindings: [])
+        var progress = try bindingProgress()
+        if let expectedBindingBatchFingerprint,
+           try Self.bindingBatchFingerprint(progress.lockedBatch)
+            != expectedBindingBatchFingerprint {
+            throw ArchiveCaptureCoordinatorError.invalidBindingContinuation
         }
-        var cursor: ArchiveCaptureCursor?
-        while cursor != boundary {
-            let page = try catalog.unboundCaptures(
-                limit: unboundBatchLimit,
-                after: cursor,
-                through: boundary
+        if progress.boundary == nil {
+            progress.boundary = try catalog.unboundCaptureBoundary().map(
+                PersistedCaptureCursor.init
             )
-            guard !page.isEmpty else { break }
-            for capture in page {
-                try Task.checkCancellation()
-                guard let normalizedLocator = ArchiveLocatorClassifier.normalize(capture.locator) else {
-                    items.append(
-                        ArchiveBindingCycleItem(
-                            captureID: capture.captureID,
-                            disposition: .failed("invalid captured locator")
-                        )
-                    )
-                    continue
-                }
-                let key = BindingKey(source: capture.source, locator: normalizedLocator)
-                let matches = grouped[key] ?? []
-                guard matches.count == 1 else {
-                    items.append(
-                        ArchiveBindingCycleItem(
-                            captureID: capture.captureID,
-                            disposition: matches.isEmpty ? .noMatch : .ambiguousMatch(matches.count)
-                        )
-                    )
-                    continue
-                }
-                let session = matches[0]
+        }
+        guard let boundary = progress.boundary?.value else {
+            try persistBindingProgress(progress)
+            try Task.checkCancellation()
+            return ArchiveBindingCycleResult(
+                items: [],
+                bindings: [],
+                processed: 0,
+                hasMore: false,
+                continuation: nil
+            )
+        }
+        if rowBudget == 0 {
+            try persistBindingProgress(progress)
+            let payload = try ArchiveCanonicalJSON.encode(progress)
+            return ArchiveBindingCycleResult(
+                items: [],
+                bindings: [],
+                processed: 0,
+                hasMore: true,
+                continuation: ArchiveV2Hash.sha256(payload)
+            )
+        }
 
-                do {
-                    let unbound = try ArchiveCanonicalJSON.decode(
-                        ArchiveSourceManifest.self,
-                        from: capture.unboundManifestBytes
-                    )
-                    guard unbound.sessionID == nil,
-                          unbound.source == session.source.rawValue,
-                          unbound.locator == session.locator else {
-                        items.append(
-                            ArchiveBindingCycleItem(
-                                captureID: capture.captureID,
-                                disposition: .failed("capture/session identity mismatch")
-                            )
-                        )
-                        continue
-                    }
-                    guard Self.indexedGenerationMatches(
-                        session.indexedGenerationProof,
-                        capture: capture,
-                        manifest: unbound
-                    ) else {
-                        items.append(
-                            ArchiveBindingCycleItem(
-                                captureID: capture.captureID,
-                                disposition: .indexedGenerationMismatch
-                            )
-                        )
-                        continue
-                    }
-                    try ExactSourceCapturer.verify(
-                        sourceURL: URL(fileURLWithPath: session.locator),
-                        expectedGeneration: unbound.generation,
-                        expectedWholeSourceSHA256: unbound.wholeSourceSHA256
-                    )
-                    try Task.checkCancellation()
-                    let bound = try ArchiveSourceManifest(
-                        captureID: unbound.captureID,
-                        machineID: unbound.machineID,
-                        source: unbound.source,
-                        locator: unbound.locator,
-                        sessionID: session.sessionID,
-                        capturedAt: unbound.capturedAt,
-                        generation: unbound.generation,
-                        wholeSourceSHA256: unbound.wholeSourceSHA256,
-                        rawByteCount: unbound.rawByteCount,
-                        chunkSize: unbound.chunkSize,
-                        chunks: unbound.chunks,
-                        replayLayout: unbound.replayLayout
-                    )
-                    let canonicalBytes = try ArchiveCanonicalJSON.encode(bound)
-                    let manifestSHA256 = ArchiveV2Hash.sha256(canonicalBytes)
-                    let sourceSnapshotFingerprint = try Self.sourceSnapshotFingerprint(
-                        session: session,
-                        manifest: unbound
-                    )
-                    _ = try cas.publishManifest(
-                        canonicalBytes,
-                        expectedSHA256: manifestSHA256
-                    )
-                    let binding = try catalog.bind(
-                        canonicalManifestBytes: canonicalBytes,
-                        sourceSnapshotFingerprint: sourceSnapshotFingerprint
-                    )
-                    bindings.append(binding)
-                    items.append(
-                        ArchiveBindingCycleItem(
-                            captureID: capture.captureID,
-                            disposition: .bound
-                        )
-                    )
-                } catch ExactSourceCapturerError.generationChanged {
-                    items.append(
-                        ArchiveBindingCycleItem(
-                            captureID: capture.captureID,
-                            disposition: .generationChanged
-                        )
-                    )
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch let error as ExactSourceCapturerError {
-                    items.append(
-                        ArchiveBindingCycleItem(
-                            captureID: capture.captureID,
-                            disposition: .failed(String(describing: error))
-                        )
-                    )
-                } catch {
-                    items.append(
-                        ArchiveBindingCycleItem(
-                            captureID: capture.captureID,
-                            disposition: .failed(String(describing: error))
-                        )
-                    )
+        let enteredWithLockedBatch = progress.lockedBatch != nil
+        var processed = 0
+        var exhaustedSnapshot = false
+        while processed < rowBudget {
+            let lockedTargets: [ArchiveCapture]
+            if progress.lockedBatch != nil {
+                lockedTargets = try lockedBindingTargets(progress)
+            } else {
+                lockedTargets = try catalog.unboundCaptures(
+                    limit: min(unboundBatchLimit, rowBudget - processed),
+                    after: progress.after?.value,
+                    through: boundary
+                )
+                if !lockedTargets.isEmpty {
+                    progress.lockedBatch = try Self.lockedBatch(for: lockedTargets)
+                    try persistBindingProgress(progress)
                 }
             }
-            guard let last = page.last else { break }
-            cursor = ArchiveCaptureCursor(
-                capturedAt: last.capturedAt,
-                captureID: last.captureID
+            guard !lockedTargets.isEmpty else {
+                exhaustedSnapshot = true
+                break
+            }
+            let targets = Array(lockedTargets.prefix(rowBudget - processed))
+            for (targetIndex, capture) in targets.enumerated() {
+                try Task.checkCancellation()
+                processed += 1
+                let outcome = try bindCapture(capture, grouped: grouped)
+                items.append(outcome.item)
+                if let binding = outcome.binding {
+                    bindings.append(binding)
+                }
+
+                progress.after = PersistedCaptureCursor(
+                    ArchiveCaptureCursor(
+                        capturedAt: capture.capturedAt,
+                        captureID: capture.captureID
+                    )
+                )
+                let remainingTargets = Array(lockedTargets.dropFirst(targetIndex + 1))
+                progress.lockedBatch = remainingTargets.isEmpty
+                    ? nil
+                    : try Self.lockedBatch(for: remainingTargets)
+                try persistBindingProgress(progress)
+                expectedBindingBatchFingerprint = try Self.bindingBatchFingerprint(
+                    progress.lockedBatch
+                )
+                testHooks.afterBindingRowAdvanced?(capture)
+                try Task.checkCancellation()
+            }
+            if enteredWithLockedBatch { break }
+        }
+
+        if !exhaustedSnapshot {
+            exhaustedSnapshot = try catalog.unboundCaptures(
+                limit: 1,
+                after: progress.after?.value,
+                through: boundary
+            ).isEmpty
+        }
+        let hasMore = !exhaustedSnapshot
+        if !hasMore {
+            progress = BindingProgress(
+                schemaVersion: 2,
+                boundary: nil,
+                after: nil,
+                lockedBatch: nil
+            )
+        }
+        try persistBindingProgress(progress)
+        expectedBindingBatchFingerprint = try Self.bindingBatchFingerprint(
+            progress.lockedBatch
+        )
+        let payload = try ArchiveCanonicalJSON.encode(progress)
+        return ArchiveBindingCycleResult(
+            items: items,
+            bindings: bindings,
+            processed: processed,
+            hasMore: hasMore,
+            continuation: hasMore ? ArchiveV2Hash.sha256(payload) : nil
+        )
+    }
+
+    private func bindCapture(
+        _ capture: ArchiveCapture,
+        grouped: [BindingKey: [ArchiveSessionIdentity]]
+    ) throws -> (item: ArchiveBindingCycleItem, binding: ArchiveBinding?) {
+        guard let normalizedLocator = ArchiveLocatorClassifier.normalize(capture.locator) else {
+            return (
+                ArchiveBindingCycleItem(
+                    captureID: capture.captureID,
+                    disposition: .failed("invalid captured locator")
+                ),
+                nil
+            )
+        }
+        let key = BindingKey(source: capture.source, locator: normalizedLocator)
+        let matches = grouped[key] ?? []
+        guard matches.count == 1 else {
+            return (
+                ArchiveBindingCycleItem(
+                    captureID: capture.captureID,
+                    disposition: matches.isEmpty ? .noMatch : .ambiguousMatch(matches.count)
+                ),
+                nil
+            )
+        }
+        let session = matches[0]
+        do {
+            let unbound = try ArchiveCanonicalJSON.decode(
+                ArchiveSourceManifest.self,
+                from: capture.unboundManifestBytes
+            )
+            guard unbound.sessionID == nil,
+                  unbound.source == session.source.rawValue,
+                  unbound.locator == session.locator else {
+                return (
+                    ArchiveBindingCycleItem(
+                        captureID: capture.captureID,
+                        disposition: .failed("capture/session identity mismatch")
+                    ),
+                    nil
+                )
+            }
+            guard Self.indexedGenerationMatches(
+                session.indexedGenerationProof,
+                capture: capture,
+                manifest: unbound
+            ) else {
+                return (
+                    ArchiveBindingCycleItem(
+                        captureID: capture.captureID,
+                        disposition: .indexedGenerationMismatch
+                    ),
+                    nil
+                )
+            }
+            try ExactSourceCapturer.verify(
+                sourceURL: URL(fileURLWithPath: session.locator),
+                expectedGeneration: unbound.generation,
+                expectedWholeSourceSHA256: unbound.wholeSourceSHA256
+            )
+            try Task.checkCancellation()
+            let bound = try ArchiveSourceManifest(
+                captureID: unbound.captureID,
+                machineID: unbound.machineID,
+                source: unbound.source,
+                locator: unbound.locator,
+                sessionID: session.sessionID,
+                capturedAt: unbound.capturedAt,
+                generation: unbound.generation,
+                wholeSourceSHA256: unbound.wholeSourceSHA256,
+                rawByteCount: unbound.rawByteCount,
+                chunkSize: unbound.chunkSize,
+                chunks: unbound.chunks,
+                replayLayout: unbound.replayLayout
+            )
+            let canonicalBytes = try ArchiveCanonicalJSON.encode(bound)
+            let manifestSHA256 = ArchiveV2Hash.sha256(canonicalBytes)
+            let sourceSnapshotFingerprint = try Self.sourceSnapshotFingerprint(
+                session: session,
+                manifest: unbound
+            )
+            _ = try cas.publishManifest(
+                canonicalBytes,
+                expectedSHA256: manifestSHA256
+            )
+            let binding = try catalog.bind(
+                canonicalManifestBytes: canonicalBytes,
+                sourceSnapshotFingerprint: sourceSnapshotFingerprint
+            )
+            return (
+                ArchiveBindingCycleItem(
+                    captureID: capture.captureID,
+                    disposition: .bound
+                ),
+                binding
+            )
+        } catch ExactSourceCapturerError.generationChanged {
+            return (
+                ArchiveBindingCycleItem(
+                    captureID: capture.captureID,
+                    disposition: .generationChanged
+                ),
+                nil
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as ExactSourceCapturerError {
+            return (
+                ArchiveBindingCycleItem(
+                    captureID: capture.captureID,
+                    disposition: .failed(String(describing: error))
+                ),
+                nil
+            )
+        } catch {
+            return (
+                ArchiveBindingCycleItem(
+                    captureID: capture.captureID,
+                    disposition: .failed(String(describing: error))
+                ),
+                nil
+            )
+        }
+    }
+
+    private static func initialCaptureProgress(
+        for adapters: [any SessionAdapter]
+    ) -> CaptureProgress {
+        CaptureProgress(
+            schemaVersion: 2,
+            sources: adapters.map {
+                SourceCaptureProgress(
+                    source: $0.source.rawValue,
+                    locatorSetDigest: nil,
+                    lastLocator: nil,
+                    sweepUpperBound: nil,
+                    wrapEnd: nil,
+                    didWrap: true,
+                    exhaustedDigest: nil
+                )
+            },
+            nextSourceIndex: 0
+        )
+    }
+
+    private func captureProgress(
+        for adapters: [any SessionAdapter],
+        cursorScope: ArchiveCaptureCursorScope
+    ) throws -> CaptureProgress {
+        guard let checkpoint = try catalog.archiveCursorCheckpoint(
+            for: cursorScope.metadataKey
+        ) else {
+            return Self.initialCaptureProgress(for: adapters)
+        }
+        let decoded: CaptureProgress
+        do {
+            decoded = try ArchiveCanonicalJSON.decode(
+                CaptureProgress.self,
+                from: checkpoint.payload
+            )
+            guard try ArchiveCanonicalJSON.encode(decoded) == checkpoint.payload else {
+                throw ArchiveCaptureCoordinatorError.invalidCaptureContinuation
+            }
+        } catch {
+            throw ArchiveCaptureCoordinatorError.invalidCaptureContinuation
+        }
+        let sources = adapters.map { $0.source.rawValue }
+        guard decoded.schemaVersion == 2,
+              decoded.sources.allSatisfy(Self.valid),
+              (decoded.sources.isEmpty
+                  ? decoded.nextSourceIndex == 0
+                  : decoded.sources.indices.contains(decoded.nextSourceIndex)) else {
+            throw ArchiveCaptureCoordinatorError.invalidCaptureContinuation
+        }
+        guard decoded.sources.map(\.source) == sources else {
+            return Self.initialCaptureProgress(for: adapters)
+        }
+        return decoded
+    }
+
+    private static func valid(_ progress: SourceCaptureProgress) -> Bool {
+        guard !progress.source.isEmpty else { return false }
+        if let digest = progress.locatorSetDigest,
+           !ArchiveV2Hash.isValidSHA256(digest) {
+            return false
+        }
+        if let exhaustedDigest = progress.exhaustedDigest,
+           !ArchiveV2Hash.isValidSHA256(exhaustedDigest) {
+            return false
+        }
+        for locator in [
+            progress.lastLocator,
+            progress.sweepUpperBound,
+            progress.wrapEnd,
+        ].compactMap({ $0 }) {
+            if locator.isEmpty || locator.utf8.count > 4_096 { return false }
+        }
+        return progress.locatorSetDigest != nil || (
+            progress.lastLocator == nil
+                && progress.sweepUpperBound == nil
+                && progress.wrapEnd == nil
+                && progress.didWrap
+                && progress.exhaustedDigest == nil
+        )
+    }
+
+    private static func stableLocatorSnapshots(_ locators: [String]) -> [LocatorSnapshot] {
+        var byKey: [String: String] = [:]
+        for locator in locators {
+            let key = ArchiveLocatorClassifier.normalize(locator) ?? locator
+            guard !key.isEmpty else { continue }
+            if let existing = byKey[key] {
+                byKey[key] = min(existing, locator)
+            } else {
+                byKey[key] = locator
+            }
+        }
+        return byKey.map { LocatorSnapshot(locator: $0.value, key: $0.key) }
+            .sorted { ($0.key, $0.locator) < ($1.key, $1.locator) }
+    }
+
+    private static func locatorSetDigest(_ snapshots: [LocatorSnapshot]) throws -> String {
+        ArchiveV2Hash.sha256(
+            try ArchiveCanonicalJSON.encode(snapshots.map(\.key).sorted())
+        )
+    }
+
+    private static func nextCaptureSource(
+        in progress: CaptureProgress,
+        availableSources: Set<Int>
+    ) -> Int? {
+        guard !progress.sources.isEmpty else { return nil }
+        for offset in 0 ..< progress.sources.count {
+            let index = (progress.nextSourceIndex + offset) % progress.sources.count
+            let source = progress.sources[index]
+            if availableSources.contains(index),
+               source.locatorSetDigest != nil,
+               source.exhaustedDigest != source.locatorSetDigest {
+                return index
+            }
+        }
+        return nil
+    }
+
+    private static func startSweep(
+        _ progress: inout SourceCaptureProgress,
+        digest: String,
+        snapshots: [LocatorSnapshot]
+    ) {
+        let anchor = progress.lastLocator
+        progress.locatorSetDigest = digest
+        progress.sweepUpperBound = snapshots.last?.key
+        progress.wrapEnd = anchor.flatMap { anchor in
+            snapshots.last(where: { $0.key <= anchor })?.key
+        }
+        progress.didWrap = anchor == nil
+        progress.exhaustedDigest = nil
+    }
+
+    private static func nextLocator(
+        in snapshots: [LocatorSnapshot],
+        progress: inout SourceCaptureProgress
+    ) -> (snapshot: LocatorSnapshot, didWrap: Bool)? {
+        guard !snapshots.isEmpty,
+              let upperBound = progress.sweepUpperBound,
+              progress.exhaustedDigest != progress.locatorSetDigest else {
+            return nil
+        }
+
+        if !progress.didWrap {
+            if let next = snapshots.first(where: {
+                $0.key > (progress.lastLocator ?? "") && $0.key <= upperBound
+            }) {
+                return (next, false)
+            }
+            progress.didWrap = true
+            progress.lastLocator = nil
+        }
+
+        let phaseEnd = progress.wrapEnd ?? upperBound
+        if let next = snapshots.first(where: {
+            $0.key > (progress.lastLocator ?? "") && $0.key <= phaseEnd
+        }) {
+            return (next, true)
+        }
+        progress.exhaustedDigest = progress.locatorSetDigest
+        return nil
+    }
+
+    private static func finishSweepIfAtCurrentBoundary(
+        _ progress: inout SourceCaptureProgress,
+        snapshots: [LocatorSnapshot]
+    ) {
+        guard let lastLocator = progress.lastLocator,
+              let upperBound = progress.sweepUpperBound else { return }
+        let phaseEnd = progress.didWrap ? (progress.wrapEnd ?? upperBound) : upperBound
+        let hasLaterInPhase = snapshots.contains {
+            $0.key > lastLocator && $0.key <= phaseEnd
+        }
+        guard !hasLaterInPhase else { return }
+        if progress.didWrap || progress.wrapEnd == nil {
+            progress.exhaustedDigest = progress.locatorSetDigest
+        }
+    }
+
+    private static func lockedBatch(
+        for captures: [ArchiveCapture]
+    ) throws -> LockedBindingBatch {
+        guard let last = captures.last, !captures.isEmpty else {
+            throw ArchiveCaptureCoordinatorError.invalidBindingContinuation
+        }
+        return LockedBindingBatch(
+            end: PersistedCaptureCursor(
+                ArchiveCaptureCursor(
+                    capturedAt: last.capturedAt,
+                    captureID: last.captureID
+                )
+            ),
+            count: captures.count,
+            captureIDsSHA256: ArchiveV2Hash.sha256(
+                try ArchiveCanonicalJSON.encode(captures.map(\.captureID))
+            )
+        )
+    }
+
+    private static func bindingBatchFingerprint(
+        _ batch: LockedBindingBatch?
+    ) throws -> String? {
+        guard let batch else { return nil }
+        return ArchiveV2Hash.sha256(try ArchiveCanonicalJSON.encode(batch))
+    }
+
+    private func lockedBindingTargets(
+        _ progress: BindingProgress
+    ) throws -> [ArchiveCapture] {
+        guard let lockedBatch = progress.lockedBatch else {
+            throw ArchiveCaptureCoordinatorError.invalidBindingContinuation
+        }
+        let targets = try catalog.unboundCaptures(
+            limit: lockedBatch.count,
+            after: progress.after?.value,
+            through: lockedBatch.end.value
+        )
+        guard targets.count == lockedBatch.count,
+              targets.last.map({
+                  ($0.capturedAt, $0.captureID)
+                      == (lockedBatch.end.capturedAt, lockedBatch.end.captureID)
+              }) == true,
+              ArchiveV2Hash.sha256(
+                  try ArchiveCanonicalJSON.encode(targets.map(\.captureID))
+              ) == lockedBatch.captureIDsSHA256 else {
+            throw ArchiveCaptureCoordinatorError.invalidBindingContinuation
+        }
+        return targets
+    }
+
+    private func persistBindingProgress(_ progress: BindingProgress) throws {
+        _ = try catalog.storeArchiveCursorCheckpoint(
+            try ArchiveCanonicalJSON.encode(progress),
+            for: .bindingCycle
+        )
+    }
+
+    private func bindingProgress() throws -> BindingProgress {
+        guard let checkpoint = try catalog.archiveCursorCheckpoint(for: .bindingCycle) else {
+            return BindingProgress(
+                schemaVersion: 2,
+                boundary: nil,
+                after: nil,
+                lockedBatch: nil
+            )
+        }
+        let decoded: BindingProgress
+        do {
+            decoded = try ArchiveCanonicalJSON.decode(
+                BindingProgress.self,
+                from: checkpoint.payload
+            )
+            guard try ArchiveCanonicalJSON.encode(decoded) == checkpoint.payload else {
+                throw ArchiveCaptureCoordinatorError.invalidBindingContinuation
+            }
+        } catch {
+            throw ArchiveCaptureCoordinatorError.invalidBindingContinuation
+        }
+        guard decoded.schemaVersion == 2,
+              decoded.boundary != nil || (decoded.after == nil && decoded.lockedBatch == nil),
+              Self.valid(decoded.boundary),
+              Self.valid(decoded.after),
+              Self.valid(decoded.lockedBatch) else {
+            throw ArchiveCaptureCoordinatorError.invalidBindingContinuation
+        }
+        if let after = decoded.after, let boundary = decoded.boundary,
+           (after.capturedAt, after.captureID) > (boundary.capturedAt, boundary.captureID) {
+            throw ArchiveCaptureCoordinatorError.invalidBindingContinuation
+        }
+        if let lockedBatch = decoded.lockedBatch,
+           let boundary = decoded.boundary {
+            if (lockedBatch.end.capturedAt, lockedBatch.end.captureID)
+                > (boundary.capturedAt, boundary.captureID) {
+                throw ArchiveCaptureCoordinatorError.invalidBindingContinuation
+            }
+            if let after = decoded.after,
+               (lockedBatch.end.capturedAt, lockedBatch.end.captureID)
+                <= (after.capturedAt, after.captureID) {
+                throw ArchiveCaptureCoordinatorError.invalidBindingContinuation
+            }
+        }
+        return decoded
+    }
+
+    private static func valid(_ batch: LockedBindingBatch?) -> Bool {
+        guard let batch else { return true }
+        return batch.count > 0
+            && valid(batch.end)
+            && ArchiveV2Hash.isValidSHA256(batch.captureIDsSHA256)
+    }
+
+    private static func valid(_ cursor: PersistedCaptureCursor?) -> Bool {
+        guard let cursor else { return true }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return ArchiveV2Hash.isValidSHA256(cursor.captureID)
+            && formatter.date(from: cursor.capturedAt).map(formatter.string(from:)) == cursor.capturedAt
+    }
+
+    private func captureLocator(
+        adapter: any SessionAdapter,
+        exactAdapter: any ExactArchiveSourceAdapter,
+        locator: String,
+        machineID: String
+    ) async throws -> (item: ArchiveCaptureCycleItem, capture: ArchiveCaptureResult?) {
+        try Task.checkCancellation()
+        if ArchiveLocatorClassifier.isVirtual(locator) {
+            return (
+                ArchiveCaptureCycleItem(
+                    source: adapter.source,
+                    locator: locator,
+                    classification: .unsupportedVirtual,
+                    captureID: nil,
+                    diagnostic: nil
+                ),
+                nil
+            )
+        }
+        let descriptor: ArchiveSourceDescriptor
+        do {
+            descriptor = try await exactAdapter.archiveSourceDescriptor(locator: locator)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return (
+                ArchiveCaptureCycleItem(
+                    source: adapter.source,
+                    locator: locator,
+                    classification: .unsafe("descriptor rejected"),
+                    captureID: nil,
+                    diagnostic: String(describing: error)
+                ),
+                nil
             )
         }
         try Task.checkCancellation()
-        return ArchiveBindingCycleResult(items: items, bindings: bindings)
+        let classification = ArchiveLocatorClassifier.classify(
+            descriptor: descriptor,
+            enumeratedLocator: locator
+        )
+        guard case .declaredSingleFile = classification else {
+            return (
+                ArchiveCaptureCycleItem(
+                    source: adapter.source,
+                    locator: locator,
+                    classification: classification,
+                    captureID: nil,
+                    diagnostic: nil
+                ),
+                nil
+            )
+        }
+        do {
+            let result = try ExactSourceCapturer(
+                cas: cas,
+                catalog: catalog,
+                descriptor: descriptor
+            ).capture(
+                source: adapter.source,
+                locator: locator,
+                machineID: machineID
+            )
+            testHooks.afterCaptureRecorded?(result)
+            return (
+                ArchiveCaptureCycleItem(
+                    source: adapter.source,
+                    locator: locator,
+                    classification: classification,
+                    captureID: result.capture.captureID,
+                    diagnostic: nil
+                ),
+                result
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return (
+                ArchiveCaptureCycleItem(
+                    source: adapter.source,
+                    locator: locator,
+                    classification: classification,
+                    captureID: nil,
+                    diagnostic: String(describing: error)
+                ),
+                nil
+            )
+        }
     }
 
     private struct SourceSnapshotFingerprintSeed: Codable {

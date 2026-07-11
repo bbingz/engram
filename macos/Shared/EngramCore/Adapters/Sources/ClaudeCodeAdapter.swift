@@ -32,11 +32,14 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     }
 
     func listSessionLocators() async throws -> [String] {
+        try Task.checkCancellation()
         var locators: [String] = []
         for projectURL in JSONLAdapterSupport.directChildren(of: projectsRoot, includingHidden: true)
             where JSONLAdapterSupport.isDirectory(projectURL)
         {
+            try Task.checkCancellation()
             for entryURL in JSONLAdapterSupport.directChildren(of: projectURL) {
+                try Task.checkCancellation()
                 if entryURL.pathExtension == "jsonl" {
                     locators.append(entryURL.path)
                     continue
@@ -47,10 +50,12 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 for subagentURL in JSONLAdapterSupport.directChildren(of: subagentsURL)
                     where subagentURL.pathExtension == "jsonl"
                 {
+                    try Task.checkCancellation()
                     locators.append(subagentURL.path)
                 }
             }
         }
+        try Task.checkCancellation()
         return locators.sorted()
     }
 
@@ -82,6 +87,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     ) async throws -> [String] {
         var locators: [String] = []
         for locator in try await listSessionLocators() {
+            try Task.checkCancellation()
             if let modifiedSince {
                 guard let modifiedAt = try? Self.modifiedAt(locator: locator, fileManager: fileManager),
                       modifiedAt >= modifiedSince

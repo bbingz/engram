@@ -172,6 +172,22 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         try await command("triggerSync", payload: request)
     }
 
+    func archiveV2Status() async throws -> EngramServiceArchiveV2StatusResponse {
+        try await commandWithAbsentPayload("archiveV2Status")
+    }
+
+    func archiveV2Retry(
+        _ request: EngramServiceArchiveV2RetryRequest
+    ) async throws -> EngramServiceArchiveV2RetryResponse {
+        try await command("archiveV2Retry", payload: request)
+    }
+
+    func archiveReadSessionPage(
+        _ request: EngramServiceArchiveReadSessionPageRequest
+    ) async throws -> EngramServiceArchiveReadSessionPageResponse {
+        try await command("archiveReadSessionPage", payload: request)
+    }
+
     func refreshUsage() async throws -> EngramServiceRefreshUsageResponse {
         try await command("refreshUsage")
     }
@@ -309,9 +325,30 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         payload: Payload,
         timeout: TimeInterval? = nil
     ) async throws -> Response {
-        let request = try EngramServiceRequestEnvelope(
+        try await sendCommand(
+            name,
+            payload: JSONEncoder().encode(payload),
+            timeout: timeout
+        )
+    }
+
+    /// Archive V2 status deliberately distinguishes an absent payload from
+    /// the legacy no-argument `{}` payload used by older service commands.
+    private func commandWithAbsentPayload<Response: Decodable>(
+        _ name: String,
+        timeout: TimeInterval? = nil
+    ) async throws -> Response {
+        try await sendCommand(name, payload: nil, timeout: timeout)
+    }
+
+    private func sendCommand<Response: Decodable>(
+        _ name: String,
+        payload: Data?,
+        timeout: TimeInterval?
+    ) async throws -> Response {
+        let request = EngramServiceRequestEnvelope(
             command: name,
-            payload: JSONEncoder().encode(payload)
+            payload: payload
         )
         let response = try await transport.send(request, timeout: timeout ?? defaultTimeout)
         guard response.requestId == request.requestId else {

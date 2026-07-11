@@ -67,7 +67,7 @@ enum MCPOutputSchemas {
     )
 
     static let getSession = j(
-        #"{"type":"object","additionalProperties":false,"required":["session","messages","totalPages","currentPage","redacted"],"properties":{"session":\#(fullSession),"totalPages":{"type":"integer"},"currentPage":{"type":"integer"},"redacted":{"type":"boolean"},"totalKnownComplete":{"type":"boolean"},"truncated":{"type":"boolean"},"truncatedAt":{"type":"integer"},"messages":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["role","content"],"properties":{"role":{"type":"string"},"content":{"type":"string"},"timestamp":{"type":"string"}}}}}}"#
+        #"{"type":"object","additionalProperties":false,"required":["session","messages","totalPages","currentPage","redacted"],"properties":{"session":\#(fullSession),"totalPages":{"type":"integer"},"currentPage":{"type":"integer"},"redacted":{"type":"boolean"},"totalKnownComplete":{"type":"boolean"},"truncated":{"type":"boolean"},"truncatedAt":{"type":"integer"},"responseBudgetTruncated":{"type":"boolean"},"messages":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["role","content"],"properties":{"role":{"type":"string"},"content":{"type":"string"},"timestamp":{"type":"string"}}}}}}"#
     )
 
     static let handoff = j(

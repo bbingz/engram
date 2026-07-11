@@ -75,6 +75,20 @@ public enum EngramServiceRunner {
             exit(70) // EX_SOFTWARE
         }
 
+        // Archive V2 has one process-wide coordinator. Its default-off factory
+        // only reads settings and returns a dormant actor: it does not create
+        // archive storage, read Keychain credentials, or construct backends.
+        let archiveV2Settings = ArchiveV2Settings.load(
+            settingsURL: engramSettingsURL(environment: environment),
+            environment: environment
+        )
+        let archiveV2Coordinator = Self.makeArchiveV2Coordinator(
+            gate: gate,
+            databasePath: databasePath,
+            settings: archiveV2Settings
+        )
+        let archiveTranscriptResolver = archiveV2Coordinator.transcriptResolverSnapshot
+
         let statusMonitor = ServiceStatusMonitor()
         // Wire breaker transition logs once at process start (os_log subsystem
         // com.engram.service, category ai). Counters stay on the shared breaker
@@ -94,6 +108,8 @@ public enum EngramServiceRunner {
         ServiceLogger.installRing(logRing)
         let handler = EngramServiceCommandHandler(
             writerGate: gate,
+            archiveV2Coordinator: archiveV2Coordinator,
+            archiveTranscriptResolver: archiveTranscriptResolver,
             readProvider: try SQLiteEngramServiceReadProvider(databasePath: databasePath),
             statusMonitor: statusMonitor,
             telemetry: telemetry,
@@ -128,6 +144,8 @@ public enum EngramServiceRunner {
                 statusMonitor: statusMonitor,
                 telemetry: telemetry,
                 environment: environment,
+                archiveV2Coordinator: archiveV2Coordinator,
+                archiveV2CaptureEnabled: archiveV2Settings.exactArchiveEnabled,
                 tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) },
                 testHooks: InitialScanTestHooks()
             )
@@ -145,14 +163,17 @@ public enum EngramServiceRunner {
         }
 
         let indexingTask = Task {
-            await Self.runIndexingLoop(
-                gate: gate,
-                statusMonitor: statusMonitor,
-                telemetry: telemetry,
-                environment: environment,
-                tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) },
-                remoteSync: remoteSync
-            )
+            await Self.runAfterInitialScan(initialScanTask: initialScanTask) {
+                await Self.runIndexingLoop(
+                    gate: gate,
+                    statusMonitor: statusMonitor,
+                    telemetry: telemetry,
+                    environment: environment,
+                    archiveV2Coordinator: archiveV2Coordinator,
+                    tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) },
+                    remoteSync: remoteSync
+                )
+            }
         }
 
         // Best-effort startup TRUNCATE: PASSIVE never shrinks the WAL file on
@@ -258,6 +279,112 @@ public enum EngramServiceRunner {
         }
     }
 
+    /// Builds the single Archive V2 composition-root actor. Internal so focused
+    /// integration tests can prove the default-off path has no storage effects.
+    static func makeArchiveV2Coordinator(
+        gate: ServiceWriterGate,
+        databasePath: String,
+        settings: ArchiveV2Settings
+    ) -> ArchiveV2ServiceCoordinator {
+        return ArchiveV2ServiceCoordinator.make(
+            settings: settings,
+            databasePath: databasePath,
+            writerGate: gate
+        )
+    }
+
+    /// Prevent the periodic task from entering its first scheduling cycle until
+    /// all initial-scan work (including bounded archive capture) has unwound.
+    /// Cancellation while waiting must stop the next phase from starting.
+    static func runAfterInitialScan(
+        initialScanTask: Task<Void, Never>,
+        operation: @escaping @Sendable () async -> Void
+    ) async {
+        await initialScanTask.value
+        guard !Task.isCancelled else { return }
+        await operation()
+    }
+
+    static func runArchiveV2IndexCycle(
+        coordinator: ArchiveV2ServiceCoordinator?,
+        captureAdapters: [any SessionAdapter],
+        indexingAdapters: [any SessionAdapter],
+        cursorScope: ArchiveCaptureCursorScope,
+        indexOperation: @escaping @Sendable (
+            [any SessionAdapter]
+        ) async throws -> EngramDatabaseIndexResult
+    ) async throws -> ArchiveV2ServiceCycleResult {
+        guard let coordinator else {
+            let result = try await indexOperation(indexingAdapters)
+            return ArchiveV2ServiceCycleResult(
+                indexResult: result,
+                indexPlan: .unrestricted
+            )
+        }
+        return try await coordinator.runCycle(
+            adapters: captureAdapters,
+            cursorScope: cursorScope
+        ) { plan in
+            try await indexOperation(
+                SessionAdapterFactory.indexingAdapters(
+                    from: indexingAdapters,
+                    capturedExactLocators: plan.capturedExactLocators
+                )
+            )
+        }
+    }
+
+    /// Exact-archive conformance is the capture eligibility boundary. Deriving
+    /// this projection from the already-disabled-filtered indexing list keeps
+    /// source opt-outs identical on both paths while leaving unsupported source
+    /// adapters available to the product indexer.
+    static func exactArchiveAdapters(
+        from adapters: [any SessionAdapter]
+    ) -> [any SessionAdapter] {
+        adapters.filter { $0 is any ExactArchiveSourceAdapter }
+    }
+
+    /// Compose the bounded recent-window adapters with any exact locators that
+    /// need another archive-capture attempt. The coordinator remains the owner
+    /// of retry state and applies its configured per-source batch bound; the
+    /// factory applies the same absolute safety cap before creating adapters.
+    static func recentAdaptersForPeriodicCycle(
+        archiveV2Coordinator: ArchiveV2ServiceCoordinator?,
+        disabledSources: Set<String>,
+        now: Date = Date()
+    ) async -> [any SessionAdapter] {
+        let retryLocators = await archiveV2Coordinator?.recentCaptureRetryLocators(
+            maximumPerSource: SessionAdapterFactory.maximumTransientRetryLocatorsPerSource
+        ) ?? [:]
+        return adaptersExcludingDisabled(
+            SessionAdapterFactory.recentActiveAdapters(
+                now: now,
+                priorTransientRetryLocators: retryLocators,
+                maximumRetryLocatorsPerSource:
+                    SessionAdapterFactory.maximumTransientRetryLocatorsPerSource
+            ),
+            disabledSources: disabledSources
+        )
+    }
+
+    struct ArchiveCaptureInputs {
+        let adapters: [any SessionAdapter]
+        let cursorScope: ArchiveCaptureCursorScope
+    }
+
+    static func archiveCaptureInputsForPeriodicCycle(
+        coordinator: ArchiveV2ServiceCoordinator?,
+        fullAdapters: [any SessionAdapter],
+        recentAdapters: [any SessionAdapter]
+    ) async -> ArchiveCaptureInputs {
+        let continueFull = await coordinator?.needsFullCaptureContinuation() ?? false
+        let sourceAdapters = continueFull ? fullAdapters : recentAdapters
+        return ArchiveCaptureInputs(
+            adapters: exactArchiveAdapters(from: sourceAdapters),
+            cursorScope: continueFull ? .full : .recent
+        )
+    }
+
     /// Prune observability tables past their retention windows, through the
     /// single-writer gate so it serializes with indexing writes. The one-time
     /// backlog can be ~661k rows; delete it in bounded batches, each its own
@@ -340,6 +467,7 @@ public enum EngramServiceRunner {
         statusMonitor: ServiceStatusMonitor,
         telemetry: ServiceTelemetryCollector? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        archiveV2Coordinator: ArchiveV2ServiceCoordinator? = nil,
         tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits],
         remoteSync: RemoteSyncCoordinator? = nil,
         activityScheduler: IndexingBackgroundActivityScheduling = NSIndexingBackgroundActivityScheduler()
@@ -371,6 +499,7 @@ public enum EngramServiceRunner {
                     statusMonitor: statusMonitor,
                     telemetry: telemetry,
                     environment: environment,
+                    archiveV2Coordinator: archiveV2Coordinator,
                     tokenLimitsProvider: tokenLimitsProvider,
                     remoteSync: remoteSync,
                     scheduleBox: scheduleBox
@@ -388,6 +517,7 @@ public enum EngramServiceRunner {
         statusMonitor: ServiceStatusMonitor,
         telemetry: ServiceTelemetryCollector?,
         environment: [String: String],
+        archiveV2Coordinator: ArchiveV2ServiceCoordinator?,
         tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits],
         remoteSync: RemoteSyncCoordinator?,
         scheduleBox: IndexingScheduleBox
@@ -410,20 +540,42 @@ public enum EngramServiceRunner {
         }
 
         let disabled = readDisabledSources(environment: environment)
-        let recentAdapters = adaptersExcludingDisabled(
-            SessionAdapterFactory.recentActiveAdapters(),
+        let recentAdapters = await recentAdaptersForPeriodicCycle(
+            archiveV2Coordinator: archiveV2Coordinator,
             disabledSources: disabled
         )
         let enabledAdapters = adaptersExcludingDisabled(
             SessionAdapterFactory.defaultAdapters(),
             disabledSources: disabled
         )
+        let captureInputs = await archiveCaptureInputsForPeriodicCycle(
+            coordinator: archiveV2Coordinator,
+            fullAdapters: enabledAdapters,
+            recentAdapters: recentAdapters
+        )
         let scanClock = ContinuousClock()
         let scanStarted = scanClock.now
         do {
-            let scan = try await gate.performWriteCommand(name: "indexRecent") { writer in
-                try await writer.indexRecentSessions(adapters: recentAdapters)
-            }.value
+            let archiveCycle = try await runArchiveV2IndexCycle(
+                coordinator: archiveV2Coordinator,
+                captureAdapters: captureInputs.adapters,
+                indexingAdapters: recentAdapters,
+                cursorScope: captureInputs.cursorScope
+            ) { parserAdapters in
+                try await gate.performWriteCommand(name: "indexRecent") { writer in
+                    try await writer.indexRecentSessions(adapters: parserAdapters)
+                }.value
+            }
+            let scan = archiveCycle.indexResult
+            let periodicParserAdapters: [any SessionAdapter]
+            if let captured = archiveCycle.indexPlan.capturedExactLocators {
+                periodicParserAdapters = SessionAdapterFactory.indexingAdapters(
+                    from: recentAdapters,
+                    capturedExactLocators: captured
+                )
+            } else {
+                periodicParserAdapters = enabledAdapters
+            }
             scheduleBox.policy.recordScan(.init(indexed: scan.indexed, failed: false))
 
             // Parent-link only after indexed changes (idle skip).
@@ -437,7 +589,7 @@ public enum EngramServiceRunner {
             var jobs = StartupIndexJobRecoveryResult(completed: 0, notApplicable: 0)
             while !Task.isCancelled {
                 let drain = try await gate.performWriteCommand(name: "periodicFtsDrain") { writer in
-                    try await IndexJobRunner(writer: writer, adapters: enabledAdapters)
+                    try await IndexJobRunner(writer: writer, adapters: periodicParserAdapters)
                         .runRecoverableJobsOnce()
                 }.value
                 jobs.completed += drain.result.completed
@@ -563,6 +715,38 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         var errorDescription: String? { "injected failure for phase \(phase)" }
     }
 
+    /// Archive-enabled startup path: capture exact source bytes before the
+    /// full parser/index operation, then let the coordinator reconcile the
+    /// captured generation outside the writer gate. Keeping this as a distinct
+    /// phase preserves the legacy default-off ordering below.
+    private static func runInitialArchiveV2IndexPhase(
+        gate: ServiceWriterGate,
+        statusMonitor: ServiceStatusMonitor,
+        telemetry: ServiceTelemetryCollector?,
+        archiveV2Coordinator: ArchiveV2ServiceCoordinator?,
+        startupAdapters: [any SessionAdapter],
+        testHooks: InitialScanTestHooks
+    ) async -> InitialScanPhaseOutcome<ArchiveV2ServiceCycleResult> {
+        let archiveAdapters = exactArchiveAdapters(from: startupAdapters)
+        return await runInitialScanPhase(
+            name: "initialScanIndex",
+            statusMonitor: statusMonitor,
+            telemetry: telemetry,
+            testHooks: testHooks
+        ) {
+            try await runArchiveV2IndexCycle(
+                coordinator: archiveV2Coordinator,
+                captureAdapters: archiveAdapters,
+                indexingAdapters: startupAdapters,
+                cursorScope: .full
+            ) { parserAdapters in
+                try await gate.performWriteCommand(name: "initialScanIndex") { writer in
+                    try await writer.indexAllSessions(adapters: parserAdapters)
+                }.value
+            }
+        }
+    }
+
     /// V2 composition root: runs the startup scan once, draining the FTS
     /// backlog. Builds real conformers over the unit-tested static funcs and
     /// runs through the gate so writes serialize with command dispatch.
@@ -572,6 +756,8 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         statusMonitor: ServiceStatusMonitor,
         telemetry: ServiceTelemetryCollector? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        archiveV2Coordinator: ArchiveV2ServiceCoordinator? = nil,
+        archiveV2CaptureEnabled: Bool = false,
         tokenLimitsProvider: @escaping @Sendable () -> [String: StartupUsageTokenLimits] = { [:] },
         testHooks: InitialScanTestHooks = InitialScanTestHooks()
     ) async {
@@ -607,6 +793,37 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         if usageParserBackfillCheck.failed { failedPhaseCount += 1 }
         let usageParserBackfillNeeded = usageParserBackfillCheck.value ?? false
         let startupAdapters = enabledAdapters
+        let parserAdapters: [any SessionAdapter]
+
+        var startupIndexed = 0
+        if archiveV2CaptureEnabled {
+            // Capture exact source bytes before ANY startup parser runs. Archive
+            // failures remain best-effort; index failures keep phase telemetry.
+            let indexedPhase = await runInitialArchiveV2IndexPhase(
+                gate: gate,
+                statusMonitor: statusMonitor,
+                telemetry: telemetry,
+                archiveV2Coordinator: archiveV2Coordinator,
+                startupAdapters: startupAdapters,
+                testHooks: testHooks
+            )
+            if indexedPhase.cancelled { return }
+            if indexedPhase.failed { failedPhaseCount += 1 }
+            if let archiveCycle = indexedPhase.value {
+                startupIndexed = archiveCycle.indexResult.indexed
+                parserAdapters = SessionAdapterFactory.indexingAdapters(
+                    from: startupAdapters,
+                    capturedExactLocators: archiveCycle.indexPlan.capturedExactLocators ?? [:]
+                )
+            } else {
+                parserAdapters = SessionAdapterFactory.indexingAdapters(
+                    from: startupAdapters,
+                    capturedExactLocators: [:]
+                )
+            }
+        } else {
+            parserAdapters = startupAdapters
+        }
 
         // Phase 1 — structural backfills, split into THREE gated write
         // commands so the single write gate is RELEASED between them and
@@ -622,7 +839,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             testHooks: testHooks
         ) {
             try await gate.performWriteCommand(name: "initialInstructionBackfill") { writer in
-                try await writer.indexInstructionBackfillSessions(adapters: startupAdapters).indexed
+                try await writer.indexInstructionBackfillSessions(adapters: parserAdapters).indexed
             }.value
         }
         if instructionBackfillPhase.cancelled { return }
@@ -636,28 +853,35 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             testHooks: testHooks
         ) {
             try await gate.performWriteCommand(name: "initialImplementationBeatBackfill") { writer in
-                try await writer.indexImplementationBeatBackfillSessions(adapters: startupAdapters).indexed
+                try await writer.indexImplementationBeatBackfillSessions(adapters: parserAdapters).indexed
             }.value
         }
         if implementationBackfillPhase.cancelled { return }
         if implementationBackfillPhase.failed { failedPhaseCount += 1 }
         let implementationBackfilled = implementationBackfillPhase.value ?? 0
 
-        let indexedPhase = await runInitialScanPhase(
-            name: "initialScanIndex",
-            statusMonitor: statusMonitor,
-            telemetry: telemetry,
-            testHooks: testHooks
-        ) {
-            try await gate.performWriteCommand(name: "initialScanIndex") { writer in
-                try await StartupBackfills.runStartupIndex(
-                    indexer: WriterStartupIndexing(writer: writer, adapters: startupAdapters)
-                )
-            }.value
+        if !archiveV2CaptureEnabled {
+            // Preserve the established default-off execution exactly: targeted
+            // backfills run before the full startup index, with the legacy thin
+            // StartupBackfills wrapper and telemetry phase name unchanged.
+            let indexedPhase = await runInitialScanPhase(
+                name: "initialScanIndex",
+                statusMonitor: statusMonitor,
+                telemetry: telemetry,
+                testHooks: testHooks
+            ) {
+                try await gate.performWriteCommand(name: "initialScanIndex") { writer in
+                    try await StartupBackfills.runStartupIndex(
+                        indexer: WriterStartupIndexing(writer: writer, adapters: parserAdapters)
+                    )
+                }.value
+            }
+            if indexedPhase.cancelled { return }
+            if indexedPhase.failed { failedPhaseCount += 1 }
+            startupIndexed = indexedPhase.value ?? 0
         }
-        if indexedPhase.cancelled { return }
-        if indexedPhase.failed { failedPhaseCount += 1 }
-        let indexed = instructionBackfilled + implementationBackfilled + (indexedPhase.value ?? 0)
+
+        let indexed = instructionBackfilled + implementationBackfilled + startupIndexed
 
         let backfillsPhase = await runInitialScanPhase(
             name: "initialScanBackfills",
@@ -670,7 +894,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                     indexed: indexed,
                     emit: emitBackfill,
                     log: OSLogStartupBackfillLogging(),
-                    indexer: WriterStartupIndexing(writer: writer, adapters: startupAdapters),
+                    indexer: WriterStartupIndexing(writer: writer, adapters: parserAdapters),
                     database: WriterStartupBackfillDatabase(writer: writer)
                 )
             }
@@ -690,7 +914,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                     log: OSLogStartupBackfillLogging(),
                     orphanScanner: WriterStartupOrphanScanning(writer: writer),
                     database: WriterStartupBackfillDatabase(writer: writer),
-                    adapters: startupAdapters
+                    adapters: parserAdapters
                 )
             }
         }
@@ -715,7 +939,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                 testHooks: testHooks
             ) {
                 try await gate.performWriteCommand(name: "initialFtsDrain") { writer in
-                    try await IndexJobRunner(writer: writer, adapters: enabledAdapters)
+                    try await IndexJobRunner(writer: writer, adapters: parserAdapters)
                         .runRecoverableJobsOnce()
                         .drained
                 }.value

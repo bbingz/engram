@@ -34,6 +34,8 @@ public enum ArchiveCatalogError: Error, Equatable, Sendable {
     case invalidRemoteEligibilityValue(String)
     case invalidProjectRootSnapshot(String?)
     case remotePolicyConflict(manifestSHA256: String)
+    case invalidArchiveCursorPayloadSize(Int)
+    case invalidArchiveCursorCheckpoint(String)
     case invalidReplicaTransition(from: ArchiveReplicaState, to: ArchiveReplicaState)
     case invalidClaimGeneration(Int)
     case invalidLastError(String)
@@ -95,6 +97,25 @@ public struct ArchiveCaptureCursor: Equatable, Sendable {
     }
 }
 
+public enum ArchiveCursorKey: String, CaseIterable, Sendable {
+    case captureFull = "archive_cursor_capture_full_v1"
+    case captureRecent = "archive_cursor_capture_recent_v1"
+    case bindingCycle = "archive_cursor_binding_v1"
+    case policyCycle = "archive_cursor_policy_v1"
+}
+
+public struct ArchiveCursorCheckpoint: Equatable, Sendable {
+    public let payload: Data
+    public let payloadSHA256: String
+    public let updatedAt: String
+
+    public init(payload: Data, payloadSHA256: String, updatedAt: String) {
+        self.payload = payload
+        self.payloadSHA256 = payloadSHA256
+        self.updatedAt = updatedAt
+    }
+}
+
 public enum ArchiveRemoteEligibility: String, CaseIterable, Equatable, Sendable {
     case unknown
     case eligible
@@ -129,6 +150,16 @@ public struct ArchiveBinding: Equatable, Sendable {
         self.boundAt = boundAt
         self.projectRootSnapshot = projectRootSnapshot
         self.remoteEligibility = remoteEligibility
+    }
+}
+
+public struct ArchiveBindingCursor: Equatable, Sendable {
+    public let boundAt: String
+    public let manifestSHA256: String
+
+    public init(boundAt: String, manifestSHA256: String) {
+        self.boundAt = boundAt
+        self.manifestSHA256 = manifestSHA256
     }
 }
 
@@ -208,12 +239,108 @@ public struct ArchiveReplicaClaim: Equatable, Sendable {
     public let attempts: Int
 }
 
+public struct ArchiveReplicaStatusCounts: Equatable, Sendable {
+    public let pending: Int
+    public let inflight: Int
+    public let retry: Int
+    public let quarantine: Int
+    public let verified: Int
+
+    public init(
+        pending: Int,
+        inflight: Int,
+        retry: Int,
+        quarantine: Int,
+        verified: Int
+    ) {
+        self.pending = pending
+        self.inflight = inflight
+        self.retry = retry
+        self.quarantine = quarantine
+        self.verified = verified
+    }
+}
+
+public struct ArchiveStatusReceiptSummary: Equatable, Sendable {
+    public let replicaID: String
+    public let manifestSHA256: String
+    public let captureID: String
+    public let receiptSHA256: String
+    public let storedAt: String
+    public let verifiedAt: String
+
+    public init(
+        replicaID: String,
+        manifestSHA256: String,
+        captureID: String,
+        receiptSHA256: String,
+        storedAt: String,
+        verifiedAt: String
+    ) {
+        self.replicaID = replicaID
+        self.manifestSHA256 = manifestSHA256
+        self.captureID = captureID
+        self.receiptSHA256 = receiptSHA256
+        self.storedAt = storedAt
+        self.verifiedAt = verifiedAt
+    }
+}
+
+public struct ArchiveStatusAggregate: Equatable, Sendable {
+    public let captured: Int
+    public let bound: Int
+    public let unbound: Int
+    public let unknown: Int
+    public let eligible: Int
+    public let excluded: Int
+    public let hq: ArchiveReplicaStatusCounts
+    public let m1: ArchiveReplicaStatusCounts
+    public let singleVerified: Int
+    public let dualVerified: Int
+    public let latestReceipts: [ArchiveStatusReceiptSummary]
+
+    public init(
+        captured: Int,
+        bound: Int,
+        unbound: Int,
+        unknown: Int,
+        eligible: Int,
+        excluded: Int,
+        hq: ArchiveReplicaStatusCounts,
+        m1: ArchiveReplicaStatusCounts,
+        singleVerified: Int,
+        dualVerified: Int,
+        latestReceipts: [ArchiveStatusReceiptSummary]
+    ) {
+        self.captured = captured
+        self.bound = bound
+        self.unbound = unbound
+        self.unknown = unknown
+        self.eligible = eligible
+        self.excluded = excluded
+        self.hq = hq
+        self.m1 = m1
+        self.singleVerified = singleVerified
+        self.dualVerified = dualVerified
+        self.latestReceipts = Array(latestReceipts.prefix(2))
+    }
+}
+
+private struct ArchiveCursorEnvelope: Codable, Equatable {
+    let schemaVersion: Int
+    let key: String
+    let payload: Data
+    let payloadSHA256: String
+    let updatedAt: String
+}
+
 /// Rebuildable archive metadata isolated from Engram's product index database.
 /// The immutable byte authority remains `ImmutableArchiveCAS`.
 public final class ArchiveCatalog: @unchecked Sendable {
     public static let currentReplicaIDs = ["hq", "m1"]
     private static let databaseFilename = "archive.sqlite"
     private static let captureStatus = "captured"
+    private static let maximumArchiveCursorPayloadBytes = 16_384
 
     private let pool: DatabasePool
     private let root: URL
@@ -280,6 +407,78 @@ public final class ArchiveCatalog: @unchecked Sendable {
             }
             return value
         }
+    }
+
+    public func archiveCursorCheckpoint(
+        for key: ArchiveCursorKey
+    ) throws -> ArchiveCursorCheckpoint? {
+        try pool.read { db in
+            guard let storedValue = try String.fetchOne(
+                db,
+                sql: "SELECT value FROM archive_metadata WHERE key = ?",
+                arguments: [key.rawValue]
+            ) else {
+                return nil
+            }
+            return try Self.archiveCursorCheckpoint(
+                from: storedValue,
+                expectedKey: key
+            )
+        }
+    }
+
+    @discardableResult
+    public func storeArchiveCursorCheckpoint(
+        _ payload: Data,
+        for key: ArchiveCursorKey,
+        updatedAt: String? = nil
+    ) throws -> Bool {
+        guard (1 ... Self.maximumArchiveCursorPayloadBytes).contains(payload.count) else {
+            throw ArchiveCatalogError.invalidArchiveCursorPayloadSize(payload.count)
+        }
+        let resolvedUpdatedAt = updatedAt ?? Self.currentTimestamp()
+        try Self.validateTimestamp(
+            resolvedUpdatedAt,
+            field: "archiveCursor.updatedAt"
+        )
+        let envelope = ArchiveCursorEnvelope(
+            schemaVersion: 1,
+            key: key.rawValue,
+            payload: payload,
+            payloadSHA256: ArchiveV2Hash.sha256(payload),
+            updatedAt: resolvedUpdatedAt
+        )
+        let canonicalBytes = try ArchiveCanonicalJSON.encode(envelope)
+        guard let storedValue = String(data: canonicalBytes, encoding: .utf8) else {
+            throw ArchiveCatalogError.invalidArchiveCursorCheckpoint(key.rawValue)
+        }
+
+        let changed = try pool.write { db in
+            if let existingValue = try String.fetchOne(
+                db,
+                sql: "SELECT value FROM archive_metadata WHERE key = ?",
+                arguments: [key.rawValue]
+            ) {
+                let existing = try Self.archiveCursorCheckpoint(
+                    from: existingValue,
+                    expectedKey: key
+                )
+                guard existing.payload != payload else { return false }
+                guard existingValue != storedValue else { return false }
+                try db.execute(
+                    sql: "UPDATE archive_metadata SET value = ? WHERE key = ?",
+                    arguments: [storedValue, key.rawValue]
+                )
+            } else {
+                try db.execute(
+                    sql: "INSERT INTO archive_metadata(key, value) VALUES (?, ?)",
+                    arguments: [key.rawValue, storedValue]
+                )
+            }
+            return true
+        }
+        if changed { try secureDatabaseFiles() }
+        return changed
     }
 
     // `PRAGMA synchronous` is connection-local. Keep this internal verifier so
@@ -499,6 +698,99 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 """,
                 arguments: [sessionID]
             ).map { try Self.binding(from: $0) }
+        }
+    }
+
+    public func unknownBindings(
+        limit: Int,
+        after cursor: ArchiveBindingCursor?
+    ) throws -> [ArchiveBinding] {
+        try unknownBindings(limit: limit, after: cursor, through: nil)
+    }
+
+    /// Stable upper bound for one historical-policy sweep. Rows appended after
+    /// this key are intentionally deferred to the next sweep so a continuously
+    /// growing tail cannot prevent older `unknown` bindings from being revisited.
+    public func unknownBindingBoundary() throws -> ArchiveBindingCursor? {
+        try pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT bound_at, manifest_sha256
+                FROM archive_session_bindings
+                WHERE remote_eligibility = 'unknown'
+                ORDER BY bound_at DESC, manifest_sha256 DESC
+                LIMIT 1
+                """
+            ) else {
+                return nil
+            }
+            let cursor = ArchiveBindingCursor(
+                boundAt: row["bound_at"],
+                manifestSHA256: row["manifest_sha256"]
+            )
+            try Self.validateBindingCursor(cursor, fieldPrefix: "boundary")
+            return cursor
+        }
+    }
+
+    public func unknownBindings(
+        limit: Int,
+        after cursor: ArchiveBindingCursor?,
+        through boundary: ArchiveBindingCursor?
+    ) throws -> [ArchiveBinding] {
+        guard limit > 0 else {
+            throw ArchiveCatalogError.invalidLimit(limit)
+        }
+        if let cursor {
+            try Self.validateBindingCursor(cursor, fieldPrefix: "cursor")
+        }
+        if let boundary {
+            try Self.validateBindingCursor(boundary, fieldPrefix: "boundary")
+        }
+        return try pool.read { db in
+            let cursorPredicate: String
+            let boundaryPredicate: String
+            var arguments = StatementArguments()
+            if let cursor {
+                cursorPredicate = """
+                  AND (bound_at > ? OR (bound_at = ? AND manifest_sha256 > ?))
+                """
+                arguments += [
+                    cursor.boundAt,
+                    cursor.boundAt,
+                    cursor.manifestSHA256,
+                ]
+            } else {
+                cursorPredicate = ""
+            }
+            if let boundary {
+                boundaryPredicate = """
+                  AND (bound_at < ? OR (bound_at = ? AND manifest_sha256 <= ?))
+                """
+                arguments += [
+                    boundary.boundAt,
+                    boundary.boundAt,
+                    boundary.manifestSHA256,
+                ]
+            } else {
+                boundaryPredicate = ""
+            }
+            arguments += [limit]
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT *
+                FROM archive_session_bindings
+                WHERE remote_eligibility = 'unknown'
+                \(cursorPredicate)
+                \(boundaryPredicate)
+                ORDER BY bound_at ASC, manifest_sha256 ASC
+                LIMIT ?
+                """,
+                arguments: arguments
+            )
+            return try rows.map(Self.binding(from:))
         }
     }
 
@@ -1139,6 +1431,46 @@ public final class ArchiveCatalog: @unchecked Sendable {
         }
     }
 
+    public func currentVerifiedReceipt(
+        manifestSHA256: String,
+        replicaID: String
+    ) throws -> ArchiveVerifiedReceipt? {
+        try Self.validateManifestSHA256(manifestSHA256)
+        guard Self.currentReplicaIDs.contains(replicaID) else {
+            throw ArchiveCatalogError.invalidReplicaID
+        }
+        return try pool.read { db in
+            guard let bindingRow = try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM archive_session_bindings WHERE manifest_sha256 = ?",
+                arguments: [manifestSHA256]
+            ) else {
+                throw ArchiveCatalogError.bindingNotFound(
+                    manifestSHA256: manifestSHA256
+                )
+            }
+            let binding = try Self.binding(from: bindingRow)
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT capture_id, replica_id, receipt_bytes, receipt_sha256, verified_at
+                FROM archive_replica_receipts
+                WHERE manifest_sha256 = ?
+                  AND replica_id = ?
+                  AND state = 'verified'
+                """,
+                arguments: [manifestSHA256, replicaID]
+            ) else {
+                return nil
+            }
+            return try Self.verifiedReceipt(
+                from: row,
+                binding: binding,
+                replicaID: replicaID
+            )
+        }
+    }
+
     public func currentVerifiedReceipts(
         manifestSHA256: String
     ) throws -> [String: ArchiveVerifiedReceipt] {
@@ -1169,6 +1501,156 @@ public final class ArchiveCatalog: @unchecked Sendable {
             var receipts: [String: ArchiveVerifiedReceipt] = [:]
             for row in rows {
                 let replicaID: String = row["replica_id"]
+                receipts[replicaID] = try Self.verifiedReceipt(
+                    from: row,
+                    binding: binding,
+                    replicaID: replicaID,
+                )
+            }
+            return receipts
+        }
+    }
+
+    private static func verifiedReceipt(
+        from row: Row,
+        binding: ArchiveBinding,
+        replicaID: String
+    ) throws -> ArchiveVerifiedReceipt {
+        let captureID: String = row["capture_id"]
+        guard captureID == binding.captureID else {
+            throw ArchiveCatalogError.bindingConflict(
+                manifestSHA256: binding.manifestSHA256
+            )
+        }
+        guard let bytes: Data = row["receipt_bytes"],
+              let sha256: String = row["receipt_sha256"],
+              let verifiedAt: String = row["verified_at"] else {
+            throw ArchiveCatalogError.receiptRequired
+        }
+        let receipt = ArchiveVerifiedReceipt(
+            canonicalBytes: bytes,
+            sha256: sha256,
+            verifiedAt: verifiedAt
+        )
+        try validate(
+            receipt: receipt,
+            replicaID: replicaID,
+            boundManifestBytes: binding.canonicalManifestBytes
+        )
+        return receipt
+    }
+
+    public func archiveStatus() throws -> ArchiveStatusAggregate {
+        try pool.read { db in
+            let captured = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM archive_captures"
+            ) ?? 0
+            let unbound = try Int.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*)
+                FROM archive_captures AS c
+                LEFT JOIN archive_session_bindings AS b
+                  ON b.capture_id = c.capture_id
+                WHERE b.capture_id IS NULL
+                """
+            ) ?? 0
+            let eligibility = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*) AS bound,
+                       COALESCE(SUM(remote_eligibility = 'unknown'), 0) AS unknown_count,
+                       COALESCE(SUM(remote_eligibility = 'eligible'), 0) AS eligible_count,
+                       COALESCE(SUM(remote_eligibility = 'excluded'), 0) AS excluded_count,
+                       COALESCE(SUM(remote_eligibility NOT IN ('unknown', 'eligible', 'excluded')), 0)
+                         AS invalid_count
+                FROM archive_session_bindings
+                """
+            )!
+            let invalidEligibility: Int = eligibility["invalid_count"]
+            guard invalidEligibility == 0 else {
+                throw ArchiveCatalogError.invalidRemoteEligibility
+            }
+
+            var replicaCounts: [String: ArchiveReplicaStatusCounts] = [:]
+            let countRows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT replica_id,
+                       COALESCE(SUM(state = 'pending'), 0) AS pending_count,
+                       COALESCE(SUM(state IN ('uploadingObjects', 'uploadingManifest',
+                                              'requestingReceipt', 'verifyingReceipt')), 0)
+                         AS inflight_count,
+                       COALESCE(SUM(state = 'retryWait'), 0) AS retry_count,
+                       COALESCE(SUM(state = 'quarantined'), 0) AS quarantine_count,
+                       COALESCE(SUM(state = 'verified'), 0) AS verified_count,
+                       COALESCE(SUM(state NOT IN ('pending', 'uploadingObjects',
+                                                  'uploadingManifest', 'requestingReceipt',
+                                                  'verifyingReceipt', 'verified',
+                                                  'retryWait', 'quarantined')), 0)
+                         AS invalid_count
+                FROM archive_replica_receipts
+                WHERE replica_id IN ('hq', 'm1')
+                GROUP BY replica_id
+                """
+            )
+            for row in countRows {
+                let invalidStateCount: Int = row["invalid_count"]
+                guard invalidStateCount == 0 else {
+                    throw ArchiveCatalogError.invalidReplicaState("catalog")
+                }
+                let replicaID: String = row["replica_id"]
+                replicaCounts[replicaID] = ArchiveReplicaStatusCounts(
+                    pending: row["pending_count"],
+                    inflight: row["inflight_count"],
+                    retry: row["retry_count"],
+                    quarantine: row["quarantine_count"],
+                    verified: row["verified_count"]
+                )
+            }
+
+            let durability = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT COALESCE(SUM(verified_count = 1), 0) AS single_count,
+                       COALESCE(SUM(verified_count = 2), 0) AS dual_count
+                FROM (
+                    SELECT manifest_sha256, COUNT(*) AS verified_count
+                    FROM archive_replica_receipts
+                    WHERE replica_id IN ('hq', 'm1') AND state = 'verified'
+                    GROUP BY manifest_sha256
+                )
+                """
+            )!
+
+            var latestReceipts: [ArchiveStatusReceiptSummary] = []
+            for replicaID in Self.currentReplicaIDs {
+                guard let row = try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT manifest_sha256, capture_id, receipt_bytes,
+                           receipt_sha256, verified_at
+                    FROM archive_replica_receipts
+                    WHERE replica_id = ? AND state = 'verified'
+                    ORDER BY verified_at DESC, manifest_sha256 DESC
+                    LIMIT 1
+                    """,
+                    arguments: [replicaID]
+                ) else {
+                    continue
+                }
+                let manifestSHA256: String = row["manifest_sha256"]
+                guard let bindingRow = try Row.fetchOne(
+                    db,
+                    sql: "SELECT * FROM archive_session_bindings WHERE manifest_sha256 = ?",
+                    arguments: [manifestSHA256]
+                ) else {
+                    throw ArchiveCatalogError.bindingNotFound(
+                        manifestSHA256: manifestSHA256
+                    )
+                }
+                let binding = try Self.binding(from: bindingRow)
                 let captureID: String = row["capture_id"]
                 guard captureID == binding.captureID else {
                     throw ArchiveCatalogError.bindingConflict(
@@ -1176,13 +1658,13 @@ public final class ArchiveCatalog: @unchecked Sendable {
                     )
                 }
                 guard let bytes: Data = row["receipt_bytes"],
-                      let sha256: String = row["receipt_sha256"],
+                      let receiptSHA256: String = row["receipt_sha256"],
                       let verifiedAt: String = row["verified_at"] else {
                     throw ArchiveCatalogError.receiptRequired
                 }
                 let receipt = ArchiveVerifiedReceipt(
                     canonicalBytes: bytes,
-                    sha256: sha256,
+                    sha256: receiptSHA256,
                     verifiedAt: verifiedAt
                 )
                 try Self.validate(
@@ -1190,9 +1672,41 @@ public final class ArchiveCatalog: @unchecked Sendable {
                     replicaID: replicaID,
                     boundManifestBytes: binding.canonicalManifestBytes
                 )
-                receipts[replicaID] = receipt
+                let decoded = try ArchiveCanonicalJSON.decode(
+                    ArchiveServerReceipt.self,
+                    from: bytes
+                )
+                latestReceipts.append(
+                    ArchiveStatusReceiptSummary(
+                        replicaID: replicaID,
+                        manifestSHA256: manifestSHA256,
+                        captureID: captureID,
+                        receiptSHA256: receiptSHA256,
+                        storedAt: decoded.storedAt,
+                        verifiedAt: verifiedAt
+                    )
+                )
             }
-            return receipts
+            let zeroCounts = ArchiveReplicaStatusCounts(
+                pending: 0,
+                inflight: 0,
+                retry: 0,
+                quarantine: 0,
+                verified: 0
+            )
+            return ArchiveStatusAggregate(
+                captured: captured,
+                bound: eligibility["bound"],
+                unbound: unbound,
+                unknown: eligibility["unknown_count"],
+                eligible: eligibility["eligible_count"],
+                excluded: eligibility["excluded_count"],
+                hq: replicaCounts["hq"] ?? zeroCounts,
+                m1: replicaCounts["m1"] ?? zeroCounts,
+                singleVerified: durability["single_count"],
+                dualVerified: durability["dual_count"],
+                latestReceipts: latestReceipts
+            )
         }
     }
 
@@ -1784,6 +2298,42 @@ public final class ArchiveCatalog: @unchecked Sendable {
         try decoded.validate(againstCanonicalManifestBytes: boundManifestBytes)
     }
 
+    private static func archiveCursorCheckpoint(
+        from storedValue: String,
+        expectedKey: ArchiveCursorKey
+    ) throws -> ArchiveCursorCheckpoint {
+        do {
+            let bytes = Data(storedValue.utf8)
+            let envelope = try ArchiveCanonicalJSON.decode(
+                ArchiveCursorEnvelope.self,
+                from: bytes
+            )
+            guard envelope.schemaVersion == 1,
+                  envelope.key == expectedKey.rawValue,
+                  (1 ... maximumArchiveCursorPayloadBytes).contains(envelope.payload.count),
+                  ArchiveV2Hash.isValidSHA256(envelope.payloadSHA256),
+                  ArchiveV2Hash.sha256(envelope.payload) == envelope.payloadSHA256,
+                  try ArchiveCanonicalJSON.encode(envelope) == bytes else {
+                throw ArchiveCatalogError.invalidArchiveCursorCheckpoint(
+                    expectedKey.rawValue
+                )
+            }
+            try validateTimestamp(
+                envelope.updatedAt,
+                field: "archiveCursor.updatedAt"
+            )
+            return ArchiveCursorCheckpoint(
+                payload: envelope.payload,
+                payloadSHA256: envelope.payloadSHA256,
+                updatedAt: envelope.updatedAt
+            )
+        } catch {
+            throw ArchiveCatalogError.invalidArchiveCursorCheckpoint(
+                expectedKey.rawValue
+            )
+        }
+    }
+
     private static func currentTimestamp() -> String {
         timestampFormatter().string(from: Date())
     }
@@ -1796,6 +2346,21 @@ public final class ArchiveCatalog: @unchecked Sendable {
         let formatter = timestampFormatter()
         let date = formatter.date(from: value)!
         return formatter.string(from: date.addingTimeInterval(-seconds))
+    }
+
+    private static func validateBindingCursor(
+        _ cursor: ArchiveBindingCursor,
+        fieldPrefix: String
+    ) throws {
+        try validateTimestamp(
+            cursor.boundAt,
+            field: "\(fieldPrefix).boundAt"
+        )
+        guard ArchiveV2Hash.isValidSHA256(cursor.manifestSHA256) else {
+            throw ArchiveCatalogError.invalidSHA256(
+                field: "\(fieldPrefix).manifestSHA256"
+            )
+        }
     }
 
     private static func validateTimestamp(_ value: String, field: String) throws {

@@ -394,15 +394,24 @@ git commit -m "feat(archive): replicate to two independent servers"
 
 **Files:**
 
+- Modify: `macos/EngramCoreWrite/ArchiveV2/ArchiveCaptureCoordinator.swift`
+- Modify: `macos/EngramCoreWrite/ArchiveV2/ArchiveCatalog.swift`
+- Modify: `macos/EngramCoreTests/ArchiveV2/ArchiveCaptureCoordinatorTests.swift`
+- Modify: `macos/EngramCoreTests/ArchiveV2/ArchiveCatalogTests.swift`
 - Create: `macos/EngramService/Core/ArchiveV2ServiceCoordinator.swift`
 - Create: `macos/EngramService/Core/ArchiveV2Settings.swift`
 - Create: `macos/EngramService/Core/EngramServiceCommandHandler+ArchiveV2.swift`
 - Modify: `macos/EngramService/Core/EngramServiceRunner.swift`
 - Modify: `macos/EngramService/Core/EngramServiceCommandHandler.swift`
 - Modify: `macos/Shared/Service/EngramServiceProtocol.swift`
+- Modify: `macos/Shared/Service/EngramServiceModels.swift`
 - Modify: `macos/Shared/Service/EngramServiceClient.swift`
 - Modify: `macos/Shared/Service/MockEngramServiceClient.swift`
+- Modify: `macos/Shared/Service/ServiceCapabilityToken.swift`
 - Modify: `macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift` to preserve exact-source conformance in the periodic recent wrapper
+- Create: `macos/EngramCoreTests/ArchiveV2/ArchiveV2RecentAdapterTests.swift`
+- Create: `macos/EngramServiceCoreTests/ArchiveV2SettingsTests.swift`
+- Create: `macos/EngramServiceCoreTests/ArchiveV2ServiceWireTests.swift`
 - Create: `macos/EngramServiceCoreTests/ArchiveV2ServiceCoordinatorTests.swift`
 - Create: `macos/EngramServiceCoreTests/ArchiveV2IPCTests.swift`
 
@@ -418,9 +427,13 @@ capture supported locators outside ServiceWriterGate
 -> bounded dual replication outside the gate
 ```
 
+Before service composition, add bounded Core support without a fifth table: a global fair budget for source-byte capture after locator discovery, a binding row budget whose continuation advances past poison rows, stable bounded enumeration of historical unknown bindings, and a fixed-size current-replica status aggregate. Continuation envelopes live under archive-owned `archive_metadata` keys and are digest-checked on every read.
+
+**Zero-deletion v1 discovery exception:** Claude Code and Codex locator discovery remains a cooperative-cancellable `O(N)` filesystem traversal that materializes and sorts the current locator set before the capture budget is applied. `batchSize` bounds source-byte capture, binding, policy, and replication work; it does not bound locator discovery. A restart-stable hard-bounded filesystem cursor cannot be represented safely by the metadata token alone: directory cookies are tied to a live directory stream, while a path cursor must rescan from the root after restart. Claiming bounded discovery therefore requires a future durable locator inventory/work queue (normally bootstrapped by one explicit full crawl and maintained with FSEvents). This operational exception does not weaken capture-before-parse, archive integrity, or deletion safety; v1 remains default-off and performs no source deletion.
+
 - [ ] **Step 1: RED — settings and fail-closed policy**
 
-Test environment/settings precedence, default off with no archive side effects, exact two distinct replicas, missing Keychain token disables remote replication with a status error, project exclusion, absent/ambiguous cwd remote exclusion, persisted project-root/eligibility snapshot, restart reconciliation, and local capture still allowed for remote-excluded projects.
+Test environment/settings precedence, default off with no archive side effects, `batchSize` default `20` and range `1...100`, atomic whole-object remote environment override, exact two distinct replicas, no token environment variables, missing Keychain token disables remote replication with a status error, project exclusion, absent/ambiguous cwd remote exclusion, persisted project-root/eligibility snapshot, restart reconciliation, and local capture still allowed for remote-excluded projects.
 
 - [ ] **Step 2: RED — orchestration order**
 
@@ -430,11 +443,11 @@ Also assert that binding refuses a changed post-index generation and an ambiguou
 
 - [ ] **Step 3: GREEN — composition root**
 
-Create one archive coordinator from the index database sibling path `archive-v2`. Thread it through initial and periodic cycles without changing default-off execution. Startup performs bounded full Claude/Codex exact capture; periodic capture uses an exact-conformance-preserving recent wrapper plus bounded retry of earlier transient capture failures. Explicitly single-flight/coalesce cycles, bound total capture/bind/remote work, recover stale in-flight state on restart, and check cancellation between files/replicas.
+Create one archive coordinator from the index database sibling path `archive-v2`. Thread the same instance through runner and handler without changing default-off execution. Startup performs cancellable full Claude/Codex locator discovery followed by bounded exact source-byte capture; periodic capture uses an exact-conformance-preserving recent wrapper plus bounded retry of earlier transient capture failures. Explicitly single-flight/coalesce cycles, persist fair capture/bind cursors, bound post-discovery capture/bind/policy/remote work, recover stale in-flight state and historical unknown policy on restart, and check cancellation between files/replicas. The indexing loop waits for the initial scan before starting its first periodic archive cycle.
 
 - [ ] **Step 4: RED/GREEN — IPC**
 
-Add `archiveV2Status` and `archiveV2Retry`. Status is read-only and bounded; retry only resets eligible replica work. Prove there is no archive delete/evict/GC/reclaim command and no capability token grants one.
+Add `archiveV2Status` and `archiveV2Retry`. Status is read-only, bounded, and telemetry-excluded; retry is capability-protected, accepts only `nil|hq|m1`, and only resets eligible quarantined current-replica work without starting network activity. Prove there is no archive delete/evict/GC/reclaim command and no capability token grants one.
 
 - [ ] **Step 5: Verify and commit**
 

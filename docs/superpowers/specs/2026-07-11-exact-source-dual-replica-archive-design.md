@@ -313,6 +313,8 @@ When v2 is enabled, the server bind address must be loopback or a literal Tailsc
 
 Bearer tokens live in Keychain service `com.engram.remote-archive-v2` under accounts `replica:hq` and `replica:m1`. Server AES keys never leave their servers.
 
+`batchSize` defaults to `20` and is valid only in `1...100`. `ENGRAM_EXACT_ARCHIVE_ENABLED` may override the top-level local-capture switch; `ENGRAM_REMOTE_ARCHIVE_V2_CONFIG_JSON` atomically replaces the complete `remoteArchiveV2` object rather than merging partial file and environment configuration. Tokens have no environment-variable path. With the top-level switch off, the service does not instantiate CAS/catalog storage, read Keychain, or contact a server. Invalid remote configuration or a missing token leaves exact local capture enabled but disables all remote replication; it never degrades to one replica.
+
 ### Replication state machine
 
 The new `ArchiveReplicaBackend` exposes only object, manifest, receipt, and receipt-list operations. It has no delete, catalog mutation, offload, rehydrate, or vacuum method.
@@ -348,6 +350,10 @@ Remote replication is fail-closed when project root is absent or ambiguous. Each
 
 Task 5 owns the schema and fail-closed mechanics: `archive_session_bindings.project_root_snapshot`, `remote_eligibility = unknown|eligible|excluded`, an `unknown -> eligible|excluded` compare-and-set, and reconciliation that selects only `eligible`. Existing and Task 3 bindings default to `unknown` and are never uploaded. Task 6 alone derives the trusted normalized project root/exclusion result from the gated index snapshot and writes that policy snapshot.
 
+Task 6 bounds all post-discovery maintenance units. Source-byte capture uses a global locator budget plus a persistent fair continuation; binding uses a row budget plus a continuation that advances past an unsafe or permanently unbindable row so later captures cannot starve. Historical unknown bindings are enumerated through a stable bounded cursor. Continuations are integrity-wrapped and stored only under archive-owned keys in the existing `archive_metadata` table; no fifth archive table is added. Catalog status is a fixed-size aggregate over current `hq`/`m1` rows and revalidates any receipt it reports.
+
+Locator discovery is an explicit zero-deletion v1 exception to the bounded-work claim. The Claude Code and Codex adapters cooperatively check cancellation, but they still traverse, materialize, and sort the complete current locator set before the source-byte capture budget applies. `batchSize` is not a locator-discovery bound. Cross-restart hard paging would require a durable locator inventory/work queue: macOS directory cookies are scoped to a live directory stream, and a persisted path cursor must rescan from the root after restart. Until that inventory exists, archive v2 stays default-off, discovery cost is reported honestly as `O(N)`, and no source deletion depends on it.
+
 ## Read and Recovery Behavior
 
 The service owns Keychain and network access. MCP does not receive remote credentials.
@@ -381,6 +387,8 @@ Add read-only archive status that reports:
 - last capture/replication error, bounded and redacted.
 
 Add a manual retry command protected by the existing service writer/command boundary. Do not add delete, evict, GC, or source-reclaim commands.
+
+`archiveV2Status` is read-only and excluded from command telemetry polling noise. `archiveV2Retry` is capability-protected and accepts only `nil`, `hq`, or `m1`; it resets only current quarantined replica rows and does not start a network cycle. Status contains fixed `hq`/`m1` counters, at most two digest-only receipt summaries, non-negative counts, canonical timestamps, and bounded symbolic errors. It never returns local paths, origins, tokens, receipt bytes, or response bodies.
 
 Normal indexing and the app remain usable when either or both servers are offline. Remote replication is bounded background maintenance and cannot make service readiness depend on remote health.
 

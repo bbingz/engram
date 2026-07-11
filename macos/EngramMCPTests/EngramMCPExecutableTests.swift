@@ -1212,19 +1212,6 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(results.compactMap { $0["session"]?["id"]?.stringValue }, ["mcp-hidden-visible"])
     }
 
-    func testMCPTranscriptFallbackDoesNotBypassAdapterSizeFailures() throws {
-        let source = try String(contentsOfFile: sourcePath("EngramMCP/Core/MCPTranscriptReader.swift"), encoding: .utf8)
-        let start = try XCTUnwrap(source.range(of: "static func readMessagePage"))
-        let end = try XCTUnwrap(source.range(of: "private static func normalizeRoles", options: [], range: start.lowerBound..<source.endIndex))
-        let reader = String(source[start.lowerBound..<end.lowerBound])
-
-        XCTAssertTrue(reader.contains("try await readPageWithAdapterRegistry"))
-        XCTAssertTrue(reader.contains("try await readWithAdapterRegistry"))
-        XCTAssertTrue(reader.contains("try TranscriptSizeGuard.validateFullJSONTranscript"))
-        XCTAssertTrue(source.contains("isFallbackUnsafeParserFailure"))
-        XCTAssertTrue(source.contains("catch let failure as ParserFailure where isFallbackUnsafeParserFailure(failure)"))
-    }
-
     func testInitializeMatchesGolden() throws {
         let capture = try rpc(
             """
@@ -2879,6 +2866,623 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testGetSessionMissingExactSourceFallsBackToArchiveService() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-archive-fallback-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        let missingTranscript = root.appendingPathComponent("missing-codex-session.jsonl")
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: missingTranscript.path,
+            messageCount: 3,
+            userMessageCount: 1,
+            assistantMessageCount: 2,
+            toolMessageCount: 0
+        )
+
+        let secret = "sk-archive0123456789"
+        let server = try MockServiceSocketServer { request in
+            XCTAssertEqual(request.command, "archiveReadSessionPage")
+            let rawPayload = try JSONDecoder().decode(
+                TestJSONValue.self,
+                from: try XCTUnwrap(request.payload)
+            )
+            XCTAssertNil(rawPayload["includeRaw"])
+            XCTAssertNil(rawPayload["include_raw"])
+            let payload = try request.decodePayload(
+                EngramServiceArchiveReadSessionPageRequest.self
+            )
+            XCTAssertEqual(payload.sessionId, "mcp-transcript-01")
+            XCTAssertEqual(payload.page, 2)
+            XCTAssertEqual(payload.pageSize, 50)
+            XCTAssertEqual(payload.roles, ["assistant"])
+            return try request.success(
+                .object([
+                    "messages": .array([
+                        .object([
+                            "role": .string("assistant"),
+                            "content": .string("token \(secret)"),
+                            "timestamp": .string("2026-07-12T00:00:00Z"),
+                        ]),
+                    ]),
+                    "totalPages": .int(3),
+                    "currentPage": .int(2),
+                    "totalKnownComplete": .bool(false),
+                    "truncatedAt": .int(123),
+                    "responseBudgetTruncated": .bool(true),
+                ])
+            )
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":2,"roles":["assistant"]}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertEqual(server.requestCount, 1)
+        XCTAssertEqual(structured["messages"]?.arrayValue?.count, 1)
+        let redactedContent = structured["messages"]?.arrayValue?.first?["content"]?.stringValue ?? ""
+        XCTAssertFalse(redactedContent.contains(secret), redactedContent)
+        XCTAssertTrue(redactedContent.contains("[REDACTED]"), redactedContent)
+        XCTAssertEqual(structured["totalPages"]?.intValue, 3)
+        XCTAssertEqual(structured["currentPage"]?.intValue, 2)
+        XCTAssertEqual(structured["totalKnownComplete"]?.boolValue, false)
+        XCTAssertEqual(structured["truncated"]?.boolValue, true)
+        XCTAssertEqual(structured["truncatedAt"]?.intValue, 123)
+        XCTAssertEqual(structured["responseBudgetTruncated"]?.boolValue, true)
+        XCTAssertEqual(structured["redacted"]?.boolValue, true)
+
+        let rawCapture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","page":2,"roles":["assistant"],"include_raw":true}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+        XCTAssertEqual(server.requestCount, 2)
+        XCTAssertEqual(
+            rawCapture.ordered["result"]?["structuredContent"]?["messages"]?
+                .arrayValue?.first?["content"]?.stringValue,
+            "token \(secret)"
+        )
+        XCTAssertEqual(rawCapture.ordered["result"]?["structuredContent"]?["redacted"]?.boolValue, false)
+    }
+
+    func testGetSessionCancellationAfterDefinitiveMissMakesZeroArchiveRequests() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-archive-cancel-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: root.appendingPathComponent("missing.jsonl").path,
+            messageCount: 0,
+            userMessageCount: 0,
+            assistantMessageCount: 0,
+            toolMessageCount: 0
+        )
+        let server = try makeEmptyArchivePageServer()
+        try server.start()
+        defer { server.stop() }
+
+        let barrier = root.appendingPathComponent("fallback-barrier", isDirectory: true)
+        try FileManager.default.createDirectory(at: barrier, withIntermediateDirectories: false)
+        let ready = barrier.appendingPathComponent("ready")
+        let release = barrier.appendingPathComponent("release")
+
+        let process = Process()
+        process.executableURL = executableURL()
+        process.environment = ProcessInfo.processInfo.environment.merging(
+            [
+                "TZ": "UTC",
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+                "ENGRAM_MCP_TEST_ARCHIVE_FALLBACK_BARRIER_DIR": barrier.path,
+            ]
+        ) { _, new in new }
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        try process.run()
+
+        var inputClosed = false
+        defer {
+            if !FileManager.default.fileExists(atPath: release.path) {
+                try? Data().write(to: release)
+            }
+            if !inputClosed {
+                try? stdinPipe.fileHandleForWriting.close()
+            }
+            if process.isRunning {
+                process.terminate()
+                process.waitUntilExit()
+            }
+        }
+
+        let call = #"{"jsonrpc":"2.0","id":"fallback-cancel","method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01"}}}"#
+        stdinPipe.fileHandleForWriting.write(Data("\(call)\n".utf8))
+
+        let readyDeadline = Date().addingTimeInterval(5)
+        while !FileManager.default.fileExists(atPath: ready.path),
+              process.isRunning,
+              Date() < readyDeadline {
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        guard FileManager.default.fileExists(atPath: ready.path) else {
+            XCTFail("MCP did not reach the definitive-miss cancellation barrier")
+            return
+        }
+
+        let outputLock = NSLock()
+        var output = Data()
+        let pingReceived = expectation(description: "cancellation notification processed before release")
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            outputLock.lock()
+            output.append(data)
+            let hasLine = output.contains(0x0A)
+            outputLock.unlock()
+            if hasLine {
+                pingReceived.fulfill()
+            }
+        }
+        let cancellationAndPing = """
+        {"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"fallback-cancel"}}
+        {"jsonrpc":"2.0","id":"cancel-observed","method":"ping"}
+        """
+        stdinPipe.fileHandleForWriting.write(Data("\(cancellationAndPing)\n".utf8))
+        wait(for: [pingReceived], timeout: 5)
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+
+        outputLock.lock()
+        let pingOutput = String(decoding: output, as: UTF8.self)
+        outputLock.unlock()
+        XCTAssertTrue(pingOutput.contains(#""id":"cancel-observed""#), pingOutput)
+
+        try Data().write(to: release)
+        try stdinPipe.fileHandleForWriting.close()
+        inputClosed = true
+        process.waitUntilExit()
+
+        let remainingOutput = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderr = String(
+            decoding: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        outputLock.lock()
+        output.append(remainingOutput)
+        let allOutput = String(decoding: output, as: UTF8.self)
+        outputLock.unlock()
+
+        XCTAssertEqual(process.terminationStatus, 0, stderr)
+        XCTAssertFalse(allOutput.contains(#""id":"fallback-cancel""#), allOutput)
+        XCTAssertEqual(server.requestCount, 0)
+    }
+
+    func testGetSessionArchiveResponseBudgetTruncationDoesNotMarkTranscriptTruncated() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-archive-budget-only-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: root.appendingPathComponent("missing.jsonl").path,
+            messageCount: 1,
+            userMessageCount: 1,
+            assistantMessageCount: 0,
+            toolMessageCount: 0
+        )
+
+        let server = try MockServiceSocketServer { request in
+            XCTAssertEqual(request.command, "archiveReadSessionPage")
+            return try request.success(
+                .object([
+                    "messages": .array([
+                        .object([
+                            "role": .string("user"),
+                            "content": .string("budget-limited message"),
+                            "timestamp": .null,
+                        ]),
+                    ]),
+                    "totalPages": .int(1),
+                    "currentPage": .int(1),
+                    "totalKnownComplete": .bool(true),
+                    "truncatedAt": .null,
+                    "responseBudgetTruncated": .bool(true),
+                ])
+            )
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertEqual(server.requestCount, 1)
+        XCTAssertEqual(structured["totalKnownComplete"]?.boolValue, nil)
+        XCTAssertEqual(structured["truncated"]?.boolValue, nil)
+        XCTAssertEqual(structured["truncatedAt"]?.intValue, nil)
+        XCTAssertEqual(structured["responseBudgetTruncated"]?.boolValue, true)
+    }
+
+    func testGetSessionArchiveFallbackNormalizesEmptyRolesToNil() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-archive-empty-roles-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: root.appendingPathComponent("missing.jsonl").path,
+            messageCount: 0,
+            userMessageCount: 0,
+            assistantMessageCount: 0,
+            toolMessageCount: 0
+        )
+
+        let server = try MockServiceSocketServer { request in
+            let payload = try request.decodePayload(
+                EngramServiceArchiveReadSessionPageRequest.self
+            )
+            XCTAssertNil(payload.roles)
+            return try request.success(
+                .object([
+                    "messages": .array([]),
+                    "totalPages": .int(1),
+                    "currentPage": .int(1),
+                    "totalKnownComplete": .bool(true),
+                    "truncatedAt": .null,
+                    "responseBudgetTruncated": .bool(false),
+                ])
+            )
+        }
+        try server.start()
+        defer { server.stop() }
+
+        _ = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01","roles":[]}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+        XCTAssertEqual(server.requestCount, 1)
+    }
+
+    func testGetSessionExistingExactSourceMakesZeroArchiveRequests() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transcript = root.appendingPathComponent("live-codex.jsonl")
+        try """
+        {"timestamp":"2026-07-12T00:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"live message"}]}}
+        """.write(to: transcript, atomically: true, encoding: .utf8)
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-live-exact-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: transcript.path,
+            messageCount: 1,
+            userMessageCount: 1,
+            assistantMessageCount: 0,
+            toolMessageCount: 0
+        )
+        let server = try makeEmptyArchivePageServer()
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+
+        XCTAssertEqual(server.requestCount, 0)
+        XCTAssertEqual(
+            capture.ordered["result"]?["structuredContent"]?["messages"]?
+                .arrayValue?.first?["content"]?.stringValue,
+            "live message"
+        )
+    }
+
+    func testGetSessionMissingNonExactVirtualLocatorMakesZeroArchiveRequests() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-virtual-nonexact-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "cursor",
+            filePath: root.appendingPathComponent("missing.vscdb").path + "::composer-1",
+            messageCount: 0,
+            userMessageCount: 0,
+            assistantMessageCount: 0,
+            toolMessageCount: 0
+        )
+        let server = try makeEmptyArchivePageServer()
+        try server.start()
+        defer { server.stop() }
+
+        _ = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+        XCTAssertEqual(server.requestCount, 0)
+    }
+
+    func testGetSessionMissingNonExactPhysicalLocatorMakesZeroArchiveRequests() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-physical-nonexact-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "cursor",
+            filePath: root.appendingPathComponent("missing.vscdb").path,
+            messageCount: 0,
+            userMessageCount: 0,
+            assistantMessageCount: 0,
+            toolMessageCount: 0
+        )
+        let server = try makeEmptyArchivePageServer()
+        try server.start()
+        defer { server.stop() }
+
+        _ = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+        XCTAssertEqual(server.requestCount, 0)
+    }
+
+    func testGetSessionMissingExactVirtualLocatorMakesZeroArchiveRequests() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-virtual-exact-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: root.appendingPathComponent("missing.jsonl").path + "::virtual-record",
+            messageCount: 0,
+            userMessageCount: 0,
+            assistantMessageCount: 0,
+            toolMessageCount: 0
+        )
+        let server = try makeEmptyArchivePageServer()
+        try server.start()
+        defer { server.stop() }
+
+        _ = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+        XCTAssertEqual(server.requestCount, 0)
+    }
+
+    func testGetSessionExactLocatorWithENOTDIRFallsBackToArchiveService() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let nonDirectoryParent = root.appendingPathComponent("parent-file")
+        try Data("not a directory".utf8).write(to: nonDirectoryParent)
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-enotdir-exact-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: nonDirectoryParent.appendingPathComponent("missing.jsonl").path,
+            messageCount: 0,
+            userMessageCount: 0,
+            assistantMessageCount: 0,
+            toolMessageCount: 0
+        )
+        let server = try makeEmptyArchivePageServer()
+        try server.start()
+        defer { server.stop() }
+
+        _ = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+        XCTAssertEqual(server.requestCount, 1)
+    }
+
+    func testGetSessionUnsafeExactLocatorMakesZeroArchiveRequests() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-unsafe-exact-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: root.path,
+            messageCount: 0,
+            userMessageCount: 0,
+            assistantMessageCount: 0,
+            toolMessageCount: 0
+        )
+        let server = try makeEmptyArchivePageServer()
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+        XCTAssertEqual(server.requestCount, 0)
+        XCTAssertEqual(capture.ordered["result"]?["isError"]?.boolValue, true)
+        let message = capture.ordered["result"]?["content"]?.arrayValue?
+            .first?["text"]?.stringValue ?? ""
+        XCTAssertFalse(message.contains(root.path), message)
+    }
+
+    func testGetSessionParserFailureMakesZeroArchiveRequests() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transcript = root.appendingPathComponent("invalid-utf8.jsonl")
+        try Data([0xFF, 0x0A]).write(to: transcript)
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-parser-failure-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: transcript.path,
+            messageCount: 0,
+            userMessageCount: 0,
+            assistantMessageCount: 0,
+            toolMessageCount: 0
+        )
+        let server = try makeEmptyArchivePageServer()
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+        XCTAssertEqual(server.requestCount, 0)
+        XCTAssertEqual(capture.ordered["result"]?["isError"]?.boolValue, true)
+    }
+
+    func testGetSessionArchiveFallbackPreservesTranscriptTooLargeCode() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-archive-too-large-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: root.appendingPathComponent("missing.jsonl").path,
+            messageCount: 0,
+            userMessageCount: 0,
+            assistantMessageCount: 0,
+            toolMessageCount: 0
+        )
+        let server = try MockServiceSocketServer { request in
+            try request.failure(
+                name: "transcriptTooLarge",
+                message: "codex transcript is too large",
+                retryPolicy: "never"
+            )
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-transcript-01"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
+            ]
+        )
+        XCTAssertEqual(server.requestCount, 1)
+        XCTAssertEqual(capture.ordered["result"]?["isError"]?.boolValue, true)
+        XCTAssertEqual(
+            capture.ordered["result"]?["structuredContent"]?["code"]?.stringValue,
+            "transcriptTooLarge"
+        )
+    }
+
     /// M16: default get_session redacts secrets; include_raw=true is the only unredacted opt-in.
     func testGetSessionRedactsSecretsByDefaultAndAllowsRawOptIn_repro() throws {
         let root = try temporaryDirectory()
@@ -3088,6 +3692,9 @@ final class EngramMCPExecutableTests: XCTestCase {
             assistantMessageCount: 0,
             toolMessageCount: 0
         )
+        let server = try makeEmptyArchivePageServer()
+        try server.start()
+        defer { server.stop() }
 
         let capture = try rpc(
             """
@@ -3096,9 +3703,11 @@ final class EngramMCPExecutableTests: XCTestCase {
             environment: [
                 "ENGRAM_MCP_DB_PATH": dbPath,
                 "ENGRAM_MAX_FULL_JSON_TRANSCRIPT_BYTES": "128",
+                "ENGRAM_MCP_SERVICE_SOCKET": server.socketPath,
             ]
         )
 
+        XCTAssertEqual(server.requestCount, 0)
         let result = try XCTUnwrap(capture.ordered["result"])
         XCTAssertEqual(result["isError"]?.boolValue, true)
         XCTAssertEqual(result["structuredContent"]?["code"]?.stringValue, "transcriptTooLarge")
@@ -4197,6 +4806,21 @@ final class EngramMCPExecutableTests: XCTestCase {
         }
     }
 
+    private func makeEmptyArchivePageServer() throws -> MockServiceSocketServer {
+        try MockServiceSocketServer { request in
+            try request.success(
+                .object([
+                    "messages": .array([]),
+                    "totalPages": .int(1),
+                    "currentPage": .int(1),
+                    "totalKnownComplete": .bool(true),
+                    "truncatedAt": .null,
+                    "responseBudgetTruncated": .bool(false),
+                ])
+            )
+        }
+    }
+
     // MARK: - Wave 8A lane 1A: H07 / M07 / M08 / M09
 
     /// H07: same-dimension different-model must fail closed with structured
@@ -4967,8 +5591,16 @@ private final class MockServiceSocketServer {
 
     private let handler: (RequestEnvelope) throws -> Data
     private let queue = DispatchQueue(label: "MockServiceSocketServer")
+    private let requestCountLock = NSLock()
+    private var _requestCount = 0
     private var socketFD: Int32 = -1
     private var acceptWorkItem: DispatchWorkItem?
+
+    var requestCount: Int {
+        requestCountLock.lock()
+        defer { requestCountLock.unlock() }
+        return _requestCount
+    }
 
     init(handler: @escaping (RequestEnvelope) throws -> Data) throws {
         self.socketPath = "/tmp/egmcp-\(UUID().uuidString.prefix(8)).sock"
@@ -4979,7 +5611,7 @@ private final class MockServiceSocketServer {
         socketFD = try Self.bindSocket(path: socketPath)
         let socketFD = self.socketFD
         let handler = self.handler
-        let workItem = DispatchWorkItem {
+        let workItem = DispatchWorkItem { [weak self] in
             while true {
                 let client = accept(socketFD, nil, nil)
                 if client < 0 { break }
@@ -4988,6 +5620,7 @@ private final class MockServiceSocketServer {
                     let frame = try Self.readFrame(from: client)
                     let request = try JSONDecoder().decode(RequestEnvelope.self, from: frame)
                     requestID = request.requestId
+                    self?.recordRequest()
                     let response = try handler(request)
                     try Self.writeFrame(response, to: client)
                 } catch {
@@ -5010,6 +5643,12 @@ private final class MockServiceSocketServer {
         }
         acceptWorkItem = workItem
         queue.async(execute: workItem)
+    }
+
+    private func recordRequest() {
+        requestCountLock.lock()
+        _requestCount += 1
+        requestCountLock.unlock()
     }
 
     func stop() {

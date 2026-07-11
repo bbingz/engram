@@ -1044,6 +1044,68 @@ final class ArchiveCatalogTests: XCTestCase {
         }
     }
 
+    func testCurrentVerifiedReceiptValidatesOnlyTheRequestedReplica() throws {
+        let (catalog, manifestBytes, binding) = try eligibleBoundCatalog()
+        let claims = try catalog.claimReplicaWork(
+            limit: 2,
+            now: "2026-07-11T00:00:00.000Z"
+        )
+        var expected: [String: ArchiveVerifiedReceipt] = [:]
+        for claim in claims {
+            try advanceToVerifying(catalog, claim: claim)
+            let receiptBytes = try receiptBytes(
+                serverID: claim.replicaID,
+                manifestBytes: manifestBytes
+            )
+            let receipt = ArchiveVerifiedReceipt(
+                canonicalBytes: receiptBytes,
+                sha256: ArchiveV2Hash.sha256(receiptBytes),
+                verifiedAt: "2026-07-11T00:05:00.000Z"
+            )
+            XCTAssertTrue(
+                try catalog.recordVerifiedReceipt(
+                    claim,
+                    receipt: receipt,
+                    updatedAt: "2026-07-11T00:05:00.000Z"
+                )
+            )
+            expected[claim.replicaID] = receipt
+        }
+
+        try writeArchiveDatabase { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_replica_receipts
+                SET receipt_sha256 = ?
+                WHERE manifest_sha256 = ? AND replica_id = 'hq'
+                """,
+                arguments: [String(repeating: "0", count: 64), binding.manifestSHA256]
+            )
+        }
+
+        XCTAssertThrowsError(
+            try catalog.currentVerifiedReceipt(
+                manifestSHA256: binding.manifestSHA256,
+                replicaID: "hq"
+            )
+        )
+        XCTAssertEqual(
+            try catalog.currentVerifiedReceipt(
+                manifestSHA256: binding.manifestSHA256,
+                replicaID: "m1"
+            ),
+            expected["m1"]
+        )
+        XCTAssertThrowsError(
+            try catalog.currentVerifiedReceipt(
+                manifestSHA256: binding.manifestSHA256,
+                replicaID: "obsolete"
+            )
+        ) { error in
+            XCTAssertEqual(error as? ArchiveCatalogError, .invalidReplicaID)
+        }
+    }
+
     func testReplicaTimestampsMustBeCanonicalBeforePersistence() throws {
         let (catalog, manifestBytes, binding) = try eligibleBoundCatalog()
         XCTAssertThrowsError(
@@ -1269,6 +1331,531 @@ final class ArchiveCatalogTests: XCTestCase {
         try assertOnlySentinelTable(in: indexURL)
     }
 
+    func testArchiveCursorCheckpointIsBoundedIdempotentAndFailsClosedWhenTampered() throws {
+        let catalog = try migratedCatalog()
+        let payload = Data(#"{"next":1}"#.utf8)
+        let updatedAt = "2026-07-11T00:06:00.000Z"
+
+        XCTAssertTrue(
+            try catalog.storeArchiveCursorCheckpoint(
+                payload,
+                for: .captureFull,
+                updatedAt: updatedAt
+            )
+        )
+        XCTAssertFalse(
+            try catalog.storeArchiveCursorCheckpoint(
+                payload,
+                for: .captureFull,
+                updatedAt: updatedAt
+            )
+        )
+        XCTAssertFalse(
+            try catalog.storeArchiveCursorCheckpoint(
+                payload,
+                for: .captureFull,
+                updatedAt: "2026-07-11T00:07:00.000Z"
+            )
+        )
+        let checkpoint = try XCTUnwrap(
+            try catalog.archiveCursorCheckpoint(for: .captureFull)
+        )
+        XCTAssertEqual(checkpoint.payload, payload)
+        XCTAssertEqual(checkpoint.payloadSHA256, ArchiveV2Hash.sha256(payload))
+        XCTAssertEqual(checkpoint.updatedAt, updatedAt)
+
+        XCTAssertThrowsError(
+            try catalog.storeArchiveCursorCheckpoint(
+                Data(),
+                for: .captureFull,
+                updatedAt: updatedAt
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ArchiveCatalogError,
+                .invalidArchiveCursorPayloadSize(0)
+            )
+        }
+        XCTAssertThrowsError(
+            try catalog.storeArchiveCursorCheckpoint(
+                Data(repeating: 0, count: 16_385),
+                for: .captureRecent,
+                updatedAt: updatedAt
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ArchiveCatalogError,
+                .invalidArchiveCursorPayloadSize(16_385)
+            )
+        }
+        XCTAssertThrowsError(
+            try catalog.storeArchiveCursorCheckpoint(
+                payload,
+                for: .bindingCycle,
+                updatedAt: "2026-07-11T00:06:00Z"
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ArchiveCatalogError,
+                .invalidTimestamp(
+                    field: "archiveCursor.updatedAt",
+                    value: "2026-07-11T00:06:00Z"
+                )
+            )
+        }
+
+        try writeArchiveDatabase { db in
+            try db.execute(
+                sql: "UPDATE archive_metadata SET value = '{}' WHERE key = ?",
+                arguments: [ArchiveCursorKey.captureFull.rawValue]
+            )
+        }
+        XCTAssertThrowsError(
+            try catalog.archiveCursorCheckpoint(for: .captureFull)
+        ) { error in
+            XCTAssertEqual(
+                error as? ArchiveCatalogError,
+                .invalidArchiveCursorCheckpoint(ArchiveCursorKey.captureFull.rawValue)
+            )
+        }
+        XCTAssertThrowsError(
+            try catalog.storeArchiveCursorCheckpoint(
+                payload,
+                for: .captureFull,
+                updatedAt: updatedAt
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ArchiveCatalogError,
+                .invalidArchiveCursorCheckpoint(ArchiveCursorKey.captureFull.rawValue)
+            )
+        }
+    }
+
+    func testRemotePolicyCursorUsesIndependentDigestCheckedMetadataSlot() throws {
+        let catalog = try migratedCatalog()
+        let policyPayload = Data(#"{"boundAt":"2026-07-11T00:06:00.000Z","manifestSHA256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.utf8)
+        let bindingPayload = Data(#"{"after":null}"#.utf8)
+        let updatedAt = "2026-07-11T00:08:00.000Z"
+
+        XCTAssertEqual(
+            ArchiveCursorKey.policyCycle.rawValue,
+            "archive_cursor_policy_v1"
+        )
+        XCTAssertTrue(
+            try catalog.storeArchiveCursorCheckpoint(
+                policyPayload,
+                for: .policyCycle,
+                updatedAt: updatedAt
+            )
+        )
+        XCTAssertTrue(
+            try catalog.storeArchiveCursorCheckpoint(
+                bindingPayload,
+                for: .bindingCycle,
+                updatedAt: updatedAt
+            )
+        )
+        XCTAssertEqual(
+            try catalog.archiveCursorCheckpoint(for: .policyCycle)?.payload,
+            policyPayload
+        )
+        XCTAssertEqual(
+            try catalog.archiveCursorCheckpoint(for: .bindingCycle)?.payload,
+            bindingPayload
+        )
+
+        try writeArchiveDatabase { db in
+            try db.execute(
+                sql: "UPDATE archive_metadata SET value = '{}' WHERE key = ?",
+                arguments: [ArchiveCursorKey.policyCycle.rawValue]
+            )
+        }
+        XCTAssertThrowsError(
+            try catalog.archiveCursorCheckpoint(for: .policyCycle)
+        ) { error in
+            XCTAssertEqual(
+                error as? ArchiveCatalogError,
+                .invalidArchiveCursorCheckpoint(ArchiveCursorKey.policyCycle.rawValue)
+            )
+        }
+        XCTAssertEqual(
+            try catalog.archiveCursorCheckpoint(for: .bindingCycle)?.payload,
+            bindingPayload,
+            "tampering with the policy cursor must not affect binding progress"
+        )
+    }
+
+    func testUnknownBindingsPagesInStableOrderWithoutDuplicatesAndRejectsInvalidCursor() throws {
+        let catalog = try migratedCatalog()
+        let bindings = try [
+            addBinding(to: catalog, captureSeed: "unknown-a", sessionID: "session-a"),
+            addBinding(to: catalog, captureSeed: "unknown-b", sessionID: "session-b"),
+            addBinding(to: catalog, captureSeed: "unknown-c", sessionID: "session-c"),
+        ].sorted {
+            ($0.boundAt, $0.manifestSHA256) < ($1.boundAt, $1.manifestSHA256)
+        }
+        XCTAssertTrue(
+            try catalog.setRemotePolicySnapshot(
+                manifestSHA256: bindings[1].manifestSHA256,
+                projectRootSnapshot: "/tmp/excluded",
+                eligibility: .excluded
+            )
+        )
+        let expected = [bindings[0], bindings[2]]
+
+        let first = try catalog.unknownBindings(limit: 1, after: nil)
+        XCTAssertEqual(first, [expected[0]])
+        XCTAssertEqual(first[0].remoteEligibility, .unknown)
+        XCTAssertNil(first[0].projectRootSnapshot)
+        XCTAssertEqual(
+            ArchiveV2Hash.sha256(first[0].canonicalManifestBytes),
+            first[0].manifestSHA256
+        )
+        let cursor = ArchiveBindingCursor(
+            boundAt: first[0].boundAt,
+            manifestSHA256: first[0].manifestSHA256
+        )
+        let second = try catalog.unknownBindings(limit: 1, after: cursor)
+        XCTAssertEqual(second, [expected[1]])
+        let exhausted = try catalog.unknownBindings(
+            limit: 1,
+            after: ArchiveBindingCursor(
+                boundAt: second[0].boundAt,
+                manifestSHA256: second[0].manifestSHA256
+            )
+        )
+        XCTAssertTrue(exhausted.isEmpty)
+        XCTAssertEqual(Set((first + second).map(\.manifestSHA256)).count, 2)
+
+        XCTAssertThrowsError(
+            try catalog.unknownBindings(
+                limit: 1,
+                after: ArchiveBindingCursor(
+                    boundAt: "not-a-timestamp",
+                    manifestSHA256: first[0].manifestSHA256
+                )
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ArchiveCatalogError,
+                .invalidTimestamp(
+                    field: "cursor.boundAt",
+                    value: "not-a-timestamp"
+                )
+            )
+        }
+        XCTAssertThrowsError(
+            try catalog.unknownBindings(
+                limit: 1,
+                after: ArchiveBindingCursor(
+                    boundAt: first[0].boundAt,
+                    manifestSHA256: "tampered"
+                )
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ArchiveCatalogError,
+                .invalidSHA256(field: "cursor.manifestSHA256")
+            )
+        }
+    }
+
+    func testUnknownBindingBoundaryFreezesOneSweepWhileNewTailRowsArrive() throws {
+        let catalog = try migratedCatalog()
+        let initial = try [
+            addBinding(to: catalog, captureSeed: "sweep-a", sessionID: "sweep-a"),
+            addBinding(to: catalog, captureSeed: "sweep-b", sessionID: "sweep-b"),
+            addBinding(to: catalog, captureSeed: "sweep-c", sessionID: "sweep-c"),
+        ].sorted {
+            ($0.boundAt, $0.manifestSHA256) < ($1.boundAt, $1.manifestSHA256)
+        }
+        let boundary = try XCTUnwrap(catalog.unknownBindingBoundary())
+        XCTAssertEqual(boundary.boundAt, initial.last?.boundAt)
+        XCTAssertEqual(boundary.manifestSHA256, initial.last?.manifestSHA256)
+
+        let first = try catalog.unknownBindings(
+            limit: 1,
+            after: nil,
+            through: boundary
+        )
+        XCTAssertEqual(first, [initial[0]])
+
+        let appended = try addBinding(
+            to: catalog,
+            captureSeed: "sweep-tail",
+            sessionID: "sweep-tail",
+            boundAt: "2026-07-11T00:05:00.000Z"
+        )
+        let afterFirst = ArchiveBindingCursor(
+            boundAt: initial[0].boundAt,
+            manifestSHA256: initial[0].manifestSHA256
+        )
+        let restOfFrozenSweep = try catalog.unknownBindings(
+            limit: 10,
+            after: afterFirst,
+            through: boundary
+        )
+
+        XCTAssertEqual(restOfFrozenSweep, Array(initial.dropFirst()))
+        XCTAssertFalse(
+            restOfFrozenSweep.contains { $0.manifestSHA256 == appended.manifestSHA256 },
+            "new unknown rows belong to the next bounded sweep"
+        )
+        XCTAssertTrue(
+            try catalog.unknownBindings(
+                limit: 1,
+                after: boundary,
+                through: boundary
+            ).isEmpty
+        )
+        XCTAssertEqual(
+            try catalog.unknownBindingBoundary()?.manifestSHA256,
+            appended.manifestSHA256
+        )
+    }
+
+    func testArchiveStatusIsFixedSizeCurrentReplicaOnlyAndRevalidatesReceipts() throws {
+        let first = try eligibleBoundCatalog()
+        let catalog = first.0
+        let claims = try catalog.claimReplicaWork(
+            limit: 2,
+            now: "2026-07-11T00:00:01.000Z"
+        )
+        XCTAssertEqual(Set(claims.map(\.replicaID)), Set(["hq", "m1"]))
+        for (index, claim) in claims.enumerated() {
+            try advanceToVerifying(catalog, claim: claim)
+            let verifiedAt = "2026-07-11T00:0\(6 + index):00.000Z"
+            let bytes = try receiptBytes(
+                serverID: claim.replicaID,
+                manifestBytes: first.manifestBytes,
+                storedAt: verifiedAt
+            )
+            XCTAssertTrue(
+                try catalog.recordVerifiedReceipt(
+                    claim,
+                    receipt: ArchiveVerifiedReceipt(
+                        canonicalBytes: bytes,
+                        sha256: ArchiveV2Hash.sha256(bytes),
+                        verifiedAt: verifiedAt
+                    ),
+                    updatedAt: verifiedAt
+                )
+            )
+        }
+
+        let second = try addBinding(
+            to: catalog,
+            captureSeed: "status-second",
+            sessionID: "status-second"
+        )
+        XCTAssertTrue(
+            try catalog.setRemotePolicySnapshot(
+                manifestSHA256: second.manifestSHA256,
+                projectRootSnapshot: "/tmp/status-second",
+                eligibility: .eligible
+            )
+        )
+        let third = try addBinding(
+            to: catalog,
+            captureSeed: "status-third",
+            sessionID: "status-third"
+        )
+        XCTAssertTrue(
+            try catalog.setRemotePolicySnapshot(
+                manifestSHA256: third.manifestSHA256,
+                projectRootSnapshot: "/tmp/status-third",
+                eligibility: .eligible
+            )
+        )
+        let excluded = try addBinding(
+            to: catalog,
+            captureSeed: "status-excluded",
+            sessionID: "status-excluded"
+        )
+        XCTAssertTrue(
+            try catalog.setRemotePolicySnapshot(
+                manifestSHA256: excluded.manifestSHA256,
+                projectRootSnapshot: "/tmp/status-excluded",
+                eligibility: .excluded
+            )
+        )
+        _ = try addBinding(
+            to: catalog,
+            captureSeed: "status-unknown",
+            sessionID: "status-unknown"
+        )
+        let unbound = try manifest(captureSeed: "status-unbound", sessionID: nil)
+        _ = try catalog.recordCapture(
+            canonicalManifestBytes: ArchiveCanonicalJSON.encode(unbound)
+        )
+        XCTAssertEqual(
+            try catalog.reconcileEligibleReplicaRows(
+                updatedAt: "2026-07-11T00:10:00.000Z"
+            ),
+            4
+        )
+        try writeArchiveDatabase { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_replica_receipts
+                SET state = 'uploadingManifest'
+                WHERE manifest_sha256 = ? AND replica_id = 'hq';
+                UPDATE archive_replica_receipts
+                SET state = 'retryWait', next_retry_at = '2026-07-11T01:00:00.000Z'
+                WHERE manifest_sha256 = ? AND replica_id = 'm1';
+                UPDATE archive_replica_receipts
+                SET state = 'quarantined', last_error = 'status_test'
+                WHERE manifest_sha256 = ? AND replica_id = 'hq';
+                """,
+                arguments: [
+                    second.manifestSHA256,
+                    second.manifestSHA256,
+                    third.manifestSHA256,
+                ]
+            )
+        }
+        try insertObsoleteVerifiedReplicaRow(
+            manifestSHA256: first.binding.manifestSHA256,
+            captureID: first.binding.captureID
+        )
+
+        let status = try catalog.archiveStatus()
+
+        XCTAssertEqual(status.captured, 6)
+        XCTAssertEqual(status.bound, 5)
+        XCTAssertEqual(status.unbound, 1)
+        XCTAssertEqual(status.unknown, 1)
+        XCTAssertEqual(status.eligible, 3)
+        XCTAssertEqual(status.excluded, 1)
+        XCTAssertEqual(
+            status.hq,
+            ArchiveReplicaStatusCounts(
+                pending: 0,
+                inflight: 1,
+                retry: 0,
+                quarantine: 1,
+                verified: 1
+            )
+        )
+        XCTAssertEqual(
+            status.m1,
+            ArchiveReplicaStatusCounts(
+                pending: 1,
+                inflight: 0,
+                retry: 1,
+                quarantine: 0,
+                verified: 1
+            )
+        )
+        XCTAssertEqual(status.singleVerified, 0)
+        XCTAssertEqual(status.dualVerified, 1)
+        XCTAssertEqual(status.latestReceipts.count, 2)
+        XCTAssertEqual(Set(status.latestReceipts.map(\.replicaID)), Set(["hq", "m1"]))
+        XCTAssertTrue(status.latestReceipts.allSatisfy { summary in
+            summary.manifestSHA256 == first.binding.manifestSHA256
+                && summary.captureID == first.binding.captureID
+                && ArchiveV2Hash.isValidSHA256(summary.receiptSHA256)
+                && !summary.verifiedAt.isEmpty
+                && !summary.storedAt.isEmpty
+        })
+
+        try writeArchiveDatabase { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_replica_receipts
+                SET receipt_bytes = ?
+                WHERE manifest_sha256 = ? AND replica_id = 'hq'
+                """,
+                arguments: [Data("tampered".utf8), first.binding.manifestSHA256]
+            )
+        }
+        XCTAssertThrowsError(try catalog.archiveStatus())
+    }
+
+    func testArchiveStatusReturnsOneLatestValidatedReceiptPerCurrentReplica() throws {
+        let first = try eligibleBoundCatalog()
+        let catalog = first.0
+        let initialClaims = try catalog.claimReplicaWork(
+            limit: 2,
+            now: "2026-07-11T00:00:01.000Z"
+        )
+        for claim in initialClaims {
+            try advanceToVerifying(catalog, claim: claim)
+            let storedAt = claim.replicaID == "hq"
+                ? "2026-07-11T00:06:00.000Z"
+                : "2026-07-11T00:05:00.000Z"
+            let bytes = try receiptBytes(
+                serverID: claim.replicaID,
+                manifestBytes: first.manifestBytes,
+                storedAt: storedAt
+            )
+            XCTAssertTrue(
+                try catalog.recordVerifiedReceipt(
+                    claim,
+                    receipt: ArchiveVerifiedReceipt(
+                        canonicalBytes: bytes,
+                        sha256: ArchiveV2Hash.sha256(bytes),
+                        verifiedAt: storedAt
+                    ),
+                    updatedAt: storedAt
+                )
+            )
+        }
+
+        let second = try addBinding(
+            to: catalog,
+            captureSeed: "latest-hq-second",
+            sessionID: "latest-hq-second"
+        )
+        let third = try addBinding(
+            to: catalog,
+            captureSeed: "latest-hq-third",
+            sessionID: "latest-hq-third"
+        )
+        for binding in [second, third] {
+            XCTAssertTrue(
+                try catalog.setRemotePolicySnapshot(
+                    manifestSHA256: binding.manifestSHA256,
+                    projectRootSnapshot: "/tmp/\(binding.sessionID)",
+                    eligibility: .eligible
+                )
+            )
+        }
+        XCTAssertEqual(
+            try catalog.reconcileEligibleReplicaRows(
+                updatedAt: "2026-07-11T00:07:00.000Z"
+            ),
+            4
+        )
+        try forceVerifiedReplicaRow(
+            binding: second,
+            replicaID: "hq",
+            verifiedAt: "2026-07-11T00:08:00.000Z"
+        )
+        try forceVerifiedReplicaRow(
+            binding: third,
+            replicaID: "hq",
+            verifiedAt: "2026-07-11T00:09:00.000Z"
+        )
+
+        let status = try catalog.archiveStatus()
+
+        XCTAssertEqual(status.latestReceipts.count, 2)
+        XCTAssertEqual(Set(status.latestReceipts.map(\.replicaID)), Set(["hq", "m1"]))
+        XCTAssertEqual(
+            status.latestReceipts.first { $0.replicaID == "hq" }?.manifestSHA256,
+            third.manifestSHA256
+        )
+        XCTAssertEqual(
+            status.latestReceipts.first { $0.replicaID == "m1" }?.manifestSHA256,
+            first.binding.manifestSHA256
+        )
+        XCTAssertTrue(status.latestReceipts.allSatisfy {
+            ArchiveV2Hash.isValidSHA256($0.receiptSHA256)
+        })
+    }
+
     private struct ReplicaDatabaseRow {
         let state: ArchiveReplicaState
         let attempts: Int
@@ -1306,7 +1893,8 @@ final class ArchiveCatalogTests: XCTestCase {
     private func addBinding(
         to catalog: ArchiveCatalog,
         captureSeed: String,
-        sessionID: String
+        sessionID: String,
+        boundAt: String = "2026-07-11T00:04:00.000Z"
     ) throws -> ArchiveBinding {
         let locator = "/tmp/\(captureSeed).jsonl"
         let unbound = try manifest(
@@ -1325,7 +1913,7 @@ final class ArchiveCatalogTests: XCTestCase {
         return try catalog.bind(
             canonicalManifestBytes: ArchiveCanonicalJSON.encode(bound),
             sourceSnapshotFingerprint: ArchiveV2Hash.sha256(Data("snapshot-\(captureSeed)".utf8)),
-            boundAt: "2026-07-11T00:04:00.000Z"
+            boundAt: boundAt
         )
     }
 
@@ -1428,6 +2016,37 @@ final class ArchiveCatalogTests: XCTestCase {
                     claimGeneration,
                 ]
             )
+        }
+    }
+
+    private func forceVerifiedReplicaRow(
+        binding: ArchiveBinding,
+        replicaID: String,
+        verifiedAt: String
+    ) throws {
+        let bytes = try receiptBytes(
+            serverID: replicaID,
+            manifestBytes: binding.canonicalManifestBytes,
+            storedAt: verifiedAt
+        )
+        try writeArchiveDatabase { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_replica_receipts
+                SET state = 'verified', receipt_bytes = ?, receipt_sha256 = ?,
+                    verified_at = ?, updated_at = ?
+                WHERE manifest_sha256 = ? AND replica_id = ?
+                """,
+                arguments: [
+                    bytes,
+                    ArchiveV2Hash.sha256(bytes),
+                    verifiedAt,
+                    verifiedAt,
+                    binding.manifestSHA256,
+                    replicaID,
+                ]
+            )
+            XCTAssertEqual(db.changesCount, 1)
         }
     }
 
