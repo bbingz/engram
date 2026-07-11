@@ -45,7 +45,14 @@ final class ArchiveCatalogTests: XCTestCase {
         try catalog.migrate()
         try catalog.migrate()
 
-        let values = try readArchiveDatabase { db -> ([String], String, String) in
+        let values = try readArchiveDatabase { db -> (
+            tables: [String],
+            journalMode: String,
+            machineID: String,
+            bindingColumns: [String],
+            receiptColumns: [String],
+            schemaVersion: String
+        ) in
             let tables = try String.fetchAll(
                 db,
                 sql: """
@@ -60,22 +67,77 @@ final class ArchiveCatalogTests: XCTestCase {
                 try String.fetchOne(
                     db,
                     sql: "SELECT value FROM archive_metadata WHERE key = 'machine_id'"
+                ) ?? "",
+                try Row.fetchAll(db, sql: "PRAGMA table_info(archive_session_bindings)")
+                    .map { $0["name"] as String },
+                try Row.fetchAll(db, sql: "PRAGMA table_info(archive_replica_receipts)")
+                    .map { $0["name"] as String },
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT value FROM archive_metadata WHERE key = 'schema_version'"
                 ) ?? ""
             )
         }
 
-        XCTAssertEqual(values.0, [
+        XCTAssertEqual(values.tables, [
             "archive_captures",
             "archive_metadata",
             "archive_replica_receipts",
             "archive_session_bindings",
         ])
-        XCTAssertEqual(values.1, "wal")
+        XCTAssertEqual(values.journalMode, "wal")
         XCTAssertEqual(try catalog.configuredSynchronousMode(), 2)
-        XCTAssertEqual(values.2, machineID)
+        XCTAssertEqual(values.machineID, machineID)
+        XCTAssertTrue(values.bindingColumns.contains("project_root_snapshot"))
+        XCTAssertTrue(values.bindingColumns.contains("remote_eligibility"))
+        XCTAssertTrue(values.receiptColumns.contains("claim_generation"))
+        XCTAssertEqual(values.schemaVersion, "2")
         XCTAssertEqual(try catalog.machineID(), machineID)
         XCTAssertEqual(try permissions(root.path), 0o700)
         XCTAssertEqual(try permissions(root.appendingPathComponent("archive.sqlite").path), 0o600)
+    }
+
+    func testVersionOneMigrationAddsPolicyAndLeaseColumnsIdempotentlyAndFailsClosed() throws {
+        let migratedManifestBytes = try createVersionOneCatalogWithBinding()
+        let catalog = try ArchiveCatalog(root: root, machineID: machineID)
+
+        try catalog.migrate()
+        try catalog.migrate()
+
+        let manifestSHA256 = ArchiveV2Hash.sha256(migratedManifestBytes)
+        let migrated = try XCTUnwrap(try catalog.latestBinding(sessionID: "migrated-session"))
+        XCTAssertEqual(migrated.manifestSHA256, manifestSHA256)
+        XCTAssertNil(migrated.projectRootSnapshot)
+        XCTAssertEqual(migrated.remoteEligibility, .unknown)
+        XCTAssertEqual(
+            try catalog.reconcileEligibleReplicaRows(
+                updatedAt: "2026-07-11T00:10:00.000Z"
+            ),
+            0
+        )
+        XCTAssertEqual(try replicaRowCount(), 1)
+        XCTAssertEqual(
+            try catalog.claimReplicaWork(
+                limit: 10,
+                now: "2026-07-11T00:10:01.000Z"
+            ),
+            []
+        )
+
+        XCTAssertTrue(
+            try catalog.setRemotePolicySnapshot(
+                manifestSHA256: manifestSHA256,
+                projectRootSnapshot: "/tmp/migrated-project",
+                eligibility: .eligible
+            )
+        )
+        XCTAssertEqual(
+            try catalog.reconcileEligibleReplicaRows(
+                updatedAt: "2026-07-11T00:11:00.000Z"
+            ),
+            1
+        )
+        XCTAssertEqual(try replicaIDs(manifestSHA256: manifestSHA256), ["hq", "m1"])
     }
 
     func testGeneratedMachineIDPersistsAcrossCatalogInstances() throws {
@@ -285,68 +347,562 @@ final class ArchiveCatalogTests: XCTestCase {
         XCTAssertTrue(uniqueIndex?.contains("UNIQUE") == true)
     }
 
-    func testReplicaStatesAreIndependentByManifestAndReplica() throws {
-        let (catalog, manifestBytes, binding) = try boundCatalog()
-        try catalog.upsertReplicaState(
-            manifestSHA256: binding.manifestSHA256,
-            replicaID: "hq",
-            state: .uploadingObjects,
-            attempts: 1,
-            updatedAt: "2026-07-11T00:00:00.000Z"
+    func testRemotePolicySnapshotIsFailClosedOneWayAndRequiresNormalizedAbsoluteRoot() throws {
+        let (catalog, _, binding) = try boundCatalog()
+
+        XCTAssertNil(binding.projectRootSnapshot)
+        XCTAssertEqual(binding.remoteEligibility, .unknown)
+        XCTAssertEqual(
+            try catalog.reconcileEligibleReplicaRows(
+                updatedAt: "2026-07-11T00:05:00.000Z"
+            ),
+            0
         )
-        try catalog.upsertReplicaState(
-            manifestSHA256: binding.manifestSHA256,
-            replicaID: "m1",
-            state: .pending,
-            updatedAt: "2026-07-11T00:00:00.000Z"
+        XCTAssertThrowsError(
+            try catalog.setRemotePolicySnapshot(
+                manifestSHA256: binding.manifestSHA256,
+                projectRootSnapshot: nil,
+                eligibility: .unknown
+            )
+        )
+        for invalidRoot in [nil, "relative/project", "/tmp/project/../other", "/tmp/a\u{0}b"] {
+            XCTAssertThrowsError(
+                try catalog.setRemotePolicySnapshot(
+                    manifestSHA256: binding.manifestSHA256,
+                    projectRootSnapshot: invalidRoot,
+                    eligibility: .eligible
+                )
+            )
+        }
+
+        XCTAssertTrue(
+            try catalog.setRemotePolicySnapshot(
+                manifestSHA256: binding.manifestSHA256,
+                projectRootSnapshot: "/tmp/project",
+                eligibility: .eligible
+            )
+        )
+        XCTAssertFalse(
+            try catalog.setRemotePolicySnapshot(
+                manifestSHA256: binding.manifestSHA256,
+                projectRootSnapshot: "/tmp/project",
+                eligibility: .eligible
+            )
+        )
+        XCTAssertThrowsError(
+            try catalog.setRemotePolicySnapshot(
+                manifestSHA256: binding.manifestSHA256,
+                projectRootSnapshot: nil,
+                eligibility: .excluded
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ArchiveCatalogError,
+                .remotePolicyConflict(manifestSHA256: binding.manifestSHA256)
+            )
+        }
+
+        let resolved = try XCTUnwrap(try catalog.latestBinding(sessionID: binding.sessionID))
+        XCTAssertEqual(resolved.projectRootSnapshot, "/tmp/project")
+        XCTAssertEqual(resolved.remoteEligibility, .eligible)
+
+        let excluded = try addBinding(
+            to: catalog,
+            captureSeed: "excluded-policy",
+            sessionID: "excluded-session"
+        )
+        XCTAssertTrue(
+            try catalog.setRemotePolicySnapshot(
+                manifestSHA256: excluded.manifestSHA256,
+                projectRootSnapshot: nil,
+                eligibility: .excluded
+            )
+        )
+    }
+
+    func testReconciliationSeedsOnlyEligibleBindingsForExactCurrentReplicas() throws {
+        let (catalog, _, eligible) = try boundCatalog()
+        let unknown = try addBinding(
+            to: catalog,
+            captureSeed: "unknown-binding",
+            sessionID: "unknown-session"
+        )
+        let excluded = try addBinding(
+            to: catalog,
+            captureSeed: "excluded-binding",
+            sessionID: "excluded-session"
+        )
+        XCTAssertTrue(
+            try catalog.setRemotePolicySnapshot(
+                manifestSHA256: eligible.manifestSHA256,
+                projectRootSnapshot: "/tmp/eligible",
+                eligibility: .eligible
+            )
+        )
+        XCTAssertTrue(
+            try catalog.setRemotePolicySnapshot(
+                manifestSHA256: excluded.manifestSHA256,
+                projectRootSnapshot: "/tmp/excluded",
+                eligibility: .excluded
+            )
         )
 
-        let receipt = try receiptBytes(
+        XCTAssertEqual(
+            try catalog.reconcileEligibleReplicaRows(
+                updatedAt: "2026-07-11T00:05:00.000Z"
+            ),
+            2
+        )
+        XCTAssertEqual(
+            try catalog.reconcileEligibleReplicaRows(
+                updatedAt: "2026-07-11T00:06:00.000Z"
+            ),
+            0
+        )
+        XCTAssertEqual(try replicaIDs(manifestSHA256: eligible.manifestSHA256), ["hq", "m1"])
+        XCTAssertEqual(try replicaIDs(manifestSHA256: unknown.manifestSHA256), [])
+        XCTAssertEqual(try replicaIDs(manifestSHA256: excluded.manifestSHA256), [])
+    }
+
+    func testAtomicClaimCarriesExactBindingAndTwoCatalogInstancesCannotWinSameRow() async throws {
+        let (catalog, manifestBytes, binding) = try eligibleBoundCatalog()
+        let first = try XCTUnwrap(
+            try catalog.claimReplicaWork(
+                limit: 1,
+                now: "2026-07-11T00:05:00.000Z"
+            ).first
+        )
+        XCTAssertEqual(first.replicaID, "hq")
+        XCTAssertEqual(first.manifestSHA256, binding.manifestSHA256)
+        XCTAssertEqual(first.captureID, binding.captureID)
+        XCTAssertEqual(first.sessionID, binding.sessionID)
+        XCTAssertEqual(first.canonicalManifestBytes, manifestBytes)
+        XCTAssertEqual(first.claimGeneration, 1)
+        XCTAssertEqual(first.attempts, 0)
+
+        let reopened = try ArchiveCatalog(root: root, machineID: machineID)
+        try reopened.migrate()
+        async let firstContender = Task.detached(priority: .userInitiated) {
+            try catalog.claimReplicaWork(
+                limit: 1,
+                now: "2026-07-11T00:05:01.000Z"
+            )
+        }.value
+        async let secondContender = Task.detached(priority: .userInitiated) {
+            try reopened.claimReplicaWork(
+                limit: 1,
+                now: "2026-07-11T00:05:01.000Z"
+            )
+        }.value
+        let racedClaims = try await firstContender + secondContender
+        XCTAssertEqual(racedClaims.count, 1)
+        XCTAssertEqual(racedClaims.first?.replicaID, "m1")
+        XCTAssertEqual(racedClaims.first?.claimGeneration, 1)
+    }
+
+    func testTransitionsAndHeartbeatRequireExpectedStateAndGeneration() throws {
+        let (catalog, _, _) = try eligibleBoundCatalog()
+        let claim = try XCTUnwrap(
+            try catalog.claimReplicaWork(
+                limit: 1,
+                now: "2026-07-11T00:00:00.000Z"
+            ).first
+        )
+
+        XCTAssertFalse(
+            try catalog.transitionReplicaClaim(
+                claim,
+                from: .uploadingObjects,
+                to: .uploadingManifest,
+                updatedAt: "2026-07-11T00:01:00.000Z",
+                usingClaimGeneration: claim.claimGeneration + 1
+            )
+        )
+        XCTAssertFalse(
+            try catalog.transitionReplicaClaim(
+                claim,
+                from: .uploadingManifest,
+                to: .requestingReceipt,
+                updatedAt: "2026-07-11T00:01:00.000Z"
+            )
+        )
+        XCTAssertThrowsError(
+            try catalog.transitionReplicaClaim(
+                claim,
+                from: .uploadingObjects,
+                to: .requestingReceipt,
+                updatedAt: "2026-07-11T00:01:00.000Z"
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ArchiveCatalogError,
+                .invalidReplicaTransition(
+                    from: .uploadingObjects,
+                    to: .requestingReceipt
+                )
+            )
+        }
+        XCTAssertTrue(
+            try catalog.transitionReplicaClaim(
+                claim,
+                from: .uploadingObjects,
+                to: .uploadingManifest,
+                updatedAt: "2026-07-11T00:01:00.000Z"
+            )
+        )
+        XCTAssertFalse(
+            try catalog.heartbeatReplicaClaim(
+                claim,
+                state: .uploadingObjects,
+                at: "2026-07-11T00:02:00.000Z"
+            )
+        )
+        XCTAssertTrue(
+            try catalog.heartbeatReplicaClaim(
+                claim,
+                state: .uploadingManifest,
+                at: "2026-07-11T00:02:00.000Z"
+            )
+        )
+        let state = try XCTUnwrap(
+            try catalog.replicaWork(
+                manifestSHA256: claim.manifestSHA256,
+                replicaID: claim.replicaID
+            )
+        )
+        XCTAssertEqual(state.state, .uploadingManifest)
+        XCTAssertEqual(state.updatedAt, "2026-07-11T00:02:00.000Z")
+        XCTAssertEqual(state.claimGeneration, claim.claimGeneration)
+    }
+
+    func testHeartbeatPreventsTenMinuteRecoveryAndRecoveryInvalidatesABAWorker() throws {
+        let (catalog, manifestBytes, _) = try eligibleBoundCatalog()
+        let claims = try catalog.claimReplicaWork(
+            limit: 2,
+            now: "2026-07-11T00:00:00.000Z"
+        )
+        let hq = try XCTUnwrap(claims.first { $0.replicaID == "hq" })
+        let m1 = try XCTUnwrap(claims.first { $0.replicaID == "m1" })
+        try advanceToVerifying(catalog, claim: hq)
+        XCTAssertTrue(
+            try catalog.heartbeatReplicaClaim(
+                hq,
+                state: .verifyingReceipt,
+                at: "2026-07-11T00:09:00.000Z"
+            )
+        )
+        XCTAssertTrue(
+            try catalog.heartbeatReplicaClaim(
+                m1,
+                state: .uploadingObjects,
+                at: "2026-07-11T00:19:00.000Z"
+            )
+        )
+        XCTAssertEqual(
+            try catalog.recoverStaleInflight(
+                now: "2026-07-11T00:12:00.000Z",
+                olderThanSeconds: 600
+            ),
+            0
+        )
+        XCTAssertEqual(
+            try catalog.recoverStaleInflight(
+                now: "2026-07-11T00:20:00.000Z",
+                olderThanSeconds: 600
+            ),
+            1
+        )
+        let recovered = try XCTUnwrap(
+            try catalog.replicaWork(
+                manifestSHA256: hq.manifestSHA256,
+                replicaID: "hq"
+            )
+        )
+        XCTAssertEqual(recovered.state, .pending)
+        XCTAssertEqual(recovered.claimGeneration, hq.claimGeneration + 1)
+
+        XCTAssertFalse(
+            try catalog.heartbeatReplicaClaim(
+                hq,
+                state: .verifyingReceipt,
+                at: "2026-07-11T00:20:01.000Z"
+            )
+        )
+        XCTAssertFalse(
+            try catalog.markReplicaQuarantined(
+                hq,
+                from: .verifyingReceipt,
+                lastError: "stale_worker",
+                updatedAt: "2026-07-11T00:20:01.000Z"
+            )
+        )
+        let staleReceiptBytes = try receiptBytes(
             serverID: "hq",
             manifestBytes: manifestBytes
         )
-        try catalog.upsertReplicaState(
-            manifestSHA256: binding.manifestSHA256,
-            replicaID: "hq",
-            state: .verified,
-            attempts: 1,
-            receipt: ArchiveVerifiedReceipt(
-                canonicalBytes: receipt,
-                sha256: ArchiveV2Hash.sha256(receipt),
-                verifiedAt: "2026-07-11T00:05:00.000Z"
-            ),
-            updatedAt: "2026-07-11T00:05:00.000Z"
+        XCTAssertFalse(
+            try catalog.recordVerifiedReceipt(
+                hq,
+                receipt: ArchiveVerifiedReceipt(
+                    canonicalBytes: staleReceiptBytes,
+                    sha256: ArchiveV2Hash.sha256(staleReceiptBytes),
+                    verifiedAt: "2026-07-11T00:20:01.000Z"
+                ),
+                updatedAt: "2026-07-11T00:20:01.000Z"
+            )
         )
-
-        let pending = try catalog.pendingReplicaWork(
-            limit: 10,
-            now: "2026-07-11T00:06:00.000Z"
+        let replacement = try XCTUnwrap(
+            try catalog.claimReplicaWork(
+                limit: 1,
+                now: "2026-07-11T00:20:02.000Z"
+            ).first
         )
-        XCTAssertEqual(pending.map(\.replicaID), ["m1"])
-        XCTAssertEqual(pending.first?.manifestSHA256, binding.manifestSHA256)
+        XCTAssertEqual(replacement.replicaID, "hq")
+        XCTAssertEqual(replacement.claimGeneration, hq.claimGeneration + 2)
+        XCTAssertTrue(
+            try catalog.transitionReplicaClaim(
+                replacement,
+                from: .uploadingObjects,
+                to: .uploadingManifest,
+                updatedAt: "2026-07-11T00:20:03.000Z"
+            )
+        )
     }
 
-    func testVerifiedReceiptIsAtomicAndConflictingSecondReceiptIsRejected() throws {
-        let (catalog, manifestBytes, binding) = try boundCatalog()
-        let firstBytes = try receiptBytes(serverID: "hq", manifestBytes: manifestBytes)
-        let first = ArchiveVerifiedReceipt(
-            canonicalBytes: firstBytes,
-            sha256: ArchiveV2Hash.sha256(firstBytes),
+    func testRetryAndQuarantineRequireCASAndBoundedSymbolicErrors() throws {
+        let (catalog, _, _) = try eligibleBoundCatalog()
+        let claims = try catalog.claimReplicaWork(
+            limit: 2,
+            now: "2026-07-11T00:00:00.000Z"
+        )
+        let hq = try XCTUnwrap(claims.first { $0.replicaID == "hq" })
+        let m1 = try XCTUnwrap(claims.first { $0.replicaID == "m1" })
+
+        for invalid in ["", "localized timeout", String(repeating: "a", count: 65)] {
+            XCTAssertThrowsError(
+                try catalog.markReplicaRetry(
+                    hq,
+                    from: .uploadingObjects,
+                    nextRetryAt: "2026-07-11T00:02:00.000Z",
+                    lastError: invalid,
+                    updatedAt: "2026-07-11T00:01:00.000Z"
+                )
+            )
+        }
+        XCTAssertFalse(
+            try catalog.markReplicaRetry(
+                hq,
+                from: .uploadingObjects,
+                nextRetryAt: "2026-07-11T00:02:00.000Z",
+                lastError: "timeout",
+                updatedAt: "2026-07-11T00:01:00.000Z",
+                usingClaimGeneration: hq.claimGeneration + 1
+            )
+        )
+        XCTAssertTrue(
+            try catalog.markReplicaRetry(
+                hq,
+                from: .uploadingObjects,
+                nextRetryAt: "2026-07-11T00:02:00.000Z",
+                lastError: "timeout",
+                updatedAt: "2026-07-11T00:01:00.000Z"
+            )
+        )
+        XCTAssertTrue(
+            try catalog.markReplicaQuarantined(
+                m1,
+                from: .uploadingObjects,
+                lastError: "receipt_conflict",
+                updatedAt: "2026-07-11T00:01:00.000Z"
+            )
+        )
+
+        let hqState = try XCTUnwrap(
+            try catalog.replicaWork(
+                manifestSHA256: hq.manifestSHA256,
+                replicaID: "hq"
+            )
+        )
+        let m1State = try XCTUnwrap(
+            try catalog.replicaWork(
+                manifestSHA256: m1.manifestSHA256,
+                replicaID: "m1"
+            )
+        )
+        XCTAssertEqual(hqState.state, .retryWait)
+        XCTAssertEqual(hqState.attempts, 1)
+        XCTAssertEqual(hqState.lastError, "timeout")
+        XCTAssertEqual(m1State.state, .quarantined)
+        XCTAssertEqual(m1State.attempts, 1)
+        XCTAssertEqual(m1State.lastError, "receipt_conflict")
+    }
+
+    func testRetryAndQuarantineAttemptCountersSaturateAtSQLiteIntegerMax() throws {
+        let (catalog, _, _) = try eligibleBoundCatalog()
+        let claims = try catalog.claimReplicaWork(
+            limit: 2,
+            now: "2026-07-11T00:00:00.000Z"
+        )
+        let hq = try XCTUnwrap(claims.first { $0.replicaID == "hq" })
+        let m1 = try XCTUnwrap(claims.first { $0.replicaID == "m1" })
+        try writeArchiveDatabase { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_replica_receipts
+                SET attempts = ?
+                WHERE manifest_sha256 = ? AND replica_id IN ('hq', 'm1')
+                """,
+                arguments: [Int64.max, hq.manifestSHA256]
+            )
+        }
+
+        XCTAssertTrue(
+            try catalog.markReplicaRetry(
+                hq,
+                from: .uploadingObjects,
+                nextRetryAt: "2026-07-11T00:02:00.000Z",
+                lastError: "timeout",
+                updatedAt: "2026-07-11T00:01:00.000Z"
+            )
+        )
+        XCTAssertTrue(
+            try catalog.markReplicaQuarantined(
+                m1,
+                from: .uploadingObjects,
+                lastError: "protocol_contradiction",
+                updatedAt: "2026-07-11T00:01:00.000Z"
+            )
+        )
+
+        let stored = try readArchiveDatabase { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT replica_id, attempts, typeof(attempts) AS storage_type
+                FROM archive_replica_receipts
+                WHERE manifest_sha256 = ? AND replica_id IN ('hq', 'm1')
+                ORDER BY replica_id
+                """,
+                arguments: [hq.manifestSHA256]
+            ).map { row -> (String, String, Int64?) in
+                let storageType: String = row["storage_type"]
+                let attempts: Int64? = storageType == "integer" ? row["attempts"] : nil
+                return (row["replica_id"], storageType, attempts)
+            }
+        }
+        XCTAssertEqual(stored.map(\.0), ["hq", "m1"])
+        XCTAssertEqual(stored.map(\.1), ["integer", "integer"])
+        XCTAssertEqual(stored.compactMap(\.2), [Int64.max, Int64.max])
+    }
+
+    func testManualRetryOnlyTouchesSelectedCurrentQuarantinedRows() throws {
+        let (catalog, _, binding) = try eligibleBoundCatalog()
+        let claims = try catalog.claimReplicaWork(
+            limit: 2,
+            now: "2026-07-11T00:00:00.000Z"
+        )
+        for claim in claims {
+            XCTAssertTrue(
+                try catalog.markReplicaQuarantined(
+                    claim,
+                    from: .uploadingObjects,
+                    lastError: "protocol_contradiction",
+                    updatedAt: "2026-07-11T00:01:00.000Z"
+                )
+            )
+        }
+        try insertObsoleteReplicaRow(
+            manifestSHA256: binding.manifestSHA256,
+            captureID: binding.captureID,
+            state: .quarantined,
+            attempts: 9,
+            claimGeneration: 7
+        )
+
+        XCTAssertEqual(
+            try catalog.retryQuarantined(
+                replicaID: "hq",
+                now: "2026-07-11T00:02:00.000Z"
+            ),
+            1
+        )
+        let hq = try XCTUnwrap(
+            try catalog.replicaWork(
+                manifestSHA256: binding.manifestSHA256,
+                replicaID: "hq"
+            )
+        )
+        let m1 = try XCTUnwrap(
+            try catalog.replicaWork(
+                manifestSHA256: binding.manifestSHA256,
+                replicaID: "m1"
+            )
+        )
+        XCTAssertEqual(hq.state, .pending)
+        XCTAssertEqual(hq.attempts, 0)
+        XCTAssertEqual(hq.claimGeneration, 2)
+        XCTAssertEqual(m1.state, .quarantined)
+        XCTAssertEqual(m1.attempts, 1)
+        XCTAssertEqual(m1.claimGeneration, 1)
+        XCTAssertEqual(try replicaRow(replicaID: "obsolete").claimGeneration, 7)
+
+        XCTAssertThrowsError(
+            try catalog.retryQuarantined(
+                replicaID: "obsolete",
+                now: "2026-07-11T00:02:30.000Z"
+            )
+        ) { error in
+            XCTAssertEqual(error as? ArchiveCatalogError, .invalidReplicaID)
+        }
+        XCTAssertEqual(
+            try catalog.retryQuarantined(
+                replicaID: nil,
+                now: "2026-07-11T00:03:00.000Z"
+            ),
+            1
+        )
+        let retriedM1 = try XCTUnwrap(
+            try catalog.replicaWork(
+                manifestSHA256: binding.manifestSHA256,
+                replicaID: "m1"
+            )
+        )
+        XCTAssertEqual(retriedM1.state, .pending)
+        XCTAssertEqual(retriedM1.attempts, 0)
+        XCTAssertEqual(retriedM1.claimGeneration, 2)
+        XCTAssertEqual(try replicaRow(replicaID: "obsolete").claimGeneration, 7)
+    }
+
+    func testVerifiedReceiptsAreIdempotentConflictSafeCurrentAndRevalidatedOnRead() throws {
+        let (catalog, manifestBytes, binding) = try eligibleBoundCatalog()
+        let claims = try catalog.claimReplicaWork(
+            limit: 2,
+            now: "2026-07-11T00:00:00.000Z"
+        )
+        let hq = try XCTUnwrap(claims.first { $0.replicaID == "hq" })
+        let m1 = try XCTUnwrap(claims.first { $0.replicaID == "m1" })
+        try advanceToVerifying(catalog, claim: hq)
+        try advanceToVerifying(catalog, claim: m1)
+
+        let hqBytes = try receiptBytes(serverID: "hq", manifestBytes: manifestBytes)
+        let hqReceipt = ArchiveVerifiedReceipt(
+            canonicalBytes: hqBytes,
+            sha256: ArchiveV2Hash.sha256(hqBytes),
             verifiedAt: "2026-07-11T00:05:00.000Z"
         )
-        try catalog.upsertReplicaState(
-            manifestSHA256: binding.manifestSHA256,
-            replicaID: "hq",
-            state: .verified,
-            receipt: first,
-            updatedAt: "2026-07-11T00:05:00.000Z"
+        XCTAssertTrue(
+            try catalog.recordVerifiedReceipt(
+                hq,
+                receipt: hqReceipt,
+                updatedAt: "2026-07-11T00:05:00.000Z"
+            )
         )
-        try catalog.upsertReplicaState(
-            manifestSHA256: binding.manifestSHA256,
-            replicaID: "hq",
-            state: .verified,
-            receipt: first,
-            updatedAt: "2026-07-11T00:05:00.000Z"
+        XCTAssertFalse(
+            try catalog.recordVerifiedReceipt(
+                hq,
+                receipt: hqReceipt,
+                updatedAt: "2026-07-11T00:05:00.000Z"
+            )
         )
 
         let conflictingBytes = try receiptBytes(
@@ -355,10 +911,8 @@ final class ArchiveCatalogTests: XCTestCase {
             storedAt: "2026-07-11T00:07:00.000Z"
         )
         XCTAssertThrowsError(
-            try catalog.upsertReplicaState(
-                manifestSHA256: binding.manifestSHA256,
-                replicaID: "hq",
-                state: .verified,
+            try catalog.recordVerifiedReceipt(
+                hq,
                 receipt: ArchiveVerifiedReceipt(
                     canonicalBytes: conflictingBytes,
                     sha256: ArchiveV2Hash.sha256(conflictingBytes),
@@ -376,46 +930,142 @@ final class ArchiveCatalogTests: XCTestCase {
             )
         }
 
-        let stored = try readArchiveDatabase { db -> (Data?, String?, String?) in
-            guard let row = try Row.fetchOne(
-                db,
+        try insertObsoleteVerifiedReplicaRow(
+            manifestSHA256: binding.manifestSHA256,
+            captureID: binding.captureID
+        )
+        XCTAssertEqual(Set(try catalog.currentVerifiedReceipts(
+            manifestSHA256: binding.manifestSHA256
+        ).keys), ["hq"])
+        XCTAssertFalse(try catalog.hasCurrentDualDurability(manifestSHA256: binding.manifestSHA256))
+
+        let m1Bytes = try receiptBytes(serverID: "m1", manifestBytes: manifestBytes)
+        XCTAssertTrue(
+            try catalog.recordVerifiedReceipt(
+                m1,
+                receipt: ArchiveVerifiedReceipt(
+                    canonicalBytes: m1Bytes,
+                    sha256: ArchiveV2Hash.sha256(m1Bytes),
+                    verifiedAt: "2026-07-11T00:06:00.000Z"
+                ),
+                updatedAt: "2026-07-11T00:06:00.000Z"
+            )
+        )
+        XCTAssertTrue(try catalog.hasCurrentDualDurability(manifestSHA256: binding.manifestSHA256))
+
+        XCTAssertFalse(
+            try catalog.markReplicaRetry(
+                hq,
+                from: .verifyingReceipt,
+                nextRetryAt: "2026-07-11T00:09:00.000Z",
+                lastError: "timeout",
+                updatedAt: "2026-07-11T00:08:00.000Z"
+            )
+        )
+        XCTAssertEqual(
+            try catalog.retryQuarantined(
+                replicaID: "hq",
+                now: "2026-07-11T00:08:00.000Z"
+            ),
+            0
+        )
+        XCTAssertEqual(
+            try catalog.recoverStaleInflight(
+                now: "2026-07-11T01:00:00.000Z",
+                olderThanSeconds: 600
+            ),
+            0
+        )
+        XCTAssertEqual(
+            try catalog.replicaWork(
+                manifestSHA256: binding.manifestSHA256,
+                replicaID: "hq"
+            )?.state,
+            .verified
+        )
+
+        let unrelated = try addBinding(
+            to: catalog,
+            captureSeed: "unrelated-receipt-capture",
+            sessionID: "unrelated-receipt-session"
+        )
+        try writeArchiveDatabase { db in
+            try db.execute(
                 sql: """
-                SELECT receipt_bytes, receipt_sha256, verified_at
-                FROM archive_replica_receipts
+                UPDATE archive_replica_receipts
+                SET capture_id = ?
                 WHERE manifest_sha256 = ? AND replica_id = 'hq'
                 """,
-                arguments: [binding.manifestSHA256]
-            ) else {
-                return (nil, nil, nil)
-            }
-            return (row["receipt_bytes"], row["receipt_sha256"], row["verified_at"])
+                arguments: [unrelated.captureID, binding.manifestSHA256]
+            )
         }
-        XCTAssertEqual(stored.0, first.canonicalBytes)
-        XCTAssertEqual(stored.1, first.sha256)
-        XCTAssertEqual(stored.2, first.verifiedAt)
+        XCTAssertThrowsError(
+            try catalog.currentVerifiedReceipts(manifestSHA256: binding.manifestSHA256)
+        ) { error in
+            XCTAssertEqual(
+                error as? ArchiveCatalogError,
+                .bindingConflict(manifestSHA256: binding.manifestSHA256)
+            )
+        }
+        try writeArchiveDatabase { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_replica_receipts
+                SET capture_id = ?
+                WHERE manifest_sha256 = ? AND replica_id = 'hq'
+                """,
+                arguments: [binding.captureID, binding.manifestSHA256]
+            )
+        }
+
+        let storedBeforeCorruption = try replicaRow(replicaID: "hq")
+        XCTAssertEqual(storedBeforeCorruption.receiptBytes, hqReceipt.canonicalBytes)
+        XCTAssertEqual(storedBeforeCorruption.receiptSHA256, hqReceipt.sha256)
+        try writeArchiveDatabase { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_replica_receipts
+                SET receipt_sha256 = ?
+                WHERE manifest_sha256 = ? AND replica_id = 'hq'
+                """,
+                arguments: [String(repeating: "0", count: 64), binding.manifestSHA256]
+            )
+        }
+        XCTAssertThrowsError(
+            try catalog.currentVerifiedReceipts(manifestSHA256: binding.manifestSHA256)
+        ) { error in
+            XCTAssertEqual(
+                error as? ArchiveCatalogError,
+                .receiptDigestMismatch(
+                    expected: String(repeating: "0", count: 64),
+                    actual: hqReceipt.sha256
+                )
+            )
+        }
     }
 
     func testReplicaTimestampsMustBeCanonicalBeforePersistence() throws {
-        let (catalog, manifestBytes, binding) = try boundCatalog()
+        let (catalog, manifestBytes, binding) = try eligibleBoundCatalog()
         XCTAssertThrowsError(
-            try catalog.upsertReplicaState(
-                manifestSHA256: binding.manifestSHA256,
-                replicaID: "bad-updated",
-                state: .pending,
-                updatedAt: "not-a-timestamp"
-            )
+            try catalog.reconcileEligibleReplicaRows(updatedAt: "not-a-timestamp")
         ) { error in
             XCTAssertEqual(
                 error as? ArchiveCatalogError,
                 .invalidTimestamp(field: "updatedAt", value: "not-a-timestamp")
             )
         }
+        let claim = try XCTUnwrap(
+            try catalog.claimReplicaWork(
+                limit: 1,
+                now: "2026-07-11T00:00:00.000Z"
+            ).first
+        )
         XCTAssertThrowsError(
-            try catalog.upsertReplicaState(
-                manifestSHA256: binding.manifestSHA256,
-                replicaID: "bad-retry",
-                state: .retryWait,
+            try catalog.markReplicaRetry(
+                claim,
+                from: .uploadingObjects,
                 nextRetryAt: "2026-07-11 00:10:00",
+                lastError: "timeout",
                 updatedAt: "2026-07-11T00:00:00.000Z"
             )
         ) { error in
@@ -427,13 +1077,11 @@ final class ArchiveCatalogTests: XCTestCase {
                 )
             )
         }
-
+        try advanceToVerifying(catalog, claim: claim)
         let receipt = try receiptBytes(serverID: "hq", manifestBytes: manifestBytes)
         XCTAssertThrowsError(
-            try catalog.upsertReplicaState(
-                manifestSHA256: binding.manifestSHA256,
-                replicaID: "hq",
-                state: .verified,
+            try catalog.recordVerifiedReceipt(
+                claim,
                 receipt: ArchiveVerifiedReceipt(
                     canonicalBytes: receipt,
                     sha256: ArchiveV2Hash.sha256(receipt),
@@ -450,46 +1098,7 @@ final class ArchiveCatalogTests: XCTestCase {
                 )
             )
         }
-
-        let count = try readArchiveDatabase { db in
-            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM archive_replica_receipts") ?? -1
-        }
-        XCTAssertEqual(count, 0)
-    }
-
-    func testStaleInflightRecoveryResetsOnlyWorkOlderThanTenMinutes() throws {
-        let (catalog, _, binding) = try boundCatalog()
-        try catalog.upsertReplicaState(
-            manifestSHA256: binding.manifestSHA256,
-            replicaID: "hq",
-            state: .uploadingManifest,
-            updatedAt: "2026-07-11T00:00:00.000Z"
-        )
-        try catalog.upsertReplicaState(
-            manifestSHA256: binding.manifestSHA256,
-            replicaID: "m1",
-            state: .requestingReceipt,
-            updatedAt: "2026-07-11T00:11:00.000Z"
-        )
-
-        XCTAssertEqual(
-            try catalog.recoverStaleInflight(
-                now: "2026-07-11T00:12:00.000Z",
-                olderThanSeconds: 600
-            ),
-            1
-        )
-        let states = try readArchiveDatabase { db -> [String: String] in
-            let rows = try Row.fetchAll(
-                db,
-                sql: "SELECT replica_id, state FROM archive_replica_receipts"
-            )
-            return Dictionary(uniqueKeysWithValues: rows.map {
-                ($0["replica_id"] as String, $0["state"] as String)
-            })
-        }
-        XCTAssertEqual(states["hq"], ArchiveReplicaState.pending.rawValue)
-        XCTAssertEqual(states["m1"], ArchiveReplicaState.requestingReceipt.rawValue)
+        XCTAssertFalse(try catalog.hasCurrentDualDurability(manifestSHA256: binding.manifestSHA256))
     }
 
     func testArchiveMigrationNeverTouchesSeparateIndexDatabase() throws {
@@ -660,6 +1269,332 @@ final class ArchiveCatalogTests: XCTestCase {
         try assertOnlySentinelTable(in: indexURL)
     }
 
+    private struct ReplicaDatabaseRow {
+        let state: ArchiveReplicaState
+        let attempts: Int
+        let claimGeneration: Int
+        let receiptBytes: Data?
+        let receiptSHA256: String?
+    }
+
+    private func eligibleBoundCatalog() throws -> (
+        ArchiveCatalog,
+        manifestBytes: Data,
+        binding: ArchiveBinding
+    ) {
+        let result = try boundCatalog()
+        XCTAssertTrue(
+            try result.0.setRemotePolicySnapshot(
+                manifestSHA256: result.binding.manifestSHA256,
+                projectRootSnapshot: "/tmp/project",
+                eligibility: .eligible
+            )
+        )
+        XCTAssertEqual(
+            try result.0.reconcileEligibleReplicaRows(
+                updatedAt: "2026-07-11T00:00:00.000Z"
+            ),
+            2
+        )
+        return (
+            result.0,
+            result.manifestBytes,
+            try XCTUnwrap(try result.0.latestBinding(sessionID: result.binding.sessionID))
+        )
+    }
+
+    private func addBinding(
+        to catalog: ArchiveCatalog,
+        captureSeed: String,
+        sessionID: String
+    ) throws -> ArchiveBinding {
+        let locator = "/tmp/\(captureSeed).jsonl"
+        let unbound = try manifest(
+            captureSeed: captureSeed,
+            sessionID: nil,
+            locator: locator
+        )
+        _ = try catalog.recordCapture(
+            canonicalManifestBytes: ArchiveCanonicalJSON.encode(unbound)
+        )
+        let bound = try manifest(
+            captureSeed: captureSeed,
+            sessionID: sessionID,
+            locator: locator
+        )
+        return try catalog.bind(
+            canonicalManifestBytes: ArchiveCanonicalJSON.encode(bound),
+            sourceSnapshotFingerprint: ArchiveV2Hash.sha256(Data("snapshot-\(captureSeed)".utf8)),
+            boundAt: "2026-07-11T00:04:00.000Z"
+        )
+    }
+
+    private func advanceToVerifying(
+        _ catalog: ArchiveCatalog,
+        claim: ArchiveReplicaClaim
+    ) throws {
+        XCTAssertTrue(
+            try catalog.transitionReplicaClaim(
+                claim,
+                from: .uploadingObjects,
+                to: .uploadingManifest,
+                updatedAt: "2026-07-11T00:01:00.000Z"
+            )
+        )
+        XCTAssertTrue(
+            try catalog.transitionReplicaClaim(
+                claim,
+                from: .uploadingManifest,
+                to: .requestingReceipt,
+                updatedAt: "2026-07-11T00:02:00.000Z"
+            )
+        )
+        XCTAssertTrue(
+            try catalog.transitionReplicaClaim(
+                claim,
+                from: .requestingReceipt,
+                to: .verifyingReceipt,
+                updatedAt: "2026-07-11T00:03:00.000Z"
+            )
+        )
+    }
+
+    private func replicaRowCount() throws -> Int {
+        try readArchiveDatabase { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM archive_replica_receipts") ?? -1
+        }
+    }
+
+    private func replicaIDs(manifestSHA256: String) throws -> [String] {
+        try readArchiveDatabase { db in
+            try String.fetchAll(
+                db,
+                sql: """
+                SELECT replica_id FROM archive_replica_receipts
+                WHERE manifest_sha256 = ?
+                ORDER BY replica_id
+                """,
+                arguments: [manifestSHA256]
+            )
+        }
+    }
+
+    private func replicaRow(replicaID: String) throws -> ReplicaDatabaseRow {
+        try readArchiveDatabase { db in
+            let row = try XCTUnwrap(
+                try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT state, attempts, claim_generation, receipt_bytes, receipt_sha256
+                    FROM archive_replica_receipts
+                    WHERE replica_id = ?
+                    """,
+                    arguments: [replicaID]
+                )
+            )
+            let rawState: String = row["state"]
+            return ReplicaDatabaseRow(
+                state: try XCTUnwrap(ArchiveReplicaState(rawValue: rawState)),
+                attempts: row["attempts"],
+                claimGeneration: row["claim_generation"],
+                receiptBytes: row["receipt_bytes"],
+                receiptSHA256: row["receipt_sha256"]
+            )
+        }
+    }
+
+    private func insertObsoleteReplicaRow(
+        manifestSHA256: String,
+        captureID: String,
+        state: ArchiveReplicaState,
+        attempts: Int,
+        claimGeneration: Int
+    ) throws {
+        try writeArchiveDatabase { db in
+            try db.execute(
+                sql: """
+                INSERT INTO archive_replica_receipts(
+                    manifest_sha256, capture_id, replica_id, state, attempts,
+                    next_retry_at, last_error, receipt_bytes, receipt_sha256,
+                    verified_at, updated_at, claim_generation
+                ) VALUES (?, ?, 'obsolete', ?, ?, NULL, 'obsolete_protocol',
+                          NULL, NULL, NULL, '2026-07-11T00:01:00.000Z', ?)
+                """,
+                arguments: [
+                    manifestSHA256,
+                    captureID,
+                    state.rawValue,
+                    attempts,
+                    claimGeneration,
+                ]
+            )
+        }
+    }
+
+    private func insertObsoleteVerifiedReplicaRow(
+        manifestSHA256: String,
+        captureID: String
+    ) throws {
+        try writeArchiveDatabase { db in
+            try db.execute(
+                sql: """
+                INSERT INTO archive_replica_receipts(
+                    manifest_sha256, capture_id, replica_id, state, attempts,
+                    next_retry_at, last_error, receipt_bytes, receipt_sha256,
+                    verified_at, updated_at, claim_generation
+                ) VALUES (?, ?, 'obsolete', 'verified', 0, NULL, NULL,
+                          ?, ?, '2026-07-11T00:05:00.000Z',
+                          '2026-07-11T00:05:00.000Z', 4)
+                """,
+                arguments: [
+                    manifestSHA256,
+                    captureID,
+                    Data("not-canonical".utf8),
+                    String(repeating: "0", count: 64),
+                ]
+            )
+        }
+    }
+
+    private func createVersionOneCatalogWithBinding() throws -> Data {
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let databaseURL = root.appendingPathComponent("archive.sqlite")
+        let unbound = try manifest(captureSeed: "migrated-capture", sessionID: nil)
+        let bound = try manifest(
+            captureSeed: "migrated-capture",
+            sessionID: "migrated-session"
+        )
+        let unboundBytes = try ArchiveCanonicalJSON.encode(unbound)
+        let boundBytes = try ArchiveCanonicalJSON.encode(bound)
+        do {
+            let queue = try DatabaseQueue(path: databaseURL.path)
+            try queue.write { db in
+                try db.execute(sql: """
+                CREATE TABLE archive_metadata (
+                    key TEXT PRIMARY KEY NOT NULL,
+                    value TEXT NOT NULL
+                ) WITHOUT ROWID;
+                CREATE TABLE archive_captures (
+                    capture_id TEXT PRIMARY KEY NOT NULL,
+                    machine_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    locator TEXT NOT NULL,
+                    generation_device INTEGER NOT NULL,
+                    generation_inode INTEGER NOT NULL,
+                    generation_size INTEGER NOT NULL,
+                    generation_mtime_ns INTEGER NOT NULL,
+                    generation_ctime_ns INTEGER NOT NULL,
+                    generation_mode INTEGER NOT NULL,
+                    whole_source_sha256 TEXT NOT NULL,
+                    raw_byte_count INTEGER NOT NULL,
+                    chunk_size INTEGER NOT NULL,
+                    unbound_manifest_sha256 TEXT NOT NULL UNIQUE,
+                    unbound_manifest_bytes BLOB NOT NULL,
+                    status TEXT NOT NULL,
+                    diagnostic TEXT,
+                    captured_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                ) WITHOUT ROWID;
+                CREATE TABLE archive_session_bindings (
+                    manifest_sha256 TEXT PRIMARY KEY NOT NULL,
+                    session_id TEXT NOT NULL,
+                    capture_id TEXT NOT NULL,
+                    source_snapshot_fingerprint TEXT NOT NULL,
+                    bound_manifest_bytes BLOB NOT NULL,
+                    bound_at TEXT NOT NULL
+                ) WITHOUT ROWID;
+                CREATE TABLE archive_replica_receipts (
+                    manifest_sha256 TEXT NOT NULL,
+                    capture_id TEXT NOT NULL,
+                    replica_id TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_retry_at TEXT,
+                    last_error TEXT,
+                    receipt_bytes BLOB,
+                    receipt_sha256 TEXT,
+                    verified_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(manifest_sha256, replica_id)
+                ) WITHOUT ROWID
+                """)
+                try db.execute(
+                    sql: "INSERT INTO archive_metadata(key, value) VALUES (?, ?), (?, ?)",
+                    arguments: ["schema_version", "1", "machine_id", machineID]
+                )
+                try db.execute(
+                    sql: """
+                    INSERT INTO archive_captures(
+                        capture_id, machine_id, source, locator,
+                        generation_device, generation_inode, generation_size,
+                        generation_mtime_ns, generation_ctime_ns, generation_mode,
+                        whole_source_sha256, raw_byte_count, chunk_size,
+                        unbound_manifest_sha256, unbound_manifest_bytes,
+                        status, diagnostic, captured_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                              'captured', NULL, ?, ?, ?)
+                    """,
+                    arguments: [
+                        unbound.captureID,
+                        unbound.machineID,
+                        unbound.source,
+                        unbound.locator,
+                        unbound.generation.device,
+                        unbound.generation.inode,
+                        unbound.generation.size,
+                        unbound.generation.mtimeNs,
+                        unbound.generation.ctimeNs,
+                        unbound.generation.mode,
+                        unbound.wholeSourceSHA256,
+                        unbound.rawByteCount,
+                        unbound.chunkSize,
+                        ArchiveV2Hash.sha256(unboundBytes),
+                        unboundBytes,
+                        unbound.capturedAt,
+                        "2026-07-11T00:00:00.000Z",
+                        "2026-07-11T00:00:00.000Z",
+                    ]
+                )
+                try db.execute(
+                    sql: """
+                    INSERT INTO archive_session_bindings(
+                        manifest_sha256, session_id, capture_id,
+                        source_snapshot_fingerprint, bound_manifest_bytes, bound_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    arguments: [
+                        ArchiveV2Hash.sha256(boundBytes),
+                        "migrated-session",
+                        unbound.captureID,
+                        ArchiveV2Hash.sha256(Data("migrated-snapshot".utf8)),
+                        boundBytes,
+                        "2026-07-11T00:04:00.000Z",
+                    ]
+                )
+                try db.execute(
+                    sql: """
+                    INSERT INTO archive_replica_receipts(
+                        manifest_sha256, capture_id, replica_id, state,
+                        attempts, next_retry_at, last_error,
+                        receipt_bytes, receipt_sha256, verified_at, updated_at
+                    ) VALUES (?, ?, 'hq', 'pending', 0, NULL, NULL,
+                              NULL, NULL, NULL, '2026-07-11T00:04:00.000Z')
+                    """,
+                    arguments: [ArchiveV2Hash.sha256(boundBytes), unbound.captureID]
+                )
+            }
+        }
+        guard chmod(databaseURL.path, 0o600) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        return boundBytes
+    }
+
     private func migratedCatalog() throws -> ArchiveCatalog {
         let catalog = try ArchiveCatalog(root: root, machineID: machineID)
         try catalog.migrate()
@@ -756,6 +1691,11 @@ final class ArchiveCatalogTests: XCTestCase {
             configuration: configuration
         )
         return try queue.read(body)
+    }
+
+    private func writeArchiveDatabase<T>(_ body: (Database) throws -> T) throws -> T {
+        let queue = try DatabaseQueue(path: root.appendingPathComponent("archive.sqlite").path)
+        return try queue.write(body)
     }
 
     private func createProtectedIndexDatabase() throws -> URL {

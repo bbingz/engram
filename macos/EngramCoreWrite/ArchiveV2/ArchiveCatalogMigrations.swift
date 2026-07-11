@@ -1,7 +1,7 @@
 import GRDB
 
 enum ArchiveCatalogMigrations {
-    static let currentSchemaVersion = "1"
+    static let currentSchemaVersion = "2"
 
     static func migrate(_ db: Database, machineID: String) throws {
         try db.execute(sql: """
@@ -44,9 +44,31 @@ enum ArchiveCatalogMigrations {
             source_snapshot_fingerprint TEXT NOT NULL,
             bound_manifest_bytes BLOB NOT NULL,
             bound_at TEXT NOT NULL,
+            project_root_snapshot TEXT,
+            remote_eligibility TEXT NOT NULL DEFAULT 'unknown' CHECK(
+                remote_eligibility IN ('unknown', 'eligible', 'excluded')
+                AND (remote_eligibility != 'unknown' OR project_root_snapshot IS NULL)
+                AND (remote_eligibility != 'eligible' OR project_root_snapshot IS NOT NULL)
+            ),
             FOREIGN KEY(capture_id) REFERENCES archive_captures(capture_id) ON DELETE RESTRICT
         ) WITHOUT ROWID
         """)
+        if try !hasColumn("project_root_snapshot", in: "archive_session_bindings", db: db) {
+            try db.execute(sql: """
+            ALTER TABLE archive_session_bindings
+            ADD COLUMN project_root_snapshot TEXT
+            """)
+        }
+        if try !hasColumn("remote_eligibility", in: "archive_session_bindings", db: db) {
+            try db.execute(sql: """
+            ALTER TABLE archive_session_bindings
+            ADD COLUMN remote_eligibility TEXT NOT NULL DEFAULT 'unknown' CHECK(
+                remote_eligibility IN ('unknown', 'eligible', 'excluded')
+                AND (remote_eligibility != 'unknown' OR project_root_snapshot IS NULL)
+                AND (remote_eligibility != 'eligible' OR project_root_snapshot IS NOT NULL)
+            )
+            """)
+        }
         try db.execute(sql: """
         CREATE INDEX IF NOT EXISTS archive_session_bindings_session_bound
         ON archive_session_bindings(session_id, bound_at DESC)
@@ -54,6 +76,11 @@ enum ArchiveCatalogMigrations {
         try db.execute(sql: """
         CREATE UNIQUE INDEX IF NOT EXISTS archive_session_bindings_capture_unique
         ON archive_session_bindings(capture_id)
+        """)
+        try db.execute(sql: """
+        CREATE INDEX IF NOT EXISTS archive_session_bindings_remote_eligible
+        ON archive_session_bindings(manifest_sha256)
+        WHERE remote_eligibility = 'eligible'
         """)
 
         try db.execute(sql: """
@@ -78,6 +105,7 @@ enum ArchiveCatalogMigrations {
             receipt_sha256 TEXT,
             verified_at TEXT,
             updated_at TEXT NOT NULL,
+            claim_generation INTEGER NOT NULL DEFAULT 0 CHECK(claim_generation >= 0),
             PRIMARY KEY(manifest_sha256, replica_id),
             FOREIGN KEY(manifest_sha256)
                 REFERENCES archive_session_bindings(manifest_sha256) ON DELETE RESTRICT,
@@ -90,6 +118,13 @@ enum ArchiveCatalogMigrations {
             CHECK(state != 'verified' OR receipt_bytes IS NOT NULL)
         ) WITHOUT ROWID
         """)
+        if try !hasColumn("claim_generation", in: "archive_replica_receipts", db: db) {
+            try db.execute(sql: """
+            ALTER TABLE archive_replica_receipts
+            ADD COLUMN claim_generation INTEGER NOT NULL DEFAULT 0
+            CHECK(claim_generation >= 0)
+            """)
+        }
         try db.execute(sql: """
         CREATE INDEX IF NOT EXISTS archive_replica_receipts_pending
         ON archive_replica_receipts(state, next_retry_at, updated_at)
@@ -109,5 +144,16 @@ enum ArchiveCatalogMigrations {
             """,
             arguments: [machineID]
         )
+    }
+
+    private static func hasColumn(
+        _ column: String,
+        in table: String,
+        db: Database
+    ) throws -> Bool {
+        try Row.fetchAll(db, sql: "PRAGMA table_info(\(table))").contains { row in
+            let name: String = row["name"]
+            return name == column
+        }
     }
 }

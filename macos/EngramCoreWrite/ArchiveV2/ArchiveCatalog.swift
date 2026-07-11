@@ -30,6 +30,13 @@ public enum ArchiveCatalogError: Error, Equatable, Sendable {
     case invalidLimit(Int)
     case invalidStaleInterval(TimeInterval)
     case invalidTimestamp(field: String, value: String)
+    case invalidRemoteEligibility
+    case invalidRemoteEligibilityValue(String)
+    case invalidProjectRootSnapshot(String?)
+    case remotePolicyConflict(manifestSHA256: String)
+    case invalidReplicaTransition(from: ArchiveReplicaState, to: ArchiveReplicaState)
+    case invalidClaimGeneration(Int)
+    case invalidLastError(String)
     case unsafeRoot(String)
     case unsafeDatabasePath(String)
     case sqliteFileControlFailed(code: Int32)
@@ -88,6 +95,12 @@ public struct ArchiveCaptureCursor: Equatable, Sendable {
     }
 }
 
+public enum ArchiveRemoteEligibility: String, CaseIterable, Equatable, Sendable {
+    case unknown
+    case eligible
+    case excluded
+}
+
 public struct ArchiveBinding: Equatable, Sendable {
     public let manifestSHA256: String
     public let sessionID: String
@@ -95,6 +108,28 @@ public struct ArchiveBinding: Equatable, Sendable {
     public let sourceSnapshotFingerprint: String
     public let canonicalManifestBytes: Data
     public let boundAt: String
+    public let projectRootSnapshot: String?
+    public let remoteEligibility: ArchiveRemoteEligibility
+
+    init(
+        manifestSHA256: String,
+        sessionID: String,
+        captureID: String,
+        sourceSnapshotFingerprint: String,
+        canonicalManifestBytes: Data,
+        boundAt: String,
+        projectRootSnapshot: String? = nil,
+        remoteEligibility: ArchiveRemoteEligibility = .unknown
+    ) {
+        self.manifestSHA256 = manifestSHA256
+        self.sessionID = sessionID
+        self.captureID = captureID
+        self.sourceSnapshotFingerprint = sourceSnapshotFingerprint
+        self.canonicalManifestBytes = canonicalManifestBytes
+        self.boundAt = boundAt
+        self.projectRootSnapshot = projectRootSnapshot
+        self.remoteEligibility = remoteEligibility
+    }
 }
 
 public enum ArchiveReplicaState: String, CaseIterable, Equatable, Sendable {
@@ -137,11 +172,46 @@ public struct ArchiveReplicaWork: Equatable, Sendable {
     public let attempts: Int
     public let nextRetryAt: String?
     public let lastError: String?
+    public let claimGeneration: Int
+    public let updatedAt: String
+
+    init(
+        manifestSHA256: String,
+        captureID: String,
+        replicaID: String,
+        state: ArchiveReplicaState,
+        attempts: Int,
+        nextRetryAt: String?,
+        lastError: String?,
+        claimGeneration: Int = 0,
+        updatedAt: String = "1970-01-01T00:00:00.000Z"
+    ) {
+        self.manifestSHA256 = manifestSHA256
+        self.captureID = captureID
+        self.replicaID = replicaID
+        self.state = state
+        self.attempts = attempts
+        self.nextRetryAt = nextRetryAt
+        self.lastError = lastError
+        self.claimGeneration = claimGeneration
+        self.updatedAt = updatedAt
+    }
+}
+
+public struct ArchiveReplicaClaim: Equatable, Sendable {
+    public let manifestSHA256: String
+    public let captureID: String
+    public let sessionID: String
+    public let replicaID: String
+    public let canonicalManifestBytes: Data
+    public let claimGeneration: Int
+    public let attempts: Int
 }
 
 /// Rebuildable archive metadata isolated from Engram's product index database.
 /// The immutable byte authority remains `ImmutableArchiveCAS`.
 public final class ArchiveCatalog: @unchecked Sendable {
+    public static let currentReplicaIDs = ["hq", "m1"]
     private static let databaseFilename = "archive.sqlite"
     private static let captureStatus = "captured"
 
@@ -360,7 +430,7 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 sql: "SELECT * FROM archive_session_bindings WHERE manifest_sha256 = ?",
                 arguments: [manifestSHA256]
             ) {
-                let existing = Self.binding(from: existingRow)
+                let existing = try Self.binding(from: existingRow)
                 guard existing.sessionID == sessionID,
                       existing.captureID == manifest.captureID,
                       existing.sourceSnapshotFingerprint == sourceSnapshotFingerprint,
@@ -380,7 +450,7 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 """,
                 arguments: [manifest.captureID]
             ) {
-                let existing = Self.binding(from: existingRow)
+                let existing = try Self.binding(from: existingRow)
                 throw ArchiveCatalogError.captureAlreadyBound(
                     captureID: manifest.captureID,
                     existingSessionID: existing.sessionID
@@ -428,7 +498,7 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 LIMIT 1
                 """,
                 arguments: [sessionID]
-            ).map(Self.binding(from:))
+            ).map { try Self.binding(from: $0) }
         }
     }
 
@@ -523,38 +593,557 @@ public final class ArchiveCatalog: @unchecked Sendable {
         }
     }
 
-    public func upsertReplicaState(
+    @discardableResult
+    public func setRemotePolicySnapshot(
         manifestSHA256: String,
-        replicaID: String,
-        state: ArchiveReplicaState,
-        attempts: Int = 0,
-        nextRetryAt: String? = nil,
-        lastError: String? = nil,
-        receipt: ArchiveVerifiedReceipt? = nil,
-        updatedAt: String? = nil
-    ) throws {
-        guard ArchiveV2Hash.isValidSHA256(manifestSHA256) else {
-            throw ArchiveCatalogError.invalidSHA256(field: "manifestSHA256")
+        projectRootSnapshot: String?,
+        eligibility: ArchiveRemoteEligibility
+    ) throws -> Bool {
+        try Self.validateManifestSHA256(manifestSHA256)
+        guard eligibility != .unknown else {
+            throw ArchiveCatalogError.invalidRemoteEligibility
         }
+        try Self.validateProjectRootSnapshot(
+            projectRootSnapshot,
+            eligibility: eligibility
+        )
+
+        let changed = try pool.write { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT project_root_snapshot, remote_eligibility
+                FROM archive_session_bindings
+                WHERE manifest_sha256 = ?
+                """,
+                arguments: [manifestSHA256]
+            ) else {
+                throw ArchiveCatalogError.bindingNotFound(
+                    manifestSHA256: manifestSHA256
+                )
+            }
+            let rawEligibility: String = row["remote_eligibility"]
+            guard let existingEligibility = ArchiveRemoteEligibility(
+                rawValue: rawEligibility
+            ) else {
+                throw ArchiveCatalogError.invalidRemoteEligibilityValue(rawEligibility)
+            }
+            let existingRoot: String? = row["project_root_snapshot"]
+            if existingEligibility != .unknown {
+                guard existingEligibility == eligibility,
+                      existingRoot == projectRootSnapshot else {
+                    throw ArchiveCatalogError.remotePolicyConflict(
+                        manifestSHA256: manifestSHA256
+                    )
+                }
+                return false
+            }
+
+            try db.execute(
+                sql: """
+                UPDATE archive_session_bindings
+                SET project_root_snapshot = ?, remote_eligibility = ?
+                WHERE manifest_sha256 = ? AND remote_eligibility = 'unknown'
+                """,
+                arguments: [
+                    projectRootSnapshot,
+                    eligibility.rawValue,
+                    manifestSHA256,
+                ]
+            )
+            guard db.changesCount == 1 else {
+                throw ArchiveCatalogError.remotePolicyConflict(
+                    manifestSHA256: manifestSHA256
+                )
+            }
+            return true
+        }
+        if changed { try secureDatabaseFiles() }
+        return changed
+    }
+
+    @discardableResult
+    public func reconcileEligibleReplicaRows(updatedAt: String? = nil) throws -> Int {
+        let resolvedUpdatedAt = updatedAt ?? Self.currentTimestamp()
+        try Self.validateTimestamp(resolvedUpdatedAt, field: "updatedAt")
+        let inserted = try pool.write { db in
+            var count = 0
+            for replicaID in Self.currentReplicaIDs {
+                try db.execute(
+                    sql: """
+                    INSERT INTO archive_replica_receipts(
+                        manifest_sha256, capture_id, replica_id, state,
+                        attempts, next_retry_at, last_error,
+                        receipt_bytes, receipt_sha256, verified_at,
+                        updated_at, claim_generation
+                    )
+                    SELECT manifest_sha256, capture_id, ?, 'pending',
+                           0, NULL, NULL, NULL, NULL, NULL, ?, 0
+                    FROM archive_session_bindings
+                    WHERE remote_eligibility = 'eligible'
+                    ON CONFLICT(manifest_sha256, replica_id) DO NOTHING
+                    """,
+                    arguments: [replicaID, resolvedUpdatedAt]
+                )
+                count += db.changesCount
+            }
+            return count
+        }
+        if inserted > 0 { try secureDatabaseFiles() }
+        return inserted
+    }
+
+    public func claimReplicaWork(limit: Int, now: String) throws -> [ArchiveReplicaClaim] {
+        guard limit > 0 else {
+            throw ArchiveCatalogError.invalidLimit(limit)
+        }
+        try Self.validateTimestamp(now, field: "now")
+        let claims = try pool.write { db in
+            let claimedRows = try Row.fetchAll(
+                db,
+                sql: """
+                UPDATE archive_replica_receipts
+                SET state = 'uploadingObjects',
+                    claim_generation = claim_generation + 1,
+                    next_retry_at = NULL,
+                    last_error = NULL,
+                    updated_at = ?
+                WHERE (manifest_sha256, replica_id) IN (
+                    SELECT r.manifest_sha256, r.replica_id
+                    FROM archive_replica_receipts AS r
+                    JOIN archive_session_bindings AS b
+                      ON b.manifest_sha256 = r.manifest_sha256
+                    WHERE b.remote_eligibility = 'eligible'
+                      AND r.replica_id IN ('hq', 'm1')
+                      AND (
+                          r.state = 'pending'
+                          OR (
+                              r.state = 'retryWait'
+                              AND (r.next_retry_at IS NULL OR r.next_retry_at <= ?)
+                          )
+                      )
+                    ORDER BY r.updated_at ASC,
+                             r.manifest_sha256 ASC,
+                             r.replica_id ASC
+                    LIMIT ?
+                )
+                  AND (
+                      state = 'pending'
+                      OR (
+                          state = 'retryWait'
+                          AND (next_retry_at IS NULL OR next_retry_at <= ?)
+                      )
+                  )
+                RETURNING manifest_sha256, capture_id, replica_id,
+                          attempts, claim_generation
+                """,
+                arguments: [now, now, limit, now]
+            )
+
+            var claims: [ArchiveReplicaClaim] = []
+            claims.reserveCapacity(claimedRows.count)
+            for row in claimedRows {
+                let manifestSHA256: String = row["manifest_sha256"]
+                guard let bindingRow = try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT * FROM archive_session_bindings
+                    WHERE manifest_sha256 = ? AND remote_eligibility = 'eligible'
+                    """,
+                    arguments: [manifestSHA256]
+                ) else {
+                    throw ArchiveCatalogError.bindingNotFound(
+                        manifestSHA256: manifestSHA256
+                    )
+                }
+                let binding = try Self.binding(from: bindingRow)
+                let captureID: String = row["capture_id"]
+                guard binding.captureID == captureID else {
+                    throw ArchiveCatalogError.bindingConflict(
+                        manifestSHA256: manifestSHA256
+                    )
+                }
+                let claim = ArchiveReplicaClaim(
+                    manifestSHA256: manifestSHA256,
+                    captureID: captureID,
+                    sessionID: binding.sessionID,
+                    replicaID: row["replica_id"],
+                    canonicalManifestBytes: binding.canonicalManifestBytes,
+                    claimGeneration: row["claim_generation"],
+                    attempts: row["attempts"]
+                )
+                try Self.validateClaim(
+                    claim,
+                    claimGeneration: claim.claimGeneration
+                )
+                claims.append(claim)
+            }
+            return claims.sorted {
+                ($0.manifestSHA256, $0.replicaID) < ($1.manifestSHA256, $1.replicaID)
+            }
+        }
+        if !claims.isEmpty { try secureDatabaseFiles() }
+        return claims
+    }
+
+    @discardableResult
+    public func transitionReplicaClaim(
+        _ claim: ArchiveReplicaClaim,
+        from expectedState: ArchiveReplicaState,
+        to newState: ArchiveReplicaState,
+        updatedAt: String
+    ) throws -> Bool {
+        try transitionReplicaClaim(
+            claim,
+            from: expectedState,
+            to: newState,
+            updatedAt: updatedAt,
+            usingClaimGeneration: claim.claimGeneration
+        )
+    }
+
+    @discardableResult
+    func transitionReplicaClaim(
+        _ claim: ArchiveReplicaClaim,
+        from expectedState: ArchiveReplicaState,
+        to newState: ArchiveReplicaState,
+        updatedAt: String,
+        usingClaimGeneration claimGeneration: Int
+    ) throws -> Bool {
+        guard Self.isAllowedTransition(from: expectedState, to: newState) else {
+            throw ArchiveCatalogError.invalidReplicaTransition(
+                from: expectedState,
+                to: newState
+            )
+        }
+        try Self.validateClaim(
+            claim,
+            claimGeneration: claimGeneration
+        )
+        try Self.validateTimestamp(updatedAt, field: "updatedAt")
+        let changed = try pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_replica_receipts
+                SET state = ?, next_retry_at = NULL, last_error = NULL, updated_at = ?
+                WHERE manifest_sha256 = ?
+                  AND capture_id = ?
+                  AND replica_id = ?
+                  AND state = ?
+                  AND claim_generation = ?
+                """,
+                arguments: [
+                    newState.rawValue,
+                    updatedAt,
+                    claim.manifestSHA256,
+                    claim.captureID,
+                    claim.replicaID,
+                    expectedState.rawValue,
+                    claimGeneration,
+                ]
+            )
+            return db.changesCount == 1
+        }
+        if changed { try secureDatabaseFiles() }
+        return changed
+    }
+
+    @discardableResult
+    public func heartbeatReplicaClaim(
+        _ claim: ArchiveReplicaClaim,
+        state: ArchiveReplicaState,
+        at: String
+    ) throws -> Bool {
+        guard state.isInFlight else {
+            throw ArchiveCatalogError.invalidReplicaTransition(from: state, to: state)
+        }
+        try Self.validateClaim(
+            claim,
+            claimGeneration: claim.claimGeneration
+        )
+        try Self.validateTimestamp(at, field: "updatedAt")
+        let changed = try pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_replica_receipts
+                SET updated_at = ?
+                WHERE manifest_sha256 = ?
+                  AND capture_id = ?
+                  AND replica_id = ?
+                  AND state = ?
+                  AND claim_generation = ?
+                """,
+                arguments: [
+                    at,
+                    claim.manifestSHA256,
+                    claim.captureID,
+                    claim.replicaID,
+                    state.rawValue,
+                    claim.claimGeneration,
+                ]
+            )
+            return db.changesCount == 1
+        }
+        if changed { try secureDatabaseFiles() }
+        return changed
+    }
+
+    @discardableResult
+    public func markReplicaRetry(
+        _ claim: ArchiveReplicaClaim,
+        from expectedState: ArchiveReplicaState,
+        nextRetryAt: String,
+        lastError: String,
+        updatedAt: String
+    ) throws -> Bool {
+        try markReplicaRetry(
+            claim,
+            from: expectedState,
+            nextRetryAt: nextRetryAt,
+            lastError: lastError,
+            updatedAt: updatedAt,
+            usingClaimGeneration: claim.claimGeneration
+        )
+    }
+
+    @discardableResult
+    func markReplicaRetry(
+        _ claim: ArchiveReplicaClaim,
+        from expectedState: ArchiveReplicaState,
+        nextRetryAt: String,
+        lastError: String,
+        updatedAt: String,
+        usingClaimGeneration claimGeneration: Int
+    ) throws -> Bool {
+        guard expectedState.isInFlight else {
+            throw ArchiveCatalogError.invalidReplicaTransition(
+                from: expectedState,
+                to: .retryWait
+            )
+        }
+        try Self.validateClaim(claim, claimGeneration: claimGeneration)
+        try Self.validateLastError(lastError)
+        try Self.validateTimestamp(nextRetryAt, field: "nextRetryAt")
+        try Self.validateTimestamp(updatedAt, field: "updatedAt")
+        let changed = try pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_replica_receipts
+                SET state = 'retryWait',
+                    attempts = CASE
+                        WHEN attempts >= ? THEN ?
+                        ELSE attempts + 1
+                    END,
+                    next_retry_at = ?,
+                    last_error = ?,
+                    updated_at = ?
+                WHERE manifest_sha256 = ?
+                  AND capture_id = ?
+                  AND replica_id = ?
+                  AND state = ?
+                  AND claim_generation = ?
+                """,
+                arguments: [
+                    Int64.max,
+                    Int64.max,
+                    nextRetryAt,
+                    lastError,
+                    updatedAt,
+                    claim.manifestSHA256,
+                    claim.captureID,
+                    claim.replicaID,
+                    expectedState.rawValue,
+                    claimGeneration,
+                ]
+            )
+            return db.changesCount == 1
+        }
+        if changed { try secureDatabaseFiles() }
+        return changed
+    }
+
+    @discardableResult
+    public func markReplicaQuarantined(
+        _ claim: ArchiveReplicaClaim,
+        from expectedState: ArchiveReplicaState,
+        lastError: String,
+        updatedAt: String
+    ) throws -> Bool {
+        guard expectedState.isInFlight else {
+            throw ArchiveCatalogError.invalidReplicaTransition(
+                from: expectedState,
+                to: .quarantined
+            )
+        }
+        try Self.validateClaim(
+            claim,
+            claimGeneration: claim.claimGeneration
+        )
+        try Self.validateLastError(lastError)
+        try Self.validateTimestamp(updatedAt, field: "updatedAt")
+        let changed = try pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_replica_receipts
+                SET state = 'quarantined',
+                    attempts = CASE
+                        WHEN attempts >= ? THEN ?
+                        ELSE attempts + 1
+                    END,
+                    next_retry_at = NULL,
+                    last_error = ?,
+                    updated_at = ?
+                WHERE manifest_sha256 = ?
+                  AND capture_id = ?
+                  AND replica_id = ?
+                  AND state = ?
+                  AND claim_generation = ?
+                """,
+                arguments: [
+                    Int64.max,
+                    Int64.max,
+                    lastError,
+                    updatedAt,
+                    claim.manifestSHA256,
+                    claim.captureID,
+                    claim.replicaID,
+                    expectedState.rawValue,
+                    claim.claimGeneration,
+                ]
+            )
+            return db.changesCount == 1
+        }
+        if changed { try secureDatabaseFiles() }
+        return changed
+    }
+
+    @discardableResult
+    public func recordVerifiedReceipt(
+        _ claim: ArchiveReplicaClaim,
+        receipt: ArchiveVerifiedReceipt,
+        updatedAt: String
+    ) throws -> Bool {
+        try Self.validateClaim(
+            claim,
+            claimGeneration: claim.claimGeneration
+        )
+        try Self.validateTimestamp(updatedAt, field: "updatedAt")
+        let changed = try pool.write { db in
+            guard let bindingRow = try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM archive_session_bindings WHERE manifest_sha256 = ?",
+                arguments: [claim.manifestSHA256]
+            ) else {
+                throw ArchiveCatalogError.bindingNotFound(
+                    manifestSHA256: claim.manifestSHA256
+                )
+            }
+            let binding = try Self.binding(from: bindingRow)
+            guard binding.captureID == claim.captureID,
+                  binding.sessionID == claim.sessionID,
+                  binding.canonicalManifestBytes == claim.canonicalManifestBytes else {
+                throw ArchiveCatalogError.bindingConflict(
+                    manifestSHA256: claim.manifestSHA256
+                )
+            }
+            try Self.validate(
+                receipt: receipt,
+                replicaID: claim.replicaID,
+                boundManifestBytes: binding.canonicalManifestBytes
+            )
+
+            guard let existing = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT state, claim_generation, receipt_bytes, receipt_sha256
+                FROM archive_replica_receipts
+                WHERE manifest_sha256 = ? AND replica_id = ?
+                """,
+                arguments: [claim.manifestSHA256, claim.replicaID]
+            ) else {
+                return false
+            }
+            let existingBytes: Data? = existing["receipt_bytes"]
+            let existingSHA256: String? = existing["receipt_sha256"]
+            if existingBytes != nil || existingSHA256 != nil {
+                guard existingBytes == receipt.canonicalBytes,
+                      existingSHA256 == receipt.sha256 else {
+                    throw ArchiveCatalogError.receiptConflict(
+                        manifestSHA256: claim.manifestSHA256,
+                        replicaID: claim.replicaID
+                    )
+                }
+                let existingState: String = existing["state"]
+                if existingState == ArchiveReplicaState.verified.rawValue {
+                    return false
+                }
+                throw ArchiveCatalogError.receiptConflict(
+                    manifestSHA256: claim.manifestSHA256,
+                    replicaID: claim.replicaID
+                )
+            }
+
+            try db.execute(
+                sql: """
+                UPDATE archive_replica_receipts
+                SET state = 'verified',
+                    next_retry_at = NULL,
+                    last_error = NULL,
+                    receipt_bytes = ?,
+                    receipt_sha256 = ?,
+                    verified_at = ?,
+                    updated_at = ?
+                WHERE manifest_sha256 = ?
+                  AND capture_id = ?
+                  AND replica_id = ?
+                  AND state = 'verifyingReceipt'
+                  AND claim_generation = ?
+                """,
+                arguments: [
+                    receipt.canonicalBytes,
+                    receipt.sha256,
+                    receipt.verifiedAt,
+                    updatedAt,
+                    claim.manifestSHA256,
+                    claim.captureID,
+                    claim.replicaID,
+                    claim.claimGeneration,
+                ]
+            )
+            return db.changesCount == 1
+        }
+        if changed { try secureDatabaseFiles() }
+        return changed
+    }
+
+    public func replicaWork(
+        manifestSHA256: String,
+        replicaID: String
+    ) throws -> ArchiveReplicaWork? {
+        try Self.validateManifestSHA256(manifestSHA256)
         guard !replicaID.isEmpty else {
             throw ArchiveCatalogError.invalidReplicaID
         }
-        guard attempts >= 0 else {
-            throw ArchiveCatalogError.invalidAttempts(attempts)
+        return try pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT manifest_sha256, capture_id, replica_id, state,
+                       attempts, next_retry_at, last_error,
+                       claim_generation, updated_at
+                FROM archive_replica_receipts
+                WHERE manifest_sha256 = ? AND replica_id = ?
+                """,
+                arguments: [manifestSHA256, replicaID]
+            ).map(Self.replicaWork(from:))
         }
-        if state == .verified, receipt == nil {
-            throw ArchiveCatalogError.receiptRequired
-        }
-        if state != .verified, receipt != nil {
-            throw ArchiveCatalogError.unexpectedReceipt
-        }
-        let resolvedUpdatedAt = updatedAt ?? Self.currentTimestamp()
-        try Self.validateTimestamp(resolvedUpdatedAt, field: "updatedAt")
-        if let nextRetryAt {
-            try Self.validateTimestamp(nextRetryAt, field: "nextRetryAt")
-        }
+    }
 
-        try pool.write { db in
+    public func currentVerifiedReceipts(
+        manifestSHA256: String
+    ) throws -> [String: ArchiveVerifiedReceipt] {
+        try Self.validateManifestSHA256(manifestSHA256)
+        return try pool.read { db in
             guard let bindingRow = try Row.fetchOne(
                 db,
                 sql: "SELECT * FROM archive_session_bindings WHERE manifest_sha256 = ?",
@@ -564,102 +1153,94 @@ public final class ArchiveCatalog: @unchecked Sendable {
                     manifestSHA256: manifestSHA256
                 )
             }
-            let binding = Self.binding(from: bindingRow)
-            if let receipt {
+            let binding = try Self.binding(from: bindingRow)
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT capture_id, replica_id, receipt_bytes, receipt_sha256, verified_at
+                FROM archive_replica_receipts
+                WHERE manifest_sha256 = ?
+                  AND replica_id IN ('hq', 'm1')
+                  AND state = 'verified'
+                ORDER BY replica_id
+                """,
+                arguments: [manifestSHA256]
+            )
+            var receipts: [String: ArchiveVerifiedReceipt] = [:]
+            for row in rows {
+                let replicaID: String = row["replica_id"]
+                let captureID: String = row["capture_id"]
+                guard captureID == binding.captureID else {
+                    throw ArchiveCatalogError.bindingConflict(
+                        manifestSHA256: manifestSHA256
+                    )
+                }
+                guard let bytes: Data = row["receipt_bytes"],
+                      let sha256: String = row["receipt_sha256"],
+                      let verifiedAt: String = row["verified_at"] else {
+                    throw ArchiveCatalogError.receiptRequired
+                }
+                let receipt = ArchiveVerifiedReceipt(
+                    canonicalBytes: bytes,
+                    sha256: sha256,
+                    verifiedAt: verifiedAt
+                )
                 try Self.validate(
                     receipt: receipt,
                     replicaID: replicaID,
                     boundManifestBytes: binding.canonicalManifestBytes
                 )
+                receipts[replicaID] = receipt
             }
-
-            let existing = try Row.fetchOne(
-                db,
-                sql: """
-                SELECT receipt_bytes, receipt_sha256, verified_at
-                FROM archive_replica_receipts
-                WHERE manifest_sha256 = ? AND replica_id = ?
-                """,
-                arguments: [manifestSHA256, replicaID]
-            )
-            let existingReceiptBytes: Data? = existing?["receipt_bytes"]
-            let existingReceiptSHA256: String? = existing?["receipt_sha256"]
-            let existingVerifiedAt: String? = existing?["verified_at"]
-
-            if let existingReceiptBytes {
-                guard let receipt,
-                      existingReceiptBytes == receipt.canonicalBytes,
-                      existingReceiptSHA256 == receipt.sha256 else {
-                    throw ArchiveCatalogError.receiptConflict(
-                        manifestSHA256: manifestSHA256,
-                        replicaID: replicaID
-                    )
-                }
-            }
-
-            let receiptBytes = existingReceiptBytes ?? receipt?.canonicalBytes
-            let receiptSHA256 = existingReceiptSHA256 ?? receipt?.sha256
-            let verifiedAt = existingVerifiedAt ?? receipt?.verifiedAt
-
-            try db.execute(
-                sql: """
-                INSERT INTO archive_replica_receipts(
-                    manifest_sha256, capture_id, replica_id, state, attempts,
-                    next_retry_at, last_error,
-                    receipt_bytes, receipt_sha256, verified_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(manifest_sha256, replica_id) DO UPDATE SET
-                    state = excluded.state,
-                    attempts = excluded.attempts,
-                    next_retry_at = excluded.next_retry_at,
-                    last_error = excluded.last_error,
-                    receipt_bytes = excluded.receipt_bytes,
-                    receipt_sha256 = excluded.receipt_sha256,
-                    verified_at = excluded.verified_at,
-                    updated_at = excluded.updated_at
-                """,
-                arguments: [
-                    manifestSHA256,
-                    binding.captureID,
-                    replicaID,
-                    state.rawValue,
-                    attempts,
-                    nextRetryAt,
-                    lastError,
-                    receiptBytes,
-                    receiptSHA256,
-                    verifiedAt,
-                    resolvedUpdatedAt,
-                ]
-            )
+            return receipts
         }
-        try secureDatabaseFiles()
     }
 
-    public func pendingReplicaWork(
-        limit: Int,
-        now: String
-    ) throws -> [ArchiveReplicaWork] {
-        guard limit > 0 else {
-            throw ArchiveCatalogError.invalidLimit(limit)
-        }
+    public func hasCurrentDualDurability(manifestSHA256: String) throws -> Bool {
+        let receipts = try currentVerifiedReceipts(
+            manifestSHA256: manifestSHA256
+        )
+        return Set(receipts.keys) == Set(Self.currentReplicaIDs)
+    }
+
+    @discardableResult
+    public func retryQuarantined(replicaID: String?, now: String) throws -> Int {
         try Self.validateTimestamp(now, field: "now")
-        return try pool.read { db in
-            let rows = try Row.fetchAll(
-                db,
-                sql: """
-                SELECT manifest_sha256, capture_id, replica_id, state,
-                       attempts, next_retry_at, last_error
-                FROM archive_replica_receipts
-                WHERE state = 'pending'
-                   OR (state = 'retryWait' AND (next_retry_at IS NULL OR next_retry_at <= ?))
-                ORDER BY updated_at ASC, manifest_sha256 ASC, replica_id ASC
-                LIMIT ?
-                """,
-                arguments: [now, limit]
-            )
-            return try rows.map(Self.replicaWork(from:))
+        if let replicaID, !Self.currentReplicaIDs.contains(replicaID) {
+            throw ArchiveCatalogError.invalidReplicaID
         }
+        let changed = try pool.write { db in
+            let replicaPredicate: String
+            var arguments: StatementArguments = [now]
+            if let replicaID {
+                replicaPredicate = "replica_id = ?"
+                arguments += [replicaID]
+            } else {
+                replicaPredicate = "replica_id IN ('hq', 'm1')"
+            }
+            try db.execute(
+                sql: """
+                UPDATE archive_replica_receipts
+                SET state = 'pending',
+                    attempts = 0,
+                    next_retry_at = NULL,
+                    last_error = NULL,
+                    updated_at = ?,
+                    claim_generation = claim_generation + 1
+                WHERE state = 'quarantined'
+                  AND \(replicaPredicate)
+                  AND EXISTS (
+                      SELECT 1 FROM archive_session_bindings AS b
+                      WHERE b.manifest_sha256 = archive_replica_receipts.manifest_sha256
+                        AND b.remote_eligibility = 'eligible'
+                  )
+                """,
+                arguments: arguments
+            )
+            return db.changesCount
+        }
+        if changed > 0 { try secureDatabaseFiles() }
+        return changed
     }
 
     @discardableResult
@@ -678,13 +1259,23 @@ public final class ArchiveCatalog: @unchecked Sendable {
             try db.execute(
                 sql: """
                 UPDATE archive_replica_receipts
-                SET state = 'pending', next_retry_at = NULL, updated_at = ?
+                SET state = 'pending',
+                    next_retry_at = NULL,
+                    last_error = NULL,
+                    updated_at = ?,
+                    claim_generation = claim_generation + 1
                 WHERE state IN (
                     'uploadingObjects',
                     'uploadingManifest',
                     'requestingReceipt',
                     'verifyingReceipt'
                 )
+                  AND replica_id IN ('hq', 'm1')
+                  AND EXISTS (
+                      SELECT 1 FROM archive_session_bindings AS b
+                      WHERE b.manifest_sha256 = archive_replica_receipts.manifest_sha256
+                        AND b.remote_eligibility = 'eligible'
+                  )
                   AND updated_at < ?
                 """,
                 arguments: [now, cutoff]
@@ -962,14 +1553,53 @@ public final class ArchiveCatalog: @unchecked Sendable {
         )
     }
 
-    private static func binding(from row: Row) -> ArchiveBinding {
-        ArchiveBinding(
-            manifestSHA256: row["manifest_sha256"],
-            sessionID: row["session_id"],
-            captureID: row["capture_id"],
-            sourceSnapshotFingerprint: row["source_snapshot_fingerprint"],
-            canonicalManifestBytes: row["bound_manifest_bytes"],
-            boundAt: row["bound_at"]
+    private static func binding(from row: Row) throws -> ArchiveBinding {
+        let manifestSHA256: String = row["manifest_sha256"]
+        try validateManifestSHA256(manifestSHA256)
+        let canonicalManifestBytes: Data = row["bound_manifest_bytes"]
+        guard ArchiveV2Hash.sha256(canonicalManifestBytes) == manifestSHA256 else {
+            throw ArchiveCatalogError.bindingConflict(
+                manifestSHA256: manifestSHA256
+            )
+        }
+        let manifest = try ArchiveCanonicalJSON.decode(
+            ArchiveSourceManifest.self,
+            from: canonicalManifestBytes
+        )
+        let sessionID: String = row["session_id"]
+        let captureID: String = row["capture_id"]
+        guard manifest.sessionID == sessionID,
+              manifest.captureID == captureID else {
+            throw ArchiveCatalogError.bindingConflict(
+                manifestSHA256: manifestSHA256
+            )
+        }
+        let sourceSnapshotFingerprint: String = row["source_snapshot_fingerprint"]
+        guard ArchiveV2Hash.isValidSHA256(sourceSnapshotFingerprint) else {
+            throw ArchiveCatalogError.invalidSHA256(
+                field: "sourceSnapshotFingerprint"
+            )
+        }
+        let boundAt: String = row["bound_at"]
+        try validateTimestamp(boundAt, field: "boundAt")
+        let rawEligibility: String = row["remote_eligibility"]
+        guard let eligibility = ArchiveRemoteEligibility(rawValue: rawEligibility) else {
+            throw ArchiveCatalogError.invalidRemoteEligibilityValue(rawEligibility)
+        }
+        let projectRootSnapshot: String? = row["project_root_snapshot"]
+        try validateProjectRootSnapshot(
+            projectRootSnapshot,
+            eligibility: eligibility
+        )
+        return ArchiveBinding(
+            manifestSHA256: manifestSHA256,
+            sessionID: sessionID,
+            captureID: captureID,
+            sourceSnapshotFingerprint: sourceSnapshotFingerprint,
+            canonicalManifestBytes: canonicalManifestBytes,
+            boundAt: boundAt,
+            projectRootSnapshot: projectRootSnapshot,
+            remoteEligibility: eligibility
         )
     }
 
@@ -978,14 +1608,34 @@ public final class ArchiveCatalog: @unchecked Sendable {
         guard let state = ArchiveReplicaState(rawValue: rawState) else {
             throw ArchiveCatalogError.invalidReplicaState(rawState)
         }
+        let attempts: Int = row["attempts"]
+        guard attempts >= 0 else {
+            throw ArchiveCatalogError.invalidAttempts(attempts)
+        }
+        let claimGeneration: Int = row["claim_generation"]
+        guard claimGeneration >= 0 else {
+            throw ArchiveCatalogError.invalidClaimGeneration(claimGeneration)
+        }
+        let nextRetryAt: String? = row["next_retry_at"]
+        if let nextRetryAt {
+            try validateTimestamp(nextRetryAt, field: "nextRetryAt")
+        }
+        let lastError: String? = row["last_error"]
+        if let lastError {
+            try validateLastError(lastError)
+        }
+        let updatedAt: String = row["updated_at"]
+        try validateTimestamp(updatedAt, field: "updatedAt")
         return ArchiveReplicaWork(
             manifestSHA256: row["manifest_sha256"],
             captureID: row["capture_id"],
             replicaID: row["replica_id"],
             state: state,
-            attempts: row["attempts"],
-            nextRetryAt: row["next_retry_at"],
-            lastError: row["last_error"]
+            attempts: attempts,
+            nextRetryAt: nextRetryAt,
+            lastError: lastError,
+            claimGeneration: claimGeneration,
+            updatedAt: updatedAt
         )
     }
 
@@ -1007,6 +1657,102 @@ public final class ArchiveCatalog: @unchecked Sendable {
         if unbound.chunks != bound.chunks { return "chunks" }
         if unbound.replayLayout != bound.replayLayout { return "replayLayout" }
         return nil
+    }
+
+    private static func validateManifestSHA256(_ value: String) throws {
+        guard ArchiveV2Hash.isValidSHA256(value) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "manifestSHA256")
+        }
+    }
+
+    private static func validateClaim(
+        _ claim: ArchiveReplicaClaim,
+        claimGeneration: Int
+    ) throws {
+        try validateManifestSHA256(claim.manifestSHA256)
+        guard ArchiveV2Hash.isValidSHA256(claim.captureID) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "captureID")
+        }
+        guard !claim.sessionID.isEmpty else {
+            throw ArchiveCatalogError.boundManifestRequiresSessionID
+        }
+        guard currentReplicaIDs.contains(claim.replicaID) else {
+            throw ArchiveCatalogError.invalidReplicaID
+        }
+        guard claimGeneration >= 0 else {
+            throw ArchiveCatalogError.invalidClaimGeneration(claimGeneration)
+        }
+        guard claim.attempts >= 0 else {
+            throw ArchiveCatalogError.invalidAttempts(claim.attempts)
+        }
+        guard ArchiveV2Hash.sha256(claim.canonicalManifestBytes) == claim.manifestSHA256 else {
+            throw ArchiveCatalogError.bindingConflict(
+                manifestSHA256: claim.manifestSHA256
+            )
+        }
+        let manifest = try ArchiveCanonicalJSON.decode(
+            ArchiveSourceManifest.self,
+            from: claim.canonicalManifestBytes
+        )
+        guard manifest.captureID == claim.captureID,
+              manifest.sessionID == claim.sessionID else {
+            throw ArchiveCatalogError.bindingConflict(
+                manifestSHA256: claim.manifestSHA256
+            )
+        }
+    }
+
+    private static func isAllowedTransition(
+        from: ArchiveReplicaState,
+        to: ArchiveReplicaState
+    ) -> Bool {
+        switch (from, to) {
+        case (.uploadingObjects, .uploadingManifest),
+             (.uploadingManifest, .requestingReceipt),
+             (.requestingReceipt, .verifyingReceipt):
+            true
+        default:
+            false
+        }
+    }
+
+    private static func validateLastError(_ value: String) throws {
+        guard (1 ... 64).contains(value.utf8.count),
+              value.utf8.allSatisfy({ byte in
+                  (byte >= 97 && byte <= 122)
+                      || (byte >= 48 && byte <= 57)
+                      || byte == 95
+              }) else {
+            throw ArchiveCatalogError.invalidLastError(value)
+        }
+    }
+
+    private static func validateProjectRootSnapshot(
+        _ value: String?,
+        eligibility: ArchiveRemoteEligibility
+    ) throws {
+        switch eligibility {
+        case .unknown:
+            guard value == nil else {
+                throw ArchiveCatalogError.invalidProjectRootSnapshot(value)
+            }
+            return
+        case .eligible:
+            guard value != nil else {
+                throw ArchiveCatalogError.invalidProjectRootSnapshot(value)
+            }
+        case .excluded:
+            guard value != nil else { return }
+        }
+
+        guard let value,
+              !value.isEmpty,
+              value.hasPrefix("/"),
+              !value.utf8.contains(0),
+              (value == "/" || !value.hasSuffix("/")),
+              URL(fileURLWithPath: value).standardizedFileURL.path == value else {
+            throw ArchiveCatalogError.invalidProjectRootSnapshot(value)
+        }
     }
 
     private static func validate(

@@ -342,6 +342,53 @@ final class ArchiveModelTests: XCTestCase {
         )
     }
 
+    func testReceiptRequiresCanonicalFractionalSecondUTCTimestamp() throws {
+        let nonCanonicalValues = [
+            "2026-07-11T00:01:00Z",
+            "2026-07-11T00:01:00.000+00:00",
+            "2026-07-11T00:01:00.00Z",
+            "2026-07-11T00:01:00.0000Z",
+            "2026-07-11t00:01:00.000z",
+            "2026-07-11T00:01:00.000Z ",
+        ]
+
+        for storedAt in nonCanonicalValues {
+            XCTAssertThrowsError(
+                try ArchiveServerReceipt(
+                    serverID: "hq",
+                    machineID: machineID,
+                    sessionID: "session-1",
+                    captureID: captureDigest,
+                    manifestSHA256: manifestDigest,
+                    wholeSourceSHA256: sourceDigest,
+                    objectCount: 1,
+                    rawByteCount: 5,
+                    storedAt: storedAt
+                ),
+                "Expected non-canonical timestamp rejection for \(storedAt)"
+            ) { error in
+                XCTAssertEqual(
+                    error as? ArchiveV2ValidationError,
+                    .invalidValue(field: "storedAt")
+                )
+            }
+        }
+
+        XCTAssertNoThrow(
+            try ArchiveServerReceipt(
+                serverID: "hq",
+                machineID: machineID,
+                sessionID: "session-1",
+                captureID: captureDigest,
+                manifestSHA256: manifestDigest,
+                wholeSourceSHA256: sourceDigest,
+                objectCount: 1,
+                rawByteCount: 5,
+                storedAt: "2026-07-11T00:01:00.000Z"
+            )
+        )
+    }
+
     private func makeReceipt(
         schemaVersion: Int = 1,
         serverID: String = "hq",

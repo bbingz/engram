@@ -510,7 +510,7 @@ public struct ArchiveServerReceipt: Codable, Equatable, Sendable {
         guard (objectCount == 0) == (rawByteCount == 0) else {
             throw ArchiveV2ValidationError.invalidValue(field: "objectCount")
         }
-        guard !storedAt.isEmpty else {
+        guard Self.isCanonicalTimestamp(storedAt) else {
             throw ArchiveV2ValidationError.invalidValue(field: "storedAt")
         }
         self.schemaVersion = schemaVersion
@@ -572,5 +572,31 @@ public struct ArchiveServerReceipt: Codable, Equatable, Sendable {
         guard rawByteCount == manifest.rawByteCount else {
             throw ArchiveV2ValidationError.receiptManifestMismatch(field: "rawByteCount")
         }
+    }
+
+    private static func isCanonicalTimestamp(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard bytes.count == 24,
+              bytes[4] == 45,
+              bytes[7] == 45,
+              bytes[10] == 84,
+              bytes[13] == 58,
+              bytes[16] == 58,
+              bytes[19] == 46,
+              bytes[23] == 90 else {
+            return false
+        }
+        let separators = Set([4, 7, 10, 13, 16, 19, 23])
+        guard bytes.indices.allSatisfy({ index in
+            separators.contains(index) || (48...57).contains(bytes[index])
+        }) else {
+            return false
+        }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        guard let date = formatter.date(from: value) else { return false }
+        return formatter.string(from: date) == value
     }
 }
