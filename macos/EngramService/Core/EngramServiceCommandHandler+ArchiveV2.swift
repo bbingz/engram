@@ -1,6 +1,29 @@
+import EngramCoreWrite
 import Foundation
 
 extension EngramServiceCommandHandler {
+    func archiveV2StoreTokenResponse(
+        _ request: EngramServiceArchiveV2StoreTokenRequest
+    ) async throws -> EngramServiceArchiveV2StoreTokenResponse {
+        do {
+            return try await archiveV2CredentialProvisioner.store(
+                token: request.token,
+                replicaID: request.replicaID
+            )
+        } catch is ArchiveV2CredentialProvisionerError {
+            throw EngramServiceError.invalidRequest(message: "Invalid archive credential")
+        } catch let error as ArchiveCredentialStoreError {
+            switch error {
+            case .invalidReplicaID, .invalidToken:
+                throw EngramServiceError.invalidRequest(message: "Invalid archive credential")
+            case .keychainStatus:
+                throw EngramServiceError.serviceUnavailable(message: "Archive credential store unavailable")
+            }
+        } catch {
+            throw EngramServiceError.serviceUnavailable(message: "Archive credential store unavailable")
+        }
+    }
+
     func archiveV2StatusResponse() async throws -> EngramServiceArchiveV2StatusResponse {
         if let archiveV2Coordinator {
             return await archiveV2Coordinator.status()

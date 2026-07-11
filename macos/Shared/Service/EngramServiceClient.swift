@@ -182,6 +182,12 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         try await command("archiveV2Retry", payload: request)
     }
 
+    func archiveV2StoreToken(
+        _ request: EngramServiceArchiveV2StoreTokenRequest
+    ) async throws -> EngramServiceArchiveV2StoreTokenResponse {
+        try await command("archiveV2StoreToken", payload: request)
+    }
+
     func archiveReadSessionPage(
         _ request: EngramServiceArchiveReadSessionPageRequest
     ) async throws -> EngramServiceArchiveReadSessionPageResponse {

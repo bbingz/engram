@@ -38,6 +38,7 @@ function buildStubApp(opts?: {
   writeFileSync(join(contents, 'MacOS', 'Engram'), '#!/bin/sh\nexit 0\n');
   writeFileSync(join(contents, 'Helpers', 'EngramMCP'), 'stub');
   writeFileSync(join(contents, 'Helpers', 'EngramService'), 'stub');
+  writeFileSync(join(contents, 'Helpers', 'EngramCLI'), 'stub');
 
   const shortVersion = opts?.shortVersion ?? '0.1.0';
   const bundleVersion = opts?.bundleVersion ?? '12345';
@@ -134,6 +135,14 @@ describe('macOS release-verify bundle hygiene', () => {
         expect(out).toContain('bundle hygiene clean');
         expect(out).toContain('structure present');
         expect(out).toContain('version short=0.1.0 build=777');
+      });
+
+      it('fails when the shipped EngramCLI helper is absent', () => {
+        const app = buildStubApp();
+        rmSync(join(app, 'Contents', 'Helpers', 'EngramCLI'));
+        const { code, out } = runVerify(app, []);
+        expect(code).not.toBe(0);
+        expect(out).toContain('missing Contents/Helpers/EngramCLI');
       });
     },
   );

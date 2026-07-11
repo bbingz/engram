@@ -11,6 +11,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     let writerGate: ServiceWriterGate
     let archiveV2Coordinator: ArchiveV2ServiceCoordinator?
     let archiveTranscriptResolver: ArchiveTranscriptResolver?
+    let archiveV2CredentialProvisioner: ArchiveV2CredentialProvisioner
     private let readProvider: any EngramServiceReadProvider
     private let statusMonitor: ServiceStatusMonitor
     private let telemetry: ServiceTelemetryCollector?
@@ -51,6 +52,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         writerGate: ServiceWriterGate,
         archiveV2Coordinator: ArchiveV2ServiceCoordinator? = nil,
         archiveTranscriptResolver: ArchiveTranscriptResolver? = nil,
+        archiveV2CredentialProvisioner: ArchiveV2CredentialProvisioner = ArchiveV2CredentialProvisioner(),
         readProvider: any EngramServiceReadProvider = EmptyEngramServiceReadProvider(),
         statusMonitor: ServiceStatusMonitor = ServiceStatusMonitor(),
         telemetry: ServiceTelemetryCollector? = nil,
@@ -67,6 +69,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         self.writerGate = writerGate
         self.archiveV2Coordinator = archiveV2Coordinator
         self.archiveTranscriptResolver = archiveTranscriptResolver
+        self.archiveV2CredentialProvisioner = archiveV2CredentialProvisioner
         self.readProvider = readProvider
         self.statusMonitor = statusMonitor
         self.telemetry = telemetry
@@ -156,6 +159,12 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(try await archiveV2RetryResponse(payload))
+                )
+            case "archiveV2StoreToken":
+                let payload = try decodePayload(EngramServiceArchiveV2StoreTokenRequest.self, from: request)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(try await archiveV2StoreTokenResponse(payload))
                 )
             case "status":
                 let status = try await writerGate.indexStatus()

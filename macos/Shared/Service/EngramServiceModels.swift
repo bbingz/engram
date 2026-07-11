@@ -1273,6 +1273,18 @@ struct EngramServiceArchiveV2RetryRequest: Codable, Equatable, Sendable {
     }
 }
 
+struct EngramServiceArchiveV2StoreTokenRequest: Codable, Equatable, Sendable {
+    let replicaID: String
+    let token: String
+}
+
+struct EngramServiceArchiveV2StoreTokenResponse: Codable, Equatable, Sendable {
+    let replicaID: String
+    let stored: Bool
+    let pairReady: Bool
+    let serviceRestartRequired: Bool
+}
+
 struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
     let replicaID: String
     let queuedCount: Int
