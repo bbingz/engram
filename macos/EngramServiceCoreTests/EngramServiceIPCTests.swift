@@ -3831,6 +3831,41 @@ final class EngramServiceIPCTests: XCTestCase {
         }
     }
 
+    func testSetFavoriteWritesCreatedAtForLegacySchemaWithoutDefault_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "DROP TABLE IF EXISTS favorites")
+            try db.execute(sql: """
+                CREATE TABLE favorites (
+                    session_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL
+                )
+                """)
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        try await client.setFavorite(sessionId: "s1", favorite: true)
+
+        try await queue.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT session_id, created_at FROM favorites WHERE session_id = 's1'"
+            )
+            XCTAssertEqual(row?["session_id"] as String?, "s1")
+            XCTAssertFalse((row?["created_at"] as String? ?? "").isEmpty)
+        }
+    }
+
     func testSetSessionHiddenMirrorsLocalState() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)

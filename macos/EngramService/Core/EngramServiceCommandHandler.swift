@@ -969,7 +969,10 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             try ensureAppMetadataTables(db)
             if request.favorite {
                 try db.execute(
-                    sql: "INSERT OR IGNORE INTO favorites (session_id) VALUES (?)",
+                    sql: """
+                        INSERT OR IGNORE INTO favorites (session_id, created_at)
+                        VALUES (?, datetime('now'))
+                        """,
                     arguments: [request.sessionId]
                 )
             } else {

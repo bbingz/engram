@@ -7,6 +7,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: session export feedback and legacy favorite writes (2026-07-11)
+
+- Sessions and Timeline exports now share the command-palette
+  idle→inFlight→succeeded|failed contract, keep page content visible, disable
+  duplicate export actions, and retain the output path for Finder reveal.
+- `setFavorite` now writes `created_at` explicitly, so restored or legacy
+  `favorites` tables whose NOT NULL timestamp has no default no longer silently
+  ignore Add to Favorites. A real service IPC regression test covers both the
+  legacy schema and the existing metadata mutation path.
+
 ### Docs: Wave 8 Round 4 engineering-zero durable closeout (2026-07-11)
 
 - Reconciled seven durable surfaces only (no source/tests/scripts):
