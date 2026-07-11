@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 @testable import EngramRemoteServerCore
 import XCTest
@@ -445,6 +446,61 @@ final class ArchiveConfigTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: physicalRoot.path))
     }
 
+    func testProgrammaticAppUsesFilesystemIdentityAcrossSystemUsersFirmlink() throws {
+        let aliasBase = FileManager.default.homeDirectoryForCurrentUser
+        let physicalBase = URL(fileURLWithPath: "/System/Volumes/Data", isDirectory: true)
+            .appendingPathComponent(String(aliasBase.path.dropFirst()), isDirectory: true)
+        guard try directoryIdentity(aliasBase) == directoryIdentity(physicalBase) else {
+            throw XCTSkip("this macOS volume does not expose the Users APFS firmlink")
+        }
+
+        let prefix = "engram-archive-firmlink-\(UUID().uuidString)"
+        let sameAlias = aliasBase.appendingPathComponent("\(prefix)-same", isDirectory: true)
+        let samePhysical = physicalBase.appendingPathComponent("\(prefix)-same", isDirectory: true)
+        let ancestorAlias = aliasBase.appendingPathComponent("\(prefix)-ancestor", isDirectory: true)
+        let descendantPhysical = physicalBase
+            .appendingPathComponent("\(prefix)-ancestor", isDirectory: true)
+            .appendingPathComponent("archive", isDirectory: true)
+        let siblingAlias = aliasBase.appendingPathComponent("\(prefix)-sibling-a", isDirectory: true)
+        let siblingPhysical = physicalBase.appendingPathComponent("\(prefix)-sibling-b", isDirectory: true)
+        defer {
+            for url in [sameAlias, ancestorAlias, siblingAlias, siblingPhysical] {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+
+        for (legacyRoot, archiveRoot) in [
+            (sameAlias, samePhysical),
+            (ancestorAlias, descendantPhysical),
+        ] {
+            XCTAssertThrowsError(
+                try EngramRemoteServerApp(
+                    config: programmaticConfig(
+                        base: aliasBase,
+                        legacyRoot: legacyRoot,
+                        archiveRoot: archiveRoot
+                    )
+                )
+            ) { error in
+                guard case EngramRemoteServerConfig.ConfigError.storeRootsMustBeDisjoint = error else {
+                    return XCTFail("unexpected error: \(error)")
+                }
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sameAlias.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ancestorAlias.path))
+
+        XCTAssertNoThrow(
+            try EngramRemoteServerApp(
+                config: programmaticConfig(
+                    base: aliasBase,
+                    legacyRoot: siblingAlias,
+                    archiveRoot: siblingPhysical
+                )
+            )
+        )
+    }
+
     func testProgrammaticAppRejectsDanglingRelativeRootAliasBeforeLegacyCreation() throws {
         let base = temporaryDirectory()
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
@@ -625,6 +681,18 @@ final class ArchiveConfigTests: XCTestCase {
     private func temporaryDirectory() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("engram-archive-config-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    private func directoryIdentity(_ url: URL) throws -> [UInt64] {
+        var metadata = stat()
+        let result = url.path.withCString { stat($0, &metadata) }
+        guard result == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        return [
+            UInt64(truncatingIfNeeded: metadata.st_dev),
+            UInt64(truncatingIfNeeded: metadata.st_ino),
+        ]
     }
 
     private func keyBytes(_ key: SymmetricKey) -> Data {

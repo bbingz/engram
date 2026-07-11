@@ -216,14 +216,40 @@ public final class EngramRemoteServerApp: Sendable {
             return false
         }
         let resolvedComparisonIsCaseSensitive = comparisonIsCaseSensitive(
-            resolvedLHS,
-            resolvedRHS
+            resolvedLHS.url,
+            resolvedRHS.url
         )
-        return !pathsOverlap(
+        guard !pathsOverlap(
+            resolvedLHS.url,
+            resolvedRHS.url,
+            caseSensitive: resolvedComparisonIsCaseSensitive
+        ) else { return false }
+        return !filesystemRootsOverlap(
             resolvedLHS,
             resolvedRHS,
             caseSensitive: resolvedComparisonIsCaseSensitive
         )
+    }
+
+    private struct FilesystemIdentity: Hashable {
+        let device: UInt64
+        let inode: UInt64
+
+        init(_ metadata: stat) {
+            self.device = UInt64(truncatingIfNeeded: metadata.st_dev)
+            self.inode = UInt64(truncatingIfNeeded: metadata.st_ino)
+        }
+    }
+
+    private struct ExistingDirectoryNode {
+        let identity: FilesystemIdentity
+        let component: String?
+    }
+
+    private struct CanonicalRootResolution {
+        let url: URL
+        let existingDirectories: [ExistingDirectoryNode]
+        let unresolvedSuffix: [String]
     }
 
     /// Resolve every existing symlink component while preserving the suffix below
@@ -232,12 +258,20 @@ public final class EngramRemoteServerApp: Sendable {
     /// which can make two stores appear disjoint until the first store creates it.
     /// Dangling links, cycles, non-directory components, and inspection failures
     /// are rejected so root validation never creates filesystem state.
-    private static func canonicalRootWithoutCreating(_ url: URL) -> URL? {
+    private static func canonicalRootWithoutCreating(_ url: URL) -> CanonicalRootResolution? {
         guard var components = lexicallyNormalizedComponents(url) else { return nil }
         var resolved = URL(fileURLWithPath: "/", isDirectory: true)
         var index = 0
         var symlinkHops = 0
         var visitedSymlinks = Set<String>()
+        var rootMetadata = stat()
+        guard resolved.path.withCString({ lstat($0, &rootMetadata) }) == 0,
+              rootMetadata.st_mode & S_IFMT == S_IFDIR else {
+            return nil
+        }
+        var existingDirectories = [
+            ExistingDirectoryNode(identity: FilesystemIdentity(rootMetadata), component: nil),
+        ]
 
         while index < components.count {
             let component = components[index]
@@ -247,10 +281,15 @@ public final class EngramRemoteServerApp: Sendable {
 
             if result != 0 {
                 guard errno == ENOENT else { return nil }
-                for suffix in components[index...] {
+                let unresolvedSuffix = Array(components[index...])
+                for suffix in unresolvedSuffix {
                     resolved.appendPathComponent(suffix, isDirectory: true)
                 }
-                return resolved
+                return CanonicalRootResolution(
+                    url: resolved,
+                    existingDirectories: existingDirectories,
+                    unresolvedSuffix: unresolvedSuffix
+                )
             }
 
             let fileType = metadata.st_mode & S_IFMT
@@ -292,16 +331,54 @@ public final class EngramRemoteServerApp: Sendable {
                 let suffix = Array(components.dropFirst(index + 1))
                 components = destinationComponents + suffix
                 resolved = URL(fileURLWithPath: "/", isDirectory: true)
+                existingDirectories = [
+                    ExistingDirectoryNode(identity: FilesystemIdentity(rootMetadata), component: nil),
+                ]
                 index = 0
                 continue
             }
 
             guard fileType == S_IFDIR else { return nil }
             resolved = candidate
+            existingDirectories.append(
+                ExistingDirectoryNode(
+                    identity: FilesystemIdentity(metadata),
+                    component: component
+                )
+            )
             index += 1
         }
 
-        return resolved
+        return CanonicalRootResolution(
+            url: resolved,
+            existingDirectories: existingDirectories,
+            unresolvedSuffix: []
+        )
+    }
+
+    private static func filesystemRootsOverlap(
+        _ lhs: CanonicalRootResolution,
+        _ rhs: CanonicalRootResolution,
+        caseSensitive: Bool
+    ) -> Bool {
+        var deepestCommon: (lhs: Int, rhs: Int, score: Int)?
+        for lhsIndex in lhs.existingDirectories.indices {
+            for rhsIndex in rhs.existingDirectories.indices
+                where lhs.existingDirectories[lhsIndex].identity
+                    == rhs.existingDirectories[rhsIndex].identity {
+                let score = lhsIndex + rhsIndex
+                if deepestCommon == nil || score > deepestCommon!.score {
+                    deepestCommon = (lhsIndex, rhsIndex, score)
+                }
+            }
+        }
+        guard let deepestCommon else { return false }
+
+        let lhsRelative = lhs.existingDirectories.dropFirst(deepestCommon.lhs + 1)
+            .compactMap(\.component) + lhs.unresolvedSuffix
+        let rhsRelative = rhs.existingDirectories.dropFirst(deepestCommon.rhs + 1)
+            .compactMap(\.component) + rhs.unresolvedSuffix
+        return componentsOverlap(lhsRelative, rhsRelative, caseSensitive: caseSensitive)
     }
 
     private static func lexicallyNormalizedRoot(_ url: URL) -> URL? {
@@ -336,6 +413,18 @@ public final class EngramRemoteServerApp: Sendable {
         _ rhs: URL,
         caseSensitive: Bool
     ) -> Bool {
+        return componentsOverlap(
+            lhs.pathComponents,
+            rhs.pathComponents,
+            caseSensitive: caseSensitive
+        )
+    }
+
+    private static func componentsOverlap(
+        _ lhs: [String],
+        _ rhs: [String],
+        caseSensitive: Bool
+    ) -> Bool {
         let lhsComponents = comparablePathComponents(lhs, caseSensitive: caseSensitive)
         let rhsComponents = comparablePathComponents(rhs, caseSensitive: caseSensitive)
         if lhsComponents.count <= rhsComponents.count {
@@ -345,10 +434,10 @@ public final class EngramRemoteServerApp: Sendable {
     }
 
     private static func comparablePathComponents(
-        _ url: URL,
+        _ components: [String],
         caseSensitive: Bool
     ) -> [String] {
-        url.pathComponents.map { component in
+        components.map { component in
             let canonical = component.precomposedStringWithCanonicalMapping
             guard !caseSensitive else { return canonical }
             return canonical.folding(
