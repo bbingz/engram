@@ -46,32 +46,47 @@ at the host's **Tailscale IP** (or a tailnet DNS name). The TLS cert's SAN must
 include that IP. (LAN HTTPS still works for `curl`/Terminal, which have Local
 Network access — but the app won't.)
 
-## Deploy the server (host has the Swift toolchain but no Xcode)
+## Build a relocatable server package
 
-`EngramRemoteServer` is built on the dev Mac and shipped as a small relocatable
-bundle (the `EngramRemoteServerCore.framework` statically links Hummingbird/NIO,
-so the bundle is just the binary + that framework + `libswiftCompatibilitySpan.dylib`,
-which already carry the right rpaths — only an ad-hoc re-sign is needed).
+Build `EngramRemoteServer` on the development Mac and package the complete
+Release/arm64 runtime before any separately approved host deployment. The
+packager preserves the versioned framework symlinks, resolves Swift runtime
+dependencies through the active Xcode toolchain, ad-hoc signs nested code in
+dependency order, and writes a sorted SHA-256 manifest plus source metadata.
 
 ```bash
-# 1. Build (Debug is fine; it is a tiny loopback server)
-xcodebuild build -project macos/Engram.xcodeproj -scheme EngramRemoteServer \
-  -destination 'platform=macOS' -derivedDataPath /tmp/ers CODE_SIGNING_ALLOWED=NO
-DD=/tmp/ers/Build/Products/Debug
+DERIVED_DATA=/tmp/engram-remote-derived
+PACKAGE=/tmp/engram-remote-package
+SOURCE_REVISION="$(git rev-parse HEAD)"
 
-# 2. Assemble + ad-hoc re-sign a relocatable bundle
-B=/tmp/erbundle; mkdir -p "$B/bin" "$B/Frameworks"
-cp "$DD/EngramRemoteServer" "$B/bin/"
-cp -R "$DD/EngramRemoteServerCore.framework" "$B/Frameworks/"
-cp "$(find /tmp/ers -name libswiftCompatibilitySpan.dylib | head -1)" "$B/Frameworks/"
-codesign --force -s - "$B/Frameworks/"* "$B/bin/EngramRemoteServer"
+xcodebuild build \
+  -project macos/Engram.xcodeproj \
+  -scheme EngramRemoteServer \
+  -configuration Release \
+  -destination 'generic/platform=macOS' \
+  -derivedDataPath "$DERIVED_DATA" \
+  ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO
 
-# 3. Ship to the host
-RR='.engram-remote'
-ssh HOST "mkdir -p ~/$RR/bin ~/$RR/Frameworks ~/$RR/store && chmod 700 ~/$RR ~/$RR/store"
-rsync -a "$B/bin/" "HOST:~/$RR/bin/"
-rsync -a "$B/Frameworks/" "HOST:~/$RR/Frameworks/"
+bash macos/scripts/package-remote-server.sh \
+  --derived-data "$DERIVED_DATA" \
+  --configuration Release \
+  --arch arm64 \
+  --source-revision "$SOURCE_REVISION" \
+  --output "$PACKAGE"
+bash macos/scripts/package-remote-server.sh --verify-only "$PACKAGE"
 ```
+
+Ship the package as one directory; do not reconstruct it with ad-hoc `cp`
+commands on the host. It contains `bin/EngramRemoteServer`, the adjacent
+`bin/swift-nio_NIOPosix.bundle`, `Frameworks/`, owner-only wrapper/LaunchAgent
+templates, `BUILD-METADATA.json`, and `SHA256SUMS`. Run `--verify-only` again
+after transfer and before activation. Host transfer, rollback capture, and
+launchd changes are production operations outside this build procedure.
+
+The M1 nginx `:8443` listener described below remains a legacy `/v1/bundles`
+route only. Exact-source archive v2 does not use or alter that listener; its
+approved topology is Tailscale Serve HTTPS 443 as documented in
+[`remote-archive-v2.md`](remote-archive-v2.md).
 
 ### Secrets, wrapper, launchd (on the host)
 

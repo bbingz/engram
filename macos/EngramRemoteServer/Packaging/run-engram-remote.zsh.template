@@ -1,0 +1,12 @@
+#!/bin/zsh
+set -euo pipefail
+umask 077
+
+remote_root='__ENGRAM_REMOTE_ROOT__'
+
+set -a
+source "$remote_root/secrets/legacy-v1.env"
+source "$remote_root/secrets/archive-v2.env"
+set +a
+
+exec "$remote_root/current/bin/EngramRemoteServer"

@@ -112,12 +112,12 @@ network client is constructed.
     "replicas": [
       {
         "id": "hq",
-        "serverURL": "https://macmini-hq.<tailnet>.ts.net:8443",
+        "serverURL": "https://macmini-hq.tail1cb16.ts.net",
         "requireTLS": true
       },
       {
         "id": "m1",
-        "serverURL": "https://macmini-m1.<tailnet>.ts.net:8443",
+        "serverURL": "https://macmini-m1.tail1cb16.ts.net",
         "requireTLS": true
       }
     ],
@@ -158,6 +158,18 @@ the v2 token/key/root are separate and must not reuse them.
 enabled. A loopback bind may sit behind a tailnet-only TLS reverse proxy. Never
 bind the archive listener to `0.0.0.0`, `::`, a LAN/public address, or a public
 Funnel. The v2 archive root and legacy v1 store root must be disjoint.
+
+For the approved v2 topology, run the same loopback-to-tailnet mapping on each
+server after its local authenticated API checks pass:
+
+```zsh
+tailscale serve --bg --https=443 --yes http://127.0.0.1:8787
+```
+
+The client origins are exactly `https://macmini-hq.tail1cb16.ts.net` and
+`https://macmini-m1.tail1cb16.ts.net`. Do not add `:8443`, enable Funnel, or
+reuse a LAN/public listener. The existing M1 nginx `:8443` listener is
+legacy-only for `/v1/bundles` and is outside archive v2; leave it unchanged.
 
 ### Two-site secret and launch procedure (template only)
 
@@ -243,6 +255,11 @@ Do not put `launchctl bootstrap`, `bootout`, `kickstart`, Tailscale Serve, DNS,
 ACL, certificate, or reverse-proxy changes into an implementation-only run.
 Those are persistent production operations and require the separate deployment
 approval named above.
+
+Both archive hosts use FileVault without automatic login. A cold power loss
+therefore requires manual unlock at the FileVault login screen before the
+per-user LaunchAgent can start. Do not weaken FileVault or describe this setup
+as unattended cold-boot recovery.
 
 On the Engram client, use **Keychain Access** (not a command containing the
 token) to create two Generic Password items. Obtain the hq token directly from

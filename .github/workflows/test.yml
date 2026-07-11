@@ -87,7 +87,7 @@ jobs:
           test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
       - name: Check archive v2 no-delete boundary
         run: bash scripts/check-archive-v2-safety.sh
-      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/product-boundary-scripts.test.ts tests/scripts/archive-v2-safety-gate.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/swift-conventions.test.ts tests/scripts/version-guard.test.ts
+      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/remote-server-package.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/product-boundary-scripts.test.ts tests/scripts/archive-v2-safety-gate.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/swift-conventions.test.ts tests/scripts/version-guard.test.ts
 
   swift-unit:
     runs-on: macos-15
@@ -167,6 +167,52 @@ jobs:
           run_xcode_tests EngramServiceCore
           run_xcode_tests EngramMCPTests
           run_xcode_tests EngramRemoteServerCore
+
+      - name: Build Release remote server package
+        run: |
+          set -euo pipefail
+          umask 077
+          cd macos
+
+          REMOTE_DERIVED_DATA="$RUNNER_TEMP/engram-remote-derived"
+          REMOTE_PACKAGE="$RUNNER_TEMP/engram-remote-package"
+          KEYGEN_HOME="$RUNNER_TEMP/engram-remote-keygen-home"
+          KEYGEN_OUTPUT="$RUNNER_TEMP/engram-remote-keygen.txt"
+          test ! -e "$REMOTE_PACKAGE"
+
+          xcodebuild build \
+            -project Engram.xcodeproj \
+            -scheme EngramRemoteServer \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$REMOTE_DERIVED_DATA" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+          bash scripts/package-remote-server.sh \
+            --derived-data "$REMOTE_DERIVED_DATA" \
+            --configuration Release \
+            --arch arm64 \
+            --source-revision "$GITHUB_SHA" \
+            --output "$REMOTE_PACKAGE"
+          NO_XCODE_PATH="$RUNNER_TEMP/engram-remote-no-xcode"
+          mkdir -m 0700 "$NO_XCODE_PATH"
+          ln -s /usr/bin/false "$NO_XCODE_PATH/xcrun"
+          PATH="$NO_XCODE_PATH:$PATH" \
+            /bin/bash scripts/package-remote-server.sh --verify-only "$REMOTE_PACKAGE"
+
+          mkdir -m 0700 "$KEYGEN_HOME"
+          trap 'rm -f "$KEYGEN_OUTPUT"' EXIT
+          env -i \
+            HOME="$KEYGEN_HOME" \
+            PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+            "$REMOTE_PACKAGE/bin/EngramRemoteServer" keygen > "$KEYGEN_OUTPUT"
+          test "$(
+            /usr/bin/openssl base64 -d -A < "$KEYGEN_OUTPUT" |
+              /usr/bin/wc -c |
+              /usr/bin/tr -d '[:space:]'
+          )" = 32
 
   fixture-check:
     runs-on: macos-15
