@@ -263,6 +263,9 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: EngramRemoteServer/Core
+      - path: Shared/EngramCore/ArchiveV2/ArchiveHash.swift
+      - path: Shared/EngramCore/ArchiveV2/ArchiveCanonicalJSON.swift
+      - path: Shared/EngramCore/ArchiveV2/ArchiveModels.swift
     dependencies:
       - package: Hummingbird
         product: Hummingbird
@@ -303,6 +306,8 @@ targets:
         product: GRDB-dynamic
       - package: Hummingbird
         product: Hummingbird
+      - package: Hummingbird
+        product: HummingbirdTesting
     settings:
       SWIFT_VERSION: "5.9"
       GENERATE_INFOPLIST_FILE: YES

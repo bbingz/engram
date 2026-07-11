@@ -16,10 +16,20 @@ import Logging
 public final class EngramRemoteServerApp: Sendable {
     private let config: EngramRemoteServerConfig
     private let store: BlobStore
+    private let archiveStore: ArchiveStore?
 
     public init(config: EngramRemoteServerConfig) throws {
         self.config = config
         self.store = try BlobStore(root: config.storeRoot, key: config.atRestKey)
+        if let archive = config.archiveV2 {
+            self.archiveStore = try ArchiveStore(
+                root: archive.root,
+                key: archive.atRestKey,
+                serverID: archive.serverID
+            )
+        } else {
+            self.archiveStore = nil
+        }
     }
 
     public func buildRouter() -> Router<BasicRequestContext> {
@@ -117,6 +127,14 @@ public final class EngramRemoteServerApp: Sendable {
             } catch {
                 return Response(status: .internalServerError)
             }
+        }
+
+        if let archive = config.archiveV2, let archiveStore {
+            ArchiveRoutes.mount(
+                on: router,
+                store: archiveStore,
+                token: archive.bearerToken
+            )
         }
 
         return router

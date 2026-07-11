@@ -18,6 +18,148 @@ public enum ArchiveV2ValidationError: Error, Equatable, Sendable {
     case receiptManifestMismatch(field: String)
 }
 
+public enum ArchiveV2ProtocolValidationError: Error, Equatable, Sendable {
+    case invalidPageLimit
+    case invalidCursor
+    case tooManyPageItems
+    case invalidMachineID
+    case invalidReceiptSummary(field: String)
+    case pageItemsNotStrictlyOrdered
+    case emptyNonTerminalPage
+}
+
+public enum ArchiveV2ProtocolLimits {
+    public static let maxObjectRawBytes = 8 * 1024 * 1024
+    public static let maxManifestBytes = 1024 * 1024
+    public static let maxReceiptBytes = 16 * 1024
+    public static let maxPageBytes = 256 * 1024
+    public static let maxCursorBytes = 256
+    public static let maxErrorBytes = 4 * 1024
+    public static let maxServerIDBytes = 128
+    public static let defaultPageLimit = 50
+    public static let maxPageItems = 100
+
+    public static func validatedPageLimit(_ rawValue: String?) throws -> Int {
+        guard let rawValue else { return defaultPageLimit }
+        guard !rawValue.isEmpty,
+              let value = Int(rawValue),
+              String(value) == rawValue,
+              (1...maxPageItems).contains(value) else {
+            throw ArchiveV2ProtocolValidationError.invalidPageLimit
+        }
+        return value
+    }
+
+    public static func validateCursor(_ cursor: String?) throws {
+        guard let cursor else { return }
+        guard !cursor.isEmpty,
+              cursor.utf8.count <= maxCursorBytes,
+              cursor.utf8.allSatisfy({ byte in
+                  (48...57).contains(byte)
+                      || (65...90).contains(byte)
+                      || (97...122).contains(byte)
+                      || byte == 45
+                      || byte == 95
+              }) else {
+            throw ArchiveV2ProtocolValidationError.invalidCursor
+        }
+    }
+}
+
+public struct ArchiveReceiptSummary: Codable, Equatable, Sendable {
+    public let manifestSHA256: String
+    public let receiptSHA256: String
+
+    public init(manifestSHA256: String, receiptSHA256: String) throws {
+        guard ArchiveV2Hash.isValidSHA256(manifestSHA256) else {
+            throw ArchiveV2ProtocolValidationError.invalidReceiptSummary(
+                field: "manifestSHA256"
+            )
+        }
+        guard ArchiveV2Hash.isValidSHA256(receiptSHA256) else {
+            throw ArchiveV2ProtocolValidationError.invalidReceiptSummary(
+                field: "receiptSHA256"
+            )
+        }
+        self.manifestSHA256 = manifestSHA256
+        self.receiptSHA256 = receiptSHA256
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            manifestSHA256: container.decode(String.self, forKey: .manifestSHA256),
+            receiptSHA256: container.decode(String.self, forKey: .receiptSHA256)
+        )
+    }
+}
+
+public struct ArchiveMachinePage: Codable, Equatable, Sendable {
+    public let machineIDs: [String]
+    public let nextCursor: String?
+
+    public init(machineIDs: [String], nextCursor: String?) throws {
+        try ArchiveV2ProtocolLimits.validateCursor(nextCursor)
+        guard machineIDs.count <= ArchiveV2ProtocolLimits.maxPageItems else {
+            throw ArchiveV2ProtocolValidationError.tooManyPageItems
+        }
+        guard nextCursor == nil || !machineIDs.isEmpty else {
+            throw ArchiveV2ProtocolValidationError.emptyNonTerminalPage
+        }
+        guard machineIDs.allSatisfy({ value in
+            UUID(uuidString: value)?.uuidString == value
+        }) else {
+            throw ArchiveV2ProtocolValidationError.invalidMachineID
+        }
+        guard Self.isStrictlyOrdered(machineIDs) else {
+            throw ArchiveV2ProtocolValidationError.pageItemsNotStrictlyOrdered
+        }
+        self.machineIDs = machineIDs
+        self.nextCursor = nextCursor
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            machineIDs: container.decode([String].self, forKey: .machineIDs),
+            nextCursor: container.decodeIfPresent(String.self, forKey: .nextCursor)
+        )
+    }
+
+    private static func isStrictlyOrdered(_ values: [String]) -> Bool {
+        zip(values, values.dropFirst()).allSatisfy(<)
+    }
+}
+
+public struct ArchiveReceiptPage: Codable, Equatable, Sendable {
+    public let receipts: [ArchiveReceiptSummary]
+    public let nextCursor: String?
+
+    public init(receipts: [ArchiveReceiptSummary], nextCursor: String?) throws {
+        try ArchiveV2ProtocolLimits.validateCursor(nextCursor)
+        guard receipts.count <= ArchiveV2ProtocolLimits.maxPageItems else {
+            throw ArchiveV2ProtocolValidationError.tooManyPageItems
+        }
+        guard nextCursor == nil || !receipts.isEmpty else {
+            throw ArchiveV2ProtocolValidationError.emptyNonTerminalPage
+        }
+        let manifests = receipts.map(\.manifestSHA256)
+        guard zip(manifests, manifests.dropFirst()).allSatisfy(<) else {
+            throw ArchiveV2ProtocolValidationError.pageItemsNotStrictlyOrdered
+        }
+        self.receipts = receipts
+        self.nextCursor = nextCursor
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            receipts: container.decode([ArchiveReceiptSummary].self, forKey: .receipts),
+            nextCursor: container.decodeIfPresent(String.self, forKey: .nextCursor)
+        )
+    }
+}
+
 public enum ArchiveReplayStrategy: String, Codable, Equatable, Sendable {
     case singleFile
 }
