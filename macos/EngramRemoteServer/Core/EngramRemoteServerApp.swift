@@ -21,6 +21,9 @@ public final class EngramRemoteServerApp: Sendable {
 
     public init(config: EngramRemoteServerConfig) throws {
         if let archive = config.archiveV2 {
+            guard EngramRemoteServerConfig.isCurrentArchiveServerID(archive.serverID) else {
+                throw EngramRemoteServerConfig.ConfigError.invalidArchiveServerID
+            }
             guard archive.bearerToken != config.bearerToken,
                   !Self.keysEqual(archive.atRestKey, config.atRestKey) else {
                 throw EngramRemoteServerConfig.ConfigError.archiveCredentialsMustBeDistinct

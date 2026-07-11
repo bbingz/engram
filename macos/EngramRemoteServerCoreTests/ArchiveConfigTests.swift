@@ -597,13 +597,23 @@ final class ArchiveConfigTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: untouched.path))
     }
 
-    func testArchiveServerIDIsAStableSafeToken() {
-        for serverID in ["hq/../../escape", "hq one", "hq\"quoted", ".", "..", "hq:one"] {
+    func testArchiveServerIDAcceptsOnlyCurrentProductionReplicas() {
+        for serverID in [
+            "hq/../../escape",
+            "hq one",
+            "hq\"quoted",
+            ".",
+            "..",
+            "hq:one",
+            "m1-primary",
+            "archive.server_2",
+            "archive-test",
+        ] {
             var env = enabledEnvironment(host: "127.0.0.1")
             env["ENGRAM_REMOTE_ARCHIVE_SERVER_ID"] = serverID
             XCTAssertThrowsError(
                 try EngramRemoteServerConfig.fromEnvironment(env),
-                "expected unsafe server ID \(serverID) to be rejected"
+                "expected archive server ID \(serverID) to be rejected"
             ) { error in
                 guard case EngramRemoteServerConfig.ConfigError.invalidArchiveServerID = error else {
                     return XCTFail("unexpected error for \(serverID): \(error)")
@@ -611,11 +621,35 @@ final class ArchiveConfigTests: XCTestCase {
             }
         }
 
-        for serverID in ["hq", "m1-primary", "archive.server_2"] {
+        for serverID in ["hq", "m1"] {
             var env = enabledEnvironment(host: "127.0.0.1")
             env["ENGRAM_REMOTE_ARCHIVE_SERVER_ID"] = serverID
             XCTAssertNoThrow(try EngramRemoteServerConfig.fromEnvironment(env))
         }
+    }
+
+    func testProgrammaticAppRejectsNonProductionArchiveServerIDBeforeCreatingRoots() {
+        let base = temporaryDirectory()
+        let legacyRoot = base.appendingPathComponent("legacy", isDirectory: true)
+        let archiveRoot = base.appendingPathComponent("archive", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        XCTAssertThrowsError(
+            try EngramRemoteServerApp(
+                config: programmaticConfig(
+                    base: base,
+                    legacyRoot: legacyRoot,
+                    archiveRoot: archiveRoot,
+                    archiveServerID: "archive-test"
+                )
+            )
+        ) { error in
+            guard case EngramRemoteServerConfig.ConfigError.invalidArchiveServerID = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyRoot.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: archiveRoot.path))
     }
 
     func testRemoteServerCoreIncludesOnlyPureArchiveWireSources() throws {
@@ -659,7 +693,8 @@ final class ArchiveConfigTests: XCTestCase {
         legacyRoot: URL? = nil,
         archiveRoot: URL? = nil,
         archiveToken: String = "archive-token",
-        archiveKeyData: Data? = nil
+        archiveKeyData: Data? = nil,
+        archiveServerID: String = "hq"
     ) -> EngramRemoteServerConfig {
         let v1Root = legacyRoot ?? base.appendingPathComponent("legacy", isDirectory: true)
         let v2Root = archiveRoot ?? base.appendingPathComponent("archive", isDirectory: true)
@@ -670,7 +705,7 @@ final class ArchiveConfigTests: XCTestCase {
             bearerToken: "legacy-token",
             atRestKey: SymmetricKey(data: keyData),
             archiveV2: EngramRemoteArchiveConfig(
-                serverID: "hq",
+                serverID: archiveServerID,
                 root: v2Root,
                 bearerToken: archiveToken,
                 atRestKey: SymmetricKey(data: archiveKeyData ?? self.archiveKeyData)

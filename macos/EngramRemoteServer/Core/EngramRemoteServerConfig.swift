@@ -134,17 +134,7 @@ public struct EngramRemoteServerConfig: Sendable {
                   !serverID.isEmpty else {
                 throw ConfigError.missingArchiveServerID
             }
-            guard serverID.utf8.count <= ArchiveV2ProtocolLimits.maxServerIDBytes,
-                  serverID != ".",
-                  serverID != "..",
-                  serverID.utf8.allSatisfy({ byte in
-                      (48...57).contains(byte)
-                          || (65...90).contains(byte)
-                          || (97...122).contains(byte)
-                          || byte == 45
-                          || byte == 46
-                          || byte == 95
-                  }) else {
+            guard Self.isCurrentArchiveServerID(serverID) else {
                 throw ConfigError.invalidArchiveServerID
             }
             guard let archiveRootPath = env["ENGRAM_REMOTE_ARCHIVE_ROOT"],
@@ -195,6 +185,10 @@ public struct EngramRemoteServerConfig: Sendable {
     /// Generate a fresh base64 at-rest key for first-time setup.
     public static func generateAtRestKeyBase64() -> String {
         SymmetricKey(size: .bits256).withUnsafeBytes { Data(Array($0)).base64EncodedString() }
+    }
+
+    static func isCurrentArchiveServerID(_ value: String) -> Bool {
+        value == "hq" || value == "m1"
     }
 
     private static func isAllowedArchiveBindAddress(_ host: String) -> Bool {

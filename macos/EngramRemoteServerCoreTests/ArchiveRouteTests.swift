@@ -591,7 +591,7 @@ final class ArchiveRouteTests: XCTestCase {
     ) throws -> EngramRemoteServerApp {
         let archive = enabled
             ? EngramRemoteArchiveConfig(
-                serverID: "archive-route-test-server",
+                serverID: "hq",
                 root: tempDir.appendingPathComponent("archive", isDirectory: true),
                 bearerToken: Self.archiveToken,
                 atRestKey: overrideArchiveKey ?? archiveKey

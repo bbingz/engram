@@ -126,7 +126,7 @@ final class EngramRemoteServerTests: XCTestCase {
         let archiveStore = try ArchiveStore(
             root: archiveRoot,
             key: archiveKey,
-            serverID: "archive-test"
+            serverID: "hq"
         )
         let protectedRaw = Data("immutable archive bytes".utf8)
         let protectedDigest = ArchiveV2Hash.sha256(protectedRaw)
@@ -149,7 +149,7 @@ final class EngramRemoteServerTests: XCTestCase {
             bearerToken: "legacy-token",
             atRestKey: SymmetricKey(data: Data(repeating: 0x11, count: 32)),
             archiveV2: EngramRemoteArchiveConfig(
-                serverID: "archive-test",
+                serverID: "hq",
                 root: archiveRoot,
                 bearerToken: "archive-token",
                 atRestKey: archiveKey
