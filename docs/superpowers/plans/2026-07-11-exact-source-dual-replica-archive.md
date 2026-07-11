@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILLS: `superpowers:subagent-driven-development`, `superpowers:test-driven-development`, and `scoped-task-worker`. Implement one task at a time. Observe RED before production edits, produce a worker report, run the task verifier, commit, and pass both spec-compliance and code-quality review before starting the next task.
 
-**Goal:** Add exact regular-file capture, an immutable `/v2/archive` server, two independent remote replicas, and verified local/HQ/M1 transcript recovery without adding any deletion path.
+**Goal:** Add exact capture for adapter-declared, replay-proven source files, an immutable `/v2/archive` server, two independent remote replicas, and verified local/HQ/M1 transcript recovery without adding any deletion path.
 
 **Design:** `docs/superpowers/specs/2026-07-11-exact-source-dual-replica-archive-design.md`
 
@@ -19,7 +19,7 @@
 - No source unlink, local archive delete/evict/GC, remote final-object delete/GC, public endpoint, deployment, service restart, or production credential change.
 - Every production behavior starts with a focused failing test whose failure is caused by the missing behavior, not a compile error unrelated to the assertion.
 - Do not use a HEAD response as durability proof. Persist and verify a server-specific receipt.
-- Do not count virtual, composite, directory, symlink, or database-backed locators as captured in v1.
+- Capture is deny-by-default: only adapters with an explicit `ExactArchiveSourceAdapter` descriptor and a delete-original/replay fixture may be enabled. Do not infer source completeness from a regular-file locator.
 - Do not put archive payload blobs in `index.sqlite`.
 - Each task ends with `git diff --check`, its focused test scheme, a scoped commit, worker report, and two-gate review.
 - Production deployment to `macmini-hq` and `macmini-m1` is explicitly outside this plan.
@@ -88,7 +88,7 @@ Use `JSONEncoder` with `.sortedKeys` and `.withoutEscapingSlashes`; do not encod
 
 - [ ] **Step 3: Verify target membership**
 
-Run `xcodegen generate` only if `project.yml` changed, rerun the focused test, then run:
+Run `xcodegen generate` whenever new source files need generated PBX file references, even if the recursive source declaration in `project.yml` itself did not change. Rerun the focused test, then run:
 
 ```bash
 git diff --check
@@ -175,6 +175,9 @@ Include newly created paths with `git add`; do not use `git add -A`.
 - Create: `macos/EngramCoreWrite/ArchiveV2/ExactSourceCapturer.swift`
 - Create: `macos/EngramCoreWrite/ArchiveV2/ArchiveCaptureCoordinator.swift`
 - Create: `macos/EngramCoreWrite/ArchiveV2/ArchiveLocatorClassifier.swift`
+- Create: `macos/Shared/EngramCore/ArchiveV2/ArchiveSourceDescriptor.swift`
+- Modify: `macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift`
+- Modify: `macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift`
 - Create: `macos/EngramCoreTests/ArchiveV2/ExactSourceCapturerTests.swift`
 - Create: `macos/EngramCoreTests/ArchiveV2/ArchiveCaptureCoordinatorTests.swift`
 
@@ -182,11 +185,16 @@ Include newly created paths with `git add`; do not use `git add -A`.
 
 ```swift
 public enum ArchiveLocatorClassification: Equatable, Sendable {
-    case regularFile(URL)
+    case declaredSingleFile(URL)
     case missing
     case unsupportedComposite
     case unsupportedVirtual
+    case unsupportedAdapter
     case unsafe(String)
+}
+
+public protocol ExactArchiveSourceAdapter: SessionAdapter {
+    func archiveSourceDescriptor(locator: String) async throws -> ArchiveSourceDescriptor
 }
 
 public struct ExactSourceCapturer: Sendable {
@@ -201,7 +209,7 @@ public actor ArchiveCaptureCoordinator {
 
 - [ ] **Step 1: RED — locator classification**
 
-Test ordinary file, missing file, directory, symlink, FIFO, `db.sqlite::session`, and `db.sqlite?composer=id`. Explicitly prove unsupported/unsafe cases do not produce objects or verified captures.
+Test a descriptor-declared ordinary file, missing file, directory, symlink, FIFO, an undeclared adapter, `db.sqlite::session`, and `db.sqlite?composer=id`. Explicitly prove unsupported/unsafe cases do not produce objects or verified captures. Assert Kimi, Copilot, Antigravity, Cursor, and OpenCode are not enabled by a regular-file `stat` result.
 
 - [ ] **Step 2: RED — generation race**
 
@@ -213,7 +221,7 @@ Read one descriptor in 8 MiB chunks, hash chunk and whole source incrementally, 
 
 - [ ] **Step 4: RED/GREEN — coordinator and binding**
 
-Use fake adapters to prove locator enumeration and capture occur before an injected parse marker, unchanged captures are idempotent, parser failure leaves an unbound capture, and exact `(source, locator)` session identities create bound manifests that reuse the same objects.
+Use fake adapters to prove locator enumeration and capture occur before an injected parse marker, unchanged captures are idempotent, and parser failure leaves an unbound capture. Binding requires exactly one normalized `(source, locator)` session match, then re-opens and re-hashes the source to prove it is still the captured generation. Test append after capture, atomic replacement, and duplicate session matches; all remain unbound. Add Claude Code and Codex fixtures that delete the original tree, reconstruct the descriptor layout from archive objects, and obtain equivalent messages through the same adapter.
 
 - [ ] **Step 5: Verify and commit**
 
@@ -249,13 +257,14 @@ public struct ArchiveStore: Sendable {
     public func getManifest(digest: String) throws -> Data
     public func createReceipt(manifestDigest: String) throws -> Data
     public func getReceipt(manifestDigest: String) throws -> Data
+    public func listMachines(cursor: String?, limit: Int) throws -> ArchiveMachinePage
     public func listReceipts(machineID: String, cursor: String?, limit: Int) throws -> ArchiveReceiptPage
 }
 ```
 
 - [ ] **Step 1: RED — config isolation**
 
-Prove legacy config starts with v2 disabled, enabling v2 requires server ID and absolute archive root, and v1 store root remains unchanged. Add `Shared/EngramCore/ArchiveV2` to `EngramRemoteServerCore` sources without adding a dependency on `EngramCoreWrite`.
+Prove legacy config starts with v2 disabled, enabling v2 requires server ID and absolute archive root, and v1 store root remains unchanged. When v2 is enabled, accept only loopback or literal Tailscale IPv4/IPv6 bind addresses; reject wildcard, public, RFC1918/LAN, and DNS bind names. Add `Shared/EngramCore/ArchiveV2` to `EngramRemoteServerCore` sources without adding a dependency on `EngramCoreWrite`.
 
 - [ ] **Step 2: RED — encrypted immutable store**
 
@@ -267,7 +276,7 @@ Use LZFSE only when it reduces size. AAD binds version/kind/digest/codec/raw len
 
 - [ ] **Step 4: RED — HTTP contract**
 
-Test auth; object 8 MiB success and +1 rejection; path/body mismatch; binary GET; manifest missing-reference conflict; corrupt-reference conflict; coherent manifest success; idempotent receipt; receipt listing pagination; bounded redacted errors; all v2 DELETE variants `405`; existing v1 PUT/GET/DELETE still pass.
+Test auth; object 8 MiB success and +1 rejection; path/body mismatch; binary GET; manifest missing-reference conflict; corrupt-reference conflict; coherent manifest success; idempotent receipt; bounded machine listing and receipt-list pagination; bounded redacted errors; all v2 DELETE variants `405`; existing v1 PUT/GET/DELETE still pass.
 
 - [ ] **Step 5: GREEN — routes**
 
@@ -315,6 +324,7 @@ public protocol ArchiveReplicaBackend: Sendable {
     func getManifest(digest: String) async throws -> Data
     func createReceipt(manifestDigest: String) async throws -> Data
     func getReceipt(manifestDigest: String) async throws -> Data
+    func listMachines(cursor: String?, limit: Int) async throws -> ArchiveMachinePage
     func listReceipts(machineID: String, cursor: String?, limit: Int) async throws -> ArchiveReceiptPage
 }
 
@@ -328,7 +338,7 @@ There is deliberately no delete method.
 
 - [ ] **Step 1: RED — transport confinement**
 
-Test HTTPS, loopback, `100.64.0.0/10`, and `.ts.net` acceptance; public HTTP refusal; normalized duplicate URL refusal; distinct replica IDs; exact two-replica config; bearer header presence without logging token.
+Test HTTPS plus plain HTTP loopback, `100.64.0.0/10`, `fd7a:115c:a1e0::/48`, and valid `.ts.net` acceptance. Refuse public HTTP, RFC1918, `.local`, wildcard, malformed `.ts.net`, and bare single-label hosts. Test normalized duplicate URL refusal, distinct replica IDs, exact two-replica config, and bearer header presence without logging token. Do not reuse legacy `isPrivateHost`.
 
 - [ ] **Step 2: GREEN — HTTP backend and credentials**
 
@@ -396,6 +406,8 @@ Test environment/settings precedence, default off, exact two distinct replicas, 
 
 Use fakes to record capture, index, bind, and replicate calls. Assert capture precedes the parser/index marker, archive I/O does not hold the writer gate, parser failure retains capture, unchanged index still permits first capture, and remote offline errors do not fail service readiness or index success.
 
+Also assert that binding refuses a changed post-index generation and an ambiguous `(source, locator)` result rather than associating capture A with parsed generation B.
+
 - [ ] **Step 3: GREEN — composition root**
 
 Create one archive coordinator from the index database sibling path `archive-v2`. Thread it through initial and periodic cycles without changing default-off execution. Bound remote work per cycle and check cancellation between files/replicas.
@@ -445,11 +457,11 @@ Materialize to an owner-only temporary regular file, parse through the existing 
 
 - [ ] **Step 4: RED/GREEN — service export and MCP page**
 
-Add a bounded service transcript-page command used by MCP only when direct local reading fails because the source is unavailable. Preserve page size, role filters, total/truncation fields, `include_raw` redaction, and `transcriptTooLarge` error mapping. Route export through the same resolver.
+Add a read-only bounded `archiveReadSessionPage` command and DTO. The service accepts session ID, page, page size, and role filter; it owns live/local/HQ/M1 resolution plus visible-message pagination and returns messages, total pages, current page, completeness, and truncation fields. MCP invokes it only when direct local reading fails because the source is unavailable and retains `include_raw` redaction/output shaping. IPC must not return raw archive bytes or a temporary path. Preserve `transcriptTooLarge` mapping and route export through the same resolver.
 
 - [ ] **Step 5: RED/GREEN — clean-machine recovery**
 
-Start two in-process archive routers with separate roots, keys, tokens, and server IDs. Replicate one multi-chunk capture; delete only the test client's temporary catalog/CAS; list receipts by machine ID from a server; download manifest/objects; assert byte-identical reconstruction. Stop hq and prove m1 fallback.
+Start two in-process archive routers with separate roots, keys, tokens, and server IDs. Replicate one multi-chunk capture; delete the test client's temporary catalog/CAS and machine ID; list machine IDs from a server, select one, list its receipts, download manifest/objects, and assert byte-identical reconstruction. Stop hq and prove m1 fallback.
 
 - [ ] **Step 6: Verify and commit**
 
@@ -528,7 +540,7 @@ git commit -m "docs: add dual-replica archive runbook and gates"
 ## Failure Handling
 
 - If a focused RED does not fail for the intended reason, fix the test before production code.
-- If an implementation task reveals that a locator is not a single regular file, classify it unsupported; do not broaden scope inside that task.
+- If an adapter lacks an explicit replay-proven archive descriptor, classify it unsupported even when its locator is a regular file; do not broaden scope inside that task.
 - If Hummingbird cannot express a required bounded route safely, stop that task and produce a minimal reproducer; do not weaken hash, size, auth, or no-overwrite guarantees.
 - If POSIX durability calls are unavailable or untestable on macOS, retain no-overwrite and hash verification, mark the exact unsupported guarantee, and do not issue receipts until the gap is closed.
 - If either remote is unavailable, record retry state and continue local operation. Do not convert offline state into index failure.

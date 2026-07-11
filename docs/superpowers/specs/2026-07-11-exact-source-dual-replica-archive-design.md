@@ -30,7 +30,7 @@ Parsed messages, FTS rows, summaries, embeddings, tiers, and legacy offload bund
 3. Each server has a distinct bearer token, AES-at-rest key, archive root, and stable server identifier.
 4. Both servers are reachable only over Tailscale. Tailnet membership does not replace bearer authorization.
 5. The new protocol uses an isolated `/v2/archive` namespace with no DELETE route. Existing `/v1/bundles` behavior remains byte-for-byte compatible.
-6. Local capture precedes parsing for supported regular-file locators. Parser failure does not discard a successfully captured generation.
+6. Local capture precedes parsing for adapter-declared, replay-proven source descriptors. Parser failure does not discard a successfully captured generation.
 7. Compression occurs after hashing the raw bytes and before encryption.
 8. A remote object is durable only after immutable publication, file and parent-directory synchronization, read-back verification, and a server-issued receipt whose identity and contents the client independently verifies. A HEAD response alone is not a receipt.
 9. The first release never treats an archive or receipt as authorization to unlink a live source.
@@ -72,20 +72,25 @@ The local archive and each remote server are independently self-verifying. `inde
 
 ## Exact Capture Contract
 
-### Supported locator policy
+### Adapter-declared source policy
 
-The first release supports locators that resolve to one regular file without following a symbolic link. Capture eligibility is independent of session tier; `skip` sessions are not excluded merely because they are omitted from search.
+A locator that happens to resolve to a regular file is not sufficient evidence that the file is the adapter's complete fact source. Some adapters enumerate an index file but read adjacent shards; others choose a parser from the locator's original path shape. The first release is therefore deny-by-default.
+
+Only an adapter conforming to `ExactArchiveSourceAdapter` may produce an `ArchiveSourceDescriptor`. The descriptor declares the complete canonical file set, stable relative reconstruction paths, and replay strategy. The initial implementation enables only `claude-code` and `codex` single-file descriptors after each passes a fixture test that deletes the original tree, reconstructs only from archived bytes, and obtains equivalent messages from the same adapter. All other adapters remain explicitly unsupported until they gain the same proof.
+
+Capture eligibility is independent of session tier; `skip` sessions from an enabled adapter are not excluded merely because they are omitted from search.
 
 Every enumerated locator is classified as one of:
 
-- `regularFile`: eligible for exact capture;
+- `declaredSingleFile`: eligible only when the adapter descriptor identifies one regular file and a replay-safe relative path;
 - `missing`: transient retry state;
 - `unsupportedComposite`: a directory or multi-file logical source;
 - `unsupportedVirtual`: a locator containing adapter-specific selectors such as `::` or `?composer=`;
+- `unsupportedAdapter`: the adapter has not declared and proven an archive source contract;
 - `unsafe`: symlink, non-regular object, path outside the adapter's enumerated locator, or an identity race;
 - `excluded`: local capture remains allowed, but remote replication is forbidden by project policy.
 
-Unsupported and unsafe locators are recorded honestly and are never reported as remotely durable. This release does not guess that an opaque locator string is a file path.
+Unsupported and unsafe locators are recorded honestly and are never reported as remotely durable. The coordinator never infers source completeness from `stat`, a filename extension, or an opaque locator string. Kimi context/wire files, Copilot checkpoint indexes/bodies, Antigravity path-sensitive sources, and database-backed Cursor/OpenCode locators are specifically unsupported in this release.
 
 ### Generation identity
 
@@ -125,6 +130,7 @@ wholeSourceSHA256
 rawByteCount
 chunkSize
 chunks[]             # ordinal, rawSHA256, rawByteCount
+replayLayout          # adapter-declared relative paths and replay strategy
 ```
 
 `machineID` is a persisted random UUID, not a hostname. `captureID` is derived from machine ID, source, normalized locator, generation tuple, and whole-source digest. Binding a session produces a new canonical manifest that references the same immutable objects; the unbound capture remains auditable.
@@ -154,12 +160,13 @@ No archive payload table is added to `index.sqlite`.
 
 EngramService runs exact-source capture as a distinct pre-index phase, outside the `ServiceWriterGate` that owns `index.sqlite` writes:
 
-1. Enumerate current locators from the registered Swift adapters.
-2. Classify and capture stable regular-file generations into the local archive.
+1. Enumerate current locators from registered adapters that explicitly conform to `ExactArchiveSourceAdapter`; record other adapters as unsupported.
+2. Ask the adapter for an `ArchiveSourceDescriptor`, validate its declared files and replay paths, and capture stable generations into the local archive.
 3. Run the existing Swift indexer unchanged through `ServiceWriterGate`.
-4. Reconcile unbound captures to indexed sessions by exact `(source, locator)` match.
-5. Create bound canonical manifests.
-6. Queue eligible bound manifests for both replicas.
+4. Read the current session identity set and require exactly one match for normalized `(source, locator)`.
+5. Re-open the declared source after indexing and revalidate the complete generation tuple and whole-source SHA-256 against the capture. A changed source or ambiguous session match remains unbound and retries.
+6. Create bound canonical manifests only after that proof.
+7. Queue eligible bound manifests for both replicas.
 
 This deliberately permits a captured but unbound generation when parsing fails. It also lets a previously unchanged/index-skipped locator receive its first exact archive capture. Archive capture failures do not make the existing index scan unusable; they are surfaced independently in archive status.
 
@@ -218,6 +225,7 @@ Missing references return `409`; invalid digest/schema/content returns `422`. A 
 PUT /v2/archive/receipts/:manifest-sha256
 GET /v2/archive/receipts/:manifest-sha256
 GET /v2/archive/receipts?machine_id=<uuid>&cursor=<opaque>&limit=<bounded>
+GET /v2/archive/machines?cursor=<opaque>&limit=<bounded>
 ```
 
 Receipt creation is idempotent. The server emits a canonical receipt only after the bound manifest and every referenced object are durably published and reverified. It includes:
@@ -235,7 +243,7 @@ rawByteCount
 storedAt
 ```
 
-The receipt identifier is the SHA-256 of its canonical bytes. The client stores the exact receipt bytes and digest. Listing receipts by machine ID provides clean-machine discovery without trusting a mutable catalog copied from the client.
+The receipt identifier is the SHA-256 of its canonical bytes. The client stores the exact receipt bytes and digest. An authenticated bounded machine listing is derived from immutable receipt namespaces; it lets a clean client discover machine IDs before listing receipts without trusting a mutable catalog copied from the client.
 
 ### Immutable encrypted storage
 
@@ -286,7 +294,11 @@ Archive v2 is default-off and separate from legacy offload settings. Enabling it
 }
 ```
 
-Plain HTTP is accepted only for Tailscale IPs/hostnames or loopback. Other non-TLS URLs fail closed. Bearer tokens live in Keychain service `com.engram.remote-archive-v2` under accounts `replica:hq` and `replica:m1`. Server AES keys never leave their servers.
+Plain HTTP is accepted only for loopback, Tailscale IPv4 `100.64.0.0/10`, Tailscale IPv6 `fd7a:115c:a1e0::/48`, or a syntactically valid hostname ending in `.ts.net`. RFC1918 addresses, `.local`, wildcard addresses, and bare single-label names are not sufficient. Every other URL requires HTTPS or fails closed. The new backend must not reuse the legacy backend's broader `isPrivateHost` predicate.
+
+When v2 is enabled, the server bind address must be loopback or a literal Tailscale IPv4/IPv6 address. `0.0.0.0`, `::`, public addresses, RFC1918/LAN addresses, and DNS names are rejected. The supported Tailscale Serve layout binds EngramRemoteServer to loopback and lets Tailscale own the external listener.
+
+Bearer tokens live in Keychain service `com.engram.remote-archive-v2` under accounts `replica:hq` and `replica:m1`. Server AES keys never leave their servers.
 
 ### Replication state machine
 
@@ -330,11 +342,11 @@ For transcript reads and exports:
 
 An existing live source that fails parsing does not silently fall back to an older archived generation. This prevents stale history from masking a current parser regression.
 
-Service export and MCP `get_session` share this resolution policy. MCP keeps its fast direct local-file path and calls the service only for the archive fallback, so the normal local contract and pagination remain unchanged.
+Service export and MCP `get_session` share this resolution policy. MCP keeps its fast direct local-file path. Only when that source is missing/unavailable, it calls a read-only `archiveReadSessionPage` service command with session ID, page, page size, and role filter. The service owns live/local/HQ/M1 resolution and visible-message pagination and returns a bounded DTO containing messages, total pages, current page, completeness, and truncation metadata. MCP retains `include_raw`/redaction and output shaping. IPC never returns archive bytes or a temporary path.
 
 Raw archive bytes never bypass existing output redaction/role/pagination policy. Exactness is a storage property, not automatic plaintext egress authorization.
 
-Clean-machine recovery is proven by an integration test that starts with no local catalog, lists receipts by machine ID from one replica, downloads and verifies a manifest and its objects, and reconstructs byte-identical source data. A user-facing restore CLI is deferred.
+Clean-machine recovery is proven by an integration test that starts with neither local catalog nor machine ID, lists machine IDs from one authenticated replica, selects one, lists its receipts, downloads and verifies a manifest and its objects, and reconstructs byte-identical source data. A user-facing restore CLI is deferred.
 
 ## Service and IPC Surface
 
@@ -415,7 +427,7 @@ The runbook must generate separate tokens and keys, use owner-only LaunchAgent e
 ## Delivery Sequence
 
 1. Shared canonical models, local immutable CAS, and separate archive catalog.
-2. Pre-index regular-file capture and post-index session binding.
+2. Pre-index capture for adapter-declared Claude Code and Codex single-file sources, followed by generation-verified session binding.
 3. Immutable single-server `/v2/archive` store and routes, preserving v1.
 4. Separate archive HTTP client, Keychain/config contract, and dual-replica coordinator.
 5. Service scheduling, status/retry IPC, and offline behavior.
@@ -430,7 +442,7 @@ The implementation is ready for deployment planning only when:
 
 1. focused RED/GREEN evidence exists for every new behavior;
 2. all Swift schemes affected by archive changes pass;
-3. `xcodegen generate` produces no uncommitted project drift when target membership changes;
+3. `xcodegen generate` produces no unrelated project drift after new file references or target membership change;
 4. a two-server local integration harness proves independent receipts and hq-to-m1 fallback;
 5. a clean-machine reconstruction test proves exact bytes without local catalog state;
 6. static search proves no v2 DELETE/source-unlink/GC path exists;
