@@ -388,6 +388,159 @@ final class ArchiveConfigTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: decomposed.path))
     }
 
+    func testProgrammaticAppRejectsMissingLeafBelowExistingSymlinkAncestor() throws {
+        let base = temporaryDirectory()
+        let real = base.appendingPathComponent("real", isDirectory: true)
+        let alias = base.appendingPathComponent("alias", isDirectory: true)
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: real)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let realChild = real.appendingPathComponent("missing-child", isDirectory: true)
+        let aliasChild = alias.appendingPathComponent("missing-child", isDirectory: true)
+        XCTAssertThrowsError(
+            try EngramRemoteServerApp(
+                config: programmaticConfig(
+                    base: base,
+                    legacyRoot: realChild,
+                    archiveRoot: aliasChild
+                )
+            )
+        ) { error in
+            guard case EngramRemoteServerConfig.ConfigError.storeRootsMustBeDisjoint = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: realChild.path))
+    }
+
+    func testProgrammaticAppRejectsMissingLeafThroughSystemTmpAlias() throws {
+        let tmpAlias = URL(fileURLWithPath: "/tmp", isDirectory: true)
+        let privateTmp = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+        guard tmpAlias.resolvingSymlinksInPath().standardizedFileURL == privateTmp.standardizedFileURL else {
+            throw XCTSkip("this macOS volume does not expose /tmp as /private/tmp")
+        }
+
+        let leaf = "engram-archive-root-alias-\(UUID().uuidString)"
+        let aliasRoot = tmpAlias.appendingPathComponent(leaf, isDirectory: true)
+        let physicalRoot = privateTmp.appendingPathComponent(leaf, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: aliasRoot)
+            try? FileManager.default.removeItem(at: physicalRoot)
+        }
+
+        XCTAssertThrowsError(
+            try EngramRemoteServerApp(
+                config: programmaticConfig(
+                    base: privateTmp,
+                    legacyRoot: physicalRoot,
+                    archiveRoot: aliasRoot
+                )
+            )
+        ) { error in
+            guard case EngramRemoteServerConfig.ConfigError.storeRootsMustBeDisjoint = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: physicalRoot.path))
+    }
+
+    func testProgrammaticAppRejectsDanglingRelativeRootAliasBeforeLegacyCreation() throws {
+        let base = temporaryDirectory()
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let real = base.appendingPathComponent("not-created-yet", isDirectory: true)
+        let alias = base.appendingPathComponent("dangling-alias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: alias.path,
+            withDestinationPath: "not-created-yet"
+        )
+
+        XCTAssertThrowsError(
+            try EngramRemoteServerApp(
+                config: programmaticConfig(
+                    base: base,
+                    legacyRoot: real,
+                    archiveRoot: alias
+                )
+            )
+        ) { error in
+            guard case EngramRemoteServerConfig.ConfigError.storeRootsMustBeDisjoint = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: real.path))
+        XCTAssertNotNil(try FileManager.default.destinationOfSymbolicLink(atPath: alias.path))
+    }
+
+    func testProgrammaticAppRejectsRelativeSymlinkChainWithMissingLeaf() throws {
+        let base = temporaryDirectory()
+        let real = base.appendingPathComponent("chain-real", isDirectory: true)
+        let first = base.appendingPathComponent("chain-first", isDirectory: true)
+        let second = base.appendingPathComponent("chain-second", isDirectory: true)
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: first.path,
+            withDestinationPath: "chain-real"
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: second.path,
+            withDestinationPath: "chain-first"
+        )
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let realChild = real.appendingPathComponent("missing-child", isDirectory: true)
+        let chainedChild = second.appendingPathComponent("missing-child", isDirectory: true)
+        XCTAssertThrowsError(
+            try EngramRemoteServerApp(
+                config: programmaticConfig(
+                    base: base,
+                    legacyRoot: realChild,
+                    archiveRoot: chainedChild
+                )
+            )
+        ) { error in
+            guard case EngramRemoteServerConfig.ConfigError.storeRootsMustBeDisjoint = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: realChild.path))
+    }
+
+    func testProgrammaticAppRejectsSymlinkCycleWithoutCreatingRoots() throws {
+        let base = temporaryDirectory()
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let first = base.appendingPathComponent("cycle-first", isDirectory: true)
+        let second = base.appendingPathComponent("cycle-second", isDirectory: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: first.path,
+            withDestinationPath: "cycle-second"
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: second.path,
+            withDestinationPath: "cycle-first"
+        )
+        let untouched = base.appendingPathComponent("untouched", isDirectory: true)
+
+        XCTAssertThrowsError(
+            try EngramRemoteServerApp(
+                config: programmaticConfig(
+                    base: base,
+                    legacyRoot: first.appendingPathComponent("child", isDirectory: true),
+                    archiveRoot: untouched
+                )
+            )
+        ) { error in
+            guard case EngramRemoteServerConfig.ConfigError.storeRootsMustBeDisjoint = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: untouched.path))
+    }
+
     func testArchiveServerIDIsAStableSafeToken() {
         for serverID in ["hq/../../escape", "hq one", "hq\"quoted", ".", "..", "hq:one"] {
             var env = enabledEnvironment(host: "127.0.0.1")

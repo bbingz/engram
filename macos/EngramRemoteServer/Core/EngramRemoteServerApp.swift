@@ -1,5 +1,6 @@
-import Foundation
 import CryptoKit
+import Darwin
+import Foundation
 import Hummingbird
 import HTTPTypes
 import NIOCore
@@ -196,8 +197,10 @@ public final class EngramRemoteServerApp: Sendable {
     }
 
     private static func storeRootsAreDisjoint(_ lhs: URL, _ rhs: URL) -> Bool {
-        let standardizedLHS = lhs.standardizedFileURL
-        let standardizedRHS = rhs.standardizedFileURL
+        guard let standardizedLHS = lexicallyNormalizedRoot(lhs),
+              let standardizedRHS = lexicallyNormalizedRoot(rhs) else {
+            return false
+        }
         let standardizedComparisonIsCaseSensitive = comparisonIsCaseSensitive(
             standardizedLHS,
             standardizedRHS
@@ -208,8 +211,10 @@ public final class EngramRemoteServerApp: Sendable {
             caseSensitive: standardizedComparisonIsCaseSensitive
         ) else { return false }
 
-        let resolvedLHS = standardizedLHS.resolvingSymlinksInPath().standardizedFileURL
-        let resolvedRHS = standardizedRHS.resolvingSymlinksInPath().standardizedFileURL
+        guard let resolvedLHS = canonicalRootWithoutCreating(standardizedLHS),
+              let resolvedRHS = canonicalRootWithoutCreating(standardizedRHS) else {
+            return false
+        }
         let resolvedComparisonIsCaseSensitive = comparisonIsCaseSensitive(
             resolvedLHS,
             resolvedRHS
@@ -219,6 +224,111 @@ public final class EngramRemoteServerApp: Sendable {
             resolvedRHS,
             caseSensitive: resolvedComparisonIsCaseSensitive
         )
+    }
+
+    /// Resolve every existing symlink component while preserving the suffix below
+    /// the deepest existing directory. Foundation's whole-path resolver leaves an
+    /// existing symlink ancestor unresolved when the final leaf does not exist,
+    /// which can make two stores appear disjoint until the first store creates it.
+    /// Dangling links, cycles, non-directory components, and inspection failures
+    /// are rejected so root validation never creates filesystem state.
+    private static func canonicalRootWithoutCreating(_ url: URL) -> URL? {
+        guard var components = lexicallyNormalizedComponents(url) else { return nil }
+        var resolved = URL(fileURLWithPath: "/", isDirectory: true)
+        var index = 0
+        var symlinkHops = 0
+        var visitedSymlinks = Set<String>()
+
+        while index < components.count {
+            let component = components[index]
+            let candidate = resolved.appendingPathComponent(component, isDirectory: true)
+            var metadata = stat()
+            let result = candidate.path.withCString { lstat($0, &metadata) }
+
+            if result != 0 {
+                guard errno == ENOENT else { return nil }
+                for suffix in components[index...] {
+                    resolved.appendPathComponent(suffix, isDirectory: true)
+                }
+                return resolved
+            }
+
+            let fileType = metadata.st_mode & S_IFMT
+            if fileType == S_IFLNK {
+                symlinkHops += 1
+                guard symlinkHops <= 40,
+                      visitedSymlinks.insert(candidate.path).inserted,
+                      let destination = try? FileManager.default.destinationOfSymbolicLink(
+                          atPath: candidate.path
+                      ) else {
+                    return nil
+                }
+
+                let destinationURL: URL
+                if destination.hasPrefix("/") {
+                    destinationURL = URL(fileURLWithPath: destination, isDirectory: true)
+                } else {
+                    let combinedPath = (resolved.path as NSString)
+                        .appendingPathComponent(destination)
+                    destinationURL = URL(fileURLWithPath: combinedPath, isDirectory: true)
+                }
+                guard let destinationComponents = lexicallyNormalizedComponents(destinationURL) else {
+                    return nil
+                }
+                let standardizedDestination = rootURL(components: destinationComponents)
+
+                // A dangling target could become live after BlobStore creates the
+                // other root, so it must fail closed instead of being preserved as
+                // an unresolved suffix.
+                var destinationMetadata = stat()
+                let destinationResult = standardizedDestination.path.withCString {
+                    stat($0, &destinationMetadata)
+                }
+                guard destinationResult == 0,
+                      destinationMetadata.st_mode & S_IFMT == S_IFDIR else {
+                    return nil
+                }
+
+                let suffix = Array(components.dropFirst(index + 1))
+                components = destinationComponents + suffix
+                resolved = URL(fileURLWithPath: "/", isDirectory: true)
+                index = 0
+                continue
+            }
+
+            guard fileType == S_IFDIR else { return nil }
+            resolved = candidate
+            index += 1
+        }
+
+        return resolved
+    }
+
+    private static func lexicallyNormalizedRoot(_ url: URL) -> URL? {
+        guard let components = lexicallyNormalizedComponents(url) else { return nil }
+        return rootURL(components: components)
+    }
+
+    private static func lexicallyNormalizedComponents(_ url: URL) -> [String]? {
+        guard url.isFileURL, url.path.hasPrefix("/") else { return nil }
+        var result: [String] = []
+        for component in url.pathComponents.dropFirst() {
+            switch component {
+            case "", ".":
+                continue
+            case "..":
+                guard !result.isEmpty else { return nil }
+                result.removeLast()
+            default:
+                result.append(component)
+            }
+        }
+        return result
+    }
+
+    private static func rootURL(components: [String]) -> URL {
+        let path = components.isEmpty ? "/" : "/" + components.joined(separator: "/")
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 
     private static func pathsOverlap(
@@ -257,7 +367,7 @@ public final class EngramRemoteServerApp: Sendable {
     }
 
     private static func volumeSupportsCaseSensitiveNames(at url: URL) -> Bool? {
-        var candidate = url.standardizedFileURL
+        var candidate = url
         while true {
             if FileManager.default.fileExists(atPath: candidate.path),
                let values = try? candidate.resourceValues(
@@ -265,7 +375,7 @@ public final class EngramRemoteServerApp: Sendable {
                ), let supportsCaseSensitiveNames = values.volumeSupportsCaseSensitiveNames {
                 return supportsCaseSensitiveNames
             }
-            let parent = candidate.deletingLastPathComponent().standardizedFileURL
+            let parent = candidate.deletingLastPathComponent()
             guard parent.path != candidate.path else { return nil }
             candidate = parent
         }
