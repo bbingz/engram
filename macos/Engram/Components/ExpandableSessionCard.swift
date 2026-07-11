@@ -25,6 +25,7 @@ struct ExpandableSessionCard: View {
     var onRename: ((Session) -> Void)? = nil
     var onExportMarkdown: ((Session) -> Void)? = nil
     var onExportJSON: ((Session) -> Void)? = nil
+    var exportsDisabled = false
     /// Favorite toggle with a main-actor success flag.
     /// Callers invoke `completion(true)` after a successful service write/reload
     /// and `completion(false)` on failure. Parent/Timeline sites may ignore it;
@@ -204,6 +205,7 @@ struct ExpandableSessionCard: View {
                         onRename: onRename.map { cb in { cb(session) } },
                         onExportMarkdown: onExportMarkdown.map { cb in { cb(session) } },
                         onExportJSON: onExportJSON.map { cb in { cb(session) } },
+                        exportsDisabled: exportsDisabled,
                         onHide: onHide.map { cb in { cb(session) } }
                     )
                 }
@@ -235,6 +237,7 @@ struct ExpandableSessionCard: View {
                                 onRename: onRename.map { cb in { cb(child) } },
                                 onExportMarkdown: onExportMarkdown.map { cb in { cb(child) } },
                                 onExportJSON: onExportJSON.map { cb in { cb(child) } },
+                                exportsDisabled: exportsDisabled,
                                 // Completion-aware: local isFavorite flips only after service success.
                                 onToggleFavorite: onToggleFavorite.map { _ in { toggleChildFavorite(child) } },
                                 isHidden: child.hiddenAt != nil
@@ -271,6 +274,7 @@ struct ExpandableSessionCard: View {
                                 onRename: onRename.map { cb in { cb(child) } },
                                 onExportMarkdown: onExportMarkdown.map { cb in { cb(child) } },
                                 onExportJSON: onExportJSON.map { cb in { cb(child) } },
+                                exportsDisabled: exportsDisabled,
                                 // Completion-aware: local isFavorite flips only after service success.
                                 onToggleFavorite: onToggleFavorite.map { _ in { toggleChildFavorite(child) } },
                                 isHidden: child.hiddenAt != nil
@@ -403,6 +407,7 @@ struct CompactChildRow: View {
     var onRename: (() -> Void)? = nil
     var onExportMarkdown: (() -> Void)? = nil
     var onExportJSON: (() -> Void)? = nil
+    var exportsDisabled = false
     var onToggleFavorite: (() -> Void)? = nil
     var isHidden = false
 
@@ -466,6 +471,7 @@ struct CompactChildRow: View {
                 onRename: onRename,
                 onExportMarkdown: onExportMarkdown,
                 onExportJSON: onExportJSON,
+                exportsDisabled: exportsDisabled,
                 onHide: onHide
             )
         }
@@ -484,6 +490,7 @@ private struct SessionWriteMenuItems: View {
     var onRename: (() -> Void)? = nil
     var onExportMarkdown: (() -> Void)? = nil
     var onExportJSON: (() -> Void)? = nil
+    var exportsDisabled = false
     var onHide: (() -> Void)? = nil
 
     private var hasAny: Bool {
@@ -513,6 +520,7 @@ private struct SessionWriteMenuItems: View {
                         Button("JSON") { onExportJSON() }
                     }
                 }
+                .disabled(exportsDisabled)
             }
             if let onHide {
                 Button(isHidden ? "Unhide" : "Hide") { onHide() }

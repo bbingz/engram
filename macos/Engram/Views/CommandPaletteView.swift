@@ -2,61 +2,7 @@
 import AppKit
 import SwiftUI
 
-/// H12: export is a side-channel status, never a full results replacement.
-/// Transitions: idle → inFlight → succeeded|failed → idle (clear / next export).
-enum CommandPaletteExportState: Equatable {
-    case idle
-    case inFlight(sessionId: String)
-    case succeeded(path: String)
-    case failed(message: String)
-
-    var isInFlight: Bool {
-        if case .inFlight = self { return true }
-        return false
-    }
-
-    /// Results and selection stay visible for every non-idle state.
-    var keepsResultsVisible: Bool { true }
-
-    var allowsExportAction: Bool { !isInFlight }
-
-    var statusText: String? {
-        switch self {
-        case .idle:
-            return nil
-        case .inFlight:
-            return "Exporting…"
-        case .succeeded(let path):
-            return "Exported to \((path as NSString).lastPathComponent)"
-        case .failed(let message):
-            return message
-        }
-    }
-
-    var revealPath: String? {
-        if case .succeeded(let path) = self { return path }
-        return nil
-    }
-
-    /// Begin an export. Returns false when one is already in flight (double-submit guard).
-    mutating func begin(sessionId: String) -> Bool {
-        guard !isInFlight else { return false }
-        self = .inFlight(sessionId: sessionId)
-        return true
-    }
-
-    mutating func succeed(path: String) {
-        self = .succeeded(path: path)
-    }
-
-    mutating func fail(message: String) {
-        self = .failed(message: message)
-    }
-
-    mutating func clear() {
-        self = .idle
-    }
-}
+typealias CommandPaletteExportState = SessionExportState
 
 struct CommandPaletteView: View {
     let onNavigate: (Screen) -> Void

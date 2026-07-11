@@ -170,7 +170,7 @@ remaining 19. No row was overturned or accepted-as-design in this closeout.
 
 | Former open follow-up | Disposition |
 |-----------------------|-------------|
-| Session export in-flight feedback | **Closed** via H12 / Wave 8C |
+| Session export in-flight feedback | **Closed** via H12 / Wave 8C for Command Palette plus final Task 7 remediation for Sessions/Timeline rows; `CommandPaletteTests` + `SessionActionsTests` cover progress and duplicate guards |
 | Long project migration cancel/reconnect | **Closed** via Wave 8D (`c983a759`) |
 | Disk-audit `last_accessed_at` / `access_count` consumer | **Closed** via Wave 8E E2E `testGetMemoryRanksByServiceRecordedAccessCount_diskAuditConsumer` |
 | Normalize local ignore rules | **Closed** — universal artifacts already in shared `.gitignore` (`node_modules/`, `dist/`, `.husky/_/`); host-local `.git/info/exclude` remains uncommitted by design |

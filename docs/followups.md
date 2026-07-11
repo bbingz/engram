@@ -22,10 +22,12 @@ Evidence ledger:
 CLOSEOUT (2026-07-11): actionable items from the 2026-07-08 perceived-duration
 audit and related ops follow-ups.
 
-- **Session export in-flight feedback.** Closed via Wave 8C / H12
-  (`262d59a2` / `cfed29b5`): `CommandPaletteExportState` idle→inFlight→
-  succeeded|failed with progress, duplicate-export disable, and Finder reveal.
-  Evidence: `CommandPaletteTests` export state suite.
+- **Session export in-flight feedback.** Closed across every exposed app entry:
+  Wave 8C / H12 (`262d59a2` / `cfed29b5`) added the command-palette state
+  machine; the final Task 7 remediation extended the same
+  idle→inFlight→succeeded|failed contract to Sessions and Timeline rows, with
+  visible progress, duplicate-export disable, and Finder reveal. Evidence:
+  `CommandPaletteTests` and `SessionActionsTests` export-state/wiring suites.
 - **Long project migrations cancel or continue.** Closed via Wave 8D
   (`c983a759` / `eeab26a8`): stable operation ID, cancel-before-commit,
   post-commit reconnect/continuation (not false cancellation), idempotent

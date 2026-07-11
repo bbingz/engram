@@ -31,6 +31,7 @@ struct SessionsPageView: View {
     @State private var renameText = ""
     @State private var relateTarget: Session? = nil
     @State private var actionStatus: String? = nil
+    @State private var exportState: SessionExportState = .idle
     // Filter signature at the last load; distinguishes a filter change (reload
     // immediately from page one) from a background index tick (debounce + keep
     // pagination). See BrowseReloadCoalescer / #3.
@@ -127,6 +128,20 @@ struct SessionsPageView: View {
         await task.value
     }
 
+    private func export(_ session: Session, format: String) {
+        var next = exportState
+        guard next.begin(sessionId: session.id) else { return }
+        exportState = next
+        handlers.export(session, format: format) { terminal in
+            guard exportState == .inFlight(sessionId: session.id) else { return }
+            exportState = terminal
+            Task {
+                try? await Task.sleep(for: .seconds(3))
+                if exportState == terminal { exportState = .idle }
+            }
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -137,6 +152,8 @@ struct SessionsPageView: View {
                     AlertBanner(message: actionStatus)
                         .accessibilityIdentifier("sessions_actionStatus")
                 }
+                SessionExportStatusBanner(state: exportState)
+                    .accessibilityIdentifier("sessions_exportStatus")
                 HStack(spacing: 12) {
                     KPICard(value: "\(totalCount)", label: "Total Sessions")
                         .accessibilityIdentifier("sessions_kpiCard_total")
@@ -203,8 +220,9 @@ struct SessionsPageView: View {
                                 onRelate: { relateTarget = $0 },
                                 onHide: { handlers.setHidden($0, hidden: $0.hiddenAt == nil) },
                                 onRename: { beginRename($0) },
-                                onExportMarkdown: { handlers.export($0, format: "markdown") },
-                                onExportJSON: { handlers.export($0, format: "json") },
+                                onExportMarkdown: { export($0, format: "markdown") },
+                                onExportJSON: { export($0, format: "json") },
+                                exportsDisabled: !exportState.allowsExportAction,
                                 // M19: one toggle for Browse and Starred — target is !isFavorite.
                                 // Completion reports service success so expanded children can
                                 // update local isFavorite only after write+reload succeed.

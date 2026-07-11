@@ -39,3 +39,20 @@ user-facing wait.
   cancellation and cannot be backgrounded once execution starts.
 - Session export can wait up to the default 30 second service timeout without
   in-flight progress or cancellation.
+
+## Remediation status (2026-07-11)
+
+- **Session export: resolved.** Command Palette, Sessions, and Timeline now use
+  the same idle→inFlight→succeeded|failed contract. All exposed entry points
+  show progress, block duplicate exports while the service call is active, and
+  retain the exported path for Finder reveal. The export runs in a background
+  task while the page remains usable, satisfying the audit's background-
+  continuation alternative without adding a misleading client-only cancel.
+  Regression coverage lives in `CommandPaletteTests` and
+  `SessionActionsTests`.
+- **Project move / batch move: resolved.** Wave 8D added cancellable,
+  reconnectable long-operation sessions; see the Wave 7 engineering-zero
+  closeout for the named Core/Service/App tests.
+- **FTS full rebuild: still conditional.** No user-visible rebuild trigger is
+  exposed, so rebuild-specific progress remains a product decision rather than
+  an active engineering task.

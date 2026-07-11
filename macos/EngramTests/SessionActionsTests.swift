@@ -86,6 +86,67 @@ final class SessionActionsTests: XCTestCase {
         XCTAssertEqual(SessionActionHandlers.normalizedName("x"), "x")
     }
 
+    func testSessionsAndTimelineWireExportProgressAndDuplicateGuard() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+
+        for relativePath in [
+            "macos/Engram/Views/Pages/SessionsPageView.swift",
+            "macos/Engram/Views/Pages/TimelinePageView.swift",
+        ] {
+            let source = try String(
+                contentsOfFile: root.appendingPathComponent(relativePath).path,
+                encoding: .utf8
+            )
+            XCTAssertTrue(
+                source.contains("@State private var exportState: SessionExportState"),
+                "\(relativePath) must own export state"
+            )
+            XCTAssertTrue(
+                source.contains("SessionExportStatusBanner(state: exportState)"),
+                "\(relativePath) must render in-flight and terminal export status"
+            )
+            XCTAssertTrue(
+                source.contains("guard next.begin(sessionId: session.id) else { return }"),
+                "\(relativePath) must reject duplicate exports before the service call"
+            )
+            XCTAssertTrue(
+                source.contains("exportsDisabled: !exportState.allowsExportAction"),
+                "\(relativePath) must disable export menu actions while in flight"
+            )
+        }
+
+        let componentSource = try String(
+            contentsOfFile: root
+                .appendingPathComponent("macos/Engram/Components/ExpandableSessionCard.swift")
+                .path,
+            encoding: .utf8
+        )
+        XCTAssertGreaterThanOrEqual(
+            componentSource.components(separatedBy: "exportsDisabled: exportsDisabled").count - 1,
+            3,
+            "parent, confirmed-child, and suggested-child export menus must inherit the guard"
+        )
+        XCTAssertTrue(
+            componentSource.contains(".disabled(exportsDisabled)"),
+            "the shared export menu must visibly disable duplicate actions"
+        )
+
+        let handlerSource = try String(
+            contentsOfFile: root
+                .appendingPathComponent("macos/Engram/Views/SessionActionHandlers.swift")
+                .path,
+            encoding: .utf8
+        )
+        XCTAssertTrue(
+            handlerSource.contains("completion(.succeeded(path: response.outputPath))")
+                && handlerSource.contains("completion(.failed(message:"),
+            "the background export task must report both terminal states to its host page"
+        )
+    }
+
     private static func empty(_ request: EngramServiceRequestEnvelope) -> EngramServiceResponseEnvelope {
         .success(requestId: request.requestId, result: Data("{}".utf8))
     }

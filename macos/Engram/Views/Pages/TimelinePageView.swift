@@ -107,6 +107,7 @@ struct TimelinePageView: View {
     @State private var renameTarget: Session? = nil
     @State private var renameText = ""
     @State private var actionStatus: String? = nil
+    @State private var exportState: SessionExportState = .idle
 
     private var handlers: SessionActionHandlers {
         SessionActionHandlers(
@@ -122,6 +123,20 @@ struct TimelinePageView: View {
                 }
             }
         )
+    }
+
+    private func export(_ session: Session, format: String) {
+        var next = exportState
+        guard next.begin(sessionId: session.id) else { return }
+        exportState = next
+        handlers.export(session, format: format) { terminal in
+            guard exportState == .inFlight(sessionId: session.id) else { return }
+            exportState = terminal
+            Task {
+                try? await Task.sleep(for: .seconds(3))
+                if exportState == terminal { exportState = .idle }
+            }
+        }
     }
 
     // Distinct projects across the loaded window, for the client-side filter.
@@ -209,6 +224,8 @@ struct TimelinePageView: View {
                     AlertBanner(message: actionStatus)
                         .accessibilityIdentifier("timeline_actionStatus")
                 }
+                SessionExportStatusBanner(state: exportState)
+                    .accessibilityIdentifier("timeline_exportStatus")
                 if !visibleChartData.isEmpty {
                     ActivityChart(data: visibleChartData)
                         .frame(height: 120)
@@ -266,8 +283,9 @@ struct TimelinePageView: View {
                                         onDismissSuggestion: { child in dismissSuggestion(child) },
                                         onHide: { handlers.setHidden($0, hidden: $0.hiddenAt == nil) },
                                         onRename: { beginRename($0) },
-                                        onExportMarkdown: { handlers.export($0, format: "markdown") },
-                                        onExportJSON: { handlers.export($0, format: "json") },
+                                        onExportMarkdown: { export($0, format: "markdown") },
+                                        onExportJSON: { export($0, format: "json") },
+                                        exportsDisabled: !exportState.allowsExportAction,
                                         onToggleFavorite: { session, completion in
                                             handlers.setFavorite(
                                                 session,

@@ -2,6 +2,97 @@
 import AppKit
 import SwiftUI
 
+/// Export is a side-channel status so page content remains usable while the
+/// service writes the transcript. One in-flight export is allowed per surface.
+enum SessionExportState: Equatable {
+    case idle
+    case inFlight(sessionId: String)
+    case succeeded(path: String)
+    case failed(message: String)
+
+    var isInFlight: Bool {
+        if case .inFlight = self { return true }
+        return false
+    }
+
+    var keepsResultsVisible: Bool { true }
+    var allowsExportAction: Bool { !isInFlight }
+
+    var statusText: String? {
+        switch self {
+        case .idle:
+            nil
+        case .inFlight:
+            "Exporting…"
+        case .succeeded(let path):
+            "Exported to \((path as NSString).lastPathComponent)"
+        case .failed(let message):
+            message
+        }
+    }
+
+    var revealPath: String? {
+        if case .succeeded(let path) = self { return path }
+        return nil
+    }
+
+    mutating func begin(sessionId: String) -> Bool {
+        guard !isInFlight else { return false }
+        self = .inFlight(sessionId: sessionId)
+        return true
+    }
+
+    mutating func succeed(path: String) {
+        self = .succeeded(path: path)
+    }
+
+    mutating func fail(message: String) {
+        self = .failed(message: message)
+    }
+
+    mutating func clear() {
+        self = .idle
+    }
+}
+
+struct SessionExportStatusBanner: View {
+    let state: SessionExportState
+
+    var body: some View {
+        if let status = state.statusText {
+            HStack(spacing: 8) {
+                if state.isInFlight {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityIdentifier("sessionExport_progress")
+                }
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle({
+                        if case .failed = state { return Color.red }
+                        return Color.secondary
+                    }() as Color)
+                Spacer(minLength: 4)
+                if let path = state.revealPath {
+                    Button("Show in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .accessibilityIdentifier("sessionExport_reveal")
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Theme.surface)
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                    .stroke(Theme.border, lineWidth: 1)
+            )
+        }
+    }
+}
+
 /// Side-effecting session-action service calls shared by the browse pages
 /// (SessionsPageView, TimelinePageView). It owns ONLY the service/clipboard/
 /// Finder side effects — sheet-presentation state (resume/replay/rename targets)
@@ -78,7 +169,11 @@ struct SessionActionHandlers {
         }
     }
 
-    func export(_ session: Session, format: String) {
+    func export(
+        _ session: Session,
+        format: String,
+        completion: @escaping @MainActor (SessionExportState) -> Void
+    ) {
         Task {
             do {
                 let response = try await serviceClient.exportSession(
@@ -87,9 +182,9 @@ struct SessionActionHandlers {
                 NSWorkspace.shared.activateFileViewerSelecting(
                     [URL(fileURLWithPath: response.outputPath)]
                 )
-                onStatus("Exported to \((response.outputPath as NSString).lastPathComponent)")
+                completion(.succeeded(path: response.outputPath))
             } catch {
-                onStatus("Export failed: \(error.localizedDescription)")
+                completion(.failed(message: "Export failed: \(error.localizedDescription)"))
             }
         }
     }
