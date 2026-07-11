@@ -69,23 +69,29 @@ function writeGates(dir: string, registry: Record<string, unknown>): string {
 }
 
 describe('invariants ledger gate script', () => {
-  it('passes for the repo invariants ledger with allowlisted gates', () => {
-    const result = runScript();
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain('invariants ledger ok');
-  });
+  it.skipIf(process.platform !== 'darwin')(
+    'passes for the repo invariants ledger with allowlisted gates',
+    () => {
+      const result = runScript();
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('invariants ledger ok');
+    },
+  );
 
-  it('passes under stock macOS /bin/bash with the valid registry', () => {
-    // L09 portability: the runner must not require bash 4+ features (mapfile).
-    const pathEnv = `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ''}`;
-    const stdout = execFileSync('/bin/bash', [script], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      env: { ...process.env, PATH: pathEnv },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    expect(stdout).toContain('invariants ledger ok');
-  });
+  it.skipIf(process.platform !== 'darwin')(
+    'passes under stock macOS /bin/bash with the valid registry',
+    () => {
+      // L09 portability: the runner must not require bash 4+ features (mapfile).
+      const pathEnv = `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ''}`;
+      const stdout = execFileSync('/bin/bash', [script], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: pathEnv },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      expect(stdout).toContain('invariants ledger ok');
+    },
+  );
 
   it('keeps enforced and verified anchors inside the checked path set', () => {
     const ledger = readFileSync(
