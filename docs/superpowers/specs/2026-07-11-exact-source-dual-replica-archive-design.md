@@ -150,7 +150,7 @@ Raw chunks are stored in immutable, hash-addressed files. Local publication uses
 Local archive files are owner-only. `archive.sqlite` uses a separate idempotent GRDB migration runner and `synchronous=FULL`. It is a rebuildable catalog, not the byte authority. The minimum tables are:
 
 - `archive_captures`: source/locator/generation, manifest hashes, status, diagnostics, timestamps;
-- `archive_session_bindings`: session ID to capture/manifest, source snapshot fingerprint, bound timestamp;
+- `archive_session_bindings`: session ID to capture/manifest, internally derived source snapshot fingerprint, normalized project-root/remote-eligibility snapshot, bound timestamp;
 - `archive_replica_receipts`: capture/manifest plus replica ID, retry state, receipt bytes/digest, verified timestamp;
 - `archive_metadata`: schema and persisted machine ID.
 
@@ -163,12 +163,14 @@ EngramService runs exact-source capture as a distinct pre-index phase, outside t
 1. Enumerate current locators from registered adapters that explicitly conform to `ExactArchiveSourceAdapter`; record other adapters as unsupported.
 2. Ask the adapter for an `ArchiveSourceDescriptor`, validate its declared files and replay paths, and capture stable generations into the local archive.
 3. Run the existing Swift indexer unchanged through `ServiceWriterGate`.
-4. Read the current session identity set and require exactly one match for normalized `(source, locator)`.
-5. Re-open the declared source after indexing and revalidate the complete generation tuple and whole-source SHA-256 against the capture. A changed source or ambiguous session match remains unbound and retries.
+4. In one short gated snapshot, join sessions to `file_index_state`, require `parse_status = ok`, retain every normalized `(source, locator)` match for ambiguity detection, and construct a structured successful-index generation proof for the capture. A caller cannot supply an arbitrary source fingerprint.
+5. Outside the gate, require the proof's capture ID, source, locator, size, mtime, inode, and device to match the capture, then re-open the declared source and revalidate the complete generation tuple plus whole-source SHA-256. A changed source, stale parser row, non-`ok` state, or ambiguous session match remains unbound and retries.
 6. Create bound canonical manifests only after that proof.
 7. Queue eligible bound manifests for both replicas.
 
 This deliberately permits a captured but unbound generation when parsing fails. It also lets a previously unchanged/index-skipped locator receive its first exact archive capture. Archive capture failures do not make the existing index scan unusable; they are surfaced independently in archive status.
+
+The existing index state records modification time through `FileManager`, while exact capture records Darwin `timespec`. Service integration compares the persisted index row with a fresh `FileIndexStat` in that same precision domain, then constructs the proof with capture-exact fields; it does not naively require the two nanosecond representations to be bit-identical.
 
 ## Remote Archive Protocol
 
@@ -245,6 +247,13 @@ storedAt
 
 The receipt identifier is the SHA-256 of its canonical bytes. The client stores the exact receipt bytes and digest. An authenticated bounded machine listing is derived from immutable receipt namespaces; it lets a clean client discover machine IDs before listing receipts without trusting a mutable catalog copied from the client.
 
+The shared page schemas are fixed before either side is implemented:
+
+- `ArchiveMachinePage`: ordered UUID machine IDs plus an optional opaque next cursor;
+- `ArchiveReceiptPage`: ordered immutable receipt summaries (`manifestSHA256`, `receiptSHA256`) plus an optional opaque next cursor.
+
+Limits and cursor syntax are protocol constants shared by server and client. Pages are deterministic by lexical key, body sizes are bounded while streaming, and a cursor must advance; empty non-terminal pages, cursor cycles, malformed or oversized cursors, and conflicting duplicate items are protocol errors.
+
 ### Immutable encrypted storage
 
 Each remote envelope applies:
@@ -294,7 +303,9 @@ Archive v2 is default-off and separate from legacy offload settings. Enabling it
 }
 ```
 
-Plain HTTP is accepted only for loopback, Tailscale IPv4 `100.64.0.0/10`, Tailscale IPv6 `fd7a:115c:a1e0::/48`, or a syntactically valid hostname ending in `.ts.net`. RFC1918 addresses, `.local`, wildcard addresses, and bare single-label names are not sufficient. Every other URL requires HTTPS or fails closed. The new backend must not reuse the legacy backend's broader `isPrivateHost` predicate.
+Production client origins are restricted to Tailscale: a strict ASCII hostname ending in `.ts.net`, a literal Tailscale IPv4 in `100.64.0.0/10`, or a literal Tailscale IPv6 in `fd7a:115c:a1e0::/48`. `.ts.net` requires HTTPS. Literal tailnet IPs may use HTTP only when `requireTLS` is false; TLS validation is never disabled. Loopback is available only through an internal test override and cannot come from settings or environment. Public hosts, RFC1918 or link-local addresses, `.local`, bare names, wildcard or zone-scoped addresses, userinfo, query, fragment, and non-root base paths fail closed even when they use HTTPS. The new backend must parse IPs with `inet_pton`, normalize origins before distinctness checks, and must not reuse the legacy backend's broader `isPrivateHost` predicate.
+
+The backend owns an ephemeral transport with cookies, cache, credential storage, and system HTTP proxies disabled. Redirects are never followed, even to another tailnet origin, and the final response URL must equal the expected normalized origin plus exact endpoint. This prevents bearer credentials from escaping the origin validated at configuration time.
 
 When v2 is enabled, the server bind address must be loopback or a literal Tailscale IPv4/IPv6 address. `0.0.0.0`, `::`, public addresses, RFC1918/LAN addresses, and DNS names are rejected. The supported Tailscale Serve layout binds EngramRemoteServer to loopback and lets Tailscale own the external listener.
 
@@ -312,7 +323,7 @@ pending -> uploadingObjects -> uploadingManifest -> requestingReceipt
         -> retryWait | quarantined
 ```
 
-- States are persisted independently by `(captureID, replicaID)`.
+- States are persisted independently by `(manifestSHA256, replicaID)` and retain the owning capture ID.
 - A failure on one replica never re-uploads a verified replica.
 - Retry is exponential with jitter and a 24-hour cap.
 - Cancellation does not increment attempts.
@@ -320,33 +331,34 @@ pending -> uploadingObjects -> uploadingManifest -> requestingReceipt
 - Hash/schema/protocol contradictions quarantine that replica entry; network and 5xx failures retry.
 - Dual durability is a derived condition requiring two currently configured, distinct replica IDs with verified receipts for the same bound manifest digest.
 - Replication never changes `sessions.offload_state`, FTS rows, summaries, local CAS, legacy queue rows, or database vacuum state.
+- Every cycle reconciles all policy-eligible bindings that lack either currently configured replica row; it does not enqueue only bindings produced in the current process lifetime. Claims and state transitions are compare-and-set so stale workers cannot regress `verified` work.
 
 Legacy v1 offload and v2 archive may coexist because their storage, protocol, credentials, tables, and coordinators are disjoint. Tests must prove v2 activity cannot invoke legacy purge/delete paths.
 
 ### Remote policy
 
-Remote replication is fail-closed when project root is absent or ambiguous. Configured absolute project-root exclusions prevent remote upload while retaining local capture. This is an ingestion policy, because an immutable remote archive cannot promise retroactive erasure.
+Remote replication is fail-closed when project root is absent or ambiguous. Each binding persists a normalized project-root snapshot (or an explicit excluded or unknown eligibility state) so restart reconciliation can safely decide whether to seed replica work. Configured absolute project-root exclusions prevent remote upload while retaining local capture. This is an ingestion policy, because an immutable remote archive cannot promise retroactive erasure.
 
 ## Read and Recovery Behavior
 
 The service owns Keychain and network access. MCP does not receive remote credentials.
 
-For transcript reads and exports:
+For transcript reads and exports, source resolution and parsing are separate phases:
 
-1. Use the current live source when it exists.
-2. Only for missing/unavailable source, resolve the latest verified local bound manifest.
+1. Select bytes from the current live source when it is definitively available.
+2. Only for a typed definitively-missing or unavailable result, resolve one latest verified local bound manifest.
 3. If local objects are missing/corrupt, try `hq` using its verified receipt.
 4. On absence, transport failure, or integrity failure, try `m1`.
-5. Reconstruct to an owner-only temporary file, verify every chunk plus whole-source digest, and invoke the existing source adapter/parser.
+5. Reconstruct that same manifest digest to an owner-only temporary file, verify every chunk plus whole-source digest, and invoke the existing source adapter/parser exactly once.
 6. Return a structured unavailable/corrupt error if no source passes verification.
 
-An existing live source that fails parsing does not silently fall back to an older archived generation. This prevents stale history from masking a current parser regression.
+An existing live source that fails parsing does not silently fall back to an older archived generation. A parser failure after verified local or remote reconstruction does not try another replica containing the same bytes. Cancellation never advances to another tier. This prevents stale history from masking a current parser regression and keeps storage integrity failures distinct from parser failures.
 
-Service export and MCP `get_session` share this resolution policy. MCP keeps its fast direct local-file path. Only when that source is missing/unavailable, it calls a read-only `archiveReadSessionPage` service command with session ID, page, page size, and role filter. The service owns live/local/HQ/M1 resolution and visible-message pagination and returns a bounded DTO containing messages, total pages, current page, completeness, and truncation metadata. MCP retains `include_raw`/redaction and output shaping. IPC never returns archive bytes or a temporary path.
+Service export and MCP `get_session` share this resolution policy. MCP keeps its fast direct local-file path. Only when that source is definitively missing or unavailable, it calls a read-only `archiveReadSessionPage` service command with session ID, page, page size, and role filter. The service owns live/local/HQ/M1 resolution and visible-message pagination and returns a bounded DTO containing messages, total pages, current page, transcript completeness, and separate response-budget truncation metadata. Roles are restricted to user and assistant. The final encoded outer Unix-socket envelope, including JSON escaping and base64 expansion, must remain below the existing 256 KiB frame limit. MCP retains `include_raw`/redaction and output shaping. IPC never returns archive bytes or a temporary path.
 
 Raw archive bytes never bypass existing output redaction/role/pagination policy. Exactness is a storage property, not automatic plaintext egress authorization.
 
-Clean-machine recovery is proven by an integration test that starts with neither local catalog nor machine ID, lists machine IDs from one authenticated replica, selects one, lists its receipts, downloads and verifies a manifest and its objects, and reconstructs byte-identical source data. A user-facing restore CLI is deferred.
+Clean-machine recovery is proven by an integration test that starts with neither local catalog nor machine ID, lists machine IDs from one authenticated replica, selects one, lists its receipts, downloads and verifies a manifest and its objects, and reconstructs byte-identical source data. It does not instantiate `ArchiveCatalog` before choosing the remote machine ID. Multiple generations restore collision-safely under `<restore-root>/<machineID>/<manifestSHA256>/<replay-path>`; final files are owner-only and exclusively created, and an existing target is accepted only after an exact hash match. A user-facing restore CLI is deferred.
 
 ## Service and IPC Surface
 

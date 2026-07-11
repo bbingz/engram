@@ -150,7 +150,7 @@ Use same-directory temp files, `O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC`, a fu
 
 - [ ] **Step 3: RED — catalog migration and state**
 
-Test fresh migration, repeat migration, persisted machine UUID, capture idempotency, immutable generation fields, bound/unbound manifests, independent `(captureID, replicaID)` states, stale-inflight recovery, and absence of archive tables from a separately created `index.sqlite`.
+Test fresh migration, repeat migration, persisted machine UUID, capture idempotency, immutable generation fields, bound/unbound manifests, independent `(manifestSHA256, replicaID)` states retaining capture ID, stale-inflight recovery, and absence of archive tables from a separately created `index.sqlite`.
 
 - [ ] **Step 4: GREEN — catalog**
 
@@ -221,7 +221,7 @@ Read one descriptor in 8 MiB chunks, hash chunk and whole source incrementally, 
 
 - [ ] **Step 4: RED/GREEN — coordinator and binding**
 
-Use fake adapters to prove locator enumeration and capture occur before an injected parse marker, unchanged captures are idempotent, and parser failure leaves an unbound capture. Binding requires exactly one normalized `(source, locator)` session match, then re-opens and re-hashes the source to prove it is still the captured generation. Test append after capture, atomic replacement, and duplicate session matches; all remain unbound. Add Claude Code and Codex fixtures that delete the original tree, reconstruct the descriptor layout from archive objects, and obtain equivalent messages through the same adapter.
+Use fake adapters to prove locator enumeration and capture occur before an injected parse marker, unchanged captures are idempotent, and parser failure leaves an unbound capture. Binding requires exactly one normalized `(source, locator)` session match plus a structured `parse_status = ok` generation proof whose capture ID/source/locator/size/mtime/inode/device match the capture; its snapshot fingerprint is derived internally rather than accepted from the caller. Then re-open and re-hash the source to prove it is still the captured generation. Test stale rows after parser failure, append after capture, atomic replacement, duplicate session matches, and pre-cancellation; all unsafe cases remain unbound. Add Claude Code and Codex fixtures that delete the original tree, reconstruct the descriptor layout from archive objects, and obtain equivalent messages through the same adapter.
 
 - [ ] **Step 5: Verify and commit**
 
@@ -242,6 +242,7 @@ git commit -m "feat(archive): capture stable regular-file generations"
 - Create: `macos/EngramRemoteServer/Core/ArchiveRoutes.swift`
 - Modify: `macos/EngramRemoteServer/Core/EngramRemoteServerConfig.swift`
 - Modify: `macos/EngramRemoteServer/Core/EngramRemoteServerApp.swift`
+- Modify: `macos/Shared/EngramCore/ArchiveV2/ArchiveModels.swift` for shared bounded machine/receipt page DTOs and protocol limits
 - Modify: `macos/project.yml`
 - Create: `macos/EngramRemoteServerCoreTests/ArchiveStoreTests.swift`
 - Create: `macos/EngramRemoteServerCoreTests/ArchiveRouteTests.swift`
@@ -276,11 +277,11 @@ Use LZFSE only when it reduces size. AAD binds version/kind/digest/codec/raw len
 
 - [ ] **Step 4: RED — HTTP contract**
 
-Test auth; object 8 MiB success and +1 rejection; path/body mismatch; binary GET; manifest missing-reference conflict; corrupt-reference conflict; coherent manifest success; idempotent receipt; bounded machine listing and receipt-list pagination; bounded redacted errors; all v2 DELETE variants `405`; existing v1 PUT/GET/DELETE still pass.
+Test auth on every route; object 8 MiB success and +1 rejection; path/body mismatch; binary GET; manifest missing-reference conflict; corrupt-reference conflict; coherent manifest success; idempotent receipt; bounded deterministic machine listing and receipt-list pagination with malformed/non-advancing cursor rejection; bounded redacted errors; verified HEAD; all v2 DELETE variants `405`; wrong-key restart; existing v1 PUT/GET/DELETE still pass.
 
 - [ ] **Step 5: GREEN — routes**
 
-Mount archive routes only when v2 is enabled. Receipt creation loads and verifies the bound manifest and every object after durable publication. Store the first canonical receipt so repeated calls preserve `storedAt` and receipt digest.
+Mount archive routes only when v2 is enabled. Receipt creation loads and verifies the bound manifest and every object after durable publication. Store the first canonical receipt so repeated calls preserve `storedAt` and receipt digest. Enforce shared object/manifest/receipt/page/cursor/error limits while reading, not after unbounded buffering, and derive discovery only from immutable receipt namespaces.
 
 - [ ] **Step 6: Verify and commit**
 
@@ -310,6 +311,9 @@ git commit -m "feat(remote): add immutable archive v2 protocol"
 - Create: `macos/EngramCoreWrite/ArchiveV2/HTTPArchiveReplicaBackend.swift`
 - Create: `macos/EngramCoreWrite/ArchiveV2/ArchiveReplicationCoordinator.swift`
 - Create: `macos/EngramCoreWrite/ArchiveV2/ArchiveCredentialStore.swift`
+- Modify: `macos/EngramCoreWrite/ArchiveV2/ArchiveCatalog.swift`
+- Modify: `macos/EngramCoreWrite/ArchiveV2/ArchiveCatalogMigrations.swift`
+- Modify: `macos/Shared/EngramCore/ArchiveV2/ArchiveModels.swift` for strict receipt timestamp/page decoding if Task 4 has not already done so
 - Create: `macos/EngramCoreTests/ArchiveV2/HTTPArchiveReplicaBackendTests.swift`
 - Create: `macos/EngramCoreTests/ArchiveV2/ArchiveReplicationCoordinatorTests.swift`
 
@@ -318,8 +322,10 @@ git commit -m "feat(remote): add immutable archive v2 protocol"
 ```swift
 public protocol ArchiveReplicaBackend: Sendable {
     var replicaID: String { get }
+    func headObject(digest: String) async throws -> Bool
     func putObject(digest: String, data: Data) async throws
     func getObject(digest: String) async throws -> Data
+    func headManifest(digest: String) async throws -> Bool
     func putManifest(digest: String, data: Data) async throws
     func getManifest(digest: String) async throws -> Data
     func createReceipt(manifestDigest: String) async throws -> Data
@@ -338,11 +344,11 @@ There is deliberately no delete method.
 
 - [ ] **Step 1: RED — transport confinement**
 
-Test HTTPS plus plain HTTP loopback, `100.64.0.0/10`, `fd7a:115c:a1e0::/48`, and valid `.ts.net` acceptance. Refuse public HTTP, RFC1918, `.local`, wildcard, malformed `.ts.net`, and bare single-label hosts. Test normalized duplicate URL refusal, distinct replica IDs, exact two-replica config, and bearer header presence without logging token. Do not reuse legacy `isPrivateHost`.
+Test HTTPS `.ts.net` plus policy-allowed literal Tailscale IPv4 `100.64.0.0/10` and IPv6 `fd7a:115c:a1e0::/48`. Loopback exists only behind an internal test override. Refuse every public host even over HTTPS, RFC1918/link-local, `.local`, wildcard/zone-scoped addresses, malformed `.ts.net`, bare names, userinfo/query/fragment/non-root paths, and normalized duplicate origins. Require distinct replica IDs, origins, loaded token values, and exactly two replicas. Prove redirects are never followed and the redirect target never receives Authorization. Do not reuse legacy `isPrivateHost`.
 
 - [ ] **Step 2: GREEN — HTTP backend and credentials**
 
-Use injectable `URLSession`/transport. Store tokens under Keychain service `com.engram.remote-archive-v2`, accounts `replica:<id>`. Never reuse the v1 credential account.
+Own an ephemeral no-cookie/no-cache/no-credential/no-proxy session with a no-redirect delegate; inject only a bounded low-level transport/test protocol, not an arbitrary redirect-following session. Store tokens under Keychain service `com.engram.remote-archive-v2`, accounts `replica:<id>`, using update-first writes. Never reuse the v1 credential account.
 
 - [ ] **Step 3: RED — dual state machine**
 
@@ -356,11 +362,12 @@ With two fake replicas, prove:
 - contradiction/422 quarantines;
 - stale in-flight work requeues after ten minutes;
 - verified hq is not re-uploaded when m1 retries;
+- a stale worker cannot regress verified state, and restart reconciliation seeds any missing replica row for every eligible historical binding;
 - no legacy remote backend, offload queue, FTS mutation, or vacuum method is invoked.
 
 - [ ] **Step 4: GREEN — replication**
 
-Upload missing objects, then manifest, request receipt, fetch it again, verify canonical bytes and every binding field, then persist. Derive dual durability only from both configured verified rows for the same bound manifest.
+Use verified HEAD to upload only missing objects, then the manifest, request a receipt, fetch it independently, require exact canonical bytes plus every binding field and canonical timestamp, then atomically persist. HEAD/PUT success is never durability evidence. Use compare-and-set claims/transitions, retry only the failed replica, classify auth/protocol contradictions as quarantine and transient network/408/429/5xx as bounded jittered retry, and derive dual durability only from both configured verified rows for the same bound manifest.
 
 - [ ] **Step 5: Verify and commit**
 
@@ -383,6 +390,8 @@ git commit -m "feat(archive): replicate to two independent servers"
 - Modify: `macos/EngramService/Core/EngramServiceCommandHandler.swift`
 - Modify: `macos/Shared/Service/EngramServiceProtocol.swift`
 - Modify: `macos/Shared/Service/EngramServiceClient.swift`
+- Modify: `macos/Shared/Service/MockEngramServiceClient.swift`
+- Modify: `macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift` to preserve exact-source conformance in the periodic recent wrapper
 - Create: `macos/EngramServiceCoreTests/ArchiveV2ServiceCoordinatorTests.swift`
 - Create: `macos/EngramServiceCoreTests/ArchiveV2IPCTests.swift`
 
@@ -393,24 +402,24 @@ Archive v2 is default-off. When enabled, startup and periodic cycles execute:
 ```text
 capture supported locators outside ServiceWriterGate
 -> existing indexing through ServiceWriterGate
--> brief gate read of sessionID/source/filePath/cwd identities
+-> one brief gated snapshot joining sessions to successful file_index_state identities and cwd/project root
 -> bind in archive.sqlite outside the gate
 -> bounded dual replication outside the gate
 ```
 
 - [ ] **Step 1: RED — settings and fail-closed policy**
 
-Test environment/settings precedence, default off, exact two distinct replicas, missing Keychain token disables remote replication with a status error, project exclusion, absent/ambiguous cwd remote exclusion, and local capture still allowed for remote-excluded projects.
+Test environment/settings precedence, default off with no archive side effects, exact two distinct replicas, missing Keychain token disables remote replication with a status error, project exclusion, absent/ambiguous cwd remote exclusion, persisted project-root/eligibility snapshot, restart reconciliation, and local capture still allowed for remote-excluded projects.
 
 - [ ] **Step 2: RED — orchestration order**
 
-Use fakes to record capture, index, bind, and replicate calls. Assert capture precedes the parser/index marker, archive I/O does not hold the writer gate, parser failure retains capture, unchanged index still permits first capture, and remote offline errors do not fail service readiness or index success.
+Use fakes to record capture, index, one brief gated snapshot, bind, reconcile, and replicate calls. Assert capture precedes the parser/index marker, archive I/O does not hold the writer gate, parser failure or non-`ok`/stale `file_index_state` retains capture, unchanged `ok` index state still permits first capture, and remote offline errors do not fail service readiness or index success. The gated snapshot preserves all duplicate locator rows, constructs capture-exact Task 3 proofs, and never calls a parser.
 
 Also assert that binding refuses a changed post-index generation and an ambiguous `(source, locator)` result rather than associating capture A with parsed generation B.
 
 - [ ] **Step 3: GREEN — composition root**
 
-Create one archive coordinator from the index database sibling path `archive-v2`. Thread it through initial and periodic cycles without changing default-off execution. Bound remote work per cycle and check cancellation between files/replicas.
+Create one archive coordinator from the index database sibling path `archive-v2`. Thread it through initial and periodic cycles without changing default-off execution. Startup performs bounded full Claude/Codex exact capture; periodic capture uses an exact-conformance-preserving recent wrapper plus bounded retry of earlier transient capture failures. Explicitly single-flight/coalesce cycles, bound total capture/bind/remote work, recover stale in-flight state on restart, and check cancellation between files/replicas.
 
 - [ ] **Step 4: RED/GREEN — IPC**
 
@@ -441,27 +450,27 @@ git commit -m "feat(service): orchestrate exact dual-replica archive"
 - Modify: `macos/EngramMCPTests/EngramMCPExecutableTests.swift`
 - Create: `macos/EngramRemoteServerCoreTests/ArchiveRecoveryIntegrationTests.swift`
 
-**Resolution contract:** live source exists → existing reader; missing source → local bound manifest; local corrupt/missing → hq; hq unavailable/corrupt → m1; all fail → structured error. A live source parse failure never silently selects an old generation.
+**Resolution contract:** first select bytes with a typed outcome (`live -> local bound manifest -> hq -> m1`), then invoke the existing parser exactly once. Only definitive source unavailability leaves live. A live/local/remote parser failure never silently selects another generation or replica, and cancellation never advances tiers.
 
 - [ ] **Step 1: RED — exact materialization**
 
-Test local manifest reconstruction and every per-chunk plus whole-source digest. Test secure temp permissions/cleanup and rejection of corrupt/missing objects.
+Test one locked latest manifest digest, its persisted verified receipt per remote replica, local reconstruction, and every per-chunk plus whole-source digest. Stream to an exclusive owner-only temp file instead of concatenating the transcript in memory. Test zero-byte sources, secure permissions/cleanup on every exit, and rejection of corrupt/missing objects.
 
 - [ ] **Step 2: RED — fallback order**
 
-Use fake backends to prove live/local/hq/m1 order, no remote request on live success, hq error falls through to m1, and a live parser error does not fall back.
+Use fake backends to prove live/local/hq/m1 order by replica ID, no service/remote request on live/local success, hq absence/transport/integrity error falls through to m1, parser errors do not fall through, and cancellation does not call the next tier.
 
 - [ ] **Step 3: GREEN — resolver**
 
-Materialize to an owner-only temporary regular file, parse through the existing adapter/reader using the archived source name, and remove the temp file after the result is materialized. Keep network and Keychain access in EngramService.
+Materialize the same canonical manifest digest to an owner-only temporary regular file beneath its declared replay path, parse through the existing adapter/reader using the archived source name, and remove the isolated temp root after the result is materialized. Keep audit locator, live path, replay path, and temp path distinct. Keep network and Keychain access in EngramService.
 
 - [ ] **Step 4: RED/GREEN — service export and MCP page**
 
-Add a read-only bounded `archiveReadSessionPage` command and DTO. The service accepts session ID, page, page size, and role filter; it owns live/local/HQ/M1 resolution plus visible-message pagination and returns messages, total pages, current page, completeness, and truncation fields. MCP invokes it only when direct local reading fails because the source is unavailable and retains `include_raw` redaction/output shaping. IPC must not return raw archive bytes or a temporary path. Preserve `transcriptTooLarge` mapping and route export through the same resolver.
+Add a read-only bounded `archiveReadSessionPage` command and DTO. The service accepts bounded session ID, page, page size, and user/assistant role filter; it owns live/local/HQ/M1 resolution plus visible-message pagination and returns messages, total pages, current page, transcript completeness, and a separate response-budget truncation field. MCP invokes it only after a typed definitive local-source-unavailable result and retains `include_raw` redaction/output shaping. Encode the real outer Unix-socket response and enforce a conservative aggregate content budget below the 256 KiB frame after JSON/base64 expansion. IPC must not return raw archive bytes, receipt/manifest bytes, or a temporary path. Preserve `transcriptTooLarge` mapping and route export through the same resolver.
 
 - [ ] **Step 5: RED/GREEN — clean-machine recovery**
 
-Start two in-process archive routers with separate roots, keys, tokens, and server IDs. Replicate one multi-chunk capture; delete the test client's temporary catalog/CAS and machine ID; list machine IDs from a server, select one, list its receipts, download manifest/objects, and assert byte-identical reconstruction. Stop hq and prove m1 fallback.
+Start two in-process archive routers with separate roots, keys, tokens, and server IDs. Replicate multiple generations including one multi-chunk capture; delete the test client's temporary catalog/CAS and machine ID without constructing a replacement catalog; list machine IDs from a server, select one, page receipts with cursor-progress/cycle checks, download manifest/objects, and assert byte-identical collision-safe reconstruction under `<machine>/<manifest>/<replay-path>`. Stop hq, restart m1 pagination from a nil cursor, and prove m1 fallback.
 
 - [ ] **Step 6: Verify and commit**
 
