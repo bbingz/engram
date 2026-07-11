@@ -76,6 +76,7 @@ jobs:
           run_xcode_tests Engram -skip-testing:EngramUITests
           run_xcode_tests EngramServiceCore
           run_xcode_tests EngramMCPTests
+          run_xcode_tests EngramRemoteServerCore
 
   release-bundle-gate:
     runs-on: macos-15

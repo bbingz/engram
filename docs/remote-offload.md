@@ -1,5 +1,10 @@
 # Remote session offload — deployment & operations
 
+> This page documents the legacy `/v1/bundles` feature for regenerable FTS and
+> summary artifacts. It does not configure or verify exact raw transcript
+> archival. For the separate default-off, zero-delete `/v2/archive` design, see
+> [`remote-archive-v2.md`](remote-archive-v2.md).
+
 Remote offload reclaims local disk/CPU by moving the **regenerable index
 artifacts** of cold/archived sessions to a server you control, keeping each
 session keyword-searchable via a local "shadow" line and rehydrating full content

@@ -3,6 +3,28 @@
 Follow-ups are verification gaps, low-priority refactors, or items that need
 real data, UI exercise, or product confirmation before becoming TODOs.
 
+## Open conditional follow-ups — exact-source archive v2 (2026-07-12)
+
+These items are deliberately outside the zero-delete first release and are not
+implementation-ready blockers for its repository verification:
+
+- **Restart-stable bounded locator discovery.** Current Claude Code and Codex
+  discovery is cooperative-cancellable but O(N) and materializes/sorts the
+  current locator set before `batchSize` applies. A future design needs a
+  durable locator inventory/work queue, normally bootstrapped by one explicit
+  full crawl and maintained with FSEvents. Do not claim discovery itself is
+  bounded until that implementation and restart tests exist.
+- **Canonical exporters for additional adapters.** Keep virtual, composite,
+  adjacent-shard, path-sensitive, and database-backed locators unsupported
+  until each adapter declares a complete canonical source set and passes a
+  delete-original/replay-equivalence fixture. Regular-file shape alone is not
+  sufficient.
+- **Any source deletion, archive eviction, remote erasure, or GC.** This needs a
+  separate design and explicit authorization after two-site production restore
+  evidence, independent key recovery, generation revalidation immediately
+  before unlink, and a fresh deletion safety review. No part of archive v2's
+  first release or its receipts authorizes that work.
+
 ## Engineering-zero status (2026-07-11, Wave 8 Round 4)
 
 **Open implementation-ready engineering follow-ups: 0.**
