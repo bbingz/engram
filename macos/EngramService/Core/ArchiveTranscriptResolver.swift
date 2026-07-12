@@ -26,6 +26,7 @@ public struct ArchiveRemoteRecoveryProof: Equatable, Sendable {
     public let receiptSHA256: String
     public let manifestSHA256: String
     public let wholeSourceSHA256: String
+    public let rawByteCount: Int64
 }
 
 public enum ArchiveTranscriptResolverError: Error, Equatable, Sendable {
@@ -127,10 +128,11 @@ public struct ArchiveTranscriptResolver: Sendable {
     /// Verifies one persisted remote archive end-to-end without consulting the
     /// live source or local CAS and without invoking a transcript parser.
     public func remoteRecoveryProbe(
-        sessionID: String
+        sessionID: String,
+        replicaID: String? = nil
     ) async throws -> ArchiveRemoteRecoveryProof {
         let locked = try lockedManifest(sessionID: sessionID)
-        let selected = try await selectVerifiedRemoteReplay(locked)
+        let selected = try await selectVerifiedRemoteReplay(locked, replicaID: replicaID)
         let preCleanupResult: Result<Void, Error>
         do {
             try testHooks.remoteReplaySelected?(selected.replay.fileURL)
@@ -146,7 +148,8 @@ public struct ArchiveTranscriptResolver: Sendable {
             tier: selected.replay.tier,
             receiptSHA256: selected.persistedReceipt.sha256,
             manifestSHA256: locked.binding.manifestSHA256,
-            wholeSourceSHA256: locked.manifest.wholeSourceSHA256
+            wholeSourceSHA256: locked.manifest.wholeSourceSHA256,
+            rawByteCount: locked.manifest.rawByteCount
         )
     }
 
@@ -295,10 +298,22 @@ public struct ArchiveTranscriptResolver: Sendable {
     }
 
     private func selectVerifiedRemoteReplay(
-        _ locked: LockedManifest
+        _ locked: LockedManifest,
+        replicaID requiredReplicaID: String? = nil
     ) async throws -> RemoteReplaySelection {
+        let replicas: [(ArchiveTranscriptTier, (any ArchiveReplicaBackend)?)]
+        switch requiredReplicaID {
+        case nil:
+            replicas = [(.hq, hq), (.m1, m1)]
+        case "hq":
+            replicas = [(.hq, hq)]
+        case "m1":
+            replicas = [(.m1, m1)]
+        default:
+            throw ArchiveTranscriptResolverError.invalidReplicaBackend
+        }
         var sawCorruption = false
-        for (tier, backend) in [(ArchiveTranscriptTier.hq, hq), (.m1, m1)] {
+        for (tier, backend) in replicas {
             try Task.checkCancellation()
             guard let backend else { continue }
             let replicaID = tier.rawValue

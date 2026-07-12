@@ -102,6 +102,8 @@ public enum ArchiveCursorKey: String, CaseIterable, Sendable {
     case captureRecent = "archive_cursor_capture_recent_v1"
     case bindingCycle = "archive_cursor_binding_v1"
     case policyCycle = "archive_cursor_policy_v1"
+    case recoveryDrillHQ = "archive_recovery_drill_cursor_hq_v1"
+    case recoveryDrillM1 = "archive_recovery_drill_cursor_m1_v1"
 }
 
 public struct ArchiveCursorCheckpoint: Equatable, Sendable {
@@ -178,6 +180,23 @@ public struct ArchiveRecoveryLease: Equatable, Sendable {
     public let manifestSHA256: String
     public let verifiedAt: String
     public let verifiedBytes: Int64
+
+    public init(
+        replicaID: String,
+        manifestSHA256: String,
+        verifiedAt: String,
+        verifiedBytes: Int64
+    ) {
+        self.replicaID = replicaID
+        self.manifestSHA256 = manifestSHA256
+        self.verifiedAt = verifiedAt
+        self.verifiedBytes = verifiedBytes
+    }
+}
+
+public struct ArchiveRecoveryDrillCandidate: Equatable, Sendable {
+    public let binding: ArchiveBinding
+    public let rawByteCount: Int64
 }
 
 public enum ArchiveReclamationPhase: String, Equatable, Sendable {
@@ -927,6 +946,128 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 )
             }
         }
+    }
+
+    public func nextRecoveryDrillCandidate(
+        replicaID: String,
+        maximumBytes: Int64
+    ) throws -> ArchiveRecoveryDrillCandidate? {
+        let cursorKey = try Self.recoveryDrillCursorKey(replicaID: replicaID)
+        guard maximumBytes > 0 else {
+            throw ArchiveCatalogError.invalidLimit(Int(maximumBytes))
+        }
+
+        return try pool.read { db in
+            let cursor: String?
+            if let storedValue = try String.fetchOne(
+                db,
+                sql: "SELECT value FROM archive_metadata WHERE key = ?",
+                arguments: [cursorKey.rawValue]
+            ) {
+                let checkpoint = try Self.archiveCursorCheckpoint(
+                    from: storedValue,
+                    expectedKey: cursorKey
+                )
+                guard let decoded = String(data: checkpoint.payload, encoding: .utf8),
+                      ArchiveV2Hash.isValidSHA256(decoded) else {
+                    throw ArchiveCatalogError.invalidArchiveCursorCheckpoint(cursorKey.rawValue)
+                }
+                cursor = decoded
+            } else {
+                cursor = nil
+            }
+
+            let baseSQL = """
+                SELECT b.*, c.raw_byte_count
+                FROM archive_session_bindings AS b
+                JOIN archive_captures AS c ON c.capture_id = b.capture_id
+                JOIN archive_replica_receipts AS r
+                  ON r.manifest_sha256 = b.manifest_sha256
+                 AND r.replica_id = ?
+                WHERE b.remote_eligibility = 'eligible'
+                  AND r.state = 'verified'
+                  AND r.receipt_bytes IS NOT NULL
+                  AND c.raw_byte_count <= ?
+                """
+            let row: Row?
+            if let cursor {
+                row = try Row.fetchOne(
+                    db,
+                    sql: baseSQL + " AND b.manifest_sha256 > ? ORDER BY b.manifest_sha256 LIMIT 1",
+                    arguments: [replicaID, maximumBytes, cursor]
+                ) ?? Row.fetchOne(
+                    db,
+                    sql: baseSQL + " ORDER BY b.manifest_sha256 LIMIT 1",
+                    arguments: [replicaID, maximumBytes]
+                )
+            } else {
+                row = try Row.fetchOne(
+                    db,
+                    sql: baseSQL + " ORDER BY b.manifest_sha256 LIMIT 1",
+                    arguments: [replicaID, maximumBytes]
+                )
+            }
+            return try row.map {
+                ArchiveRecoveryDrillCandidate(
+                    binding: try Self.binding(from: $0),
+                    rawByteCount: $0["raw_byte_count"]
+                )
+            }
+        }
+    }
+
+    public func advanceRecoveryDrillCursor(
+        replicaID: String,
+        manifestSHA256: String,
+        updatedAt: String
+    ) throws {
+        let cursorKey = try Self.recoveryDrillCursorKey(replicaID: replicaID)
+        guard ArchiveV2Hash.isValidSHA256(manifestSHA256) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "manifestSHA256")
+        }
+        try Self.validateTimestamp(updatedAt, field: "updatedAt")
+        let payload = Data(manifestSHA256.utf8)
+        let envelope = ArchiveCursorEnvelope(
+            schemaVersion: 1,
+            key: cursorKey.rawValue,
+            payload: payload,
+            payloadSHA256: ArchiveV2Hash.sha256(payload),
+            updatedAt: updatedAt
+        )
+        let canonicalBytes = try ArchiveCanonicalJSON.encode(envelope)
+        guard let storedValue = String(data: canonicalBytes, encoding: .utf8) else {
+            throw ArchiveCatalogError.invalidArchiveCursorCheckpoint(cursorKey.rawValue)
+        }
+
+        try pool.write { db in
+            guard try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM archive_session_bindings AS b
+                    JOIN archive_replica_receipts AS r
+                      ON r.manifest_sha256 = b.manifest_sha256
+                     AND r.replica_id = ?
+                    WHERE b.manifest_sha256 = ?
+                      AND b.remote_eligibility = 'eligible'
+                      AND r.state = 'verified'
+                      AND r.receipt_bytes IS NOT NULL
+                )
+                """,
+                arguments: [replicaID, manifestSHA256]
+            ) == true else {
+                throw ArchiveCatalogError.bindingNotFound(manifestSHA256: manifestSHA256)
+            }
+            try db.execute(
+                sql: """
+                INSERT INTO archive_metadata(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                arguments: [cursorKey.rawValue, storedValue]
+            )
+        }
+        try secureDatabaseFiles()
     }
 
     public func upsertReclamationIntent(
@@ -2726,6 +2867,14 @@ public final class ArchiveCatalog: @unchecked Sendable {
             throw ArchiveCatalogError.invalidArchiveCursorCheckpoint(
                 expectedKey.rawValue
             )
+        }
+    }
+
+    private static func recoveryDrillCursorKey(replicaID: String) throws -> ArchiveCursorKey {
+        switch replicaID {
+        case "hq": .recoveryDrillHQ
+        case "m1": .recoveryDrillM1
+        default: throw ArchiveCatalogError.invalidReplicaID
         }
     }
 

@@ -149,6 +149,35 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertEqual(replicateCount, 0)
     }
 
+    func testRecoveryDrillRunsOnlyRequestedReplicaAndReturnsLease() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let events = EventLog()
+        var operations = makeOperations(events: events)
+        operations.recoveryDrill = { replicaID in
+            await events.append("drill:\(replicaID)")
+            return ArchiveRecoveryLease(
+                replicaID: replicaID,
+                manifestSHA256: String(repeating: "a", count: 64),
+                verifiedAt: "2026-07-12T00:00:00.000Z",
+                verifiedBytes: 42
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations
+        )
+
+        let lease = try await coordinator.runRecoveryDrill(replicaID: "m1")
+
+        XCTAssertEqual(lease.replicaID, "m1")
+        XCTAssertEqual(lease.verifiedBytes, 42)
+        let recorded = await events.values()
+        XCTAssertEqual(recorded, ["drill:m1"])
+    }
+
     func testStatusMapsFixedAggregateAndOnlyApprovedReceiptFields() async throws {
         let harness = try makeHarness(remoteReady: true)
         let events = EventLog()

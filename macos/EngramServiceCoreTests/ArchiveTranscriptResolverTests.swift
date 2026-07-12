@@ -525,6 +525,7 @@ final class ArchiveTranscriptResolverTests: XCTestCase {
         XCTAssertEqual(proof.tier, .hq)
         XCTAssertEqual(proof.manifestSHA256, fixture.manifestDigest)
         XCTAssertEqual(proof.wholeSourceSHA256, ArchiveV2Hash.sha256(fixture.raw))
+        XCTAssertEqual(proof.rawByteCount, Int64(fixture.raw.count))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: temporaryParent.path), [])
         let hqEvents = await hq.events()
         XCTAssertEqual(hqEvents, ["getReceipt", "getManifest", "getObject"])
@@ -586,6 +587,40 @@ final class ArchiveTranscriptResolverTests: XCTestCase {
         }
         let untouchedM1Events = await untouchedM1.events()
         XCTAssertEqual(untouchedM1Events, [])
+    }
+
+    func testRemoteRecoveryProbeCanRequireOneReplica() async throws {
+        let store = try makeStore(name: "probe-required-replica")
+        let fixture = try addFixture(
+            to: store,
+            sessionID: "session-probe-required-replica",
+            seed: "probe-required-replica",
+            chunks: [Data("required replica recovery proof".utf8)],
+            publishLocalObjects: false
+        )
+        let hq = RecordingArchiveBackend(replicaID: "hq")
+        let m1 = RecordingArchiveBackend(replicaID: "m1")
+        try await persistVerifiedReceipt(for: fixture, replicaID: "hq", store: store, backend: hq)
+        try await persistVerifiedReceipt(for: fixture, replicaID: "m1", store: store, backend: m1)
+        let resolver = try ArchiveTranscriptResolver(
+            catalog: store.catalog,
+            cas: store.cas,
+            hq: hq,
+            m1: m1,
+            temporaryParent: try makeTemporaryParent(name: "probe-required-replica-temp")
+        )
+
+        let proof = try await resolver.remoteRecoveryProbe(
+            sessionID: fixture.sessionID,
+            replicaID: "m1"
+        )
+
+        XCTAssertEqual(proof.tier, .m1)
+        XCTAssertEqual(proof.rawByteCount, Int64(fixture.raw.count))
+        let hqEvents = await hq.events()
+        let m1Events = await m1.events()
+        XCTAssertEqual(hqEvents, [])
+        XCTAssertEqual(m1Events, ["getReceipt", "getManifest", "getObject"])
     }
 
     func testRemoteRecoveryProbeChecksCleanupBeforeProofAndDoesNotFallThrough() async throws {

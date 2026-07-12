@@ -113,6 +113,7 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
     var replicate: @Sendable (Int) async -> ArchiveReplicationCycleResult
     var status: @Sendable () async throws -> ArchiveStatusAggregate
     var retry: @Sendable (String?) async throws -> Int
+    var recoveryDrill: @Sendable (String) async throws -> ArchiveRecoveryLease
 
     init(
         capture: @escaping @Sendable (
@@ -138,7 +139,10 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
         ) async throws -> Void,
         replicate: @escaping @Sendable (Int) async -> ArchiveReplicationCycleResult,
         status: @escaping @Sendable () async throws -> ArchiveStatusAggregate,
-        retry: @escaping @Sendable (String?) async throws -> Int
+        retry: @escaping @Sendable (String?) async throws -> Int,
+        recoveryDrill: @escaping @Sendable (String) async throws -> ArchiveRecoveryLease = { _ in
+            throw ArchiveV2ServiceCoordinatorError.recoveryDrillUnavailable
+        }
     ) {
         self.capture = capture
         self.bindingTargets = bindingTargets
@@ -150,7 +154,16 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
         self.replicate = replicate
         self.status = status
         self.retry = retry
+        self.recoveryDrill = recoveryDrill
     }
+}
+
+enum ArchiveV2ServiceCoordinatorError: Error, Equatable, Sendable {
+    case invalidReplica
+    case recoveryDrillUnavailable
+    case noRecoveryDrillCandidate
+    case recoveryDrillMismatch
+    case recoveryDrillTimedOut
 }
 
 actor ArchiveV2ServiceCoordinator {
@@ -330,7 +343,8 @@ actor ArchiveV2ServiceCoordinator {
         let operations = Self.productionOperations(
             captureCoordinator: captureCoordinator,
             catalog: catalog,
-            replicationCoordinator: replicationCoordinator
+            replicationCoordinator: replicationCoordinator,
+            transcriptResolver: transcriptResolver
         )
         return ArchiveV2ServiceCoordinator(
             settings: settings,
@@ -421,6 +435,16 @@ actor ArchiveV2ServiceCoordinator {
         } catch {
             return Self.retryResponse(accepted: false, resetRows: 0, error: "catalog_failure")
         }
+    }
+
+    func runRecoveryDrill(replicaID: String) async throws -> ArchiveRecoveryLease {
+        guard replicaID == "hq" || replicaID == "m1" else {
+            throw ArchiveV2ServiceCoordinatorError.invalidReplica
+        }
+        guard remoteReady, let operations else {
+            throw ArchiveV2ServiceCoordinatorError.recoveryDrillUnavailable
+        }
+        return try await operations.recoveryDrill(replicaID)
     }
 
     func recentCaptureRetryLocators(
@@ -684,7 +708,8 @@ actor ArchiveV2ServiceCoordinator {
     private static func productionOperations(
         captureCoordinator: ArchiveCaptureCoordinator,
         catalog: ArchiveCatalog,
-        replicationCoordinator: ArchiveReplicationCoordinator?
+        replicationCoordinator: ArchiveReplicationCoordinator?,
+        transcriptResolver: ArchiveTranscriptResolver?
     ) -> ArchiveV2ServiceCoordinatorOperations {
         ArchiveV2ServiceCoordinatorOperations(
             capture: { adapters, budget, scope in
@@ -746,6 +771,52 @@ actor ArchiveV2ServiceCoordinator {
                     replicaID: replicaID,
                     now: Self.timestamp(Date())
                 )
+            },
+            recoveryDrill: { replicaID in
+                guard let transcriptResolver,
+                      let candidate = try catalog.nextRecoveryDrillCandidate(
+                          replicaID: replicaID,
+                          maximumBytes: 64 * 1_024 * 1_024
+                      ) else {
+                    throw ArchiveV2ServiceCoordinatorError.noRecoveryDrillCandidate
+                }
+                let proof = try await withThrowingTaskGroup(
+                    of: ArchiveRemoteRecoveryProof.self
+                ) { group in
+                    group.addTask {
+                        try await transcriptResolver.remoteRecoveryProbe(
+                            sessionID: candidate.binding.sessionID,
+                            replicaID: replicaID
+                        )
+                    }
+                    group.addTask {
+                        try await Task.sleep(for: .seconds(60))
+                        throw ArchiveV2ServiceCoordinatorError.recoveryDrillTimedOut
+                    }
+                    guard let first = try await group.next() else {
+                        throw ArchiveV2ServiceCoordinatorError.recoveryDrillUnavailable
+                    }
+                    group.cancelAll()
+                    return first
+                }
+                guard proof.tier.rawValue == replicaID,
+                      proof.manifestSHA256 == candidate.binding.manifestSHA256,
+                      proof.rawByteCount == candidate.rawByteCount else {
+                    throw ArchiveV2ServiceCoordinatorError.recoveryDrillMismatch
+                }
+                let verifiedAt = Self.timestamp(Date())
+                let lease = try catalog.recordRecoveryLease(
+                    replicaID: replicaID,
+                    manifestSHA256: proof.manifestSHA256,
+                    verifiedAt: verifiedAt,
+                    verifiedBytes: proof.rawByteCount
+                )
+                try catalog.advanceRecoveryDrillCursor(
+                    replicaID: replicaID,
+                    manifestSHA256: proof.manifestSHA256,
+                    updatedAt: verifiedAt
+                )
+                return lease
             }
         )
     }

@@ -268,6 +268,57 @@ final class ArchiveCatalogTests: XCTestCase {
         )
     }
 
+    func testRecoveryDrillCandidateRotatesPerReplicaAndRespectsByteLimit() throws {
+        let catalog = try migratedCatalog()
+        let first = try addBinding(to: catalog, captureSeed: "drill-a", sessionID: "drill-a")
+        let second = try addBinding(to: catalog, captureSeed: "drill-b", sessionID: "drill-b")
+        for binding in [first, second] {
+            XCTAssertTrue(
+                try catalog.setRemotePolicySnapshot(
+                    manifestSHA256: binding.manifestSHA256,
+                    projectRootSnapshot: "/tmp/project",
+                    eligibility: .eligible
+                )
+            )
+        }
+        XCTAssertEqual(
+            try catalog.reconcileEligibleReplicaRows(updatedAt: "2026-07-11T00:00:00.000Z"),
+            4
+        )
+        try forceVerifiedReplicaRow(binding: first, replicaID: "hq", verifiedAt: "2026-07-11T00:01:00.000Z")
+        try forceVerifiedReplicaRow(binding: second, replicaID: "hq", verifiedAt: "2026-07-11T00:01:00.000Z")
+
+        let ordered = [first, second].sorted { $0.manifestSHA256 < $1.manifestSHA256 }
+        let candidate1 = try XCTUnwrap(
+            try catalog.nextRecoveryDrillCandidate(replicaID: "hq", maximumBytes: 64 * 1_024 * 1_024)
+        )
+        XCTAssertEqual(candidate1.binding.manifestSHA256, ordered[0].manifestSHA256)
+        XCTAssertEqual(candidate1.rawByteCount, 5)
+        try catalog.advanceRecoveryDrillCursor(
+            replicaID: "hq",
+            manifestSHA256: candidate1.binding.manifestSHA256,
+            updatedAt: "2026-07-11T00:02:00.000Z"
+        )
+        let candidate2 = try XCTUnwrap(
+            try catalog.nextRecoveryDrillCandidate(replicaID: "hq", maximumBytes: 64 * 1_024 * 1_024)
+        )
+        XCTAssertEqual(candidate2.binding.manifestSHA256, ordered[1].manifestSHA256)
+        try catalog.advanceRecoveryDrillCursor(
+            replicaID: "hq",
+            manifestSHA256: candidate2.binding.manifestSHA256,
+            updatedAt: "2026-07-11T00:03:00.000Z"
+        )
+        XCTAssertEqual(
+            try catalog.nextRecoveryDrillCandidate(replicaID: "hq", maximumBytes: 4),
+            nil
+        )
+        XCTAssertEqual(
+            try catalog.nextRecoveryDrillCandidate(replicaID: "m1", maximumBytes: 64 * 1_024 * 1_024),
+            nil,
+            "a receipt on the requested replica is mandatory"
+        )
+    }
+
     func testVersionOneMigrationAddsPolicyAndLeaseColumnsIdempotentlyAndFailsClosed() throws {
         let migratedManifestBytes = try createVersionOneCatalogWithBinding()
         let catalog = try ArchiveCatalog(root: root, machineID: machineID)
