@@ -94,7 +94,7 @@ jobs:
       - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/remote-server-package.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/product-boundary-scripts.test.ts tests/scripts/archive-v2-safety-gate.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/swift-conventions.test.ts tests/scripts/version-guard.test.ts
 
   swift-unit:
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -170,7 +170,31 @@ jobs:
           bash scripts/release-verify.sh "$ENGRAM_APP" --hygiene-only
           run_xcode_tests EngramServiceCore
           run_xcode_tests EngramMCPTests
-          ENGRAM_CODE_COVERAGE=NO run_xcode_tests EngramRemoteServerCore -derivedDataPath "$RUNNER_TEMP/engram-remote-tests-derived"
+
+  remote-server-swift:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install xcodegen
+        run: |
+          brew install xcodegen
+          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
+
+      - name: Generate Xcode project
+        run: cd macos && xcodegen generate
+
+      - name: Run remote server unit tests
+        run: |
+          cd macos
+          xcodebuild test \
+            -project Engram.xcodeproj \
+            -scheme EngramRemoteServerCore \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/engram-remote-tests-derived" \
+            -enableCodeCoverage NO \
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Build Release remote server package
         run: |

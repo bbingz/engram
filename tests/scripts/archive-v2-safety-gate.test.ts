@@ -380,8 +380,8 @@ describe('archive v2 CI contract', () => {
     );
 
     expect(normalCI).toContain('bash scripts/check-archive-v2-safety.sh');
-    expect(normalCI).toContain('run_xcode_tests EngramRemoteServerCore');
-    expect(releaseCI).toContain('run_xcode_tests EngramRemoteServerCore');
+    expect(normalCI).toContain('-scheme EngramRemoteServerCore');
+    expect(releaseCI).toContain('-scheme EngramRemoteServerCore');
     expect(normalCI).toContain(
       'release-verify.sh "$ENGRAM_APP" --hygiene-only',
     );

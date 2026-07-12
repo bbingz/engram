@@ -130,16 +130,15 @@ describe('CI workflow hardening', () => {
       resolve(repoRoot, '.github/workflows/release.yml'),
       'utf8',
     );
-    const isolatedInvocation =
-      'run_xcode_tests EngramRemoteServerCore -derivedDataPath "$RUNNER_TEMP/engram-remote-tests-derived"';
-
+    expect(normalWorkflow).toContain('  remote-server-swift:');
+    expect(releaseWorkflow).toContain('  release-remote-server-tests:');
     expect(normalWorkflow).toContain(
-      `ENGRAM_CODE_COVERAGE=NO ${isolatedInvocation}`,
+      '-derivedDataPath "$RUNNER_TEMP/engram-remote-tests-derived"',
     );
-    expect(releaseWorkflow).toContain(isolatedInvocation);
-    expect(normalWorkflow).toContain(
-      '-enableCodeCoverage "${ENGRAM_CODE_COVERAGE:-YES}"',
+    expect(releaseWorkflow).toContain(
+      '-derivedDataPath "$RUNNER_TEMP/engram-remote-tests-derived"',
     );
+    expect(normalWorkflow).toContain('-enableCodeCoverage NO');
   });
 
   it('runs Hummingbird-linked Swift gates on the supported macOS 26 image', () => {
@@ -152,16 +151,28 @@ describe('CI workflow hardening', () => {
       'utf8',
     );
     const swiftJob = normalWorkflow.slice(
-      normalWorkflow.indexOf('  swift-unit:'),
+      normalWorkflow.indexOf('  remote-server-swift:'),
       normalWorkflow.indexOf('  fixture-check:'),
     );
     const releaseJob = releaseWorkflow.slice(
-      releaseWorkflow.indexOf('  release-tests:'),
+      releaseWorkflow.indexOf('  release-remote-server-tests:'),
       releaseWorkflow.indexOf('  release-bundle-gate:'),
     );
 
     expect(swiftJob).toContain('runs-on: macos-26');
     expect(releaseJob).toContain('runs-on: macos-26');
+    expect(
+      normalWorkflow.slice(
+        normalWorkflow.indexOf('  swift-unit:'),
+        normalWorkflow.indexOf('  remote-server-swift:'),
+      ),
+    ).toContain('runs-on: macos-15');
+    expect(
+      releaseWorkflow.slice(
+        releaseWorkflow.indexOf('  release-tests:'),
+        releaseWorkflow.indexOf('  release-remote-server-tests:'),
+      ),
+    ).toContain('runs-on: macos-15');
   });
 
   it('runs bundle hygiene against the Debug app built in Swift CI', () => {
