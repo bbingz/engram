@@ -142,6 +142,28 @@ describe('CI workflow hardening', () => {
     );
   });
 
+  it('runs Hummingbird-linked Swift gates on the supported macOS 26 image', () => {
+    const normalWorkflow = readFileSync(
+      resolve(repoRoot, '.github/workflows/test.yml'),
+      'utf8',
+    );
+    const releaseWorkflow = readFileSync(
+      resolve(repoRoot, '.github/workflows/release.yml'),
+      'utf8',
+    );
+    const swiftJob = normalWorkflow.slice(
+      normalWorkflow.indexOf('  swift-unit:'),
+      normalWorkflow.indexOf('  fixture-check:'),
+    );
+    const releaseJob = releaseWorkflow.slice(
+      releaseWorkflow.indexOf('  release-tests:'),
+      releaseWorkflow.indexOf('  release-bundle-gate:'),
+    );
+
+    expect(swiftJob).toContain('runs-on: macos-26');
+    expect(releaseJob).toContain('runs-on: macos-26');
+  });
+
   it('runs bundle hygiene against the Debug app built in Swift CI', () => {
     expect(testWorkflow).toContain('Build/Products/Debug/Engram.app');
     expect(testWorkflow).toContain(
