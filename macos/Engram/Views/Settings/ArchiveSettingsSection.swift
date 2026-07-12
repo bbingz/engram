@@ -1,5 +1,40 @@
 import SwiftUI
 
+enum ArchiveSyncPresentationState: Equatable {
+    case unavailable
+    case disabled
+    case needsAttention
+    case inProgress
+    case complete
+
+    init(status: EngramServiceArchiveV2StatusResponse?) {
+        guard let status else {
+            self = .unavailable
+            return
+        }
+
+        let hasAttentionState = status.configurationError != nil
+            || status.lastCaptureError != nil
+            || status.lastReplicationError != nil
+            || status.unsafeLocatorCount > 0
+            || status.replicas.contains { $0.quarantinedCount > 0 }
+        if hasAttentionState {
+            self = .needsAttention
+            return
+        }
+
+        guard status.enabled, status.remoteReplicationEnabled else {
+            self = .disabled
+            return
+        }
+
+        let hasPendingWork = status.cycleRunning
+            || status.dualReplicaVerifiedCount < status.remotePolicyEligibleCount
+            || status.replicas.contains { $0.queuedCount > 0 || $0.retryingCount > 0 }
+        self = hasPendingWork ? .inProgress : .complete
+    }
+}
+
 struct ArchiveSettingsSection: View {
     @Environment(EngramServiceClient.self) private var serviceClient
 
@@ -10,6 +45,7 @@ struct ArchiveSettingsSection: View {
     @State private var hotWindowDays = 30
     @State private var busy = false
     @State private var syncBusy = false
+    @State private var syncRefreshGeneration = 0
     @State private var message: String?
     @State private var messageIsError = false
 
@@ -155,30 +191,18 @@ struct ArchiveSettingsSection: View {
     }
 
     private var syncPresentation: (text: String, icon: String, color: Color) {
-        guard let archiveStatus else {
+        switch ArchiveSyncPresentationState(status: archiveStatus) {
+        case .unavailable:
             return (String(localized: "Sync status unavailable"), "questionmark.circle", .secondary)
-        }
-        guard archiveStatus.enabled, archiveStatus.remoteReplicationEnabled else {
+        case .disabled:
             return (String(localized: "Archive synchronization disabled"), "pause.circle", .secondary)
-        }
-
-        let hasAttentionState = archiveStatus.configurationError != nil
-            || archiveStatus.lastCaptureError != nil
-            || archiveStatus.lastReplicationError != nil
-            || archiveStatus.unsafeLocatorCount > 0
-            || archiveStatus.replicas.contains { $0.quarantinedCount > 0 }
-        if hasAttentionState {
+        case .needsAttention:
             return (String(localized: "Archive synchronization needs attention"), "exclamationmark.triangle", .orange)
-        }
-
-        let hasPendingWork = archiveStatus.cycleRunning
-            || archiveStatus.dualReplicaVerifiedCount < archiveStatus.remotePolicyEligibleCount
-            || archiveStatus.replicas.contains { $0.queuedCount > 0 || $0.retryingCount > 0 }
-        if hasPendingWork {
+        case .inProgress:
             return (String(localized: "Archive synchronization in progress"), "arrow.triangle.2.circlepath", .blue)
+        case .complete:
+            return (String(localized: "Archive synchronization complete"), "checkmark.circle", .green)
         }
-
-        return (String(localized: "Archive synchronization complete"), "checkmark.circle", .green)
     }
 
     private func replicaSummary(_ replica: EngramServiceArchiveV2ReplicaStatus) -> String {
@@ -194,17 +218,26 @@ struct ArchiveSettingsSection: View {
 
     @MainActor
     private func refreshArchiveStatus() async {
+        syncRefreshGeneration += 1
+        let requestGeneration = syncRefreshGeneration
         syncBusy = true
-        defer { syncBusy = false }
+        defer {
+            if requestGeneration == syncRefreshGeneration {
+                syncBusy = false
+            }
+        }
         do {
-            archiveStatus = try await serviceClient.archiveV2Status()
+            let value = try await serviceClient.archiveV2Status()
+            guard requestGeneration == syncRefreshGeneration else { return }
+            archiveStatus = value
         } catch {
+            guard requestGeneration == syncRefreshGeneration else { return }
             archiveStatus = nil
         }
     }
 
     @MainActor
-    private func refresh() async {
+    private func refresh(reportError: Bool = true) async {
         await refreshArchiveStatus()
         do {
             let value = try await serviceClient.archiveReclamationStatus()
@@ -212,8 +245,10 @@ struct ArchiveSettingsSection: View {
             enabled = value.enabled
             hotWindowDays = value.hotWindowDays
         } catch {
-            message = String(localized: "Error: archive status unavailable.")
-            messageIsError = true
+            if reportError {
+                message = String(localized: "Error: archive status unavailable.")
+                messageIsError = true
+            }
         }
     }
 
@@ -231,7 +266,7 @@ struct ArchiveSettingsSection: View {
                 : String(localized: "Automatic reclamation disabled.")
             messageIsError = false
         } catch {
-            await refresh()
+            await refresh(reportError: false)
             message = requestedEnabled
                 ? String(localized: "Error: save failed. Verify both recovery drills are current and the service is available.")
                 : String(localized: "Error: save failed because the service is unavailable.")
@@ -278,7 +313,7 @@ struct ArchiveSettingsSection: View {
                 }
                 messageIsError = true
             }
-            await refresh()
+            await refresh(reportError: false)
         } catch {
             message = String(localized: "Error: reclamation run failed.")
             messageIsError = true
@@ -296,7 +331,7 @@ struct ArchiveSettingsSection: View {
                 replicaID.uppercased()
             )
             messageIsError = false
-            await refresh()
+            await refresh(reportError: false)
         } catch {
             message = String.localizedStringWithFormat(
                 String(localized: "Error: %@ recovery drill failed."),
