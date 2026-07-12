@@ -74,6 +74,23 @@ final class ArchiveSettingsSectionTests: XCTestCase {
         XCTAssertFalse(summary.contains("snapshot_write_failed"))
     }
 
+    func testRemoteSummaryUsesUnavailableForOutOfRangeUptime() throws {
+        for uptimeSeconds in [Double(Int64.max) * 60, .greatestFiniteMagnitude] {
+            let telemetry = try remoteTelemetry(
+                replicaID: "hq",
+                uptimeSeconds: uptimeSeconds
+            )
+
+            let summary = ArchiveRemoteTelemetryPresentation.summary(
+                replicaID: "hq",
+                telemetry: telemetry,
+                error: nil
+            )
+
+            XCTAssertTrue(summary.contains(String(localized: "Uptime unavailable")))
+        }
+    }
+
     func testRemoteSummaryHandlesUnavailableAndPartialSuccessIndependently() throws {
         let hq = ArchiveRemoteTelemetryPresentation.summary(
             replicaID: "hq",
@@ -97,7 +114,11 @@ final class ArchiveSettingsSectionTests: XCTestCase {
         XCTAssertTrue(m1.contains(String(localized: "Remote status unavailable")))
         XCTAssertTrue(m1.contains(String(localized: "Request timed out")))
         XCTAssertFalse(m1.contains("transport_timeout"))
-        XCTAssertTrue(missing.contains(String(localized: "Other remote error")))
+        XCTAssertEqual(
+            missing,
+            ["M1", String(localized: "Remote status unavailable")].joined(separator: " · ")
+        )
+        XCTAssertFalse(missing.contains(String(localized: "Other remote error")))
     }
 
     func testRemoteErrorSymbolsAndSanitizedCategoriesNeverRenderRawValues() {
@@ -317,6 +338,7 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             "Unauthorized",
             "Unknown build",
             "Uptime: %@",
+            "Uptime unavailable",
             "Verify HQ",
             "Verify M1",
         ]
@@ -429,6 +451,7 @@ final class ArchiveSettingsSectionTests: XCTestCase {
     private func remoteTelemetry(
         replicaID: String,
         revision: String = "abcdef0123456789abcdef0123456789abcdef01",
+        uptimeSeconds: Double = 5_408,
         persistenceError: String? = nil,
         recentErrors: [EngramServiceArchiveV2RemoteError] = []
     ) throws -> EngramServiceArchiveV2RemoteTelemetry {
@@ -436,7 +459,7 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             serverID: replicaID,
             sourceRevision: revision,
             snapshotAt: "2026-07-12T17:28:00.000Z",
-            uptimeSeconds: 5_408,
+            uptimeSeconds: uptimeSeconds,
             diskAvailableBytes: 64 * 1_024 * 1_024 * 1_024,
             diskTotalBytes: 128 * 1_024 * 1_024 * 1_024,
             requestCount: 41,

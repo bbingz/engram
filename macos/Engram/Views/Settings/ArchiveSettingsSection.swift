@@ -124,11 +124,14 @@ enum ArchiveRemoteTelemetryPresentation {
     ) -> String {
         let replicaName = replicaID.uppercased()
         guard let telemetry else {
-            return [
+            var parts = [
                 replicaName,
                 String(localized: "Remote status unavailable"),
-                remoteErrorName(error),
-            ].joined(separator: " · ")
+            ]
+            if let error {
+                parts.append(remoteErrorName(error))
+            }
+            return parts.joined(separator: " · ")
         }
 
         let build = telemetry.sourceRevision == "unknown"
@@ -208,7 +211,11 @@ enum ArchiveRemoteTelemetryPresentation {
     }
 
     private static func localizedUptime(_ seconds: Double) -> String {
-        let minutes = Int64(seconds / 60)
+        let minuteValue = seconds / 60
+        guard minuteValue < Double(Int64.max) else {
+            return String(localized: "Uptime unavailable")
+        }
+        let minutes = Int64(minuteValue)
         let days = minutes / (24 * 60)
         let hours = (minutes / 60) % 24
         if days > 0 {
