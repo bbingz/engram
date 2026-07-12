@@ -170,7 +170,7 @@ jobs:
           bash scripts/release-verify.sh "$ENGRAM_APP" --hygiene-only
           run_xcode_tests EngramServiceCore
           run_xcode_tests EngramMCPTests
-          run_xcode_tests EngramRemoteServerCore
+          run_xcode_tests EngramRemoteServerCore -derivedDataPath "$RUNNER_TEMP/engram-remote-tests-derived"
 
       - name: Build Release remote server package
         run: |

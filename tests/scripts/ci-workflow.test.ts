@@ -121,6 +121,22 @@ describe('CI workflow hardening', () => {
     expect(coverageIndex).toBeGreaterThan(installIndex);
   });
 
+  it('isolates remote-server Swift tests from shared DerivedData package products', () => {
+    const normalWorkflow = readFileSync(
+      resolve(repoRoot, '.github/workflows/test.yml'),
+      'utf8',
+    );
+    const releaseWorkflow = readFileSync(
+      resolve(repoRoot, '.github/workflows/release.yml'),
+      'utf8',
+    );
+    const isolatedInvocation =
+      'run_xcode_tests EngramRemoteServerCore -derivedDataPath "$RUNNER_TEMP/engram-remote-tests-derived"';
+
+    expect(normalWorkflow).toContain(isolatedInvocation);
+    expect(releaseWorkflow).toContain(isolatedInvocation);
+  });
+
   it('runs bundle hygiene against the Debug app built in Swift CI', () => {
     expect(testWorkflow).toContain('Build/Products/Debug/Engram.app');
     expect(testWorkflow).toContain(
