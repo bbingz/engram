@@ -4,11 +4,17 @@
     "%lld days" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 天" } } }
     },
+    "%lld ms" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 毫秒" } } }
+    },
     "%lld unbound archives (not a sync failure)" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 个归档尚未绑定（不代表同步失败）" } } }
     },
     "%@: %lld verified, %lld retrying, %lld queued, %lld quarantined" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%1$@：已验证 %2$lld，重试中 %3$lld，排队 %4$lld，隔离 %5$lld" } } }
+    },
+    "%@ s" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@ 秒" } } }
     },
     "%@ recovery drill passed." : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@ 恢复演练已通过。" } } }
@@ -42,6 +48,15 @@
     },
     "Automatically reclaim old local transcripts" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动精简旧的本地会话记录" } } }
+    },
+    "Cancelled" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已取消" } } }
+    },
+    "Configuration" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "配置" } } }
+    },
+    "Credentials" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "凭据" } } }
     },
     "Dual-copy verified: %lld of %lld" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "双副本已验证：%1$lld / %2$lld" } } }
@@ -82,8 +97,29 @@
     "Keep full local transcripts" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "完整本地记录保留时长" } } }
     },
+    "Issue: %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "问题：%@" } } }
+    },
+    "Last pass %@ · %@ · verified %lld · retry %lld · quarantined %lld" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "上次同步 %1$@ · 用时 %2$@ · 验证 %3$lld · 重试 %4$lld · 隔离 %5$lld" } } }
+    },
     "Lightweight Recovery Drills" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "轻量恢复演练" } } }
+    },
+    "Local archive" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地归档" } } }
+    },
+    "Next background opportunity around %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "预计下轮后台检查：%@" } } }
+    },
+    "Next retry: %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "下次重试：%@" } } }
+    },
+    "Oldest pending: %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最早积压：%@" } } }
+    },
+    "Other" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "其他" } } }
     },
     "Preview" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "预览" } } }
@@ -97,6 +133,9 @@
     "Recovery drills required" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需要完成恢复演练" } } }
     },
+    "Remote verification" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "远端校验" } } }
+    },
     "Refresh Status" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "刷新状态" } } }
     },
@@ -105,6 +144,9 @@
     },
     "Run Now" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "立即运行" } } }
+    },
+    "Retry reasons: %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "重试原因：%@" } } }
     },
     "Search metadata and summaries remain local. Older source files and local archive objects are reclaimed only after both remote copies and both current recovery drills are verified." : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "搜索元数据和摘要仍保留在本机。只有在两个远端副本和两端当前恢复演练均验证通过后，才会精简较旧的源文件和本地归档对象。" } } }

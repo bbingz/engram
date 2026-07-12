@@ -1,5 +1,79 @@
 import SwiftUI
 
+enum ArchiveSyncRetryCategory: CaseIterable, Hashable {
+    case network
+    case credentials
+    case localArchive
+    case remoteVerification
+    case configuration
+    case other
+
+    var localizedName: String {
+        switch self {
+        case .network: String(localized: "Network")
+        case .credentials: String(localized: "Credentials")
+        case .localArchive: String(localized: "Local archive")
+        case .remoteVerification: String(localized: "Remote verification")
+        case .configuration: String(localized: "Configuration")
+        case .other: String(localized: "Other")
+        }
+    }
+}
+
+struct ArchiveSyncRetryCategoryCount: Equatable {
+    let category: ArchiveSyncRetryCategory
+    let count: Int
+}
+
+enum ArchiveSyncRetryPresentation {
+    static func group(
+        _ reasons: [EngramServiceArchiveV2RetryReasonCount]
+    ) -> [ArchiveSyncRetryCategoryCount] {
+        var counts: [ArchiveSyncRetryCategory: Int] = [:]
+        for reason in reasons {
+            let category = category(for: reason.symbol)
+            let (sum, overflow) = counts[category, default: 0]
+                .addingReportingOverflow(reason.count)
+            counts[category] = overflow ? Int.max : sum
+        }
+        return ArchiveSyncRetryCategory.allCases.compactMap { category in
+            guard let count = counts[category], count > 0 else { return nil }
+            return ArchiveSyncRetryCategoryCount(category: category, count: count)
+        }
+    }
+
+    static func requiresAttention(
+        _ reasons: [EngramServiceArchiveV2RetryReasonCount]
+    ) -> Bool {
+        reasons.contains { category(for: $0.symbol) != .network }
+    }
+
+    static func requiresAttention(symbol: String) -> Bool {
+        category(for: symbol) != .network
+    }
+
+    static func category(for symbol: String) -> ArchiveSyncRetryCategory {
+        if symbol.hasPrefix("transport_")
+            || symbol == "remote_server_unavailable"
+            || symbol == "remote_rate_limited" {
+            return .network
+        }
+        if symbol == "remote_auth_rejected" {
+            return .credentials
+        }
+        if symbol.hasPrefix("local_") {
+            return .localArchive
+        }
+        if symbol.hasPrefix("remote_") {
+            return .remoteVerification
+        }
+        if symbol == "replica_configuration_failure" {
+            return .configuration
+        }
+        return .other
+    }
+}
+
 enum ArchiveSyncPresentationState: Equatable {
     case unavailable
     case disabled
@@ -13,9 +87,16 @@ enum ArchiveSyncPresentationState: Equatable {
             return
         }
 
+        let replicationNeedsAttention = status.lastReplicationError.map(
+            ArchiveSyncRetryPresentation.requiresAttention(symbol:)
+        ) ?? false
+        let retryNeedsAttention = status.replicas.contains {
+            ArchiveSyncRetryPresentation.requiresAttention($0.retryReasons)
+        }
         let hasAttentionState = status.configurationError != nil
             || status.lastCaptureError != nil
-            || status.lastReplicationError != nil
+            || replicationNeedsAttention
+            || retryNeedsAttention
             || status.unsafeLocatorCount > 0
             || status.replicas.contains { $0.quarantinedCount > 0 }
         if hasAttentionState {
@@ -166,13 +247,44 @@ struct ArchiveSettingsSection: View {
                     .font(.caption)
                     .accessibilityIdentifier("archiveSync_progress")
 
-                    ForEach(archiveStatus.replicas, id: \.replicaID) { replica in
-                        Text(replicaSummary(replica))
-                            .font(.caption)
+                    if let cycle = archiveStatus.lastReplicationCycle {
+                        Text(lastCycleSummary(cycle))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
-                            .accessibilityIdentifier(
-                                replica.replicaID == "hq" ? "archiveSync_hq" : "archiveSync_m1"
+                            .accessibilityIdentifier("archiveSync_lastCycle")
+                    }
+
+                    ForEach(archiveStatus.replicas, id: \.replicaID) { replica in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(replicaSummary(replica))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier(
+                                    replica.replicaID == "hq" ? "archiveSync_hq" : "archiveSync_m1"
+                                )
+                            if let diagnostics = replicaDiagnostics(replica) {
+                                Text(diagnostics)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    .accessibilityIdentifier(
+                                        replica.replicaID == "hq"
+                                            ? "archiveSync_hqDiagnostics"
+                                            : "archiveSync_m1Diagnostics"
+                                    )
+                            }
+                        }
+                    }
+
+                    if let next = archiveStatus.nextScheduledCycleAt {
+                        Text(
+                            String.localizedStringWithFormat(
+                                String(localized: "Next background opportunity around %@"),
+                                localizedTimestamp(next)
                             )
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .accessibilityIdentifier("archiveSync_nextCycle")
                     }
 
                     Text(
@@ -214,6 +326,86 @@ struct ArchiveSettingsSection: View {
             Int64(replica.queuedCount),
             Int64(replica.quarantinedCount)
         )
+    }
+
+    private func replicaDiagnostics(
+        _ replica: EngramServiceArchiveV2ReplicaStatus
+    ) -> String? {
+        var parts: [String] = []
+        if let oldest = replica.oldestOutstandingAt {
+            parts.append(
+                String.localizedStringWithFormat(
+                    String(localized: "Oldest pending: %@"),
+                    localizedTimestamp(oldest)
+                )
+            )
+        }
+        if let retry = replica.nextRetryAt {
+            parts.append(
+                String.localizedStringWithFormat(
+                    String(localized: "Next retry: %@"),
+                    localizedTimestamp(retry)
+                )
+            )
+        }
+        let reasons = ArchiveSyncRetryPresentation.group(replica.retryReasons).map {
+            "\($0.category.localizedName) ×\($0.count)"
+        }
+        if !reasons.isEmpty {
+            parts.append(
+                String.localizedStringWithFormat(
+                    String(localized: "Retry reasons: %@"),
+                    ListFormatter.localizedString(byJoining: reasons)
+                )
+            )
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private func lastCycleSummary(
+        _ cycle: EngramServiceArchiveV2ReplicationCycleSummary
+    ) -> String {
+        var summary = String.localizedStringWithFormat(
+            String(localized: "Last pass %@ · %@ · verified %lld · retry %lld · quarantined %lld"),
+            localizedTimestamp(cycle.finishedAt),
+            localizedDuration(milliseconds: cycle.durationMs),
+            Int64(cycle.verifiedCount),
+            Int64(cycle.retryScheduledCount),
+            Int64(cycle.quarantinedCount)
+        )
+        if let error = cycle.cycleError {
+            summary += " · " + String.localizedStringWithFormat(
+                String(localized: "Issue: %@"),
+                ArchiveSyncRetryPresentation.category(for: error).localizedName
+            )
+        }
+        if cycle.cancelled {
+            summary += " · " + String(localized: "Cancelled")
+        }
+        return summary
+    }
+
+    private func localizedTimestamp(_ value: String) -> String {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = parser.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+        guard let date else { return value }
+        return date.formatted(date: .numeric, time: .shortened)
+    }
+
+    private func localizedDuration(milliseconds: Double) -> String {
+        if milliseconds < 1_000 {
+            return String.localizedStringWithFormat(
+                String(localized: "%lld ms"),
+                Int64(milliseconds.rounded())
+            )
+        }
+        let formatter = NumberFormatter()
+        formatter.maximumFractionDigits = 1
+        formatter.minimumFractionDigits = 0
+        let seconds = formatter.string(from: NSNumber(value: milliseconds / 1_000))
+            ?? String(format: "%.1f", milliseconds / 1_000)
+        return String.localizedStringWithFormat(String(localized: "%@ s"), seconds)
     }
 
     @MainActor

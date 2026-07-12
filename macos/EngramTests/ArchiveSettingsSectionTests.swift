@@ -19,6 +19,10 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             "archiveSync_progress",
             "archiveSync_hq",
             "archiveSync_m1",
+            "archiveSync_hqDiagnostics",
+            "archiveSync_m1Diagnostics",
+            "archiveSync_lastCycle",
+            "archiveSync_nextCycle",
             "archiveSync_unbound",
             "archiveSync_refresh",
         ] {
@@ -69,6 +73,53 @@ final class ArchiveSettingsSectionTests: XCTestCase {
         XCTAssertEqual(ArchiveSyncPresentationState(status: nil), .unavailable)
     }
 
+    func testRetryReasonsGroupIntoFriendlyDeterministicCategories() throws {
+        let grouped = ArchiveSyncRetryPresentation.group([
+            try reason("transport_network", 2),
+            try reason("remote_server_unavailable", 1),
+            try reason("remote_auth_rejected", 1),
+            try reason("local_object_missing", 2),
+            try reason("remote_receipt_mismatch", 1),
+            try reason("replica_configuration_failure", 1),
+            try reason("future_symbol", 3),
+        ])
+
+        XCTAssertEqual(grouped, [
+            ArchiveSyncRetryCategoryCount(category: .network, count: 3),
+            ArchiveSyncRetryCategoryCount(category: .credentials, count: 1),
+            ArchiveSyncRetryCategoryCount(category: .localArchive, count: 2),
+            ArchiveSyncRetryCategoryCount(category: .remoteVerification, count: 1),
+            ArchiveSyncRetryCategoryCount(category: .configuration, count: 1),
+            ArchiveSyncRetryCategoryCount(category: .other, count: 3),
+        ])
+    }
+
+    func testSyncPresentationOnlyEscalatesNonTransientRetryReasons() throws {
+        let networkStatus = try makeStatus(
+            replicas: [
+                try replica(
+                    "hq",
+                    retryingCount: 1,
+                    retryReasons: [try reason("transport_network", 1)]
+                ),
+                try replica("m1"),
+            ]
+        )
+        let localFailureStatus = try makeStatus(
+            replicas: [
+                try replica(
+                    "hq",
+                    retryingCount: 1,
+                    retryReasons: [try reason("local_object_missing", 1)]
+                ),
+                try replica("m1"),
+            ]
+        )
+
+        XCTAssertEqual(ArchiveSyncPresentationState(status: networkStatus), .inProgress)
+        XCTAssertEqual(ArchiveSyncPresentationState(status: localFailureStatus), .needsAttention)
+    }
+
     func testEveryArchiveSettingsStringHasSimplifiedChineseTranslation() throws {
         let catalogURL = macOSRoot.appendingPathComponent("Engram/Resources/Localizable.xcstrings")
         let data = try Data(contentsOf: catalogURL)
@@ -77,8 +128,13 @@ final class ArchiveSettingsSectionTests: XCTestCase {
 
         let requiredKeys = [
             "%lld days",
+            "%lld ms",
             "%lld unbound archives (not a sync failure)",
             "%@: %lld verified, %lld retrying, %lld queued, %lld quarantined",
+            "%@ s",
+            "Cancelled",
+            "Configuration",
+            "Credentials",
             "%@ recovery drill passed.",
             "Archive & Storage",
             "Archive Sync Status",
@@ -103,11 +159,21 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             "Error: save failed because the service is unavailable.",
             "Error: save failed. Verify both recovery drills are current and the service is available.",
             "Keep full local transcripts",
+            "Issue: %@",
+            "Last pass %@ · %@ · verified %lld · retry %lld · quarantined %lld",
             "Lightweight Recovery Drills",
+            "Local archive",
+            "Network",
+            "Next background opportunity around %@",
+            "Next retry: %@",
+            "Oldest pending: %@",
+            "Other",
             "Preview",
             "Preview: %lld files, about %@.",
             "Recovery drills current",
             "Recovery drills required",
+            "Remote verification",
+            "Retry reasons: %@",
             "Refresh Status",
             "Released %@.",
             "Run Now",
@@ -174,7 +240,8 @@ final class ArchiveSettingsSectionTests: XCTestCase {
         remoteReplicationEnabled: Bool = true,
         configurationError: String? = nil,
         remotePolicyEligibleCount: Int = 0,
-        dualReplicaVerifiedCount: Int = 0
+        dualReplicaVerifiedCount: Int = 0,
+        replicas: [EngramServiceArchiveV2ReplicaStatus]? = nil
     ) throws -> EngramServiceArchiveV2StatusResponse {
         try EngramServiceArchiveV2StatusResponse(
             enabled: enabled,
@@ -189,7 +256,7 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             remotePolicyExcludedCount: 0,
             unsupportedLocatorCount: 0,
             unsafeLocatorCount: 0,
-            replicas: [try replica("hq"), try replica("m1")],
+            replicas: replicas ?? [try replica("hq"), try replica("m1")],
             singleReplicaVerifiedCount: 0,
             dualReplicaVerifiedCount: dualReplicaVerifiedCount,
             latestReceipts: [],
@@ -200,13 +267,25 @@ final class ArchiveSettingsSectionTests: XCTestCase {
         )
     }
 
-    private func replica(_ replicaID: String) throws -> EngramServiceArchiveV2ReplicaStatus {
+    private func replica(
+        _ replicaID: String,
+        retryingCount: Int = 0,
+        retryReasons: [EngramServiceArchiveV2RetryReasonCount] = []
+    ) throws -> EngramServiceArchiveV2ReplicaStatus {
         try EngramServiceArchiveV2ReplicaStatus(
             replicaID: replicaID,
             queuedCount: 0,
-            retryingCount: 0,
+            retryingCount: retryingCount,
             quarantinedCount: 0,
-            verifiedCount: 0
+            verifiedCount: 0,
+            retryReasons: retryReasons
         )
+    }
+
+    private func reason(
+        _ symbol: String,
+        _ count: Int
+    ) throws -> EngramServiceArchiveV2RetryReasonCount {
+        try EngramServiceArchiveV2RetryReasonCount(symbol: symbol, count: count)
     }
 }
