@@ -177,6 +177,11 @@ actor ArchiveV2ServiceCoordinator {
         let task: Task<ArchiveV2ServiceCycleResult, Error>
     }
 
+    private struct InFlightRecoveryDrill {
+        let id: UUID
+        let task: Task<ArchiveRecoveryLease, Error>
+    }
+
     private enum PolicyDecision {
         case eligible(String)
         case excluded(String?)
@@ -195,6 +200,7 @@ actor ArchiveV2ServiceCoordinator {
     nonisolated let transcriptResolverSnapshot: ArchiveTranscriptResolver?
 
     private var inFlight: InFlightCycle?
+    private var recoveryDrillsInFlight: [String: InFlightRecoveryDrill] = [:]
     private var cycleCoalesced = false
     private var lastCaptureError: String?
     private var lastReplicationError: String?
@@ -444,7 +450,25 @@ actor ArchiveV2ServiceCoordinator {
         guard remoteReady, let operations else {
             throw ArchiveV2ServiceCoordinatorError.recoveryDrillUnavailable
         }
-        return try await operations.recoveryDrill(replicaID)
+        if let existing = recoveryDrillsInFlight[replicaID] {
+            return try await existing.task.value
+        }
+        let id = UUID()
+        let task = Task { try await operations.recoveryDrill(replicaID) }
+        recoveryDrillsInFlight[replicaID] = InFlightRecoveryDrill(id: id, task: task)
+        do {
+            let lease = try await task.value
+            clearRecoveryDrill(replicaID: replicaID, id: id)
+            return lease
+        } catch {
+            clearRecoveryDrill(replicaID: replicaID, id: id)
+            throw error
+        }
+    }
+
+    private func clearRecoveryDrill(replicaID: String, id: UUID) {
+        guard recoveryDrillsInFlight[replicaID]?.id == id else { return }
+        recoveryDrillsInFlight.removeValue(forKey: replicaID)
     }
 
     func recentCaptureRetryLocators(
@@ -797,8 +821,9 @@ actor ArchiveV2ServiceCoordinator {
         ) else {
             throw ArchiveV2ServiceCoordinatorError.noRecoveryDrillCandidate
         }
+        let proof: ArchiveRemoteRecoveryProof
         do {
-            let proof = try await withThrowingTaskGroup(
+            proof = try await withThrowingTaskGroup(
                 of: ArchiveRemoteRecoveryProof.self
             ) { group in
                 group.addTask {
@@ -822,12 +847,6 @@ actor ArchiveV2ServiceCoordinator {
                   proof.rawByteCount == candidate.rawByteCount else {
                 throw ArchiveV2ServiceCoordinatorError.recoveryDrillMismatch
             }
-            return try catalog.recordRecoveryLeaseAndAdvanceCursor(
-                replicaID: replicaID,
-                manifestSHA256: proof.manifestSHA256,
-                verifiedAt: Self.timestamp(Date()),
-                verifiedBytes: proof.rawByteCount
-            )
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -838,6 +857,12 @@ actor ArchiveV2ServiceCoordinator {
             )
             throw error
         }
+        return try catalog.recordRecoveryLeaseAndAdvanceCursor(
+            replicaID: replicaID,
+            manifestSHA256: proof.manifestSHA256,
+            verifiedAt: Self.timestamp(Date()),
+            verifiedBytes: proof.rawByteCount
+        )
     }
 
     static func captureSummary(
