@@ -22,7 +22,10 @@ public final class HTTPArchiveReplicaBackend: ArchiveReplicaBackend, @unchecked 
     private let connection: ArchiveReplicaConnection
     private let transportDelegate: ArchiveBoundedSessionDelegate
     private let session: URLSession
+    private let telemetryTransportDelegate: ArchiveBoundedSessionDelegate
+    private let telemetrySession: URLSession
     let transportPolicyForTesting: ArchiveTransportPolicySnapshot
+    let telemetryTransportPolicyForTesting: ArchiveTransportPolicySnapshot
 
     public convenience init(connection: ArchiveReplicaConnection) {
         self.init(connection: connection, testProtocolClasses: [])
@@ -32,20 +35,30 @@ public final class HTTPArchiveReplicaBackend: ArchiveReplicaBackend, @unchecked 
         self.connection = connection
         replicaID = connection.replicaID
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.httpShouldSetCookies = false
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.urlCredentialStorage = nil
-        configuration.connectionProxyDictionary = [:]
-        configuration.waitsForConnectivity = false
-        configuration.timeoutIntervalForRequest = Self.requestTimeout
-        configuration.timeoutIntervalForResource = Self.resourceTimeout
-        if !testProtocolClasses.isEmpty {
-            configuration.protocolClasses = testProtocolClasses
+        func makeConfiguration(
+            requestTimeout: TimeInterval,
+            resourceTimeout: TimeInterval
+        ) -> URLSessionConfiguration {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.httpCookieStorage = nil
+            configuration.httpShouldSetCookies = false
+            configuration.urlCache = nil
+            configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+            configuration.urlCredentialStorage = nil
+            configuration.connectionProxyDictionary = [:]
+            configuration.waitsForConnectivity = false
+            configuration.timeoutIntervalForRequest = requestTimeout
+            configuration.timeoutIntervalForResource = resourceTimeout
+            if !testProtocolClasses.isEmpty {
+                configuration.protocolClasses = testProtocolClasses
+            }
+            return configuration
         }
 
+        let configuration = makeConfiguration(
+            requestTimeout: Self.requestTimeout,
+            resourceTimeout: Self.resourceTimeout
+        )
         transportPolicyForTesting = ArchiveTransportPolicySnapshot(
             cookiesDisabled: configuration.httpCookieStorage == nil
                 && !configuration.httpShouldSetCookies,
@@ -57,6 +70,21 @@ public final class HTTPArchiveReplicaBackend: ArchiveReplicaBackend, @unchecked 
             resourceTimeout: configuration.timeoutIntervalForResource,
             usesEphemeralConfiguration: true
         )
+        let telemetryConfiguration = makeConfiguration(
+            requestTimeout: Self.telemetryRequestTimeout,
+            resourceTimeout: Self.telemetryRequestTimeout
+        )
+        telemetryTransportPolicyForTesting = ArchiveTransportPolicySnapshot(
+            cookiesDisabled: telemetryConfiguration.httpCookieStorage == nil
+                && !telemetryConfiguration.httpShouldSetCookies,
+            cacheDisabled: telemetryConfiguration.urlCache == nil,
+            credentialStorageDisabled: telemetryConfiguration.urlCredentialStorage == nil,
+            proxyDictionaryEmpty: telemetryConfiguration.connectionProxyDictionary?.isEmpty == true,
+            waitsForConnectivity: telemetryConfiguration.waitsForConnectivity,
+            requestTimeout: telemetryConfiguration.timeoutIntervalForRequest,
+            resourceTimeout: telemetryConfiguration.timeoutIntervalForResource,
+            usesEphemeralConfiguration: true
+        )
 
         let transportDelegate = ArchiveBoundedSessionDelegate()
         self.transportDelegate = transportDelegate
@@ -65,10 +93,18 @@ public final class HTTPArchiveReplicaBackend: ArchiveReplicaBackend, @unchecked 
             delegate: transportDelegate,
             delegateQueue: nil
         )
+        let telemetryTransportDelegate = ArchiveBoundedSessionDelegate()
+        self.telemetryTransportDelegate = telemetryTransportDelegate
+        telemetrySession = URLSession(
+            configuration: telemetryConfiguration,
+            delegate: telemetryTransportDelegate,
+            delegateQueue: nil
+        )
     }
 
     deinit {
         session.invalidateAndCancel()
+        telemetrySession.invalidateAndCancel()
     }
 
     public func headObject(digest: String) async throws -> Bool {
@@ -170,7 +206,7 @@ public final class HTTPArchiveReplicaBackend: ArchiveReplicaBackend, @unchecked 
             method: "GET",
             timeoutInterval: Self.telemetryRequestTimeout
         )
-        let response = try await execute(request, successLimit: .telemetry)
+        let response = try await executeTelemetry(request, successLimit: .telemetry)
         guard response.statusCode == 200 else {
             throw ArchiveReplicaBackendError.unexpectedStatus(response.statusCode)
         }
@@ -295,10 +331,36 @@ public final class HTTPArchiveReplicaBackend: ArchiveReplicaBackend, @unchecked 
         _ request: URLRequest,
         successLimit: ArchiveResponseLimitKind
     ) async throws -> ArchiveHTTPResponse {
+        try await execute(
+            request,
+            successLimit: successLimit,
+            session: session,
+            delegate: transportDelegate
+        )
+    }
+
+    private func executeTelemetry(
+        _ request: URLRequest,
+        successLimit: ArchiveResponseLimitKind
+    ) async throws -> ArchiveHTTPResponse {
+        try await execute(
+            request,
+            successLimit: successLimit,
+            session: telemetrySession,
+            delegate: telemetryTransportDelegate
+        )
+    }
+
+    private func execute(
+        _ request: URLRequest,
+        successLimit: ArchiveResponseLimitKind,
+        session: URLSession,
+        delegate: ArchiveBoundedSessionDelegate
+    ) async throws -> ArchiveHTTPResponse {
         let task = session.dataTask(with: request)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                transportDelegate.register(
+                delegate.register(
                     task: task,
                     expectedURL: request.url,
                     method: request.httpMethod,

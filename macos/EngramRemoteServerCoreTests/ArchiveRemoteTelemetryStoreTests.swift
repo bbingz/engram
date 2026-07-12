@@ -210,6 +210,123 @@ final class ArchiveRemoteTelemetryStoreTests: XCTestCase {
         XCTAssertEqual(writer.count, 2)
     }
 
+    func testSingleRecordPersistsAfterQuietFlushInterval() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clock = MutableArchiveTelemetryClock(now: instant("2026-07-12T10:00:00.000Z"))
+        let writer = ArchiveTelemetryWriterProbe()
+        let sleeper = ArchiveTelemetrySleeperProbe()
+        let store = try makeStore(
+            root: root,
+            clock: clock,
+            writer: { data, url in try writer.write(data, url) },
+            sleep: { delay in try await sleeper.sleep(delay) }
+        )
+        defer { withExtendedLifetime(store) {} }
+
+        await store.record(successObservation)
+        let scheduled = await sleeper.reachesScheduledCount(1)
+        XCTAssertTrue(scheduled)
+        let delays = await sleeper.delays
+        XCTAssertEqual(delays, [60])
+        XCTAssertEqual(writer.count, 0)
+
+        clock.set(instant("2026-07-12T10:01:00.000Z"))
+        await sleeper.resumeNext()
+        let wrote = await writer.reachesCount(1)
+        XCTAssertTrue(wrote)
+
+        XCTAssertEqual(writer.count, 1)
+    }
+
+    func testFailedQuietPersistenceRetriesAfterAnotherSixtySeconds() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clock = MutableArchiveTelemetryClock(now: instant("2026-07-12T10:00:00.000Z"))
+        let writer = ArchiveTelemetryWriterProbe(failuresBeforeSuccess: 1)
+        let sleeper = ArchiveTelemetrySleeperProbe()
+        let store = try makeStore(
+            root: root,
+            clock: clock,
+            writer: { data, url in try writer.write(data, url) },
+            sleep: { delay in try await sleeper.sleep(delay) }
+        )
+        defer { withExtendedLifetime(store) {} }
+
+        await store.record(successObservation)
+        let firstScheduled = await sleeper.reachesScheduledCount(1)
+        XCTAssertTrue(firstScheduled)
+        clock.set(instant("2026-07-12T10:01:00.000Z"))
+        await sleeper.resumeNext()
+        let firstWrite = await writer.reachesCount(1)
+        XCTAssertTrue(firstWrite)
+
+        let retryScheduled = await sleeper.reachesScheduledCount(2)
+        XCTAssertTrue(retryScheduled)
+        guard retryScheduled else { return }
+        let delays = await sleeper.delays
+        XCTAssertEqual(delays, [60, 60])
+
+        clock.set(instant("2026-07-12T10:02:00.000Z"))
+        await sleeper.resumeNext()
+        let secondWrite = await writer.reachesCount(2)
+        XCTAssertTrue(secondWrite)
+        let snapshot = await store.status(forcePersist: false)
+        XCTAssertNil(snapshot.persistenceError)
+    }
+
+    func testForceFlushCancelsScheduledTaskAndDoesNotDuplicateWrite() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clock = MutableArchiveTelemetryClock(now: instant("2026-07-12T10:00:00.000Z"))
+        let writer = ArchiveTelemetryWriterProbe()
+        let sleeper = ArchiveTelemetrySleeperProbe()
+        let store = try makeStore(
+            root: root,
+            clock: clock,
+            writer: { data, url in try writer.write(data, url) },
+            sleep: { delay in try await sleeper.sleep(delay) }
+        )
+
+        await store.record(successObservation)
+        let scheduled = await sleeper.reachesScheduledCount(1)
+        XCTAssertTrue(scheduled)
+
+        _ = await store.status(forcePersist: true)
+        XCTAssertEqual(writer.count, 1)
+        let cancelled = await sleeper.reachesCancellationCount(1)
+        XCTAssertTrue(cancelled)
+
+        clock.set(instant("2026-07-12T10:01:00.000Z"))
+        await sleeper.resumeNext()
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertEqual(writer.count, 1)
+    }
+
+    func testStoreReleaseCancelsScheduledTaskWithoutRetainingActor() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clock = MutableArchiveTelemetryClock(now: instant("2026-07-12T10:00:00.000Z"))
+        let sleeper = ArchiveTelemetrySleeperProbe()
+        var store: ArchiveRemoteTelemetryStore? = try makeStore(
+            root: root,
+            clock: clock,
+            sleep: { delay in try await sleeper.sleep(delay) }
+        )
+        weak let weakStore = store
+
+        await store?.record(successObservation)
+        let scheduled = await sleeper.reachesScheduledCount(1)
+        XCTAssertTrue(scheduled)
+        store = nil
+        for _ in 0..<100 where weakStore != nil { await Task.yield() }
+
+        XCTAssertNil(weakStore)
+        let cancelled = await sleeper.reachesCancellationCount(1)
+        XCTAssertTrue(cancelled)
+        await sleeper.resumeNext()
+    }
+
     func testFailedAutomaticPersistenceIsAlsoThrottledToSixtySeconds() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -371,15 +488,20 @@ final class ArchiveRemoteTelemetryStoreTests: XCTestCase {
     private func makeStore(
         root: URL,
         clock: MutableArchiveTelemetryClock,
-        writer: @escaping ArchiveRemoteTelemetryStore.SnapshotWriter =
-            ArchiveRemoteTelemetryStore.defaultSnapshotWriter
+        writer: @escaping ArchiveRemoteTelemetryStore.SnapshotWriter = { data, url in
+            try ArchiveRemoteTelemetryStore.defaultSnapshotWriter(data, url)
+        },
+        sleep: @escaping ArchiveRemoteTelemetryStore.Sleeper = { delay in
+            try await ArchiveRemoteTelemetryStore.defaultSleeper(delay)
+        }
     ) throws -> ArchiveRemoteTelemetryStore {
         try ArchiveRemoteTelemetryStore(
             archiveRoot: root,
             serverID: "hq",
             sourceRevision: revision,
             now: clock.now,
-            snapshotWriter: writer
+            snapshotWriter: writer,
+            sleep: sleep
         )
     }
 
@@ -477,11 +599,18 @@ private final class MutableArchiveTelemetryClock: @unchecked Sendable {
 
 private final class ArchiveTelemetryWriterProbe: @unchecked Sendable {
     private let lock = NSLock()
-    private let shouldFail: Bool
+    private let alwaysFail: Bool
+    private var failuresRemaining: Int
     private var writes = 0
 
     init(shouldFail: Bool = false) {
-        self.shouldFail = shouldFail
+        alwaysFail = shouldFail
+        failuresRemaining = 0
+    }
+
+    init(failuresBeforeSuccess: Int) {
+        alwaysFail = false
+        failuresRemaining = failuresBeforeSuccess
     }
 
     var count: Int {
@@ -489,9 +618,65 @@ private final class ArchiveTelemetryWriterProbe: @unchecked Sendable {
     }
 
     func write(_ data: Data, _ url: URL) throws {
-        lock.withLock { writes += 1 }
+        let shouldFail = lock.withLock { () -> Bool in
+            writes += 1
+            if failuresRemaining > 0 {
+                failuresRemaining -= 1
+                return true
+            }
+            return alwaysFail
+        }
         if shouldFail {
             throw NSError(domain: "injected", code: 1)
         }
+    }
+
+    func reachesCount(_ expected: Int) async -> Bool {
+        for _ in 0..<1_000 {
+            if count >= expected { return true }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        return count >= expected
+    }
+}
+
+private actor ArchiveTelemetrySleeperProbe {
+    private(set) var delays: [TimeInterval] = []
+    private var cancellationCount = 0
+    private var continuations: [CheckedContinuation<Void, Error>] = []
+
+    func sleep(_ delay: TimeInterval) async throws {
+        delays.append(delay)
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                continuations.append(continuation)
+            }
+        } onCancel: {
+            Task { await self.noteCancellation() }
+        }
+    }
+
+    func reachesScheduledCount(_ expected: Int) async -> Bool {
+        for _ in 0..<1_000 {
+            if delays.count >= expected { return true }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        return delays.count >= expected
+    }
+
+    func reachesCancellationCount(_ expected: Int) async -> Bool {
+        for _ in 0..<1_000 {
+            if cancellationCount >= expected { return true }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        return cancellationCount >= expected
+    }
+
+    func resumeNext() {
+        continuations.removeFirst().resume()
+    }
+
+    private func noteCancellation() {
+        cancellationCount += 1
     }
 }

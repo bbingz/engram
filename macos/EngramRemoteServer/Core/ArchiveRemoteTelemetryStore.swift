@@ -36,6 +36,7 @@ struct ArchiveRemoteTelemetryObservation: Equatable, Sendable {
 
 actor ArchiveRemoteTelemetryStore {
     typealias SnapshotWriter = @Sendable (Data, URL) throws -> Void
+    typealias Sleeper = @Sendable (TimeInterval) async throws -> Void
 
     static let flushInterval: TimeInterval = 60
     static let telemetryDirectoryName = ".telemetry"
@@ -189,7 +190,9 @@ actor ArchiveRemoteTelemetryStore {
     private let processStartedAt: Date
     private let now: @Sendable () -> Date
     private let snapshotWriter: SnapshotWriter
+    private let sleep: Sleeper
     private var state: State
+    private var scheduledFlushTask: Task<Void, Never>?
 
     init(
         archiveRoot: URL,
@@ -204,6 +207,9 @@ actor ArchiveRemoteTelemetryStore {
             now: now,
             snapshotWriter: { data, url in
                 try Self.defaultSnapshotWriter(data, url)
+            },
+            sleep: { delay in
+                try await Self.defaultSleeper(delay)
             }
         )
     }
@@ -213,7 +219,10 @@ actor ArchiveRemoteTelemetryStore {
         serverID: String,
         sourceRevision: String,
         now: @escaping @Sendable () -> Date,
-        snapshotWriter: @escaping SnapshotWriter
+        snapshotWriter: @escaping SnapshotWriter,
+        sleep: @escaping Sleeper = { delay in
+            try await ArchiveRemoteTelemetryStore.defaultSleeper(delay)
+        }
     ) throws {
         let root = archiveRoot.standardizedFileURL
         let directory = root.appendingPathComponent(
@@ -250,6 +259,7 @@ actor ArchiveRemoteTelemetryStore {
         self.processStartedAt = startedAt
         self.now = now
         self.snapshotWriter = snapshotWriter
+        self.sleep = sleep
 
         let directoryIsSafe = Self.prepareTelemetryDirectory(directory)
         if directoryIsSafe,
@@ -264,20 +274,33 @@ actor ArchiveRemoteTelemetryStore {
         }
     }
 
+    deinit {
+        scheduledFlushTask?.cancel()
+    }
+
     func record(_ observation: ArchiveRemoteTelemetryObservation) {
         let observedAt = now()
         state.apply(observation, timestamp: Self.timestamp(observedAt))
         if observedAt.timeIntervalSince(state.lastPersistedAt) >= Self.flushInterval {
+            cancelScheduledFlush()
             persistBestEffort(at: observedAt)
+        } else {
+            scheduleAutomaticFlushIfNeeded(at: observedAt)
         }
     }
 
     func status(forcePersist: Bool) -> ArchiveRemoteTelemetrySnapshot {
         let snapshotAt = now()
         if forcePersist && state.dirty {
+            cancelScheduledFlush()
             persistBestEffort(at: snapshotAt)
         }
         return makeSnapshot(at: snapshotAt, persistenceError: state.persistenceError)
+    }
+
+    static func defaultSleeper(_ delay: TimeInterval) async throws {
+        guard delay > 0 else { return }
+        try await Task.sleep(nanoseconds: UInt64((delay * 1_000_000_000).rounded(.up)))
     }
 
     static func defaultSnapshotWriter(_ data: Data, _ url: URL) throws {
@@ -319,7 +342,42 @@ actor ArchiveRemoteTelemetryStore {
             state.dirty = false
         } catch {
             state.persistenceError = "snapshot_write_failed"
+            scheduleAutomaticFlushIfNeeded(at: date)
         }
+    }
+
+    private func scheduleAutomaticFlushIfNeeded(at date: Date) {
+        guard state.dirty, scheduledFlushTask == nil else { return }
+        let delay = max(
+            0,
+            Self.flushInterval - date.timeIntervalSince(state.lastPersistedAt)
+        )
+        let sleep = sleep
+        scheduledFlushTask = Task { [weak self] in
+            do {
+                try await sleep(delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.automaticFlushTimerFired()
+        }
+    }
+
+    private func automaticFlushTimerFired() {
+        scheduledFlushTask = nil
+        guard state.dirty else { return }
+        let firedAt = now()
+        guard firedAt.timeIntervalSince(state.lastPersistedAt) >= Self.flushInterval else {
+            scheduleAutomaticFlushIfNeeded(at: firedAt)
+            return
+        }
+        persistBestEffort(at: firedAt)
+    }
+
+    private func cancelScheduledFlush() {
+        scheduledFlushTask?.cancel()
+        scheduledFlushTask = nil
     }
 
     private func makeSnapshot(

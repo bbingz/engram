@@ -190,6 +190,20 @@ final class HTTPArchiveReplicaBackendTests: XCTestCase {
         XCTAssertTrue(policy.usesEphemeralConfiguration)
     }
 
+    func testRemoteTelemetryOwnsIndependentThreeSecondEphemeralSession() throws {
+        let backend = try makeBackend()
+        let policy = backend.telemetryTransportPolicyForTesting
+
+        XCTAssertTrue(policy.cookiesDisabled)
+        XCTAssertTrue(policy.cacheDisabled)
+        XCTAssertTrue(policy.credentialStorageDisabled)
+        XCTAssertTrue(policy.proxyDictionaryEmpty)
+        XCTAssertFalse(policy.waitsForConnectivity)
+        XCTAssertEqual(policy.requestTimeout, 3)
+        XCTAssertEqual(policy.resourceTimeout, 3)
+        XCTAssertTrue(policy.usesEphemeralConfiguration)
+    }
+
     func testRemoteTelemetrySnapshotDecodesValidBoundedCanonicalResponse() throws {
         let status = try ArchiveCanonicalJSON.decode(
             ArchiveRemoteTelemetrySnapshot.self,
