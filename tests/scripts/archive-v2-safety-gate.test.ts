@@ -130,6 +130,79 @@ describe('archive v2 release safety gate', () => {
     expect(result.status).toBe(0);
   });
 
+  it('rejects a duplicate quarantine unlink in ArchiveSourceReclaimer', () => {
+    const root = makeSafeFixture();
+    const reclaimer = join(
+      root,
+      'macos/EngramCoreWrite/ArchiveV2/ArchiveSourceReclaimer.swift',
+    );
+    const duplicate = [
+      readFileSync(reclaimer, 'utf8'),
+      'guard Darwin.unlink(quarantineURL.path) == 0 else {',
+      '  throw TestError()',
+      '}',
+    ].join('\n');
+    writeFileSync(reclaimer, duplicate, 'utf8');
+
+    const result = runGate(root);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      'ArchiveSourceReclaimer quarantine unlink must occur exactly once',
+    );
+  });
+
+  it('rejects a duplicate object unlink in ImmutableArchiveCAS', () => {
+    const root = makeSafeFixture();
+    const cas = join(
+      root,
+      'macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift',
+    );
+    const duplicate = [
+      readFileSync(cas, 'utf8'),
+      'guard Darwin.unlink(objectURL.path) == 0 else {',
+      '  throw TestError()',
+      '}',
+    ].join('\n');
+    writeFileSync(cas, duplicate, 'utf8');
+
+    const result = runGate(root);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      'ImmutableArchiveCAS object unlink must occur exactly once',
+    );
+  });
+
+  it.each([
+    {
+      path: 'macos/EngramService/Core/ArchiveSourceReclaimer.swift',
+      content: [
+        'guard Darwin.unlink(quarantineURL.path) == 0 else {',
+        '  throw TestError()',
+        '}',
+      ].join('\n'),
+    },
+    {
+      path: 'macos/EngramService/Core/ArchiveStore.swift',
+      content: '_ = Darwin.unlink(temporaryURL.path)\n',
+    },
+    {
+      path: 'macos/EngramRemoteServer/Core/ArchiveTranscriptResolver.swift',
+      content: 'try FileManager.default.removeItem(at: replay.directoryURL)\n',
+    },
+  ])('rejects a basename allowlist collision at $path', ({ path, content }) => {
+    const root = makeSafeFixture();
+    write(root, path, content);
+
+    const result = runGate(root);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      'forbidden archive deletion primitive',
+    );
+  });
+
   it.each([
     {
       path: 'macos/EngramCoreWrite/ArchiveV2/ArchiveSourceReclaimer.swift',

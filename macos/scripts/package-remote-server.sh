@@ -250,7 +250,12 @@ verify_templates() {
   local wrapper="$1"
   local launch_agent="$2"
   local expected_revision="$3"
-  local wrapper_mode launch_agent_mode revision_count
+  local wrapper_mode launch_agent_mode trusted_wrapper trusted_launch_agent
+
+  trusted_wrapper="$TEMPLATE_DIR/run-engram-remote.zsh.template"
+  trusted_launch_agent="$TEMPLATE_DIR/com.engram.remote-server.plist.template"
+  [[ -f "$trusted_wrapper" && -f "$trusted_launch_agent" ]] ||
+    fail "trusted deployment source template is missing"
 
   wrapper_mode="$(/usr/bin/stat -f '%Lp' "$wrapper")"
   launch_agent_mode="$(/usr/bin/stat -f '%Lp' "$launch_agent")"
@@ -264,30 +269,17 @@ verify_templates() {
   if /usr/bin/grep -q '__ENGRAM_REMOTE_SOURCE_REVISION__' "$wrapper"; then
     fail "wrapper template contains an unresolved source revision"
   fi
-  revision_count="$(
-    /usr/bin/awk '
-      /^[[:space:]]*(export[[:space:]]+)?ENGRAM_REMOTE_SOURCE_REVISION[[:space:]]*=/ {
-        count += 1
-      }
-      END { print count + 0 }
-    ' "$wrapper"
-  )"
-  [[ "$revision_count" == "1" ]] ||
-    fail "wrapper template must export exactly one source revision"
   /usr/bin/grep -Fqx \
     "export ENGRAM_REMOTE_SOURCE_REVISION='$expected_revision'" "$wrapper" ||
     fail "wrapper template source revision does not match BUILD-METADATA"
 
-  if /usr/bin/grep -Eiq \
-    '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*(TOKEN|KEY|PASSWORD|SECRET|CREDENTIAL)[A-Za-z0-9_]*[[:space:]]*=' \
-    "$wrapper"; then
-    fail "deployment templates contain credential-like assignments"
-  fi
-  if /usr/bin/grep -Eiq \
-    'ENGRAM_REMOTE_(ARCHIVE_)?(TOKEN|AT_REST_KEY)|EnvironmentVariables|password|credential|private[_-]?key' \
-    "$wrapper" "$launch_agent"; then
-    fail "deployment templates contain credential-like or environment material"
-  fi
+  /usr/bin/cmp -s "$wrapper" <(
+    /usr/bin/sed \
+      "s/__ENGRAM_REMOTE_SOURCE_REVISION__/$expected_revision/" \
+      "$trusted_wrapper"
+  ) || fail "wrapper does not exactly match trusted source template"
+  /usr/bin/cmp -s "$launch_agent" "$trusted_launch_agent" ||
+    fail "LaunchAgent does not exactly match trusted source template"
 }
 
 substitute_wrapper_revision() {

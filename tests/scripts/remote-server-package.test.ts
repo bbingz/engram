@@ -78,13 +78,14 @@ function runPackage(args: string[]): { status: number | null; output: string } {
 function runTemplateVerification(
   wrapperContents: string,
   expectedRevision: string,
+  launchAgentContents = launchAgentTemplate,
 ): { status: number | null; output: string } {
   const root = makeTempRoot();
   const wrapper = join(root, 'run-engram-remote.zsh.template');
   const launchAgent = join(root, 'com.engram.remote-server.plist.template');
   const runner = join(root, 'verify-templates.sh');
   writeFileSync(wrapper, wrapperContents);
-  writeFileSync(launchAgent, launchAgentTemplate);
+  writeFileSync(launchAgent, launchAgentContents);
   chmodSync(wrapper, 0o700);
   chmodSync(launchAgent, 0o600);
   writeFileSync(
@@ -93,6 +94,7 @@ function runTemplateVerification(
       '#!/bin/bash',
       'set -euo pipefail',
       'fail() { echo "$*" >&2; exit 1; }',
+      'TEMPLATE_DIR="$4"',
       `${shellFunctionBody('verify_templates')}\n}`,
       'verify_templates "$1" "$2" "$3"',
       '',
@@ -101,7 +103,13 @@ function runTemplateVerification(
   chmodSync(runner, 0o700);
   const result = spawnSync(
     '/bin/bash',
-    [runner, wrapper, launchAgent, expectedRevision],
+    [
+      runner,
+      wrapper,
+      launchAgent,
+      expectedRevision,
+      resolve(repoRoot, 'macos/EngramRemoteServer/Packaging'),
+    ],
     { cwd: repoRoot, encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } },
   );
   return {
@@ -233,7 +241,9 @@ describe('remote server package implementation contract', () => {
     expect(packageBody).toMatch(/BUNDLE_WRAPPER_TEMPLATE[^\n]+revision/);
     expect(verifyTemplates).toContain('__ENGRAM_REMOTE_SOURCE_REVISION__');
     expect(verifyTemplates).toMatch(/sourceRevision|source_revision|revision/);
-    expect(verifyTemplates).toMatch(/credential|TOKEN|AT_REST_KEY/);
+    expect(verifyTemplates).toContain('/usr/bin/cmp -s');
+    expect(verifyTemplates).toContain('trusted source template');
+    expect(verifyTemplates).toContain('TEMPLATE_DIR');
   });
 
   it('accepts only a resolved matching credential-free wrapper revision', () => {
@@ -258,7 +268,7 @@ describe('remote server package implementation contract', () => {
       {
         wrapper: `${valid}\npassword_hint='forbidden'\n`,
         expected: revision,
-        message: 'credential-like',
+        message: 'trusted source template',
       },
     ];
     for (const { wrapper, expected, message } of rejected) {
@@ -295,7 +305,7 @@ describe('remote server package implementation contract', () => {
     const result = runTemplateVerification(`${valid}${suffix}`, revision);
 
     expect(result.status).not.toBe(0);
-    expect(result.output).toContain('exactly one source revision');
+    expect(result.output).toContain('trusted source template');
   });
 
   it.each([
@@ -317,7 +327,51 @@ describe('remote server package implementation contract', () => {
     );
 
     expect(result.status).not.toBe(0);
-    expect(result.output).toContain('credential-like');
+    expect(result.output).toContain('trusted source template');
+  });
+
+  it.each([
+    {
+      name: 'typeset source revision override',
+      wrapperSuffix: `\ntypeset -gx ENGRAM_REMOTE_SOURCE_REVISION='${'b'.repeat(40)}'\n`,
+    },
+    {
+      name: 'quoted export source revision override',
+      wrapperSuffix: `\nexport "ENGRAM_REMOTE_SOURCE_REVISION=${'b'.repeat(40)}"\n`,
+    },
+    {
+      name: 'API_KEY assignment',
+      wrapperSuffix: `\nAPI_KEY='forbidden'\n`,
+    },
+    {
+      name: 'LaunchAgent api-key argument',
+      launchAgent: launchAgentTemplate.replace(
+        '    <string>__ENGRAM_REMOTE_WRAPPER__</string>',
+        [
+          '    <string>__ENGRAM_REMOTE_WRAPPER__</string>',
+          '    <string>--api-key</string>',
+          '    <string>forbidden</string>',
+        ].join('\n'),
+      ),
+    },
+  ])('rejects trusted template drift: $name', ({
+    wrapperSuffix,
+    launchAgent,
+  }) => {
+    const revision = 'a'.repeat(40);
+    const valid = wrapperTemplate.replace(
+      '__ENGRAM_REMOTE_SOURCE_REVISION__',
+      revision,
+    );
+
+    const result = runTemplateVerification(
+      `${valid}${wrapperSuffix ?? ''}`,
+      revision,
+      launchAgent,
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('trusted source template');
   });
 
   it('requires the fixed Release arm64 build products and package layout', () => {

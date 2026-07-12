@@ -52,29 +52,48 @@ if [[ -n "$legacy_hits" ]]; then
 fi
 
 deletion_pattern='Darwin\.unlink[[:space:]]*\(|unlinkat[[:space:]]*\(|FileManager\.default\.removeItem[[:space:]]*\(|\.removeItem[[:space:]]*\('
+archive_source_reclaimer="$ROOT_DIR/macos/EngramCoreWrite/ArchiveV2/ArchiveSourceReclaimer.swift"
+immutable_archive_cas="$ROOT_DIR/macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift"
+archive_store="$ROOT_DIR/macos/EngramRemoteServer/Core/ArchiveStore.swift"
+archive_transcript_resolver="$ROOT_DIR/macos/EngramService/Core/ArchiveTranscriptResolver.swift"
+source_reclaimer_unlink_count=0
+immutable_object_unlink_count=0
 while IFS=: read -r path line text; do
   [[ -z "${path:-}" ]] && continue
   normalized_text="$(
     printf '%s' "$text" |
       /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
   )"
-  case "$path:$normalized_text" in
-    *'/ArchiveSourceReclaimer.swift:guard Darwin.unlink(quarantineURL.path) == 0 else {' )
-      ;;
-    *'/ImmutableArchiveCAS.swift:guard Darwin.unlink(objectURL.path) == 0 else {' )
-      ;;
-    *'/ImmutableArchiveCAS.swift:'*'Darwin.unlink(temporaryURL.path)'*)
-      ;;
-    *'/ArchiveStore.swift:'*'Darwin.unlink(temporaryURL.path)'*)
-      ;;
-    *'/ArchiveTranscriptResolver.swift:'*'FileManager.default.removeItem(at: replay.directoryURL)'*)
-      ;;
-    *)
-      echo "$path:$line:$text" >&2
-      fail "forbidden archive deletion primitive; only named temporary cleanup is allowed"
-      ;;
-  esac
+  if [[ "$path" == "$archive_source_reclaimer" &&
+    "$normalized_text" == 'guard Darwin.unlink(quarantineURL.path) == 0 else {' ]]; then
+    ((source_reclaimer_unlink_count += 1))
+    continue
+  fi
+  if [[ "$path" == "$immutable_archive_cas" &&
+    "$normalized_text" == 'guard Darwin.unlink(objectURL.path) == 0 else {' ]]; then
+    ((immutable_object_unlink_count += 1))
+    continue
+  fi
+  if [[ "$path" == "$immutable_archive_cas" &&
+    "$normalized_text" == *'Darwin.unlink(temporaryURL.path)'* ]]; then
+    continue
+  fi
+  if [[ "$path" == "$archive_store" &&
+    "$normalized_text" == *'Darwin.unlink(temporaryURL.path)'* ]]; then
+    continue
+  fi
+  if [[ "$path" == "$archive_transcript_resolver" &&
+    "$normalized_text" == *'FileManager.default.removeItem(at: replay.directoryURL)'* ]]; then
+    continue
+  fi
+  echo "$path:$line:$text" >&2
+  fail "forbidden archive deletion primitive; only named temporary cleanup is allowed"
 done < <(rg -n --no-heading "$deletion_pattern" "${archive_files[@]}" || true)
+
+[[ "$source_reclaimer_unlink_count" -eq 1 ]] ||
+  fail "ArchiveSourceReclaimer quarantine unlink must occur exactly once"
+[[ "$immutable_object_unlink_count" -eq 1 ]] ||
+  fail "ImmutableArchiveCAS object unlink must occur exactly once"
 
 remote_server_files=()
 while IFS= read -r path; do
