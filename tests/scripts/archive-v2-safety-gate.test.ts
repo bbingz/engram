@@ -250,6 +250,51 @@ describe('archive v2 release safety gate', () => {
     );
   });
 
+  it.each([
+    {
+      name: 'multiline Darwin unlink',
+      content: ['Darwin', '  . unlink (', '    sourceURL.path', '  )'].join(
+        '\n',
+      ),
+      primitive: 'Darwin.unlink',
+    },
+    {
+      name: 'multiline unknown receiver removeItem',
+      content: [
+        'unknownReceiver',
+        '  . removeItem (',
+        '    at: sourceURL',
+        '  )',
+      ].join('\n'),
+      primitive: 'receiver.removeItem',
+    },
+    {
+      name: 'multiline unlinkat',
+      content: ['unlinkat', '  (directoryFD, sourceName, 0)'].join('\n'),
+      primitive: 'unlinkat',
+    },
+  ])('rejects $name without echoing source content', ({
+    content,
+    primitive,
+  }) => {
+    const root = makeSafeFixture();
+    write(
+      root,
+      'macos/EngramService/Core/ArchiveSourceCleanup.swift',
+      `${content}\n`,
+    );
+
+    const result = runGate(root);
+    const output = `${result.stdout}${result.stderr}`;
+
+    expect(result.status).not.toBe(0);
+    expect(output).toContain(`ArchiveSourceCleanup.swift:`);
+    expect(output).toContain(primitive);
+    expect(output).not.toContain('sourceURL');
+    expect(output).not.toContain('unknownReceiver');
+    expect(output).not.toContain('directoryFD');
+  });
+
   it('rejects delete capability on ArchiveReplicaBackend', () => {
     const root = makeSafeFixture();
     write(

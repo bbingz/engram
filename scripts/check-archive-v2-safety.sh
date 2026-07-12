@@ -51,49 +51,212 @@ if [[ -n "$legacy_hits" ]]; then
   fail "legacy offload coupling is forbidden in archive v2 modules"
 fi
 
-deletion_pattern='Darwin\.unlink[[:space:]]*\(|unlinkat[[:space:]]*\(|FileManager\.default\.removeItem[[:space:]]*\(|\.removeItem[[:space:]]*\('
-archive_source_reclaimer="$ROOT_DIR/macos/EngramCoreWrite/ArchiveV2/ArchiveSourceReclaimer.swift"
-immutable_archive_cas="$ROOT_DIR/macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift"
-archive_store="$ROOT_DIR/macos/EngramRemoteServer/Core/ArchiveStore.swift"
-archive_transcript_resolver="$ROOT_DIR/macos/EngramService/Core/ArchiveTranscriptResolver.swift"
-source_reclaimer_unlink_count=0
-immutable_object_unlink_count=0
-while IFS=: read -r path line text; do
-  [[ -z "${path:-}" ]] && continue
-  normalized_text="$(
-    printf '%s' "$text" |
-      /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
-  )"
-  if [[ "$path" == "$archive_source_reclaimer" &&
-    "$normalized_text" == 'guard Darwin.unlink(quarantineURL.path) == 0 else {' ]]; then
-    ((source_reclaimer_unlink_count += 1))
-    continue
-  fi
-  if [[ "$path" == "$immutable_archive_cas" &&
-    "$normalized_text" == 'guard Darwin.unlink(objectURL.path) == 0 else {' ]]; then
-    ((immutable_object_unlink_count += 1))
-    continue
-  fi
-  if [[ "$path" == "$immutable_archive_cas" &&
-    "$normalized_text" == *'Darwin.unlink(temporaryURL.path)'* ]]; then
-    continue
-  fi
-  if [[ "$path" == "$archive_store" &&
-    "$normalized_text" == *'Darwin.unlink(temporaryURL.path)'* ]]; then
-    continue
-  fi
-  if [[ "$path" == "$archive_transcript_resolver" &&
-    "$normalized_text" == *'FileManager.default.removeItem(at: replay.directoryURL)'* ]]; then
-    continue
-  fi
-  echo "$path:$line:$text" >&2
-  fail "forbidden archive deletion primitive; only named temporary cleanup is allowed"
-done < <(rg -n --no-heading "$deletion_pattern" "${archive_files[@]}" || true)
+node - "$ROOT_DIR" "${archive_files[@]}" <<'NODE'
+const { readFileSync } = require('node:fs');
+const { resolve } = require('node:path');
 
-[[ "$source_reclaimer_unlink_count" -eq 1 ]] ||
-  fail "ArchiveSourceReclaimer quarantine unlink must occur exactly once"
-[[ "$immutable_object_unlink_count" -eq 1 ]] ||
-  fail "ImmutableArchiveCAS object unlink must occur exactly once"
+const root = process.argv[2];
+const archiveSourceReclaimer = resolve(
+  root,
+  'macos/EngramCoreWrite/ArchiveV2/ArchiveSourceReclaimer.swift',
+);
+const immutableArchiveCAS = resolve(
+  root,
+  'macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift',
+);
+const archiveStore = resolve(
+  root,
+  'macos/EngramRemoteServer/Core/ArchiveStore.swift',
+);
+const archiveTranscriptResolver = resolve(
+  root,
+  'macos/EngramService/Core/ArchiveTranscriptResolver.swift',
+);
+
+const primitivePatterns = [
+  { name: 'Darwin.unlink', pattern: /\bDarwin\s*\.\s*unlink\s*\(/g },
+  { name: 'unlinkat', pattern: /\bunlinkat\s*\(/g },
+  {
+    name: 'FileManager.default.removeItem',
+    pattern: /\bFileManager\s*\.\s*default\s*\.\s*removeItem\s*\(/g,
+  },
+  { name: 'receiver.removeItem', pattern: /\.\s*removeItem\s*\(/g },
+];
+
+function maskComments(source) {
+  const output = [...source];
+  let blockDepth = 0;
+  let inLineComment = false;
+  let stringDelimiterLength = 0;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const next = source[index + 1];
+    if (inLineComment) {
+      if (source[index] === '\n') {
+        inLineComment = false;
+      } else {
+        output[index] = ' ';
+      }
+      continue;
+    }
+    if (blockDepth > 0) {
+      if (source[index] === '/' && next === '*') {
+        output[index] = ' ';
+        output[index + 1] = ' ';
+        blockDepth += 1;
+        index += 1;
+      } else if (source[index] === '*' && next === '/') {
+        output[index] = ' ';
+        output[index + 1] = ' ';
+        blockDepth -= 1;
+        index += 1;
+      } else if (source[index] !== '\n') {
+        output[index] = ' ';
+      }
+      continue;
+    }
+    if (stringDelimiterLength === 3) {
+      if (source.slice(index, index + 3) === '\"\"\"') {
+        stringDelimiterLength = 0;
+        index += 2;
+      }
+      continue;
+    }
+    if (stringDelimiterLength === 1) {
+      if (source[index] === '\\') {
+        index += 1;
+      } else if (source[index] === '\"') {
+        stringDelimiterLength = 0;
+      }
+      continue;
+    }
+    if (source[index] === '/' && next === '/') {
+      output[index] = ' ';
+      output[index + 1] = ' ';
+      inLineComment = true;
+      index += 1;
+    } else if (source[index] === '/' && next === '*') {
+      output[index] = ' ';
+      output[index + 1] = ' ';
+      blockDepth = 1;
+      index += 1;
+    } else if (source.slice(index, index + 3) === '\"\"\"') {
+      stringDelimiterLength = 3;
+      index += 2;
+    } else if (source[index] === '\"') {
+      stringDelimiterLength = 1;
+    }
+  }
+  return output.join('');
+}
+
+function lineAt(source, index) {
+  return source.slice(0, index).split('\n').length;
+}
+
+function closingParen(source, openParen) {
+  let depth = 0;
+  for (let index = openParen; index < source.length; index += 1) {
+    if (source[index] === '(') depth += 1;
+    if (source[index] !== ')') continue;
+    depth -= 1;
+    if (depth === 0) return index;
+  }
+  return -1;
+}
+
+function failPrimitive(path, line, primitive) {
+  console.error(`${path}:${line}:${primitive}`);
+  console.error(
+    'archive v2 safety gate failed: forbidden archive deletion primitive; only named temporary cleanup is allowed',
+  );
+  process.exit(1);
+}
+
+let sourceReclaimerUnlinkCount = 0;
+let immutableObjectUnlinkCount = 0;
+
+for (const path of process.argv.slice(3)) {
+  const source = readFileSync(path, 'utf8');
+  const scanSource = maskComments(source);
+  const callsByOpenParen = new Map();
+
+  for (const { name, pattern } of primitivePatterns) {
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(scanSource)) !== null) {
+      const relativeOpenParen = match[0].lastIndexOf('(');
+      const openParen = match.index + relativeOpenParen;
+      if (!callsByOpenParen.has(openParen)) {
+        callsByOpenParen.set(openParen, { name, start: match.index, openParen });
+      }
+    }
+  }
+
+  const calls = [...callsByOpenParen.values()].sort(
+    (left, right) => left.start - right.start,
+  );
+  for (const { name, start, openParen } of calls) {
+    const closeParen = closingParen(scanSource, openParen);
+    if (closeParen < 0) failPrimitive(path, lineAt(source, start), name);
+    const argument = scanSource
+      .slice(openParen + 1, closeParen)
+      .replace(/\s+/g, '');
+
+    if (
+      name === 'Darwin.unlink' &&
+      path === archiveSourceReclaimer &&
+      argument === 'quarantineURL.path'
+    ) {
+      sourceReclaimerUnlinkCount += 1;
+      continue;
+    }
+    if (
+      name === 'Darwin.unlink' &&
+      path === immutableArchiveCAS &&
+      argument === 'objectURL.path'
+    ) {
+      immutableObjectUnlinkCount += 1;
+      continue;
+    }
+    if (
+      name === 'Darwin.unlink' &&
+      path === immutableArchiveCAS &&
+      argument === 'temporaryURL.path'
+    ) {
+      continue;
+    }
+    if (
+      name === 'Darwin.unlink' &&
+      path === archiveStore &&
+      argument === 'temporaryURL.path'
+    ) {
+      continue;
+    }
+    if (
+      name === 'FileManager.default.removeItem' &&
+      path === archiveTranscriptResolver &&
+      argument === 'at:replay.directoryURL'
+    ) {
+      continue;
+    }
+    failPrimitive(path, lineAt(source, start), name);
+  }
+}
+
+if (sourceReclaimerUnlinkCount !== 1) {
+  console.error(
+    'archive v2 safety gate failed: ArchiveSourceReclaimer quarantine unlink must occur exactly once',
+  );
+  process.exit(1);
+}
+if (immutableObjectUnlinkCount !== 1) {
+  console.error(
+    'archive v2 safety gate failed: ImmutableArchiveCAS object unlink must occur exactly once',
+  );
+  process.exit(1);
+}
+NODE
 
 remote_server_files=()
 while IFS= read -r path; do
