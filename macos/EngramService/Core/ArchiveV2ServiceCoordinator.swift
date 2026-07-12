@@ -89,6 +89,10 @@ struct ArchiveV2ServiceUnknownPage: Equatable, Sendable {
 }
 
 struct ArchiveV2ServiceCoordinatorOperations: Sendable {
+    typealias RemoteTelemetryResults = [
+        String: Result<ArchiveRemoteTelemetrySnapshot, any Error>
+    ]
+
     var capture: @Sendable (
         [any SessionAdapter],
         Int,
@@ -112,6 +116,7 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
     ) async throws -> Void
     var replicate: @Sendable (Int) async -> ArchiveReplicationCycleResult
     var status: @Sendable () async throws -> ArchiveStatusAggregate
+    var remoteTelemetry: @Sendable () async -> RemoteTelemetryResults
     var retry: @Sendable (String?) async throws -> Int
     var recoveryDrill: @Sendable (String) async throws -> ArchiveRecoveryLease
 
@@ -139,6 +144,7 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
         ) async throws -> Void,
         replicate: @escaping @Sendable (Int) async -> ArchiveReplicationCycleResult,
         status: @escaping @Sendable () async throws -> ArchiveStatusAggregate,
+        remoteTelemetry: @escaping @Sendable () async -> RemoteTelemetryResults = { [:] },
         retry: @escaping @Sendable (String?) async throws -> Int,
         recoveryDrill: @escaping @Sendable (String) async throws -> ArchiveRecoveryLease = { _ in
             throw ArchiveV2ServiceCoordinatorError.recoveryDrillUnavailable
@@ -153,6 +159,7 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
         self.applyRemotePolicy = applyRemotePolicy
         self.replicate = replicate
         self.status = status
+        self.remoteTelemetry = remoteTelemetry
         self.retry = retry
         self.recoveryDrill = recoveryDrill
     }
@@ -368,7 +375,8 @@ actor ArchiveV2ServiceCoordinator {
             captureCoordinator: captureCoordinator,
             catalog: catalog,
             replicationCoordinator: replicationCoordinator,
-            transcriptResolver: transcriptResolver
+            transcriptResolver: transcriptResolver,
+            replicaBackends: replicaBackends
         )
         let reclamationCoordinator = try? ArchiveReclamationCoordinator(
             settingsURL: settingsURL,
@@ -430,14 +438,17 @@ actor ArchiveV2ServiceCoordinator {
 
     func status() async -> EngramServiceArchiveV2StatusResponse {
         let aggregate: ArchiveStatusAggregate
+        let remoteTelemetry: ArchiveV2ServiceCoordinatorOperations.RemoteTelemetryResults
         if let operations, localCaptureReady {
             do {
                 aggregate = try await operations.status()
             } catch {
                 aggregate = Self.zeroAggregate
             }
+            remoteTelemetry = remoteReady ? await operations.remoteTelemetry() : [:]
         } else {
             aggregate = Self.zeroAggregate
+            remoteTelemetry = [:]
         }
         return Self.statusResponse(
             settings: settings,
@@ -445,6 +456,7 @@ actor ArchiveV2ServiceCoordinator {
             remoteReady: remoteReady,
             configurationError: configurationError,
             aggregate: aggregate,
+            remoteTelemetry: remoteTelemetry,
             unsupportedLocatorCount: unsupportedLocatorCount,
             unsafeLocatorCount: unsafeLocatorCount,
             lastCaptureError: lastCaptureError,
@@ -787,7 +799,8 @@ actor ArchiveV2ServiceCoordinator {
         captureCoordinator: ArchiveCaptureCoordinator,
         catalog: ArchiveCatalog,
         replicationCoordinator: ArchiveReplicationCoordinator?,
-        transcriptResolver: ArchiveTranscriptResolver?
+        transcriptResolver: ArchiveTranscriptResolver?,
+        replicaBackends: [String: any ArchiveReplicaBackend]
     ) -> ArchiveV2ServiceCoordinatorOperations {
         ArchiveV2ServiceCoordinatorOperations(
             capture: { adapters, budget, scope in
@@ -844,6 +857,27 @@ actor ArchiveV2ServiceCoordinator {
                 return await replicationCoordinator.runOnce(limit: limit)
             },
             status: { try catalog.archiveStatus() },
+            remoteTelemetry: {
+                await withTaskGroup(
+                    of: (String, Result<ArchiveRemoteTelemetrySnapshot, any Error>).self
+                ) { group in
+                    for replicaID in ["hq", "m1"] {
+                        guard let backend = replicaBackends[replicaID] else { continue }
+                        group.addTask {
+                            do {
+                                return (replicaID, .success(try await backend.remoteTelemetryStatus()))
+                            } catch {
+                                return (replicaID, .failure(error))
+                            }
+                        }
+                    }
+                    var results: ArchiveV2ServiceCoordinatorOperations.RemoteTelemetryResults = [:]
+                    for await (replicaID, result) in group {
+                        results[replicaID] = result
+                    }
+                    return results
+                }
+            },
             retry: { replicaID in
                 try catalog.retryQuarantined(
                     replicaID: replicaID,
@@ -1406,6 +1440,7 @@ actor ArchiveV2ServiceCoordinator {
         remoteReady: Bool,
         configurationError: String?,
         aggregate: ArchiveStatusAggregate,
+        remoteTelemetry: ArchiveV2ServiceCoordinatorOperations.RemoteTelemetryResults,
         unsupportedLocatorCount: Int,
         unsafeLocatorCount: Int,
         lastCaptureError: String?,
@@ -1416,8 +1451,8 @@ actor ArchiveV2ServiceCoordinator {
         nextScheduledCycleAt: String?
     ) -> EngramServiceArchiveV2StatusResponse {
         let replicas = [
-            replicaStatus(id: "hq", counts: aggregate.hq),
-            replicaStatus(id: "m1", counts: aggregate.m1),
+            replicaStatus(id: "hq", counts: aggregate.hq, remote: remoteTelemetry["hq"]),
+            replicaStatus(id: "m1", counts: aggregate.m1, remote: remoteTelemetry["m1"]),
         ]
         let receipts = aggregate.latestReceipts.compactMap { receipt in
             try? EngramServiceArchiveV2LatestReceipt(
@@ -1476,7 +1511,8 @@ actor ArchiveV2ServiceCoordinator {
 
     private static func replicaStatus(
         id: String,
-        counts: ArchiveReplicaStatusCounts
+        counts: ArchiveReplicaStatusCounts,
+        remote: Result<ArchiveRemoteTelemetrySnapshot, any Error>?
     ) -> EngramServiceArchiveV2ReplicaStatus {
         let (queued, overflow) = counts.pending.addingReportingOverflow(counts.inflight)
         let retryReasons = counts.retryReasons.map {
@@ -1484,6 +1520,21 @@ actor ArchiveV2ServiceCoordinator {
                 symbol: $0.symbol,
                 count: $0.count
             )
+        }
+        let remoteStatus: (EngramServiceArchiveV2RemoteTelemetry?, String?)
+        switch remote {
+        case .success(let snapshot) where snapshot.serverID == id:
+            if let telemetry = remoteTelemetry(snapshot) {
+                remoteStatus = (telemetry, nil)
+            } else {
+                remoteStatus = (nil, "invalid_canonical_response")
+            }
+        case .success:
+            remoteStatus = (nil, "invalid_canonical_response")
+        case .failure(let error):
+            remoteStatus = (nil, remoteTelemetryErrorSymbol(error))
+        case nil:
+            remoteStatus = (nil, nil)
         }
         return try! EngramServiceArchiveV2ReplicaStatus(
             replicaID: id,
@@ -1493,8 +1544,86 @@ actor ArchiveV2ServiceCoordinator {
             verifiedCount: counts.verified,
             oldestOutstandingAt: counts.oldestOutstandingAt,
             nextRetryAt: counts.nextRetryAt,
-            retryReasons: retryReasons
+            retryReasons: retryReasons,
+            remoteTelemetry: remoteStatus.0,
+            remoteTelemetryError: remoteStatus.1
         )
+    }
+
+    private static func remoteTelemetry(
+        _ snapshot: ArchiveRemoteTelemetrySnapshot
+    ) -> EngramServiceArchiveV2RemoteTelemetry? {
+        let endpoints = snapshot.endpoints.compactMap { endpoint in
+            try? EngramServiceArchiveV2RemoteEndpoint(
+                endpoint: endpoint.endpoint,
+                requestCount: endpoint.requestCount,
+                errorCount: endpoint.errorCount,
+                totalDurationMs: endpoint.totalDurationMs,
+                maximumDurationMs: endpoint.maximumDurationMs,
+                requestBytes: endpoint.requestBytes,
+                responseBytes: endpoint.responseBytes
+            )
+        }
+        let recentErrors = snapshot.recentErrors.compactMap { error in
+            try? EngramServiceArchiveV2RemoteError(
+                timestamp: error.timestamp,
+                endpoint: error.endpoint,
+                method: error.method,
+                statusCode: error.statusCode,
+                category: error.category
+            )
+        }
+        guard endpoints.count == snapshot.endpoints.count,
+              recentErrors.count == snapshot.recentErrors.count else {
+            return nil
+        }
+        return try? EngramServiceArchiveV2RemoteTelemetry(
+            serverID: snapshot.serverID,
+            sourceRevision: snapshot.sourceRevision,
+            snapshotAt: snapshot.snapshotAt,
+            uptimeSeconds: snapshot.uptimeSeconds,
+            diskAvailableBytes: snapshot.diskAvailableBytes,
+            diskTotalBytes: snapshot.diskTotalBytes,
+            requestCount: snapshot.requestCount,
+            clientErrorCount: snapshot.clientErrorCount,
+            serverErrorCount: snapshot.serverErrorCount,
+            lastArchiveMutationAt: snapshot.lastArchiveMutationAt,
+            persistenceError: snapshot.persistenceError,
+            endpoints: endpoints,
+            recentErrors: recentErrors
+        )
+    }
+
+    nonisolated static func remoteTelemetryErrorSymbol(_ error: Error) -> String {
+        guard let backendError = error as? ArchiveReplicaBackendError else {
+            return "remote_telemetry_unavailable"
+        }
+        return switch backendError {
+        case .invalidDigest, .invalidRequest:
+            "invalid_request"
+        case .notHTTPResponse:
+            "not_http_response"
+        case .unexpectedStatus:
+            "unexpected_status"
+        case .responseTooLarge:
+            "response_too_large"
+        case .redirectRejected:
+            "redirect_rejected"
+        case .finalURLMismatch:
+            "final_url_mismatch"
+        case .invalidCanonicalResponse:
+            "invalid_canonical_response"
+        case .telemetryUnsupported:
+            "telemetry_unsupported"
+        case .transport(.cancelled):
+            "transport_cancelled"
+        case .transport(.timedOut):
+            "transport_timeout"
+        case .transport(.tls):
+            "transport_tls"
+        case .transport(.network):
+            "transport_network"
+        }
     }
 
     private static func retryResponse(

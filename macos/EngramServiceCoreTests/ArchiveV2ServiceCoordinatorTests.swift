@@ -324,6 +324,74 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertEqual(status.latestReceipts[0].receiptSHA256, String(repeating: "c", count: 64))
     }
 
+    func testStatusCollectsReplicaTelemetryConcurrentlyOnlyOnRequestAndKeepsPartialSuccess() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let probe = ConcurrentTelemetryProbe()
+        let hqSnapshot = try makeRemoteTelemetrySnapshot(replicaID: "hq")
+        let coordinator = ArchiveV2ServiceCoordinator.make(
+            settings: harness.settings,
+            databasePath: harness.database.path,
+            writerGate: harness.gate,
+            tokenLoaderFactory: { StaticTokenLoader() },
+            backendFactory: { connection in
+                RemoteTelemetryBackend(
+                    replicaID: connection.replicaID,
+                    result: connection.replicaID == "hq"
+                        ? .success(hqSnapshot)
+                        : .failure(.transport(.network)),
+                    probe: probe
+                )
+            }
+        )
+
+        let beforeStatus = await probe.startedReplicaIDs()
+        XCTAssertEqual(beforeStatus, [])
+        let status = await coordinator.status()
+        let startedReplicaIDs = await probe.startedReplicaIDs()
+        let overlapped = await probe.overlapped()
+
+        XCTAssertEqual(status.replicas.map(\.replicaID), ["hq", "m1"])
+        XCTAssertEqual(status.replicas[0].remoteTelemetry?.serverID, "hq")
+        XCTAssertNil(status.replicas[0].remoteTelemetryError)
+        XCTAssertNil(status.replicas[1].remoteTelemetry)
+        XCTAssertEqual(status.replicas[1].remoteTelemetryError, "transport_network")
+        XCTAssertEqual(Set(startedReplicaIDs), Set(["hq", "m1"]))
+        XCTAssertTrue(overlapped)
+    }
+
+    func testRemoteTelemetryErrorsMapToFixedSymbolsWithoutRawDetails() {
+        let cases: [(Error, String)] = [
+            (ArchiveReplicaBackendError.invalidDigest, "invalid_request"),
+            (ArchiveReplicaBackendError.invalidRequest, "invalid_request"),
+            (ArchiveReplicaBackendError.notHTTPResponse, "not_http_response"),
+            (ArchiveReplicaBackendError.unexpectedStatus(599), "unexpected_status"),
+            (ArchiveReplicaBackendError.responseTooLarge(.telemetry), "response_too_large"),
+            (ArchiveReplicaBackendError.redirectRejected, "redirect_rejected"),
+            (ArchiveReplicaBackendError.finalURLMismatch, "final_url_mismatch"),
+            (ArchiveReplicaBackendError.invalidCanonicalResponse, "invalid_canonical_response"),
+            (ArchiveReplicaBackendError.telemetryUnsupported, "telemetry_unsupported"),
+            (ArchiveReplicaBackendError.transport(.cancelled), "transport_cancelled"),
+            (ArchiveReplicaBackendError.transport(.timedOut), "transport_timeout"),
+            (ArchiveReplicaBackendError.transport(.tls), "transport_tls"),
+            (ArchiveReplicaBackendError.transport(.network), "transport_network"),
+            (
+                NSError(
+                    domain: "https://secret-host.example/token/private/path",
+                    code: 7,
+                    userInfo: [NSLocalizedDescriptionKey: "bearer super-secret-token"]
+                ),
+                "remote_telemetry_unavailable"
+            ),
+        ]
+
+        for (error, expected) in cases {
+            XCTAssertEqual(
+                ArchiveV2ServiceCoordinator.remoteTelemetryErrorSymbol(error),
+                expected
+            )
+        }
+    }
+
     func testDefaultOffFactoryHasNoDirectoryCredentialBackendOrCatalogSideEffect() async throws {
         let root = temporaryRoot("default-off")
         let databaseURL = root.appendingPathComponent("index.sqlite")
@@ -1447,6 +1515,109 @@ private extension FileHandle {
 
 private struct MissingTokenLoader: ArchiveReplicaTokenLoading {
     func loadToken(replicaID _: String) throws -> String? { nil }
+}
+
+private struct StaticTokenLoader: ArchiveReplicaTokenLoading {
+    func loadToken(replicaID: String) throws -> String? { "\(replicaID)-token" }
+}
+
+private actor ConcurrentTelemetryProbe {
+    private var started: [String] = []
+    private var didOverlap = false
+
+    func begin(replicaID: String) async {
+        started.append(replicaID)
+        if started.count > 1 {
+            didOverlap = true
+        } else {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    func startedReplicaIDs() -> [String] { started }
+    func overlapped() -> Bool { didOverlap }
+}
+
+private actor RemoteTelemetryBackend: ArchiveReplicaBackend {
+    let replicaID: String
+    private let result: Result<ArchiveRemoteTelemetrySnapshot, ArchiveReplicaBackendError>
+    private let probe: ConcurrentTelemetryProbe
+
+    init(
+        replicaID: String,
+        result: Result<ArchiveRemoteTelemetrySnapshot, ArchiveReplicaBackendError>,
+        probe: ConcurrentTelemetryProbe
+    ) {
+        self.replicaID = replicaID
+        self.result = result
+        self.probe = probe
+    }
+
+    func remoteTelemetryStatus() async throws -> ArchiveRemoteTelemetrySnapshot {
+        await probe.begin(replicaID: replicaID)
+        return try result.get()
+    }
+
+    func headObject(digest _: String) async throws -> Bool { throw TestError.backendMustNotBeBuilt }
+    func putObject(digest _: String, data _: Data) async throws { throw TestError.backendMustNotBeBuilt }
+    func getObject(digest _: String) async throws -> Data { throw TestError.backendMustNotBeBuilt }
+    func headManifest(digest _: String) async throws -> Bool { throw TestError.backendMustNotBeBuilt }
+    func putManifest(digest _: String, data _: Data) async throws { throw TestError.backendMustNotBeBuilt }
+    func getManifest(digest _: String) async throws -> Data { throw TestError.backendMustNotBeBuilt }
+    func createReceipt(manifestDigest _: String) async throws -> Data { throw TestError.backendMustNotBeBuilt }
+    func getReceipt(manifestDigest _: String) async throws -> Data { throw TestError.backendMustNotBeBuilt }
+    func listMachines(cursor _: String?, limit _: Int) async throws -> ArchiveMachinePage {
+        throw TestError.backendMustNotBeBuilt
+    }
+    func listReceipts(
+        machineID _: String,
+        cursor _: String?,
+        limit _: Int
+    ) async throws -> ArchiveReceiptPage {
+        throw TestError.backendMustNotBeBuilt
+    }
+}
+
+private func makeRemoteTelemetrySnapshot(
+    replicaID: String
+) throws -> ArchiveRemoteTelemetrySnapshot {
+    try ArchiveRemoteTelemetrySnapshot(
+        serverID: replicaID,
+        sourceRevision: String(repeating: replicaID == "hq" ? "a" : "b", count: 40),
+        processStartedAt: "2026-07-12T00:00:00.000Z",
+        snapshotAt: "2026-07-12T00:01:00.000Z",
+        uptimeSeconds: 60,
+        diskAvailableBytes: 500,
+        diskTotalBytes: 1_000,
+        requestCount: 4,
+        successCount: 2,
+        clientErrorCount: 1,
+        serverErrorCount: 1,
+        requestBytes: 100,
+        responseBytes: 200,
+        lastArchiveMutationAt: "2026-07-12T00:00:30.000Z",
+        persistenceError: nil,
+        endpoints: [
+            try ArchiveRemoteTelemetryEndpoint(
+                endpoint: "status",
+                requestCount: 4,
+                errorCount: 2,
+                totalDurationMs: 20,
+                maximumDurationMs: 8,
+                requestBytes: 100,
+                responseBytes: 200
+            ),
+        ],
+        recentErrors: [
+            try ArchiveRemoteTelemetryError(
+                timestamp: "2026-07-12T00:00:45.000Z",
+                endpoint: "status",
+                method: "GET",
+                statusCode: 500,
+                category: "internal_error"
+            ),
+        ]
+    )
 }
 
 private func zeroAggregate() -> ArchiveStatusAggregate {

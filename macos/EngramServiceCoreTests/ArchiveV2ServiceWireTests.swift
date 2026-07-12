@@ -62,9 +62,10 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
                     "hq",
                     oldestOutstandingAt: "2026-07-11T23:30:00.000Z",
                     nextRetryAt: "2026-07-12T00:05:00.000Z",
-                    retryReasons: reasons
+                    retryReasons: reasons,
+                    remoteTelemetry: try remoteTelemetry("hq")
                 ),
-                try replica("m1"),
+                try replica("m1", remoteTelemetryError: "transport_network"),
             ],
             lastReplicationCycle: cycle,
             nextScheduledCycleAt: "2026-07-12T00:15:00.000Z"
@@ -78,6 +79,8 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         XCTAssertEqual(decoded, status)
         XCTAssertEqual(decoded.replicas.map(\.replicaID), ["hq", "m1"])
         XCTAssertEqual(decoded.latestReceipts.map(\.replicaID), ["hq", "m1"])
+        XCTAssertEqual(decoded.replicas[0].remoteTelemetry?.serverID, "hq")
+        XCTAssertEqual(decoded.replicas[1].remoteTelemetryError, "transport_network")
     }
 
     func testStatusDecodesOlderPayloadWithoutDiagnostics() throws {
@@ -110,6 +113,8 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
             replicas[index].removeValue(forKey: "oldestOutstandingAt")
             replicas[index].removeValue(forKey: "nextRetryAt")
             replicas[index].removeValue(forKey: "retryReasons")
+            replicas[index].removeValue(forKey: "remoteTelemetry")
+            replicas[index].removeValue(forKey: "remoteTelemetryError")
         }
         object["replicas"] = replicas
 
@@ -124,7 +129,61 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
             $0.oldestOutstandingAt == nil
                 && $0.nextRetryAt == nil
                 && $0.retryReasons.isEmpty
+                && $0.remoteTelemetry == nil
+                && $0.remoteTelemetryError == nil
         })
+    }
+
+    func testRemoteTelemetryRejectsMalformedOrUnboundedIPCValues() throws {
+        let endpoint = try remoteEndpoint()
+        let error = try remoteError()
+
+        XCTAssertThrowsError(
+            try remoteTelemetry("hq", endpoints: Array(repeating: endpoint, count: 8))
+        )
+        XCTAssertThrowsError(
+            try remoteTelemetry("hq", endpoints: [endpoint, endpoint])
+        )
+        XCTAssertThrowsError(
+            try remoteTelemetry("hq", recentErrors: Array(repeating: error, count: 101))
+        )
+        XCTAssertThrowsError(
+            try replica("hq", remoteTelemetry: try remoteTelemetry("m1"))
+        )
+        XCTAssertThrowsError(
+            try replica("hq", remoteTelemetryError: "https_secret_host_token")
+        )
+        XCTAssertThrowsError(
+            try replica(
+                "hq",
+                remoteTelemetry: try remoteTelemetry("hq"),
+                remoteTelemetryError: "transport_network"
+            )
+        )
+
+        let valid = try JSONEncoder().encode(
+            makeStatus(
+                replicas: [
+                    try replica("hq", remoteTelemetry: try remoteTelemetry("hq")),
+                    try replica("m1"),
+                ]
+            )
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: valid) as? [String: Any]
+        )
+        var replicas = try XCTUnwrap(object["replicas"] as? [[String: Any]])
+        var telemetry = try XCTUnwrap(replicas[0]["remoteTelemetry"] as? [String: Any])
+        telemetry["requestCount"] = -1
+        replicas[0]["remoteTelemetry"] = telemetry
+        object["replicas"] = replicas
+
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(
+                EngramServiceArchiveV2StatusResponse.self,
+                from: JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            )
+        )
     }
 
     func testStatusDiagnosticsRejectInvalidValues() throws {
@@ -502,7 +561,9 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         _ id: String,
         oldestOutstandingAt: String? = nil,
         nextRetryAt: String? = nil,
-        retryReasons: [EngramServiceArchiveV2RetryReasonCount] = []
+        retryReasons: [EngramServiceArchiveV2RetryReasonCount] = [],
+        remoteTelemetry: EngramServiceArchiveV2RemoteTelemetry? = nil,
+        remoteTelemetryError: String? = nil
     ) throws -> EngramServiceArchiveV2ReplicaStatus {
         try EngramServiceArchiveV2ReplicaStatus(
             replicaID: id,
@@ -512,7 +573,53 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
             verifiedCount: 3,
             oldestOutstandingAt: oldestOutstandingAt,
             nextRetryAt: nextRetryAt,
-            retryReasons: retryReasons
+            retryReasons: retryReasons,
+            remoteTelemetry: remoteTelemetry,
+            remoteTelemetryError: remoteTelemetryError
+        )
+    }
+
+    private func remoteTelemetry(
+        _ serverID: String,
+        endpoints: [EngramServiceArchiveV2RemoteEndpoint]? = nil,
+        recentErrors: [EngramServiceArchiveV2RemoteError]? = nil
+    ) throws -> EngramServiceArchiveV2RemoteTelemetry {
+        try EngramServiceArchiveV2RemoteTelemetry(
+            serverID: serverID,
+            sourceRevision: String(repeating: serverID == "hq" ? "a" : "b", count: 40),
+            snapshotAt: timestamp,
+            uptimeSeconds: 60,
+            diskAvailableBytes: 500,
+            diskTotalBytes: 1_000,
+            requestCount: 4,
+            clientErrorCount: 1,
+            serverErrorCount: 1,
+            lastArchiveMutationAt: timestamp,
+            persistenceError: nil,
+            endpoints: endpoints ?? [try remoteEndpoint()],
+            recentErrors: recentErrors ?? [try remoteError()]
+        )
+    }
+
+    private func remoteEndpoint() throws -> EngramServiceArchiveV2RemoteEndpoint {
+        try EngramServiceArchiveV2RemoteEndpoint(
+            endpoint: "status",
+            requestCount: 4,
+            errorCount: 2,
+            totalDurationMs: 20,
+            maximumDurationMs: 8,
+            requestBytes: 100,
+            responseBytes: 200
+        )
+    }
+
+    private func remoteError() throws -> EngramServiceArchiveV2RemoteError {
+        try EngramServiceArchiveV2RemoteError(
+            timestamp: timestamp,
+            endpoint: "status",
+            method: "GET",
+            statusCode: 500,
+            category: "internal_error"
         )
     }
 

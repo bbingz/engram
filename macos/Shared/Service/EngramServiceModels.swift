@@ -1023,6 +1023,37 @@ private enum EngramServiceArchiveV2WireValidation {
     static let maximumTranscriptPage = 100_000
     static let maximumTranscriptPageSize = 500
     static let maximumTranscriptTimestampBytes = 128
+    static let maximumRemoteTelemetryEndpoints = 7
+    static let maximumRemoteTelemetryErrors = 100
+    static let remoteTelemetryEndpoints: Set<String> = [
+        "object", "manifest", "receipt", "machines", "receipts", "status", "unknown",
+    ]
+    static let remoteTelemetryMethods: Set<String> = ["GET", "HEAD", "PUT", "DELETE"]
+    static let remoteTelemetryErrorCategories: Set<String> = [
+        "unauthorized",
+        "malformed_request",
+        "not_found",
+        "conflict",
+        "payload_too_large",
+        "invalid_content",
+        "storage_unavailable",
+        "internal_error",
+    ]
+    static let remoteTelemetryErrors: Set<String> = [
+        "final_url_mismatch",
+        "invalid_canonical_response",
+        "invalid_request",
+        "not_http_response",
+        "redirect_rejected",
+        "remote_telemetry_unavailable",
+        "response_too_large",
+        "telemetry_unsupported",
+        "transport_cancelled",
+        "transport_network",
+        "transport_timeout",
+        "transport_tls",
+        "unexpected_status",
+    ]
 
     static func require(_ condition: @autoclosure () -> Bool, field: String) throws {
         guard condition() else {
@@ -1035,6 +1066,10 @@ private enum EngramServiceArchiveV2WireValidation {
     }
 
     static func validateNonNegative(_ value: Int, field: String) throws {
+        try require(value >= 0, field: field)
+    }
+
+    static func validateNonNegative(_ value: Int64, field: String) throws {
         try require(value >= 0, field: field)
     }
 
@@ -1058,6 +1093,17 @@ private enum EngramServiceArchiveV2WireValidation {
                 (48...57).contains(byte) || (97...102).contains(byte)
             },
             field: field
+        )
+    }
+
+    static func validateSourceRevision(_ value: String) throws {
+        let bytes = value.utf8
+        try require(
+            value == "unknown"
+                || (bytes.count == 40 && bytes.allSatisfy { byte in
+                    (48...57).contains(byte) || (97...102).contains(byte)
+                }),
+            field: "sourceRevision"
         )
     }
 
@@ -1393,6 +1439,265 @@ struct EngramServiceArchiveV2RemoteRecoveryProbeResponse: Codable, Equatable, Se
     }
 }
 
+struct EngramServiceArchiveV2RemoteEndpoint: Codable, Equatable, Sendable {
+    let endpoint: String
+    let requestCount: Int64
+    let errorCount: Int64
+    let totalDurationMs: Double
+    let maximumDurationMs: Double
+    let requestBytes: Int64
+    let responseBytes: Int64
+
+    init(
+        endpoint: String,
+        requestCount: Int64,
+        errorCount: Int64,
+        totalDurationMs: Double,
+        maximumDurationMs: Double,
+        requestBytes: Int64,
+        responseBytes: Int64
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.require(
+            EngramServiceArchiveV2WireValidation.remoteTelemetryEndpoints.contains(endpoint),
+            field: "endpoint"
+        )
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            requestCount,
+            field: "requestCount"
+        )
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            errorCount,
+            field: "errorCount"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            errorCount <= requestCount,
+            field: "errorCount"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            totalDurationMs.isFinite && totalDurationMs >= 0,
+            field: "totalDurationMs"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            maximumDurationMs.isFinite
+                && maximumDurationMs >= 0
+                && maximumDurationMs <= totalDurationMs,
+            field: "maximumDurationMs"
+        )
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            requestBytes,
+            field: "requestBytes"
+        )
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            responseBytes,
+            field: "responseBytes"
+        )
+        self.endpoint = endpoint
+        self.requestCount = requestCount
+        self.errorCount = errorCount
+        self.totalDurationMs = totalDurationMs
+        self.maximumDurationMs = maximumDurationMs
+        self.requestBytes = requestBytes
+        self.responseBytes = responseBytes
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            endpoint: container.decode(String.self, forKey: .endpoint),
+            requestCount: container.decode(Int64.self, forKey: .requestCount),
+            errorCount: container.decode(Int64.self, forKey: .errorCount),
+            totalDurationMs: container.decode(Double.self, forKey: .totalDurationMs),
+            maximumDurationMs: container.decode(Double.self, forKey: .maximumDurationMs),
+            requestBytes: container.decode(Int64.self, forKey: .requestBytes),
+            responseBytes: container.decode(Int64.self, forKey: .responseBytes)
+        )
+    }
+}
+
+struct EngramServiceArchiveV2RemoteError: Codable, Equatable, Sendable {
+    let timestamp: String
+    let endpoint: String
+    let method: String
+    let statusCode: Int
+    let category: String
+
+    init(
+        timestamp: String,
+        endpoint: String,
+        method: String,
+        statusCode: Int,
+        category: String
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.validateTimestamp(
+            timestamp,
+            field: "timestamp"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            EngramServiceArchiveV2WireValidation.remoteTelemetryEndpoints.contains(endpoint),
+            field: "endpoint"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            EngramServiceArchiveV2WireValidation.remoteTelemetryMethods.contains(method),
+            field: "method"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            (400...599).contains(statusCode),
+            field: "statusCode"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            EngramServiceArchiveV2WireValidation.remoteTelemetryErrorCategories.contains(category),
+            field: "category"
+        )
+        self.timestamp = timestamp
+        self.endpoint = endpoint
+        self.method = method
+        self.statusCode = statusCode
+        self.category = category
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            timestamp: container.decode(String.self, forKey: .timestamp),
+            endpoint: container.decode(String.self, forKey: .endpoint),
+            method: container.decode(String.self, forKey: .method),
+            statusCode: container.decode(Int.self, forKey: .statusCode),
+            category: container.decode(String.self, forKey: .category)
+        )
+    }
+}
+
+struct EngramServiceArchiveV2RemoteTelemetry: Codable, Equatable, Sendable {
+    let serverID: String
+    let sourceRevision: String
+    let snapshotAt: String
+    let uptimeSeconds: Double
+    let diskAvailableBytes: Int64?
+    let diskTotalBytes: Int64?
+    let requestCount: Int64
+    let clientErrorCount: Int64
+    let serverErrorCount: Int64
+    let lastArchiveMutationAt: String?
+    let persistenceError: String?
+    let endpoints: [EngramServiceArchiveV2RemoteEndpoint]
+    let recentErrors: [EngramServiceArchiveV2RemoteError]
+
+    init(
+        serverID: String,
+        sourceRevision: String,
+        snapshotAt: String,
+        uptimeSeconds: Double,
+        diskAvailableBytes: Int64?,
+        diskTotalBytes: Int64?,
+        requestCount: Int64,
+        clientErrorCount: Int64,
+        serverErrorCount: Int64,
+        lastArchiveMutationAt: String?,
+        persistenceError: String?,
+        endpoints: [EngramServiceArchiveV2RemoteEndpoint],
+        recentErrors: [EngramServiceArchiveV2RemoteError]
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.validateReplicaID(serverID, field: "serverID")
+        try EngramServiceArchiveV2WireValidation.validateSourceRevision(sourceRevision)
+        try EngramServiceArchiveV2WireValidation.validateTimestamp(
+            snapshotAt,
+            field: "snapshotAt"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            uptimeSeconds.isFinite && uptimeSeconds >= 0,
+            field: "uptimeSeconds"
+        )
+        if let diskAvailableBytes {
+            try EngramServiceArchiveV2WireValidation.validateNonNegative(
+                diskAvailableBytes,
+                field: "diskAvailableBytes"
+            )
+        }
+        if let diskTotalBytes {
+            try EngramServiceArchiveV2WireValidation.validateNonNegative(
+                diskTotalBytes,
+                field: "diskTotalBytes"
+            )
+        }
+        if let diskAvailableBytes, let diskTotalBytes {
+            try EngramServiceArchiveV2WireValidation.require(
+                diskAvailableBytes <= diskTotalBytes,
+                field: "diskAvailableBytes"
+            )
+        }
+        for (field, value) in [
+            ("requestCount", requestCount),
+            ("clientErrorCount", clientErrorCount),
+            ("serverErrorCount", serverErrorCount),
+        ] {
+            try EngramServiceArchiveV2WireValidation.validateNonNegative(value, field: field)
+        }
+        if let lastArchiveMutationAt {
+            try EngramServiceArchiveV2WireValidation.validateTimestamp(
+                lastArchiveMutationAt,
+                field: "lastArchiveMutationAt"
+            )
+        }
+        try EngramServiceArchiveV2WireValidation.require(
+            persistenceError == nil || persistenceError == "snapshot_write_failed",
+            field: "persistenceError"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            endpoints.count <= EngramServiceArchiveV2WireValidation.maximumRemoteTelemetryEndpoints,
+            field: "endpoints"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            Set(endpoints.map(\.endpoint)).count == endpoints.count,
+            field: "endpoints"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            recentErrors.count <= EngramServiceArchiveV2WireValidation.maximumRemoteTelemetryErrors,
+            field: "recentErrors"
+        )
+        self.serverID = serverID
+        self.sourceRevision = sourceRevision
+        self.snapshotAt = snapshotAt
+        self.uptimeSeconds = uptimeSeconds
+        self.diskAvailableBytes = diskAvailableBytes
+        self.diskTotalBytes = diskTotalBytes
+        self.requestCount = requestCount
+        self.clientErrorCount = clientErrorCount
+        self.serverErrorCount = serverErrorCount
+        self.lastArchiveMutationAt = lastArchiveMutationAt
+        self.persistenceError = persistenceError
+        self.endpoints = endpoints
+        self.recentErrors = recentErrors
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            serverID: container.decode(String.self, forKey: .serverID),
+            sourceRevision: container.decode(String.self, forKey: .sourceRevision),
+            snapshotAt: container.decode(String.self, forKey: .snapshotAt),
+            uptimeSeconds: container.decode(Double.self, forKey: .uptimeSeconds),
+            diskAvailableBytes: container.decodeIfPresent(Int64.self, forKey: .diskAvailableBytes),
+            diskTotalBytes: container.decodeIfPresent(Int64.self, forKey: .diskTotalBytes),
+            requestCount: container.decode(Int64.self, forKey: .requestCount),
+            clientErrorCount: container.decode(Int64.self, forKey: .clientErrorCount),
+            serverErrorCount: container.decode(Int64.self, forKey: .serverErrorCount),
+            lastArchiveMutationAt: container.decodeIfPresent(
+                String.self,
+                forKey: .lastArchiveMutationAt
+            ),
+            persistenceError: container.decodeIfPresent(String.self, forKey: .persistenceError),
+            endpoints: container.decode(
+                [EngramServiceArchiveV2RemoteEndpoint].self,
+                forKey: .endpoints
+            ),
+            recentErrors: container.decode(
+                [EngramServiceArchiveV2RemoteError].self,
+                forKey: .recentErrors
+            )
+        )
+    }
+}
+
 struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
     let replicaID: String
     let queuedCount: Int
@@ -1402,6 +1707,8 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
     let oldestOutstandingAt: String?
     let nextRetryAt: String?
     let retryReasons: [EngramServiceArchiveV2RetryReasonCount]
+    let remoteTelemetry: EngramServiceArchiveV2RemoteTelemetry?
+    let remoteTelemetryError: String?
 
     init(
         replicaID: String,
@@ -1411,7 +1718,9 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
         verifiedCount: Int,
         oldestOutstandingAt: String? = nil,
         nextRetryAt: String? = nil,
-        retryReasons: [EngramServiceArchiveV2RetryReasonCount] = []
+        retryReasons: [EngramServiceArchiveV2RetryReasonCount] = [],
+        remoteTelemetry: EngramServiceArchiveV2RemoteTelemetry? = nil,
+        remoteTelemetryError: String? = nil
     ) throws {
         try EngramServiceArchiveV2WireValidation.validateReplicaID(replicaID)
         try EngramServiceArchiveV2WireValidation.validateNonNegative(
@@ -1450,6 +1759,22 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
             Set(retryReasons.map(\.symbol)).count == retryReasons.count,
             field: "retryReasons"
         )
+        try EngramServiceArchiveV2WireValidation.require(
+            remoteTelemetry == nil || remoteTelemetry?.serverID == replicaID,
+            field: "remoteTelemetry"
+        )
+        if let remoteTelemetryError {
+            try EngramServiceArchiveV2WireValidation.require(
+                EngramServiceArchiveV2WireValidation.remoteTelemetryErrors.contains(
+                    remoteTelemetryError
+                ),
+                field: "remoteTelemetryError"
+            )
+        }
+        try EngramServiceArchiveV2WireValidation.require(
+            remoteTelemetry == nil || remoteTelemetryError == nil,
+            field: "remoteTelemetry"
+        )
         self.replicaID = replicaID
         self.queuedCount = queuedCount
         self.retryingCount = retryingCount
@@ -1458,6 +1783,8 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
         self.oldestOutstandingAt = oldestOutstandingAt
         self.nextRetryAt = nextRetryAt
         self.retryReasons = retryReasons
+        self.remoteTelemetry = remoteTelemetry
+        self.remoteTelemetryError = remoteTelemetryError
     }
 
     init(from decoder: Decoder) throws {
@@ -1476,7 +1803,15 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
             retryReasons: try container.decodeIfPresent(
                 [EngramServiceArchiveV2RetryReasonCount].self,
                 forKey: .retryReasons
-            ) ?? []
+            ) ?? [],
+            remoteTelemetry: container.decodeIfPresent(
+                EngramServiceArchiveV2RemoteTelemetry.self,
+                forKey: .remoteTelemetry
+            ),
+            remoteTelemetryError: container.decodeIfPresent(
+                String.self,
+                forKey: .remoteTelemetryError
+            )
         )
     }
 
@@ -1489,6 +1824,8 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
         case oldestOutstandingAt
         case nextRetryAt
         case retryReasons
+        case remoteTelemetry
+        case remoteTelemetryError
     }
 }
 

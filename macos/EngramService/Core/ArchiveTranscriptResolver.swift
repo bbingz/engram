@@ -1020,7 +1020,7 @@ public struct ArchiveTranscriptResolver: Sendable {
             true
         case .unexpectedStatus(409), .unexpectedStatus(422):
             true
-        case .unexpectedStatus, .transport:
+        case .unexpectedStatus, .telemetryUnsupported, .transport:
             false
         }
     }

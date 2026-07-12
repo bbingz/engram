@@ -421,14 +421,18 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
                 queuedCount: 0,
                 retryingCount: 0,
                 quarantinedCount: 0,
-                verifiedCount: 0
+                verifiedCount: 0,
+                remoteTelemetry: nil,
+                remoteTelemetryError: nil
             ),
             try! EngramServiceArchiveV2ReplicaStatus(
                 replicaID: "m1",
                 queuedCount: 0,
                 retryingCount: 0,
                 quarantinedCount: 0,
-                verifiedCount: 0
+                verifiedCount: 0,
+                remoteTelemetry: nil,
+                remoteTelemetryError: nil
             ),
         ],
         singleReplicaVerifiedCount: 0,
