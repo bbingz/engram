@@ -268,6 +268,58 @@ describe('remote server package implementation contract', () => {
     }
   });
 
+  it.each([
+    {
+      name: 'a second exported assignment',
+      suffix: `\nexport ENGRAM_REMOTE_SOURCE_REVISION='${'b'.repeat(40)}'\n`,
+    },
+    {
+      name: 'a non-exported assignment',
+      suffix: `\nENGRAM_REMOTE_SOURCE_REVISION='${'b'.repeat(40)}'\n`,
+    },
+    {
+      name: 'a leading-whitespace assignment',
+      suffix: `\n  export ENGRAM_REMOTE_SOURCE_REVISION='${'b'.repeat(40)}'\n`,
+    },
+    {
+      name: 'an assignment with whitespace before equals',
+      suffix: `\nENGRAM_REMOTE_SOURCE_REVISION = '${'b'.repeat(40)}'\n`,
+    },
+  ])('rejects $name for the source revision', ({ suffix }) => {
+    const revision = 'a'.repeat(40);
+    const valid = wrapperTemplate.replace(
+      '__ENGRAM_REMOTE_SOURCE_REVISION__',
+      revision,
+    );
+
+    const result = runTemplateVerification(`${valid}${suffix}`, revision);
+
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('exactly one source revision');
+  });
+
+  it.each([
+    'API_KEY',
+    'SERVICE_TOKEN',
+    'DATABASE_PASSWORD',
+    'CLIENT_SECRET',
+    'DEPLOY_CREDENTIAL',
+  ])('rejects common secret assignment %s', (name) => {
+    const revision = 'a'.repeat(40);
+    const valid = wrapperTemplate.replace(
+      '__ENGRAM_REMOTE_SOURCE_REVISION__',
+      revision,
+    );
+
+    const result = runTemplateVerification(
+      `${valid}\nexport ${name}='forbidden'\n`,
+      revision,
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('credential-like');
+  });
+
   it('requires the fixed Release arm64 build products and package layout', () => {
     expect(packageScript).toMatch(
       /Build\/Products\/\$(?:CONFIGURATION|configuration)/,

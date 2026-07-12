@@ -54,7 +54,15 @@ fi
 deletion_pattern='Darwin\.unlink[[:space:]]*\(|unlinkat[[:space:]]*\(|FileManager\.default\.removeItem[[:space:]]*\(|\.removeItem[[:space:]]*\('
 while IFS=: read -r path line text; do
   [[ -z "${path:-}" ]] && continue
-  case "$path:$text" in
+  normalized_text="$(
+    printf '%s' "$text" |
+      /usr/bin/sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
+  )"
+  case "$path:$normalized_text" in
+    *'/ArchiveSourceReclaimer.swift:guard Darwin.unlink(quarantineURL.path) == 0 else {' )
+      ;;
+    *'/ImmutableArchiveCAS.swift:guard Darwin.unlink(objectURL.path) == 0 else {' )
+      ;;
     *'/ImmutableArchiveCAS.swift:'*'Darwin.unlink(temporaryURL.path)'*)
       ;;
     *'/ArchiveStore.swift:'*'Darwin.unlink(temporaryURL.path)'*)
@@ -89,9 +97,15 @@ const genericPatterns = [
   /\brouter\s*\.\s*(?:on|add|route|register)\s*\(\s*(?:(?:(?:[A-Za-z_][A-Za-z0-9_]*|`[^`\r\n]+`)\s*\.\s*)+|\.\s*)(?:delete|DELETE)\b/g,
   /\brouter\s*\.\s*(?:on|add|route|register)\s*\([\s\S]{0,512}?\bmethod\s*:\s*["']DELETE["']/g,
 ];
-const expectedGuardBody = [
-  'request, _ in guard authorized(request, token: token) else { return unauthorized() }',
-  'return errorResponse(status: .methodNotAllowed, code: "method_not_allowed")',
+const expectedEnumeratedGuardBody = [
+  'request, _ in await observed(request, endpoint: endpoint, telemetry: telemetry) {',
+  'guard authorized(request, token: token) else { return unauthorized() }',
+  'return errorResponse(status: .methodNotAllowed, code: "method_not_allowed") }',
+].join(' ');
+const expectedWildcardGuardBody = [
+  'request, _ in await observed(request, endpoint: "unknown", telemetry: telemetry) {',
+  'guard authorized(request, token: token) else { return unauthorized() }',
+  'return errorResponse(status: .methodNotAllowed, code: "method_not_allowed") }',
 ].join(' ');
 
 let legacyCount = 0;
@@ -141,7 +155,10 @@ for (const path of process.argv.slice(2)) {
     }
     if (isEnumeratedGuard || isWildcardGuard) {
       const body = closureBody(source, directDelete.lastIndex);
-      if (body !== expectedGuardBody) {
+      const expectedBody = isEnumeratedGuard
+        ? expectedEnumeratedGuardBody
+        : expectedWildcardGuardBody;
+      if (body !== expectedBody) {
         console.error(
           'archive v2 safety gate failed: v2 DELETE guards must contain only auth rejection and 405',
         );
@@ -197,9 +214,15 @@ const { readFileSync } = require('node:fs');
 
 const source = readFileSync(process.argv[2], 'utf8');
 const marker = 'router.delete';
-const expectedBody = [
-  'request, _ in guard authorized(request, token: token) else { return unauthorized() }',
-  'return errorResponse(status: .methodNotAllowed, code: "method_not_allowed")',
+const expectedEnumeratedBody = [
+  'request, _ in await observed(request, endpoint: endpoint, telemetry: telemetry) {',
+  'guard authorized(request, token: token) else { return unauthorized() }',
+  'return errorResponse(status: .methodNotAllowed, code: "method_not_allowed") }',
+].join(' ');
+const expectedWildcardBody = [
+  'request, _ in await observed(request, endpoint: "unknown", telemetry: telemetry) {',
+  'guard authorized(request, token: token) else { return unauthorized() }',
+  'return errorResponse(status: .methodNotAllowed, code: "method_not_allowed") }',
 ].join(' ');
 
 let cursor = 0;
@@ -227,6 +250,14 @@ while ((cursor = source.indexOf(marker, cursor)) >= 0) {
     .replace(/\/\/.*$/gm, '')
     .replace(/\s+/g, ' ')
     .trim();
+  const registration = source.slice(cursor + marker.length, open);
+  const expectedBody = /^\s*\(\s*RouterPath\s*\(\s*path\s*\)\s*\)\s*$/.test(
+    registration,
+  )
+    ? expectedEnumeratedBody
+    : /^\s*\(\s*["']\/v2\/archive\/\*\*["']\s*\)\s*$/.test(registration)
+      ? expectedWildcardBody
+      : null;
   if (body !== expectedBody) {
     console.error(
       'archive v2 safety gate failed: v2 DELETE guards must contain only auth rejection and 405',

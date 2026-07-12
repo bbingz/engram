@@ -63,7 +63,21 @@ function makeSafeFixture(): string {
   write(
     root,
     'macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift',
-    '_ = Darwin.unlink(temporaryURL.path)\n',
+    [
+      'guard Darwin.unlink(objectURL.path) == 0 else {',
+      '  throw TestError()',
+      '}',
+      '_ = Darwin.unlink(temporaryURL.path)',
+    ].join('\n'),
+  );
+  write(
+    root,
+    'macos/EngramCoreWrite/ArchiveV2/ArchiveSourceReclaimer.swift',
+    [
+      'guard Darwin.unlink(quarantineURL.path) == 0 else {',
+      '  throw TestError()',
+      '}',
+    ].join('\n'),
   );
   write(
     root,
@@ -76,13 +90,17 @@ function makeSafeFixture(): string {
     [
       'for path in ["/v2/archive/objects/:digest"] {',
       '  router.delete(RouterPath(path)) { request, _ in',
-      '    guard authorized(request, token: token) else { return unauthorized() }',
-      '    return errorResponse(status: .methodNotAllowed, code: "method_not_allowed")',
+      '    await observed(request, endpoint: endpoint, telemetry: telemetry) {',
+      '      guard authorized(request, token: token) else { return unauthorized() }',
+      '      return errorResponse(status: .methodNotAllowed, code: "method_not_allowed")',
+      '    }',
       '  }',
       '}',
       'router.delete("/v2/archive/**") { request, _ in',
-      '  guard authorized(request, token: token) else { return unauthorized() }',
-      '  return errorResponse(status: .methodNotAllowed, code: "method_not_allowed")',
+      '  await observed(request, endpoint: "unknown", telemetry: telemetry) {',
+      '    guard authorized(request, token: token) else { return unauthorized() }',
+      '    return errorResponse(status: .methodNotAllowed, code: "method_not_allowed")',
+      '  }',
       '}',
     ].join('\n'),
   );
@@ -107,9 +125,42 @@ describe('archive v2 release safety gate', () => {
     expect(result.stdout).toContain('archive v2 safety gate ok');
   });
 
-  it('accepts only the explicit temporary-file cleanup sites', () => {
+  it('accepts only the explicit archive cleanup and reclamation sites', () => {
     const result = runGate(makeSafeFixture());
     expect(result.status).toBe(0);
+  });
+
+  it.each([
+    {
+      path: 'macos/EngramCoreWrite/ArchiveV2/ArchiveSourceReclaimer.swift',
+      content:
+        'guard Darwin.unlink(sourceURL.path) == 0 else { throw TestError() }\n',
+    },
+    {
+      path: 'macos/EngramCoreWrite/ArchiveV2/OtherReclaimer.swift',
+      content:
+        'guard Darwin.unlink(quarantineURL.path) == 0 else { throw TestError() }\n',
+    },
+    {
+      path: 'macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift',
+      content:
+        'guard Darwin.unlink(sourceURL.path) == 0 else { throw TestError() }\n',
+    },
+    {
+      path: 'macos/EngramCoreWrite/ArchiveV2/OtherCAS.swift',
+      content:
+        'guard Darwin.unlink(objectURL.path) == 0 else { throw TestError() }\n',
+    },
+  ])('rejects a non-allowlisted unlink at $path', ({ path, content }) => {
+    const root = makeSafeFixture();
+    write(root, path, content);
+
+    const result = runGate(root);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      'forbidden archive deletion primitive',
+    );
   });
 
   it('rejects a source-file removal path', () => {
@@ -226,6 +277,28 @@ describe('archive v2 release safety gate', () => {
       [
         'if allowDelete { return ok() }',
         '    return errorResponse(status: .methodNotAllowed, code: "method_not_allowed")',
+      ].join('\n'),
+    );
+    writeFileSync(routes, unsafe, 'utf8');
+
+    const result = runGate(root);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      'v2 DELETE guards must contain only auth rejection and 405',
+    );
+  });
+
+  it('rejects an extra operation inside an allowed DELETE guard', () => {
+    const root = makeSafeFixture();
+    const routes = join(
+      root,
+      'macos/EngramRemoteServer/Core/ArchiveRoutes.swift',
+    );
+    const unsafe = readFileSync(routes, 'utf8').replace(
+      'guard authorized(request, token: token) else { return unauthorized() }',
+      [
+        'await performDeleteSideEffect()',
+        '      guard authorized(request, token: token) else { return unauthorized() }',
       ].join('\n'),
     );
     writeFileSync(routes, unsafe, 'utf8');

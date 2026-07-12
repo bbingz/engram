@@ -265,7 +265,12 @@ verify_templates() {
     fail "wrapper template contains an unresolved source revision"
   fi
   revision_count="$(
-    /usr/bin/grep -c '^export ENGRAM_REMOTE_SOURCE_REVISION=' "$wrapper" || true
+    /usr/bin/awk '
+      /^[[:space:]]*(export[[:space:]]+)?ENGRAM_REMOTE_SOURCE_REVISION[[:space:]]*=/ {
+        count += 1
+      }
+      END { print count + 0 }
+    ' "$wrapper"
   )"
   [[ "$revision_count" == "1" ]] ||
     fail "wrapper template must export exactly one source revision"
@@ -273,6 +278,11 @@ verify_templates() {
     "export ENGRAM_REMOTE_SOURCE_REVISION='$expected_revision'" "$wrapper" ||
     fail "wrapper template source revision does not match BUILD-METADATA"
 
+  if /usr/bin/grep -Eiq \
+    '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*(TOKEN|KEY|PASSWORD|SECRET|CREDENTIAL)[A-Za-z0-9_]*[[:space:]]*=' \
+    "$wrapper"; then
+    fail "deployment templates contain credential-like assignments"
+  fi
   if /usr/bin/grep -Eiq \
     'ENGRAM_REMOTE_(ARCHIVE_)?(TOKEN|AT_REST_KEY)|EnvironmentVariables|password|credential|private[_-]?key' \
     "$wrapper" "$launch_agent"; then
