@@ -11,6 +11,7 @@ import XCTest
 final class ArchiveRouteTests: XCTestCase {
     private static let archiveToken = "archive-route-secret"
     private static let legacyToken = "legacy-route-secret"
+    private static let sourceRevision = String(repeating: "a", count: 40)
 
     private var tempDir: URL!
     private var archiveKey: SymmetricKey!
@@ -64,12 +65,14 @@ final class ArchiveRouteTests: XCTestCase {
                 (.get, "/v2/archive/receipts/\(digest)"),
                 (.get, "/v2/archive/receipts?machine_id=\(UUID().uuidString)"),
                 (.get, "/v2/archive/machines"),
+                (.get, "/v2/archive/status"),
                 (.delete, "/v2/archive"),
                 (.delete, "/v2/archive/objects/\(digest)"),
                 (.delete, "/v2/archive/manifests/\(digest)"),
                 (.delete, "/v2/archive/receipts/\(digest)"),
                 (.delete, "/v2/archive/receipts"),
                 (.delete, "/v2/archive/machines"),
+                (.delete, "/v2/archive/status"),
                 (.delete, "/v2/archive/arbitrary/deeper/path"),
             ]
 
@@ -88,6 +91,7 @@ final class ArchiveRouteTests: XCTestCase {
                 "/v2/archive/receipts/\(digest)",
                 "/v2/archive/receipts",
                 "/v2/archive/machines",
+                "/v2/archive/status",
                 "/v2/archive/arbitrary/deeper/path",
             ] {
                 let response = try await client.execute(
@@ -97,6 +101,192 @@ final class ArchiveRouteTests: XCTestCase {
                 )
                 XCTAssertEqual(response.status.code, 405, uri)
             }
+        }
+    }
+
+    func testStatusRequiresArchiveTokenAndContainsOnlyPriorCanonicalTelemetry() async throws {
+        let now = try Self.instant("2026-07-12T10:00:00.000Z")
+        let raw = Data("observed archive bytes".utf8)
+        let digest = ArchiveV2Hash.sha256(raw)
+        let app = Application(
+            router: try makeRemoteApp(
+                sourceRevision: Self.sourceRevision,
+                telemetryNow: { now }
+            ).buildRouter()
+        )
+
+        try await app.test(.router) { client in
+            var response = try await client.execute(
+                uri: "/v2/archive/objects/\(digest)",
+                method: .put,
+                headers: Self.headers(
+                    contentType: "application/octet-stream",
+                    contentLength: raw.count
+                ),
+                body: ByteBuffer(data: raw)
+            )
+            XCTAssertEqual(response.status.code, 201)
+
+            response = try await client.execute(
+                uri: "/v2/archive/status",
+                method: .get
+            )
+            XCTAssertEqual(response.status.code, 401)
+
+            response = try await client.execute(
+                uri: "/v2/archive/status",
+                method: .get,
+                headers: Self.headers()
+            )
+            XCTAssertEqual(response.status.code, 200)
+            XCTAssertTrue(response.headers[.contentType]?.hasPrefix("application/json") == true)
+            let bytes = Self.data(response)
+            XCTAssertLessThanOrEqual(
+                bytes.count,
+                ArchiveRemoteTelemetrySnapshot.maximumEncodedBytes
+            )
+            let snapshot = try ArchiveCanonicalJSON.decode(
+                ArchiveRemoteTelemetrySnapshot.self,
+                from: bytes
+            )
+            XCTAssertEqual(try ArchiveCanonicalJSON.encode(snapshot), bytes)
+            XCTAssertEqual(snapshot.serverID, "hq")
+            XCTAssertEqual(snapshot.sourceRevision, Self.sourceRevision)
+            XCTAssertEqual(snapshot.requestCount, 2)
+            XCTAssertEqual(snapshot.successCount, 1)
+            XCTAssertEqual(snapshot.clientErrorCount, 1)
+            XCTAssertEqual(snapshot.requestBytes, Int64(raw.count))
+            XCTAssertEqual(snapshot.lastArchiveMutationAt, "2026-07-12T10:00:00.000Z")
+            XCTAssertEqual(snapshot.recentErrors.map(\.category), ["unauthorized"])
+            XCTAssertEqual(Set(snapshot.endpoints.map(\.endpoint)), ["object", "status"])
+
+            let text = String(decoding: bytes, as: UTF8.self)
+            for forbidden in [digest, Self.archiveToken, tempDir.path, "observed archive bytes"] {
+                XCTAssertFalse(text.contains(forbidden), "telemetry exposed \(forbidden)")
+            }
+
+            let persistedURL = tempDir
+                .appendingPathComponent("archive", isDirectory: true)
+                .appendingPathComponent(".telemetry", isDirectory: true)
+                .appendingPathComponent("status-v1.json")
+            let persisted = try ArchiveCanonicalJSON.decode(
+                ArchiveRemoteTelemetrySnapshot.self,
+                from: Data(contentsOf: persistedURL)
+            )
+            XCTAssertEqual(persisted.requestCount, 2, "status must force-flush prior traffic")
+
+            response = try await client.execute(
+                uri: "/v2/archive/status",
+                method: .get,
+                headers: Self.headers()
+            )
+            let next = try ArchiveCanonicalJSON.decode(
+                ArchiveRemoteTelemetrySnapshot.self,
+                from: Self.data(response)
+            )
+            XCTAssertEqual(next.requestCount, 3, "a status response records itself only afterward")
+        }
+    }
+
+    func testRouteTelemetryUsesFixedCategoriesAndNormalizedEndpointNames() async throws {
+        let now = try Self.instant("2026-07-12T10:00:00.000Z")
+        let archiveRoot = tempDir.appendingPathComponent("archive", isDirectory: true)
+        let store = try ArchiveStore(
+            root: archiveRoot,
+            key: archiveKey,
+            serverID: "hq",
+            testHooks: ArchiveStoreTestHooks(beforeFileFsync: { _ in
+                throw CocoaError(.fileWriteUnknown)
+            })
+        )
+        let telemetry = try ArchiveRemoteTelemetryStore(
+            archiveRoot: archiveRoot,
+            serverID: "hq",
+            sourceRevision: Self.sourceRevision,
+            now: { now }
+        )
+        let router = Router<BasicRequestContext>()
+        ArchiveRoutes.mount(
+            on: router,
+            store: store,
+            token: Self.archiveToken,
+            telemetry: telemetry
+        )
+        let app = Application(router: router)
+        try await app.test(.router) { client in
+            var response = try await client.execute(
+                uri: "/v2/archive/objects/not-a-digest",
+                method: .get,
+                headers: Self.headers()
+            )
+            XCTAssertEqual(response.status.code, 400)
+
+            let raw = Data("server failure bytes".utf8)
+            let digest = ArchiveV2Hash.sha256(raw)
+            response = try await client.execute(
+                uri: "/v2/archive/objects/\(digest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/octet-stream"),
+                body: ByteBuffer(data: raw)
+            )
+            XCTAssertEqual(response.status.code, 500)
+
+            response = try await client.execute(
+                uri: "/v2/archive/status",
+                method: .get,
+                headers: Self.headers()
+            )
+            let snapshot = try ArchiveCanonicalJSON.decode(
+                ArchiveRemoteTelemetrySnapshot.self,
+                from: Self.data(response)
+            )
+            XCTAssertEqual(
+                snapshot.recentErrors.map(\.category),
+                ["malformed_request", "internal_error"]
+            )
+            XCTAssertEqual(snapshot.endpoints.map(\.endpoint), ["object"])
+            let encoded = String(decoding: Self.data(response), as: UTF8.self)
+            XCTAssertFalse(encoded.contains(digest))
+            XCTAssertFalse(encoded.contains("not-a-digest"))
+            XCTAssertFalse(encoded.contains(archiveRoot.path))
+        }
+    }
+
+    func testTelemetryPersistenceFailureDoesNotChangeSuccessfulArchivePut() async throws {
+        let now = try Self.instant("2026-07-12T10:00:00.000Z")
+        let app = Application(
+            router: try makeRemoteApp(
+                sourceRevision: Self.sourceRevision,
+                telemetryNow: { now },
+                telemetrySnapshotWriter: { _, _ in
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+            ).buildRouter()
+        )
+        let raw = Data("business success survives telemetry".utf8)
+        let digest = ArchiveV2Hash.sha256(raw)
+
+        try await app.test(.router) { client in
+            var response = try await client.execute(
+                uri: "/v2/archive/objects/\(digest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/octet-stream"),
+                body: ByteBuffer(data: raw)
+            )
+            XCTAssertEqual(response.status.code, 201)
+
+            response = try await client.execute(
+                uri: "/v2/archive/status",
+                method: .get,
+                headers: Self.headers()
+            )
+            let snapshot = try ArchiveCanonicalJSON.decode(
+                ArchiveRemoteTelemetrySnapshot.self,
+                from: Self.data(response)
+            )
+            XCTAssertEqual(snapshot.requestCount, 1)
+            XCTAssertEqual(snapshot.lastArchiveMutationAt, "2026-07-12T10:00:00.000Z")
+            XCTAssertEqual(snapshot.persistenceError, "snapshot_write_failed")
         }
     }
 
@@ -587,7 +777,13 @@ final class ArchiveRouteTests: XCTestCase {
 
     private func makeRemoteApp(
         enabled: Bool = true,
-        archiveKey overrideArchiveKey: SymmetricKey? = nil
+        archiveKey overrideArchiveKey: SymmetricKey? = nil,
+        sourceRevision: String = "unknown",
+        telemetryNow: @escaping @Sendable () -> Date = { Date() },
+        telemetrySnapshotWriter: @escaping ArchiveRemoteTelemetryStore.SnapshotWriter =
+            { data, url in
+                try ArchiveRemoteTelemetryStore.defaultSnapshotWriter(data, url)
+            }
     ) throws -> EngramRemoteServerApp {
         let archive = enabled
             ? EngramRemoteArchiveConfig(
@@ -604,20 +800,34 @@ final class ArchiveRouteTests: XCTestCase {
                 storeRoot: tempDir.appendingPathComponent("legacy", isDirectory: true),
                 bearerToken: Self.legacyToken,
                 atRestKey: legacyKey,
-                archiveV2: archive
-            )
+                archiveV2: archive,
+                sourceRevision: sourceRevision
+            ),
+            archiveTelemetryNow: telemetryNow,
+            archiveTelemetrySnapshotWriter: telemetrySnapshotWriter
         )
     }
 
     private static func headers(
         contentType: String? = nil,
+        contentLength: Int? = nil,
         token: String = archiveToken
     ) -> HTTPFields {
         var headers: HTTPFields = [.authorization: "Bearer \(token)"]
         if let contentType {
             headers[.contentType] = contentType
         }
+        if let contentLength {
+            headers[.contentLength] = "\(contentLength)"
+        }
         return headers
+    }
+
+    private static func instant(_ value: String) throws -> Date {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return try XCTUnwrap(formatter.date(from: value))
     }
 
     private static func data(_ response: TestResponse) -> Data {

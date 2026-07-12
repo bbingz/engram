@@ -18,8 +18,23 @@ public final class EngramRemoteServerApp: Sendable {
     private let config: EngramRemoteServerConfig
     private let store: BlobStore
     private let archiveStore: ArchiveStore?
+    private let archiveTelemetry: ArchiveRemoteTelemetryStore?
 
-    public init(config: EngramRemoteServerConfig) throws {
+    public convenience init(config: EngramRemoteServerConfig) throws {
+        try self.init(
+            config: config,
+            archiveTelemetryNow: { Date() },
+            archiveTelemetrySnapshotWriter: { data, url in
+                try ArchiveRemoteTelemetryStore.defaultSnapshotWriter(data, url)
+            }
+        )
+    }
+
+    init(
+        config: EngramRemoteServerConfig,
+        archiveTelemetryNow: @escaping @Sendable () -> Date,
+        archiveTelemetrySnapshotWriter: @escaping ArchiveRemoteTelemetryStore.SnapshotWriter
+    ) throws {
         if let archive = config.archiveV2 {
             guard EngramRemoteServerConfig.isCurrentArchiveServerID(archive.serverID) else {
                 throw EngramRemoteServerConfig.ConfigError.invalidArchiveServerID
@@ -40,8 +55,16 @@ public final class EngramRemoteServerApp: Sendable {
                 key: archive.atRestKey,
                 serverID: archive.serverID
             )
+            self.archiveTelemetry = try ArchiveRemoteTelemetryStore(
+                archiveRoot: archive.root,
+                serverID: archive.serverID,
+                sourceRevision: config.sourceRevision,
+                now: archiveTelemetryNow,
+                snapshotWriter: archiveTelemetrySnapshotWriter
+            )
         } else {
             self.archiveStore = nil
+            self.archiveTelemetry = nil
         }
     }
 
@@ -142,11 +165,12 @@ public final class EngramRemoteServerApp: Sendable {
             }
         }
 
-        if let archive = config.archiveV2, let archiveStore {
+        if let archive = config.archiveV2, let archiveStore, let archiveTelemetry {
             ArchiveRoutes.mount(
                 on: router,
                 store: archiveStore,
-                token: archive.bearerToken
+                token: archive.bearerToken,
+                telemetry: archiveTelemetry
             )
         }
 

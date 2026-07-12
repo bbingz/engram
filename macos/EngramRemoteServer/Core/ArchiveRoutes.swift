@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import Hummingbird
 import HummingbirdCore
@@ -12,9 +13,16 @@ enum ArchiveRoutes {
     static func mount(
         on router: Router<BasicRequestContext>,
         store: ArchiveStore,
-        token: String
+        token: String,
+        telemetry: ArchiveRemoteTelemetryStore? = nil
     ) {
         router.put("/v2/archive/objects/:digest") { request, context in
+            await observed(
+                request,
+                endpoint: "object",
+                telemetry: telemetry,
+                archiveMutation: true
+            ) {
             guard authorized(request, token: token) else { return unauthorized() }
             guard let digest = context.parameters.get("digest"),
                   ArchiveV2Hash.isValidSHA256(digest) else {
@@ -40,9 +48,11 @@ enum ArchiveRoutes {
             } catch {
                 return storeErrorResponse(error)
             }
+            }
         }
 
         router.head("/v2/archive/objects/:digest") { request, context in
+            await observed(request, endpoint: "object", telemetry: telemetry) {
             guard authorized(request, token: token) else { return unauthorized() }
             guard let digest = context.parameters.get("digest"),
                   ArchiveV2Hash.isValidSHA256(digest) else {
@@ -58,9 +68,11 @@ enum ArchiveRoutes {
             } catch {
                 return storeErrorResponse(error)
             }
+            }
         }
 
         router.get("/v2/archive/objects/:digest") { request, context in
+            await observed(request, endpoint: "object", telemetry: telemetry) {
             guard authorized(request, token: token) else { return unauthorized() }
             guard let digest = context.parameters.get("digest"),
                   ArchiveV2Hash.isValidSHA256(digest) else {
@@ -75,9 +87,16 @@ enum ArchiveRoutes {
             } catch {
                 return storeErrorResponse(error)
             }
+            }
         }
 
         router.put("/v2/archive/manifests/:digest") { request, context in
+            await observed(
+                request,
+                endpoint: "manifest",
+                telemetry: telemetry,
+                archiveMutation: true
+            ) {
             guard authorized(request, token: token) else { return unauthorized() }
             guard let digest = context.parameters.get("digest"),
                   ArchiveV2Hash.isValidSHA256(digest) else {
@@ -103,9 +122,11 @@ enum ArchiveRoutes {
             } catch {
                 return storeErrorResponse(error)
             }
+            }
         }
 
         router.head("/v2/archive/manifests/:digest") { request, context in
+            await observed(request, endpoint: "manifest", telemetry: telemetry) {
             guard authorized(request, token: token) else { return unauthorized() }
             guard let digest = context.parameters.get("digest"),
                   ArchiveV2Hash.isValidSHA256(digest) else {
@@ -121,9 +142,11 @@ enum ArchiveRoutes {
             } catch {
                 return storeErrorResponse(error)
             }
+            }
         }
 
         router.get("/v2/archive/manifests/:digest") { request, context in
+            await observed(request, endpoint: "manifest", telemetry: telemetry) {
             guard authorized(request, token: token) else { return unauthorized() }
             guard let digest = context.parameters.get("digest"),
                   ArchiveV2Hash.isValidSHA256(digest) else {
@@ -138,9 +161,16 @@ enum ArchiveRoutes {
             } catch {
                 return storeErrorResponse(error)
             }
+            }
         }
 
         router.put("/v2/archive/receipts/:digest") { request, context in
+            await observed(
+                request,
+                endpoint: "receipt",
+                telemetry: telemetry,
+                archiveMutation: true
+            ) {
             guard authorized(request, token: token) else { return unauthorized() }
             guard let digest = context.parameters.get("digest"),
                   ArchiveV2Hash.isValidSHA256(digest) else {
@@ -166,9 +196,11 @@ enum ArchiveRoutes {
             } catch {
                 return storeErrorResponse(error)
             }
+            }
         }
 
         router.get("/v2/archive/receipts/:digest") { request, context in
+            await observed(request, endpoint: "receipt", telemetry: telemetry) {
             guard authorized(request, token: token) else { return unauthorized() }
             guard let digest = context.parameters.get("digest"),
                   ArchiveV2Hash.isValidSHA256(digest) else {
@@ -183,9 +215,11 @@ enum ArchiveRoutes {
             } catch {
                 return storeErrorResponse(error)
             }
+            }
         }
 
         router.get("/v2/archive/machines") { request, _ in
+            await observed(request, endpoint: "machines", telemetry: telemetry) {
             guard authorized(request, token: token) else { return unauthorized() }
             do {
                 let parameters = try pageParameters(
@@ -202,9 +236,11 @@ enum ArchiveRoutes {
             } catch {
                 return storeErrorResponse(error)
             }
+            }
         }
 
         router.get("/v2/archive/receipts") { request, _ in
+            await observed(request, endpoint: "receipts", telemetry: telemetry) {
             guard authorized(request, token: token) else { return unauthorized() }
             do {
                 let query = request.uri.queryParameters
@@ -226,25 +262,93 @@ enum ArchiveRoutes {
             } catch {
                 return storeErrorResponse(error)
             }
+            }
         }
 
-        for path in [
-            "/v2/archive",
-            "/v2/archive/objects/:digest",
-            "/v2/archive/manifests/:digest",
-            "/v2/archive/receipts/:digest",
-            "/v2/archive/receipts",
-            "/v2/archive/machines",
+        if let telemetry {
+            router.get("/v2/archive/status") { request, _ in
+                await observed(request, endpoint: "status", telemetry: telemetry) {
+                    guard authorized(request, token: token) else { return unauthorized() }
+                    let snapshot = await telemetry.status(forcePersist: true)
+                    do {
+                        let bytes = try ArchiveCanonicalJSON.encode(snapshot)
+                        guard bytes.count <= ArchiveRemoteTelemetrySnapshot.maximumEncodedBytes else {
+                            return errorResponse(status: .internalServerError, code: "internal_error")
+                        }
+                        return dataResponse(
+                            bytes,
+                            status: .ok,
+                            contentType: "application/json; charset=utf-8"
+                        )
+                    } catch {
+                        return errorResponse(status: .internalServerError, code: "internal_error")
+                    }
+                }
+            }
+        }
+
+        for (path, endpoint) in [
+            ("/v2/archive", "unknown"),
+            ("/v2/archive/objects/:digest", "object"),
+            ("/v2/archive/manifests/:digest", "manifest"),
+            ("/v2/archive/receipts/:digest", "receipt"),
+            ("/v2/archive/receipts", "receipts"),
+            ("/v2/archive/machines", "machines"),
+            ("/v2/archive/status", "status"),
         ] {
             router.delete(RouterPath(path)) { request, _ in
+                await observed(request, endpoint: endpoint, telemetry: telemetry) {
+                    guard authorized(request, token: token) else { return unauthorized() }
+                    return errorResponse(status: .methodNotAllowed, code: "method_not_allowed")
+                }
+            }
+        }
+        router.delete("/v2/archive/**") { request, _ in
+            await observed(request, endpoint: "unknown", telemetry: telemetry) {
                 guard authorized(request, token: token) else { return unauthorized() }
                 return errorResponse(status: .methodNotAllowed, code: "method_not_allowed")
             }
         }
-        router.delete("/v2/archive/**") { request, _ in
-            guard authorized(request, token: token) else { return unauthorized() }
-            return errorResponse(status: .methodNotAllowed, code: "method_not_allowed")
+    }
+
+    private static func observed(
+        _ request: Request,
+        endpoint: String,
+        telemetry: ArchiveRemoteTelemetryStore?,
+        archiveMutation: Bool = false,
+        operation: () async -> Response
+    ) async -> Response {
+        let started = DispatchTime.now().uptimeNanoseconds
+        let response = await operation()
+        guard let telemetry else { return response }
+        await telemetry.record(
+            ArchiveRemoteTelemetryObservation(
+                endpoint: endpoint,
+                method: request.method.rawValue,
+                statusCode: response.status.code,
+                durationMs: elapsedMilliseconds(since: started),
+                requestBytes: boundedContentLength(request.headers),
+                responseBytes: boundedContentLength(response.headers),
+                archiveMutation: archiveMutation && response.status.code < 300
+            )
+        )
+        return response
+    }
+
+    private static func elapsedMilliseconds(since started: UInt64) -> Double {
+        let finished = DispatchTime.now().uptimeNanoseconds
+        guard finished >= started else { return 0 }
+        return Double(finished - started) / 1_000_000
+    }
+
+    private static func boundedContentLength(_ headers: HTTPFields) -> Int64 {
+        guard let value = headers[.contentLength],
+              !value.isEmpty,
+              value.utf8.allSatisfy({ (48...57).contains($0) }),
+              let count = Int64(value) else {
+            return 0
         }
+        return count
     }
 
     private static func authorized(_ request: Request, token: String) -> Bool {

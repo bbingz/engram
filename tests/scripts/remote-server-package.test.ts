@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -68,6 +69,41 @@ function runPackage(args: string[]): { status: number | null; output: string } {
     encoding: 'utf8',
     env: { ...process.env, LC_ALL: 'C' },
   });
+  return {
+    status: result.status,
+    output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
+  };
+}
+
+function runTemplateVerification(
+  wrapperContents: string,
+  expectedRevision: string,
+): { status: number | null; output: string } {
+  const root = makeTempRoot();
+  const wrapper = join(root, 'run-engram-remote.zsh.template');
+  const launchAgent = join(root, 'com.engram.remote-server.plist.template');
+  const runner = join(root, 'verify-templates.sh');
+  writeFileSync(wrapper, wrapperContents);
+  writeFileSync(launchAgent, launchAgentTemplate);
+  chmodSync(wrapper, 0o700);
+  chmodSync(launchAgent, 0o600);
+  writeFileSync(
+    runner,
+    [
+      '#!/bin/bash',
+      'set -euo pipefail',
+      'fail() { echo "$*" >&2; exit 1; }',
+      `${shellFunctionBody('verify_templates')}\n}`,
+      'verify_templates "$1" "$2" "$3"',
+      '',
+    ].join('\n'),
+  );
+  chmodSync(runner, 0o700);
+  const result = spawnSync(
+    '/bin/bash',
+    [runner, wrapper, launchAgent, expectedRevision],
+    { cwd: repoRoot, encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } },
+  );
   return {
     status: result.status,
     output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
@@ -189,6 +225,49 @@ describe('remote server package command contract', () => {
 });
 
 describe('remote server package implementation contract', () => {
+  it('substitutes and verifies only the validated build revision', () => {
+    const packageBody = shellFunctionBody('package_remote_server');
+    const verifyTemplates = shellFunctionBody('verify_templates');
+
+    expect(packageBody).toContain('substitute_wrapper_revision');
+    expect(packageBody).toMatch(/BUNDLE_WRAPPER_TEMPLATE[^\n]+revision/);
+    expect(verifyTemplates).toContain('__ENGRAM_REMOTE_SOURCE_REVISION__');
+    expect(verifyTemplates).toMatch(/sourceRevision|source_revision|revision/);
+    expect(verifyTemplates).toMatch(/credential|TOKEN|AT_REST_KEY/);
+  });
+
+  it('accepts only a resolved matching credential-free wrapper revision', () => {
+    const revision = 'a'.repeat(40);
+    const valid = wrapperTemplate.replace(
+      '__ENGRAM_REMOTE_SOURCE_REVISION__',
+      revision,
+    );
+    expect(runTemplateVerification(valid, revision).status).toBe(0);
+
+    const rejected = [
+      {
+        wrapper: wrapperTemplate,
+        expected: revision,
+        message: 'unresolved source revision',
+      },
+      {
+        wrapper: valid,
+        expected: 'b'.repeat(40),
+        message: 'does not match BUILD-METADATA',
+      },
+      {
+        wrapper: `${valid}\npassword_hint='forbidden'\n`,
+        expected: revision,
+        message: 'credential-like',
+      },
+    ];
+    for (const { wrapper, expected, message } of rejected) {
+      const result = runTemplateVerification(wrapper, expected);
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain(message);
+    }
+  });
+
   it('requires the fixed Release arm64 build products and package layout', () => {
     expect(packageScript).toMatch(
       /Build\/Products\/\$(?:CONFIGURATION|configuration)/,
@@ -283,9 +362,16 @@ describe('owner-only deployment templates', () => {
     expect(wrapperTemplate).toContain('umask 077');
     expect(wrapperTemplate).toContain('legacy-v1.env');
     expect(wrapperTemplate).toContain('archive-v2.env');
+    expect(wrapperTemplate).toContain(
+      "export ENGRAM_REMOTE_SOURCE_REVISION='__ENGRAM_REMOTE_SOURCE_REVISION__'",
+    );
+    expect(
+      wrapperTemplate.match(/ENGRAM_REMOTE_SOURCE_REVISION/g) ?? [],
+    ).toHaveLength(2);
     expect(wrapperTemplate).not.toMatch(
       /ENGRAM_REMOTE_(?:ARCHIVE_)?(?:TOKEN|AT_REST_KEY)/,
     );
+    expect(wrapperTemplate).not.toMatch(/password|credential|private[_-]?key/i);
   });
 
   it('runs only the wrapper from launchd and has no environment dictionary', () => {

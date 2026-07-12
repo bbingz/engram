@@ -249,7 +249,8 @@ verify_metadata() {
 verify_templates() {
   local wrapper="$1"
   local launch_agent="$2"
-  local wrapper_mode launch_agent_mode
+  local expected_revision="$3"
+  local wrapper_mode launch_agent_mode revision_count
 
   wrapper_mode="$(/usr/bin/stat -f '%Lp' "$wrapper")"
   launch_agent_mode="$(/usr/bin/stat -f '%Lp' "$launch_agent")"
@@ -258,11 +259,44 @@ verify_templates() {
     fail "LaunchAgent template mode must be 0600"
   /usr/bin/plutil -lint "$launch_agent" >/dev/null
 
-  if /usr/bin/grep -Eiq \
-    'ENGRAM_REMOTE_(ARCHIVE_)?(TOKEN|AT_REST_KEY)|EnvironmentVariables' \
-    "$wrapper" "$launch_agent"; then
-    fail "deployment templates contain credential or environment material"
+  [[ "$expected_revision" =~ ^[0-9a-f]{40}$ ]] ||
+    fail "cannot verify templates against an invalid source revision"
+  if /usr/bin/grep -q '__ENGRAM_REMOTE_SOURCE_REVISION__' "$wrapper"; then
+    fail "wrapper template contains an unresolved source revision"
   fi
+  revision_count="$(
+    /usr/bin/grep -c '^export ENGRAM_REMOTE_SOURCE_REVISION=' "$wrapper" || true
+  )"
+  [[ "$revision_count" == "1" ]] ||
+    fail "wrapper template must export exactly one source revision"
+  /usr/bin/grep -Fqx \
+    "export ENGRAM_REMOTE_SOURCE_REVISION='$expected_revision'" "$wrapper" ||
+    fail "wrapper template source revision does not match BUILD-METADATA"
+
+  if /usr/bin/grep -Eiq \
+    'ENGRAM_REMOTE_(ARCHIVE_)?(TOKEN|AT_REST_KEY)|EnvironmentVariables|password|credential|private[_-]?key' \
+    "$wrapper" "$launch_agent"; then
+    fail "deployment templates contain credential-like or environment material"
+  fi
+}
+
+substitute_wrapper_revision() {
+  local wrapper="$1"
+  local revision="$2"
+  local placeholder='__ENGRAM_REMOTE_SOURCE_REVISION__'
+  local placeholder_count temporary
+
+  [[ "$revision" =~ ^[0-9a-f]{40}$ ]] ||
+    fail "cannot substitute an invalid source revision"
+  placeholder_count="$(
+    /usr/bin/grep -o "$placeholder" "$wrapper" | /usr/bin/wc -l | /usr/bin/tr -d ' '
+  )"
+  [[ "$placeholder_count" == "1" ]] ||
+    fail "wrapper template must contain exactly one source revision placeholder"
+  temporary="${wrapper}.revision.$$"
+  /usr/bin/sed "s/$placeholder/$revision/" "$wrapper" > "$temporary"
+  /bin/chmod 0700 "$temporary"
+  /bin/mv -f "$temporary" "$wrapper"
 }
 
 verify_package_layout() {
@@ -312,7 +346,7 @@ verify_signatures_and_architecture() {
 
 verify_package() {
   local bundle="$1"
-  local canonical_bundle
+  local canonical_bundle revision
 
   [[ -d "$bundle" && ! -L "$bundle" ]] || fail "verify-only bundle must be a directory"
   canonical_bundle="$(cd "$bundle" && pwd -P)"
@@ -323,9 +357,14 @@ verify_package() {
     /usr/bin/shasum -a 256 -c SHA256SUMS >/dev/null
   ) || fail "SHA256SUMS verification failed"
   verify_metadata "$canonical_bundle/BUILD-METADATA.json"
+  revision="$(
+    /usr/bin/plutil -extract sourceRevision raw -o - \
+      "$canonical_bundle/BUILD-METADATA.json"
+  )"
   verify_templates \
     "$canonical_bundle/templates/run-engram-remote.zsh.template" \
-    "$canonical_bundle/templates/com.engram.remote-server.plist.template"
+    "$canonical_bundle/templates/com.engram.remote-server.plist.template" \
+    "$revision"
   verify_signatures_and_architecture "$canonical_bundle"
   verify_framework_rpath "$canonical_bundle/bin/EngramRemoteServer"
   verify_dependency_closure "$canonical_bundle"
@@ -378,6 +417,7 @@ package_remote_server() {
   /bin/cp \
     "$TEMPLATE_DIR/com.engram.remote-server.plist.template" \
     "$BUNDLE_LAUNCH_AGENT_TEMPLATE"
+  substitute_wrapper_revision "$BUNDLE_WRAPPER_TEMPLATE" "$revision"
   /bin/chmod 0700 "$BUNDLE_EXECUTABLE"
   /bin/chmod 0700 "$BUNDLE_WRAPPER_TEMPLATE"
   /bin/chmod 0600 "$BUNDLE_LAUNCH_AGENT_TEMPLATE"

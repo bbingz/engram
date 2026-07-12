@@ -23,6 +23,44 @@ final class ArchiveConfigTests: XCTestCase {
         XCTAssertEqual(config.port, 9988)
         XCTAssertEqual(config.bearerToken, "legacy-token")
         XCTAssertEqual(keyBytes(config.atRestKey), keyData)
+        XCTAssertEqual(config.sourceRevision, "unknown")
+    }
+
+    func testSourceRevisionAcceptsExactlyFortyLowercaseHexCharacters() throws {
+        let revision = "0123456789abcdef0123456789abcdef01234567"
+        var env = enabledEnvironment(host: "127.0.0.1")
+        env["ENGRAM_REMOTE_SOURCE_REVISION"] = revision
+        XCTAssertEqual(
+            try EngramRemoteServerConfig.fromEnvironment(env).sourceRevision,
+            revision
+        )
+
+        for invalid in [
+            "",
+            String(repeating: "a", count: 39),
+            String(repeating: "a", count: 41),
+            String(repeating: "A", count: 40),
+            String(repeating: "g", count: 40),
+            String(repeating: "a", count: 40) + "\n",
+            "token=0123456789abcdef0123456789abcdef01",
+        ] {
+            env["ENGRAM_REMOTE_SOURCE_REVISION"] = invalid
+            XCTAssertEqual(
+                try EngramRemoteServerConfig.fromEnvironment(env).sourceRevision,
+                "unknown",
+                "accepted invalid revision \(String(reflecting: invalid))"
+            )
+        }
+
+        let programmatic = EngramRemoteServerConfig(
+            host: "127.0.0.1",
+            port: 8787,
+            storeRoot: URL(fileURLWithPath: "/tmp/legacy-v1-store"),
+            bearerToken: "legacy-token",
+            atRestKey: SymmetricKey(data: keyData),
+            sourceRevision: String(repeating: "F", count: 40)
+        )
+        XCTAssertEqual(programmatic.sourceRevision, "unknown")
     }
 
     func testEnabledArchiveRequiresServerIDAndAbsoluteRoot() {

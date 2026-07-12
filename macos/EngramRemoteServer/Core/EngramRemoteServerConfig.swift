@@ -33,6 +33,7 @@ public struct EngramRemoteServerConfig: Sendable {
     public var atRestKey: SymmetricKey
     public var maxBundleBytes: Int
     public var archiveV2: EngramRemoteArchiveConfig?
+    public let sourceRevision: String
 
     public init(
         host: String,
@@ -41,7 +42,8 @@ public struct EngramRemoteServerConfig: Sendable {
         bearerToken: String,
         atRestKey: SymmetricKey,
         maxBundleBytes: Int = 64 * 1024 * 1024,
-        archiveV2: EngramRemoteArchiveConfig? = nil
+        archiveV2: EngramRemoteArchiveConfig? = nil,
+        sourceRevision: String = "unknown"
     ) {
         self.host = host
         self.port = port
@@ -50,6 +52,7 @@ public struct EngramRemoteServerConfig: Sendable {
         self.atRestKey = atRestKey
         self.maxBundleBytes = maxBundleBytes
         self.archiveV2 = archiveV2
+        self.sourceRevision = Self.validatedSourceRevision(sourceRevision)
     }
 
     public enum ConfigError: Error, CustomStringConvertible {
@@ -178,7 +181,8 @@ public struct EngramRemoteServerConfig: Sendable {
             storeRoot: store,
             bearerToken: token,
             atRestKey: SymmetricKey(data: keyData),
-            archiveV2: archiveV2
+            archiveV2: archiveV2,
+            sourceRevision: env["ENGRAM_REMOTE_SOURCE_REVISION"] ?? "unknown"
         )
     }
 
@@ -189,6 +193,16 @@ public struct EngramRemoteServerConfig: Sendable {
 
     static func isCurrentArchiveServerID(_ value: String) -> Bool {
         value == "hq" || value == "m1"
+    }
+
+    private static func validatedSourceRevision(_ value: String) -> String {
+        guard value.utf8.count == 40,
+              value.utf8.allSatisfy({ byte in
+                  (48...57).contains(byte) || (97...102).contains(byte)
+              }) else {
+            return "unknown"
+        }
+        return value
     }
 
     private static func isAllowedArchiveBindAddress(_ host: String) -> Bool {
