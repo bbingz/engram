@@ -152,6 +152,7 @@
 		374063758D48B1AF5B848016 /* AGENTS.md in Resources */ = {isa = PBXBuildFile; fileRef = DC828C4AB925BBDEA8382A92 /* AGENTS.md */; };
 		37ACDC44D634A6F7C88CDDF5 /* SessionSemanticSearchPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 846C67C54683B93A30D09851 /* SessionSemanticSearchPolicy.swift */; };
 		39DFCA7BDACACDE2C18C49F9 /* InstructionExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 807B4016F878D904668B2602 /* InstructionExtractor.swift */; };
+		39E587EBA2905652B6FD9F64 /* ArchiveSourceReclaimer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C4C97FCD132465302CC2728 /* ArchiveSourceReclaimer.swift */; };
 		3A1AF8130B056EF8AD3E19C5 /* TodayWorkbenchSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 878858A587504826B3D53D12 /* TodayWorkbenchSupport.swift */; };
 		3AC42849CCED91B6414A4173 /* StartupComposition.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAD748C6EC231047FF5EB447 /* StartupComposition.swift */; };
 		3AC989792108767490FFE1E4 /* EngramServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = F157FA0F7C17FA4398BCC146 /* EngramServiceProtocol.swift */; };
@@ -362,6 +363,7 @@
 		8DDC02D8C7C3738A955D85F6 /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3457E62B73BFD0770B3C2EE0 /* JSONValue.swift */; };
 		8E212ACBA96B9853B294BB40 /* TranscriptSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8627BCC3ECACA818A8814F7B /* TranscriptSizeGuard.swift */; };
 		8EB6ECA0CB17D59E3DD5C428 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = 8D04D1866BFCBEBF44A8B026 /* AppIcon.icns */; };
+		8F88F6C2BF0667DF66D93200 /* ArchiveSourceReclaimerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E36C870948B384CEB8D94768 /* ArchiveSourceReclaimerTests.swift */; };
 		90240AE049D4FA4C3FC0CDD7 /* LaunchAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBC72889AD73299ACF4534DE /* LaunchAgent.swift */; };
 		909ACCF030DD1E1D3F8296B9 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EF78E4EF7AA7613D39D1160 /* main.swift */; };
 		90CB386B2D156A805D6E093D /* QoderAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31F84C4D0860A06E7036F321 /* QoderAdapter.swift */; };
@@ -931,6 +933,7 @@
 		1B9F654F382E1F1DA027FD9A /* AdapterRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdapterRegistry.swift; sourceTree = "<group>"; };
 		1C37BCCB1ACAB67E7F8B9C8E /* LiveSessionCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSessionCard.swift; sourceTree = "<group>"; };
 		1C393A33D07F4F9E3F3742EE /* FixtureAssertions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureAssertions.swift; sourceTree = "<group>"; };
+		1C4C97FCD132465302CC2728 /* ArchiveSourceReclaimer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveSourceReclaimer.swift; sourceTree = "<group>"; };
 		1D0235E45DAAFCBA57B29A6E /* ToolResultView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolResultView.swift; sourceTree = "<group>"; };
 		1D1BB361D9AC2D5B6AEB8F36 /* ServiceCapabilityToken.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceCapabilityToken.swift; sourceTree = "<group>"; };
 		1DB524C7D024C84A86B5E826 /* SessionSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSyncTests.swift; sourceTree = "<group>"; };
@@ -1319,6 +1322,7 @@
 		E21DEF04504C06E927EFC95B /* EngramLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramLogger.swift; sourceTree = "<group>"; };
 		E21FC5ED27185582D19F8FD6 /* WorkGraphView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkGraphView.swift; sourceTree = "<group>"; };
 		E2EDCF96A3B2CE8B52F6153E /* WindsurfAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindsurfAdapter.swift; sourceTree = "<group>"; };
+		E36C870948B384CEB8D94768 /* ArchiveSourceReclaimerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveSourceReclaimerTests.swift; sourceTree = "<group>"; };
 		E38D9E5A1C4AA15BD06FEC77 /* TraceExplorerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TraceExplorerView.swift; sourceTree = "<group>"; };
 		E42392A1EEAFB6C03B149F4A /* ArchiveReplicationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveReplicationCoordinator.swift; sourceTree = "<group>"; };
 		E49FCF64DC5907F64208CBE0 /* ImplementationDigestExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImplementationDigestExtractor.swift; sourceTree = "<group>"; };
@@ -2412,6 +2416,7 @@
 				7E88F20261BDB5D92EDF539D /* ArchiveModelTests.swift */,
 				663E8B62FCFF1F8E8CC1C0A7 /* ArchiveReclamationPolicyTests.swift */,
 				3A4F94AE48569070E7F4D1C2 /* ArchiveReplicationCoordinatorTests.swift */,
+				E36C870948B384CEB8D94768 /* ArchiveSourceReclaimerTests.swift */,
 				C3CA0581E58BF21CF223E38B /* ArchiveV2RecentAdapterTests.swift */,
 				92A49BE9BF5D5C5AF1188E09 /* ExactSourceCapturerTests.swift */,
 				D7CD09BB9A31F326D694CF1C /* HTTPArchiveReplicaBackendTests.swift */,
@@ -2512,6 +2517,7 @@
 				B459CDDD6BBE3C7178120DC0 /* ArchiveReclamationPolicy.swift */,
 				5F75599BDACF57E380569A9E /* ArchiveReplicaBackend.swift */,
 				E42392A1EEAFB6C03B149F4A /* ArchiveReplicationCoordinator.swift */,
+				1C4C97FCD132465302CC2728 /* ArchiveSourceReclaimer.swift */,
 				435D37FFA95674394E6BE3AB /* ExactSourceCapturer.swift */,
 				6FFC8438F36E24371F957F6E /* HTTPArchiveReplicaBackend.swift */,
 				838C689FA08B2DF458F32AAA /* ImmutableArchiveCAS.swift */,
@@ -3131,6 +3137,7 @@
 				BD5C4BD7580A606F32A3625E /* ArchiveModelTests.swift in Sources */,
 				E644B841FA4A30198697399C /* ArchiveReclamationPolicyTests.swift in Sources */,
 				C3CB69A48C677D5F422D66B1 /* ArchiveReplicationCoordinatorTests.swift in Sources */,
+				8F88F6C2BF0667DF66D93200 /* ArchiveSourceReclaimerTests.swift in Sources */,
 				B8A6B1CE954B81574D18E72B /* ArchiveTests.swift in Sources */,
 				C4FC98E5FB24AC0A2D01EECB /* ArchiveV2RecentAdapterTests.swift in Sources */,
 				D7845DFA6F44F9C29F508094 /* BatchTests.swift in Sources */,
@@ -3548,6 +3555,7 @@
 				FE83A60CE92CF23B99278F29 /* ArchiveReclamationPolicy.swift in Sources */,
 				302DC41D3E9E664C22DAE792 /* ArchiveReplicaBackend.swift in Sources */,
 				E78D19A217EA790B3172C9D4 /* ArchiveReplicationCoordinator.swift in Sources */,
+				39E587EBA2905652B6FD9F64 /* ArchiveSourceReclaimer.swift in Sources */,
 				0DD10D250D0E20BF30D1DE75 /* Batch.swift in Sources */,
 				E707BAD663F02A3148FC3C19 /* BundleCodec.swift in Sources */,
 				0256569E8DEFAE124674D719 /* EncodeClaudeCodeDir.swift in Sources */,

@@ -1189,7 +1189,10 @@ public final class ArchiveCatalog: @unchecked Sendable {
         to: ArchiveReclamationPhase,
         expectedClaimGeneration: Int,
         quarantinePath: String?,
-        updatedAt: String
+        updatedAt: String,
+        releasedSourceBytes: Int64? = nil,
+        releasedCASBytes: Int64? = nil,
+        lastError: String? = nil
     ) throws -> Bool {
         guard Self.isAllowedReclamationTransition(from: from, to: to) else {
             return false
@@ -1203,6 +1206,13 @@ public final class ArchiveCatalog: @unchecked Sendable {
         if to == .quarantinePlanned || to == .sourceQuarantined {
             guard let quarantinePath, !quarantinePath.isEmpty else { return false }
         }
+        if let releasedSourceBytes, releasedSourceBytes < 0 {
+            throw ArchiveCatalogError.invalidLimit(Int(releasedSourceBytes))
+        }
+        if let releasedCASBytes, releasedCASBytes < 0 {
+            throw ArchiveCatalogError.invalidLimit(Int(releasedCASBytes))
+        }
+        if let lastError { try Self.validateLastError(lastError) }
         try Self.validateTimestamp(updatedAt, field: "updatedAt")
         return try pool.write { db in
             try db.execute(
@@ -1210,6 +1220,10 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 UPDATE archive_reclamation_intents
                 SET phase = ?,
                     quarantine_path = COALESCE(quarantine_path, ?),
+                    released_source_bytes = COALESCE(?, released_source_bytes),
+                    released_cas_bytes = COALESCE(?, released_cas_bytes),
+                    last_error = ?,
+                    attempts = attempts + CASE WHEN ? IS NULL THEN 0 ELSE 1 END,
                     updated_at = ?,
                     claim_generation = claim_generation + 1
                 WHERE manifest_sha256 = ? AND phase = ? AND claim_generation = ?
@@ -1218,6 +1232,10 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 arguments: [
                     to.rawValue,
                     quarantinePath,
+                    releasedSourceBytes,
+                    releasedCASBytes,
+                    lastError,
+                    lastError,
                     updatedAt,
                     manifestSHA256,
                     from.rawValue,
@@ -2783,6 +2801,8 @@ public final class ArchiveCatalog: @unchecked Sendable {
              (.sourceQuarantined, .sourceDeleted),
              (.sourceDeleted, .localContentEvicted),
              (.eligible, .paused),
+             (.quarantinePlanned, .paused),
+             (.sourceQuarantined, .paused),
              (.paused, .eligible):
             true
         default:
