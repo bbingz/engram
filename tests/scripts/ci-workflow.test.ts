@@ -93,6 +93,20 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain('tests/scripts/version-guard.test.ts');
   });
 
+  it('installs ripgrep before Ubuntu coverage runs the archive safety gate', () => {
+    const typescriptJob = testWorkflow.slice(
+      testWorkflow.indexOf('  typescript:'),
+      testWorkflow.indexOf('  macos-vitest:'),
+    );
+    const installIndex = typescriptJob.indexOf(
+      'sudo apt-get install --yes ripgrep',
+    );
+    const coverageIndex = typescriptJob.indexOf('npm run test:coverage');
+
+    expect(installIndex).toBeGreaterThan(-1);
+    expect(coverageIndex).toBeGreaterThan(installIndex);
+  });
+
   it('runs bundle hygiene against the Debug app built in Swift CI', () => {
     expect(testWorkflow).toContain('Build/Products/Debug/Engram.app');
     expect(testWorkflow).toContain(
