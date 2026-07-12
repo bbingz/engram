@@ -5,6 +5,59 @@ import XCTest
 @testable import EngramServiceCore
 
 final class ArchiveV2IPCTests: XCTestCase {
+    func testReclamationCapabilityBoundary() {
+        XCTAssertFalse(ServiceCapabilityToken.requiresToken("archiveReclamationStatus"))
+        XCTAssertFalse(ServiceCapabilityToken.requiresToken("archiveReclamationPreview"))
+        XCTAssertTrue(ServiceCapabilityToken.requiresToken("archiveReclamationUpdateSettings"))
+        XCTAssertTrue(ServiceCapabilityToken.requiresToken("archiveReclamationRun"))
+        XCTAssertTrue(ServiceCapabilityToken.requiresToken("archiveV2RecoveryDrill"))
+    }
+
+    func testDisabledReclamationStatusAndPreviewAreReadOnly() async throws {
+        let harness = try makeHarness()
+        let handler = EngramServiceCommandHandler(writerGate: harness.gate)
+
+        let statusResponse = await handler.handle(
+            EngramServiceRequestEnvelope(command: "archiveReclamationStatus")
+        )
+        guard case .success(_, let statusData, _) = statusResponse else {
+            return XCTFail("archiveReclamationStatus failed")
+        }
+        let status = try JSONDecoder().decode(
+            EngramServiceArchiveReclamationStatusResponse.self,
+            from: statusData
+        )
+        XCTAssertFalse(status.enabled)
+        XCTAssertEqual(status.hotWindowDays, 30)
+
+        let previewResponse = await handler.handle(
+            EngramServiceRequestEnvelope(command: "archiveReclamationPreview")
+        )
+        guard case .success(_, let previewData, _) = previewResponse else {
+            return XCTFail("archiveReclamationPreview failed")
+        }
+        let preview = try JSONDecoder().decode(
+            EngramServiceArchiveReclamationPreviewResponse.self,
+            from: previewData
+        )
+        XCTAssertEqual(preview.eligibleCount, 0)
+    }
+
+    func testReclamationReadCommandsRejectEvenEmptyPayload() async throws {
+        let harness = try makeHarness()
+        let handler = EngramServiceCommandHandler(writerGate: harness.gate)
+        let empty = try JSONEncoder().encode([String: String]())
+
+        for command in ["archiveReclamationStatus", "archiveReclamationPreview"] {
+            let response = await handler.handle(
+                EngramServiceRequestEnvelope(command: command, payload: empty)
+            )
+            guard case .failure(_, let error) = response else {
+                return XCTFail("\(command) accepted a payload")
+            }
+            XCTAssertEqual(error.name, "InvalidRequest")
+        }
+    }
     func testDisabledStatusReturnsStrictFixedZeroResponseWithoutPayload() async throws {
         let harness = try makeHarness()
         let handler = EngramServiceCommandHandler(writerGate: harness.gate)

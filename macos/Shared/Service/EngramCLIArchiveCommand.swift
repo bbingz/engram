@@ -10,7 +10,7 @@ enum EngramCLIArchiveError: Error, CustomStringConvertible, Equatable {
     var description: String {
         switch self {
         case .usage:
-            return "Usage: EngramCLI archive status [--json] | retry --replica hq|m1|all [--json] | token set --replica hq|m1 --stdin [--json] | probe-remote --session-id <id> [--json]"
+            return "Usage: EngramCLI archive status [--json] | reclaim status|preview|enable|disable|run [--hot-window-days 30|60|90|180] [--json] | recovery-drill --replica hq|m1 [--json] | retry --replica hq|m1|all [--json] | token set --replica hq|m1 --stdin [--json] | probe-remote --session-id <id> [--json]"
         case .invalidTokenInput:
             return "archive token input must be one canonical base64 line decoding to 32 bytes"
         case .ttyInputForbidden:
@@ -26,6 +26,11 @@ enum EngramCLIArchiveCommand: Equatable {
     case retry(replicaID: String?, json: Bool)
     case storeToken(replicaID: String, json: Bool)
     case probeRemote(sessionID: String, json: Bool)
+    case reclamationStatus(json: Bool)
+    case reclamationPreview(json: Bool)
+    case reclamationUpdate(enabled: Bool, hotWindowDays: Int, json: Bool)
+    case reclamationRun(json: Bool)
+    case recoveryDrill(replicaID: String, json: Bool)
 
     static func parse(arguments: [String]) throws -> Self? {
         guard arguments.first == "archive" else { return nil }
@@ -63,9 +68,49 @@ enum EngramCLIArchiveCommand: Equatable {
             guard let sessionID else { throw EngramCLIArchiveError.usage }
             _ = try EngramServiceArchiveV2RemoteRecoveryProbeRequest(sessionId: sessionID)
             return .probeRemote(sessionID: sessionID, json: json)
+        case "reclaim":
+            return try parseReclamation(tail)
+        case "recovery-drill":
+            let parsed = try parseReplicaOptions(tail, allowAll: false, requireStdin: false)
+            return .recoveryDrill(replicaID: parsed.replicaID, json: parsed.json)
         default:
             throw EngramCLIArchiveError.usage
         }
+    }
+
+    private static func parseReclamation(_ arguments: [String]) throws -> Self {
+        guard let action = arguments.first else { throw EngramCLIArchiveError.usage }
+        let tail = Array(arguments.dropFirst())
+        if action == "status" || action == "preview" || action == "disable" || action == "run" {
+            guard tail.allSatisfy({ $0 == "--json" }), tail.filter({ $0 == "--json" }).count <= 1 else {
+                throw EngramCLIArchiveError.usage
+            }
+            let json = tail.contains("--json")
+            switch action {
+            case "status": return .reclamationStatus(json: json)
+            case "preview": return .reclamationPreview(json: json)
+            case "disable": return .reclamationUpdate(enabled: false, hotWindowDays: 30, json: json)
+            default: return .reclamationRun(json: json)
+            }
+        }
+        guard action == "enable" else { throw EngramCLIArchiveError.usage }
+        var days: Int?
+        var json = false
+        var index = 0
+        while index < tail.count {
+            switch tail[index] {
+            case "--hot-window-days" where days == nil && index + 1 < tail.count:
+                days = Int(tail[index + 1])
+                index += 2
+            case "--json" where !json:
+                json = true
+                index += 1
+            default:
+                throw EngramCLIArchiveError.usage
+            }
+        }
+        guard let days, [30, 60, 90, 180].contains(days) else { throw EngramCLIArchiveError.usage }
+        return .reclamationUpdate(enabled: true, hotWindowDays: days, json: json)
     }
 
     private static func parseReplicaOptions(
@@ -169,6 +214,21 @@ enum EngramCLIArchiveRunner {
             value = try await client.archiveV2RemoteRecoveryProbe(
                 try .init(sessionId: sessionID)
             )
+            json = wantsJSON
+        case .reclamationStatus(let wantsJSON):
+            value = try await client.archiveReclamationStatus()
+            json = wantsJSON
+        case .reclamationPreview(let wantsJSON):
+            value = try await client.archiveReclamationPreview()
+            json = wantsJSON
+        case .reclamationUpdate(let enabled, let days, let wantsJSON):
+            value = try await client.archiveReclamationUpdateSettings(.init(enabled: enabled, hotWindowDays: days))
+            json = wantsJSON
+        case .reclamationRun(let wantsJSON):
+            value = try await client.archiveReclamationRun()
+            json = wantsJSON
+        case .recoveryDrill(let replicaID, let wantsJSON):
+            value = try await client.archiveV2RecoveryDrill(.init(replicaID: replicaID))
             json = wantsJSON
         }
         let data = try JSONEncoder().encode(AnyEncodable(value))

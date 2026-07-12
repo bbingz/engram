@@ -5,6 +5,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
     case general
     case ai
     case sources
+    case archive
     case advanced
     case about
 
@@ -15,6 +16,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
         case .general: return "General"
         case .ai: return "AI Summary"
         case .sources: return "Data Sources"
+        case .archive: return "Archive & Storage"
         case .advanced: return "Advanced"
         case .about: return "About"
         }
@@ -25,6 +27,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
         case .general: return "gear"
         case .ai: return "brain"
         case .sources: return "folder"
+        case .archive: return "archivebox"
         case .advanced: return "slider.horizontal.3"
         case .about: return "info.circle"
         }
@@ -102,6 +105,10 @@ struct SettingsView: View {
             SourcesSettingsSection()
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("settings_section_sources")
+        case .archive:
+            ArchiveSettingsSection()
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("settings_section_archive")
         case .advanced:
             AdvancedSettingsSection()
                 .accessibilityElement(children: .contain)

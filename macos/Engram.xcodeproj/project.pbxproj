@@ -376,6 +376,7 @@
 		9427AAB88B9BC00FD024A40F /* MotionAware.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69D1201BC69D5B372BF95BA3 /* MotionAware.swift */; };
 		942A28287FA74D7CD8FF84AE /* IndexingEventTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B7012F7B41FBCB1E2B95076 /* IndexingEventTypes.swift */; };
 		942C9B07EAA05798B40EC8BC /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4B94C3E09D20F677BFE6355 /* main.swift */; };
+		948A716F88A15D14B8AACFFD /* ArchiveSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10CD82E3A6FC04C90AAD341 /* ArchiveSettingsSection.swift */; };
 		9503848368703F02F526CB77 /* EngramServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C84C0FDF22D13EE6ABD4D54 /* EngramServiceClient.swift */; };
 		957C8188CA298CDB9838785A /* IflowAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C3EDC9B5E51D7E64F27A70F /* IflowAdapter.swift */; };
 		9595A9A5F00AFFC9576EE786 /* ArchiveCanonicalJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3C18806F51FE19FEA8F5E5C /* ArchiveCanonicalJSON.swift */; };
@@ -597,6 +598,7 @@
 		E37361C726A940AAD3348A27 /* EngramServiceStatusStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE7C13C1E701E692FE1174D5 /* EngramServiceStatusStore.swift */; };
 		E381616605C7A75146BE73A8 /* EngramServiceIPCTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C02528A606FCBB10D813715 /* EngramServiceIPCTests.swift */; };
 		E40BD8173BEB2F01482C445A /* UndoMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA828FEE84B5B1140D34B52B /* UndoMigration.swift */; };
+		E43C72B79138A34E3922C56A /* ArchiveReclamationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73898003C701310FE0FCBE09 /* ArchiveReclamationCoordinator.swift */; };
 		E4698219A31A1FB3804B7E8F /* LiveSyncDisabledSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58A7510D7781F78D78F27514 /* LiveSyncDisabledSources.swift */; };
 		E4BFDE3052AC634D3A36E31B /* HygieneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F751704304A7A754E040F47 /* HygieneView.swift */; };
 		E563451CBED300AFA495CF15 /* ParserLimits.swift in Sources */ = {isa = PBXBuildFile; fileRef = 320BE8A8D898FEE82D4C4E49 /* ParserLimits.swift */; };
@@ -1096,6 +1098,7 @@
 		7164B497B5E7F41DEEFDA7CB /* SessionAdapterFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionAdapterFactory.swift; sourceTree = "<group>"; };
 		7196336B6333D08DFA9085C2 /* SourcesSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourcesSyncTests.swift; sourceTree = "<group>"; };
 		72212C1765EA46875DAFAF93 /* MCPTranscriptTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPTranscriptTools.swift; sourceTree = "<group>"; };
+		73898003C701310FE0FCBE09 /* ArchiveReclamationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveReclamationCoordinator.swift; sourceTree = "<group>"; };
 		74435B0663910F546ACC2C13 /* SidebarScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarScreen.swift; sourceTree = "<group>"; };
 		745BDA0B01111960762E05A3 /* ThemeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeTests.swift; sourceTree = "<group>"; };
 		7505C058060E916B3983C9CE /* ScreenshotCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotCapture.swift; sourceTree = "<group>"; };
@@ -1357,6 +1360,7 @@
 		F04D0A334BEB070026F72A9A /* IndexingSchedulePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexingSchedulePolicyTests.swift; sourceTree = "<group>"; };
 		F04D2B6A04B8D34ED8B4D8F2 /* ColorBarMessageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorBarMessageView.swift; sourceTree = "<group>"; };
 		F05CA576651073A30F4FDE26 /* DiagnosticBundleComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticBundleComposer.swift; sourceTree = "<group>"; };
+		F10CD82E3A6FC04C90AAD341 /* ArchiveSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveSettingsSection.swift; sourceTree = "<group>"; };
 		F144233039720529B6FC1B32 /* SettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsScreen.swift; sourceTree = "<group>"; };
 		F157FA0F7C17FA4398BCC146 /* EngramServiceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramServiceProtocol.swift; sourceTree = "<group>"; };
 		F272267647A1E827C401A5EB /* AlertBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlertBanner.swift; sourceTree = "<group>"; };
@@ -1624,6 +1628,7 @@
 		1F0423CA433510CA8995DD58 /* Core */ = {
 			isa = PBXGroup;
 			children = (
+				73898003C701310FE0FCBE09 /* ArchiveReclamationCoordinator.swift */,
 				B970BC988C658CE76C826E9E /* ArchiveTranscriptResolver.swift */,
 				56E79161DD2B4746AB4130A9 /* ArchiveV2CredentialProvisioner.swift */,
 				21D038E130C1D9B8D518485C /* ArchiveV2ServiceCoordinator.swift */,
@@ -2053,6 +2058,7 @@
 				E84E8C543D2B35FC67D38675 /* AboutSettingsSection.swift */,
 				F5304C92DF9D1BD43029D4FC /* AIGenerationSettings.swift */,
 				6517DA2EA76B3A5C369919FF /* AISettingsSection.swift */,
+				F10CD82E3A6FC04C90AAD341 /* ArchiveSettingsSection.swift */,
 				36006D527ADCA5DD8673D6E3 /* GeneralSettingsSection.swift */,
 				E8A3841D86B13AA2C3546896 /* SettingsIO.swift */,
 				2A268471FEFDB447DFA7782D /* SourcesSettingsSection.swift */,
@@ -3091,6 +3097,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E43C72B79138A34E3922C56A /* ArchiveReclamationCoordinator.swift in Sources */,
 				5CE8CEEDA021FA983981D05B /* ArchiveTranscriptResolver.swift in Sources */,
 				D0EB1752F8E4D137A9E34C23 /* ArchiveV2CredentialProvisioner.swift in Sources */,
 				0CD8A8F92A44F1724B981C4F /* ArchiveV2ServiceCoordinator.swift in Sources */,
@@ -3636,6 +3643,7 @@
 				9595A9A5F00AFFC9576EE786 /* ArchiveCanonicalJSON.swift in Sources */,
 				B7E3CEF3E1CA8B9B93335787 /* ArchiveHash.swift in Sources */,
 				D849871D11C56578716F95B7 /* ArchiveModels.swift in Sources */,
+				948A716F88A15D14B8AACFFD /* ArchiveSettingsSection.swift in Sources */,
 				808C980D6973E2094A9D119C /* ArchiveSheet.swift in Sources */,
 				3D25AD27CEC2CEC16813FA65 /* ArchiveSourceDescriptor.swift in Sources */,
 				026EA41C1C119F190EE14C40 /* ArchivedDefaultOffSources.swift in Sources */,

@@ -2,6 +2,51 @@ import EngramCoreWrite
 import Foundation
 
 extension EngramServiceCommandHandler {
+    func archiveReclamationStatusResponse() async throws -> EngramServiceArchiveReclamationStatusResponse {
+        guard let coordinator = archiveV2Coordinator?.reclamationCoordinatorSnapshot else {
+            return .init(enabled: false, hotWindowDays: 30, configurationError: nil, recoveryLeaseCurrent: false, cycleRunning: false, lastError: "archive_v2_disabled")
+        }
+        return await coordinator.status()
+    }
+
+    func archiveReclamationPreviewResponse() async throws -> EngramServiceArchiveReclamationPreviewResponse {
+        guard let coordinator = archiveV2Coordinator?.reclamationCoordinatorSnapshot else {
+            return .init(eligibleCount: 0, estimatedSourceBytes: 0, blockedCounts: ["archive_v2_disabled": 1])
+        }
+        return await coordinator.preview()
+    }
+
+    func archiveReclamationUpdateSettingsResponse(
+        _ request: EngramServiceArchiveReclamationUpdateSettingsRequest
+    ) async throws -> EngramServiceArchiveReclamationStatusResponse {
+        guard let coordinator = archiveV2Coordinator?.reclamationCoordinatorSnapshot else {
+            throw EngramServiceError.serviceUnavailable(message: "Archive reclamation unavailable")
+        }
+        return try await coordinator.updateSettings(request)
+    }
+
+    func archiveReclamationRunResponse() async throws -> EngramServiceArchiveReclamationRunResponse {
+        guard let coordinator = archiveV2Coordinator?.reclamationCoordinatorSnapshot else {
+            return .init(accepted: false, coalesced: false, sourceFilesReclaimed: 0, casObjectsEvicted: 0, releasedBytes: 0, error: "archive_v2_disabled")
+        }
+        return await coordinator.runNow()
+    }
+
+    func archiveV2RecoveryDrillResponse(
+        _ request: EngramServiceArchiveV2RecoveryDrillRequest
+    ) async throws -> EngramServiceArchiveV2RecoveryDrillResponse {
+        guard request.replicaID == "hq" || request.replicaID == "m1",
+              let archiveV2Coordinator else {
+            throw EngramServiceError.invalidRequest(message: "Invalid archive recovery drill")
+        }
+        do {
+            let lease = try await archiveV2Coordinator.runRecoveryDrill(replicaID: request.replicaID)
+            return .init(replicaID: lease.replicaID, manifestSHA256: lease.manifestSHA256, verifiedAt: lease.verifiedAt, verifiedBytes: lease.verifiedBytes)
+        } catch {
+            throw EngramServiceError.serviceUnavailable(message: "Archive recovery drill unavailable")
+        }
+    }
+
     func archiveV2RemoteRecoveryProbeResponse(
         _ request: EngramServiceArchiveV2RemoteRecoveryProbeRequest
     ) async throws -> EngramServiceArchiveV2RemoteRecoveryProbeResponse {

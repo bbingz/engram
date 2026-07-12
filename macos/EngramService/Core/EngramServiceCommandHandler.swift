@@ -33,6 +33,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         "costs",
         "serviceLogs",
         "archiveV2Status",
+        "archiveReclamationStatus",
+        "archiveReclamationPreview",
     ]
 
     private static let emptyTelemetrySnapshot = ServiceTelemetrySnapshot(
@@ -160,6 +162,29 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     requestId: request.requestId,
                     result: try Self.encode(try await archiveV2RetryResponse(payload))
                 )
+            case "archiveReclamationStatus":
+                guard request.payload == nil else {
+                    throw EngramServiceError.invalidRequest(message: "archiveReclamationStatus does not accept a payload")
+                }
+                return .success(requestId: request.requestId, result: try Self.encode(try await archiveReclamationStatusResponse()))
+            case "archiveReclamationPreview":
+                guard request.payload == nil else {
+                    throw EngramServiceError.invalidRequest(message: "archiveReclamationPreview does not accept a payload")
+                }
+                return .success(requestId: request.requestId, result: try Self.encode(try await archiveReclamationPreviewResponse()))
+            case "archiveReclamationUpdateSettings":
+                try requireExactPayloadKeys(request, keys: ["enabled", "hotWindowDays"])
+                let payload = try decodePayload(EngramServiceArchiveReclamationUpdateSettingsRequest.self, from: request)
+                return .success(requestId: request.requestId, result: try Self.encode(try await archiveReclamationUpdateSettingsResponse(payload)))
+            case "archiveReclamationRun":
+                guard request.payload == nil else {
+                    throw EngramServiceError.invalidRequest(message: "archiveReclamationRun does not accept a payload")
+                }
+                return .success(requestId: request.requestId, result: try Self.encode(try await archiveReclamationRunResponse()))
+            case "archiveV2RecoveryDrill":
+                try requireExactPayloadKeys(request, keys: ["replicaID"])
+                let payload = try decodePayload(EngramServiceArchiveV2RecoveryDrillRequest.self, from: request)
+                return .success(requestId: request.requestId, result: try Self.encode(try await archiveV2RecoveryDrillResponse(payload)))
             case "archiveV2StoreToken":
                 let payload = try decodePayload(EngramServiceArchiveV2StoreTokenRequest.self, from: request)
                 return .success(
@@ -765,6 +790,17 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             throw EngramServiceError.invalidRequest(message: "Missing payload for \(request.command)")
         }
         return try Self.decodeJSONPayload(type, from: payload, command: request.command)
+    }
+
+    private func requireExactPayloadKeys(
+        _ request: EngramServiceRequestEnvelope,
+        keys: Set<String>
+    ) throws {
+        guard let payload = request.payload,
+              let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              Set(object.keys) == keys else {
+            throw EngramServiceError.invalidRequest(message: "Invalid payload for \(request.command)")
+        }
     }
 
     /// L02: map JSON `DecodingError` to structured InvalidRequest only.

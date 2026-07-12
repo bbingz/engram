@@ -22,6 +22,21 @@ final class ArchiveCatalogTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    func testReclamationQueriesAreBoundedAndEmptyOnFreshCatalog() throws {
+        let catalog = try ArchiveCatalog(root: root, machineID: machineID)
+        try catalog.migrate()
+
+        XCTAssertEqual(try catalog.reclamationCandidates(limit: 10), [])
+        XCTAssertEqual(
+            try catalog.reclamationIntents(phases: [.sourceDeleted], limit: 10),
+            []
+        )
+        XCTAssertThrowsError(try catalog.reclamationCandidates(limit: 0))
+        XCTAssertThrowsError(
+            try catalog.reclamationIntents(phases: [.sourceDeleted], limit: 0)
+        )
+    }
+
     func testSQLiteHasMovedControlIsAvailableThroughGRDBConnection() throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let queue = try DatabaseQueue(path: root.appendingPathComponent("probe.sqlite").path)

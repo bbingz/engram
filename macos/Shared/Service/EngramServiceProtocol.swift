@@ -38,6 +38,15 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func archiveV2RemoteRecoveryProbe(
         _ request: EngramServiceArchiveV2RemoteRecoveryProbeRequest
     ) async throws -> EngramServiceArchiveV2RemoteRecoveryProbeResponse
+    func archiveReclamationStatus() async throws -> EngramServiceArchiveReclamationStatusResponse
+    func archiveReclamationPreview() async throws -> EngramServiceArchiveReclamationPreviewResponse
+    func archiveReclamationUpdateSettings(
+        _ request: EngramServiceArchiveReclamationUpdateSettingsRequest
+    ) async throws -> EngramServiceArchiveReclamationStatusResponse
+    func archiveReclamationRun() async throws -> EngramServiceArchiveReclamationRunResponse
+    func archiveV2RecoveryDrill(
+        _ request: EngramServiceArchiveV2RecoveryDrillRequest
+    ) async throws -> EngramServiceArchiveV2RecoveryDrillResponse
     func archiveReadSessionPage(
         _ request: EngramServiceArchiveReadSessionPageRequest
     ) async throws -> EngramServiceArchiveReadSessionPageResponse

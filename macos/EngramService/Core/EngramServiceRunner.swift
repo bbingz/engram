@@ -85,7 +85,9 @@ public enum EngramServiceRunner {
         let archiveV2Coordinator = Self.makeArchiveV2Coordinator(
             gate: gate,
             databasePath: databasePath,
-            settings: archiveV2Settings
+            settings: archiveV2Settings,
+            settingsURL: engramSettingsURL(environment: environment),
+            environment: environment
         )
         let archiveTranscriptResolver = archiveV2Coordinator.transcriptResolverSnapshot
 
@@ -284,12 +286,16 @@ public enum EngramServiceRunner {
     static func makeArchiveV2Coordinator(
         gate: ServiceWriterGate,
         databasePath: String,
-        settings: ArchiveV2Settings
+        settings: ArchiveV2Settings,
+        settingsURL: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".engram/settings.json"),
+        environment: [String: String] = [:]
     ) -> ArchiveV2ServiceCoordinator {
         return ArchiveV2ServiceCoordinator.make(
             settings: settings,
             databasePath: databasePath,
-            writerGate: gate
+            writerGate: gate,
+            settingsURL: settingsURL,
+            environment: environment
         )
     }
 
@@ -626,6 +632,8 @@ public enum EngramServiceRunner {
                     ServiceLogger.error("remote offload cycle failed", category: .runner, error: error)
                 }
             }
+
+            await archiveV2Coordinator?.reclamationCoordinatorSnapshot?.runAutomatically()
 
             await runUserDataBackupBestEffort(gate: gate, environment: environment)
             await runPeriodicFtsOptimizeBestEffort(gate: gate)

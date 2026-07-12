@@ -194,6 +194,30 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         try await command("archiveV2RemoteRecoveryProbe", payload: request)
     }
 
+    func archiveReclamationStatus() async throws -> EngramServiceArchiveReclamationStatusResponse {
+        try await commandWithAbsentPayload("archiveReclamationStatus")
+    }
+
+    func archiveReclamationPreview() async throws -> EngramServiceArchiveReclamationPreviewResponse {
+        try await commandWithAbsentPayload("archiveReclamationPreview")
+    }
+
+    func archiveReclamationUpdateSettings(
+        _ request: EngramServiceArchiveReclamationUpdateSettingsRequest
+    ) async throws -> EngramServiceArchiveReclamationStatusResponse {
+        try await command("archiveReclamationUpdateSettings", payload: request)
+    }
+
+    func archiveReclamationRun() async throws -> EngramServiceArchiveReclamationRunResponse {
+        try await command("archiveReclamationRun")
+    }
+
+    func archiveV2RecoveryDrill(
+        _ request: EngramServiceArchiveV2RecoveryDrillRequest
+    ) async throws -> EngramServiceArchiveV2RecoveryDrillResponse {
+        try await command("archiveV2RecoveryDrill", payload: request)
+    }
+
     func archiveReadSessionPage(
         _ request: EngramServiceArchiveReadSessionPageRequest
     ) async throws -> EngramServiceArchiveReadSessionPageResponse {

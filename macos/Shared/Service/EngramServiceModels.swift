@@ -1273,6 +1273,46 @@ struct EngramServiceArchiveV2RetryRequest: Codable, Equatable, Sendable {
     }
 }
 
+struct EngramServiceArchiveReclamationStatusResponse: Codable, Equatable, Sendable {
+    let enabled: Bool
+    let hotWindowDays: Int
+    let configurationError: String?
+    let recoveryLeaseCurrent: Bool
+    let cycleRunning: Bool
+    let lastError: String?
+}
+
+struct EngramServiceArchiveReclamationPreviewResponse: Codable, Equatable, Sendable {
+    let eligibleCount: Int
+    let estimatedSourceBytes: Int64
+    let blockedCounts: [String: Int]
+}
+
+struct EngramServiceArchiveReclamationUpdateSettingsRequest: Codable, Equatable, Sendable {
+    let enabled: Bool
+    let hotWindowDays: Int
+}
+
+struct EngramServiceArchiveReclamationRunResponse: Codable, Equatable, Sendable {
+    let accepted: Bool
+    let coalesced: Bool
+    let sourceFilesReclaimed: Int
+    let casObjectsEvicted: Int
+    let releasedBytes: Int64
+    let error: String?
+}
+
+struct EngramServiceArchiveV2RecoveryDrillRequest: Codable, Equatable, Sendable {
+    let replicaID: String
+}
+
+struct EngramServiceArchiveV2RecoveryDrillResponse: Codable, Equatable, Sendable {
+    let replicaID: String
+    let manifestSHA256: String
+    let verifiedAt: String
+    let verifiedBytes: Int64
+}
+
 struct EngramServiceArchiveV2StoreTokenRequest: Codable, Equatable, Sendable {
     let replicaID: String
     let token: String

@@ -225,6 +225,14 @@ public struct ArchiveReclamationIntent: Equatable, Sendable {
     public let updatedAt: String
 }
 
+public struct ArchiveReclamationCatalogCandidate: Equatable, Sendable {
+    public let binding: ArchiveBinding
+    public let capture: ArchiveCapture
+    public let verifiedReplicaIDs: Set<String>
+    public let hasNewerCapture: Bool
+    public let hasActiveOperation: Bool
+}
+
 public struct ArchiveBindingCursor: Equatable, Sendable {
     public let boundAt: String
     public let manifestSHA256: String
@@ -1205,6 +1213,63 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 sql: "SELECT * FROM archive_reclamation_intents WHERE manifest_sha256 = ?",
                 arguments: [manifestSHA256]
             ).map { try Self.reclamationIntent(from: $0) }
+        }
+    }
+
+    public func reclamationCandidates(limit: Int) throws -> [ArchiveReclamationCatalogCandidate] {
+        guard limit > 0 else { throw ArchiveCatalogError.invalidLimit(limit) }
+        return try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT b.*, c.*,
+                  EXISTS(
+                    SELECT 1 FROM archive_captures newer
+                    WHERE newer.locator = c.locator AND newer.captured_at > c.captured_at
+                  ) AS has_newer,
+                  EXISTS(
+                    SELECT 1 FROM archive_replica_receipts r
+                    WHERE r.manifest_sha256 = b.manifest_sha256
+                      AND r.state IN ('pending', 'uploadingObjects', 'uploadingManifest', 'verifying')
+                  ) AS has_active
+                FROM archive_session_bindings b
+                JOIN archive_captures c ON c.capture_id = b.capture_id
+                WHERE b.remote_eligibility = 'eligible'
+                ORDER BY b.bound_at ASC, b.manifest_sha256 ASC
+                LIMIT ?
+                """, arguments: [limit])
+            return try rows.map { row in
+                let binding = try Self.binding(from: row)
+                let capture = try Self.capture(from: row)
+                let replicaIDs = try String.fetchAll(db, sql: """
+                    SELECT replica_id FROM archive_replica_receipts
+                    WHERE manifest_sha256 = ? AND state = 'verified'
+                      AND receipt_bytes IS NOT NULL AND receipt_sha256 IS NOT NULL
+                    """, arguments: [binding.manifestSHA256])
+                return ArchiveReclamationCatalogCandidate(
+                    binding: binding,
+                    capture: capture,
+                    verifiedReplicaIDs: Set(replicaIDs),
+                    hasNewerCapture: (row["has_newer"] as Int) != 0,
+                    hasActiveOperation: (row["has_active"] as Int) != 0
+                )
+            }
+        }
+    }
+
+    public func reclamationIntents(
+        phases: Set<ArchiveReclamationPhase>,
+        limit: Int
+    ) throws -> [ArchiveReclamationIntent] {
+        guard limit > 0 else { throw ArchiveCatalogError.invalidLimit(limit) }
+        guard !phases.isEmpty else { return [] }
+        let values = phases.map(\.rawValue).sorted()
+        let placeholders = Array(repeating: "?", count: values.count).joined(separator: ",")
+        return try pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: "SELECT * FROM archive_reclamation_intents WHERE phase IN (\(placeholders)) ORDER BY updated_at ASC, manifest_sha256 ASC LIMIT ?",
+                arguments: StatementArguments(values + [String(limit)])
+            )
+            return try rows.map { try Self.reclamationIntent(from: $0) }
         }
     }
 

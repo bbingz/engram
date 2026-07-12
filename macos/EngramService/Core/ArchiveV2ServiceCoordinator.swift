@@ -198,6 +198,7 @@ actor ArchiveV2ServiceCoordinator {
     private let batchSize: Int
     private let captureRetryLocatorLimit: Int
     nonisolated let transcriptResolverSnapshot: ArchiveTranscriptResolver?
+    nonisolated let reclamationCoordinatorSnapshot: ArchiveReclamationCoordinator?
 
     private var inFlight: InFlightCycle?
     private var recoveryDrillsInFlight: [String: InFlightRecoveryDrill] = [:]
@@ -215,7 +216,8 @@ actor ArchiveV2ServiceCoordinator {
         remoteReady: Bool,
         configurationError: String?,
         operations: ArchiveV2ServiceCoordinatorOperations,
-        transcriptResolverSnapshot: ArchiveTranscriptResolver? = nil
+        transcriptResolverSnapshot: ArchiveTranscriptResolver? = nil,
+        reclamationCoordinatorSnapshot: ArchiveReclamationCoordinator? = nil
     ) {
         self.settings = settings
         self.writerGate = writerGate
@@ -226,6 +228,7 @@ actor ArchiveV2ServiceCoordinator {
         self.configurationError = configurationError
         self.operations = operations
         self.transcriptResolverSnapshot = transcriptResolverSnapshot
+        self.reclamationCoordinatorSnapshot = reclamationCoordinatorSnapshot
         batchSize = settings.remoteConfiguration?.batchSize
             ?? ArchiveV2Settings.defaultBatchSize
         captureRetryLocatorLimit = min(
@@ -241,7 +244,8 @@ actor ArchiveV2ServiceCoordinator {
         remoteReady: Bool,
         configurationError: String?,
         operations: ArchiveV2ServiceCoordinatorOperations?,
-        transcriptResolverSnapshot: ArchiveTranscriptResolver? = nil
+        transcriptResolverSnapshot: ArchiveTranscriptResolver? = nil,
+        reclamationCoordinatorSnapshot: ArchiveReclamationCoordinator? = nil
     ) {
         self.settings = settings
         self.writerGate = writerGate
@@ -252,6 +256,7 @@ actor ArchiveV2ServiceCoordinator {
         self.configurationError = configurationError
         self.operations = operations
         self.transcriptResolverSnapshot = transcriptResolverSnapshot
+        self.reclamationCoordinatorSnapshot = reclamationCoordinatorSnapshot
         batchSize = settings.remoteConfiguration?.batchSize
             ?? ArchiveV2Settings.defaultBatchSize
         captureRetryLocatorLimit = min(
@@ -264,6 +269,8 @@ actor ArchiveV2ServiceCoordinator {
         settings: ArchiveV2Settings,
         databasePath: String,
         writerGate: ServiceWriterGate,
+        settingsURL: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".engram/settings.json"),
+        environment: [String: String] = [:],
         tokenLoaderFactory: @escaping TokenLoaderFactory = { ArchiveCredentialStore() },
         backendFactory: @escaping BackendFactory = { HTTPArchiveReplicaBackend(connection: $0) }
     ) -> ArchiveV2ServiceCoordinator {
@@ -352,6 +359,13 @@ actor ArchiveV2ServiceCoordinator {
             replicationCoordinator: replicationCoordinator,
             transcriptResolver: transcriptResolver
         )
+        let reclamationCoordinator = try? ArchiveReclamationCoordinator(
+            settingsURL: settingsURL,
+            environment: environment,
+            databasePath: databasePath,
+            catalog: catalog,
+            cas: cas
+        )
         return ArchiveV2ServiceCoordinator(
             settings: settings,
             writerGate: writerGate,
@@ -359,7 +373,8 @@ actor ArchiveV2ServiceCoordinator {
             remoteReady: replicationCoordinator != nil,
             configurationError: resolvedConfigurationError,
             operations: operations,
-            transcriptResolverSnapshot: transcriptResolver
+            transcriptResolverSnapshot: transcriptResolver,
+            reclamationCoordinatorSnapshot: reclamationCoordinator
         )
     }
 
