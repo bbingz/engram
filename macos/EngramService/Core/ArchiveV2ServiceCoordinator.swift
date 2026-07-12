@@ -858,25 +858,15 @@ actor ArchiveV2ServiceCoordinator {
             },
             status: { try catalog.archiveStatus() },
             remoteTelemetry: {
-                await withTaskGroup(
-                    of: (String, Result<ArchiveRemoteTelemetrySnapshot, any Error>).self
-                ) { group in
-                    for replicaID in ["hq", "m1"] {
-                        guard let backend = replicaBackends[replicaID] else { continue }
-                        group.addTask {
-                            do {
-                                return (replicaID, .success(try await backend.remoteTelemetryStatus()))
-                            } catch {
-                                return (replicaID, .failure(error))
-                            }
-                        }
-                    }
-                    var results: ArchiveV2ServiceCoordinatorOperations.RemoteTelemetryResults = [:]
-                    for await (replicaID, result) in group {
-                        results[replicaID] = result
-                    }
-                    return results
-                }
+                async let hq = remoteTelemetryResult(
+                    replicaID: "hq",
+                    backend: replicaBackends["hq"]
+                )
+                async let m1 = remoteTelemetryResult(
+                    replicaID: "m1",
+                    backend: replicaBackends["m1"]
+                )
+                return Dictionary(uniqueKeysWithValues: await [hq, m1].compactMap { $0 })
             },
             retry: { replicaID in
                 try catalog.retryQuarantined(
@@ -1486,6 +1476,18 @@ actor ArchiveV2ServiceCoordinator {
             lastReplicationCycle: lastReplicationCycle,
             nextScheduledCycleAt: nextScheduledCycleAt
         )
+    }
+
+    private static func remoteTelemetryResult(
+        replicaID: String,
+        backend: (any ArchiveReplicaBackend)?
+    ) async -> (String, Result<ArchiveRemoteTelemetrySnapshot, any Error>)? {
+        guard let backend else { return nil }
+        do {
+            return (replicaID, .success(try await backend.remoteTelemetryStatus()))
+        } catch {
+            return (replicaID, .failure(error))
+        }
     }
 
     private static func replicationCycleSummary(
