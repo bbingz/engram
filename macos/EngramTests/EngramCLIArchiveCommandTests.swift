@@ -11,7 +11,7 @@ final class EngramCLIArchiveCommandTests: XCTestCase {
         XCTAssertEqual(try EngramCLIArchiveCommand.parse(arguments: ["archive", "reclaim", "status"]), .reclamationStatus(json: false))
         XCTAssertEqual(try EngramCLIArchiveCommand.parse(arguments: ["archive", "reclaim", "preview", "--json"]), .reclamationPreview(json: true))
         XCTAssertEqual(try EngramCLIArchiveCommand.parse(arguments: ["archive", "reclaim", "enable", "--hot-window-days", "90"]), .reclamationUpdate(enabled: true, hotWindowDays: 90, json: false))
-        XCTAssertEqual(try EngramCLIArchiveCommand.parse(arguments: ["archive", "reclaim", "disable"]), .reclamationUpdate(enabled: false, hotWindowDays: 30, json: false))
+        XCTAssertEqual(try EngramCLIArchiveCommand.parse(arguments: ["archive", "reclaim", "disable"]), .reclamationUpdate(enabled: false, hotWindowDays: nil, json: false))
         XCTAssertEqual(try EngramCLIArchiveCommand.parse(arguments: ["archive", "reclaim", "run"]), .reclamationRun(json: false))
         XCTAssertEqual(try EngramCLIArchiveCommand.parse(arguments: ["archive", "recovery-drill", "--replica", "m1"]), .recoveryDrill(replicaID: "m1", json: false))
         XCTAssertThrowsError(try EngramCLIArchiveCommand.parse(arguments: ["archive", "reclaim", "enable", "--hot-window-days", "45"]))

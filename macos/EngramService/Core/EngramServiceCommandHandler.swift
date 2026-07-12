@@ -173,7 +173,10 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(requestId: request.requestId, result: try Self.encode(try await archiveReclamationPreviewResponse()))
             case "archiveReclamationUpdateSettings":
-                try requireExactPayloadKeys(request, keys: ["enabled", "hotWindowDays"])
+                try requireExactPayloadKeys(
+                    request,
+                    allowed: [["enabled"], ["enabled", "hotWindowDays"]]
+                )
                 let payload = try decodePayload(EngramServiceArchiveReclamationUpdateSettingsRequest.self, from: request)
                 return .success(requestId: request.requestId, result: try Self.encode(try await archiveReclamationUpdateSettingsResponse(payload)))
             case "archiveReclamationRun":
@@ -182,7 +185,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 }
                 return .success(requestId: request.requestId, result: try Self.encode(try await archiveReclamationRunResponse()))
             case "archiveV2RecoveryDrill":
-                try requireExactPayloadKeys(request, keys: ["replicaID"])
+                try requireExactPayloadKeys(request, allowed: [["replicaID"]])
                 let payload = try decodePayload(EngramServiceArchiveV2RecoveryDrillRequest.self, from: request)
                 return .success(requestId: request.requestId, result: try Self.encode(try await archiveV2RecoveryDrillResponse(payload)))
             case "archiveV2StoreToken":
@@ -794,11 +797,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
 
     private func requireExactPayloadKeys(
         _ request: EngramServiceRequestEnvelope,
-        keys: Set<String>
+        allowed: [Set<String>]
     ) throws {
         guard let payload = request.payload,
               let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
-              Set(object.keys) == keys else {
+              allowed.contains(Set(object.keys)) else {
             throw EngramServiceError.invalidRequest(message: "Invalid payload for \(request.command)")
         }
     }

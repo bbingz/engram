@@ -1290,7 +1290,7 @@ struct EngramServiceArchiveReclamationPreviewResponse: Codable, Equatable, Senda
 
 struct EngramServiceArchiveReclamationUpdateSettingsRequest: Codable, Equatable, Sendable {
     let enabled: Bool
-    let hotWindowDays: Int
+    let hotWindowDays: Int?
 }
 
 struct EngramServiceArchiveReclamationRunResponse: Codable, Equatable, Sendable {

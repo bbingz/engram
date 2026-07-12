@@ -28,7 +28,7 @@ enum EngramCLIArchiveCommand: Equatable {
     case probeRemote(sessionID: String, json: Bool)
     case reclamationStatus(json: Bool)
     case reclamationPreview(json: Bool)
-    case reclamationUpdate(enabled: Bool, hotWindowDays: Int, json: Bool)
+    case reclamationUpdate(enabled: Bool, hotWindowDays: Int?, json: Bool)
     case reclamationRun(json: Bool)
     case recoveryDrill(replicaID: String, json: Bool)
 
@@ -89,7 +89,7 @@ enum EngramCLIArchiveCommand: Equatable {
             switch action {
             case "status": return .reclamationStatus(json: json)
             case "preview": return .reclamationPreview(json: json)
-            case "disable": return .reclamationUpdate(enabled: false, hotWindowDays: 30, json: json)
+            case "disable": return .reclamationUpdate(enabled: false, hotWindowDays: nil, json: json)
             default: return .reclamationRun(json: json)
             }
         }

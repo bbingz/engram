@@ -76,7 +76,9 @@ actor ArchiveReclamationCoordinator {
         _ request: EngramServiceArchiveReclamationUpdateSettingsRequest,
         now: Date = Date()
     ) throws -> EngramServiceArchiveReclamationStatusResponse {
-        guard ArchiveReclamationSettings.supportedHotWindowDays.contains(request.hotWindowDays) else {
+        let current = loadSettings().reclamation.hotWindowDays
+        let hotWindowDays = request.hotWindowDays ?? current
+        guard ArchiveReclamationSettings.supportedHotWindowDays.contains(hotWindowDays) else {
             throw EngramServiceError.invalidRequest(message: "Invalid archive reclamation hot window")
         }
         if request.enabled, recoveryLeases(now: now) == nil {
@@ -85,7 +87,7 @@ actor ArchiveReclamationCoordinator {
         try SecureSettingsFileWriter.mutateJSON(at: settingsURL) { object in
             object["archiveReclamation"] = [
                 "enabled": request.enabled,
-                "hotWindowDays": request.hotWindowDays,
+                "hotWindowDays": hotWindowDays,
             ]
         }
         lastError = nil
@@ -140,7 +142,7 @@ actor ArchiveReclamationCoordinator {
             for intent in recovery {
                 guard sourceCount < Self.maximumCandidatesPerCycle,
                       let capture = try catalog.capture(captureID: intent.captureID),
-                      capture.rawByteCount <= sourceBudget else { break }
+                      capture.rawByteCount <= sourceBudget else { continue }
                 let result = try sourceReclaimer.recover(intent: intent, capture: capture)
                 sourceCount += 1
                 sourceBudget -= result.releasedBytes

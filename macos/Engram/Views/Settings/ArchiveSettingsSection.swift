@@ -107,7 +107,9 @@ struct ArchiveSettingsSection: View {
             message = enabled ? "Automatic reclamation enabled." : "Automatic reclamation disabled."
         } catch {
             await refresh()
-            message = "Error: run both recovery drills before enabling automatic reclamation."
+            message = enabled
+                ? "Error: save failed. Verify both recovery drills are current and the service is available."
+                : "Error: save failed because the service is unavailable."
         }
     }
 
