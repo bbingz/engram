@@ -75,6 +75,11 @@ final class ArchiveSettingsSectionTests: XCTestCase {
     }
 
     func testRemoteSummaryUsesUnavailableForOutOfRangeUptime() throws {
+        let unavailable = String(localized: "Uptime unavailable")
+        let wrappedUnavailable = String.localizedStringWithFormat(
+            String(localized: "Uptime: %@"),
+            unavailable
+        )
         for uptimeSeconds in [Double(Int64.max) * 60, .greatestFiniteMagnitude] {
             let telemetry = try remoteTelemetry(
                 replicaID: "hq",
@@ -87,7 +92,9 @@ final class ArchiveSettingsSectionTests: XCTestCase {
                 error: nil
             )
 
-            XCTAssertTrue(summary.contains(String(localized: "Uptime unavailable")))
+            let parts = summary.components(separatedBy: " · ")
+            XCTAssertEqual(parts.filter { $0 == unavailable }.count, 1)
+            XCTAssertFalse(parts.contains(wrappedUnavailable))
         }
     }
 

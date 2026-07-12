@@ -142,7 +142,7 @@ enum ArchiveRemoteTelemetryPresentation {
             String(localized: "Online"),
             formatted("Build: %@", build),
             formatted("Snapshot: %@", localizedTimestamp(telemetry.snapshotAt)),
-            formatted("Uptime: %@", localizedUptime(telemetry.uptimeSeconds)),
+            uptimeSummary(telemetry.uptimeSeconds),
             diskSummary(available: telemetry.diskAvailableBytes, total: telemetry.diskTotalBytes),
             telemetry.lastArchiveMutationAt.map {
                 formatted("Last write: %@", localizedTimestamp($0))
@@ -210,12 +210,15 @@ enum ArchiveRemoteTelemetryPresentation {
         )
     }
 
-    private static func localizedUptime(_ seconds: Double) -> String {
+    private static func uptimeSummary(_ seconds: Double) -> String {
         let minuteValue = seconds / 60
         guard minuteValue < Double(Int64.max) else {
             return String(localized: "Uptime unavailable")
         }
-        let minutes = Int64(minuteValue)
+        return formatted("Uptime: %@", localizedUptime(minutes: Int64(minuteValue)))
+    }
+
+    private static func localizedUptime(minutes: Int64) -> String {
         let days = minutes / (24 * 60)
         let hours = (minutes / 60) % 24
         if days > 0 {
