@@ -343,6 +343,7 @@
 		84CA919848FE27F9DC670F7A /* EngramCoreWrite.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */; };
 		84FC451B5E95245BD82626DE /* BarChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D04F3C79286C371A9D5E91B /* BarChart.swift */; };
 		85C1D3A4478EB20C2329C274 /* DeprecatedSettingsScrubTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD89017C638FB890D09C357 /* DeprecatedSettingsScrubTests.swift */; };
+		85ECC38D082EAF336BEB851A /* ArchiveRemoteTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A885383C2975911EC1132669 /* ArchiveRemoteTelemetry.swift */; };
 		8641694F9139C54C2BA20ACC /* EngramCLIResumeCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945AA96DE6742404DD39E2FE /* EngramCLIResumeCommand.swift */; };
 		865CF57476F438C2FD7F238C /* RemoteCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFC9A164E73E2ECBF240A0B6 /* RemoteCredentialStore.swift */; };
 		86F4AA2F10BD78EC3DB0B850 /* InsightEmbeddingBackfill.swift in Sources */ = {isa = PBXBuildFile; fileRef = D123F4CE51B234475AD54865 /* InsightEmbeddingBackfill.swift */; };
@@ -404,6 +405,7 @@
 		9D69F7D9533199C578B4F181 /* PaletteItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51B808E895E84072B2527F95 /* PaletteItem.swift */; };
 		9DD8C537F1916BC1A08BDFF2 /* ReplayDataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9B917785DFF021D380C8B74 /* ReplayDataTests.swift */; };
 		9E771A23534B55B8C8BAC279 /* GeminiCliAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0C7F5ECB22E57462D46830A /* GeminiCliAdapter.swift */; };
+		9EE5E1F4ED3659D46642C0AD /* ArchiveRemoteTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A885383C2975911EC1132669 /* ArchiveRemoteTelemetry.swift */; };
 		9F7671F0CBD87F13D02DE67E /* Paths.swift in Sources */ = {isa = PBXBuildFile; fileRef = 715C11A57A36B97963F665AB /* Paths.swift */; };
 		9F9DA85D4777532D9E3959D9 /* RemoteOffloadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6BB1DCD80B561284D2F910B /* RemoteOffloadTests.swift */; };
 		9F9F74F3538E6A5388A6BF25 /* ArchiveLocatorClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01FF39174465690B23E9367F /* ArchiveLocatorClassifier.swift */; };
@@ -478,6 +480,8 @@
 		B71D58813357CAEC3CE93B57 /* CopilotAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E5782738734957EDB33309D /* CopilotAdapter.swift */; };
 		B73EA5481CED6E7F3E239655 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA6B4E3F5D770AA51A4B4EE0 /* OnboardingView.swift */; };
 		B7662B20AE259445939E223D /* LiveSyncDisabledSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58A7510D7781F78D78F27514 /* LiveSyncDisabledSources.swift */; };
+		B76A25457328566138119439 /* ArchiveRemoteTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A885383C2975911EC1132669 /* ArchiveRemoteTelemetry.swift */; };
+		B7D00D1816F48EF2E9E6B536 /* ArchiveRemoteTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A885383C2975911EC1132669 /* ArchiveRemoteTelemetry.swift */; };
 		B7E3CEF3E1CA8B9B93335787 /* ArchiveHash.swift in Sources */ = {isa = PBXBuildFile; fileRef = 988863FB0DAC31BEF3FC50F9 /* ArchiveHash.swift */; };
 		B823851C09EE2C6A1977239A /* ServiceLogRing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00679CEC0050C5A37DD0555A /* ServiceLogRing.swift */; };
 		B825B5F4BE3F7255AA7C4175 /* EngramServiceLauncherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF93601CD1A33928B5228640 /* EngramServiceLauncherTests.swift */; };
@@ -1205,6 +1209,7 @@
 		A775956F4959F965C01D79E3 /* EngramRemoteServerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramRemoteServerApp.swift; sourceTree = "<group>"; };
 		A80A316F385DFDAEB87C6AA2 /* ServiceEventRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceEventRoutingTests.swift; sourceTree = "<group>"; };
 		A83770047B9A2B3DE0B6157E /* EngramDatabaseReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramDatabaseReader.swift; sourceTree = "<group>"; };
+		A885383C2975911EC1132669 /* ArchiveRemoteTelemetry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveRemoteTelemetry.swift; sourceTree = "<group>"; };
 		A91D30A0A48276EB34C5E004 /* TerminalLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalLauncher.swift; sourceTree = "<group>"; };
 		A996C37DF96F4028CD1BC7C0 /* ToolCallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolCallView.swift; sourceTree = "<group>"; };
 		A9DA8AD0AAE8D623BCA54FC4 /* RelativeTime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelativeTime.swift; sourceTree = "<group>"; };
@@ -1801,6 +1806,7 @@
 				B3C18806F51FE19FEA8F5E5C /* ArchiveCanonicalJSON.swift */,
 				988863FB0DAC31BEF3FC50F9 /* ArchiveHash.swift */,
 				B132577A172E114C44589557 /* ArchiveModels.swift */,
+				A885383C2975911EC1132669 /* ArchiveRemoteTelemetry.swift */,
 				17AC667EE2847548C19C34FE /* ArchiveSourceDescriptor.swift */,
 			);
 			path = ArchiveV2;
@@ -3294,6 +3300,7 @@
 				56BD6FCDE1552A3A867450CB /* ArchiveCanonicalJSON.swift in Sources */,
 				1D26ED4E4F77D1B8DFE69284 /* ArchiveHash.swift in Sources */,
 				AF20718FC0AEB50F17350337 /* ArchiveModels.swift in Sources */,
+				B7D00D1816F48EF2E9E6B536 /* ArchiveRemoteTelemetry.swift in Sources */,
 				16F6CBB192D795A0564510A3 /* ArchiveSourceDescriptor.swift in Sources */,
 				4BAEA4891C7D2B9F4B541DBC /* CJKTextHelpers.swift in Sources */,
 				5E5E0302F29863D5C79CCEDA /* ClaudeCodeAdapter.swift in Sources */,
@@ -3360,6 +3367,7 @@
 				0467D6500927B3D0D02AABF9 /* ArchiveCanonicalJSON.swift in Sources */,
 				173480C2EBD1A1AF3FA6F77D /* ArchiveHash.swift in Sources */,
 				74B54ED69B2E3DBE9A74B075 /* ArchiveModels.swift in Sources */,
+				B76A25457328566138119439 /* ArchiveRemoteTelemetry.swift in Sources */,
 				0F2361B115B0406B450CB117 /* ArchiveSourceDescriptor.swift in Sources */,
 				3B3879418AB3555A53BBA9E5 /* ArchivedDefaultOffSources.swift in Sources */,
 				66364C47FE579E8B9D088E76 /* CJKTextHelpers.swift in Sources */,
@@ -3647,6 +3655,7 @@
 				9595A9A5F00AFFC9576EE786 /* ArchiveCanonicalJSON.swift in Sources */,
 				B7E3CEF3E1CA8B9B93335787 /* ArchiveHash.swift in Sources */,
 				D849871D11C56578716F95B7 /* ArchiveModels.swift in Sources */,
+				85ECC38D082EAF336BEB851A /* ArchiveRemoteTelemetry.swift in Sources */,
 				948A716F88A15D14B8AACFFD /* ArchiveSettingsSection.swift in Sources */,
 				808C980D6973E2094A9D119C /* ArchiveSheet.swift in Sources */,
 				3D25AD27CEC2CEC16813FA65 /* ArchiveSourceDescriptor.swift in Sources */,
@@ -3823,6 +3832,7 @@
 				631CF97D42E434A8B545AE9B /* ArchiveEnvelopeCodec.swift in Sources */,
 				BBA4B8A5B7E8538B17253665 /* ArchiveHash.swift in Sources */,
 				70A62C8528848EF5F80684C1 /* ArchiveModels.swift in Sources */,
+				9EE5E1F4ED3659D46642C0AD /* ArchiveRemoteTelemetry.swift in Sources */,
 				1C5A0AC9E688D66757075308 /* ArchiveRoutes.swift in Sources */,
 				CE424D0EB3E7B0A85E5B7636 /* ArchiveStore.swift in Sources */,
 				C52F89DC9768C27550C4C8D5 /* BlobStore.swift in Sources */,

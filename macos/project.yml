@@ -272,6 +272,7 @@ targets:
       - path: Shared/EngramCore/ArchiveV2/ArchiveHash.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveCanonicalJSON.swift
       - path: Shared/EngramCore/ArchiveV2/ArchiveModels.swift
+      - path: Shared/EngramCore/ArchiveV2/ArchiveRemoteTelemetry.swift
     dependencies:
       - package: Hummingbird
         product: Hummingbird

@@ -512,6 +512,7 @@ public actor ArchiveReplicationCoordinator {
              .invalidRequest,
              .notHTTPResponse,
              .invalidCanonicalResponse,
+             .telemetryUnsupported,
              .unexpectedStatus:
             return .failed(.quarantine, "remote_protocol_contradiction", state)
         }

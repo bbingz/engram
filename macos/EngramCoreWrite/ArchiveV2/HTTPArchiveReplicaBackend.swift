@@ -17,6 +17,7 @@ public final class HTTPArchiveReplicaBackend: ArchiveReplicaBackend, @unchecked 
 
     private static let requestTimeout: TimeInterval = 30
     private static let resourceTimeout: TimeInterval = 120
+    private static let telemetryRequestTimeout: TimeInterval = 3
 
     private let connection: ArchiveReplicaConnection
     private let transportDelegate: ArchiveBoundedSessionDelegate
@@ -159,6 +160,34 @@ public final class HTTPArchiveReplicaBackend: ArchiveReplicaBackend, @unchecked 
         }
     }
 
+    public func remoteTelemetryStatus() async throws -> ArchiveRemoteTelemetrySnapshot {
+        let url = connection.canonicalOrigin
+            .appendingPathComponent("v2", isDirectory: true)
+            .appendingPathComponent("archive", isDirectory: true)
+            .appendingPathComponent("status", isDirectory: false)
+        let request = authenticatedRequest(
+            url: url,
+            method: "GET",
+            timeoutInterval: Self.telemetryRequestTimeout
+        )
+        let response = try await execute(request, successLimit: .telemetry)
+        guard response.statusCode == 200 else {
+            throw ArchiveReplicaBackendError.unexpectedStatus(response.statusCode)
+        }
+        do {
+            let status = try ArchiveCanonicalJSON.decode(
+                ArchiveRemoteTelemetrySnapshot.self,
+                from: response.data
+            )
+            guard status.serverID == replicaID else {
+                throw ArchiveReplicaBackendError.invalidCanonicalResponse
+            }
+            return status
+        } catch {
+            throw ArchiveReplicaBackendError.invalidCanonicalResponse
+        }
+    }
+
     private func head(pathKind: DigestPathKind, digest: String) async throws -> Bool {
         let request = try makeDigestRequest(method: "HEAD", pathKind: pathKind, digest: digest)
         let response = try await execute(request, successLimit: pathKind.responseLimit)
@@ -250,8 +279,12 @@ public final class HTTPArchiveReplicaBackend: ArchiveReplicaBackend, @unchecked 
         return items
     }
 
-    private func authenticatedRequest(url: URL, method: String) -> URLRequest {
-        var request = URLRequest(url: url, timeoutInterval: Self.requestTimeout)
+    private func authenticatedRequest(
+        url: URL,
+        method: String,
+        timeoutInterval: TimeInterval = HTTPArchiveReplicaBackend.requestTimeout
+    ) -> URLRequest {
+        var request = URLRequest(url: url, timeoutInterval: timeoutInterval)
         request.httpMethod = method
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("Bearer \(connection.token)", forHTTPHeaderField: "Authorization")
@@ -488,6 +521,7 @@ private extension ArchiveResponseLimitKind {
         case .manifest: ArchiveV2ProtocolLimits.maxManifestBytes
         case .receipt: ArchiveV2ProtocolLimits.maxReceiptBytes
         case .page: ArchiveV2ProtocolLimits.maxPageBytes
+        case .telemetry: ArchiveRemoteTelemetrySnapshot.maximumEncodedBytes
         case .error: ArchiveV2ProtocolLimits.maxErrorBytes
         }
     }

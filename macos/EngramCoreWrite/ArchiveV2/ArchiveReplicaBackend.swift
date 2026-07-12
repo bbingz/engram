@@ -18,6 +18,13 @@ public protocol ArchiveReplicaBackend: Sendable {
         cursor: String?,
         limit: Int
     ) async throws -> ArchiveReceiptPage
+    func remoteTelemetryStatus() async throws -> ArchiveRemoteTelemetrySnapshot
+}
+
+public extension ArchiveReplicaBackend {
+    func remoteTelemetryStatus() async throws -> ArchiveRemoteTelemetrySnapshot {
+        throw ArchiveReplicaBackendError.telemetryUnsupported
+    }
 }
 
 public enum ArchiveReplicaConfigurationError: Error, Equatable, Sendable {
@@ -279,6 +286,7 @@ public enum ArchiveResponseLimitKind: Equatable, Sendable {
     case manifest
     case receipt
     case page
+    case telemetry
     case error
 }
 
@@ -298,5 +306,6 @@ public enum ArchiveReplicaBackendError: Error, Equatable, Sendable {
     case redirectRejected
     case finalURLMismatch
     case invalidCanonicalResponse
+    case telemetryUnsupported
     case transport(ArchiveTransportFailure)
 }

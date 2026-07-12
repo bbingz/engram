@@ -190,6 +190,191 @@ final class HTTPArchiveReplicaBackendTests: XCTestCase {
         XCTAssertTrue(policy.usesEphemeralConfiguration)
     }
 
+    func testRemoteTelemetrySnapshotDecodesValidBoundedCanonicalResponse() throws {
+        let status = try ArchiveCanonicalJSON.decode(
+            ArchiveRemoteTelemetrySnapshot.self,
+            from: validTelemetryBytes()
+        )
+
+        XCTAssertEqual(status.schema, 1)
+        XCTAssertEqual(status.serverID, "hq")
+        XCTAssertEqual(status.endpoints.map(\.endpoint), ["object"])
+        XCTAssertEqual(status.recentErrors.map(\.category), ["not_found"])
+    }
+
+    func testRemoteTelemetrySnapshotRejectsTooManyErrorsAndDuplicateEndpoints() throws {
+        var tooManyErrors = validTelemetryObject
+        let error = try XCTUnwrap((tooManyErrors["recentErrors"] as? [[String: Any]])?.first)
+        tooManyErrors["recentErrors"] = Array(
+            repeating: error,
+            count: ArchiveRemoteTelemetrySnapshot.maximumErrors + 1
+        )
+        XCTAssertThrowsError(
+            try ArchiveCanonicalJSON.decode(
+                ArchiveRemoteTelemetrySnapshot.self,
+                from: canonicalJSON(tooManyErrors)
+            )
+        )
+
+        var duplicateEndpoints = validTelemetryObject
+        let endpoint = try XCTUnwrap(
+            (duplicateEndpoints["endpoints"] as? [[String: Any]])?.first
+        )
+        duplicateEndpoints["endpoints"] = [endpoint, endpoint]
+        XCTAssertThrowsError(
+            try ArchiveCanonicalJSON.decode(
+                ArchiveRemoteTelemetrySnapshot.self,
+                from: canonicalJSON(duplicateEndpoints)
+            )
+        )
+    }
+
+    func testRemoteTelemetrySnapshotRejectsInvalidIdentityTimestampAndCounts() throws {
+        for mutation in [
+            ("serverID", "backup" as Any),
+            ("snapshotAt", "2026-07-12T10:00:00Z" as Any),
+            ("requestCount", -1 as Any),
+            ("diskAvailableBytes", -1 as Any),
+        ] {
+            var object = validTelemetryObject
+            object[mutation.0] = mutation.1
+            XCTAssertThrowsError(
+                try ArchiveCanonicalJSON.decode(
+                    ArchiveRemoteTelemetrySnapshot.self,
+                    from: canonicalJSON(object)
+                ),
+                "Expected rejection for \(mutation.0)"
+            )
+        }
+
+        let valid = String(
+            data: validTelemetryBytes(),
+            encoding: .utf8
+        ).flatMap { value -> String? in
+            guard value.contains("\"requestCount\":2") else { return nil }
+            return value.replacingOccurrences(
+                of: "\"requestCount\":2",
+                with: "\"requestCount\":9223372036854775808"
+            )
+        }
+        let overflowing = try XCTUnwrap(valid).data(using: .utf8)!
+        XCTAssertThrowsError(
+            try ArchiveCanonicalJSON.decode(
+                ArchiveRemoteTelemetrySnapshot.self,
+                from: overflowing
+            )
+        )
+    }
+
+    func testRemoteTelemetryEndpointAndErrorRejectUnboundedValues() throws {
+        XCTAssertThrowsError(
+            try ArchiveRemoteTelemetryEndpoint(
+                endpoint: "object",
+                requestCount: 1,
+                errorCount: 0,
+                totalDurationMs: .infinity,
+                maximumDurationMs: 1,
+                requestBytes: 0,
+                responseBytes: 0
+            )
+        )
+        XCTAssertThrowsError(
+            try ArchiveRemoteTelemetryEndpoint(
+                endpoint: "object",
+                requestCount: 1,
+                errorCount: -1,
+                totalDurationMs: 1,
+                maximumDurationMs: 1,
+                requestBytes: 0,
+                responseBytes: 0
+            )
+        )
+
+        for (method, category) in [
+            ("POST", "not_found"),
+            ("GET", "raw error: disk /secret/path"),
+        ] {
+            XCTAssertThrowsError(
+                try ArchiveRemoteTelemetryError(
+                    timestamp: "2026-07-12T10:00:01.000Z",
+                    endpoint: "object",
+                    method: method,
+                    statusCode: 404,
+                    category: category
+                )
+            )
+        }
+    }
+
+    func testRemoteTelemetryStatusUsesAuthenticatedBoundedRequest() async throws {
+        let backend = try makeBackend()
+        ArchiveURLProtocolStub.handler = { protocolInstance, request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/v2/archive/status")
+            XCTAssertNil(request.url?.query)
+            XCTAssertEqual(request.timeoutInterval, 3, accuracy: 0.01)
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "Authorization"),
+                "Bearer hq-token"
+            )
+            protocolInstance.respond(status: 200, chunks: [self.validTelemetryBytes()])
+        }
+
+        let status = try await backend.remoteTelemetryStatus()
+        XCTAssertEqual(status.serverID, "hq")
+    }
+
+    func testRemoteTelemetryStatusRejectsOversizedRedirectedMalformedAndNon200Responses() async throws {
+        let backend = try makeBackend()
+
+        ArchiveURLProtocolStub.handler = { protocolInstance, _ in
+            protocolInstance.respond(
+                status: 200,
+                chunks: [Data(repeating: 0x41, count: ArchiveRemoteTelemetrySnapshot.maximumEncodedBytes + 1)]
+            )
+        }
+        await XCTAssertThrowsArchiveError(.responseTooLarge(.telemetry)) {
+            _ = try await backend.remoteTelemetryStatus()
+        }
+
+        ArchiveURLProtocolStub.handler = { protocolInstance, _ in
+            protocolInstance.redirect(
+                status: 307,
+                to: URL(string: "https://m1.tailnet.ts.net/v2/archive/status")!
+            )
+        }
+        await XCTAssertThrowsArchiveError(.redirectRejected) {
+            _ = try await backend.remoteTelemetryStatus()
+        }
+
+        ArchiveURLProtocolStub.handler = { protocolInstance, _ in
+            protocolInstance.respond(status: 200, chunks: [Data("{".utf8)])
+        }
+        await XCTAssertThrowsArchiveError(.invalidCanonicalResponse) {
+            _ = try await backend.remoteTelemetryStatus()
+        }
+
+        ArchiveURLProtocolStub.handler = { protocolInstance, _ in
+            protocolInstance.respond(status: 503, chunks: [Data("unavailable".utf8)])
+        }
+        await XCTAssertThrowsArchiveError(.unexpectedStatus(503)) {
+            _ = try await backend.remoteTelemetryStatus()
+        }
+    }
+
+    func testRemoteTelemetryStatusRequiresMatchingCanonicalServerID() async throws {
+        let backend = try makeBackend()
+        var wrongReplica = validTelemetryObject
+        wrongReplica["serverID"] = "m1"
+        ArchiveURLProtocolStub.handler = { protocolInstance, _ in
+            protocolInstance.respond(status: 200, chunks: [self.canonicalJSON(wrongReplica)])
+        }
+
+        await XCTAssertThrowsArchiveError(.invalidCanonicalResponse) {
+            _ = try await backend.remoteTelemetryStatus()
+        }
+    }
+
     func testHEADIsTypedAndRequestsExactAuthenticatedV2Path() async throws {
         var requests: [URLRequest] = []
         ArchiveURLProtocolStub.handler = { protocolInstance, request in
@@ -209,7 +394,7 @@ final class HTTPArchiveReplicaBackendTests: XCTestCase {
         let request = try XCTUnwrap(requests.first)
         XCTAssertEqual(request.httpMethod, "HEAD")
         XCTAssertEqual(request.url?.absoluteString, "https://hq.tailnet.ts.net/v2/archive/objects/\(digest)")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer hq-secret")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer hq-token")
         XCTAssertEqual(request.timeoutInterval, 30)
     }
 
@@ -325,7 +510,7 @@ final class HTTPArchiveReplicaBackendTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? ArchiveReplicaBackendError, .unexpectedStatus(409))
             let rendered = String(reflecting: error)
-            XCTAssertFalse(rendered.contains("hq-secret"))
+            XCTAssertFalse(rendered.contains("hq-token"))
             XCTAssertFalse(rendered.contains("TOP-SECRET-BODY"))
             XCTAssertFalse(rendered.contains("tailnet.ts.net"))
         }
@@ -479,12 +664,56 @@ final class HTTPArchiveReplicaBackendTests: XCTestCase {
     private func makeBackend() throws -> HTTPArchiveReplicaBackend {
         let set = try ArchiveReplicaSet(
             descriptors: validDescriptors,
-            tokenLoader: StubArchiveTokenLoader(tokens: ["hq": "hq-secret", "m1": "m1-secret"])
+            tokenLoader: StubArchiveTokenLoader(tokens: ["hq": "hq-token", "m1": "m1-token"])
         )
         return HTTPArchiveReplicaBackend(
             connection: try XCTUnwrap(set.connections.first { $0.replicaID == "hq" }),
             testProtocolClasses: [ArchiveURLProtocolStub.self]
         )
+    }
+
+    private var validTelemetryObject: [String: Any] {
+        [
+            "clientErrorCount": 1,
+            "diskAvailableBytes": 4_096,
+            "diskTotalBytes": 8_192,
+            "endpoints": [[
+                "endpoint": "object",
+                "errorCount": 1,
+                "maximumDurationMs": 4.5,
+                "requestBytes": 12,
+                "requestCount": 2,
+                "responseBytes": 34,
+                "totalDurationMs": 7.5,
+            ]],
+            "lastArchiveMutationAt": "2026-07-12T10:00:00.500Z",
+            "processStartedAt": "2026-07-12T09:59:00.000Z",
+            "recentErrors": [[
+                "category": "not_found",
+                "endpoint": "object",
+                "method": "GET",
+                "statusCode": 404,
+                "timestamp": "2026-07-12T10:00:01.000Z",
+            ]],
+            "requestBytes": 12,
+            "requestCount": 2,
+            "responseBytes": 34,
+            "schema": 1,
+            "serverErrorCount": 0,
+            "serverID": "hq",
+            "snapshotAt": "2026-07-12T10:00:02.000Z",
+            "sourceRevision": String(repeating: "a", count: 40),
+            "successCount": 1,
+            "uptimeSeconds": 62,
+        ]
+    }
+
+    private func validTelemetryBytes() -> Data {
+        canonicalJSON(validTelemetryObject)
+    }
+
+    private func canonicalJSON(_ object: [String: Any]) -> Data {
+        try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 
     private func XCTAssertThrowsArchiveError<T>(

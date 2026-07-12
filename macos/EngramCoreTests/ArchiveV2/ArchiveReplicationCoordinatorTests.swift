@@ -781,6 +781,7 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
             .init(name: "422", error: .unexpectedStatus(422), expectedState: .quarantined, expectedSymbol: "remote_invalid_content"),
             .init(name: "400", error: .unexpectedStatus(400), expectedState: .quarantined, expectedSymbol: "remote_protocol_contradiction"),
             .init(name: "non-http", error: .notHTTPResponse, expectedState: .quarantined, expectedSymbol: "remote_protocol_contradiction"),
+            .init(name: "telemetry-unsupported", error: .telemetryUnsupported, expectedState: .quarantined, expectedSymbol: "remote_protocol_contradiction"),
             .init(name: "size", error: .responseTooLarge(.object), expectedState: .quarantined, expectedSymbol: "remote_response_too_large"),
         ]
 
