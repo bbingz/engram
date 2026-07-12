@@ -512,11 +512,26 @@ final class EngramMCPExecutableTests: XCTestCase {
     }
 
     func testResourceReadSessionReturnsTranscript() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-resource-read-session"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try rewriteTranscriptFixtureSession(
+            dbPath: dbPath,
+            source: "codex",
+            filePath: fixturePath("mcp-runtime/transcripts/rollout-mcp-transcript-01.jsonl"),
+            messageCount: 3,
+            userMessageCount: 2,
+            assistantMessageCount: 1,
+            toolMessageCount: 0
+        )
+
         let listed = try rpc(
             """
             {"jsonrpc":"2.0","id":1,"method":"resources/list"}
             """,
-            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+            environment: ["ENGRAM_MCP_DB_PATH": dbPath]
         )
         let resources = try XCTUnwrap(listed.ordered["result"]?["resources"]?.arrayValue)
         let sessionURI = resources.compactMap { $0["uri"]?.stringValue }
@@ -527,7 +542,7 @@ final class EngramMCPExecutableTests: XCTestCase {
             """
             {"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"\(uri)"}}
             """,
-            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+            environment: ["ENGRAM_MCP_DB_PATH": dbPath]
         )
         XCTAssertNil(capture.response.error)
         let contents = try XCTUnwrap(capture.ordered["result"]?["contents"]?.arrayValue)
