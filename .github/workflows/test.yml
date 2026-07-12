@@ -72,7 +72,7 @@ jobs:
           path: coverage/
 
   macos-vitest:
-    runs-on: [self-hosted, macOS, macmini-m1]
+    runs-on: [self-hosted, macOS, macmini-m1, lite]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -88,7 +88,7 @@ jobs:
       - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/product-boundary-scripts.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/swift-conventions.test.ts tests/scripts/version-guard.test.ts
 
   swift-unit:
-    runs-on: [self-hosted, macOS, macmini-m1]
+    runs-on: [self-hosted, macOS, macmini-m1, xcode]
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
@@ -166,7 +166,7 @@ jobs:
           run_xcode_tests EngramMCPTests
 
   fixture-check:
-    runs-on: [self-hosted, macOS, macmini-m1]
+    runs-on: [self-hosted, macOS, macmini-m1, lite]
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
@@ -187,7 +187,7 @@ jobs:
           git diff --exit-code test-fixtures/test-index.sqlite
 
   ui-test-smoke:
-    runs-on: [self-hosted, macOS, macmini-m1]
+    runs-on: [self-hosted, macOS, macmini-m1, xcode]
     if: github.event_name == 'pull_request'
     timeout-minutes: 10
     needs: [typescript, swift-unit]
@@ -293,7 +293,7 @@ jobs:
             });
 
   ui-test-full:
-    runs-on: [self-hosted, macOS, macmini-m1]
+    runs-on: [self-hosted, macOS, macmini-m1, xcode]
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     timeout-minutes: 20
     needs: [typescript, swift-unit]

@@ -23,7 +23,7 @@ env:
 
 jobs:
   release-tests:
-    runs-on: [self-hosted, macOS, macmini-m1]
+    runs-on: [self-hosted, macOS, macmini-m1, xcode]
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
@@ -78,7 +78,7 @@ jobs:
           run_xcode_tests EngramMCPTests
 
   release-bundle-gate:
-    runs-on: [self-hosted, macOS, macmini-m1]
+    runs-on: [self-hosted, macOS, macmini-m1, xcode]
     needs: [release-tests]
     timeout-minutes: 25
     steps:

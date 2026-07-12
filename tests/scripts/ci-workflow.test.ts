@@ -78,6 +78,29 @@ describe('CI workflow hardening', () => {
     );
   });
 
+  it('routes macOS jobs to xcode and lite self-hosted runners', () => {
+    expect(testWorkflow).toContain(
+      'runs-on: [self-hosted, macOS, macmini-m1, lite]',
+    );
+    expect(testWorkflow).toContain(
+      'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
+    );
+    const liteJobs = ['macos-vitest:', 'fixture-check:'];
+    const xcodeJobs = ['swift-unit:', 'ui-test-smoke:', 'ui-test-full:'];
+    for (const job of liteJobs) {
+      const section = testWorkflow.slice(testWorkflow.indexOf(job));
+      expect(section).toContain(
+        'runs-on: [self-hosted, macOS, macmini-m1, lite]',
+      );
+    }
+    for (const job of xcodeJobs) {
+      const section = testWorkflow.slice(testWorkflow.indexOf(job));
+      expect(section).toContain(
+        'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
+      );
+    }
+  });
+
   it('runs macOS-only vitest suites on pull requests', () => {
     expect(testWorkflow).toContain('macos-vitest:');
     expect(testWorkflow).toContain('brew install xcodegen ripgrep');
@@ -119,7 +142,9 @@ describe('Perf workflow', () => {
     expect(perfWorkflow).toContain('name: Perf');
     expect(perfWorkflow).toContain('cron: "30 19 * * *"');
     expect(perfWorkflow).toContain('workflow_dispatch:');
-    expect(perfWorkflow).toContain('runs-on: [self-hosted, macOS, macmini-m1]');
+    expect(perfWorkflow).toContain(
+      'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
+    );
     expect(perfWorkflow).toContain('timeout-minutes: 30');
     expect(perfWorkflow).toContain('npm run generate:fixtures');
     expect(perfWorkflow).toContain(

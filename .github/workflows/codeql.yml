@@ -35,7 +35,7 @@ jobs:
 
   swift:
     name: CodeQL Swift
-    runs-on: [self-hosted, macOS, macmini-m1]
+    runs-on: [self-hosted, macOS, macmini-m1, xcode]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
