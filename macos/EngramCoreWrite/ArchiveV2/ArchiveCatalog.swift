@@ -1029,9 +1029,12 @@ public final class ArchiveCatalog: @unchecked Sendable {
             try db.execute(
                 sql: """
                 UPDATE archive_reclamation_intents
-                SET phase = ?, quarantine_path = COALESCE(?, quarantine_path), updated_at = ?,
+                SET phase = ?,
+                    quarantine_path = COALESCE(quarantine_path, ?),
+                    updated_at = ?,
                     claim_generation = claim_generation + 1
                 WHERE manifest_sha256 = ? AND phase = ? AND claim_generation = ?
+                  AND (? IS NULL OR quarantine_path IS NULL OR quarantine_path = ?)
                 """,
                 arguments: [
                     to.rawValue,
@@ -1040,6 +1043,8 @@ public final class ArchiveCatalog: @unchecked Sendable {
                     manifestSHA256,
                     from.rawValue,
                     expectedClaimGeneration,
+                    quarantinePath,
+                    quarantinePath,
                 ]
             )
             return db.changesCount == 1
@@ -2599,9 +2604,6 @@ public final class ArchiveCatalog: @unchecked Sendable {
              (.sourceQuarantined, .sourceDeleted),
              (.sourceDeleted, .localContentEvicted),
              (.eligible, .paused),
-             (.quarantinePlanned, .paused),
-             (.sourceQuarantined, .paused),
-             (.sourceDeleted, .paused),
              (.paused, .eligible):
             true
         default:

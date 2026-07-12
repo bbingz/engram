@@ -207,6 +207,17 @@ final class ArchiveCatalogTests: XCTestCase {
                 manifestSHA256: intent.manifestSHA256,
                 from: .quarantinePlanned,
                 to: .sourceQuarantined,
+                expectedClaimGeneration: planned.claimGeneration,
+                quarantinePath: manifest.locator + ".different",
+                updatedAt: "2026-07-11T00:09:15.000Z"
+            ),
+            "the write-ahead quarantine path is immutable after planning"
+        )
+        XCTAssertFalse(
+            try result.0.transitionReclamationIntent(
+                manifestSHA256: intent.manifestSHA256,
+                from: .quarantinePlanned,
+                to: .sourceQuarantined,
                 expectedClaimGeneration: intent.claimGeneration,
                 quarantinePath: planned.quarantinePath,
                 updatedAt: "2026-07-11T00:09:30.000Z"
@@ -240,6 +251,20 @@ final class ArchiveCatalogTests: XCTestCase {
             try result.0.reclamationIntent(manifestSHA256: intent.manifestSHA256)?.quarantinePath,
             planned.quarantinePath,
             "completed source deletion keeps the quarantine path for audit"
+        )
+        let deleted = try XCTUnwrap(
+            try result.0.reclamationIntent(manifestSHA256: intent.manifestSHA256)
+        )
+        XCTAssertFalse(
+            try result.0.transitionReclamationIntent(
+                manifestSHA256: intent.manifestSHA256,
+                from: .sourceDeleted,
+                to: .paused,
+                expectedClaimGeneration: deleted.claimGeneration,
+                quarantinePath: nil,
+                updatedAt: "2026-07-11T00:12:00.000Z"
+            ),
+            "destructive phases can never re-enter the eligibility graph"
         )
     }
 
