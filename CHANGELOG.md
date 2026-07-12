@@ -7,6 +7,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: CI migrated to self-hosted runners on macmini-m1 (2026-07-12)
+
+- Routed GitHub Actions off GitHub-hosted `macos-15` / `ubuntu-latest` to
+  self-hosted runners to stop burning macOS runner minutes (10× Linux pricing).
+- **Linux jobs** (`lint`, `dead-code`, `security-audit`, `typescript`, CodeQL
+  TypeScript) → existing `engram-ubuntu-10-0-0-230`
+  (`[self-hosted, Linux, X64]`).
+- **macOS heavy jobs** (`swift-unit`, UI smoke/full, CodeQL Swift, `perf`,
+  `release`) → `engram-macmini-m1` at `~/actions-runner` with label `xcode`.
+- **macOS light jobs** (`macos-vitest`, `fixture-check`) →
+  `engram-macmini-m1-lite` at `~/actions-runner-lite` with label `lite`, so
+  Node-only checks can run in parallel without competing with `xcodebuild` /
+  XCUITest for 16 GB RAM on the M1 Mac mini.
+- Installed full Xcode 26.6 on `bing@macmini-m1` (was Command Line Tools only);
+  runner services run as user `bing` launchd agents. `engram-remote` continues
+  on the same host.
+- Workflow commits: `a695c3a1` (initial self-hosted routing),
+  `d897ada5` (xcode/lite label split).
+
 ### Fixed: session export feedback and legacy favorite writes (2026-07-11)
 
 - Sessions and Timeline exports now share the command-palette
