@@ -119,7 +119,7 @@ describe('Perf workflow', () => {
     expect(perfWorkflow).toContain('name: Perf');
     expect(perfWorkflow).toContain('cron: "30 19 * * *"');
     expect(perfWorkflow).toContain('workflow_dispatch:');
-    expect(perfWorkflow).toContain('runs-on: macos-15');
+    expect(perfWorkflow).toContain('runs-on: [self-hosted, macOS, macmini-m1]');
     expect(perfWorkflow).toContain('timeout-minutes: 30');
     expect(perfWorkflow).toContain('npm run generate:fixtures');
     expect(perfWorkflow).toContain(
