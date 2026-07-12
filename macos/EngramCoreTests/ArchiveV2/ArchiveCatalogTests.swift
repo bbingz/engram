@@ -95,7 +95,7 @@ final class ArchiveCatalogTests: XCTestCase {
         XCTAssertTrue(values.bindingColumns.contains("project_root_snapshot"))
         XCTAssertTrue(values.bindingColumns.contains("remote_eligibility"))
         XCTAssertTrue(values.receiptColumns.contains("claim_generation"))
-        XCTAssertEqual(values.schemaVersion, "3")
+        XCTAssertEqual(values.schemaVersion, "4")
         XCTAssertEqual(try catalog.machineID(), machineID)
         XCTAssertEqual(try permissions(root.path), 0o700)
         XCTAssertEqual(try permissions(root.appendingPathComponent("archive.sqlite").path), 0o600)
@@ -241,10 +241,23 @@ final class ArchiveCatalogTests: XCTestCase {
             try result.0.transitionReclamationIntent(
                 manifestSHA256: intent.manifestSHA256,
                 from: .sourceQuarantined,
-                to: .sourceDeleted,
+                to: .sourceDeletePlanned,
                 expectedClaimGeneration: quarantined.claimGeneration,
-                quarantinePath: nil,
+                quarantinePath: quarantined.quarantinePath,
                 updatedAt: "2026-07-11T00:11:00.000Z"
+            )
+        )
+        let deletePlanned = try XCTUnwrap(
+            try result.0.reclamationIntent(manifestSHA256: intent.manifestSHA256)
+        )
+        XCTAssertTrue(
+            try result.0.transitionReclamationIntent(
+                manifestSHA256: intent.manifestSHA256,
+                from: .sourceDeletePlanned,
+                to: .sourceDeleted,
+                expectedClaimGeneration: deletePlanned.claimGeneration,
+                quarantinePath: nil,
+                updatedAt: "2026-07-11T00:11:30.000Z"
             )
         )
         XCTAssertEqual(

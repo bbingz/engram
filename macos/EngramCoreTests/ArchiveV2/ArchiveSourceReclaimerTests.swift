@@ -96,7 +96,11 @@ final class ArchiveSourceReclaimerTests: XCTestCase {
         let restoreReclaimer = ArchiveSourceReclaimer(
             catalog: restored.catalog,
             testHooks: ArchiveSourceReclaimerTestHooks(afterRename: { quarantineURL in
-                try Data("changed bytes!".utf8).write(to: quarantineURL)
+                try Data(repeating: 0x78, count: restored.bytes.count).write(to: quarantineURL)
+                try Self.setMtime(
+                    path: quarantineURL.path,
+                    nanoseconds: restored.capture.generation.mtimeNs
+                )
             })
         )
         XCTAssertThrowsError(
@@ -128,6 +132,101 @@ final class ArchiveSourceReclaimerTests: XCTestCase {
         XCTAssertEqual(collisionIntent.phase, .paused)
         XCTAssertEqual(collisionIntent.lastError, "quarantine_collision")
         XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(collisionIntent.quarantinePath)))
+    }
+
+    func testDeletePlanRecoversAcrossBothUnlinkWindowsAndDetectsLateMutation() throws {
+        let beforeUnlink = try makeFixture(name: "delete-plan-before", bytes: Data("before unlink".utf8))
+        XCTAssertThrowsError(
+            try ArchiveSourceReclaimer(
+                catalog: beforeUnlink.catalog,
+                testHooks: ArchiveSourceReclaimerTestHooks(
+                    afterDeletePlan: { _ in throw Marker.crash }
+                )
+            ).planAndReclaim(intent: beforeUnlink.intent, capture: beforeUnlink.capture)
+        )
+        let deletePlanned = try XCTUnwrap(
+            beforeUnlink.catalog.reclamationIntent(manifestSHA256: beforeUnlink.intent.manifestSHA256)
+        )
+        XCTAssertEqual(deletePlanned.phase, .sourceDeletePlanned)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(deletePlanned.quarantinePath)))
+        _ = try ArchiveSourceReclaimer(catalog: beforeUnlink.catalog).recover(
+            intent: deletePlanned,
+            capture: beforeUnlink.capture
+        )
+        XCTAssertEqual(
+            try beforeUnlink.catalog.reclamationIntent(manifestSHA256: beforeUnlink.intent.manifestSHA256)?.phase,
+            .sourceDeleted
+        )
+
+        let afterUnlink = try makeFixture(name: "delete-plan-after", bytes: Data("after unlink".utf8))
+        let syncController = FsyncFailureController(failOnCall: 2)
+        XCTAssertThrowsError(
+            try ArchiveSourceReclaimer(
+                catalog: afterUnlink.catalog,
+                testHooks: ArchiveSourceReclaimerTestHooks(
+                    fsyncDirectory: { _ in try syncController.call() }
+                )
+            ).planAndReclaim(intent: afterUnlink.intent, capture: afterUnlink.capture)
+        )
+        let afterDeletePlanned = try XCTUnwrap(
+            afterUnlink.catalog.reclamationIntent(manifestSHA256: afterUnlink.intent.manifestSHA256)
+        )
+        XCTAssertEqual(afterDeletePlanned.phase, .sourceDeletePlanned)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: afterUnlink.sourceURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(afterDeletePlanned.quarantinePath)))
+        _ = try ArchiveSourceReclaimer(catalog: afterUnlink.catalog).recover(
+            intent: afterDeletePlanned,
+            capture: afterUnlink.capture
+        )
+        XCTAssertEqual(
+            try afterUnlink.catalog.reclamationIntent(manifestSHA256: afterUnlink.intent.manifestSHA256)?.phase,
+            .sourceDeleted
+        )
+
+        let lateWrite = try makeFixture(name: "late-write", bytes: Data("stable transcript".utf8))
+        XCTAssertThrowsError(
+            try ArchiveSourceReclaimer(
+                catalog: lateWrite.catalog,
+                testHooks: ArchiveSourceReclaimerTestHooks(afterDeletePlan: { quarantineURL in
+                    let fd = Darwin.open(quarantineURL.path, O_WRONLY | O_APPEND)
+                    XCTAssertGreaterThanOrEqual(fd, 0)
+                    defer { _ = Darwin.close(fd) }
+                    var byte: UInt8 = 0x21
+                    XCTAssertEqual(Darwin.write(fd, &byte, 1), 1)
+                })
+            ).planAndReclaim(intent: lateWrite.intent, capture: lateWrite.capture)
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: lateWrite.sourceURL.path))
+        XCTAssertEqual(
+            try lateWrite.catalog.reclamationIntent(manifestSHA256: lateWrite.intent.manifestSHA256)?.phase,
+            .paused
+        )
+    }
+
+    func testRecoveryGenerationFailurePausesPlannedIntent() throws {
+        let fixture = try makeFixture(name: "planned-mismatch", bytes: Data("old bytes".utf8))
+        XCTAssertThrowsError(
+            try ArchiveSourceReclaimer(
+                catalog: fixture.catalog,
+                testHooks: ArchiveSourceReclaimerTestHooks(afterPlan: { _ in throw Marker.crash })
+            ).planAndReclaim(intent: fixture.intent, capture: fixture.capture)
+        )
+        try Data("new bytes".utf8).write(to: fixture.sourceURL)
+        let planned = try XCTUnwrap(
+            fixture.catalog.reclamationIntent(manifestSHA256: fixture.intent.manifestSHA256)
+        )
+        XCTAssertThrowsError(
+            try ArchiveSourceReclaimer(catalog: fixture.catalog).recover(
+                intent: planned,
+                capture: fixture.capture
+            )
+        )
+        let paused = try XCTUnwrap(
+            fixture.catalog.reclamationIntent(manifestSHA256: fixture.intent.manifestSHA256)
+        )
+        XCTAssertEqual(paused.phase, .paused)
+        XCTAssertEqual(paused.lastError, "generation_changed")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceURL.path))
     }
 
     func testSymlinkOversizeCancellationAndDirectorySyncFailureNeverDeleteSource() throws {
@@ -282,5 +381,35 @@ final class ArchiveSourceReclaimerTests: XCTestCase {
 
     private func nanoseconds(_ value: timespec) -> Int64 {
         Int64(value.tv_sec) * 1_000_000_000 + Int64(value.tv_nsec)
+    }
+
+    private static func setMtime(path: String, nanoseconds: Int64) throws {
+        var times = [
+            timespec(tv_sec: 0, tv_nsec: Int(UTIME_OMIT)),
+            timespec(
+                tv_sec: numericCast(nanoseconds / 1_000_000_000),
+                tv_nsec: numericCast(nanoseconds % 1_000_000_000)
+            ),
+        ]
+        guard Darwin.utimensat(AT_FDCWD, path, &times, 0) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+}
+
+private final class FsyncFailureController: @unchecked Sendable {
+    private let lock = NSLock()
+    private let failOnCall: Int
+    private var calls = 0
+
+    init(failOnCall: Int) {
+        self.failOnCall = failOnCall
+    }
+
+    func call() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        calls += 1
+        if calls == failOnCall { throw POSIXError(.EIO) }
     }
 }

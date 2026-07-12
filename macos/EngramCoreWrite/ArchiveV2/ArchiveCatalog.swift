@@ -203,6 +203,7 @@ public enum ArchiveReclamationPhase: String, Equatable, Sendable {
     case eligible
     case quarantinePlanned
     case sourceQuarantined
+    case sourceDeletePlanned
     case sourceDeleted
     case localContentEvicted
     case paused
@@ -2798,11 +2799,13 @@ public final class ArchiveCatalog: @unchecked Sendable {
         switch (from, to) {
         case (.eligible, .quarantinePlanned),
              (.quarantinePlanned, .sourceQuarantined),
-             (.sourceQuarantined, .sourceDeleted),
+             (.sourceQuarantined, .sourceDeletePlanned),
+             (.sourceDeletePlanned, .sourceDeleted),
              (.sourceDeleted, .localContentEvicted),
              (.eligible, .paused),
              (.quarantinePlanned, .paused),
              (.sourceQuarantined, .paused),
+             (.sourceDeletePlanned, .paused),
              (.paused, .eligible):
             true
         default:

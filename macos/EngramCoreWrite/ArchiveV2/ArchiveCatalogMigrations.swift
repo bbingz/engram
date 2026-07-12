@@ -3,7 +3,7 @@ import EngramCoreRead
 import GRDB
 
 enum ArchiveCatalogMigrations {
-    static let currentSchemaVersion = "3"
+    static let currentSchemaVersion = "4"
 
     static func migrate(_ db: Database, machineID: String) throws {
         try db.execute(sql: """
@@ -178,7 +178,7 @@ enum ArchiveCatalogMigrations {
             locator TEXT NOT NULL CHECK(length(locator) > 0),
             phase TEXT NOT NULL CHECK(phase IN (
                 'eligible', 'quarantinePlanned', 'sourceQuarantined',
-                'sourceDeleted', 'localContentEvicted', 'paused'
+                'sourceDeletePlanned', 'sourceDeleted', 'localContentEvicted', 'paused'
             )),
             quarantine_path TEXT,
             attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
@@ -194,11 +194,52 @@ enum ArchiveCatalogMigrations {
                 quarantine_path IS NULL OR length(quarantine_path) > 0
             ),
             CHECK(
-                (phase IN ('quarantinePlanned', 'sourceQuarantined') AND quarantine_path IS NOT NULL)
-                OR (phase NOT IN ('quarantinePlanned', 'sourceQuarantined'))
+                (phase IN ('quarantinePlanned', 'sourceQuarantined', 'sourceDeletePlanned')
+                    AND quarantine_path IS NOT NULL)
+                OR (phase NOT IN ('quarantinePlanned', 'sourceQuarantined', 'sourceDeletePlanned'))
             )
         ) WITHOUT ROWID
         """)
+        let intentTableSQL = try String.fetchOne(
+            db,
+            sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'archive_reclamation_intents'"
+        ) ?? ""
+        if !intentTableSQL.contains("sourceDeletePlanned") {
+            try db.execute(sql: """
+            CREATE TABLE archive_reclamation_intents_v4 (
+                manifest_sha256 TEXT PRIMARY KEY NOT NULL,
+                capture_id TEXT NOT NULL,
+                session_id TEXT NOT NULL CHECK(length(session_id) > 0),
+                locator TEXT NOT NULL CHECK(length(locator) > 0),
+                phase TEXT NOT NULL CHECK(phase IN (
+                    'eligible', 'quarantinePlanned', 'sourceQuarantined',
+                    'sourceDeletePlanned', 'sourceDeleted', 'localContentEvicted', 'paused'
+                )),
+                quarantine_path TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+                released_source_bytes INTEGER NOT NULL DEFAULT 0 CHECK(released_source_bytes >= 0),
+                released_cas_bytes INTEGER NOT NULL DEFAULT 0 CHECK(released_cas_bytes >= 0),
+                last_error TEXT,
+                claim_generation INTEGER NOT NULL DEFAULT 0 CHECK(claim_generation >= 0),
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(manifest_sha256)
+                    REFERENCES archive_session_bindings(manifest_sha256) ON DELETE RESTRICT,
+                FOREIGN KEY(capture_id) REFERENCES archive_captures(capture_id) ON DELETE RESTRICT,
+                CHECK(quarantine_path IS NULL OR length(quarantine_path) > 0),
+                CHECK(
+                    (phase IN ('quarantinePlanned', 'sourceQuarantined', 'sourceDeletePlanned')
+                        AND quarantine_path IS NOT NULL)
+                    OR (phase NOT IN ('quarantinePlanned', 'sourceQuarantined', 'sourceDeletePlanned'))
+                )
+            ) WITHOUT ROWID
+            """)
+            try db.execute(sql: """
+            INSERT INTO archive_reclamation_intents_v4
+            SELECT * FROM archive_reclamation_intents
+            """)
+            try db.execute(sql: "DROP TABLE archive_reclamation_intents")
+            try db.execute(sql: "ALTER TABLE archive_reclamation_intents_v4 RENAME TO archive_reclamation_intents")
+        }
         try db.execute(sql: """
         CREATE INDEX IF NOT EXISTS archive_reclamation_intents_by_phase
         ON archive_reclamation_intents(phase, updated_at, manifest_sha256)

@@ -21,15 +21,18 @@ public struct ArchiveSourceReclaimResult: Equatable, Sendable {
 struct ArchiveSourceReclaimerTestHooks: Sendable {
     let afterPlan: (@Sendable (URL) throws -> Void)?
     let afterRename: (@Sendable (URL) throws -> Void)?
+    let afterDeletePlan: (@Sendable (URL) throws -> Void)?
     let fsyncDirectory: (@Sendable (URL) throws -> Void)?
 
     init(
         afterPlan: (@Sendable (URL) throws -> Void)? = nil,
         afterRename: (@Sendable (URL) throws -> Void)? = nil,
+        afterDeletePlan: (@Sendable (URL) throws -> Void)? = nil,
         fsyncDirectory: (@Sendable (URL) throws -> Void)? = nil
     ) {
         self.afterPlan = afterPlan
         self.afterRename = afterRename
+        self.afterDeletePlan = afterDeletePlan
         self.fsyncDirectory = fsyncDirectory
     }
 }
@@ -57,7 +60,7 @@ public struct ArchiveSourceReclaimer: Sendable {
         switch intent.phase {
         case .eligible:
             return try plan(intent: intent, capture: capture)
-        case .quarantinePlanned, .sourceQuarantined:
+        case .quarantinePlanned, .sourceQuarantined, .sourceDeletePlanned:
             return try recover(intent: intent, capture: capture)
         default:
             throw ArchiveSourceReclaimerError.staleIntent
@@ -79,7 +82,12 @@ public struct ArchiveSourceReclaimer: Sendable {
             let quarantineExists = pathExists(quarantineURL)
             switch (sourceExists, quarantineExists) {
             case (true, false):
-                try verifySource(sourceURL, capture: capture)
+                do {
+                    try verifySource(sourceURL, capture: capture)
+                } catch {
+                    try pause(intent, error: "generation_changed")
+                    throw error
+                }
                 try renameExclusive(sourceURL, quarantineURL)
                 try syncParent(of: sourceURL)
                 try testHooks.afterRename?(quarantineURL)
@@ -90,6 +98,7 @@ public struct ArchiveSourceReclaimer: Sendable {
                 )
                 return try finish(quarantined, capture: capture)
             case (false, true):
+                try syncParent(of: quarantineURL)
                 let quarantined = try transition(
                     intent,
                     to: .sourceQuarantined,
@@ -106,6 +115,16 @@ public struct ArchiveSourceReclaimer: Sendable {
                 throw ArchiveSourceReclaimerError.pathCollision
             }
             return try finish(intent, capture: capture)
+        case .sourceDeletePlanned:
+            guard !pathExists(sourceURL) else {
+                try pause(intent, error: "quarantine_collision")
+                throw ArchiveSourceReclaimerError.pathCollision
+            }
+            if pathExists(quarantineURL) {
+                return try finishDeletePlanned(intent, capture: capture)
+            }
+            try syncParent(of: quarantineURL)
+            return try commitDeleted(intent, capture: capture)
         default:
             throw ArchiveSourceReclaimerError.staleIntent
         }
@@ -148,8 +167,9 @@ public struct ArchiveSourceReclaimer: Sendable {
         guard let quarantineURL = try quarantineURL(for: intent) else {
             throw ArchiveSourceReclaimerError.invalidIntent
         }
+        let verified: VerifiedFile
         do {
-            try verifySource(quarantineURL, capture: capture)
+            verified = try openVerifiedSource(quarantineURL, capture: capture)
             try Task.checkCancellation()
         } catch is CancellationError {
             try restoreOrPause(intent, quarantineURL: quarantineURL, error: "cancelled")
@@ -158,24 +178,58 @@ public struct ArchiveSourceReclaimer: Sendable {
             try restoreOrPause(intent, quarantineURL: quarantineURL, error: "generation_changed")
             throw ArchiveSourceReclaimerError.generationChanged
         }
+        defer { _ = Darwin.close(verified.fd) }
+        let deletePlanned = try transition(
+            intent,
+            to: .sourceDeletePlanned,
+            quarantinePath: quarantineURL.path
+        )
+        try testHooks.afterDeletePlan?(quarantineURL)
+        do {
+            try revalidate(verified, at: quarantineURL)
+            try Task.checkCancellation()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try restoreOrPause(deletePlanned, quarantineURL: quarantineURL, error: "generation_changed")
+            throw ArchiveSourceReclaimerError.generationChanged
+        }
+        return try unlinkAndCommit(deletePlanned, quarantineURL: quarantineURL, capture: capture)
+    }
 
+    private func finishDeletePlanned(
+        _ intent: ArchiveReclamationIntent,
+        capture: ArchiveCapture
+    ) throws -> ArchiveSourceReclaimResult {
+        guard let quarantineURL = try quarantineURL(for: intent) else {
+            throw ArchiveSourceReclaimerError.invalidIntent
+        }
+        let verified = try openVerifiedSource(quarantineURL, capture: capture)
+        defer { _ = Darwin.close(verified.fd) }
+        try revalidate(verified, at: quarantineURL)
+        try Task.checkCancellation()
+        return try unlinkAndCommit(intent, quarantineURL: quarantineURL, capture: capture)
+    }
+
+    private func unlinkAndCommit(
+        _ intent: ArchiveReclamationIntent,
+        quarantineURL: URL,
+        capture: ArchiveCapture
+    ) throws -> ArchiveSourceReclaimResult {
         guard Darwin.unlink(quarantineURL.path) == 0 else {
             let code = errno
-            try pause(intent, error: "local_io_failure")
             throw ArchiveSourceReclaimerError.ioFailure(operation: "unlink", code: code)
         }
-        do {
-            try syncParent(of: quarantineURL)
-        } catch {
-            try pause(intent, error: "local_io_failure")
-            throw error
-        }
-        let deleted = try transition(
-            intent,
-            to: .sourceDeleted,
-            quarantinePath: nil,
-            releasedSourceBytes: capture.rawByteCount
-        )
+        try syncParent(of: quarantineURL)
+        return try commitDeleted(intent, capture: capture)
+    }
+
+    private func commitDeleted(
+        _ intent: ArchiveReclamationIntent,
+        capture: ArchiveCapture
+    ) throws -> ArchiveSourceReclaimResult {
+        let deleted = try transition(intent, to: .sourceDeleted, quarantinePath: nil,
+                                     releasedSourceBytes: capture.rawByteCount)
         return ArchiveSourceReclaimResult(
             manifestSHA256: deleted.manifestSHA256,
             releasedBytes: capture.rawByteCount
@@ -236,11 +290,34 @@ public struct ArchiveSourceReclaimer: Sendable {
         guard capture.rawByteCount <= Self.maximumSourceBytes else {
             throw ArchiveSourceReclaimerError.sourceTooLarge
         }
+        let verified = try openVerifiedSource(url, capture: capture)
+        _ = Darwin.close(verified.fd)
+    }
+
+    private struct VerifiedFile {
+        let fd: Int32
+        let device: dev_t
+        let inode: ino_t
+        let size: off_t
+        let mtime: timespec
+        let mode: mode_t
+    }
+
+    private func openVerifiedSource(
+        _ url: URL,
+        capture: ArchiveCapture
+    ) throws -> VerifiedFile {
+        guard capture.rawByteCount <= Self.maximumSourceBytes else {
+            throw ArchiveSourceReclaimerError.sourceTooLarge
+        }
         let fd = Darwin.open(url.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else {
             throw ArchiveSourceReclaimerError.generationChanged
         }
-        defer { _ = Darwin.close(fd) }
+        var transferOwnership = false
+        defer {
+            if !transferOwnership { _ = Darwin.close(fd) }
+        }
         var before = stat()
         var pathBefore = stat()
         guard Darwin.fstat(fd, &before) == 0,
@@ -273,6 +350,30 @@ public struct ArchiveSourceReclaimer: Sendable {
               Self.matchesStableIdentity(before, after),
               Self.matchesStableIdentity(after, pathAfter),
               Self.hexDigest(hasher.finalize()) == capture.wholeSourceSHA256 else {
+            throw ArchiveSourceReclaimerError.generationChanged
+        }
+        transferOwnership = true
+        return VerifiedFile(
+            fd: fd,
+            device: after.st_dev,
+            inode: after.st_ino,
+            size: after.st_size,
+            mtime: after.st_mtimespec,
+            mode: after.st_mode
+        )
+    }
+
+    private func revalidate(_ verified: VerifiedFile, at url: URL) throws {
+        var descriptor = stat()
+        var path = stat()
+        guard Darwin.fstat(verified.fd, &descriptor) == 0,
+              Darwin.lstat(url.path, &path) == 0,
+              descriptor.st_dev == verified.device,
+              descriptor.st_ino == verified.inode,
+              descriptor.st_size == verified.size,
+              Self.nanoseconds(descriptor.st_mtimespec) == Self.nanoseconds(verified.mtime),
+              descriptor.st_mode == verified.mode,
+              Self.matchesStableIdentity(descriptor, path) else {
             throw ArchiveSourceReclaimerError.generationChanged
         }
     }
