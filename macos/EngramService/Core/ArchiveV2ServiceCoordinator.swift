@@ -773,56 +773,71 @@ actor ArchiveV2ServiceCoordinator {
                 )
             },
             recoveryDrill: { replicaID in
-                guard let transcriptResolver else {
-                    throw ArchiveV2ServiceCoordinatorError.recoveryDrillUnavailable
-                }
-                guard let candidate = try catalog.nextRecoveryDrillCandidate(
-                          replicaID: replicaID,
-                          maximumBytes: 64 * 1_024 * 1_024
-                      ) else {
-                    throw ArchiveV2ServiceCoordinatorError.noRecoveryDrillCandidate
-                }
-                do {
-                    let proof = try await withThrowingTaskGroup(
-                        of: ArchiveRemoteRecoveryProof.self
-                    ) { group in
-                        group.addTask {
-                            try await transcriptResolver.remoteRecoveryProbe(
-                                sessionID: candidate.binding.sessionID,
-                                replicaID: replicaID
-                            )
-                        }
-                        group.addTask {
-                            try await Task.sleep(for: .seconds(60))
-                            throw ArchiveV2ServiceCoordinatorError.recoveryDrillTimedOut
-                        }
-                        guard let first = try await group.next() else {
-                            throw ArchiveV2ServiceCoordinatorError.recoveryDrillUnavailable
-                        }
-                        group.cancelAll()
-                        return first
-                    }
-                    guard proof.tier.rawValue == replicaID,
-                          proof.manifestSHA256 == candidate.binding.manifestSHA256,
-                          proof.rawByteCount == candidate.rawByteCount else {
-                        throw ArchiveV2ServiceCoordinatorError.recoveryDrillMismatch
-                    }
-                    return try catalog.recordRecoveryLeaseAndAdvanceCursor(
-                        replicaID: replicaID,
-                        manifestSHA256: proof.manifestSHA256,
-                        verifiedAt: Self.timestamp(Date()),
-                        verifiedBytes: proof.rawByteCount
-                    )
-                } catch {
-                    try catalog.expireRecoveryLeaseAndAdvanceCursor(
-                        replicaID: replicaID,
-                        manifestSHA256: candidate.binding.manifestSHA256,
-                        failedAt: Self.timestamp(Date())
-                    )
-                    throw error
-                }
+                try await Self.executeRecoveryDrill(
+                    catalog: catalog,
+                    transcriptResolver: transcriptResolver,
+                    replicaID: replicaID
+                )
             }
         )
+    }
+
+    static func executeRecoveryDrill(
+        catalog: ArchiveCatalog,
+        transcriptResolver: ArchiveTranscriptResolver?,
+        replicaID: String,
+        timeout: Duration = .seconds(60)
+    ) async throws -> ArchiveRecoveryLease {
+        guard let transcriptResolver else {
+            throw ArchiveV2ServiceCoordinatorError.recoveryDrillUnavailable
+        }
+        guard let candidate = try catalog.nextRecoveryDrillCandidate(
+            replicaID: replicaID,
+            maximumBytes: 64 * 1_024 * 1_024
+        ) else {
+            throw ArchiveV2ServiceCoordinatorError.noRecoveryDrillCandidate
+        }
+        do {
+            let proof = try await withThrowingTaskGroup(
+                of: ArchiveRemoteRecoveryProof.self
+            ) { group in
+                group.addTask {
+                    try await transcriptResolver.remoteRecoveryProbe(
+                        sessionID: candidate.binding.sessionID,
+                        replicaID: replicaID
+                    )
+                }
+                group.addTask {
+                    try await Task.sleep(for: timeout)
+                    throw ArchiveV2ServiceCoordinatorError.recoveryDrillTimedOut
+                }
+                guard let first = try await group.next() else {
+                    throw ArchiveV2ServiceCoordinatorError.recoveryDrillUnavailable
+                }
+                group.cancelAll()
+                return first
+            }
+            guard proof.tier.rawValue == replicaID,
+                  proof.manifestSHA256 == candidate.binding.manifestSHA256,
+                  proof.rawByteCount == candidate.rawByteCount else {
+                throw ArchiveV2ServiceCoordinatorError.recoveryDrillMismatch
+            }
+            return try catalog.recordRecoveryLeaseAndAdvanceCursor(
+                replicaID: replicaID,
+                manifestSHA256: proof.manifestSHA256,
+                verifiedAt: Self.timestamp(Date()),
+                verifiedBytes: proof.rawByteCount
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try catalog.expireRecoveryLeaseAndAdvanceCursor(
+                replicaID: replicaID,
+                manifestSHA256: candidate.binding.manifestSHA256,
+                failedAt: Self.timestamp(Date())
+            )
+            throw error
+        }
     }
 
     static func captureSummary(

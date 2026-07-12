@@ -623,6 +623,89 @@ final class ArchiveTranscriptResolverTests: XCTestCase {
         XCTAssertEqual(m1Events, ["getReceipt", "getManifest", "getObject"])
     }
 
+    func testProductionRecoveryDrillRecordsLeaseAndCancellationPreservesPriorState() async throws {
+        let successStore = try makeStore(name: "production-drill-success")
+        let successFixture = try addFixture(
+            to: successStore,
+            sessionID: "production-drill-success",
+            seed: "production-drill-success",
+            chunks: [Data("production drill success".utf8)],
+            publishLocalObjects: false
+        )
+        let successHQ = RecordingArchiveBackend(replicaID: "hq")
+        try await persistVerifiedReceipt(
+            for: successFixture,
+            replicaID: "hq",
+            store: successStore,
+            backend: successHQ
+        )
+        let successResolver = try ArchiveTranscriptResolver(
+            catalog: successStore.catalog,
+            cas: successStore.cas,
+            hq: successHQ,
+            temporaryParent: try makeTemporaryParent(name: "production-drill-success-temp")
+        )
+
+        let lease = try await ArchiveV2ServiceCoordinator.executeRecoveryDrill(
+            catalog: successStore.catalog,
+            transcriptResolver: successResolver,
+            replicaID: "hq",
+            timeout: .seconds(1)
+        )
+
+        XCTAssertEqual(lease.manifestSHA256, successFixture.manifestDigest)
+        XCTAssertEqual(lease.verifiedBytes, Int64(successFixture.raw.count))
+        XCTAssertEqual(try successStore.catalog.recoveryLease(replicaID: "hq"), lease)
+        XCTAssertNotNil(
+            try successStore.catalog.archiveCursorCheckpoint(for: .recoveryDrillHQ)
+        )
+
+        let cancelledStore = try makeStore(name: "production-drill-cancelled")
+        let cancelledFixture = try addFixture(
+            to: cancelledStore,
+            sessionID: "production-drill-cancelled",
+            seed: "production-drill-cancelled",
+            chunks: [Data("production drill cancellation".utf8)],
+            publishLocalObjects: false
+        )
+        let cancelledHQ = RecordingArchiveBackend(replicaID: "hq")
+        try await persistVerifiedReceipt(
+            for: cancelledFixture,
+            replicaID: "hq",
+            store: cancelledStore,
+            backend: cancelledHQ
+        )
+        let priorLease = try cancelledStore.catalog.recordRecoveryLease(
+            replicaID: "hq",
+            manifestSHA256: cancelledFixture.manifestDigest,
+            verifiedAt: "2026-07-11T00:10:00.000Z",
+            verifiedBytes: Int64(cancelledFixture.raw.count)
+        )
+        await cancelledHQ.setFailure(.cancel, operation: "getReceipt")
+        let cancelledResolver = try ArchiveTranscriptResolver(
+            catalog: cancelledStore.catalog,
+            cas: cancelledStore.cas,
+            hq: cancelledHQ,
+            temporaryParent: try makeTemporaryParent(name: "production-drill-cancelled-temp")
+        )
+
+        do {
+            _ = try await ArchiveV2ServiceCoordinator.executeRecoveryDrill(
+                catalog: cancelledStore.catalog,
+                transcriptResolver: cancelledResolver,
+                replicaID: "hq",
+                timeout: .seconds(1)
+            )
+            XCTFail("expected cancellation")
+        } catch is CancellationError {
+            // expected
+        }
+        XCTAssertEqual(try cancelledStore.catalog.recoveryLease(replicaID: "hq"), priorLease)
+        XCTAssertNil(
+            try cancelledStore.catalog.archiveCursorCheckpoint(for: .recoveryDrillHQ)
+        )
+    }
+
     func testRemoteRecoveryProbeChecksCleanupBeforeProofAndDoesNotFallThrough() async throws {
         let store = try makeStore(name: "probe-cleanup")
         let fixture = try addFixture(
