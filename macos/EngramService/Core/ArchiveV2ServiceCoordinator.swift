@@ -1415,12 +1415,21 @@ actor ArchiveV2ServiceCoordinator {
         counts: ArchiveReplicaStatusCounts
     ) -> EngramServiceArchiveV2ReplicaStatus {
         let (queued, overflow) = counts.pending.addingReportingOverflow(counts.inflight)
+        let retryReasons = counts.retryReasons.map {
+            try! EngramServiceArchiveV2RetryReasonCount(
+                symbol: $0.symbol,
+                count: $0.count
+            )
+        }
         return try! EngramServiceArchiveV2ReplicaStatus(
             replicaID: id,
             queuedCount: overflow ? Int.max : queued,
             retryingCount: counts.retry,
             quarantinedCount: counts.quarantine,
-            verifiedCount: counts.verified
+            verifiedCount: counts.verified,
+            oldestOutstandingAt: counts.oldestOutstandingAt,
+            nextRetryAt: counts.nextRetryAt,
+            retryReasons: retryReasons
         )
     }
 

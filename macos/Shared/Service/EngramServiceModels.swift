@@ -1399,13 +1399,19 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
     let retryingCount: Int
     let quarantinedCount: Int
     let verifiedCount: Int
+    let oldestOutstandingAt: String?
+    let nextRetryAt: String?
+    let retryReasons: [EngramServiceArchiveV2RetryReasonCount]
 
     init(
         replicaID: String,
         queuedCount: Int,
         retryingCount: Int,
         quarantinedCount: Int,
-        verifiedCount: Int
+        verifiedCount: Int,
+        oldestOutstandingAt: String? = nil,
+        nextRetryAt: String? = nil,
+        retryReasons: [EngramServiceArchiveV2RetryReasonCount] = []
     ) throws {
         try EngramServiceArchiveV2WireValidation.validateReplicaID(replicaID)
         try EngramServiceArchiveV2WireValidation.validateNonNegative(
@@ -1424,11 +1430,34 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
             verifiedCount,
             field: "verifiedCount"
         )
+        if let oldestOutstandingAt {
+            try EngramServiceArchiveV2WireValidation.validateTimestamp(
+                oldestOutstandingAt,
+                field: "oldestOutstandingAt"
+            )
+        }
+        if let nextRetryAt {
+            try EngramServiceArchiveV2WireValidation.validateTimestamp(
+                nextRetryAt,
+                field: "nextRetryAt"
+            )
+        }
+        try EngramServiceArchiveV2WireValidation.require(
+            retryReasons.count <= 8,
+            field: "retryReasons"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            Set(retryReasons.map(\.symbol)).count == retryReasons.count,
+            field: "retryReasons"
+        )
         self.replicaID = replicaID
         self.queuedCount = queuedCount
         self.retryingCount = retryingCount
         self.quarantinedCount = quarantinedCount
         self.verifiedCount = verifiedCount
+        self.oldestOutstandingAt = oldestOutstandingAt
+        self.nextRetryAt = nextRetryAt
+        self.retryReasons = retryReasons
     }
 
     init(from decoder: Decoder) throws {
@@ -1438,7 +1467,16 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
             queuedCount: container.decode(Int.self, forKey: .queuedCount),
             retryingCount: container.decode(Int.self, forKey: .retryingCount),
             quarantinedCount: container.decode(Int.self, forKey: .quarantinedCount),
-            verifiedCount: container.decode(Int.self, forKey: .verifiedCount)
+            verifiedCount: container.decode(Int.self, forKey: .verifiedCount),
+            oldestOutstandingAt: container.decodeIfPresent(
+                String.self,
+                forKey: .oldestOutstandingAt
+            ),
+            nextRetryAt: container.decodeIfPresent(String.self, forKey: .nextRetryAt),
+            retryReasons: try container.decodeIfPresent(
+                [EngramServiceArchiveV2RetryReasonCount].self,
+                forKey: .retryReasons
+            ) ?? []
         )
     }
 
@@ -1448,6 +1486,34 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
         case retryingCount
         case quarantinedCount
         case verifiedCount
+        case oldestOutstandingAt
+        case nextRetryAt
+        case retryReasons
+    }
+}
+
+struct EngramServiceArchiveV2RetryReasonCount: Codable, Equatable, Sendable {
+    let symbol: String
+    let count: Int
+
+    init(symbol: String, count: Int) throws {
+        try EngramServiceArchiveV2WireValidation.validateSymbol(symbol, field: "symbol")
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(count, field: "count")
+        self.symbol = symbol
+        self.count = count
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            symbol: container.decode(String.self, forKey: .symbol),
+            count: container.decode(Int.self, forKey: .count)
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case symbol
+        case count
     }
 }
 
@@ -1500,6 +1566,110 @@ struct EngramServiceArchiveV2LatestReceipt: Codable, Equatable, Sendable {
     }
 }
 
+struct EngramServiceArchiveV2ReplicationCycleSummary: Codable, Equatable, Sendable {
+    let startedAt: String
+    let finishedAt: String
+    let durationMs: Double
+    let claimedCount: Int
+    let verifiedCount: Int
+    let retryScheduledCount: Int
+    let quarantinedCount: Int
+    let lostClaimCount: Int
+    let staleRecoveredCount: Int
+    let reconciledCount: Int
+    let cancelled: Bool
+    let cycleError: String?
+
+    init(
+        startedAt: String,
+        finishedAt: String,
+        durationMs: Double,
+        claimedCount: Int,
+        verifiedCount: Int,
+        retryScheduledCount: Int,
+        quarantinedCount: Int,
+        lostClaimCount: Int,
+        staleRecoveredCount: Int,
+        reconciledCount: Int,
+        cancelled: Bool,
+        cycleError: String?
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.validateTimestamp(
+            startedAt,
+            field: "startedAt"
+        )
+        try EngramServiceArchiveV2WireValidation.validateTimestamp(
+            finishedAt,
+            field: "finishedAt"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            durationMs.isFinite && durationMs >= 0,
+            field: "durationMs"
+        )
+        let counts = [
+            ("claimedCount", claimedCount),
+            ("verifiedCount", verifiedCount),
+            ("retryScheduledCount", retryScheduledCount),
+            ("quarantinedCount", quarantinedCount),
+            ("lostClaimCount", lostClaimCount),
+            ("staleRecoveredCount", staleRecoveredCount),
+            ("reconciledCount", reconciledCount),
+        ]
+        for (field, value) in counts {
+            try EngramServiceArchiveV2WireValidation.validateNonNegative(value, field: field)
+        }
+        try EngramServiceArchiveV2WireValidation.validateSymbol(
+            cycleError,
+            field: "cycleError"
+        )
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+        self.durationMs = durationMs
+        self.claimedCount = claimedCount
+        self.verifiedCount = verifiedCount
+        self.retryScheduledCount = retryScheduledCount
+        self.quarantinedCount = quarantinedCount
+        self.lostClaimCount = lostClaimCount
+        self.staleRecoveredCount = staleRecoveredCount
+        self.reconciledCount = reconciledCount
+        self.cancelled = cancelled
+        self.cycleError = cycleError
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            startedAt: container.decode(String.self, forKey: .startedAt),
+            finishedAt: container.decode(String.self, forKey: .finishedAt),
+            durationMs: container.decode(Double.self, forKey: .durationMs),
+            claimedCount: container.decode(Int.self, forKey: .claimedCount),
+            verifiedCount: container.decode(Int.self, forKey: .verifiedCount),
+            retryScheduledCount: container.decode(Int.self, forKey: .retryScheduledCount),
+            quarantinedCount: container.decode(Int.self, forKey: .quarantinedCount),
+            lostClaimCount: container.decode(Int.self, forKey: .lostClaimCount),
+            staleRecoveredCount: container.decode(Int.self, forKey: .staleRecoveredCount),
+            reconciledCount: container.decode(Int.self, forKey: .reconciledCount),
+            cancelled: container.decode(Bool.self, forKey: .cancelled),
+            cycleError: container.decodeIfPresent(String.self, forKey: .cycleError)
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case startedAt
+        case finishedAt
+        case durationMs
+        case claimedCount
+        case verifiedCount
+        case retryScheduledCount
+        case quarantinedCount
+        case lostClaimCount
+        case staleRecoveredCount
+        case reconciledCount
+        case cancelled
+        case cycleError
+    }
+}
+
 struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
     let enabled: Bool
     let localCaptureEnabled: Bool
@@ -1521,6 +1691,8 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
     let lastReplicationError: String?
     let cycleRunning: Bool
     let cycleCoalesced: Bool
+    let lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?
+    let nextScheduledCycleAt: String?
 
     init(
         enabled: Bool,
@@ -1542,7 +1714,9 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
         lastCaptureError: String?,
         lastReplicationError: String?,
         cycleRunning: Bool,
-        cycleCoalesced: Bool
+        cycleCoalesced: Bool,
+        lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary? = nil,
+        nextScheduledCycleAt: String? = nil
     ) throws {
         if !enabled {
             try EngramServiceArchiveV2WireValidation.require(
@@ -1568,6 +1742,12 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
             lastReplicationError,
             field: "lastReplicationError"
         )
+        if let nextScheduledCycleAt {
+            try EngramServiceArchiveV2WireValidation.validateTimestamp(
+                nextScheduledCycleAt,
+                field: "nextScheduledCycleAt"
+            )
+        }
 
         let counts = [
             ("capturedCount", capturedCount),
@@ -1616,6 +1796,8 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
         self.lastReplicationError = lastReplicationError
         self.cycleRunning = cycleRunning
         self.cycleCoalesced = cycleCoalesced
+        self.lastReplicationCycle = lastReplicationCycle
+        self.nextScheduledCycleAt = nextScheduledCycleAt
     }
 
     init(from decoder: Decoder) throws {
@@ -1640,7 +1822,15 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
             lastCaptureError: container.decodeIfPresent(String.self, forKey: .lastCaptureError),
             lastReplicationError: container.decodeIfPresent(String.self, forKey: .lastReplicationError),
             cycleRunning: container.decode(Bool.self, forKey: .cycleRunning),
-            cycleCoalesced: container.decode(Bool.self, forKey: .cycleCoalesced)
+            cycleCoalesced: container.decode(Bool.self, forKey: .cycleCoalesced),
+            lastReplicationCycle: container.decodeIfPresent(
+                EngramServiceArchiveV2ReplicationCycleSummary.self,
+                forKey: .lastReplicationCycle
+            ),
+            nextScheduledCycleAt: container.decodeIfPresent(
+                String.self,
+                forKey: .nextScheduledCycleAt
+            )
         )
     }
 
@@ -1665,6 +1855,8 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
         case lastReplicationError
         case cycleRunning
         case cycleCoalesced
+        case lastReplicationCycle
+        case nextScheduledCycleAt
     }
 }
 

@@ -2314,9 +2314,11 @@ public final class ArchiveCatalog: @unchecked Sendable {
             )
             for row in reasonRows {
                 let replicaID: String = row["replica_id"]
+                let symbol: String = row["last_error"]
+                try Self.validateLastError(symbol)
                 retryReasons[replicaID, default: []].append(
                     ArchiveRetryReasonCount(
-                        symbol: row["last_error"],
+                        symbol: symbol,
                         count: row["reason_count"]
                     )
                 )
@@ -2327,14 +2329,25 @@ public final class ArchiveCatalog: @unchecked Sendable {
                     throw ArchiveCatalogError.invalidReplicaState("catalog")
                 }
                 let replicaID: String = row["replica_id"]
+                let oldestOutstandingAt: String? = row["oldest_outstanding_at"]
+                let nextRetryAt: String? = row["next_retry_at"]
+                if let oldestOutstandingAt {
+                    try Self.validateTimestamp(
+                        oldestOutstandingAt,
+                        field: "oldestOutstandingAt"
+                    )
+                }
+                if let nextRetryAt {
+                    try Self.validateTimestamp(nextRetryAt, field: "nextRetryAt")
+                }
                 replicaCounts[replicaID] = ArchiveReplicaStatusCounts(
                     pending: row["pending_count"],
                     inflight: row["inflight_count"],
                     retry: row["retry_count"],
                     quarantine: row["quarantine_count"],
                     verified: row["verified_count"],
-                    oldestOutstandingAt: row["oldest_outstanding_at"],
-                    nextRetryAt: row["next_retry_at"],
+                    oldestOutstandingAt: oldestOutstandingAt,
+                    nextRetryAt: nextRetryAt,
                     retryReasons: retryReasons[replicaID] ?? []
                 )
             }

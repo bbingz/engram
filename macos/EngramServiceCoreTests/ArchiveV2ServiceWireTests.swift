@@ -36,7 +36,39 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
     }
 
     func testStatusRoundTripsCanonicalBoundedShape() throws {
-        let status = try makeStatus()
+        let reasons = [
+            try EngramServiceArchiveV2RetryReasonCount(
+                symbol: "transport_network",
+                count: 2
+            ),
+        ]
+        let cycle = try EngramServiceArchiveV2ReplicationCycleSummary(
+            startedAt: "2026-07-12T00:00:00.000Z",
+            finishedAt: "2026-07-12T00:00:01.500Z",
+            durationMs: 1_500,
+            claimedCount: 4,
+            verifiedCount: 2,
+            retryScheduledCount: 2,
+            quarantinedCount: 0,
+            lostClaimCount: 0,
+            staleRecoveredCount: 1,
+            reconciledCount: 3,
+            cancelled: false,
+            cycleError: nil
+        )
+        let status = try makeStatus(
+            replicas: [
+                try replica(
+                    "hq",
+                    oldestOutstandingAt: "2026-07-11T23:30:00.000Z",
+                    nextRetryAt: "2026-07-12T00:05:00.000Z",
+                    retryReasons: reasons
+                ),
+                try replica("m1"),
+            ],
+            lastReplicationCycle: cycle,
+            nextScheduledCycleAt: "2026-07-12T00:15:00.000Z"
+        )
         let encoded = try JSONEncoder().encode(status)
         let decoded = try JSONDecoder().decode(
             EngramServiceArchiveV2StatusResponse.self,
@@ -46,6 +78,91 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         XCTAssertEqual(decoded, status)
         XCTAssertEqual(decoded.replicas.map(\.replicaID), ["hq", "m1"])
         XCTAssertEqual(decoded.latestReceipts.map(\.replicaID), ["hq", "m1"])
+    }
+
+    func testStatusDecodesOlderPayloadWithoutDiagnostics() throws {
+        let encoded = try JSONEncoder().encode(
+            makeStatus(
+                lastReplicationCycle: try EngramServiceArchiveV2ReplicationCycleSummary(
+                    startedAt: timestamp,
+                    finishedAt: timestamp,
+                    durationMs: 0,
+                    claimedCount: 0,
+                    verifiedCount: 0,
+                    retryScheduledCount: 0,
+                    quarantinedCount: 0,
+                    lostClaimCount: 0,
+                    staleRecoveredCount: 0,
+                    reconciledCount: 0,
+                    cancelled: false,
+                    cycleError: nil
+                ),
+                nextScheduledCycleAt: timestamp
+            )
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object.removeValue(forKey: "lastReplicationCycle")
+        object.removeValue(forKey: "nextScheduledCycleAt")
+        var replicas = try XCTUnwrap(object["replicas"] as? [[String: Any]])
+        for index in replicas.indices {
+            replicas[index].removeValue(forKey: "oldestOutstandingAt")
+            replicas[index].removeValue(forKey: "nextRetryAt")
+            replicas[index].removeValue(forKey: "retryReasons")
+        }
+        object["replicas"] = replicas
+
+        let decoded = try JSONDecoder().decode(
+            EngramServiceArchiveV2StatusResponse.self,
+            from: JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        )
+
+        XCTAssertNil(decoded.lastReplicationCycle)
+        XCTAssertNil(decoded.nextScheduledCycleAt)
+        XCTAssertTrue(decoded.replicas.allSatisfy {
+            $0.oldestOutstandingAt == nil
+                && $0.nextRetryAt == nil
+                && $0.retryReasons.isEmpty
+        })
+    }
+
+    func testStatusDiagnosticsRejectInvalidValues() throws {
+        XCTAssertThrowsError(
+            try EngramServiceArchiveV2RetryReasonCount(
+                symbol: "bad/path",
+                count: 1
+            )
+        )
+        XCTAssertThrowsError(
+            try EngramServiceArchiveV2RetryReasonCount(
+                symbol: "transport_network",
+                count: -1
+            )
+        )
+        XCTAssertThrowsError(
+            try replica(
+                "hq",
+                oldestOutstandingAt: "2026-07-12T00:00:00Z"
+            )
+        )
+        XCTAssertThrowsError(
+            try EngramServiceArchiveV2ReplicationCycleSummary(
+                startedAt: timestamp,
+                finishedAt: timestamp,
+                durationMs: -1,
+                claimedCount: 0,
+                verifiedCount: 0,
+                retryScheduledCount: 0,
+                quarantinedCount: 0,
+                lostClaimCount: 0,
+                staleRecoveredCount: 0,
+                reconciledCount: 0,
+                cancelled: false,
+                cycleError: nil
+            )
+        )
+        XCTAssertThrowsError(try makeStatus(nextScheduledCycleAt: "not-a-timestamp"))
     }
 
     func testStatusRejectsNegativeCountsFromInitializerAndDecoder() throws {
@@ -348,7 +465,9 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         lastCaptureError: String? = "source_changed",
         lastReplicationError: String? = "network_unavailable",
         cycleRunning: Bool = true,
-        cycleCoalesced: Bool = false
+        cycleCoalesced: Bool = false,
+        lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary? = nil,
+        nextScheduledCycleAt: String? = nil
     ) throws -> EngramServiceArchiveV2StatusResponse {
         try EngramServiceArchiveV2StatusResponse(
             enabled: enabled,
@@ -373,17 +492,27 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
             lastCaptureError: lastCaptureError,
             lastReplicationError: lastReplicationError,
             cycleRunning: cycleRunning,
-            cycleCoalesced: cycleCoalesced
+            cycleCoalesced: cycleCoalesced,
+            lastReplicationCycle: lastReplicationCycle,
+            nextScheduledCycleAt: nextScheduledCycleAt
         )
     }
 
-    private func replica(_ id: String) throws -> EngramServiceArchiveV2ReplicaStatus {
+    private func replica(
+        _ id: String,
+        oldestOutstandingAt: String? = nil,
+        nextRetryAt: String? = nil,
+        retryReasons: [EngramServiceArchiveV2RetryReasonCount] = []
+    ) throws -> EngramServiceArchiveV2ReplicaStatus {
         try EngramServiceArchiveV2ReplicaStatus(
             replicaID: id,
             queuedCount: id == "hq" ? 1 : 2,
             retryingCount: 1,
             quarantinedCount: 0,
-            verifiedCount: 3
+            verifiedCount: 3,
+            oldestOutstandingAt: oldestOutstandingAt,
+            nextRetryAt: nextRetryAt,
+            retryReasons: retryReasons
         )
     }
 
