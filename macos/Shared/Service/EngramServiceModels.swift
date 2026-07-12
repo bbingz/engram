@@ -1285,6 +1285,74 @@ struct EngramServiceArchiveV2StoreTokenResponse: Codable, Equatable, Sendable {
     let serviceRestartRequired: Bool
 }
 
+struct EngramServiceArchiveV2RemoteRecoveryProbeRequest: Codable, Equatable, Sendable {
+    let sessionId: String
+
+    init(sessionId: String) throws {
+        try EngramServiceArchiveV2WireValidation.validateTranscriptSessionID(sessionId)
+        self.sessionId = sessionId
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(sessionId: container.decode(String.self, forKey: .sessionId))
+    }
+
+    private enum CodingKeys: String, CodingKey { case sessionId }
+}
+
+struct EngramServiceArchiveV2RemoteRecoveryProbeResponse: Codable, Equatable, Sendable {
+    let tier: String
+    let receiptSHA256: String
+    let manifestSHA256: String
+    let wholeSourceSHA256: String
+
+    init(
+        tier: String,
+        receiptSHA256: String,
+        manifestSHA256: String,
+        wholeSourceSHA256: String
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.require(
+            tier == "hq" || tier == "m1",
+            field: "tier"
+        )
+        try EngramServiceArchiveV2WireValidation.validateDigest(
+            receiptSHA256,
+            field: "receiptSHA256"
+        )
+        try EngramServiceArchiveV2WireValidation.validateDigest(
+            manifestSHA256,
+            field: "manifestSHA256"
+        )
+        try EngramServiceArchiveV2WireValidation.validateDigest(
+            wholeSourceSHA256,
+            field: "wholeSourceSHA256"
+        )
+        self.tier = tier
+        self.receiptSHA256 = receiptSHA256
+        self.manifestSHA256 = manifestSHA256
+        self.wholeSourceSHA256 = wholeSourceSHA256
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            tier: container.decode(String.self, forKey: .tier),
+            receiptSHA256: container.decode(String.self, forKey: .receiptSHA256),
+            manifestSHA256: container.decode(String.self, forKey: .manifestSHA256),
+            wholeSourceSHA256: container.decode(String.self, forKey: .wholeSourceSHA256)
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case tier
+        case receiptSHA256
+        case manifestSHA256
+        case wholeSourceSHA256
+    }
+}
+
 struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
     let replicaID: String
     let queuedCount: Int

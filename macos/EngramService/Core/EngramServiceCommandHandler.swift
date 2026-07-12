@@ -166,6 +166,45 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     requestId: request.requestId,
                     result: try Self.encode(try await archiveV2StoreTokenResponse(payload))
                 )
+            case "archiveV2RemoteRecoveryProbe":
+                guard let rawPayload = request.payload else {
+                    throw EngramServiceError.invalidRequest(
+                        message: "Invalid payload for archiveV2RemoteRecoveryProbe"
+                    )
+                }
+                do {
+                    guard let object = try JSONSerialization.jsonObject(with: rawPayload) as? [String: Any],
+                          Set(object.keys) == ["sessionId"] else {
+                        throw EngramServiceError.invalidRequest(
+                            message: "Invalid payload for archiveV2RemoteRecoveryProbe"
+                        )
+                    }
+                } catch is EngramServiceError {
+                    throw EngramServiceError.invalidRequest(
+                        message: "Invalid payload for archiveV2RemoteRecoveryProbe"
+                    )
+                } catch {
+                    throw EngramServiceError.invalidRequest(
+                        message: "Invalid payload for archiveV2RemoteRecoveryProbe"
+                    )
+                }
+                let payload: EngramServiceArchiveV2RemoteRecoveryProbeRequest
+                do {
+                    payload = try decodePayload(
+                        EngramServiceArchiveV2RemoteRecoveryProbeRequest.self,
+                        from: request
+                    )
+                } catch {
+                    throw EngramServiceError.invalidRequest(
+                        message: "Invalid payload for archiveV2RemoteRecoveryProbe"
+                    )
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(
+                        try await archiveV2RemoteRecoveryProbeResponse(payload)
+                    )
+                )
             case "status":
                 let status = try await writerGate.indexStatus()
                 return .success(

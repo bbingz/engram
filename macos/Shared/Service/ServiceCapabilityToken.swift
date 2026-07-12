@@ -52,6 +52,7 @@ enum ServiceCapabilityToken {
         "remotePullProject",
         "archiveV2Retry",
         "archiveV2StoreToken",
+        "archiveV2RemoteRecoveryProbe",
     ]
 
     static func requiresToken(_ command: String) -> Bool {

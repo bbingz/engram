@@ -35,6 +35,9 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func archiveV2Retry(
         _ request: EngramServiceArchiveV2RetryRequest
     ) async throws -> EngramServiceArchiveV2RetryResponse
+    func archiveV2RemoteRecoveryProbe(
+        _ request: EngramServiceArchiveV2RemoteRecoveryProbeRequest
+    ) async throws -> EngramServiceArchiveV2RemoteRecoveryProbeResponse
     func archiveReadSessionPage(
         _ request: EngramServiceArchiveReadSessionPageRequest
     ) async throws -> EngramServiceArchiveReadSessionPageResponse

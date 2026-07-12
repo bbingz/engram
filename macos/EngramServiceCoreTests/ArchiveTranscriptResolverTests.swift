@@ -495,6 +495,174 @@ final class ArchiveTranscriptResolverTests: XCTestCase {
         XCTAssertEqual(m1Events, ["getReceipt", "getManifest", "getObject"])
     }
 
+    func testRemoteRecoveryProbeUsesVerifiedHQWithoutParserOrLocalCAS() async throws {
+        let store = try makeStore(name: "probe-hq")
+        let fixture = try addFixture(
+            to: store,
+            sessionID: "session-probe-hq",
+            seed: "probe-hq",
+            chunks: [Data("verified remote proof".utf8)],
+            publishLocalObjects: false
+        )
+        let hq = RecordingArchiveBackend(replicaID: "hq")
+        try await persistVerifiedReceipt(for: fixture, replicaID: "hq", store: store, backend: hq)
+        let temporaryParent = try makeTemporaryParent(name: "probe-hq-temp")
+        let resolver = try ArchiveTranscriptResolver(
+            catalog: store.catalog,
+            cas: store.cas,
+            hq: hq,
+            temporaryParent: temporaryParent
+        )
+        let bindingBefore = try store.catalog.latestBinding(sessionID: fixture.sessionID)
+        let receiptBefore = try store.catalog.currentVerifiedReceipt(
+            manifestSHA256: fixture.manifestDigest,
+            replicaID: "hq"
+        )
+        let rowCountsBefore = try archiveRowCounts(store: store)
+
+        let proof = try await resolver.remoteRecoveryProbe(sessionID: fixture.sessionID)
+
+        XCTAssertEqual(proof.tier, .hq)
+        XCTAssertEqual(proof.manifestSHA256, fixture.manifestDigest)
+        XCTAssertEqual(proof.wholeSourceSHA256, ArchiveV2Hash.sha256(fixture.raw))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: temporaryParent.path), [])
+        let hqEvents = await hq.events()
+        XCTAssertEqual(hqEvents, ["getReceipt", "getManifest", "getObject"])
+        XCTAssertEqual(try store.catalog.latestBinding(sessionID: fixture.sessionID), bindingBefore)
+        XCTAssertEqual(
+            try store.catalog.currentVerifiedReceipt(
+                manifestSHA256: fixture.manifestDigest,
+                replicaID: "hq"
+            ),
+            receiptBefore
+        )
+        XCTAssertEqual(try archiveRowCounts(store: store), rowCountsBefore)
+    }
+
+    func testRemoteRecoveryProbeFallsThroughToM1AndCancellationDoesNotAdvance() async throws {
+        let store = try makeStore(name: "probe-m1")
+        let fixture = try addFixture(
+            to: store,
+            sessionID: "session-probe-m1",
+            seed: "probe-m1",
+            chunks: [Data("m1 recovery proof".utf8)],
+            publishLocalObjects: false
+        )
+        let hq = RecordingArchiveBackend(replicaID: "hq")
+        let m1 = RecordingArchiveBackend(replicaID: "m1")
+        try await persistVerifiedReceipt(for: fixture, replicaID: "hq", store: store, backend: hq)
+        try await persistVerifiedReceipt(for: fixture, replicaID: "m1", store: store, backend: m1)
+        await hq.setFailure(.transport, operation: "getReceipt")
+        let resolver = try ArchiveTranscriptResolver(
+            catalog: store.catalog,
+            cas: store.cas,
+            hq: hq,
+            m1: m1,
+            temporaryParent: try makeTemporaryParent(name: "probe-m1-temp")
+        )
+
+        let proof = try await resolver.remoteRecoveryProbe(sessionID: fixture.sessionID)
+        XCTAssertEqual(proof.tier, .m1)
+        let m1Events = await m1.events()
+        XCTAssertEqual(m1Events, ["getReceipt", "getManifest", "getObject"])
+
+        let cancelledHQ = RecordingArchiveBackend(replicaID: "hq")
+        let untouchedM1 = RecordingArchiveBackend(replicaID: "m1")
+        await cancelledHQ.seed(fixture: fixture)
+        await untouchedM1.seed(fixture: fixture)
+        await cancelledHQ.setFailure(.cancel, operation: "getReceipt")
+        let cancelledResolver = try ArchiveTranscriptResolver(
+            catalog: store.catalog,
+            cas: store.cas,
+            hq: cancelledHQ,
+            m1: untouchedM1,
+            temporaryParent: try makeTemporaryParent(name: "probe-cancel-temp")
+        )
+        do {
+            _ = try await cancelledResolver.remoteRecoveryProbe(sessionID: fixture.sessionID)
+            XCTFail("expected cancellation")
+        } catch is CancellationError {
+            // expected
+        }
+        let untouchedM1Events = await untouchedM1.events()
+        XCTAssertEqual(untouchedM1Events, [])
+    }
+
+    func testRemoteRecoveryProbeChecksCleanupBeforeProofAndDoesNotFallThrough() async throws {
+        let store = try makeStore(name: "probe-cleanup")
+        let fixture = try addFixture(
+            to: store,
+            sessionID: "session-probe-cleanup",
+            seed: "probe-cleanup",
+            chunks: [Data("cleanup must be proven".utf8)],
+            publishLocalObjects: false
+        )
+        let hq = RecordingArchiveBackend(replicaID: "hq")
+        let m1 = RecordingArchiveBackend(replicaID: "m1")
+        try await persistVerifiedReceipt(for: fixture, replicaID: "hq", store: store, backend: hq)
+        try await persistVerifiedReceipt(for: fixture, replicaID: "m1", store: store, backend: m1)
+        let temporaryParent = try makeTemporaryParent(name: "probe-cleanup-temp")
+        let resolver = try ArchiveTranscriptResolver(
+            catalog: store.catalog,
+            cas: store.cas,
+            hq: hq,
+            m1: m1,
+            temporaryParent: temporaryParent,
+            testHooks: ArchiveTranscriptResolverTestHooks(
+                remoteReplaySelected: { fileURL in
+                    XCTAssertEqual(Darwin.chflags(fileURL.path, UInt32(UF_IMMUTABLE)), 0)
+                }
+            )
+        )
+
+        do {
+            _ = try await resolver.remoteRecoveryProbe(sessionID: fixture.sessionID)
+            XCTFail("expected checked cleanup failure")
+        } catch ArchiveTranscriptResolverError.temporaryStorageFailure(let operation, _) {
+            XCTAssertTrue(operation.hasPrefix("cleanup"))
+        }
+        let m1Events = await m1.events()
+        XCTAssertEqual(m1Events, [])
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: temporaryParent.path).isEmpty)
+        clearImmutableFlagsAndContents(at: temporaryParent)
+    }
+
+    func testRemoteRecoveryProbeCancellationAfterSelectionCleansAndDoesNotFallThrough() async throws {
+        let store = try makeStore(name: "probe-post-selection-cancel")
+        let fixture = try addFixture(
+            to: store,
+            sessionID: "session-probe-post-selection-cancel",
+            seed: "probe-post-selection-cancel",
+            chunks: [Data("cancel after selection".utf8)],
+            publishLocalObjects: false
+        )
+        let hq = RecordingArchiveBackend(replicaID: "hq")
+        let m1 = RecordingArchiveBackend(replicaID: "m1")
+        try await persistVerifiedReceipt(for: fixture, replicaID: "hq", store: store, backend: hq)
+        try await persistVerifiedReceipt(for: fixture, replicaID: "m1", store: store, backend: m1)
+        let temporaryParent = try makeTemporaryParent(name: "probe-post-selection-cancel-temp")
+        let resolver = try ArchiveTranscriptResolver(
+            catalog: store.catalog,
+            cas: store.cas,
+            hq: hq,
+            m1: m1,
+            temporaryParent: temporaryParent,
+            testHooks: ArchiveTranscriptResolverTestHooks(
+                remoteReplaySelected: { _ in throw CancellationError() }
+            )
+        )
+
+        do {
+            _ = try await resolver.remoteRecoveryProbe(sessionID: fixture.sessionID)
+            XCTFail("expected cancellation")
+        } catch is CancellationError {
+            // expected
+        }
+        let m1Events = await m1.events()
+        XCTAssertEqual(m1Events, [])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: temporaryParent.path), [])
+    }
+
     func testAbsentHQBackendFallsThroughToM1() async throws {
         let store = try makeStore(name: "m1-hq-absent")
         let fixture = try addFixture(
@@ -1346,6 +1514,21 @@ final class ArchiveTranscriptResolverTests: XCTestCase {
             .appendingPathComponent("objects/sha256", isDirectory: true)
             .appendingPathComponent(String(digest.prefix(2)), isDirectory: true)
             .appendingPathComponent(digest)
+    }
+
+    private func archiveRowCounts(store: Store) throws -> [Int] {
+        let queue = try DatabaseQueue(
+            path: store.root.appendingPathComponent("archive.sqlite").path
+        )
+        return try queue.read { db in
+            try [
+                "archive_captures",
+                "archive_session_bindings",
+                "archive_replica_receipts",
+            ].map { table in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)") ?? -1
+            }
+        }
     }
 
     private func corruptPersistedReceipt(

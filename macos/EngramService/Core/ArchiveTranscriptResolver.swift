@@ -21,6 +21,13 @@ public struct ArchiveTranscriptResolution<Value: Sendable>: Sendable {
     }
 }
 
+public struct ArchiveRemoteRecoveryProof: Equatable, Sendable {
+    public let tier: ArchiveTranscriptTier
+    public let receiptSHA256: String
+    public let manifestSHA256: String
+    public let wholeSourceSHA256: String
+}
+
 public enum ArchiveTranscriptResolverError: Error, Equatable, Sendable {
     case invalidSessionID
     case invalidReplicaBackend
@@ -36,13 +43,16 @@ public enum ArchiveTranscriptResolverError: Error, Equatable, Sendable {
 struct ArchiveTranscriptResolverTestHooks: Sendable {
     let latestBinding: (@Sendable (String) throws -> ArchiveBinding?)?
     let capture: (@Sendable (String) throws -> ArchiveCapture?)?
+    let remoteReplaySelected: (@Sendable (URL) throws -> Void)?
 
     init(
         latestBinding: (@Sendable (String) throws -> ArchiveBinding?)? = nil,
-        capture: (@Sendable (String) throws -> ArchiveCapture?)? = nil
+        capture: (@Sendable (String) throws -> ArchiveCapture?)? = nil,
+        remoteReplaySelected: (@Sendable (URL) throws -> Void)? = nil
     ) {
         self.latestBinding = latestBinding
         self.capture = capture
+        self.remoteReplaySelected = remoteReplaySelected
     }
 }
 
@@ -114,6 +124,32 @@ public struct ArchiveTranscriptResolver: Sendable {
         }
     }
 
+    /// Verifies one persisted remote archive end-to-end without consulting the
+    /// live source or local CAS and without invoking a transcript parser.
+    public func remoteRecoveryProbe(
+        sessionID: String
+    ) async throws -> ArchiveRemoteRecoveryProof {
+        let locked = try lockedManifest(sessionID: sessionID)
+        let selected = try await selectVerifiedRemoteReplay(locked)
+        let preCleanupResult: Result<Void, Error>
+        do {
+            try testHooks.remoteReplaySelected?(selected.replay.fileURL)
+            try Task.checkCancellation()
+            preCleanupResult = .success(())
+        } catch {
+            preCleanupResult = .failure(error)
+        }
+        try Self.cleanupChecked(selected.replay)
+        try preCleanupResult.get()
+        try Task.checkCancellation()
+        return ArchiveRemoteRecoveryProof(
+            tier: selected.replay.tier,
+            receiptSHA256: selected.persistedReceipt.sha256,
+            manifestSHA256: locked.binding.manifestSHA256,
+            wholeSourceSHA256: locked.manifest.wholeSourceSHA256
+        )
+    }
+
     public func withResolvedFile<Value: Sendable>(
         sessionID: String,
         liveURL: URL?,
@@ -155,24 +191,9 @@ public struct ArchiveTranscriptResolver: Sendable {
         }
 
         try Task.checkCancellation()
-        let binding: ArchiveBinding
-        do {
-            guard let latest = try readLatestBinding(sessionID: sessionID) else {
-                throw ArchiveTranscriptResolverError.archiveUnavailable
-            }
-            binding = latest
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let error as ArchiveTranscriptResolverError {
-            throw error
-        } catch {
-            throw Self.isStructuralCatalogError(error)
-                ? ArchiveTranscriptResolverError.archiveCorrupt
-                : ArchiveTranscriptResolverError.archiveUnavailable
-        }
         let locked: LockedManifest
         do {
-            locked = try lockAndValidate(binding: binding, sessionID: sessionID)
+            locked = try lockedManifest(sessionID: sessionID)
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as ArchiveTranscriptResolverError {
@@ -211,20 +232,82 @@ public struct ArchiveTranscriptResolver: Sendable {
             )
         }
 
+        let selected: RemoteReplaySelection?
+        do {
+            selected = try await selectVerifiedRemoteReplay(locked)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as ArchiveTranscriptResolverError {
+            switch error {
+            case .temporaryStorageFailure, .unsafeTemporaryParent:
+                throw error
+            case .archiveCorrupt:
+                sawCorruption = true
+            default:
+                break
+            }
+            selected = nil
+        }
+        if let selected {
+            // Parsing is deliberately outside the tier-selection catch scope:
+            // once bytes are selected and verified, parser errors are final.
+            return try await parse(
+                selected.replay,
+                source: locked.manifest.source,
+                using: parser
+            )
+        }
+
+        throw sawCorruption
+            ? ArchiveTranscriptResolverError.archiveCorrupt
+            : ArchiveTranscriptResolverError.archiveUnavailable
+    }
+
+    private func lockedManifest(sessionID: String) throws -> LockedManifest {
+        guard !sessionID.isEmpty else {
+            throw ArchiveTranscriptResolverError.invalidSessionID
+        }
+        try Task.checkCancellation()
+        let binding: ArchiveBinding
+        do {
+            guard let latest = try readLatestBinding(sessionID: sessionID) else {
+                throw ArchiveTranscriptResolverError.archiveUnavailable
+            }
+            binding = latest
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as ArchiveTranscriptResolverError {
+            throw error
+        } catch {
+            throw Self.isStructuralCatalogError(error)
+                ? ArchiveTranscriptResolverError.archiveCorrupt
+                : ArchiveTranscriptResolverError.archiveUnavailable
+        }
+        do {
+            return try lockAndValidate(binding: binding, sessionID: sessionID)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as ArchiveTranscriptResolverError {
+            throw error
+        } catch {
+            throw ArchiveTranscriptResolverError.archiveCorrupt
+        }
+    }
+
+    private func selectVerifiedRemoteReplay(
+        _ locked: LockedManifest
+    ) async throws -> RemoteReplaySelection {
+        var sawCorruption = false
         for (tier, backend) in [(ArchiveTranscriptTier.hq, hq), (.m1, m1)] {
             try Task.checkCancellation()
+            guard let backend else { continue }
             let replicaID = tier.rawValue
-            guard let backend else {
-                continue
-            }
             let persistedReceipt: ArchiveVerifiedReceipt
             do {
                 guard let receipt = try catalog.currentVerifiedReceipt(
                     manifestSHA256: locked.binding.manifestSHA256,
                     replicaID: replicaID
-                ) else {
-                    continue
-                }
+                ) else { continue }
                 persistedReceipt = receipt
             } catch is CancellationError {
                 throw CancellationError()
@@ -232,22 +315,24 @@ public struct ArchiveTranscriptResolver: Sendable {
                 sawCorruption = true
                 continue
             } catch {
-                // A catalog read failure is availability-local to this tier.
                 continue
             }
-            let replay: ReplayFile
             do {
                 try Self.validatePersistedReceipt(
                     persistedReceipt,
                     replicaID: replicaID,
                     locked: locked
                 )
-                replay = try await replayFromRemote(
+                let replay = try await replayFromRemote(
                     locked,
                     persistedReceipt: persistedReceipt,
                     replicaID: replicaID,
                     backend: backend,
                     tier: tier
+                )
+                return RemoteReplaySelection(
+                    replay: replay,
+                    persistedReceipt: persistedReceipt
                 )
             } catch is CancellationError {
                 throw CancellationError()
@@ -255,36 +340,20 @@ public struct ArchiveTranscriptResolver: Sendable {
                 where error == .transport(.cancelled) {
                 throw CancellationError()
             } catch let error as ArchiveReplicaBackendError {
-                if Self.isBackendCorruption(error) {
-                    sawCorruption = true
-                }
-                continue
+                if Self.isBackendCorruption(error) { sawCorruption = true }
             } catch let error as ArchiveTranscriptResolverError {
                 switch error {
                 case .temporaryStorageFailure, .unsafeTemporaryParent:
                     throw error
                 case .archiveCorrupt:
                     sawCorruption = true
-                    continue
                 default:
-                    continue
+                    break
                 }
             } catch {
-                // A verified replica may still be absent, unavailable, or
-                // corrupt at read time. Only byte-selection failures fall
-                // through; parser errors happen after this block.
                 sawCorruption = true
-                continue
             }
-            // Parsing is deliberately outside the tier-selection catch scope:
-            // once bytes are selected and verified, parser errors are final.
-            return try await parse(
-                replay,
-                source: locked.manifest.source,
-                using: parser
-            )
         }
-
         throw sawCorruption
             ? ArchiveTranscriptResolverError.archiveCorrupt
             : ArchiveTranscriptResolverError.archiveUnavailable
@@ -1100,6 +1169,11 @@ public struct ArchiveTranscriptResolver: Sendable {
 private struct LockedManifest: Sendable {
     let binding: ArchiveBinding
     let manifest: ArchiveSourceManifest
+}
+
+private struct RemoteReplaySelection: Sendable {
+    let replay: ReplayFile
+    let persistedReceipt: ArchiveVerifiedReceipt
 }
 
 private struct ReplayFile: Sendable {

@@ -10,7 +10,7 @@ enum EngramCLIArchiveError: Error, CustomStringConvertible, Equatable {
     var description: String {
         switch self {
         case .usage:
-            return "Usage: EngramCLI archive status [--json] | retry --replica hq|m1|all [--json] | token set --replica hq|m1 --stdin [--json]"
+            return "Usage: EngramCLI archive status [--json] | retry --replica hq|m1|all [--json] | token set --replica hq|m1 --stdin [--json] | probe-remote --session-id <id> [--json]"
         case .invalidTokenInput:
             return "archive token input must be one canonical base64 line decoding to 32 bytes"
         case .ttyInputForbidden:
@@ -25,6 +25,7 @@ enum EngramCLIArchiveCommand: Equatable {
     case status(json: Bool)
     case retry(replicaID: String?, json: Bool)
     case storeToken(replicaID: String, json: Bool)
+    case probeRemote(sessionID: String, json: Bool)
 
     static func parse(arguments: [String]) throws -> Self? {
         guard arguments.first == "archive" else { return nil }
@@ -43,6 +44,25 @@ enum EngramCLIArchiveCommand: Equatable {
             guard tail.first == "set" else { throw EngramCLIArchiveError.usage }
             let parsed = try parseReplicaOptions(Array(tail.dropFirst()), allowAll: false, requireStdin: true)
             return .storeToken(replicaID: parsed.replicaID, json: parsed.json)
+        case "probe-remote":
+            var sessionID: String?
+            var json = false
+            var index = 0
+            while index < tail.count {
+                switch tail[index] {
+                case "--session-id" where sessionID == nil && index + 1 < tail.count:
+                    sessionID = tail[index + 1]
+                    index += 2
+                case "--json" where !json:
+                    json = true
+                    index += 1
+                default:
+                    throw EngramCLIArchiveError.usage
+                }
+            }
+            guard let sessionID else { throw EngramCLIArchiveError.usage }
+            _ = try EngramServiceArchiveV2RemoteRecoveryProbeRequest(sessionId: sessionID)
+            return .probeRemote(sessionID: sessionID, json: json)
         default:
             throw EngramCLIArchiveError.usage
         }
@@ -144,6 +164,11 @@ enum EngramCLIArchiveRunner {
         case .storeToken(let replicaID, let wantsJSON):
             let token = try EngramCLIArchiveTokenInput.readFromStandardInput()
             value = try await client.archiveV2StoreToken(.init(replicaID: replicaID, token: token))
+            json = wantsJSON
+        case .probeRemote(let sessionID, let wantsJSON):
+            value = try await client.archiveV2RemoteRecoveryProbe(
+                try .init(sessionId: sessionID)
+            )
             json = wantsJSON
         }
         let data = try JSONEncoder().encode(AnyEncodable(value))

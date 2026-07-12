@@ -7,9 +7,18 @@ final class EngramCLIArchiveCommandTests: XCTestCase {
         XCTAssertEqual(try EngramCLIArchiveCommand.parse(arguments: ["archive", "retry", "--replica", "all"]), .retry(replicaID: nil, json: false))
         XCTAssertEqual(try EngramCLIArchiveCommand.parse(arguments: ["archive", "retry", "--replica", "m1", "--json"]), .retry(replicaID: "m1", json: true))
         XCTAssertEqual(try EngramCLIArchiveCommand.parse(arguments: ["archive", "token", "set", "--replica", "hq", "--stdin"]), .storeToken(replicaID: "hq", json: false))
+        XCTAssertEqual(try EngramCLIArchiveCommand.parse(arguments: ["archive", "probe-remote", "--session-id", "session-1", "--json"]), .probeRemote(sessionID: "session-1", json: true))
         XCTAssertNil(try EngramCLIArchiveCommand.parse(arguments: ["resume", "session-1"]))
         XCTAssertThrowsError(try EngramCLIArchiveCommand.parse(arguments: ["archive", "unknown"]))
         XCTAssertThrowsError(try EngramCLIArchiveCommand.parse(arguments: ["archive", "status", "--socket", "/tmp/other.sock"]))
+        for forbidden in ["--replica", "--url", "--path", "--digest", "--skip"] {
+            XCTAssertThrowsError(
+                try EngramCLIArchiveCommand.parse(
+                    arguments: ["archive", "probe-remote", "--session-id", "session-1", forbidden, "value"]
+                )
+            )
+        }
+        XCTAssertThrowsError(try EngramCLIArchiveCommand.parse(arguments: ["archive", "probe-remote", "--session-id", ""]))
     }
 
     func testTokenInputRequiresNonTTYCanonicalSingleBase64LineOf32Bytes() throws {

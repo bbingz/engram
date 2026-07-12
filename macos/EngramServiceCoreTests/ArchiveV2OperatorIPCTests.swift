@@ -53,6 +53,99 @@ final class ArchiveV2OperatorIPCTests: XCTestCase {
         XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains(token))
     }
 
+    func testRemoteRecoveryProbeIsCapabilityProtectedAndResponseHasOnlyProofFields() throws {
+        XCTAssertTrue(ServiceCapabilityToken.requiresToken("archiveV2RemoteRecoveryProbe"))
+        let response = try EngramServiceArchiveV2RemoteRecoveryProbeResponse(
+            tier: "hq",
+            receiptSHA256: String(repeating: "a", count: 64),
+            manifestSHA256: String(repeating: "b", count: 64),
+            wholeSourceSHA256: String(repeating: "c", count: 64)
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(response)) as? [String: Any]
+        )
+        XCTAssertEqual(Set(object.keys), ["tier", "receiptSHA256", "manifestSHA256", "wholeSourceSHA256"])
+    }
+
+    func testRemoteRecoveryProbeRejectsUnboundedPayloadSurfaceBeforeResolution() async throws {
+        let runtime = try makeOperatorRuntime()
+        defer { try? FileManager.default.removeItem(at: runtime) }
+        let handler = EngramServiceCommandHandler(
+            writerGate: try ServiceWriterGate(
+                databasePath: runtime.appendingPathComponent("index.sqlite").path,
+                runtimeDirectory: runtime
+            )
+        )
+        let payloads: [[String: Any]] = [
+            ["sessionId": "session-1", "replica": "m1"],
+            ["sessionId": "session-1", "url": "https://example.invalid"],
+            ["sessionId": "session-1", "path": "/tmp/source"],
+            ["sessionId": "session-1", "digest": String(repeating: "a", count: 64)],
+            ["sessionId": "session-1", "skip": true],
+        ]
+        for object in payloads {
+            let response = await handler.handle(
+                EngramServiceRequestEnvelope(
+                    command: "archiveV2RemoteRecoveryProbe",
+                    payload: try JSONSerialization.data(withJSONObject: object)
+                )
+            )
+            guard case .failure(_, let error) = response else {
+                return XCTFail("expected invalid request")
+            }
+            XCTAssertEqual(error.name, "InvalidRequest")
+        }
+    }
+
+    func testRemoteRecoveryProbeSocketIsCapabilityProtectedBeforeHandler() async throws {
+        let runtime = try makeOperatorRuntime()
+        defer { try? FileManager.default.removeItem(at: runtime) }
+        let socket = runtime.appendingPathComponent("engram-service.sock")
+        let calls = OperatorCallProbe()
+        let server = UnixSocketServiceServer(socketPath: socket.path) { request in
+            await calls.record()
+            return .failure(
+                requestId: request.requestId,
+                error: EngramServiceErrorEnvelope(
+                    name: "ServiceUnavailable",
+                    message: "expected test sentinel",
+                    retryPolicy: "retry_backoff"
+                )
+            )
+        }
+        try server.start()
+        defer { server.stop() }
+        let transport = UnixSocketEngramServiceTransport(socketPath: socket.path)
+        let payload = try JSONEncoder().encode(
+            EngramServiceArchiveV2RemoteRecoveryProbeRequest(sessionId: "session-1")
+        )
+
+        let rejected = try await transport.send(
+            EngramServiceRequestEnvelope(
+                command: "archiveV2RemoteRecoveryProbe",
+                payload: payload,
+                capabilityToken: "wrong-token"
+            ),
+            timeout: 2
+        )
+        guard case .failure(_, let error) = rejected else {
+            return XCTFail("expected Unauthorized")
+        }
+        XCTAssertEqual(error.name, "Unauthorized")
+        let rejectedCalls = await calls.count()
+        XCTAssertEqual(rejectedCalls, 0)
+
+        _ = try await transport.send(
+            EngramServiceRequestEnvelope(
+                command: "archiveV2RemoteRecoveryProbe",
+                payload: payload
+            ),
+            timeout: 2
+        )
+        let acceptedCalls = await calls.count()
+        XCTAssertEqual(acceptedCalls, 1)
+    }
+
     func testStoreTokenSocketRejectsWrongCapabilityBeforeHandlerAndAllowsAuthorizedRequest() async throws {
         let runtime = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("engram-a2operator-\(UUID().uuidString.prefix(8))", isDirectory: true)

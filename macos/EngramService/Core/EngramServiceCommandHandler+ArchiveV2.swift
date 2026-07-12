@@ -2,6 +2,33 @@ import EngramCoreWrite
 import Foundation
 
 extension EngramServiceCommandHandler {
+    func archiveV2RemoteRecoveryProbeResponse(
+        _ request: EngramServiceArchiveV2RemoteRecoveryProbeRequest
+    ) async throws -> EngramServiceArchiveV2RemoteRecoveryProbeResponse {
+        guard let archiveTranscriptResolver else {
+            throw EngramServiceError.serviceUnavailable(
+                message: "Archive recovery unavailable"
+            )
+        }
+        do {
+            let proof = try await archiveTranscriptResolver.remoteRecoveryProbe(
+                sessionID: request.sessionId
+            )
+            return try EngramServiceArchiveV2RemoteRecoveryProbeResponse(
+                tier: proof.tier.rawValue,
+                receiptSHA256: proof.receiptSHA256,
+                manifestSHA256: proof.manifestSHA256,
+                wholeSourceSHA256: proof.wholeSourceSHA256
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw EngramServiceError.serviceUnavailable(
+                message: "Archive recovery unavailable"
+            )
+        }
+    }
+
     func archiveV2StoreTokenResponse(
         _ request: EngramServiceArchiveV2StoreTokenRequest
     ) async throws -> EngramServiceArchiveV2StoreTokenResponse {

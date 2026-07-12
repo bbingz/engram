@@ -36,6 +36,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let triggerSyncResult: Result<EngramServiceTriggerSyncResponse, Error>
     let archiveV2StatusResult: Result<EngramServiceArchiveV2StatusResponse, Error>
     let archiveV2RetryResult: Result<EngramServiceArchiveV2RetryResponse, Error>
+    let archiveV2RemoteRecoveryProbeResult: Result<EngramServiceArchiveV2RemoteRecoveryProbeResponse, Error>
     let archiveReadSessionPageResult: Result<EngramServiceArchiveReadSessionPageResponse, Error>
     let refreshUsageResult: Result<EngramServiceRefreshUsageResponse, Error>
     let regenerateAllTitlesResult: Result<EngramServiceRegenerateTitlesResponse, Error>
@@ -93,6 +94,12 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         triggerSync: EngramServiceTriggerSyncResponse = EngramServiceTriggerSyncResponse(results: []),
         archiveV2Status: EngramServiceArchiveV2StatusResponse = MockEngramServiceClient.defaultArchiveV2Status,
         archiveV2Retry: EngramServiceArchiveV2RetryResponse = MockEngramServiceClient.defaultArchiveV2Retry,
+        archiveV2RemoteRecoveryProbe: EngramServiceArchiveV2RemoteRecoveryProbeResponse = try! EngramServiceArchiveV2RemoteRecoveryProbeResponse(
+            tier: "hq",
+            receiptSHA256: String(repeating: "a", count: 64),
+            manifestSHA256: String(repeating: "b", count: 64),
+            wholeSourceSHA256: String(repeating: "c", count: 64)
+        ),
         archiveReadSessionPage: EngramServiceArchiveReadSessionPageResponse = MockEngramServiceClient.defaultArchiveReadSessionPage,
         refreshUsage: EngramServiceRefreshUsageResponse = EngramServiceRefreshUsageResponse(snapshotCount: 0, sources: []),
         regenerateAllTitles: EngramServiceRegenerateTitlesResponse = EngramServiceRegenerateTitlesResponse(
@@ -146,6 +153,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.triggerSyncResult = .success(triggerSync)
         self.archiveV2StatusResult = .success(archiveV2Status)
         self.archiveV2RetryResult = .success(archiveV2Retry)
+        self.archiveV2RemoteRecoveryProbeResult = .success(archiveV2RemoteRecoveryProbe)
         self.archiveReadSessionPageResult = .success(archiveReadSessionPage)
         self.refreshUsageResult = .success(refreshUsage)
         self.regenerateAllTitlesResult = .success(regenerateAllTitles)
@@ -274,6 +282,12 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         _ request: EngramServiceArchiveV2RetryRequest
     ) async throws -> EngramServiceArchiveV2RetryResponse {
         try archiveV2RetryResult.get()
+    }
+
+    func archiveV2RemoteRecoveryProbe(
+        _ request: EngramServiceArchiveV2RemoteRecoveryProbeRequest
+    ) async throws -> EngramServiceArchiveV2RemoteRecoveryProbeResponse {
+        try archiveV2RemoteRecoveryProbeResult.get()
     }
 
     func archiveReadSessionPage(
