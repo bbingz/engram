@@ -195,9 +195,7 @@ describe('remote server package implementation contract', () => {
     );
     expect(packageScript).toContain('bin/EngramRemoteServer');
     expect(packageScript).toContain('bin/swift-nio_NIOPosix.bundle');
-    expect(packageScript).toContain(
-      'Frameworks/EngramRemoteServerCore.framework',
-    );
+    expect(packageScript).not.toContain('EngramRemoteServerCore.framework');
     expect(packageScript).toContain(
       'Frameworks/libswiftCompatibilitySpan.dylib',
     );
@@ -209,46 +207,33 @@ describe('remote server package implementation contract', () => {
     expect(packageScript).toContain('SHA256SUMS');
   });
 
-  it('copies directory products with ditto and validates framework symlinks', () => {
-    expect(packageScript).toMatch(
-      /ditto[\s\\]+[^\n]+EngramRemoteServerCore\.framework/,
-    );
+  it('copies the NIO resource bundle without packaging a dynamic core framework', () => {
     expect(packageScript).toMatch(
       /ditto[\s\\]+[^\n]+swift-nio_NIOPosix\.bundle/,
     );
-    expect(packageScript).toContain('validate_framework_symlinks');
-    expect(packageScript).toContain('Versions/Current');
-    expect(packageScript).toContain('Versions/Current/Headers');
-    expect(packageScript).toContain('Versions/Current/Modules');
-    expect(packageScript).toContain('readlink');
-    expect(shellFunctionBody('validate_framework_symlinks')).toContain(
-      'framework="$(cd "$framework" && pwd -P)"',
-    );
+    expect(packageScript).not.toContain('validate_framework_symlinks');
+    expect(packageScript).not.toContain('BUNDLE_FRAMEWORK');
   });
 
   it('uses active-Xcode swift-stdlib-tool output for dependency closure', () => {
     expect(packageScript).toContain('xcrun --find swift-stdlib-tool');
     expect(packageScript).toContain('--print');
     expect(packageScript).toContain('--scan-executable');
-    expect(packageScript).toContain('--scan-folder');
+    expect(packageScript).not.toContain('--scan-folder');
     expect(packageScript).toContain('--platform macosx');
     expect(packageScript).not.toMatch(/find[^\n]+libswiftCompatibilitySpan/);
   });
 
-  it('thins before signing and signs dylibs, framework, then executable', () => {
+  it('thins before signing and signs runtime dylibs before the executable', () => {
     const thinIndex = packageScript.indexOf('thin_macho_to_arm64');
     const dylibSignIndex = packageScript.indexOf('sign_runtime_dylibs');
-    const frameworkSignIndex = packageScript.indexOf(
-      'codesign_bundle "$BUNDLE_FRAMEWORK"',
-    );
     const executableSignIndex = packageScript.indexOf(
       'codesign_bundle "$BUNDLE_EXECUTABLE"',
     );
 
     expect(thinIndex).toBeGreaterThan(-1);
     expect(dylibSignIndex).toBeGreaterThan(thinIndex);
-    expect(frameworkSignIndex).toBeGreaterThan(dylibSignIndex);
-    expect(executableSignIndex).toBeGreaterThan(frameworkSignIndex);
+    expect(executableSignIndex).toBeGreaterThan(dylibSignIndex);
   });
 
   it('verifies signatures, architecture, framework rpath, and dependency closure', () => {

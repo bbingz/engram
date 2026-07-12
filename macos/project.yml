@@ -264,7 +264,7 @@ targets:
   # bearer auth + AES-GCM at-rest encryption (server-held key). NEVER bundled in
   # Engram.app — it is deployed separately (e.g. on a Mac mini / private host).
   EngramRemoteServerCore:
-    type: framework
+    type: framework.static
     platform: macOS
     deploymentTarget: "14.0"
     sources:

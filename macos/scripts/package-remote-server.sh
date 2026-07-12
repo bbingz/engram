@@ -39,55 +39,6 @@ is_directory_empty() {
   [[ -z "$(/usr/bin/find "$directory" -mindepth 1 -maxdepth 1 -print -quit)" ]]
 }
 
-validate_framework_symlinks() {
-  local framework="$1"
-  local current binary_link headers_link modules_link resources_link
-  local link target link_dir target_parent
-  local symlink_count
-
-  framework="$(cd "$framework" && pwd -P)" || fail "framework cannot be resolved"
-  current="$framework/Versions/Current"
-  binary_link="$framework/EngramRemoteServerCore"
-  headers_link="$framework/Headers"
-  modules_link="$framework/Modules"
-  resources_link="$framework/Resources"
-
-  [[ -L "$current" ]] || fail "framework Versions/Current is not a symlink"
-  [[ "$(/usr/bin/readlink "$current")" == "A" ]] ||
-    fail "framework Versions/Current does not point to A"
-  [[ -L "$binary_link" ]] || fail "framework binary symlink is missing"
-  [[ "$(/usr/bin/readlink "$binary_link")" == \
-    "Versions/Current/EngramRemoteServerCore" ]] ||
-    fail "framework binary symlink has an unexpected target"
-  [[ -L "$headers_link" ]] || fail "framework Headers symlink is missing"
-  [[ "$(/usr/bin/readlink "$headers_link")" == "Versions/Current/Headers" ]] ||
-    fail "framework Headers symlink has an unexpected target"
-  [[ -L "$modules_link" ]] || fail "framework Modules symlink is missing"
-  [[ "$(/usr/bin/readlink "$modules_link")" == "Versions/Current/Modules" ]] ||
-    fail "framework Modules symlink has an unexpected target"
-  [[ -L "$resources_link" ]] || fail "framework Resources symlink is missing"
-  [[ "$(/usr/bin/readlink "$resources_link")" == "Versions/Current/Resources" ]] ||
-    fail "framework Resources symlink has an unexpected target"
-
-  while IFS= read -r link; do
-    [[ -e "$link" ]] || fail "framework contains a broken symlink: $link"
-    target="$(/usr/bin/readlink "$link")"
-    [[ "$target" != /* ]] || fail "framework contains an absolute symlink: $link"
-    link_dir="$(cd "$(dirname "$link")" && pwd -P)"
-    target_parent="$(cd "$link_dir/$(dirname "$target")" && pwd -P)" ||
-      fail "framework symlink cannot be resolved: $link"
-    case "$target_parent/" in
-      "$framework/" | "$framework/"*) ;;
-      *) fail "framework symlink escapes the framework: $link" ;;
-    esac
-  done < <(/usr/bin/find "$framework" -type l -print | LC_ALL=C sort)
-
-  symlink_count="$(/usr/bin/find "$framework" -type l -print | /usr/bin/wc -l)"
-  symlink_count="${symlink_count//[[:space:]]/}"
-  [[ "$symlink_count" == "5" ]] ||
-    fail "framework contains an unexpected symlink layout"
-}
-
 thin_macho_to_arm64() {
   local binary="$1"
   local architectures temporary mode
@@ -138,20 +89,17 @@ swift_stdlib_tool_path() {
 
 print_swift_runtime_dependencies() {
   local executable="$1"
-  local framework="$2"
-  local tool="$3"
+  local tool="$2"
 
   "$tool" --print \
     --scan-executable "$executable" \
-    --scan-folder "$framework" \
     --platform macosx
 }
 
 copy_swift_runtime_dependencies() {
   local executable="$1"
-  local framework="$2"
-  local frameworks_directory="$3"
-  local tool="$4"
+  local frameworks_directory="$2"
+  local tool="$3"
   local dependency destination basename
 
   while IFS= read -r dependency; do
@@ -168,7 +116,7 @@ copy_swift_runtime_dependencies() {
     else
       /usr/bin/ditto "$dependency" "$destination"
     fi
-  done < <(print_swift_runtime_dependencies "$executable" "$framework" "$tool")
+  done < <(print_swift_runtime_dependencies "$executable" "$tool")
 
   [[ -f "$frameworks_directory/libswiftCompatibilitySpan.dylib" ]] ||
     fail "swift-stdlib-tool did not resolve libswiftCompatibilitySpan.dylib"
@@ -214,11 +162,9 @@ verify_dependency_closure_for_binary() {
 verify_dependency_closure() {
   local bundle="$1"
   local executable="$bundle/bin/EngramRemoteServer"
-  local framework_binary="$bundle/Frameworks/EngramRemoteServerCore.framework/Versions/A/EngramRemoteServerCore"
   local dylib
 
   verify_dependency_closure_for_binary "$bundle" "$executable"
-  verify_dependency_closure_for_binary "$bundle" "$framework_binary"
   while IFS= read -r dylib; do
     [[ -n "$dylib" ]] || continue
     verify_dependency_closure_for_binary "$bundle" "$dylib"
@@ -326,7 +272,6 @@ verify_package_layout() {
   for required in \
     "$bundle/bin/EngramRemoteServer" \
     "$bundle/bin/swift-nio_NIOPosix.bundle" \
-    "$bundle/Frameworks/EngramRemoteServerCore.framework" \
     "$bundle/Frameworks/libswiftCompatibilitySpan.dylib" \
     "$bundle/templates/run-engram-remote.zsh.template" \
     "$bundle/templates/com.engram.remote-server.plist.template" \
@@ -350,13 +295,9 @@ verify_arm64_only() {
 verify_signatures_and_architecture() {
   local bundle="$1"
   local executable="$bundle/bin/EngramRemoteServer"
-  local framework="$bundle/Frameworks/EngramRemoteServerCore.framework"
-  local framework_binary="$framework/Versions/A/EngramRemoteServerCore"
   local dylib
 
   verify_arm64_only "$executable"
-  verify_arm64_only "$framework_binary"
-  /usr/bin/codesign --verify --deep --strict "$framework"
   /usr/bin/codesign --verify --deep --strict "$executable"
 
   while IFS= read -r dylib; do
@@ -385,8 +326,6 @@ verify_package() {
   verify_templates \
     "$canonical_bundle/templates/run-engram-remote.zsh.template" \
     "$canonical_bundle/templates/com.engram.remote-server.plist.template"
-  validate_framework_symlinks \
-    "$canonical_bundle/Frameworks/EngramRemoteServerCore.framework"
   verify_signatures_and_architecture "$canonical_bundle"
   verify_framework_rpath "$canonical_bundle/bin/EngramRemoteServer"
   verify_dependency_closure "$canonical_bundle"
@@ -415,18 +354,15 @@ package_remote_server() {
   local output="$4"
   local products_directory="$derived_data/Build/Products/$configuration"
   local source_executable="$products_directory/EngramRemoteServer"
-  local source_framework="$products_directory/EngramRemoteServerCore.framework"
   local source_resource_bundle="$products_directory/swift-nio_NIOPosix.bundle"
   local tool dylib
 
   local BUNDLE_EXECUTABLE="$output/bin/EngramRemoteServer"
   local BUNDLE_RESOURCE="$output/bin/swift-nio_NIOPosix.bundle"
-  local BUNDLE_FRAMEWORK="$output/Frameworks/EngramRemoteServerCore.framework"
   local BUNDLE_WRAPPER_TEMPLATE="$output/templates/run-engram-remote.zsh.template"
   local BUNDLE_LAUNCH_AGENT_TEMPLATE="$output/templates/com.engram.remote-server.plist.template"
 
   [[ -f "$source_executable" ]] || fail "missing Release executable: $source_executable"
-  [[ -d "$source_framework" ]] || fail "missing Release framework: $source_framework"
   [[ -d "$source_resource_bundle" ]] ||
     fail "missing Release NIO resource bundle: $source_resource_bundle"
   [[ -f "$TEMPLATE_DIR/run-engram-remote.zsh.template" ]] ||
@@ -437,8 +373,6 @@ package_remote_server() {
   /bin/mkdir -p "$output/bin" "$output/Frameworks" "$output/templates"
   /bin/cp "$source_executable" "$BUNDLE_EXECUTABLE"
   /usr/bin/ditto \
-    "$products_directory/EngramRemoteServerCore.framework" "$BUNDLE_FRAMEWORK"
-  /usr/bin/ditto \
     "$products_directory/swift-nio_NIOPosix.bundle" "$BUNDLE_RESOURCE"
   /bin/cp "$TEMPLATE_DIR/run-engram-remote.zsh.template" "$BUNDLE_WRAPPER_TEMPLATE"
   /bin/cp \
@@ -448,14 +382,11 @@ package_remote_server() {
   /bin/chmod 0700 "$BUNDLE_WRAPPER_TEMPLATE"
   /bin/chmod 0600 "$BUNDLE_LAUNCH_AGENT_TEMPLATE"
 
-  validate_framework_symlinks "$BUNDLE_FRAMEWORK"
   thin_macho_to_arm64 "$BUNDLE_EXECUTABLE"
-  thin_macho_to_arm64 \
-    "$BUNDLE_FRAMEWORK/Versions/A/EngramRemoteServerCore"
 
   tool="$(swift_stdlib_tool_path)"
   copy_swift_runtime_dependencies \
-    "$BUNDLE_EXECUTABLE" "$BUNDLE_FRAMEWORK" "$output/Frameworks" "$tool"
+    "$BUNDLE_EXECUTABLE" "$output/Frameworks" "$tool"
   while IFS= read -r dylib; do
     [[ -n "$dylib" ]] || continue
     thin_macho_to_arm64 "$dylib"
@@ -465,7 +396,6 @@ package_remote_server() {
   )
 
   sign_runtime_dylibs "$output/Frameworks"
-  codesign_bundle "$BUNDLE_FRAMEWORK"
   codesign_bundle "$BUNDLE_EXECUTABLE"
 
   write_metadata "$output/BUILD-METADATA.json" "$revision"
