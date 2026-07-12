@@ -4,6 +4,53 @@ import XCTest
 @testable import EngramServiceCore
 
 final class ArchiveV2SettingsTests: XCTestCase {
+    func testReclamationDefaultsDisabledWithThirtyDayWindow() throws {
+        let settings = ArchiveV2Settings.load(settingsURL: settingsURL, environment: [:])
+
+        XCTAssertEqual(settings.reclamation, .init(enabled: false, hotWindowDays: 30))
+        XCTAssertNil(settings.reclamationConfigurationError)
+    }
+
+    func testReclamationAcceptsOnlySupportedHotWindowsAndFailsClosed() throws {
+        for days in [30, 60, 90, 180] {
+            try writeSettings([
+                "archiveReclamation": ["enabled": true, "hotWindowDays": days],
+            ])
+            let settings = ArchiveV2Settings.load(settingsURL: settingsURL, environment: [:])
+            XCTAssertEqual(settings.reclamation, .init(enabled: true, hotWindowDays: days))
+            XCTAssertNil(settings.reclamationConfigurationError)
+        }
+
+        for value: Any in [29, 31, 365, "30", true] {
+            try writeSettings([
+                "archiveReclamation": ["enabled": true, "hotWindowDays": value],
+            ])
+            let settings = ArchiveV2Settings.load(settingsURL: settingsURL, environment: [:])
+            XCTAssertEqual(settings.reclamation, .init(enabled: false, hotWindowDays: 30))
+            XCTAssertEqual(settings.reclamationConfigurationError, .invalidHotWindowDays)
+        }
+    }
+
+    func testInvalidReclamationDoesNotDisableValidRemoteReplication() throws {
+        try writeSettings([
+            "exactArchiveEnabled": true,
+            "remoteArchiveV2": [
+                "enabled": true,
+                "batchSize": 20,
+                "replicas": [
+                    ["id": "hq", "serverURL": "https://hq.tail.example.ts.net", "requireTLS": true],
+                    ["id": "m1", "serverURL": "http://100.64.0.2:8787", "requireTLS": false],
+                ],
+            ],
+            "archiveReclamation": ["enabled": true, "hotWindowDays": 90, "extra": true],
+        ])
+        let settings = ArchiveV2Settings.load(settingsURL: settingsURL, environment: [:])
+
+        XCTAssertTrue(settings.remoteReplicationEnabled)
+        XCTAssertNil(settings.configurationError)
+        XCTAssertEqual(settings.reclamation, .init(enabled: false, hotWindowDays: 30))
+        XCTAssertEqual(settings.reclamationConfigurationError, .invalidReclamationConfiguration)
+    }
     private var root: URL!
     private var settingsURL: URL!
 

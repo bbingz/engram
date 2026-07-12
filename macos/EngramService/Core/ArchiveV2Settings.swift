@@ -11,6 +11,20 @@ public enum ArchiveV2SettingsConfigurationError: String, Error, Equatable, Senda
     case invalidReplicaOrigin = "invalid_replica_origin"
     case duplicateReplicaOrigin = "duplicate_replica_origin"
     case invalidExcludedProjectRoot = "invalid_excluded_project_root"
+    case invalidReclamationConfiguration = "invalid_reclamation_configuration"
+    case invalidHotWindowDays = "invalid_hot_window_days"
+}
+
+public struct ArchiveReclamationSettings: Equatable, Sendable {
+    public static let supportedHotWindowDays: Set<Int> = [30, 60, 90, 180]
+
+    public let enabled: Bool
+    public let hotWindowDays: Int
+
+    public init(enabled: Bool = false, hotWindowDays: Int = 30) {
+        self.enabled = enabled
+        self.hotWindowDays = hotWindowDays
+    }
 }
 
 public struct ArchiveV2RemoteConfiguration: Equatable, Sendable {
@@ -39,6 +53,22 @@ public struct ArchiveV2Settings: Equatable, Sendable {
     public let exactArchiveEnabled: Bool
     public let remoteConfiguration: ArchiveV2RemoteConfiguration?
     public let configurationError: ArchiveV2SettingsConfigurationError?
+    public let reclamation: ArchiveReclamationSettings
+    public let reclamationConfigurationError: ArchiveV2SettingsConfigurationError?
+
+    public init(
+        exactArchiveEnabled: Bool,
+        remoteConfiguration: ArchiveV2RemoteConfiguration?,
+        configurationError: ArchiveV2SettingsConfigurationError?,
+        reclamation: ArchiveReclamationSettings = .init(),
+        reclamationConfigurationError: ArchiveV2SettingsConfigurationError? = nil
+    ) {
+        self.exactArchiveEnabled = exactArchiveEnabled
+        self.remoteConfiguration = remoteConfiguration
+        self.configurationError = configurationError
+        self.reclamation = reclamation
+        self.reclamationConfigurationError = reclamationConfigurationError
+    }
 
     public var remoteReplicationEnabled: Bool {
         exactArchiveEnabled && remoteConfiguration?.enabled == true
@@ -49,6 +79,9 @@ public struct ArchiveV2Settings: Equatable, Sendable {
         environment: [String: String]
     ) -> ArchiveV2Settings {
         let settingsFile = readSettingsFile(at: settingsURL)
+        let reclamationResult = resolveReclamation(settingsFile: settingsFile)
+        let reclamation = reclamationResult.value ?? .init()
+        let reclamationError = reclamationResult.error
 
         let exactResult = resolveExactArchiveEnabled(
             settingsFile: settingsFile,
@@ -57,7 +90,9 @@ public struct ArchiveV2Settings: Equatable, Sendable {
         guard case .success(let exactEnabled) = exactResult else {
             return failed(
                 exactArchiveEnabled: false,
-                error: exactResult.error ?? .invalidExactArchiveFlag
+                error: exactResult.error ?? .invalidExactArchiveFlag,
+                reclamation: reclamation,
+                reclamationError: reclamationError
             )
         }
 
@@ -68,14 +103,18 @@ public struct ArchiveV2Settings: Equatable, Sendable {
         guard case .success(let remoteObject) = remoteObjectResult else {
             return failed(
                 exactArchiveEnabled: exactEnabled,
-                error: remoteObjectResult.error ?? .invalidRemoteConfiguration
+                error: remoteObjectResult.error ?? .invalidRemoteConfiguration,
+                reclamation: reclamation,
+                reclamationError: reclamationError
             )
         }
         guard let remoteObject else {
             return ArchiveV2Settings(
                 exactArchiveEnabled: exactEnabled,
                 remoteConfiguration: nil,
-                configurationError: nil
+                configurationError: nil,
+                reclamation: reclamation,
+                reclamationConfigurationError: reclamationError
             )
         }
 
@@ -84,10 +123,17 @@ public struct ArchiveV2Settings: Equatable, Sendable {
             return ArchiveV2Settings(
                 exactArchiveEnabled: exactEnabled,
                 remoteConfiguration: remote,
-                configurationError: nil
+                configurationError: nil,
+                reclamation: reclamation,
+                reclamationConfigurationError: reclamationError
             )
         case .failure(let error):
-            return failed(exactArchiveEnabled: exactEnabled, error: error)
+            return failed(
+                exactArchiveEnabled: exactEnabled,
+                error: error,
+                reclamation: reclamation,
+                reclamationError: reclamationError
+            )
         }
     }
 
@@ -114,17 +160,63 @@ public struct ArchiveV2Settings: Equatable, Sendable {
             guard case .failure(let error) = self else { return nil }
             return error
         }
+
+        var value: Value? {
+            guard case .success(let value) = self else { return nil }
+            return value
+        }
     }
 
     private static func failed(
         exactArchiveEnabled: Bool,
-        error: ArchiveV2SettingsConfigurationError
+        error: ArchiveV2SettingsConfigurationError,
+        reclamation: ArchiveReclamationSettings = .init(),
+        reclamationError: ArchiveV2SettingsConfigurationError? = nil
     ) -> ArchiveV2Settings {
         ArchiveV2Settings(
             exactArchiveEnabled: exactArchiveEnabled,
             remoteConfiguration: nil,
-            configurationError: error
+            configurationError: error,
+            reclamation: reclamation,
+            reclamationConfigurationError: reclamationError
         )
+    }
+
+    private static func resolveReclamation(
+        settingsFile: SettingsFile
+    ) -> Resolution<ArchiveReclamationSettings> {
+        switch settingsFile {
+        case .missing:
+            return .success(.init())
+        case .invalid:
+            return .failure(.invalidSettingsJSON)
+        case .object(let object):
+            guard let raw = object["archiveReclamation"] else {
+                return .success(.init())
+            }
+            guard let value = raw as? [String: Any],
+                  Set(value.keys).isSubset(of: ["enabled", "hotWindowDays"]),
+                  let enabledRaw = value["enabled"],
+                  let enabled = strictJSONBoolean(enabledRaw)
+            else {
+                return .failure(.invalidReclamationConfiguration)
+            }
+            let days: Int
+            if let rawDays = value["hotWindowDays"] {
+                guard let number = rawDays as? NSNumber,
+                      CFGetTypeID(number) != CFBooleanGetTypeID(),
+                      number.doubleValue.rounded() == number.doubleValue,
+                      let parsed = Int(exactly: number.int64Value),
+                      ArchiveReclamationSettings.supportedHotWindowDays.contains(parsed)
+                else {
+                    return .failure(.invalidHotWindowDays)
+                }
+                days = parsed
+            } else {
+                days = 30
+            }
+            return .success(.init(enabled: enabled, hotWindowDays: days))
+        }
     }
 
     private static func readSettingsFile(at settingsURL: URL) -> SettingsFile {
