@@ -773,50 +773,54 @@ actor ArchiveV2ServiceCoordinator {
                 )
             },
             recoveryDrill: { replicaID in
-                guard let transcriptResolver,
-                      let candidate = try catalog.nextRecoveryDrillCandidate(
+                guard let transcriptResolver else {
+                    throw ArchiveV2ServiceCoordinatorError.recoveryDrillUnavailable
+                }
+                guard let candidate = try catalog.nextRecoveryDrillCandidate(
                           replicaID: replicaID,
                           maximumBytes: 64 * 1_024 * 1_024
                       ) else {
                     throw ArchiveV2ServiceCoordinatorError.noRecoveryDrillCandidate
                 }
-                let proof = try await withThrowingTaskGroup(
-                    of: ArchiveRemoteRecoveryProof.self
-                ) { group in
-                    group.addTask {
-                        try await transcriptResolver.remoteRecoveryProbe(
-                            sessionID: candidate.binding.sessionID,
-                            replicaID: replicaID
-                        )
+                do {
+                    let proof = try await withThrowingTaskGroup(
+                        of: ArchiveRemoteRecoveryProof.self
+                    ) { group in
+                        group.addTask {
+                            try await transcriptResolver.remoteRecoveryProbe(
+                                sessionID: candidate.binding.sessionID,
+                                replicaID: replicaID
+                            )
+                        }
+                        group.addTask {
+                            try await Task.sleep(for: .seconds(60))
+                            throw ArchiveV2ServiceCoordinatorError.recoveryDrillTimedOut
+                        }
+                        guard let first = try await group.next() else {
+                            throw ArchiveV2ServiceCoordinatorError.recoveryDrillUnavailable
+                        }
+                        group.cancelAll()
+                        return first
                     }
-                    group.addTask {
-                        try await Task.sleep(for: .seconds(60))
-                        throw ArchiveV2ServiceCoordinatorError.recoveryDrillTimedOut
+                    guard proof.tier.rawValue == replicaID,
+                          proof.manifestSHA256 == candidate.binding.manifestSHA256,
+                          proof.rawByteCount == candidate.rawByteCount else {
+                        throw ArchiveV2ServiceCoordinatorError.recoveryDrillMismatch
                     }
-                    guard let first = try await group.next() else {
-                        throw ArchiveV2ServiceCoordinatorError.recoveryDrillUnavailable
-                    }
-                    group.cancelAll()
-                    return first
+                    return try catalog.recordRecoveryLeaseAndAdvanceCursor(
+                        replicaID: replicaID,
+                        manifestSHA256: proof.manifestSHA256,
+                        verifiedAt: Self.timestamp(Date()),
+                        verifiedBytes: proof.rawByteCount
+                    )
+                } catch {
+                    try catalog.expireRecoveryLeaseAndAdvanceCursor(
+                        replicaID: replicaID,
+                        manifestSHA256: candidate.binding.manifestSHA256,
+                        failedAt: Self.timestamp(Date())
+                    )
+                    throw error
                 }
-                guard proof.tier.rawValue == replicaID,
-                      proof.manifestSHA256 == candidate.binding.manifestSHA256,
-                      proof.rawByteCount == candidate.rawByteCount else {
-                    throw ArchiveV2ServiceCoordinatorError.recoveryDrillMismatch
-                }
-                let verifiedAt = Self.timestamp(Date())
-                let lease = try catalog.recordRecoveryLease(
-                    replicaID: replicaID,
-                    manifestSHA256: proof.manifestSHA256,
-                    verifiedAt: verifiedAt,
-                    verifiedBytes: proof.rawByteCount
-                )
-                try catalog.advanceRecoveryDrillCursor(
-                    replicaID: replicaID,
-                    manifestSHA256: proof.manifestSHA256,
-                    updatedAt: verifiedAt
-                )
-                return lease
             }
         )
     }

@@ -948,6 +948,76 @@ public final class ArchiveCatalog: @unchecked Sendable {
         }
     }
 
+    public func recordRecoveryLeaseAndAdvanceCursor(
+        replicaID: String,
+        manifestSHA256: String,
+        verifiedAt: String,
+        verifiedBytes: Int64
+    ) throws -> ArchiveRecoveryLease {
+        let lease = ArchiveRecoveryLease(
+            replicaID: replicaID,
+            manifestSHA256: manifestSHA256,
+            verifiedAt: verifiedAt,
+            verifiedBytes: verifiedBytes
+        )
+        let cursor = try Self.recoveryDrillCursorValue(
+            replicaID: replicaID,
+            manifestSHA256: manifestSHA256,
+            updatedAt: verifiedAt
+        )
+        guard verifiedBytes >= 0 else {
+            throw ArchiveCatalogError.invalidLimit(Int(verifiedBytes))
+        }
+        try pool.write { db in
+            try Self.requireVerifiedRecoveryCandidate(
+                db: db,
+                replicaID: replicaID,
+                manifestSHA256: manifestSHA256
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO archive_recovery_leases(
+                    replica_id, manifest_sha256, verified_at, verified_bytes, result, error
+                ) VALUES (?, ?, ?, ?, 'verified', NULL)
+                ON CONFLICT(replica_id) DO UPDATE SET
+                    manifest_sha256 = excluded.manifest_sha256,
+                    verified_at = excluded.verified_at,
+                    verified_bytes = excluded.verified_bytes,
+                    result = 'verified', error = NULL
+                """,
+                arguments: [replicaID, manifestSHA256, verifiedAt, verifiedBytes]
+            )
+            try Self.storeRecoveryDrillCursor(cursor, db: db)
+        }
+        try secureDatabaseFiles()
+        return lease
+    }
+
+    public func expireRecoveryLeaseAndAdvanceCursor(
+        replicaID: String,
+        manifestSHA256: String,
+        failedAt: String
+    ) throws {
+        let cursor = try Self.recoveryDrillCursorValue(
+            replicaID: replicaID,
+            manifestSHA256: manifestSHA256,
+            updatedAt: failedAt
+        )
+        try pool.write { db in
+            try Self.requireVerifiedRecoveryCandidate(
+                db: db,
+                replicaID: replicaID,
+                manifestSHA256: manifestSHA256
+            )
+            try db.execute(
+                sql: "DELETE FROM archive_recovery_leases WHERE replica_id = ?",
+                arguments: [replicaID]
+            )
+            try Self.storeRecoveryDrillCursor(cursor, db: db)
+        }
+        try secureDatabaseFiles()
+    }
+
     public func nextRecoveryDrillCandidate(
         replicaID: String,
         maximumBytes: Int64
@@ -1021,51 +1091,19 @@ public final class ArchiveCatalog: @unchecked Sendable {
         manifestSHA256: String,
         updatedAt: String
     ) throws {
-        let cursorKey = try Self.recoveryDrillCursorKey(replicaID: replicaID)
-        guard ArchiveV2Hash.isValidSHA256(manifestSHA256) else {
-            throw ArchiveCatalogError.invalidSHA256(field: "manifestSHA256")
-        }
-        try Self.validateTimestamp(updatedAt, field: "updatedAt")
-        let payload = Data(manifestSHA256.utf8)
-        let envelope = ArchiveCursorEnvelope(
-            schemaVersion: 1,
-            key: cursorKey.rawValue,
-            payload: payload,
-            payloadSHA256: ArchiveV2Hash.sha256(payload),
+        let cursor = try Self.recoveryDrillCursorValue(
+            replicaID: replicaID,
+            manifestSHA256: manifestSHA256,
             updatedAt: updatedAt
         )
-        let canonicalBytes = try ArchiveCanonicalJSON.encode(envelope)
-        guard let storedValue = String(data: canonicalBytes, encoding: .utf8) else {
-            throw ArchiveCatalogError.invalidArchiveCursorCheckpoint(cursorKey.rawValue)
-        }
 
         try pool.write { db in
-            guard try Bool.fetchOne(
-                db,
-                sql: """
-                SELECT EXISTS(
-                    SELECT 1
-                    FROM archive_session_bindings AS b
-                    JOIN archive_replica_receipts AS r
-                      ON r.manifest_sha256 = b.manifest_sha256
-                     AND r.replica_id = ?
-                    WHERE b.manifest_sha256 = ?
-                      AND b.remote_eligibility = 'eligible'
-                      AND r.state = 'verified'
-                      AND r.receipt_bytes IS NOT NULL
-                )
-                """,
-                arguments: [replicaID, manifestSHA256]
-            ) == true else {
-                throw ArchiveCatalogError.bindingNotFound(manifestSHA256: manifestSHA256)
-            }
-            try db.execute(
-                sql: """
-                INSERT INTO archive_metadata(key, value) VALUES (?, ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                """,
-                arguments: [cursorKey.rawValue, storedValue]
+            try Self.requireVerifiedRecoveryCandidate(
+                db: db,
+                replicaID: replicaID,
+                manifestSHA256: manifestSHA256
             )
+            try Self.storeRecoveryDrillCursor(cursor, db: db)
         }
         try secureDatabaseFiles()
     }
@@ -2876,6 +2914,70 @@ public final class ArchiveCatalog: @unchecked Sendable {
         case "m1": .recoveryDrillM1
         default: throw ArchiveCatalogError.invalidReplicaID
         }
+    }
+
+    private static func recoveryDrillCursorValue(
+        replicaID: String,
+        manifestSHA256: String,
+        updatedAt: String
+    ) throws -> (key: ArchiveCursorKey, value: String) {
+        let key = try recoveryDrillCursorKey(replicaID: replicaID)
+        guard ArchiveV2Hash.isValidSHA256(manifestSHA256) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "manifestSHA256")
+        }
+        try validateTimestamp(updatedAt, field: "updatedAt")
+        let payload = Data(manifestSHA256.utf8)
+        let envelope = ArchiveCursorEnvelope(
+            schemaVersion: 1,
+            key: key.rawValue,
+            payload: payload,
+            payloadSHA256: ArchiveV2Hash.sha256(payload),
+            updatedAt: updatedAt
+        )
+        let bytes = try ArchiveCanonicalJSON.encode(envelope)
+        guard let value = String(data: bytes, encoding: .utf8) else {
+            throw ArchiveCatalogError.invalidArchiveCursorCheckpoint(key.rawValue)
+        }
+        return (key, value)
+    }
+
+    private static func requireVerifiedRecoveryCandidate(
+        db: Database,
+        replicaID: String,
+        manifestSHA256: String
+    ) throws {
+        guard try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+                SELECT 1
+                FROM archive_session_bindings AS b
+                JOIN archive_replica_receipts AS r
+                  ON r.manifest_sha256 = b.manifest_sha256
+                 AND r.replica_id = ?
+                WHERE b.manifest_sha256 = ?
+                  AND b.remote_eligibility = 'eligible'
+                  AND r.state = 'verified'
+                  AND r.receipt_bytes IS NOT NULL
+            )
+            """,
+            arguments: [replicaID, manifestSHA256]
+        ) == true else {
+            throw ArchiveCatalogError.bindingNotFound(manifestSHA256: manifestSHA256)
+        }
+    }
+
+    private static func storeRecoveryDrillCursor(
+        _ cursor: (key: ArchiveCursorKey, value: String),
+        db: Database
+    ) throws {
+        try db.execute(
+            sql: """
+            INSERT INTO archive_metadata(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            arguments: [cursor.key.rawValue, cursor.value]
+        )
     }
 
     private static func currentTimestamp() -> String {

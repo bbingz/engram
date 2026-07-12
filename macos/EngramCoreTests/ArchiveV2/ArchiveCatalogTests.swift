@@ -303,10 +303,34 @@ final class ArchiveCatalogTests: XCTestCase {
             try catalog.nextRecoveryDrillCandidate(replicaID: "hq", maximumBytes: 64 * 1_024 * 1_024)
         )
         XCTAssertEqual(candidate2.binding.manifestSHA256, ordered[1].manifestSHA256)
-        try catalog.advanceRecoveryDrillCursor(
+        let lease = try catalog.recordRecoveryLeaseAndAdvanceCursor(
             replicaID: "hq",
             manifestSHA256: candidate2.binding.manifestSHA256,
-            updatedAt: "2026-07-11T00:03:00.000Z"
+            verifiedAt: "2026-07-11T00:03:00.000Z",
+            verifiedBytes: candidate2.rawByteCount
+        )
+        XCTAssertEqual(try catalog.recoveryLease(replicaID: "hq"), lease)
+        XCTAssertEqual(
+            try catalog.nextRecoveryDrillCandidate(
+                replicaID: "hq",
+                maximumBytes: 64 * 1_024 * 1_024
+            )?.binding.manifestSHA256,
+            ordered[0].manifestSHA256,
+            "the durable cursor wraps after the final candidate"
+        )
+        try catalog.expireRecoveryLeaseAndAdvanceCursor(
+            replicaID: "hq",
+            manifestSHA256: ordered[0].manifestSHA256,
+            failedAt: "2026-07-11T00:04:00.000Z"
+        )
+        XCTAssertNil(try catalog.recoveryLease(replicaID: "hq"))
+        XCTAssertEqual(
+            try catalog.nextRecoveryDrillCandidate(
+                replicaID: "hq",
+                maximumBytes: 64 * 1_024 * 1_024
+            )?.binding.manifestSHA256,
+            ordered[1].manifestSHA256,
+            "a failed drill expires its lease and rotates past the poison candidate"
         )
         XCTAssertEqual(
             try catalog.nextRecoveryDrillCandidate(replicaID: "hq", maximumBytes: 4),
