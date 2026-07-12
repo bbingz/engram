@@ -204,11 +204,18 @@ public struct ArchiveSourceReclaimer: Sendable {
         guard let quarantineURL = try quarantineURL(for: intent) else {
             throw ArchiveSourceReclaimerError.invalidIntent
         }
-        let verified = try openVerifiedSource(quarantineURL, capture: capture)
-        defer { _ = Darwin.close(verified.fd) }
-        try revalidate(verified, at: quarantineURL)
-        try Task.checkCancellation()
-        return try unlinkAndCommit(intent, quarantineURL: quarantineURL, capture: capture)
+        do {
+            let verified = try openVerifiedSource(quarantineURL, capture: capture)
+            defer { _ = Darwin.close(verified.fd) }
+            try revalidate(verified, at: quarantineURL)
+            try Task.checkCancellation()
+            return try unlinkAndCommit(intent, quarantineURL: quarantineURL, capture: capture)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try restoreOrPause(intent, quarantineURL: quarantineURL, error: "generation_changed")
+            throw ArchiveSourceReclaimerError.generationChanged
+        }
     }
 
     private func unlinkAndCommit(

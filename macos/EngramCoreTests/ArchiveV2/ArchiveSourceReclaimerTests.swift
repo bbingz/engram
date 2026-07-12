@@ -158,6 +158,45 @@ final class ArchiveSourceReclaimerTests: XCTestCase {
             .sourceDeleted
         )
 
+        let recoveryMismatch = try makeFixture(
+            name: "delete-plan-recovery-mismatch",
+            bytes: Data("recovery mismatch".utf8)
+        )
+        XCTAssertThrowsError(
+            try ArchiveSourceReclaimer(
+                catalog: recoveryMismatch.catalog,
+                testHooks: ArchiveSourceReclaimerTestHooks(
+                    afterDeletePlan: { _ in throw Marker.crash }
+                )
+            ).planAndReclaim(intent: recoveryMismatch.intent, capture: recoveryMismatch.capture)
+        )
+        let mismatchPlanned = try XCTUnwrap(
+            recoveryMismatch.catalog.reclamationIntent(
+                manifestSHA256: recoveryMismatch.intent.manifestSHA256
+            )
+        )
+        let mismatchPath = try XCTUnwrap(mismatchPlanned.quarantinePath)
+        try Data(repeating: 0x79, count: recoveryMismatch.bytes.count)
+            .write(to: URL(fileURLWithPath: mismatchPath))
+        try Self.setMtime(
+            path: mismatchPath,
+            nanoseconds: recoveryMismatch.capture.generation.mtimeNs
+        )
+        XCTAssertThrowsError(
+            try ArchiveSourceReclaimer(catalog: recoveryMismatch.catalog).recover(
+                intent: mismatchPlanned,
+                capture: recoveryMismatch.capture
+            )
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recoveryMismatch.sourceURL.path))
+        let mismatchPaused = try XCTUnwrap(
+            recoveryMismatch.catalog.reclamationIntent(
+                manifestSHA256: recoveryMismatch.intent.manifestSHA256
+            )
+        )
+        XCTAssertEqual(mismatchPaused.phase, .paused)
+        XCTAssertEqual(mismatchPaused.lastError, "generation_changed")
+
         let afterUnlink = try makeFixture(name: "delete-plan-after", bytes: Data("after unlink".utf8))
         let syncController = FsyncFailureController(failOnCall: 2)
         XCTAssertThrowsError(
