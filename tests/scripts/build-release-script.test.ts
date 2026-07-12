@@ -230,7 +230,10 @@ describe('release workflow gate', () => {
 
   it('requires release tests before archive verification', () => {
     expect(workflow).toContain('release-tests:');
-    expect(workflow).toContain('needs: [release-tests]');
+    expect(workflow).toContain('release-remote-server-tests:');
+    expect(workflow).toContain(
+      'needs: [release-tests, release-remote-server-tests]',
+    );
   });
 });
 

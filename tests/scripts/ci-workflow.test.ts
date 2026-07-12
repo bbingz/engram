@@ -161,6 +161,12 @@ describe('CI workflow hardening', () => {
 
     expect(swiftJob).toContain('runs-on: macos-26');
     expect(releaseJob).toContain('runs-on: macos-26');
+    expect(swiftJob).toContain(
+      'sudo xcode-select -s /Applications/Xcode_26.6.app',
+    );
+    expect(releaseJob).toContain(
+      'sudo xcode-select -s /Applications/Xcode_26.6.app',
+    );
     expect(
       normalWorkflow.slice(
         normalWorkflow.indexOf('  swift-unit:'),
