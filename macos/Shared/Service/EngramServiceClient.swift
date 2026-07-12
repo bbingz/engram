@@ -172,6 +172,58 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         try await command("triggerSync", payload: request)
     }
 
+    func archiveV2Status() async throws -> EngramServiceArchiveV2StatusResponse {
+        try await commandWithAbsentPayload("archiveV2Status")
+    }
+
+    func archiveV2Retry(
+        _ request: EngramServiceArchiveV2RetryRequest
+    ) async throws -> EngramServiceArchiveV2RetryResponse {
+        try await command("archiveV2Retry", payload: request)
+    }
+
+    func archiveV2StoreToken(
+        _ request: EngramServiceArchiveV2StoreTokenRequest
+    ) async throws -> EngramServiceArchiveV2StoreTokenResponse {
+        try await command("archiveV2StoreToken", payload: request)
+    }
+
+    func archiveV2RemoteRecoveryProbe(
+        _ request: EngramServiceArchiveV2RemoteRecoveryProbeRequest
+    ) async throws -> EngramServiceArchiveV2RemoteRecoveryProbeResponse {
+        try await command("archiveV2RemoteRecoveryProbe", payload: request)
+    }
+
+    func archiveReclamationStatus() async throws -> EngramServiceArchiveReclamationStatusResponse {
+        try await commandWithAbsentPayload("archiveReclamationStatus")
+    }
+
+    func archiveReclamationPreview() async throws -> EngramServiceArchiveReclamationPreviewResponse {
+        try await commandWithAbsentPayload("archiveReclamationPreview")
+    }
+
+    func archiveReclamationUpdateSettings(
+        _ request: EngramServiceArchiveReclamationUpdateSettingsRequest
+    ) async throws -> EngramServiceArchiveReclamationStatusResponse {
+        try await command("archiveReclamationUpdateSettings", payload: request)
+    }
+
+    func archiveReclamationRun() async throws -> EngramServiceArchiveReclamationRunResponse {
+        try await command("archiveReclamationRun")
+    }
+
+    func archiveV2RecoveryDrill(
+        _ request: EngramServiceArchiveV2RecoveryDrillRequest
+    ) async throws -> EngramServiceArchiveV2RecoveryDrillResponse {
+        try await command("archiveV2RecoveryDrill", payload: request)
+    }
+
+    func archiveReadSessionPage(
+        _ request: EngramServiceArchiveReadSessionPageRequest
+    ) async throws -> EngramServiceArchiveReadSessionPageResponse {
+        try await command("archiveReadSessionPage", payload: request)
+    }
+
     func refreshUsage() async throws -> EngramServiceRefreshUsageResponse {
         try await command("refreshUsage")
     }
@@ -309,9 +361,30 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         payload: Payload,
         timeout: TimeInterval? = nil
     ) async throws -> Response {
-        let request = try EngramServiceRequestEnvelope(
+        try await sendCommand(
+            name,
+            payload: JSONEncoder().encode(payload),
+            timeout: timeout
+        )
+    }
+
+    /// Archive V2 status deliberately distinguishes an absent payload from
+    /// the legacy no-argument `{}` payload used by older service commands.
+    private func commandWithAbsentPayload<Response: Decodable>(
+        _ name: String,
+        timeout: TimeInterval? = nil
+    ) async throws -> Response {
+        try await sendCommand(name, payload: nil, timeout: timeout)
+    }
+
+    private func sendCommand<Response: Decodable>(
+        _ name: String,
+        payload: Data?,
+        timeout: TimeInterval?
+    ) async throws -> Response {
+        let request = EngramServiceRequestEnvelope(
             command: name,
-            payload: JSONEncoder().encode(payload)
+            payload: payload
         )
         let response = try await transport.send(request, timeout: timeout ?? defaultTimeout)
         guard response.requestId == request.requestId else {

@@ -116,6 +116,82 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain('tests/scripts/version-guard.test.ts');
   });
 
+  it('installs ripgrep before Ubuntu coverage runs the archive safety gate', () => {
+    const typescriptJob = testWorkflow.slice(
+      testWorkflow.indexOf('  typescript:'),
+      testWorkflow.indexOf('  macos-vitest:'),
+    );
+    const installIndex = typescriptJob.indexOf(
+      'sudo apt-get install --yes ripgrep',
+    );
+    const coverageIndex = typescriptJob.indexOf('npm run test:coverage');
+
+    expect(installIndex).toBeGreaterThan(-1);
+    expect(coverageIndex).toBeGreaterThan(installIndex);
+  });
+
+  it('installs ripgrep before release coverage runs the archive safety gate', () => {
+    const releaseTestsJob = releaseWorkflow.slice(
+      releaseWorkflow.indexOf('  release-tests:'),
+      releaseWorkflow.indexOf('  release-bundle-gate:'),
+    );
+    const installIndex = releaseTestsJob.indexOf(
+      'brew install xcodegen ripgrep',
+    );
+    const coverageIndex = releaseTestsJob.indexOf('npm run test:coverage');
+
+    expect(installIndex).toBeGreaterThan(-1);
+    expect(coverageIndex).toBeGreaterThan(installIndex);
+  });
+
+  it('isolates remote-server Swift tests from shared DerivedData package products', () => {
+    const normalWorkflow = readFileSync(
+      resolve(repoRoot, '.github/workflows/test.yml'),
+      'utf8',
+    );
+    const releaseWorkflow = readFileSync(
+      resolve(repoRoot, '.github/workflows/release.yml'),
+      'utf8',
+    );
+    expect(normalWorkflow).toContain('  remote-server-swift:');
+    expect(releaseWorkflow).toContain('  release-remote-server-tests:');
+    expect(normalWorkflow).toContain(
+      '-derivedDataPath "$RUNNER_TEMP/engram-remote-tests-derived"',
+    );
+    expect(releaseWorkflow).toContain(
+      '-derivedDataPath "$RUNNER_TEMP/engram-remote-tests-derived"',
+    );
+    expect(normalWorkflow).toContain('-enableCodeCoverage NO');
+  });
+
+  it('runs Hummingbird-linked Swift gates on the supported macOS 26 image', () => {
+    const normalWorkflow = readFileSync(
+      resolve(repoRoot, '.github/workflows/test.yml'),
+      'utf8',
+    );
+    const releaseWorkflow = readFileSync(
+      resolve(repoRoot, '.github/workflows/release.yml'),
+      'utf8',
+    );
+    const swiftJob = normalWorkflow.slice(
+      normalWorkflow.indexOf('  remote-server-swift:'),
+      normalWorkflow.indexOf('  fixture-check:'),
+    );
+    const releaseJob = releaseWorkflow.slice(
+      releaseWorkflow.indexOf('  release-remote-server-tests:'),
+      releaseWorkflow.indexOf('  release-bundle-gate:'),
+    );
+
+    expect(swiftJob).toContain('runs-on: macos-26');
+    expect(releaseJob).toContain('runs-on: macos-26');
+    expect(swiftJob).toContain(
+      'sudo xcode-select -s /Applications/Xcode_26.6.app',
+    );
+    expect(releaseJob).toContain(
+      'sudo xcode-select -s /Applications/Xcode_26.6.app',
+    );
+  });
+
   it('runs bundle hygiene against the Debug app built in Swift CI', () => {
     expect(testWorkflow).toContain('Build/Products/Debug/Engram.app');
     expect(testWorkflow).toContain(

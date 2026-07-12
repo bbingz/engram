@@ -83,8 +83,9 @@ fi
 # --- 2. Structural sanity ---
 [ -f "$APP/Contents/MacOS/Engram" ] || fail "missing main executable Contents/MacOS/Engram"
 [ -f "$APP/Contents/Helpers/EngramMCP" ] || fail "missing Contents/Helpers/EngramMCP"
+[ -f "$APP/Contents/Helpers/EngramCLI" ] || fail "missing Contents/Helpers/EngramCLI"
 [ -f "$APP/Contents/Helpers/EngramService" ] || fail "missing Contents/Helpers/EngramService"
-ok "structure present (Engram + EngramMCP + EngramService)"
+ok "structure present (Engram + EngramCLI + EngramMCP + EngramService)"
 
 # --- 3. Version is non-default / non-empty ---
 PLIST="$APP/Contents/Info.plist"

@@ -8,7 +8,10 @@ import Security
 final class EngramServiceCommandHandler: @unchecked Sendable {
     private static let titleRegenerationCoordinator = ServiceTitleRegenerationCoordinator()
 
-    private let writerGate: ServiceWriterGate
+    let writerGate: ServiceWriterGate
+    let archiveV2Coordinator: ArchiveV2ServiceCoordinator?
+    let archiveTranscriptResolver: ArchiveTranscriptResolver?
+    let archiveV2CredentialProvisioner: ArchiveV2CredentialProvisioner
     private let readProvider: any EngramServiceReadProvider
     private let statusMonitor: ServiceStatusMonitor
     private let telemetry: ServiceTelemetryCollector?
@@ -24,7 +27,15 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     /// reads the collector itself (self-noise), `costs` is the menu-bar budget
     /// poll that fires on a timer (would fill the 200-span ring buffer), and
     /// `serviceLogs` reads the log ring (self-noise + Observability polls it).
-    private static let telemetryExcludedCommands: Set<String> = ["status", "telemetry", "costs", "serviceLogs"]
+    private static let telemetryExcludedCommands: Set<String> = [
+        "status",
+        "telemetry",
+        "costs",
+        "serviceLogs",
+        "archiveV2Status",
+        "archiveReclamationStatus",
+        "archiveReclamationPreview",
+    ]
 
     private static let emptyTelemetrySnapshot = ServiceTelemetrySnapshot(
         lastScanDurationMs: nil,
@@ -41,6 +52,9 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
 
     init(
         writerGate: ServiceWriterGate,
+        archiveV2Coordinator: ArchiveV2ServiceCoordinator? = nil,
+        archiveTranscriptResolver: ArchiveTranscriptResolver? = nil,
+        archiveV2CredentialProvisioner: ArchiveV2CredentialProvisioner = ArchiveV2CredentialProvisioner(),
         readProvider: any EngramServiceReadProvider = EmptyEngramServiceReadProvider(),
         statusMonitor: ServiceStatusMonitor = ServiceStatusMonitor(),
         telemetry: ServiceTelemetryCollector? = nil,
@@ -55,6 +69,9 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         longOpHooks: ProjectMoveLongOpHooks = .none
     ) {
         self.writerGate = writerGate
+        self.archiveV2Coordinator = archiveV2Coordinator
+        self.archiveTranscriptResolver = archiveTranscriptResolver
+        self.archiveV2CredentialProvisioner = archiveV2CredentialProvisioner
         self.readProvider = readProvider
         self.statusMonitor = statusMonitor
         self.telemetry = telemetry
@@ -100,6 +117,122 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     private func dispatch(_ request: EngramServiceRequestEnvelope) async -> EngramServiceResponseEnvelope {
         do {
             switch request.command {
+            case "archiveReadSessionPage":
+                let payload: EngramServiceArchiveReadSessionPageRequest
+                do {
+                    payload = try decodePayload(
+                        EngramServiceArchiveReadSessionPageRequest.self,
+                        from: request
+                    )
+                } catch is EngramServiceArchiveV2WireError {
+                    throw EngramServiceError.invalidRequest(
+                        message: "Invalid payload for archiveReadSessionPage"
+                    )
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try await archiveReadSessionPageResultData(
+                        payload,
+                        requestId: request.requestId
+                    )
+                )
+            case "archiveV2Status":
+                guard request.payload == nil else {
+                    throw EngramServiceError.invalidRequest(
+                        message: "archiveV2Status does not accept a payload"
+                    )
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(try await archiveV2StatusResponse())
+                )
+            case "archiveV2Retry":
+                let payload: EngramServiceArchiveV2RetryRequest
+                do {
+                    payload = try decodePayload(
+                        EngramServiceArchiveV2RetryRequest.self,
+                        from: request
+                    )
+                } catch is EngramServiceArchiveV2WireError {
+                    throw EngramServiceError.invalidRequest(
+                        message: "Invalid payload for archiveV2Retry"
+                    )
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(try await archiveV2RetryResponse(payload))
+                )
+            case "archiveReclamationStatus":
+                guard request.payload == nil else {
+                    throw EngramServiceError.invalidRequest(message: "archiveReclamationStatus does not accept a payload")
+                }
+                return .success(requestId: request.requestId, result: try Self.encode(try await archiveReclamationStatusResponse()))
+            case "archiveReclamationPreview":
+                guard request.payload == nil else {
+                    throw EngramServiceError.invalidRequest(message: "archiveReclamationPreview does not accept a payload")
+                }
+                return .success(requestId: request.requestId, result: try Self.encode(try await archiveReclamationPreviewResponse()))
+            case "archiveReclamationUpdateSettings":
+                try requireExactPayloadKeys(
+                    request,
+                    allowed: [["enabled"], ["enabled", "hotWindowDays"]]
+                )
+                let payload = try decodePayload(EngramServiceArchiveReclamationUpdateSettingsRequest.self, from: request)
+                return .success(requestId: request.requestId, result: try Self.encode(try await archiveReclamationUpdateSettingsResponse(payload)))
+            case "archiveReclamationRun":
+                guard request.payload == nil else {
+                    throw EngramServiceError.invalidRequest(message: "archiveReclamationRun does not accept a payload")
+                }
+                return .success(requestId: request.requestId, result: try Self.encode(try await archiveReclamationRunResponse()))
+            case "archiveV2RecoveryDrill":
+                try requireExactPayloadKeys(request, allowed: [["replicaID"]])
+                let payload = try decodePayload(EngramServiceArchiveV2RecoveryDrillRequest.self, from: request)
+                return .success(requestId: request.requestId, result: try Self.encode(try await archiveV2RecoveryDrillResponse(payload)))
+            case "archiveV2StoreToken":
+                let payload = try decodePayload(EngramServiceArchiveV2StoreTokenRequest.self, from: request)
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(try await archiveV2StoreTokenResponse(payload))
+                )
+            case "archiveV2RemoteRecoveryProbe":
+                guard let rawPayload = request.payload else {
+                    throw EngramServiceError.invalidRequest(
+                        message: "Invalid payload for archiveV2RemoteRecoveryProbe"
+                    )
+                }
+                do {
+                    guard let object = try JSONSerialization.jsonObject(with: rawPayload) as? [String: Any],
+                          Set(object.keys) == ["sessionId"] else {
+                        throw EngramServiceError.invalidRequest(
+                            message: "Invalid payload for archiveV2RemoteRecoveryProbe"
+                        )
+                    }
+                } catch is EngramServiceError {
+                    throw EngramServiceError.invalidRequest(
+                        message: "Invalid payload for archiveV2RemoteRecoveryProbe"
+                    )
+                } catch {
+                    throw EngramServiceError.invalidRequest(
+                        message: "Invalid payload for archiveV2RemoteRecoveryProbe"
+                    )
+                }
+                let payload: EngramServiceArchiveV2RemoteRecoveryProbeRequest
+                do {
+                    payload = try decodePayload(
+                        EngramServiceArchiveV2RemoteRecoveryProbeRequest.self,
+                        from: request
+                    )
+                } catch {
+                    throw EngramServiceError.invalidRequest(
+                        message: "Invalid payload for archiveV2RemoteRecoveryProbe"
+                    )
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(
+                        try await archiveV2RemoteRecoveryProbeResponse(payload)
+                    )
+                )
             case "status":
                 let status = try await writerGate.indexStatus()
                 return .success(
@@ -532,7 +665,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(
-                        try await TranscriptExportService.exportSession(payload, databasePath: writerGate.databasePath)
+                        try await TranscriptExportService.exportSession(
+                            payload,
+                            databasePath: writerGate.databasePath,
+                            archiveTranscriptResolver: archiveTranscriptResolver
+                        )
                     )
                 )
             case "test.write_intent":
@@ -656,6 +793,17 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             throw EngramServiceError.invalidRequest(message: "Missing payload for \(request.command)")
         }
         return try Self.decodeJSONPayload(type, from: payload, command: request.command)
+    }
+
+    private func requireExactPayloadKeys(
+        _ request: EngramServiceRequestEnvelope,
+        allowed: [Set<String>]
+    ) throws {
+        guard let payload = request.payload,
+              let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              allowed.contains(Set(object.keys)) else {
+            throw EngramServiceError.invalidRequest(message: "Invalid payload for \(request.command)")
+        }
     }
 
     /// L02: map JSON `DecodingError` to structured InvalidRequest only.

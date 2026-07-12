@@ -1,12 +1,17 @@
 import Foundation
 
 enum MCPTranscriptTools {
+    typealias ArchivePageReader = @Sendable (
+        EngramServiceArchiveReadSessionPageRequest
+    ) async throws -> EngramServiceArchiveReadSessionPageResponse
+
     static func getSession(
         database: MCPDatabase,
         id: String,
         page: Int,
         roles: [String]?,
-        includeRaw: Bool = false
+        includeRaw: Bool = false,
+        archivePageReader: ArchivePageReader? = nil
     ) async throws -> OrderedJSONValue {
         guard let session = try database.sessionRecord(id: id) else {
             throw MCPToolError.invalidArguments("Session not found: \(id)")
@@ -22,6 +27,45 @@ enum MCPTranscriptTools {
                 pageSize: pageSize,
                 roles: roles
             )
+        } catch let readError as MCPTranscriptReadError {
+            guard case .definitiveLocalExactSourceUnavailable = readError else {
+                throw readError
+            }
+            guard let archivePageReader else { throw readError }
+            do {
+                #if DEBUG
+                waitForArchiveFallbackCancellationTestBarrierIfConfigured()
+                #endif
+                try Task.checkCancellation()
+                let response = try await archivePageReader(
+                    EngramServiceArchiveReadSessionPageRequest(
+                        sessionId: id,
+                        page: page,
+                        pageSize: pageSize,
+                        roles: roles?.isEmpty == false ? roles : nil
+                    )
+                )
+                messagePage = MCPTranscriptPage(
+                    messages: response.messages.map {
+                        MCPTranscriptMessage(
+                            role: $0.role,
+                            content: $0.content,
+                            timestamp: $0.timestamp
+                        )
+                    },
+                    totalPages: response.totalPages,
+                    currentPage: response.currentPage,
+                    pageSize: pageSize,
+                    totalKnownComplete: response.totalKnownComplete,
+                    truncatedAt: response.truncatedAt,
+                    responseBudgetTruncated: response.responseBudgetTruncated
+                )
+            } catch let error as EngramServiceError {
+                if let message = transcriptTooLargeMessage(from: error) {
+                    throw MCPToolError.transcriptTooLarge(message)
+                }
+                throw error
+            }
         } catch let error as TranscriptSizeGuardError {
             throw MCPToolError.transcriptTooLarge(error.localizedDescription)
         }
@@ -44,7 +88,45 @@ enum MCPTranscriptTools {
                 entries.append(("truncatedAt", .int(truncatedAt)))
             }
         }
+        if messagePage.responseBudgetTruncated {
+            entries.append(("responseBudgetTruncated", .bool(true)))
+        }
         return .object(entries)
+    }
+
+    #if DEBUG
+    private static func waitForArchiveFallbackCancellationTestBarrierIfConfigured() {
+        guard let directory = ProcessInfo.processInfo.environment[
+            "ENGRAM_MCP_TEST_ARCHIVE_FALLBACK_BARRIER_DIR"
+        ], !directory.isEmpty else {
+            return
+        }
+
+        let root = URL(fileURLWithPath: directory, isDirectory: true)
+        let ready = root.appendingPathComponent("ready")
+        let release = root.appendingPathComponent("release")
+        try? Data().write(to: ready, options: .atomic)
+
+        // Test-only synchronization: deliberately ignore task cancellation until
+        // the harness releases the barrier, so the explicit check immediately
+        // after this helper is what prevents the remote reader from being called.
+        // The deadline prevents a mistakenly configured debug process from hanging.
+        let deadline = Date().addingTimeInterval(5)
+        while !FileManager.default.fileExists(atPath: release.path), Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+    }
+    #endif
+
+    private static func transcriptTooLargeMessage(from error: EngramServiceError) -> String? {
+        guard case .commandFailed(let name, let message, _, let details) = error else {
+            return nil
+        }
+        let code = details?["code"].flatMap { value -> String? in
+            if case .string(let code) = value { return code }
+            return nil
+        } ?? name
+        return code == "transcriptTooLarge" || name == "transcriptTooLarge" ? message : nil
     }
 
     static func handoff(

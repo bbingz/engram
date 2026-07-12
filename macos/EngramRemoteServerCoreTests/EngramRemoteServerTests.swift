@@ -119,6 +119,83 @@ final class EngramRemoteServerTests: XCTestCase {
         XCTAssertFalse(present)
     }
 
+    func testLegacyRoundTripWithArchiveEnabledDoesNotTouchArchiveFinalBytes() async throws {
+        let legacyRoot = tempDir.appendingPathComponent("legacy", isDirectory: true)
+        let archiveRoot = tempDir.appendingPathComponent("archive", isDirectory: true)
+        let archiveKey = SymmetricKey(data: Data(repeating: 0x22, count: 32))
+        let archiveStore = try ArchiveStore(
+            root: archiveRoot,
+            key: archiveKey,
+            serverID: "hq"
+        )
+        let protectedRaw = Data("immutable archive bytes".utf8)
+        let protectedDigest = ArchiveV2Hash.sha256(protectedRaw)
+        XCTAssertEqual(
+            try archiveStore.putObject(digest: protectedDigest, raw: protectedRaw),
+            .published
+        )
+        let protectedURL = archiveRoot
+            .appendingPathComponent("objects/sha256", isDirectory: true)
+            .appendingPathComponent(String(protectedDigest.prefix(2)), isDirectory: true)
+            .appendingPathComponent(protectedDigest, isDirectory: false)
+        let protectedBytesBefore = try Data(contentsOf: protectedURL)
+        let protectedInodeBefore = try XCTUnwrap(
+            (FileManager.default.attributesOfItem(atPath: protectedURL.path)[.systemFileNumber] as? NSNumber)?.uint64Value
+        )
+        let config = EngramRemoteServerConfig(
+            host: "127.0.0.1",
+            port: 0,
+            storeRoot: legacyRoot,
+            bearerToken: "legacy-token",
+            atRestKey: SymmetricKey(data: Data(repeating: 0x11, count: 32)),
+            archiveV2: EngramRemoteArchiveConfig(
+                serverID: "hq",
+                root: archiveRoot,
+                bearerToken: "archive-token",
+                atRestKey: archiveKey
+            )
+        )
+        let app = try EngramRemoteServerApp(config: config)
+        let archiveFilesBefore = try regularFileBytes(under: archiveRoot)
+        let waiter = PortWaiter()
+        let serverTask = Task { try? await app.run(onBound: { waiter.set($0) }) }
+        defer { serverTask.cancel() }
+        let port = await waiter.wait()
+
+        let backend = try EngramRemoteBackend(
+            baseURL: URL(string: "http://127.0.0.1:\(port)")!,
+            token: "legacy-token"
+        )
+        let key = "legacy-with-v2.bundle"
+        let payload = Data("legacy bytes remain isolated".utf8)
+
+        try await backend.put(key: "objects", data: Data("legacy namespace decoy".utf8))
+        var present = try await backend.head(key: "objects")
+        XCTAssertTrue(present)
+        try await backend.delete(key: "objects")
+        present = try await backend.head(key: "objects")
+        XCTAssertFalse(present)
+
+        present = try await backend.head(key: key)
+        XCTAssertFalse(present)
+        try await backend.put(key: key, data: payload)
+        present = try await backend.head(key: key)
+        XCTAssertTrue(present)
+        let fetched = try await backend.get(key: key)
+        XCTAssertEqual(fetched, payload)
+        try await backend.delete(key: key)
+        present = try await backend.head(key: key)
+        XCTAssertFalse(present)
+
+        XCTAssertEqual(try regularFileBytes(under: archiveRoot), archiveFilesBefore)
+        XCTAssertEqual(try archiveStore.getObject(digest: protectedDigest), protectedRaw)
+        XCTAssertEqual(try Data(contentsOf: protectedURL), protectedBytesBefore)
+        let protectedInodeAfter = try XCTUnwrap(
+            (FileManager.default.attributesOfItem(atPath: protectedURL.path)[.systemFileNumber] as? NSNumber)?.uint64Value
+        )
+        XCTAssertEqual(protectedInodeAfter, protectedInodeBefore)
+    }
+
     func testCatalogAggregatesPerPeerManifestsAndGatesAuth() async throws {
         let config = EngramRemoteServerConfig(
             host: "127.0.0.1", port: 0,
@@ -225,5 +302,23 @@ final class EngramRemoteServerTests: XCTestCase {
         // HTTPS is always accepted, in either mode and for any host.
         XCTAssertNoThrow(try EngramRemoteBackend(baseURL: URL(string: "https://example.com")!, token: "t", requireTLS: false))
         XCTAssertNoThrow(try EngramRemoteBackend(baseURL: URL(string: "https://100.125.101.60:8443")!, token: "t"))
+    }
+
+    private func regularFileBytes(under root: URL) throws -> [String: Data] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return [:]
+        }
+        var files: [String: Data] = [:]
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey])
+            guard values.isRegularFile == true else { continue }
+            let relative = String(url.path.dropFirst(root.path.count + 1))
+            files[relative] = try Data(contentsOf: url)
+        }
+        return files
     }
 }

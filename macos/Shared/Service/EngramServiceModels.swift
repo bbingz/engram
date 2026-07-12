@@ -1010,6 +1010,1233 @@ struct EngramServiceTriggerSyncResponse: Codable, Equatable, Sendable {
     let results: [ResultItem]
 }
 
+// MARK: - Archive v2 service wire contract
+
+enum EngramServiceArchiveV2WireError: Error, Equatable, Sendable {
+    case invalidField(String)
+}
+
+private enum EngramServiceArchiveV2WireValidation {
+    static let replicaIDs = ["hq", "m1"]
+    static let transcriptRoles: Set<String> = ["user", "assistant"]
+    static let maximumSessionIDBytes = 512
+    static let maximumTranscriptPage = 100_000
+    static let maximumTranscriptPageSize = 500
+    static let maximumTranscriptTimestampBytes = 128
+    static let maximumRemoteTelemetryEndpoints = 7
+    static let maximumRemoteTelemetryErrors = 100
+    static let remoteTelemetryEndpoints: Set<String> = [
+        "object", "manifest", "receipt", "machines", "receipts", "status", "unknown",
+    ]
+    static let remoteTelemetryMethods: Set<String> = ["GET", "HEAD", "PUT", "DELETE"]
+    static let remoteTelemetryErrorCategories: Set<String> = [
+        "unauthorized",
+        "malformed_request",
+        "not_found",
+        "conflict",
+        "payload_too_large",
+        "invalid_content",
+        "storage_unavailable",
+        "internal_error",
+    ]
+    static let remoteTelemetryErrors: Set<String> = [
+        "final_url_mismatch",
+        "invalid_canonical_response",
+        "invalid_request",
+        "not_http_response",
+        "redirect_rejected",
+        "remote_telemetry_unavailable",
+        "response_too_large",
+        "telemetry_unsupported",
+        "transport_cancelled",
+        "transport_network",
+        "transport_timeout",
+        "transport_tls",
+        "unexpected_status",
+    ]
+
+    static func require(_ condition: @autoclosure () -> Bool, field: String) throws {
+        guard condition() else {
+            throw EngramServiceArchiveV2WireError.invalidField(field)
+        }
+    }
+
+    static func validateReplicaID(_ value: String, field: String = "replicaID") throws {
+        try require(replicaIDs.contains(value), field: field)
+    }
+
+    static func validateNonNegative(_ value: Int, field: String) throws {
+        try require(value >= 0, field: field)
+    }
+
+    static func validateNonNegative(_ value: Int64, field: String) throws {
+        try require(value >= 0, field: field)
+    }
+
+    static func validateSymbol(_ value: String?, field: String) throws {
+        guard let value else { return }
+        let bytes = value.utf8
+        try require(!bytes.isEmpty && bytes.count <= 64, field: field)
+        try require(
+            bytes.allSatisfy { byte in
+                byte == 95 || (48...57).contains(byte) || (97...122).contains(byte)
+            },
+            field: field
+        )
+    }
+
+    static func validateDigest(_ value: String, field: String) throws {
+        let bytes = value.utf8
+        try require(bytes.count == 64, field: field)
+        try require(
+            bytes.allSatisfy { byte in
+                (48...57).contains(byte) || (97...102).contains(byte)
+            },
+            field: field
+        )
+    }
+
+    static func validateSourceRevision(_ value: String) throws {
+        let bytes = value.utf8
+        try require(
+            value == "unknown"
+                || (bytes.count == 40 && bytes.allSatisfy { byte in
+                    (48...57).contains(byte) || (97...102).contains(byte)
+                }),
+            field: "sourceRevision"
+        )
+    }
+
+    static func validateTimestamp(_ value: String, field: String) throws {
+        try require(value.utf8.count == 24, field: field)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        guard let date = formatter.date(from: value) else {
+            throw EngramServiceArchiveV2WireError.invalidField(field)
+        }
+        try require(formatter.string(from: date) == value, field: field)
+    }
+
+    static func validateTranscriptSessionID(_ value: String) throws {
+        try require(
+            !value.isEmpty
+                && value.utf8.count <= maximumSessionIDBytes
+                && !value.utf8.contains(0),
+            field: "sessionId"
+        )
+    }
+
+    static func validateTranscriptPage(_ value: Int, field: String) throws {
+        try require((1 ... maximumTranscriptPage).contains(value), field: field)
+    }
+
+    static func validateTranscriptPageSize(_ value: Int) throws {
+        try require(
+            (1 ... maximumTranscriptPageSize).contains(value),
+            field: "pageSize"
+        )
+    }
+
+    static func validateTranscriptRoles(_ roles: [String]?) throws {
+        guard let roles else { return }
+        try require(!roles.isEmpty && roles.count <= transcriptRoles.count, field: "roles")
+        try require(Set(roles).count == roles.count, field: "roles")
+        try require(roles.allSatisfy(transcriptRoles.contains), field: "roles")
+    }
+
+    static func validateTranscriptTimestamp(_ value: String?) throws {
+        guard let value else { return }
+        try require(
+            !value.isEmpty
+                && value.utf8.count <= maximumTranscriptTimestampBytes
+                && !value.utf8.contains(0),
+            field: "timestamp"
+        )
+    }
+}
+
+struct EngramServiceArchiveReadSessionPageRequest: Codable, Equatable, Sendable {
+    let sessionId: String
+    let page: Int
+    let pageSize: Int
+    let roles: [String]?
+
+    init(sessionId: String, page: Int, pageSize: Int, roles: [String]?) throws {
+        try EngramServiceArchiveV2WireValidation.validateTranscriptSessionID(sessionId)
+        try EngramServiceArchiveV2WireValidation.validateTranscriptPage(page, field: "page")
+        try EngramServiceArchiveV2WireValidation.validateTranscriptPageSize(pageSize)
+        try EngramServiceArchiveV2WireValidation.validateTranscriptRoles(roles)
+        self.sessionId = sessionId
+        self.page = page
+        self.pageSize = pageSize
+        self.roles = roles
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            sessionId: container.decode(String.self, forKey: .sessionId),
+            page: container.decode(Int.self, forKey: .page),
+            pageSize: container.decode(Int.self, forKey: .pageSize),
+            roles: container.decodeIfPresent([String].self, forKey: .roles)
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionId
+        case page
+        case pageSize
+        case roles
+    }
+}
+
+struct EngramServiceArchiveTranscriptMessage: Codable, Equatable, Sendable {
+    let role: String
+    let content: String
+    let timestamp: String?
+
+    init(role: String, content: String, timestamp: String?) {
+        self.role = role
+        self.content = content
+        self.timestamp = timestamp
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let role = try container.decode(String.self, forKey: .role)
+        let content = try container.decode(String.self, forKey: .content)
+        let timestamp = try container.decodeIfPresent(String.self, forKey: .timestamp)
+        try EngramServiceArchiveV2WireValidation.require(
+            EngramServiceArchiveV2WireValidation.transcriptRoles.contains(role),
+            field: "role"
+        )
+        try EngramServiceArchiveV2WireValidation.validateTranscriptTimestamp(timestamp)
+        self.init(role: role, content: content, timestamp: timestamp)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case role
+        case content
+        case timestamp
+    }
+}
+
+struct EngramServiceArchiveReadSessionPageResponse: Codable, Equatable, Sendable {
+    let messages: [EngramServiceArchiveTranscriptMessage]
+    let totalPages: Int
+    let currentPage: Int
+    let totalKnownComplete: Bool
+    let truncatedAt: Int?
+    let responseBudgetTruncated: Bool
+
+    init(
+        messages: [EngramServiceArchiveTranscriptMessage],
+        totalPages: Int,
+        currentPage: Int,
+        totalKnownComplete: Bool,
+        truncatedAt: Int?,
+        responseBudgetTruncated: Bool
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.require(
+            messages.count <= EngramServiceArchiveV2WireValidation.maximumTranscriptPageSize,
+            field: "messages"
+        )
+        for message in messages {
+            try EngramServiceArchiveV2WireValidation.require(
+                EngramServiceArchiveV2WireValidation.transcriptRoles.contains(message.role),
+                field: "role"
+            )
+            try EngramServiceArchiveV2WireValidation.validateTranscriptTimestamp(message.timestamp)
+        }
+        try EngramServiceArchiveV2WireValidation.validateTranscriptPage(
+            totalPages,
+            field: "totalPages"
+        )
+        try EngramServiceArchiveV2WireValidation.validateTranscriptPage(
+            currentPage,
+            field: "currentPage"
+        )
+        if let truncatedAt {
+            try EngramServiceArchiveV2WireValidation.validateNonNegative(
+                truncatedAt,
+                field: "truncatedAt"
+            )
+        }
+        self.messages = messages
+        self.totalPages = totalPages
+        self.currentPage = currentPage
+        self.totalKnownComplete = totalKnownComplete
+        self.truncatedAt = truncatedAt
+        self.responseBudgetTruncated = responseBudgetTruncated
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            messages: container.decode(
+                [EngramServiceArchiveTranscriptMessage].self,
+                forKey: .messages
+            ),
+            totalPages: container.decode(Int.self, forKey: .totalPages),
+            currentPage: container.decode(Int.self, forKey: .currentPage),
+            totalKnownComplete: container.decode(Bool.self, forKey: .totalKnownComplete),
+            truncatedAt: container.decodeIfPresent(Int.self, forKey: .truncatedAt),
+            responseBudgetTruncated: container.decode(
+                Bool.self,
+                forKey: .responseBudgetTruncated
+            )
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case messages
+        case totalPages
+        case currentPage
+        case totalKnownComplete
+        case truncatedAt
+        case responseBudgetTruncated
+    }
+}
+
+struct EngramServiceArchiveV2RetryRequest: Codable, Equatable, Sendable {
+    let replicaID: String?
+
+    init(replicaID: String?) throws {
+        if let replicaID {
+            try EngramServiceArchiveV2WireValidation.validateReplicaID(replicaID)
+        }
+        self.replicaID = replicaID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(replicaID: container.decodeIfPresent(String.self, forKey: .replicaID))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case replicaID
+    }
+}
+
+struct EngramServiceArchiveReclamationStatusResponse: Codable, Equatable, Sendable {
+    let enabled: Bool
+    let hotWindowDays: Int
+    let configurationError: String?
+    let recoveryLeaseCurrent: Bool
+    let cycleRunning: Bool
+    let lastError: String?
+}
+
+struct EngramServiceArchiveReclamationPreviewResponse: Codable, Equatable, Sendable {
+    let eligibleCount: Int
+    let estimatedSourceBytes: Int64
+    let blockedCounts: [String: Int]
+}
+
+struct EngramServiceArchiveReclamationUpdateSettingsRequest: Codable, Equatable, Sendable {
+    let enabled: Bool
+    let hotWindowDays: Int?
+}
+
+struct EngramServiceArchiveReclamationRunResponse: Codable, Equatable, Sendable {
+    let accepted: Bool
+    let coalesced: Bool
+    let sourceFilesReclaimed: Int
+    let casObjectsEvicted: Int
+    let releasedBytes: Int64
+    let error: String?
+}
+
+struct EngramServiceArchiveV2RecoveryDrillRequest: Codable, Equatable, Sendable {
+    let replicaID: String
+}
+
+struct EngramServiceArchiveV2RecoveryDrillResponse: Codable, Equatable, Sendable {
+    let replicaID: String
+    let manifestSHA256: String
+    let verifiedAt: String
+    let verifiedBytes: Int64
+}
+
+struct EngramServiceArchiveV2StoreTokenRequest: Codable, Equatable, Sendable {
+    let replicaID: String
+    let token: String
+}
+
+struct EngramServiceArchiveV2StoreTokenResponse: Codable, Equatable, Sendable {
+    let replicaID: String
+    let stored: Bool
+    let pairReady: Bool
+    let serviceRestartRequired: Bool
+}
+
+struct EngramServiceArchiveV2RemoteRecoveryProbeRequest: Codable, Equatable, Sendable {
+    let sessionId: String
+
+    init(sessionId: String) throws {
+        try EngramServiceArchiveV2WireValidation.validateTranscriptSessionID(sessionId)
+        self.sessionId = sessionId
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(sessionId: container.decode(String.self, forKey: .sessionId))
+    }
+
+    private enum CodingKeys: String, CodingKey { case sessionId }
+}
+
+struct EngramServiceArchiveV2RemoteRecoveryProbeResponse: Codable, Equatable, Sendable {
+    let tier: String
+    let receiptSHA256: String
+    let manifestSHA256: String
+    let wholeSourceSHA256: String
+
+    init(
+        tier: String,
+        receiptSHA256: String,
+        manifestSHA256: String,
+        wholeSourceSHA256: String
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.require(
+            tier == "hq" || tier == "m1",
+            field: "tier"
+        )
+        try EngramServiceArchiveV2WireValidation.validateDigest(
+            receiptSHA256,
+            field: "receiptSHA256"
+        )
+        try EngramServiceArchiveV2WireValidation.validateDigest(
+            manifestSHA256,
+            field: "manifestSHA256"
+        )
+        try EngramServiceArchiveV2WireValidation.validateDigest(
+            wholeSourceSHA256,
+            field: "wholeSourceSHA256"
+        )
+        self.tier = tier
+        self.receiptSHA256 = receiptSHA256
+        self.manifestSHA256 = manifestSHA256
+        self.wholeSourceSHA256 = wholeSourceSHA256
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            tier: container.decode(String.self, forKey: .tier),
+            receiptSHA256: container.decode(String.self, forKey: .receiptSHA256),
+            manifestSHA256: container.decode(String.self, forKey: .manifestSHA256),
+            wholeSourceSHA256: container.decode(String.self, forKey: .wholeSourceSHA256)
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case tier
+        case receiptSHA256
+        case manifestSHA256
+        case wholeSourceSHA256
+    }
+}
+
+struct EngramServiceArchiveV2RemoteEndpoint: Codable, Equatable, Sendable {
+    let endpoint: String
+    let requestCount: Int64
+    let errorCount: Int64
+    let totalDurationMs: Double
+    let maximumDurationMs: Double
+    let requestBytes: Int64
+    let responseBytes: Int64
+
+    init(
+        endpoint: String,
+        requestCount: Int64,
+        errorCount: Int64,
+        totalDurationMs: Double,
+        maximumDurationMs: Double,
+        requestBytes: Int64,
+        responseBytes: Int64
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.require(
+            EngramServiceArchiveV2WireValidation.remoteTelemetryEndpoints.contains(endpoint),
+            field: "endpoint"
+        )
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            requestCount,
+            field: "requestCount"
+        )
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            errorCount,
+            field: "errorCount"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            errorCount <= requestCount,
+            field: "errorCount"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            totalDurationMs.isFinite && totalDurationMs >= 0,
+            field: "totalDurationMs"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            maximumDurationMs.isFinite
+                && maximumDurationMs >= 0
+                && maximumDurationMs <= totalDurationMs,
+            field: "maximumDurationMs"
+        )
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            requestBytes,
+            field: "requestBytes"
+        )
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            responseBytes,
+            field: "responseBytes"
+        )
+        self.endpoint = endpoint
+        self.requestCount = requestCount
+        self.errorCount = errorCount
+        self.totalDurationMs = totalDurationMs
+        self.maximumDurationMs = maximumDurationMs
+        self.requestBytes = requestBytes
+        self.responseBytes = responseBytes
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            endpoint: container.decode(String.self, forKey: .endpoint),
+            requestCount: container.decode(Int64.self, forKey: .requestCount),
+            errorCount: container.decode(Int64.self, forKey: .errorCount),
+            totalDurationMs: container.decode(Double.self, forKey: .totalDurationMs),
+            maximumDurationMs: container.decode(Double.self, forKey: .maximumDurationMs),
+            requestBytes: container.decode(Int64.self, forKey: .requestBytes),
+            responseBytes: container.decode(Int64.self, forKey: .responseBytes)
+        )
+    }
+}
+
+struct EngramServiceArchiveV2RemoteError: Codable, Equatable, Sendable {
+    let timestamp: String
+    let endpoint: String
+    let method: String
+    let statusCode: Int
+    let category: String
+
+    init(
+        timestamp: String,
+        endpoint: String,
+        method: String,
+        statusCode: Int,
+        category: String
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.validateTimestamp(
+            timestamp,
+            field: "timestamp"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            EngramServiceArchiveV2WireValidation.remoteTelemetryEndpoints.contains(endpoint),
+            field: "endpoint"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            EngramServiceArchiveV2WireValidation.remoteTelemetryMethods.contains(method),
+            field: "method"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            (400...599).contains(statusCode),
+            field: "statusCode"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            EngramServiceArchiveV2WireValidation.remoteTelemetryErrorCategories.contains(category),
+            field: "category"
+        )
+        self.timestamp = timestamp
+        self.endpoint = endpoint
+        self.method = method
+        self.statusCode = statusCode
+        self.category = category
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            timestamp: container.decode(String.self, forKey: .timestamp),
+            endpoint: container.decode(String.self, forKey: .endpoint),
+            method: container.decode(String.self, forKey: .method),
+            statusCode: container.decode(Int.self, forKey: .statusCode),
+            category: container.decode(String.self, forKey: .category)
+        )
+    }
+}
+
+struct EngramServiceArchiveV2RemoteTelemetry: Codable, Equatable, Sendable {
+    let serverID: String
+    let sourceRevision: String
+    let snapshotAt: String
+    let uptimeSeconds: Double
+    let diskAvailableBytes: Int64?
+    let diskTotalBytes: Int64?
+    let requestCount: Int64
+    let clientErrorCount: Int64
+    let serverErrorCount: Int64
+    let lastArchiveMutationAt: String?
+    let persistenceError: String?
+    let endpoints: [EngramServiceArchiveV2RemoteEndpoint]
+    let recentErrors: [EngramServiceArchiveV2RemoteError]
+
+    init(
+        serverID: String,
+        sourceRevision: String,
+        snapshotAt: String,
+        uptimeSeconds: Double,
+        diskAvailableBytes: Int64?,
+        diskTotalBytes: Int64?,
+        requestCount: Int64,
+        clientErrorCount: Int64,
+        serverErrorCount: Int64,
+        lastArchiveMutationAt: String?,
+        persistenceError: String?,
+        endpoints: [EngramServiceArchiveV2RemoteEndpoint],
+        recentErrors: [EngramServiceArchiveV2RemoteError]
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.validateReplicaID(serverID, field: "serverID")
+        try EngramServiceArchiveV2WireValidation.validateSourceRevision(sourceRevision)
+        try EngramServiceArchiveV2WireValidation.validateTimestamp(
+            snapshotAt,
+            field: "snapshotAt"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            uptimeSeconds.isFinite && uptimeSeconds >= 0,
+            field: "uptimeSeconds"
+        )
+        if let diskAvailableBytes {
+            try EngramServiceArchiveV2WireValidation.validateNonNegative(
+                diskAvailableBytes,
+                field: "diskAvailableBytes"
+            )
+        }
+        if let diskTotalBytes {
+            try EngramServiceArchiveV2WireValidation.validateNonNegative(
+                diskTotalBytes,
+                field: "diskTotalBytes"
+            )
+        }
+        if let diskAvailableBytes, let diskTotalBytes {
+            try EngramServiceArchiveV2WireValidation.require(
+                diskAvailableBytes <= diskTotalBytes,
+                field: "diskAvailableBytes"
+            )
+        }
+        for (field, value) in [
+            ("requestCount", requestCount),
+            ("clientErrorCount", clientErrorCount),
+            ("serverErrorCount", serverErrorCount),
+        ] {
+            try EngramServiceArchiveV2WireValidation.validateNonNegative(value, field: field)
+        }
+        if let lastArchiveMutationAt {
+            try EngramServiceArchiveV2WireValidation.validateTimestamp(
+                lastArchiveMutationAt,
+                field: "lastArchiveMutationAt"
+            )
+        }
+        try EngramServiceArchiveV2WireValidation.require(
+            persistenceError == nil || persistenceError == "snapshot_write_failed",
+            field: "persistenceError"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            endpoints.count <= EngramServiceArchiveV2WireValidation.maximumRemoteTelemetryEndpoints,
+            field: "endpoints"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            Set(endpoints.map(\.endpoint)).count == endpoints.count,
+            field: "endpoints"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            recentErrors.count <= EngramServiceArchiveV2WireValidation.maximumRemoteTelemetryErrors,
+            field: "recentErrors"
+        )
+        self.serverID = serverID
+        self.sourceRevision = sourceRevision
+        self.snapshotAt = snapshotAt
+        self.uptimeSeconds = uptimeSeconds
+        self.diskAvailableBytes = diskAvailableBytes
+        self.diskTotalBytes = diskTotalBytes
+        self.requestCount = requestCount
+        self.clientErrorCount = clientErrorCount
+        self.serverErrorCount = serverErrorCount
+        self.lastArchiveMutationAt = lastArchiveMutationAt
+        self.persistenceError = persistenceError
+        self.endpoints = endpoints
+        self.recentErrors = recentErrors
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            serverID: container.decode(String.self, forKey: .serverID),
+            sourceRevision: container.decode(String.self, forKey: .sourceRevision),
+            snapshotAt: container.decode(String.self, forKey: .snapshotAt),
+            uptimeSeconds: container.decode(Double.self, forKey: .uptimeSeconds),
+            diskAvailableBytes: container.decodeIfPresent(Int64.self, forKey: .diskAvailableBytes),
+            diskTotalBytes: container.decodeIfPresent(Int64.self, forKey: .diskTotalBytes),
+            requestCount: container.decode(Int64.self, forKey: .requestCount),
+            clientErrorCount: container.decode(Int64.self, forKey: .clientErrorCount),
+            serverErrorCount: container.decode(Int64.self, forKey: .serverErrorCount),
+            lastArchiveMutationAt: container.decodeIfPresent(
+                String.self,
+                forKey: .lastArchiveMutationAt
+            ),
+            persistenceError: container.decodeIfPresent(String.self, forKey: .persistenceError),
+            endpoints: container.decode(
+                [EngramServiceArchiveV2RemoteEndpoint].self,
+                forKey: .endpoints
+            ),
+            recentErrors: container.decode(
+                [EngramServiceArchiveV2RemoteError].self,
+                forKey: .recentErrors
+            )
+        )
+    }
+}
+
+struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
+    let replicaID: String
+    let queuedCount: Int
+    let retryingCount: Int
+    let quarantinedCount: Int
+    let verifiedCount: Int
+    let oldestOutstandingAt: String?
+    let nextRetryAt: String?
+    let retryReasons: [EngramServiceArchiveV2RetryReasonCount]
+    let remoteTelemetry: EngramServiceArchiveV2RemoteTelemetry?
+    let remoteTelemetryError: String?
+
+    init(
+        replicaID: String,
+        queuedCount: Int,
+        retryingCount: Int,
+        quarantinedCount: Int,
+        verifiedCount: Int,
+        oldestOutstandingAt: String? = nil,
+        nextRetryAt: String? = nil,
+        retryReasons: [EngramServiceArchiveV2RetryReasonCount] = [],
+        remoteTelemetry: EngramServiceArchiveV2RemoteTelemetry? = nil,
+        remoteTelemetryError: String? = nil
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.validateReplicaID(replicaID)
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            queuedCount,
+            field: "queuedCount"
+        )
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            retryingCount,
+            field: "retryingCount"
+        )
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            quarantinedCount,
+            field: "quarantinedCount"
+        )
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            verifiedCount,
+            field: "verifiedCount"
+        )
+        if let oldestOutstandingAt {
+            try EngramServiceArchiveV2WireValidation.validateTimestamp(
+                oldestOutstandingAt,
+                field: "oldestOutstandingAt"
+            )
+        }
+        if let nextRetryAt {
+            try EngramServiceArchiveV2WireValidation.validateTimestamp(
+                nextRetryAt,
+                field: "nextRetryAt"
+            )
+        }
+        try EngramServiceArchiveV2WireValidation.require(
+            retryReasons.count <= 8,
+            field: "retryReasons"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            Set(retryReasons.map(\.symbol)).count == retryReasons.count,
+            field: "retryReasons"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            remoteTelemetry == nil || remoteTelemetry?.serverID == replicaID,
+            field: "remoteTelemetry"
+        )
+        if let remoteTelemetryError {
+            try EngramServiceArchiveV2WireValidation.require(
+                EngramServiceArchiveV2WireValidation.remoteTelemetryErrors.contains(
+                    remoteTelemetryError
+                ),
+                field: "remoteTelemetryError"
+            )
+        }
+        try EngramServiceArchiveV2WireValidation.require(
+            remoteTelemetry == nil || remoteTelemetryError == nil,
+            field: "remoteTelemetry"
+        )
+        self.replicaID = replicaID
+        self.queuedCount = queuedCount
+        self.retryingCount = retryingCount
+        self.quarantinedCount = quarantinedCount
+        self.verifiedCount = verifiedCount
+        self.oldestOutstandingAt = oldestOutstandingAt
+        self.nextRetryAt = nextRetryAt
+        self.retryReasons = retryReasons
+        self.remoteTelemetry = remoteTelemetry
+        self.remoteTelemetryError = remoteTelemetryError
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            replicaID: container.decode(String.self, forKey: .replicaID),
+            queuedCount: container.decode(Int.self, forKey: .queuedCount),
+            retryingCount: container.decode(Int.self, forKey: .retryingCount),
+            quarantinedCount: container.decode(Int.self, forKey: .quarantinedCount),
+            verifiedCount: container.decode(Int.self, forKey: .verifiedCount),
+            oldestOutstandingAt: container.decodeIfPresent(
+                String.self,
+                forKey: .oldestOutstandingAt
+            ),
+            nextRetryAt: container.decodeIfPresent(String.self, forKey: .nextRetryAt),
+            retryReasons: try container.decodeIfPresent(
+                [EngramServiceArchiveV2RetryReasonCount].self,
+                forKey: .retryReasons
+            ) ?? [],
+            remoteTelemetry: container.decodeIfPresent(
+                EngramServiceArchiveV2RemoteTelemetry.self,
+                forKey: .remoteTelemetry
+            ),
+            remoteTelemetryError: container.decodeIfPresent(
+                String.self,
+                forKey: .remoteTelemetryError
+            )
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case replicaID
+        case queuedCount
+        case retryingCount
+        case quarantinedCount
+        case verifiedCount
+        case oldestOutstandingAt
+        case nextRetryAt
+        case retryReasons
+        case remoteTelemetry
+        case remoteTelemetryError
+    }
+}
+
+struct EngramServiceArchiveV2RetryReasonCount: Codable, Equatable, Sendable {
+    let symbol: String
+    let count: Int
+
+    init(symbol: String, count: Int) throws {
+        try EngramServiceArchiveV2WireValidation.validateSymbol(symbol, field: "symbol")
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(count, field: "count")
+        self.symbol = symbol
+        self.count = count
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            symbol: container.decode(String.self, forKey: .symbol),
+            count: container.decode(Int.self, forKey: .count)
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case symbol
+        case count
+    }
+}
+
+struct EngramServiceArchiveV2LatestReceipt: Codable, Equatable, Sendable {
+    let replicaID: String
+    let manifestSHA256: String
+    let receiptSHA256: String
+    let verifiedAt: String
+
+    init(
+        replicaID: String,
+        manifestSHA256: String,
+        receiptSHA256: String,
+        verifiedAt: String
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.validateReplicaID(replicaID)
+        try EngramServiceArchiveV2WireValidation.validateDigest(
+            manifestSHA256,
+            field: "manifestSHA256"
+        )
+        try EngramServiceArchiveV2WireValidation.validateDigest(
+            receiptSHA256,
+            field: "receiptSHA256"
+        )
+        try EngramServiceArchiveV2WireValidation.validateTimestamp(
+            verifiedAt,
+            field: "verifiedAt"
+        )
+        self.replicaID = replicaID
+        self.manifestSHA256 = manifestSHA256
+        self.receiptSHA256 = receiptSHA256
+        self.verifiedAt = verifiedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            replicaID: container.decode(String.self, forKey: .replicaID),
+            manifestSHA256: container.decode(String.self, forKey: .manifestSHA256),
+            receiptSHA256: container.decode(String.self, forKey: .receiptSHA256),
+            verifiedAt: container.decode(String.self, forKey: .verifiedAt)
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case replicaID
+        case manifestSHA256
+        case receiptSHA256
+        case verifiedAt
+    }
+}
+
+struct EngramServiceArchiveV2ReplicationCycleSummary: Codable, Equatable, Sendable {
+    let startedAt: String
+    let finishedAt: String
+    let durationMs: Double
+    let claimedCount: Int
+    let verifiedCount: Int
+    let retryScheduledCount: Int
+    let quarantinedCount: Int
+    let lostClaimCount: Int
+    let staleRecoveredCount: Int
+    let reconciledCount: Int
+    let cancelled: Bool
+    let cycleError: String?
+
+    init(
+        startedAt: String,
+        finishedAt: String,
+        durationMs: Double,
+        claimedCount: Int,
+        verifiedCount: Int,
+        retryScheduledCount: Int,
+        quarantinedCount: Int,
+        lostClaimCount: Int,
+        staleRecoveredCount: Int,
+        reconciledCount: Int,
+        cancelled: Bool,
+        cycleError: String?
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.validateTimestamp(
+            startedAt,
+            field: "startedAt"
+        )
+        try EngramServiceArchiveV2WireValidation.validateTimestamp(
+            finishedAt,
+            field: "finishedAt"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            durationMs.isFinite && durationMs >= 0,
+            field: "durationMs"
+        )
+        let counts = [
+            ("claimedCount", claimedCount),
+            ("verifiedCount", verifiedCount),
+            ("retryScheduledCount", retryScheduledCount),
+            ("quarantinedCount", quarantinedCount),
+            ("lostClaimCount", lostClaimCount),
+            ("staleRecoveredCount", staleRecoveredCount),
+            ("reconciledCount", reconciledCount),
+        ]
+        for (field, value) in counts {
+            try EngramServiceArchiveV2WireValidation.validateNonNegative(value, field: field)
+        }
+        try EngramServiceArchiveV2WireValidation.validateSymbol(
+            cycleError,
+            field: "cycleError"
+        )
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+        self.durationMs = durationMs
+        self.claimedCount = claimedCount
+        self.verifiedCount = verifiedCount
+        self.retryScheduledCount = retryScheduledCount
+        self.quarantinedCount = quarantinedCount
+        self.lostClaimCount = lostClaimCount
+        self.staleRecoveredCount = staleRecoveredCount
+        self.reconciledCount = reconciledCount
+        self.cancelled = cancelled
+        self.cycleError = cycleError
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            startedAt: container.decode(String.self, forKey: .startedAt),
+            finishedAt: container.decode(String.self, forKey: .finishedAt),
+            durationMs: container.decode(Double.self, forKey: .durationMs),
+            claimedCount: container.decode(Int.self, forKey: .claimedCount),
+            verifiedCount: container.decode(Int.self, forKey: .verifiedCount),
+            retryScheduledCount: container.decode(Int.self, forKey: .retryScheduledCount),
+            quarantinedCount: container.decode(Int.self, forKey: .quarantinedCount),
+            lostClaimCount: container.decode(Int.self, forKey: .lostClaimCount),
+            staleRecoveredCount: container.decode(Int.self, forKey: .staleRecoveredCount),
+            reconciledCount: container.decode(Int.self, forKey: .reconciledCount),
+            cancelled: container.decode(Bool.self, forKey: .cancelled),
+            cycleError: container.decodeIfPresent(String.self, forKey: .cycleError)
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case startedAt
+        case finishedAt
+        case durationMs
+        case claimedCount
+        case verifiedCount
+        case retryScheduledCount
+        case quarantinedCount
+        case lostClaimCount
+        case staleRecoveredCount
+        case reconciledCount
+        case cancelled
+        case cycleError
+    }
+}
+
+struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
+    let enabled: Bool
+    let localCaptureEnabled: Bool
+    let remoteReplicationEnabled: Bool
+    let configurationError: String?
+    let capturedCount: Int
+    let boundCount: Int
+    let unboundCount: Int
+    let remotePolicyUnknownCount: Int
+    let remotePolicyEligibleCount: Int
+    let remotePolicyExcludedCount: Int
+    let unsupportedLocatorCount: Int
+    let unsafeLocatorCount: Int
+    let replicas: [EngramServiceArchiveV2ReplicaStatus]
+    let singleReplicaVerifiedCount: Int
+    let dualReplicaVerifiedCount: Int
+    let latestReceipts: [EngramServiceArchiveV2LatestReceipt]
+    let lastCaptureError: String?
+    let lastReplicationError: String?
+    let cycleRunning: Bool
+    let cycleCoalesced: Bool
+    let lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?
+    let nextScheduledCycleAt: String?
+
+    init(
+        enabled: Bool,
+        localCaptureEnabled: Bool,
+        remoteReplicationEnabled: Bool,
+        configurationError: String?,
+        capturedCount: Int,
+        boundCount: Int,
+        unboundCount: Int,
+        remotePolicyUnknownCount: Int,
+        remotePolicyEligibleCount: Int,
+        remotePolicyExcludedCount: Int,
+        unsupportedLocatorCount: Int,
+        unsafeLocatorCount: Int,
+        replicas: [EngramServiceArchiveV2ReplicaStatus],
+        singleReplicaVerifiedCount: Int,
+        dualReplicaVerifiedCount: Int,
+        latestReceipts: [EngramServiceArchiveV2LatestReceipt],
+        lastCaptureError: String?,
+        lastReplicationError: String?,
+        cycleRunning: Bool,
+        cycleCoalesced: Bool,
+        lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary? = nil,
+        nextScheduledCycleAt: String? = nil
+    ) throws {
+        if !enabled {
+            try EngramServiceArchiveV2WireValidation.require(
+                !localCaptureEnabled && !remoteReplicationEnabled,
+                field: "enabled"
+            )
+        }
+        if remoteReplicationEnabled {
+            try EngramServiceArchiveV2WireValidation.require(
+                enabled && localCaptureEnabled && configurationError == nil,
+                field: "remoteReplicationEnabled"
+            )
+        }
+        try EngramServiceArchiveV2WireValidation.validateSymbol(
+            configurationError,
+            field: "configurationError"
+        )
+        try EngramServiceArchiveV2WireValidation.validateSymbol(
+            lastCaptureError,
+            field: "lastCaptureError"
+        )
+        try EngramServiceArchiveV2WireValidation.validateSymbol(
+            lastReplicationError,
+            field: "lastReplicationError"
+        )
+        if let nextScheduledCycleAt {
+            try EngramServiceArchiveV2WireValidation.validateTimestamp(
+                nextScheduledCycleAt,
+                field: "nextScheduledCycleAt"
+            )
+        }
+
+        let counts = [
+            ("capturedCount", capturedCount),
+            ("boundCount", boundCount),
+            ("unboundCount", unboundCount),
+            ("remotePolicyUnknownCount", remotePolicyUnknownCount),
+            ("remotePolicyEligibleCount", remotePolicyEligibleCount),
+            ("remotePolicyExcludedCount", remotePolicyExcludedCount),
+            ("unsupportedLocatorCount", unsupportedLocatorCount),
+            ("unsafeLocatorCount", unsafeLocatorCount),
+            ("singleReplicaVerifiedCount", singleReplicaVerifiedCount),
+            ("dualReplicaVerifiedCount", dualReplicaVerifiedCount),
+        ]
+        for (field, value) in counts {
+            try EngramServiceArchiveV2WireValidation.validateNonNegative(value, field: field)
+        }
+
+        try EngramServiceArchiveV2WireValidation.require(
+            replicas.map(\.replicaID) == EngramServiceArchiveV2WireValidation.replicaIDs,
+            field: "replicas"
+        )
+        let receiptIDs = latestReceipts.map(\.replicaID)
+        try EngramServiceArchiveV2WireValidation.require(
+            receiptIDs == [] || receiptIDs == ["hq"] || receiptIDs == ["m1"]
+                || receiptIDs == EngramServiceArchiveV2WireValidation.replicaIDs,
+            field: "latestReceipts"
+        )
+
+        self.enabled = enabled
+        self.localCaptureEnabled = localCaptureEnabled
+        self.remoteReplicationEnabled = remoteReplicationEnabled
+        self.configurationError = configurationError
+        self.capturedCount = capturedCount
+        self.boundCount = boundCount
+        self.unboundCount = unboundCount
+        self.remotePolicyUnknownCount = remotePolicyUnknownCount
+        self.remotePolicyEligibleCount = remotePolicyEligibleCount
+        self.remotePolicyExcludedCount = remotePolicyExcludedCount
+        self.unsupportedLocatorCount = unsupportedLocatorCount
+        self.unsafeLocatorCount = unsafeLocatorCount
+        self.replicas = replicas
+        self.singleReplicaVerifiedCount = singleReplicaVerifiedCount
+        self.dualReplicaVerifiedCount = dualReplicaVerifiedCount
+        self.latestReceipts = latestReceipts
+        self.lastCaptureError = lastCaptureError
+        self.lastReplicationError = lastReplicationError
+        self.cycleRunning = cycleRunning
+        self.cycleCoalesced = cycleCoalesced
+        self.lastReplicationCycle = lastReplicationCycle
+        self.nextScheduledCycleAt = nextScheduledCycleAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            enabled: container.decode(Bool.self, forKey: .enabled),
+            localCaptureEnabled: container.decode(Bool.self, forKey: .localCaptureEnabled),
+            remoteReplicationEnabled: container.decode(Bool.self, forKey: .remoteReplicationEnabled),
+            configurationError: container.decodeIfPresent(String.self, forKey: .configurationError),
+            capturedCount: container.decode(Int.self, forKey: .capturedCount),
+            boundCount: container.decode(Int.self, forKey: .boundCount),
+            unboundCount: container.decode(Int.self, forKey: .unboundCount),
+            remotePolicyUnknownCount: container.decode(Int.self, forKey: .remotePolicyUnknownCount),
+            remotePolicyEligibleCount: container.decode(Int.self, forKey: .remotePolicyEligibleCount),
+            remotePolicyExcludedCount: container.decode(Int.self, forKey: .remotePolicyExcludedCount),
+            unsupportedLocatorCount: container.decode(Int.self, forKey: .unsupportedLocatorCount),
+            unsafeLocatorCount: container.decode(Int.self, forKey: .unsafeLocatorCount),
+            replicas: container.decode([EngramServiceArchiveV2ReplicaStatus].self, forKey: .replicas),
+            singleReplicaVerifiedCount: container.decode(Int.self, forKey: .singleReplicaVerifiedCount),
+            dualReplicaVerifiedCount: container.decode(Int.self, forKey: .dualReplicaVerifiedCount),
+            latestReceipts: container.decode([EngramServiceArchiveV2LatestReceipt].self, forKey: .latestReceipts),
+            lastCaptureError: container.decodeIfPresent(String.self, forKey: .lastCaptureError),
+            lastReplicationError: container.decodeIfPresent(String.self, forKey: .lastReplicationError),
+            cycleRunning: container.decode(Bool.self, forKey: .cycleRunning),
+            cycleCoalesced: container.decode(Bool.self, forKey: .cycleCoalesced),
+            lastReplicationCycle: container.decodeIfPresent(
+                EngramServiceArchiveV2ReplicationCycleSummary.self,
+                forKey: .lastReplicationCycle
+            ),
+            nextScheduledCycleAt: container.decodeIfPresent(
+                String.self,
+                forKey: .nextScheduledCycleAt
+            )
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case localCaptureEnabled
+        case remoteReplicationEnabled
+        case configurationError
+        case capturedCount
+        case boundCount
+        case unboundCount
+        case remotePolicyUnknownCount
+        case remotePolicyEligibleCount
+        case remotePolicyExcludedCount
+        case unsupportedLocatorCount
+        case unsafeLocatorCount
+        case replicas
+        case singleReplicaVerifiedCount
+        case dualReplicaVerifiedCount
+        case latestReceipts
+        case lastCaptureError
+        case lastReplicationError
+        case cycleRunning
+        case cycleCoalesced
+        case lastReplicationCycle
+        case nextScheduledCycleAt
+    }
+}
+
+struct EngramServiceArchiveV2RetryResponse: Codable, Equatable, Sendable {
+    let accepted: Bool
+    let resetRows: Int
+    let error: String?
+
+    init(accepted: Bool, resetRows: Int, error: String?) throws {
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            resetRows,
+            field: "resetRows"
+        )
+        try EngramServiceArchiveV2WireValidation.validateSymbol(error, field: "error")
+        if accepted {
+            try EngramServiceArchiveV2WireValidation.require(error == nil, field: "error")
+        } else {
+            try EngramServiceArchiveV2WireValidation.require(
+                resetRows == 0 && error != nil,
+                field: "accepted"
+            )
+        }
+        self.accepted = accepted
+        self.resetRows = resetRows
+        self.error = error
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            accepted: container.decode(Bool.self, forKey: .accepted),
+            resetRows: container.decode(Int.self, forKey: .resetRows),
+            error: container.decodeIfPresent(String.self, forKey: .error)
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case accepted
+        case resetRows
+        case error
+    }
+}
+
 struct EngramServiceRefreshUsageResponse: Codable, Equatable, Sendable {
     let snapshotCount: Int
     let sources: [String]

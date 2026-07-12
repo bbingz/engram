@@ -765,8 +765,16 @@ final class EngramServiceIPCTests: XCTestCase {
             source.contains(": SessionAdapterFactory.recentActiveAdapters()"),
             "startup scan must not skip sessions solely because they are older than the recent-active window"
         )
-        XCTAssertTrue(source.contains("indexer: WriterStartupIndexing(writer: writer, adapters: startupAdapters)"))
-        XCTAssertTrue(source.contains("adapters: startupAdapters"))
+        // Archive V2 projects the two exact-source adapters to the locators
+        // captured in this cycle before any parser-facing startup phase runs.
+        // With the feature disabled, `parserAdapters` is assigned exactly the
+        // full enabled startup set. Keeping it immutable after branch selection
+        // also makes subsequent @Sendable write-gate captures race-free.
+        XCTAssertTrue(source.contains("let parserAdapters: [any SessionAdapter]"))
+        XCTAssertTrue(source.contains("parserAdapters = startupAdapters"))
+        XCTAssertTrue(source.contains("SessionAdapterFactory.indexingAdapters("))
+        XCTAssertTrue(source.contains("indexer: WriterStartupIndexing(writer: writer, adapters: parserAdapters)"))
+        XCTAssertTrue(source.contains("adapters: parserAdapters"))
     }
 
     func testRunnerRepoDiscoveryProbesOutsideWriteGate() throws {
@@ -870,11 +878,14 @@ final class EngramServiceIPCTests: XCTestCase {
         let body = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(body.contains("let disabled = readDisabledSources(environment: environment)"))
-        XCTAssertTrue(body.contains("SessionAdapterFactory.recentActiveAdapters()"))
-        XCTAssertTrue(body.contains("let recentAdapters = adaptersExcludingDisabled("))
-        XCTAssertTrue(body.contains("try await writer.indexRecentSessions(adapters: recentAdapters)"))
+        XCTAssertTrue(body.contains("let recentAdapters = await recentAdaptersForPeriodicCycle("))
+        XCTAssertTrue(body.contains("archiveV2Coordinator: archiveV2Coordinator"))
+        XCTAssertTrue(body.contains("disabledSources: disabled"))
+        XCTAssertTrue(body.contains("let captureInputs = await archiveCaptureInputsForPeriodicCycle("))
+        XCTAssertTrue(body.contains("try await writer.indexRecentSessions(adapters: parserAdapters)"))
         XCTAssertTrue(body.contains("let enabledAdapters = adaptersExcludingDisabled("))
-        XCTAssertTrue(body.contains("IndexJobRunner(writer: writer, adapters: enabledAdapters)"))
+        XCTAssertTrue(body.contains("periodicParserAdapters = enabledAdapters"))
+        XCTAssertTrue(body.contains("IndexJobRunner(writer: writer, adapters: periodicParserAdapters)"))
         XCTAssertFalse(
             body.contains("try await writer.indexRecentSessions()"),
             "periodic indexing must honor disabled/default-off archived sources"
@@ -2494,7 +2505,7 @@ final class EngramServiceIPCTests: XCTestCase {
         try assertJSONExportMarkedTruncated(json)
     }
 
-    func testExportSessionMarksOpenCodeOversizedTranscriptTruncated() async throws {
+    func testExportSessionMarksOpenCodeOversizedTranscriptTruncatedWithArchiveResolverEnabled() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
         let opencodeDB = paths.runtime.appendingPathComponent("opencode.sqlite")
@@ -2517,13 +2528,33 @@ final class EngramServiceIPCTests: XCTestCase {
         let exportHome = paths.runtime.appendingPathComponent("home-opencode", isDirectory: true)
         let homeScope = ServiceCoreTestHomeScope(home: exportHome)
         defer { homeScope.restore() }
+        let archiveRoot = paths.runtime.appendingPathComponent("archive-opencode", isDirectory: true)
+        let cas = try ImmutableArchiveCAS(root: archiveRoot)
+        let catalog = try ArchiveCatalog(
+            root: archiveRoot,
+            machineID: "11111111-1111-4111-8111-111111111111"
+        )
+        try catalog.migrate()
+        let replayParent = paths.runtime.appendingPathComponent("replay-opencode", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: replayParent,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let resolver = try ArchiveTranscriptResolver(
+            catalog: catalog,
+            cas: cas,
+            temporaryParent: replayParent
+        )
 
         let json = try await TranscriptExportService.exportSession(
             EngramServiceExportSessionRequest(id: "s1", format: "json", outputHome: exportHome.path, actor: "test"),
-            databasePath: paths.database.path
+            databasePath: paths.database.path,
+            archiveTranscriptResolver: resolver
         )
 
         try assertJSONExportMarkedTruncated(json)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: replayParent.path), [])
     }
 
     private func assertJSONExportMarkedTruncated(_ response: EngramServiceExportSessionResponse) throws {

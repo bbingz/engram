@@ -1,5 +1,6 @@
-import Foundation
 import CryptoKit
+import Darwin
+import Foundation
 import Hummingbird
 import HTTPTypes
 import NIOCore
@@ -16,10 +17,55 @@ import Logging
 public final class EngramRemoteServerApp: Sendable {
     private let config: EngramRemoteServerConfig
     private let store: BlobStore
+    private let archiveStore: ArchiveStore?
+    private let archiveTelemetry: ArchiveRemoteTelemetryStore?
 
-    public init(config: EngramRemoteServerConfig) throws {
+    public convenience init(config: EngramRemoteServerConfig) throws {
+        try self.init(
+            config: config,
+            archiveTelemetryNow: { Date() },
+            archiveTelemetrySnapshotWriter: { data, url in
+                try ArchiveRemoteTelemetryStore.defaultSnapshotWriter(data, url)
+            }
+        )
+    }
+
+    init(
+        config: EngramRemoteServerConfig,
+        archiveTelemetryNow: @escaping @Sendable () -> Date,
+        archiveTelemetrySnapshotWriter: @escaping ArchiveRemoteTelemetryStore.SnapshotWriter
+    ) throws {
+        if let archive = config.archiveV2 {
+            guard EngramRemoteServerConfig.isCurrentArchiveServerID(archive.serverID) else {
+                throw EngramRemoteServerConfig.ConfigError.invalidArchiveServerID
+            }
+            guard archive.bearerToken != config.bearerToken,
+                  !Self.keysEqual(archive.atRestKey, config.atRestKey) else {
+                throw EngramRemoteServerConfig.ConfigError.archiveCredentialsMustBeDistinct
+            }
+            guard Self.storeRootsAreDisjoint(config.storeRoot, archive.root) else {
+                throw EngramRemoteServerConfig.ConfigError.storeRootsMustBeDisjoint
+            }
+        }
         self.config = config
         self.store = try BlobStore(root: config.storeRoot, key: config.atRestKey)
+        if let archive = config.archiveV2 {
+            self.archiveStore = try ArchiveStore(
+                root: archive.root,
+                key: archive.atRestKey,
+                serverID: archive.serverID
+            )
+            self.archiveTelemetry = try ArchiveRemoteTelemetryStore(
+                archiveRoot: archive.root,
+                serverID: archive.serverID,
+                sourceRevision: config.sourceRevision,
+                now: archiveTelemetryNow,
+                snapshotWriter: archiveTelemetrySnapshotWriter
+            )
+        } else {
+            self.archiveStore = nil
+            self.archiveTelemetry = nil
+        }
     }
 
     public func buildRouter() -> Router<BasicRequestContext> {
@@ -119,6 +165,15 @@ public final class EngramRemoteServerApp: Sendable {
             }
         }
 
+        if let archive = config.archiveV2, let archiveStore, let archiveTelemetry {
+            ArchiveRoutes.mount(
+                on: router,
+                store: archiveStore,
+                token: archive.bearerToken,
+                telemetry: archiveTelemetry
+            )
+        }
+
         return router
     }
 
@@ -155,6 +210,291 @@ public final class EngramRemoteServerApp: Sendable {
         var diff: UInt8 = 0
         for (x, y) in zip(a, b) { diff |= x ^ y }
         return diff == 0
+    }
+
+    private static func keysEqual(_ lhs: SymmetricKey, _ rhs: SymmetricKey) -> Bool {
+        let lhsBytes = lhs.withUnsafeBytes { Data($0) }
+        let rhsBytes = rhs.withUnsafeBytes { Data($0) }
+        guard lhsBytes.count == rhsBytes.count else { return false }
+        var diff: UInt8 = 0
+        for (left, right) in zip(lhsBytes, rhsBytes) {
+            diff |= left ^ right
+        }
+        return diff == 0
+    }
+
+    private static func storeRootsAreDisjoint(_ lhs: URL, _ rhs: URL) -> Bool {
+        guard let standardizedLHS = lexicallyNormalizedRoot(lhs),
+              let standardizedRHS = lexicallyNormalizedRoot(rhs) else {
+            return false
+        }
+        let standardizedComparisonIsCaseSensitive = comparisonIsCaseSensitive(
+            standardizedLHS,
+            standardizedRHS
+        )
+        guard !pathsOverlap(
+            standardizedLHS,
+            standardizedRHS,
+            caseSensitive: standardizedComparisonIsCaseSensitive
+        ) else { return false }
+
+        guard let resolvedLHS = canonicalRootWithoutCreating(standardizedLHS),
+              let resolvedRHS = canonicalRootWithoutCreating(standardizedRHS) else {
+            return false
+        }
+        let resolvedComparisonIsCaseSensitive = comparisonIsCaseSensitive(
+            resolvedLHS.url,
+            resolvedRHS.url
+        )
+        guard !pathsOverlap(
+            resolvedLHS.url,
+            resolvedRHS.url,
+            caseSensitive: resolvedComparisonIsCaseSensitive
+        ) else { return false }
+        return !filesystemRootsOverlap(
+            resolvedLHS,
+            resolvedRHS,
+            caseSensitive: resolvedComparisonIsCaseSensitive
+        )
+    }
+
+    private struct FilesystemIdentity: Hashable {
+        let device: UInt64
+        let inode: UInt64
+
+        init(_ metadata: stat) {
+            self.device = UInt64(truncatingIfNeeded: metadata.st_dev)
+            self.inode = UInt64(truncatingIfNeeded: metadata.st_ino)
+        }
+    }
+
+    private struct ExistingDirectoryNode {
+        let identity: FilesystemIdentity
+        let component: String?
+    }
+
+    private struct CanonicalRootResolution {
+        let url: URL
+        let existingDirectories: [ExistingDirectoryNode]
+        let unresolvedSuffix: [String]
+    }
+
+    /// Resolve every existing symlink component while preserving the suffix below
+    /// the deepest existing directory. Foundation's whole-path resolver leaves an
+    /// existing symlink ancestor unresolved when the final leaf does not exist,
+    /// which can make two stores appear disjoint until the first store creates it.
+    /// Dangling links, cycles, non-directory components, and inspection failures
+    /// are rejected so root validation never creates filesystem state.
+    private static func canonicalRootWithoutCreating(_ url: URL) -> CanonicalRootResolution? {
+        guard var components = lexicallyNormalizedComponents(url) else { return nil }
+        var resolved = URL(fileURLWithPath: "/", isDirectory: true)
+        var index = 0
+        var symlinkHops = 0
+        var visitedSymlinks = Set<String>()
+        var rootMetadata = stat()
+        guard resolved.path.withCString({ lstat($0, &rootMetadata) }) == 0,
+              rootMetadata.st_mode & S_IFMT == S_IFDIR else {
+            return nil
+        }
+        var existingDirectories = [
+            ExistingDirectoryNode(identity: FilesystemIdentity(rootMetadata), component: nil),
+        ]
+
+        while index < components.count {
+            let component = components[index]
+            let candidate = resolved.appendingPathComponent(component, isDirectory: true)
+            var metadata = stat()
+            let result = candidate.path.withCString { lstat($0, &metadata) }
+
+            if result != 0 {
+                guard errno == ENOENT else { return nil }
+                let unresolvedSuffix = Array(components[index...])
+                for suffix in unresolvedSuffix {
+                    resolved.appendPathComponent(suffix, isDirectory: true)
+                }
+                return CanonicalRootResolution(
+                    url: resolved,
+                    existingDirectories: existingDirectories,
+                    unresolvedSuffix: unresolvedSuffix
+                )
+            }
+
+            let fileType = metadata.st_mode & S_IFMT
+            if fileType == S_IFLNK {
+                symlinkHops += 1
+                guard symlinkHops <= 40,
+                      visitedSymlinks.insert(candidate.path).inserted,
+                      let destination = try? FileManager.default.destinationOfSymbolicLink(
+                          atPath: candidate.path
+                      ) else {
+                    return nil
+                }
+
+                let destinationURL: URL
+                if destination.hasPrefix("/") {
+                    destinationURL = URL(fileURLWithPath: destination, isDirectory: true)
+                } else {
+                    let combinedPath = (resolved.path as NSString)
+                        .appendingPathComponent(destination)
+                    destinationURL = URL(fileURLWithPath: combinedPath, isDirectory: true)
+                }
+                guard let destinationComponents = lexicallyNormalizedComponents(destinationURL) else {
+                    return nil
+                }
+                let standardizedDestination = rootURL(components: destinationComponents)
+
+                // A dangling target could become live after BlobStore creates the
+                // other root, so it must fail closed instead of being preserved as
+                // an unresolved suffix.
+                var destinationMetadata = stat()
+                let destinationResult = standardizedDestination.path.withCString {
+                    stat($0, &destinationMetadata)
+                }
+                guard destinationResult == 0,
+                      destinationMetadata.st_mode & S_IFMT == S_IFDIR else {
+                    return nil
+                }
+
+                let suffix = Array(components.dropFirst(index + 1))
+                components = destinationComponents + suffix
+                resolved = URL(fileURLWithPath: "/", isDirectory: true)
+                existingDirectories = [
+                    ExistingDirectoryNode(identity: FilesystemIdentity(rootMetadata), component: nil),
+                ]
+                index = 0
+                continue
+            }
+
+            guard fileType == S_IFDIR else { return nil }
+            resolved = candidate
+            existingDirectories.append(
+                ExistingDirectoryNode(
+                    identity: FilesystemIdentity(metadata),
+                    component: component
+                )
+            )
+            index += 1
+        }
+
+        return CanonicalRootResolution(
+            url: resolved,
+            existingDirectories: existingDirectories,
+            unresolvedSuffix: []
+        )
+    }
+
+    private static func filesystemRootsOverlap(
+        _ lhs: CanonicalRootResolution,
+        _ rhs: CanonicalRootResolution,
+        caseSensitive: Bool
+    ) -> Bool {
+        var deepestCommon: (lhs: Int, rhs: Int, score: Int)?
+        for lhsIndex in lhs.existingDirectories.indices {
+            for rhsIndex in rhs.existingDirectories.indices
+                where lhs.existingDirectories[lhsIndex].identity
+                    == rhs.existingDirectories[rhsIndex].identity {
+                let score = lhsIndex + rhsIndex
+                if deepestCommon == nil || score > deepestCommon!.score {
+                    deepestCommon = (lhsIndex, rhsIndex, score)
+                }
+            }
+        }
+        guard let deepestCommon else { return false }
+
+        let lhsRelative = lhs.existingDirectories.dropFirst(deepestCommon.lhs + 1)
+            .compactMap(\.component) + lhs.unresolvedSuffix
+        let rhsRelative = rhs.existingDirectories.dropFirst(deepestCommon.rhs + 1)
+            .compactMap(\.component) + rhs.unresolvedSuffix
+        return componentsOverlap(lhsRelative, rhsRelative, caseSensitive: caseSensitive)
+    }
+
+    private static func lexicallyNormalizedRoot(_ url: URL) -> URL? {
+        guard let components = lexicallyNormalizedComponents(url) else { return nil }
+        return rootURL(components: components)
+    }
+
+    private static func lexicallyNormalizedComponents(_ url: URL) -> [String]? {
+        guard url.isFileURL, url.path.hasPrefix("/") else { return nil }
+        var result: [String] = []
+        for component in url.pathComponents.dropFirst() {
+            switch component {
+            case "", ".":
+                continue
+            case "..":
+                guard !result.isEmpty else { return nil }
+                result.removeLast()
+            default:
+                result.append(component)
+            }
+        }
+        return result
+    }
+
+    private static func rootURL(components: [String]) -> URL {
+        let path = components.isEmpty ? "/" : "/" + components.joined(separator: "/")
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    private static func pathsOverlap(
+        _ lhs: URL,
+        _ rhs: URL,
+        caseSensitive: Bool
+    ) -> Bool {
+        return componentsOverlap(
+            lhs.pathComponents,
+            rhs.pathComponents,
+            caseSensitive: caseSensitive
+        )
+    }
+
+    private static func componentsOverlap(
+        _ lhs: [String],
+        _ rhs: [String],
+        caseSensitive: Bool
+    ) -> Bool {
+        let lhsComponents = comparablePathComponents(lhs, caseSensitive: caseSensitive)
+        let rhsComponents = comparablePathComponents(rhs, caseSensitive: caseSensitive)
+        if lhsComponents.count <= rhsComponents.count {
+            return Array(rhsComponents.prefix(lhsComponents.count)) == lhsComponents
+        }
+        return Array(lhsComponents.prefix(rhsComponents.count)) == rhsComponents
+    }
+
+    private static func comparablePathComponents(
+        _ components: [String],
+        caseSensitive: Bool
+    ) -> [String] {
+        components.map { component in
+            let canonical = component.precomposedStringWithCanonicalMapping
+            guard !caseSensitive else { return canonical }
+            return canonical.folding(
+                options: [.caseInsensitive],
+                locale: Locale(identifier: "en_US_POSIX")
+            )
+        }
+    }
+
+    private static func comparisonIsCaseSensitive(_ lhs: URL, _ rhs: URL) -> Bool {
+        guard let lhsIsCaseSensitive = volumeSupportsCaseSensitiveNames(at: lhs),
+              let rhsIsCaseSensitive = volumeSupportsCaseSensitiveNames(at: rhs) else {
+            return false
+        }
+        return lhsIsCaseSensitive && rhsIsCaseSensitive
+    }
+
+    private static func volumeSupportsCaseSensitiveNames(at url: URL) -> Bool? {
+        var candidate = url
+        while true {
+            if FileManager.default.fileExists(atPath: candidate.path),
+               let values = try? candidate.resourceValues(
+                   forKeys: [.volumeSupportsCaseSensitiveNamesKey]
+               ), let supportsCaseSensitiveNames = values.volumeSupportsCaseSensitiveNames {
+                return supportsCaseSensitiveNames
+            }
+            let parent = candidate.deletingLastPathComponent()
+            guard parent.path != candidate.path else { return nil }
+            candidate = parent
+        }
     }
 
     // MARK: - Responses

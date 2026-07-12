@@ -31,6 +31,25 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func removeSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse
     func relatedSessions(sessionId: String) async throws -> [String]
     func triggerSync(_ request: EngramServiceTriggerSyncRequest) async throws -> EngramServiceTriggerSyncResponse
+    func archiveV2Status() async throws -> EngramServiceArchiveV2StatusResponse
+    func archiveV2Retry(
+        _ request: EngramServiceArchiveV2RetryRequest
+    ) async throws -> EngramServiceArchiveV2RetryResponse
+    func archiveV2RemoteRecoveryProbe(
+        _ request: EngramServiceArchiveV2RemoteRecoveryProbeRequest
+    ) async throws -> EngramServiceArchiveV2RemoteRecoveryProbeResponse
+    func archiveReclamationStatus() async throws -> EngramServiceArchiveReclamationStatusResponse
+    func archiveReclamationPreview() async throws -> EngramServiceArchiveReclamationPreviewResponse
+    func archiveReclamationUpdateSettings(
+        _ request: EngramServiceArchiveReclamationUpdateSettingsRequest
+    ) async throws -> EngramServiceArchiveReclamationStatusResponse
+    func archiveReclamationRun() async throws -> EngramServiceArchiveReclamationRunResponse
+    func archiveV2RecoveryDrill(
+        _ request: EngramServiceArchiveV2RecoveryDrillRequest
+    ) async throws -> EngramServiceArchiveV2RecoveryDrillResponse
+    func archiveReadSessionPage(
+        _ request: EngramServiceArchiveReadSessionPageRequest
+    ) async throws -> EngramServiceArchiveReadSessionPageResponse
     func refreshUsage() async throws -> EngramServiceRefreshUsageResponse
     func regenerateAllTitles() async throws -> EngramServiceRegenerateTitlesResponse
     func projectMigrations(_ request: EngramServiceProjectMigrationsRequest) async throws -> EngramServiceProjectMigrationsResponse

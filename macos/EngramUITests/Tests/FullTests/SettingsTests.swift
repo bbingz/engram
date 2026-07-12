@@ -70,4 +70,33 @@ final class SettingsTests: XCTestCase {
 
         ScreenshotCapture.capture(name: "settings_about", app: app, screen: "settings", test: #function)
     }
+
+    func testArchiveSectionSimplifiedChinese() {
+        app.terminate()
+        app = XCUIApplication()
+        TestLaunchConfig.mainWindow.configure(app)
+        app.launchArguments += [
+            "-AppleLanguages", "(zh-Hans)",
+            "-AppleLocale", "zh_CN",
+        ]
+        app.launch()
+
+        openSettings()
+
+        let settings = SettingsScreen(app: app)
+        settings.waitForLoad()
+        settings.navigateToSection(named: "archive")
+
+        XCTAssertTrue(settings.archiveSection.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["归档同步状态"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.element(id: "archiveSync_status").exists)
+        XCTAssertTrue(app.button(id: "archiveSync_refresh").exists)
+
+        ScreenshotCapture.capture(
+            name: "settings_archive_zh-Hans",
+            app: app,
+            screen: "settings",
+            test: #function
+        )
+    }
 }

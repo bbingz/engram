@@ -6,7 +6,8 @@ import EngramCoreRead
 enum TranscriptExportService {
     static func exportSession(
         _ request: EngramServiceExportSessionRequest,
-        databasePath: String
+        databasePath: String,
+        archiveTranscriptResolver: ArchiveTranscriptResolver? = nil
     ) async throws -> EngramServiceExportSessionResponse {
         guard request.format == "markdown" || request.format == "json" else {
             throw EngramServiceError.invalidRequest(message: "Unsupported export format: \(request.format)")
@@ -19,22 +20,44 @@ enum TranscriptExportService {
         }
 
         let transcript: ServiceTranscriptReader.ReadResult
-        do {
-            transcript = try await ServiceTranscriptReader.readMessagesWithMetadata(
-                filePath: session.filePath,
-                source: session.source
-            )
-        } catch let error as TranscriptSizeGuardError {
-            // Preserve the stable transcriptTooLarge code through service IPC and
-            // MCP (M12). Do not collapse size failures into InvalidRequest.
-            throw EngramServiceError.commandFailed(
-                name: error.code,
-                message: error.localizedDescription,
-                retryPolicy: "never",
-                details: [
-                    "code": .string(error.code),
-                ]
-            )
+        if let archiveTranscriptResolver,
+           shouldUseArchiveResolver(
+               source: session.source,
+               locator: session.filePath
+           ) {
+            do {
+                let liveURL = session.filePath.isEmpty
+                    ? nil
+                    : URL(fileURLWithPath: session.filePath)
+                transcript = try await archiveTranscriptResolver.withResolvedFile(
+                    sessionID: session.id,
+                    liveURL: liveURL,
+                    liveSource: session.source
+                ) { selectedURL, selectedSource in
+                    try await ServiceTranscriptReader.readArchiveMessagesWithMetadata(
+                        filePath: selectedURL.path,
+                        source: selectedSource
+                    )
+                }.value
+            } catch let error as TranscriptSizeGuardError {
+                throw ArchiveTranscriptServiceErrorMapper.serviceError(for: error)
+            } catch let error as ParserFailure {
+                throw ArchiveTranscriptServiceErrorMapper.serviceError(for: error)
+            } catch let error as ArchiveTranscriptResolverError {
+                throw ArchiveTranscriptServiceErrorMapper.serviceError(for: error)
+            }
+        } else {
+            do {
+                transcript = try await ServiceTranscriptReader.readMessagesWithMetadata(
+                    filePath: session.filePath,
+                    source: session.source
+                )
+            } catch let error as TranscriptSizeGuardError {
+                // Preserve the pre-archive stable transcriptTooLarge service
+                // contract. Other direct-parser failures retain their legacy
+                // behavior and are intentionally not retyped as archive errors.
+                throw ArchiveTranscriptServiceErrorMapper.serviceError(for: error)
+            }
         }
         let home = try outputHome(from: request.outputHome)
         let outputDir = try outputDirectory(in: home)
@@ -62,6 +85,24 @@ enum TranscriptExportService {
             format: request.format,
             messageCount: transcript.messages.count
         )
+    }
+
+    /// Archive v2 is exact-source storage, not a generic replacement for each
+    /// adapter's locator contract. Virtual SQLite locators and sources that do
+    /// not explicitly opt into exact capture must keep using their authoritative
+    /// live adapter even when the archive resolver is enabled globally.
+    private static func shouldUseArchiveResolver(
+        source: String,
+        locator: String
+    ) -> Bool {
+        guard !locator.contains("::"),
+              !locator.contains("?composer=") else {
+            return false
+        }
+        return SessionAdapterFactory.defaultAdapters().contains { adapter in
+            adapter.source.rawValue == source
+                && adapter is any ExactArchiveSourceAdapter
+        }
     }
 
     /// Map a session id to a safe single-path-component filename fragment. Some
@@ -132,7 +173,7 @@ enum TranscriptExportService {
         }
     }
 
-    private static func fetchSession(id: String, queue: DatabaseQueue) throws -> ServiceExportSessionRecord? {
+    static func fetchSession(id: String, queue: DatabaseQueue) throws -> ServiceExportSessionRecord? {
         try queue.read { db in
             guard let row = try Row.fetchOne(
                 db,
@@ -228,7 +269,7 @@ enum TranscriptExportService {
     }
 }
 
-private struct ServiceExportSessionRecord {
+struct ServiceExportSessionRecord {
     let id: String
     let source: String
     let startTime: String
@@ -334,6 +375,15 @@ struct ServiceTranscriptMessage: Sendable {
 }
 
 enum ServiceTranscriptReader {
+    private enum AdapterFailurePolicy {
+        case fallback
+        case terminal
+    }
+
+    private enum ReaderError: Error {
+        case authoritativeAdapterUnavailable(source: String)
+    }
+
     struct ReadResult {
         let messages: [ServiceTranscriptMessage]
         let totalKnownComplete: Bool
@@ -365,6 +415,32 @@ enum ServiceTranscriptReader {
             totalKnownComplete: true,
             truncatedAt: nil
         )
+    }
+
+    /// Archive bytes are replayed against the one adapter authoritative for
+    /// the source locked into the manifest. Any adapter failure is terminal:
+    /// reparsing the same bytes with a permissive legacy fallback would make a
+    /// corrupt/unsupported archive look complete.
+    static func readArchiveMessagesWithMetadata(
+        filePath: String,
+        source: String
+    ) async throws -> ReadResult {
+        let guardBeforeAdapter = requiresFullJSONTranscriptGuard(source: source)
+        if guardBeforeAdapter {
+            try TranscriptSizeGuard.validateFullJSONTranscript(
+                filePath: filePath,
+                source: source
+            )
+        }
+
+        guard let result = try await readWithAdapterRegistry(
+            filePath: filePath,
+            source: source,
+            failurePolicy: .terminal
+        ) else {
+            throw ReaderError.authoritativeAdapterUnavailable(source: source)
+        }
+        return result
     }
 
     /// Read only a small primer window (first visible message + the last
@@ -455,12 +531,28 @@ enum ServiceTranscriptReader {
     private static func readWithAdapterRegistry(
         filePath: String,
         source: String,
-        primerLimit: Int? = nil
+        primerLimit: Int? = nil,
+        failurePolicy: AdapterFailurePolicy = .fallback
     ) async throws -> ReadResult? {
-        guard let sourceName = adapterSourceName(for: source),
-              let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
-        else {
+        guard let sourceName = adapterSourceName(for: source) else {
+            if failurePolicy == .terminal {
+                throw ReaderError.authoritativeAdapterUnavailable(source: source)
+            }
             return nil
+        }
+        let matchingAdapters = SessionAdapterFactory.defaultAdapters().filter {
+            $0.source == sourceName
+        }
+        let adapter: any SessionAdapter
+        switch failurePolicy {
+        case .terminal:
+            guard matchingAdapters.count == 1, let only = matchingAdapters.first else {
+                throw ReaderError.authoritativeAdapterUnavailable(source: source)
+            }
+            adapter = only
+        case .fallback:
+            guard let first = matchingAdapters.first else { return nil }
+            adapter = first
         }
 
         do {
@@ -522,6 +614,9 @@ enum ServiceTranscriptReader {
         } catch let failure as ParserFailure where isFallbackUnsafeParserFailure(failure) {
             throw failure
         } catch {
+            if failurePolicy == .terminal {
+                throw error
+            }
             return nil
         }
     }

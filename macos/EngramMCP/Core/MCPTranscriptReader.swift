@@ -14,8 +14,23 @@ struct MCPTranscriptPage {
     let pageSize: Int
     let totalKnownComplete: Bool
     let truncatedAt: Int?
+    let responseBudgetTruncated: Bool
 
     var truncated: Bool { truncatedAt != nil || !totalKnownComplete }
+}
+
+enum MCPTranscriptReadError: LocalizedError {
+    case definitiveLocalExactSourceUnavailable(path: String, code: Int32)
+    case unsafeLocalExactSource(path: String, reason: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .definitiveLocalExactSourceUnavailable(_, let code):
+            return "Exact transcript source is unavailable (errno \(code))"
+        case .unsafeLocalExactSource(_, let reason):
+            return "Exact transcript source is unsafe (\(reason))"
+        }
+    }
 }
 
 private struct MCPTranscriptPageBuilder {
@@ -51,7 +66,8 @@ private struct MCPTranscriptPageBuilder {
             currentPage: currentPage,
             pageSize: pageSize,
             totalKnownComplete: totalKnownComplete,
-            truncatedAt: truncatedAt
+            truncatedAt: truncatedAt,
+            responseBudgetTruncated: false
         )
     }
 
@@ -117,6 +133,8 @@ enum MCPTranscriptReader {
         pageSize: Int,
         roles: [String]?
     ) async throws -> MCPTranscriptPage {
+        try Task.checkCancellation()
+        try validateExactLocalSource(filePath: filePath, source: source)
         let currentPage = max(1, min(page, maxPage))
         let effectivePageSize = max(1, min(pageSize, maxPageSize))
         let roleFilter = normalizeRoles(roles)
@@ -265,6 +283,13 @@ enum MCPTranscriptReader {
             return messages
         } catch let failure as ParserFailure where isFallbackUnsafeParserFailure(failure) {
             throw failure
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let failure as ParserFailure where failure == .fileMissing {
+            try validateExactLocalSource(filePath: filePath, source: source)
+            return nil
+        } catch let error as MCPTranscriptReadError {
+            throw error
         } catch {
             return nil
         }
@@ -323,7 +348,8 @@ enum MCPTranscriptReader {
                         currentPage: currentPage,
                         pageSize: pageSize,
                         totalKnownComplete: cachedTotal.totalKnownComplete,
-                        truncatedAt: cachedTotal.truncatedAt
+                        truncatedAt: cachedTotal.truncatedAt,
+                        responseBudgetTruncated: false
                     )
                 }
 
@@ -359,9 +385,51 @@ enum MCPTranscriptReader {
             ).page
         } catch let failure as ParserFailure where isFallbackUnsafeParserFailure(failure) {
             throw failure
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let failure as ParserFailure where failure == .fileMissing {
+            try validateExactLocalSource(filePath: filePath, source: source)
+            return nil
+        } catch let error as MCPTranscriptReadError {
+            throw error
         } catch {
             return nil
         }
+    }
+
+    private static func validateExactLocalSource(filePath: String, source: String) throws {
+        guard !isVirtualLocator(filePath),
+              let sourceName = adapterSourceName(for: source),
+              let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName }),
+              adapter is any ExactArchiveSourceAdapter
+        else {
+            return
+        }
+
+        var info = stat()
+        guard lstat(filePath, &info) == 0 else {
+            let code = errno
+            if code == ENOENT || code == ENOTDIR {
+                throw MCPTranscriptReadError.definitiveLocalExactSourceUnavailable(
+                    path: filePath,
+                    code: code
+                )
+            }
+            throw MCPTranscriptReadError.unsafeLocalExactSource(
+                path: filePath,
+                reason: "lstat failed with errno \(code)"
+            )
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
+            throw MCPTranscriptReadError.unsafeLocalExactSource(
+                path: filePath,
+                reason: "locator is not a regular file"
+            )
+        }
+    }
+
+    private static func isVirtualLocator(_ locator: String) -> Bool {
+        locator.contains("::") || locator.contains("?composer=")
     }
 
     // Full visible scan of the adapter stream: dense visible-unit page window plus

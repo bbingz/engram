@@ -1019,7 +1019,12 @@ enum MCPToolRegistry {
                 id: try requiredString("id", in: arguments),
                 page: clampedInt(arguments["page"], default: 1, min: 1, max: maxSessionPage),
                 roles: arguments["roles"]?.arrayValue?.compactMap(\.stringValue),
-                includeRaw: arguments["include_raw"]?.boolValue == true
+                includeRaw: arguments["include_raw"]?.boolValue == true,
+                archivePageReader: { request in
+                    let serviceClient = makeServiceClient(config: config)
+                    defer { serviceClient.close() }
+                    return try await serviceClient.archiveReadSessionPage(request)
+                }
             )
             return .toolSuccess(structured)
         case "export":

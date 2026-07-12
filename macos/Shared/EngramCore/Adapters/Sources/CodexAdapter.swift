@@ -47,7 +47,8 @@ enum JSONLAdapterSupport {
             .sorted { $0.path < $1.path } ?? []
     }
 
-    static func recursiveFiles(under root: URL, matching predicate: (URL) -> Bool) -> [String] {
+    static func recursiveFiles(under root: URL, matching predicate: (URL) -> Bool) throws -> [String] {
+        try Task.checkCancellation()
         guard isDirectory(root) else { return [] }
         let resolvedRoot = root.resolvingSymlinksInPath()
         guard let enumerator = FileManager.default.enumerator(
@@ -60,8 +61,10 @@ enum JSONLAdapterSupport {
 
         var files: [String] = []
         for case let url as URL in enumerator where isRegularFile(url) && predicate(url) {
+            try Task.checkCancellation()
             files.append(url.path)
         }
+        try Task.checkCancellation()
         return files.sorted()
     }
 
@@ -456,9 +459,10 @@ enum JSONLAdapterSupport {
     }
 }
 
-final class CodexAdapter: SessionAdapter, Sendable {
+final class CodexAdapter: SessionAdapter, ExactArchiveSourceAdapter, Sendable {
     let source: SourceName = .codex
     private let sessionRoots: [URL]
+    private let archiveReplayUsesNamedRoots: Bool
     private let limits: ParserLimits
 
     init(
@@ -467,7 +471,9 @@ final class CodexAdapter: SessionAdapter, Sendable {
             .path,
         limits: ParserLimits = .default
     ) {
-        self.sessionRoots = Self.expandSessionRoots(URL(fileURLWithPath: sessionsRoot))
+        let requestedRoot = URL(fileURLWithPath: sessionsRoot)
+        self.sessionRoots = Self.expandSessionRoots(requestedRoot)
+        self.archiveReplayUsesNamedRoots = requestedRoot.lastPathComponent == "sessions"
         self.limits = limits
     }
 
@@ -476,13 +482,41 @@ final class CodexAdapter: SessionAdapter, Sendable {
     }
 
     func listSessionLocators() async throws -> [String] {
-        sessionRoots
-            .flatMap { root in
-                JSONLAdapterSupport.recursiveFiles(under: root) { url in
-                    url.lastPathComponent.hasPrefix("rollout-") && url.pathExtension == "jsonl"
-                }
+        try Task.checkCancellation()
+        var locators: [String] = []
+        for root in sessionRoots {
+            try Task.checkCancellation()
+            locators.append(contentsOf: try JSONLAdapterSupport.recursiveFiles(under: root) { url in
+                url.lastPathComponent.hasPrefix("rollout-") && url.pathExtension == "jsonl"
+            })
+            try Task.checkCancellation()
+        }
+        return locators.sorted()
+    }
+
+    func archiveSourceDescriptor(locator: String) async throws -> ArchiveSourceDescriptor {
+        let sourceURL = URL(fileURLWithPath: locator).standardizedFileURL
+        for declaredRoot in sessionRoots {
+            let physicalRoot = declaredRoot.resolvingSymlinksInPath().standardizedFileURL
+            guard let relative = try? ArchiveSourceDescriptor.relativePath(
+                path: sourceURL,
+                under: physicalRoot
+            ) else {
+                continue
             }
-            .sorted()
+            let replayRelativePath = archiveReplayUsesNamedRoots
+                ? "\(declaredRoot.lastPathComponent)/\(relative)"
+                : relative
+            return try ArchiveSourceDescriptor.singleFile(
+                locator: locator,
+                sourceURL: sourceURL,
+                replayRelativePath: replayRelativePath
+            )
+        }
+        throw ArchiveSourceDescriptorError.pathOutsideRoot(
+            path: sourceURL.path,
+            root: sessionRoots.map(\.path).joined(separator: ":")
+        )
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {

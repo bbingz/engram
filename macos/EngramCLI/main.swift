@@ -1,11 +1,35 @@
 import Darwin
 import Foundation
 
+if let archiveExitCode = runArchiveCommandIfRequested() {
+    exit(archiveExitCode)
+}
+
 if let resumeExitCode = runResumeCommandIfRequested() {
     exit(resumeExitCode)
 }
 
 execSwiftMCPHelper()
+
+func runArchiveCommandIfRequested() -> Int32? {
+    do {
+        guard let command = try EngramCLIArchiveCommand.parse(arguments: Array(CommandLine.arguments.dropFirst())) else {
+            return nil
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        var exitCode: Int32 = 0
+        Task {
+            do { print(try await EngramCLIArchiveRunner.run(command)) }
+            catch { writeStderr("\(error)\n"); exitCode = 1 }
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return exitCode
+    } catch {
+        writeStderr("\(error)\n")
+        return 64
+    }
+}
 
 func runResumeCommandIfRequested() -> Int32? {
     do {

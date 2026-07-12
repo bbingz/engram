@@ -52,9 +52,29 @@ correctly because `PopoverUsageSection` remains gated on real usage data.
 
 ## Open roadmap
 
-No scheduled roadmap product items as of 2026-05-24. Twelve owner decisions
-remain in the Decision pending table below (parked by the 2026-07-09
-plan-completion audit); they are not scheduled implementation work.
+The exact-source dual-replica archive v2 is the only active delivery item as of
+2026-07-12. Twelve unrelated owner decisions remain in the Decision pending
+table below (parked by the 2026-07-09 plan-completion audit); they are not
+scheduled implementation work.
+
+### Exact-source dual-replica archive v2
+
+- **Status:** implementation and repository verification branch; **not shipped
+  or deployed**. No production Mac mini, Tailscale ACL, Keychain, launchd,
+  service, or source data has been changed by this delivery branch.
+- **Topology:** `macmini-hq` is the primary cold-read target and `macmini-m1`
+  is an independently operated fallback in a different physical location with
+  separate power and network exit. Direct client replication is Tailscale-only;
+  the servers do not replicate to one another.
+- **Release boundary:** default OFF, exact raw-byte capture only for
+  replay-proven Claude Code and Codex single-file locators, separate credentials
+  and stores, and zero deletion/eviction/GC. Parsed messages and existing v1
+  offload artifacts remain derived data.
+- **Operational truth:** locator discovery is cancellable but O(N); the batch
+  limit applies only after discovery. Production deployment and live two-site
+  restore evidence require a later explicitly approved operation.
+- **Runbook:** [`docs/remote-archive-v2.md`](remote-archive-v2.md). Conditional
+  non-release follow-ups remain in [`docs/followups.md`](followups.md).
 
 ## Decision pending (2026-07-09 plan-completion audit)
 

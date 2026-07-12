@@ -168,10 +168,16 @@ targets:
       - target: EngramMCP
         link: false
         embed: false
+      - target: EngramCLI
+        link: false
+        embed: false
       - target: EngramService
         link: false
         embed: false
     postbuildScripts:
+      - name: Bundle EngramCLI helper
+        script: "${SRCROOT}/scripts/copy-cli-helper.sh"
+        basedOnDependencyAnalysis: false
       - name: Bundle EngramMCP helper
         script: "${SRCROOT}/scripts/copy-mcp-helper.sh"
         basedOnDependencyAnalysis: false
@@ -221,7 +227,7 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: EngramCLI
-      - path: Shared
+      - path: Shared/Service
     dependencies:
       - package: ArgumentParser
         product: ArgumentParser
@@ -258,11 +264,15 @@ targets:
   # bearer auth + AES-GCM at-rest encryption (server-held key). NEVER bundled in
   # Engram.app — it is deployed separately (e.g. on a Mac mini / private host).
   EngramRemoteServerCore:
-    type: framework
+    type: framework.static
     platform: macOS
     deploymentTarget: "14.0"
     sources:
       - path: EngramRemoteServer/Core
+      - path: Shared/EngramCore/ArchiveV2/ArchiveHash.swift
+      - path: Shared/EngramCore/ArchiveV2/ArchiveCanonicalJSON.swift
+      - path: Shared/EngramCore/ArchiveV2/ArchiveModels.swift
+      - path: Shared/EngramCore/ArchiveV2/ArchiveRemoteTelemetry.swift
     dependencies:
       - package: Hummingbird
         product: Hummingbird
@@ -303,6 +313,8 @@ targets:
         product: GRDB-dynamic
       - package: Hummingbird
         product: Hummingbird
+      - package: Hummingbird
+        product: HummingbirdTesting
     settings:
       SWIFT_VERSION: "5.9"
       GENERATE_INFOPLIST_FILE: YES
