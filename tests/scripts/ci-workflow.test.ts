@@ -107,6 +107,20 @@ describe('CI workflow hardening', () => {
     expect(coverageIndex).toBeGreaterThan(installIndex);
   });
 
+  it('installs ripgrep before release coverage runs the archive safety gate', () => {
+    const releaseTestsJob = releaseWorkflow.slice(
+      releaseWorkflow.indexOf('  release-tests:'),
+      releaseWorkflow.indexOf('  release-bundle-gate:'),
+    );
+    const installIndex = releaseTestsJob.indexOf(
+      'brew install xcodegen ripgrep',
+    );
+    const coverageIndex = releaseTestsJob.indexOf('npm run test:coverage');
+
+    expect(installIndex).toBeGreaterThan(-1);
+    expect(coverageIndex).toBeGreaterThan(installIndex);
+  });
+
   it('runs bundle hygiene against the Debug app built in Swift CI', () => {
     expect(testWorkflow).toContain('Build/Products/Debug/Engram.app');
     expect(testWorkflow).toContain(
