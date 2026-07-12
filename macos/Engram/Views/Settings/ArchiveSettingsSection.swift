@@ -132,9 +132,20 @@ struct ArchiveSettingsSection: View {
         defer { busy = false }
         do {
             let result = try await serviceClient.archiveReclamationRun()
-            message = result.accepted
-                ? "Released \(ByteCountFormatter.string(fromByteCount: result.releasedBytes, countStyle: .file))."
-                : "Error: reclamation is paused."
+            if result.accepted {
+                message = "Released \(ByteCountFormatter.string(fromByteCount: result.releasedBytes, countStyle: .file))."
+            } else {
+                switch result.error {
+                case "reclamation_paused":
+                    message = "Error: reclamation is paused until its safety gates are current."
+                case "cancelled":
+                    message = "Error: reclamation was cancelled."
+                case "archive_v2_disabled":
+                    message = "Error: exact archive storage is disabled."
+                default:
+                    message = "Error: reclamation failed."
+                }
+            }
             await refresh()
         } catch {
             message = "Error: reclamation run failed."

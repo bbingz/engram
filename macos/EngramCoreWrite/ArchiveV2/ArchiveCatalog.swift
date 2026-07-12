@@ -1243,7 +1243,8 @@ public final class ArchiveCatalog: @unchecked Sendable {
                   EXISTS(
                     SELECT 1 FROM archive_replica_receipts r
                     WHERE r.manifest_sha256 = b.manifest_sha256
-                      AND r.state IN ('pending', 'uploadingObjects', 'uploadingManifest', 'verifying')
+                      AND r.state IN ('pending', 'uploadingObjects', 'uploadingManifest',
+                                      'requestingReceipt', 'verifyingReceipt')
                   ) AS has_active
                 FROM archive_session_bindings b
                 JOIN archive_captures c ON c.capture_id = b.capture_id
