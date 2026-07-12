@@ -50,9 +50,10 @@ Network access — but the app won't.)
 
 Build `EngramRemoteServer` on the development Mac and package the complete
 Release/arm64 runtime before any separately approved host deployment. The
-packager preserves the versioned framework symlinks, resolves Swift runtime
-dependencies through the active Xcode toolchain, ad-hoc signs nested code in
-dependency order, and writes a sorted SHA-256 manifest plus source metadata.
+server core and package dependencies are statically linked into the executable.
+The packager resolves the remaining Swift runtime dependencies through the
+active Xcode toolchain, ad-hoc signs nested code in dependency order, and writes
+a sorted SHA-256 manifest plus source metadata.
 
 ```bash
 DERIVED_DATA=/tmp/engram-remote-derived

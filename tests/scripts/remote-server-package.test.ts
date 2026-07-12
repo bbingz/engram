@@ -329,6 +329,8 @@ describe('remote server package CI and operations documentation', () => {
   it('documents the package command instead of the old manual Debug assembly', () => {
     expect(offloadRunbook).toContain('package-remote-server.sh');
     expect(offloadRunbook).toContain('--configuration Release');
+    expect(offloadRunbook).toContain('statically linked into the executable');
+    expect(offloadRunbook).not.toContain('versioned framework symlinks');
     expect(offloadRunbook).not.toContain('Debug is fine');
     expect(offloadRunbook).not.toMatch(
       /find[^\n]+libswiftCompatibilitySpan\.dylib/,
