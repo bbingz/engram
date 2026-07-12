@@ -481,6 +481,20 @@ public struct ArchiveTranscriptResolver: Sendable {
     private func replayFromLocalIfValid(_ locked: LockedManifest) throws -> ReplayFile {
         try Task.checkCancellation()
         do {
+            let localObjects = try catalog.localObjects(
+                manifestSHA256: locked.binding.manifestSHA256
+            )
+            guard localObjects.count == locked.manifest.chunks.count,
+                  zip(localObjects, locked.manifest.chunks).allSatisfy({ object, chunk in
+                      object.ordinal == chunk.ordinal
+                          && object.objectSHA256 == chunk.rawSHA256
+                          && object.rawByteCount == chunk.rawByteCount
+                  }) else {
+                throw ArchiveTranscriptResolverError.archiveCorrupt
+            }
+            if localObjects.contains(where: { $0.residency == .evicted }) {
+                throw ArchiveTranscriptResolverError.archiveUnavailable
+            }
             let manifestBytes = try cas.readManifest(
                 sha256: locked.binding.manifestSHA256
             )
@@ -488,7 +502,15 @@ public struct ArchiveTranscriptResolver: Sendable {
                 throw ArchiveTranscriptResolverError.archiveCorrupt
             }
             return try writeReplay(tier: .local, manifest: locked.manifest) { chunk in
-                try self.cas.readObject(sha256: chunk.rawSHA256)
+                do {
+                    return try self.cas.readObject(sha256: chunk.rawSHA256)
+                } catch {
+                    _ = try? self.catalog.recordLocalObjectIntegrityFault(
+                        objectSHA256: chunk.rawSHA256,
+                        updatedAt: Self.timestamp(Date())
+                    )
+                    throw error
+                }
             }
         } catch is CancellationError {
             throw CancellationError()
@@ -505,6 +527,13 @@ public struct ArchiveTranscriptResolver: Sendable {
         } catch {
             throw ArchiveTranscriptResolverError.archiveCorrupt
         }
+    }
+
+    private static func timestamp(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter.string(from: date)
     }
 
     private func replayFromRemote(

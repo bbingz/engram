@@ -95,10 +95,31 @@ final class ArchiveCatalogTests: XCTestCase {
         XCTAssertTrue(values.bindingColumns.contains("project_root_snapshot"))
         XCTAssertTrue(values.bindingColumns.contains("remote_eligibility"))
         XCTAssertTrue(values.receiptColumns.contains("claim_generation"))
-        XCTAssertEqual(values.schemaVersion, "4")
+        XCTAssertEqual(values.schemaVersion, "5")
         XCTAssertEqual(try catalog.machineID(), machineID)
         XCTAssertEqual(try permissions(root.path), 0o700)
         XCTAssertEqual(try permissions(root.appendingPathComponent("archive.sqlite").path), 0o600)
+    }
+
+    func testRepeatedMigrationPreservesIntentionalEviction() throws {
+        let result = try boundCatalog()
+        let object = try XCTUnwrap(
+            result.0.localObjects(manifestSHA256: result.binding.manifestSHA256).first
+        )
+        XCTAssertTrue(try result.0.recordLocalObjectIntegrityFault(
+            objectSHA256: object.objectSHA256,
+            updatedAt: "2026-07-11T00:01:00.000Z"
+        ))
+        XCTAssertTrue(try result.0.markLocalObjectEvicted(
+            objectSHA256: object.objectSHA256,
+            updatedAt: "2026-07-11T00:02:00.000Z"
+        ))
+
+        try result.0.migrate()
+
+        let migrated = try XCTUnwrap(result.0.localObject(objectSHA256: object.objectSHA256))
+        XCTAssertEqual(migrated.residency, .evicted)
+        XCTAssertNil(migrated.lastError)
     }
 
     func testBindingRecordsObjectGraphAndResidencyTransactionally() throws {

@@ -118,6 +118,7 @@
 		289DEA40252ED902AC0E0E24 /* TraceExplorerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E38D9E5A1C4AA15BD06FEC77 /* TraceExplorerView.swift */; };
 		291EA3B311EC9400DFD8F79D /* QwenAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CC7EA7D95CA10EAD73E472D /* QwenAdapter.swift */; };
 		29285E37CDF718C141EE6A03 /* ObservabilityGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75493749321AFDB1D7A276D8 /* ObservabilityGateTests.swift */; };
+		29CEDD6AFAE6156EFF06323F /* ArchiveCASEvictor.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCD371EDAB47076AE9946743 /* ArchiveCASEvictor.swift */; };
 		2A93E840B0A7516DFFB0E60A /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C6B3E423E877B30FE596333 /* HomeView.swift */; };
 		2C22D0250D496B5B30A084A0 /* IndexJobAndMaintenanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6966C0261001E2BC691992C9 /* IndexJobAndMaintenanceTests.swift */; };
 		2CC0D4E6823D7BC189E7C670 /* InstructionExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 807B4016F878D904668B2602 /* InstructionExtractor.swift */; };
@@ -425,6 +426,7 @@
 		AA3A5BFD80FA3EE5D89C92BE /* ArchiveCaptureCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21E811847FF99ABDCFBB309 /* ArchiveCaptureCoordinator.swift */; };
 		AA8572FBA751E232208CA55D /* ToolCallParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C8EEF20FCD6677E183F5AE0 /* ToolCallParser.swift */; };
 		AA949F60693AC77213DD0709 /* Sources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44598B816D303E452EAF5009 /* Sources.swift */; };
+		AAC156B2627621CC99102F33 /* ArchiveCASEvictorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D34A044D1A8DEDDCD55C6AC6 /* ArchiveCASEvictorTests.swift */; };
 		AAD772B04826F4344896A2FE /* DarkModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 385F19B9C0D48C1265DF591F /* DarkModeTests.swift */; };
 		AB0D3162C84E53901AFFC384 /* UsagePressureNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 588D02060B46B65BB11B8BFE /* UsagePressureNotifier.swift */; };
 		AB2B1C9CE3ACE02AEEE9E34B /* GRDB-dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = CBDF29785DFFE67D4E31B6B0 /* GRDB-dynamic */; };
@@ -1273,6 +1275,7 @@
 		CB7D37DA354AD94959B8A5F2 /* ParsedTranscriptCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParsedTranscriptCache.swift; sourceTree = "<group>"; };
 		CB97E0567F19170423333DF8 /* RankFusion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RankFusion.swift; sourceTree = "<group>"; };
 		CBDDA6A9CE816D562C45A31A /* MigrationLogTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MigrationLogTypes.swift; sourceTree = "<group>"; };
+		CCD371EDAB47076AE9946743 /* ArchiveCASEvictor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveCASEvictor.swift; sourceTree = "<group>"; };
 		CD447C11C0E9ED15CC0D89A2 /* SessionDetailScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDetailScreen.swift; sourceTree = "<group>"; };
 		CDA80AD683D752A5F5DB26ED /* BatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchTests.swift; sourceTree = "<group>"; };
 		CE998F088298F9618047C227 /* EngramCLIArchiveCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramCLIArchiveCommandTests.swift; sourceTree = "<group>"; };
@@ -1286,6 +1289,7 @@
 		D1C92C3A64479C2893628E50 /* MCPToolRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPToolRegistry.swift; sourceTree = "<group>"; };
 		D1F5883851C4B40F390B6A32 /* UnixSocketEngramServiceTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnixSocketEngramServiceTransport.swift; sourceTree = "<group>"; };
 		D21E811847FF99ABDCFBB309 /* ArchiveCaptureCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveCaptureCoordinator.swift; sourceTree = "<group>"; };
+		D34A044D1A8DEDDCD55C6AC6 /* ArchiveCASEvictorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveCASEvictorTests.swift; sourceTree = "<group>"; };
 		D35B7B58E9283A6849A0BD33 /* ServiceUsageEventTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceUsageEventTests.swift; sourceTree = "<group>"; };
 		D3BEA650EF933B7CB2DC8734 /* ServiceErrorPresenterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceErrorPresenterTests.swift; sourceTree = "<group>"; };
 		D440C74C75C827496EEEF7E5 /* MigrationHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MigrationHistoryView.swift; sourceTree = "<group>"; };
@@ -2412,6 +2416,7 @@
 			isa = PBXGroup;
 			children = (
 				5B912698978B88FBA5612E30 /* ArchiveCaptureCoordinatorTests.swift */,
+				D34A044D1A8DEDDCD55C6AC6 /* ArchiveCASEvictorTests.swift */,
 				7FDCB4E62919C8E7D3985162 /* ArchiveCatalogTests.swift */,
 				7E88F20261BDB5D92EDF539D /* ArchiveModelTests.swift */,
 				663E8B62FCFF1F8E8CC1C0A7 /* ArchiveReclamationPolicyTests.swift */,
@@ -2510,6 +2515,7 @@
 			isa = PBXGroup;
 			children = (
 				D21E811847FF99ABDCFBB309 /* ArchiveCaptureCoordinator.swift */,
+				CCD371EDAB47076AE9946743 /* ArchiveCASEvictor.swift */,
 				5449C35A221A6DCE3C760F05 /* ArchiveCatalog.swift */,
 				2A5C1E4F3D7200FAFF5420BD /* ArchiveCatalogMigrations.swift */,
 				08C0C6EBB8A9A2BCFA9CDB77 /* ArchiveCredentialStore.swift */,
@@ -3132,6 +3138,7 @@
 				BA685621C4933D3E8B6C4708 /* AdapterMessageCountTests.swift in Sources */,
 				8801D3673FBF62F05195E8C4 /* AdapterParityTests.swift in Sources */,
 				F8281DFB2911C2E0D88B1A2A /* AdapterWindowedReadTests.swift in Sources */,
+				AAC156B2627621CC99102F33 /* ArchiveCASEvictorTests.swift in Sources */,
 				76F5EF80ADB3F6A366412C58 /* ArchiveCaptureCoordinatorTests.swift in Sources */,
 				026C6ACFD70D1E1E8665C054 /* ArchiveCatalogTests.swift in Sources */,
 				BD5C4BD7580A606F32A3625E /* ArchiveModelTests.swift in Sources */,
@@ -3547,6 +3554,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D2F95AD26061311CEBFBFE15 /* Archive.swift in Sources */,
+				29CEDD6AFAE6156EFF06323F /* ArchiveCASEvictor.swift in Sources */,
 				AA3A5BFD80FA3EE5D89C92BE /* ArchiveCaptureCoordinator.swift in Sources */,
 				EFCA322B22E987B2E5364CCE /* ArchiveCatalog.swift in Sources */,
 				60980F23DA35F02B4ABF9F16 /* ArchiveCatalogMigrations.swift in Sources */,

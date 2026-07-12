@@ -7,6 +7,11 @@ public enum ArchivePublishResult: Equatable, Sendable {
     case alreadyPresent
 }
 
+public enum ArchiveRemovalResult: Equatable, Sendable {
+    case removed(byteCount: Int64)
+    case alreadyMissing
+}
+
 public enum ImmutableArchiveCASError: Error, Equatable, Sendable {
     case invalidSHA256(String)
     case digestMismatch(expected: String, actual: String)
@@ -19,15 +24,18 @@ struct ImmutableArchiveCASTestHooks: Sendable {
     let afterExistingFileVerified: (@Sendable (URL) throws -> Void)?
     let afterDirectoryFsync: (@Sendable (URL) -> Void)?
     let afterFinalLinkPublished: (@Sendable (URL) -> Void)?
+    let beforeObjectUnlink: (@Sendable (URL) throws -> Void)?
 
     init(
         afterExistingFileVerified: (@Sendable (URL) throws -> Void)? = nil,
         afterDirectoryFsync: (@Sendable (URL) -> Void)? = nil,
-        afterFinalLinkPublished: (@Sendable (URL) -> Void)? = nil
+        afterFinalLinkPublished: (@Sendable (URL) -> Void)? = nil,
+        beforeObjectUnlink: (@Sendable (URL) throws -> Void)? = nil
     ) {
         self.afterExistingFileVerified = afterExistingFileVerified
         self.afterDirectoryFsync = afterDirectoryFsync
         self.afterFinalLinkPublished = afterFinalLinkPublished
+        self.beforeObjectUnlink = beforeObjectUnlink
     }
 }
 
@@ -94,6 +102,38 @@ public struct ImmutableArchiveCAS: Sendable {
 
     public func readObject(sha256: String) throws -> Data {
         try read(sha256: sha256, kind: .object)
+    }
+
+    public func removeObject(sha256: String) throws -> ArchiveRemovalResult {
+        try Self.validate(sha256)
+        let objectURL = try url(for: sha256, kind: .object, createShard: false)
+        var initial = stat()
+        guard Darwin.lstat(objectURL.path, &initial) == 0 else {
+            if errno == ENOENT { return .alreadyMissing }
+            throw Self.io("lstat-remove-object", code: errno)
+        }
+        guard Self.isSafeFinalFile(initial) else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(objectURL.path)
+        }
+        let bytes = try Self.readVerified(objectURL, expectedSHA256: sha256)
+        try testHooks.beforeObjectUnlink?(objectURL)
+        var final = stat()
+        guard Darwin.lstat(objectURL.path, &final) == 0 else {
+            if errno == ENOENT { return .alreadyMissing }
+            throw Self.io("lstat-remove-object-final", code: errno)
+        }
+        guard Self.isSafeFinalFile(final), Self.sameFileIdentity(initial, final) else {
+            throw ImmutableArchiveCASError.unsafeExistingPath(objectURL.path)
+        }
+        guard Darwin.unlink(objectURL.path) == 0 else {
+            if errno == ENOENT { return .alreadyMissing }
+            throw Self.io("unlink-object", code: errno)
+        }
+        try Self.fsyncDirectory(
+            objectURL.deletingLastPathComponent(),
+            afterFsync: testHooks.afterDirectoryFsync
+        )
+        return .removed(byteCount: Int64(bytes.count))
     }
 
     public func publishManifest(_ bytes: Data, expectedSHA256: String) throws -> ArchivePublishResult {

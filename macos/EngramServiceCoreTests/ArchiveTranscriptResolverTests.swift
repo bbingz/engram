@@ -623,6 +623,87 @@ final class ArchiveTranscriptResolverTests: XCTestCase {
         XCTAssertEqual(m1Events, ["getReceipt", "getManifest", "getObject"])
     }
 
+    func testIntentionalEvictionFallsBackRemotelyWithoutIntegrityFault() async throws {
+        let store = try makeStore(name: "intentional-eviction")
+        let fixture = try addFixture(
+            to: store,
+            sessionID: "session-intentional-eviction",
+            seed: "intentional-eviction",
+            chunks: [Data("remote after intentional eviction".utf8)],
+            publishLocalObjects: false
+        )
+        for digest in fixture.objectDigests {
+            XCTAssertTrue(try store.catalog.markLocalObjectEvicted(
+                objectSHA256: digest,
+                updatedAt: "2026-07-11T00:10:00.000Z"
+            ))
+        }
+        let hq = RecordingArchiveBackend(replicaID: "hq")
+        try await persistVerifiedReceipt(for: fixture, replicaID: "hq", store: store, backend: hq)
+        let resolver = try ArchiveTranscriptResolver(
+            catalog: store.catalog,
+            cas: store.cas,
+            hq: hq,
+            temporaryParent: try makeTemporaryParent(name: "intentional-eviction-temp")
+        )
+
+        let resolution: ArchiveTranscriptResolution<Data> = try await resolver.withResolvedFile(
+            sessionID: fixture.sessionID,
+            liveURL: nil
+        ) { try Data(contentsOf: $0) }
+
+        XCTAssertEqual(resolution.tier, .hq)
+        XCTAssertEqual(resolution.value, fixture.raw)
+        XCTAssertNil(try store.catalog.localObject(objectSHA256: fixture.objectDigests[0])?.lastError)
+    }
+
+    func testResidentMissingRecordsIntegrityFaultAndStillFallsThroughHQToM1() async throws {
+        let store = try makeStore(name: "resident-missing-fallback")
+        let fixture = try addFixture(
+            to: store,
+            sessionID: "session-resident-missing-fallback",
+            seed: "resident-missing-fallback",
+            chunks: [Data("remote fallback after local fault".utf8)],
+            publishLocalObjects: false
+        )
+        let hq = RecordingArchiveBackend(replicaID: "hq")
+        let m1 = RecordingArchiveBackend(replicaID: "m1")
+        try await persistVerifiedReceipt(for: fixture, replicaID: "hq", store: store, backend: hq)
+        try await persistVerifiedReceipt(for: fixture, replicaID: "m1", store: store, backend: m1)
+        await hq.setFailure(.transport, operation: "getReceipt")
+        let resolver = try ArchiveTranscriptResolver(
+            catalog: store.catalog,
+            cas: store.cas,
+            hq: hq,
+            m1: m1,
+            temporaryParent: try makeTemporaryParent(name: "resident-missing-fallback-temp")
+        )
+
+        let resolution: ArchiveTranscriptResolution<Data> = try await resolver.withResolvedFile(
+            sessionID: fixture.sessionID,
+            liveURL: nil
+        ) { try Data(contentsOf: $0) }
+
+        XCTAssertEqual(resolution.tier, .m1)
+        XCTAssertEqual(resolution.value, fixture.raw)
+        let local = try XCTUnwrap(
+            store.catalog.localObject(objectSHA256: fixture.objectDigests[0])
+        )
+        XCTAssertEqual(local.residency, .resident)
+        XCTAssertEqual(local.lastError, "local_integrity_fault")
+
+        await m1.setFailure(.transport, operation: "getReceipt")
+        do {
+            let _: ArchiveTranscriptResolution<Data> = try await resolver.withResolvedFile(
+                sessionID: fixture.sessionID,
+                liveURL: nil
+            ) { try Data(contentsOf: $0) }
+            XCTFail("expected both remotes unavailable")
+        } catch ArchiveTranscriptResolverError.archiveUnavailable {
+            // expected
+        }
+    }
+
     func testProductionRecoveryDrillRecordsLeaseAndCancellationPreservesPriorState() async throws {
         let successStore = try makeStore(name: "production-drill-success")
         let successFixture = try addFixture(

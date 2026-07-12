@@ -233,9 +233,11 @@ final class ImmutableArchiveCASTests: XCTestCase {
         XCTAssertEqual(try permissions(manifestURL(manifestHash).path), 0o600)
     }
 
-    func testCASExposesNoPublicDeleteMethod() throws {
+    func testCASExposesOnlyObjectScopedRemoval() throws {
         let text = try casSource()
         XCTAssertFalse(text.contains("public func delete"))
+        XCTAssertTrue(text.contains("public func removeObject"))
+        XCTAssertFalse(text.contains("removeManifest"))
     }
 
     func testNewDirectoryPublicationFsyncsDirectoryAndItsParent() throws {

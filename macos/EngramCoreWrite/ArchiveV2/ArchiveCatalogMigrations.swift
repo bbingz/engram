@@ -3,7 +3,7 @@ import EngramCoreRead
 import GRDB
 
 enum ArchiveCatalogMigrations {
-    static let currentSchemaVersion = "4"
+    static let currentSchemaVersion = "5"
 
     static func migrate(_ db: Database, machineID: String) throws {
         try db.execute(sql: """
@@ -137,9 +137,13 @@ enum ArchiveCatalogMigrations {
             object_sha256 TEXT PRIMARY KEY NOT NULL,
             raw_byte_count INTEGER NOT NULL CHECK(raw_byte_count > 0),
             residency TEXT NOT NULL CHECK(residency IN ('resident', 'evicted')),
+            last_error TEXT,
             updated_at TEXT NOT NULL
         ) WITHOUT ROWID
         """)
+        if try !hasColumn("last_error", in: "archive_local_objects", db: db) {
+            try db.execute(sql: "ALTER TABLE archive_local_objects ADD COLUMN last_error TEXT")
+        }
         try db.execute(sql: """
         CREATE TABLE IF NOT EXISTS archive_manifest_objects (
             manifest_sha256 TEXT NOT NULL,
@@ -261,12 +265,9 @@ enum ArchiveCatalogMigrations {
                 try db.execute(
                     sql: """
                     INSERT INTO archive_local_objects(
-                        object_sha256, raw_byte_count, residency, updated_at
-                    ) VALUES (?, ?, 'resident', ?)
-                    ON CONFLICT(object_sha256) DO UPDATE SET
-                        residency = 'resident',
-                        updated_at = excluded.updated_at
-                    WHERE archive_local_objects.raw_byte_count = excluded.raw_byte_count
+                        object_sha256, raw_byte_count, residency, last_error, updated_at
+                    ) VALUES (?, ?, 'resident', NULL, ?)
+                    ON CONFLICT(object_sha256) DO NOTHING
                     """,
                     arguments: [chunk.rawSHA256, chunk.rawByteCount, updatedAt]
                 )

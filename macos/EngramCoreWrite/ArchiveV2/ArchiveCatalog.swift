@@ -164,6 +164,7 @@ public struct ArchiveLocalObject: Equatable, Sendable {
     public let objectSHA256: String
     public let rawByteCount: Int64
     public let residency: ArchiveLocalResidency
+    public let lastError: String?
     public let updatedAt: String
 }
 
@@ -844,6 +845,7 @@ public final class ArchiveCatalog: @unchecked Sendable {
                     objectSHA256: row["object_sha256"],
                     rawByteCount: row["raw_byte_count"],
                     residency: try Self.localResidency(row["residency"]),
+                    lastError: row["last_error"],
                     updatedAt: row["updated_at"]
                 )
             }
@@ -879,8 +881,31 @@ public final class ArchiveCatalog: @unchecked Sendable {
             try db.execute(
                 sql: """
                 UPDATE archive_local_objects
-                SET residency = 'evicted', updated_at = ?
+                SET residency = 'evicted', last_error = NULL, updated_at = ?
                 WHERE object_sha256 = ? AND residency = 'resident'
+                """,
+                arguments: [updatedAt, objectSHA256]
+            )
+            return db.changesCount == 1
+        }
+    }
+
+    @discardableResult
+    public func recordLocalObjectIntegrityFault(
+        objectSHA256: String,
+        updatedAt: String
+    ) throws -> Bool {
+        guard ArchiveV2Hash.isValidSHA256(objectSHA256) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "objectSHA256")
+        }
+        try Self.validateTimestamp(updatedAt, field: "updatedAt")
+        return try pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_local_objects
+                SET last_error = 'local_integrity_fault', updated_at = ?
+                WHERE object_sha256 = ? AND residency = 'resident'
+                  AND COALESCE(last_error, '') != 'local_integrity_fault'
                 """,
                 arguments: [updatedAt, objectSHA256]
             )
