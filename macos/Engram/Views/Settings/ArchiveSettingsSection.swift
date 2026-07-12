@@ -3,16 +3,21 @@ import SwiftUI
 struct ArchiveSettingsSection: View {
     @Environment(EngramServiceClient.self) private var serviceClient
 
+    @State private var archiveStatus: EngramServiceArchiveV2StatusResponse?
     @State private var status: EngramServiceArchiveReclamationStatusResponse?
     @State private var preview: EngramServiceArchiveReclamationPreviewResponse?
     @State private var enabled = false
     @State private var hotWindowDays = 30
     @State private var busy = false
+    @State private var syncBusy = false
     @State private var message: String?
+    @State private var messageIsError = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SectionHeader(icon: "archivebox", title: "Archive & Storage")
+
+            archiveSyncStatusCard
 
             GroupBox("Automatic Local Reclamation") {
                 VStack(alignment: .leading, spacing: 12) {
@@ -22,7 +27,13 @@ struct ArchiveSettingsSection: View {
 
                     Picker("Keep full local transcripts", selection: $hotWindowDays) {
                         ForEach([30, 60, 90, 180], id: \.self) { days in
-                            Text("\(days) days").tag(days)
+                            Text(
+                                String.localizedStringWithFormat(
+                                    String(localized: "%lld days"),
+                                    Int64(days)
+                                )
+                            )
+                            .tag(days)
                         }
                     }
                     .disabled(busy)
@@ -46,13 +57,24 @@ struct ArchiveSettingsSection: View {
 
                     if let status {
                         Label(
-                            status.recoveryLeaseCurrent ? "Recovery drills current" : "Recovery drills required",
+                            status.recoveryLeaseCurrent
+                                ? String(localized: "Recovery drills current")
+                                : String(localized: "Recovery drills required"),
                             systemImage: status.recoveryLeaseCurrent ? "checkmark.shield" : "exclamationmark.shield"
                         )
                         .foregroundStyle(status.recoveryLeaseCurrent ? .green : .orange)
                     }
                     if let preview {
-                        Text("Preview: \(preview.eligibleCount) files, about \(ByteCountFormatter.string(fromByteCount: preview.estimatedSourceBytes, countStyle: .file)).")
+                        Text(
+                            String.localizedStringWithFormat(
+                                String(localized: "Preview: %lld files, about %@."),
+                                Int64(preview.eligibleCount),
+                                ByteCountFormatter.string(
+                                    fromByteCount: preview.estimatedSourceBytes,
+                                    countStyle: .file
+                                )
+                            )
+                        )
                             .font(.caption)
                     }
                 }
@@ -77,22 +99,121 @@ struct ArchiveSettingsSection: View {
             if let message {
                 Text(message)
                     .font(.caption)
-                    .foregroundStyle(message.hasPrefix("Error:") ? .red : .secondary)
+                    .foregroundStyle(messageIsError ? .red : .secondary)
                     .accessibilityIdentifier("archiveReclamation_message")
             }
         }
         .task { await refresh() }
     }
 
+    private var archiveSyncStatusCard: some View {
+        GroupBox("Archive Sync Status") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label(syncPresentation.text, systemImage: syncPresentation.icon)
+                        .foregroundStyle(syncPresentation.color)
+                        .accessibilityIdentifier("archiveSync_status")
+                    Spacer()
+                    Button("Refresh Status") { Task { await refreshArchiveStatus() } }
+                        .disabled(syncBusy)
+                        .accessibilityIdentifier("archiveSync_refresh")
+                }
+
+                if let archiveStatus {
+                    Text(
+                        String.localizedStringWithFormat(
+                            String(localized: "Dual-copy verified: %lld of %lld"),
+                            Int64(archiveStatus.dualReplicaVerifiedCount),
+                            Int64(archiveStatus.remotePolicyEligibleCount)
+                        )
+                    )
+                    .font(.caption)
+                    .accessibilityIdentifier("archiveSync_progress")
+
+                    ForEach(archiveStatus.replicas, id: \.replicaID) { replica in
+                        Text(replicaSummary(replica))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier(
+                                replica.replicaID == "hq" ? "archiveSync_hq" : "archiveSync_m1"
+                            )
+                    }
+
+                    Text(
+                        String.localizedStringWithFormat(
+                            String(localized: "%lld unbound archives (not a sync failure)"),
+                            Int64(archiveStatus.unboundCount)
+                        )
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .accessibilityIdentifier("archiveSync_unbound")
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var syncPresentation: (text: String, icon: String, color: Color) {
+        guard let archiveStatus else {
+            return (String(localized: "Sync status unavailable"), "questionmark.circle", .secondary)
+        }
+        guard archiveStatus.enabled, archiveStatus.remoteReplicationEnabled else {
+            return (String(localized: "Archive synchronization disabled"), "pause.circle", .secondary)
+        }
+
+        let hasAttentionState = archiveStatus.configurationError != nil
+            || archiveStatus.lastCaptureError != nil
+            || archiveStatus.lastReplicationError != nil
+            || archiveStatus.unsafeLocatorCount > 0
+            || archiveStatus.replicas.contains { $0.quarantinedCount > 0 }
+        if hasAttentionState {
+            return (String(localized: "Archive synchronization needs attention"), "exclamationmark.triangle", .orange)
+        }
+
+        let hasPendingWork = archiveStatus.cycleRunning
+            || archiveStatus.dualReplicaVerifiedCount < archiveStatus.remotePolicyEligibleCount
+            || archiveStatus.replicas.contains { $0.queuedCount > 0 || $0.retryingCount > 0 }
+        if hasPendingWork {
+            return (String(localized: "Archive synchronization in progress"), "arrow.triangle.2.circlepath", .blue)
+        }
+
+        return (String(localized: "Archive synchronization complete"), "checkmark.circle", .green)
+    }
+
+    private func replicaSummary(_ replica: EngramServiceArchiveV2ReplicaStatus) -> String {
+        String.localizedStringWithFormat(
+            String(localized: "%@: %lld verified, %lld retrying, %lld queued, %lld quarantined"),
+            replica.replicaID.uppercased(),
+            Int64(replica.verifiedCount),
+            Int64(replica.retryingCount),
+            Int64(replica.queuedCount),
+            Int64(replica.quarantinedCount)
+        )
+    }
+
+    @MainActor
+    private func refreshArchiveStatus() async {
+        syncBusy = true
+        defer { syncBusy = false }
+        do {
+            archiveStatus = try await serviceClient.archiveV2Status()
+        } catch {
+            archiveStatus = nil
+        }
+    }
+
     @MainActor
     private func refresh() async {
+        await refreshArchiveStatus()
         do {
             let value = try await serviceClient.archiveReclamationStatus()
             status = value
             enabled = value.enabled
             hotWindowDays = value.hotWindowDays
         } catch {
-            message = "Error: archive status unavailable."
+            message = String(localized: "Error: archive status unavailable.")
+            messageIsError = true
         }
     }
 
@@ -105,12 +226,16 @@ struct ArchiveSettingsSection: View {
             status = try await serviceClient.archiveReclamationUpdateSettings(
                 .init(enabled: enabled, hotWindowDays: hotWindowDays)
             )
-            message = enabled ? "Automatic reclamation enabled." : "Automatic reclamation disabled."
+            message = enabled
+                ? String(localized: "Automatic reclamation enabled.")
+                : String(localized: "Automatic reclamation disabled.")
+            messageIsError = false
         } catch {
             await refresh()
             message = requestedEnabled
-                ? "Error: save failed. Verify both recovery drills are current and the service is available."
-                : "Error: save failed because the service is unavailable."
+                ? String(localized: "Error: save failed. Verify both recovery drills are current and the service is available.")
+                : String(localized: "Error: save failed because the service is unavailable.")
+            messageIsError = true
         }
     }
 
@@ -121,8 +246,10 @@ struct ArchiveSettingsSection: View {
         do {
             preview = try await serviceClient.archiveReclamationPreview()
             message = nil
+            messageIsError = false
         } catch {
-            message = "Error: preview unavailable."
+            message = String(localized: "Error: preview unavailable.")
+            messageIsError = true
         }
     }
 
@@ -133,22 +260,28 @@ struct ArchiveSettingsSection: View {
         do {
             let result = try await serviceClient.archiveReclamationRun()
             if result.accepted {
-                message = "Released \(ByteCountFormatter.string(fromByteCount: result.releasedBytes, countStyle: .file))."
+                message = String.localizedStringWithFormat(
+                    String(localized: "Released %@."),
+                    ByteCountFormatter.string(fromByteCount: result.releasedBytes, countStyle: .file)
+                )
+                messageIsError = false
             } else {
                 switch result.error {
                 case "reclamation_paused":
-                    message = "Error: reclamation is paused until its safety gates are current."
+                    message = String(localized: "Error: reclamation is paused until its safety gates are current.")
                 case "cancelled":
-                    message = "Error: reclamation was cancelled."
+                    message = String(localized: "Error: reclamation was cancelled.")
                 case "archive_v2_disabled":
-                    message = "Error: exact archive storage is disabled."
+                    message = String(localized: "Error: exact archive storage is disabled.")
                 default:
-                    message = "Error: reclamation failed."
+                    message = String(localized: "Error: reclamation failed.")
                 }
+                messageIsError = true
             }
             await refresh()
         } catch {
-            message = "Error: reclamation run failed."
+            message = String(localized: "Error: reclamation run failed.")
+            messageIsError = true
         }
     }
 
@@ -158,10 +291,18 @@ struct ArchiveSettingsSection: View {
         defer { busy = false }
         do {
             _ = try await serviceClient.archiveV2RecoveryDrill(.init(replicaID: replicaID))
-            message = "\(replicaID.uppercased()) recovery drill passed."
+            message = String.localizedStringWithFormat(
+                String(localized: "%@ recovery drill passed."),
+                replicaID.uppercased()
+            )
+            messageIsError = false
             await refresh()
         } catch {
-            message = "Error: \(replicaID.uppercased()) recovery drill failed."
+            message = String.localizedStringWithFormat(
+                String(localized: "Error: %@ recovery drill failed."),
+                replicaID.uppercased()
+            )
+            messageIsError = true
         }
     }
 }

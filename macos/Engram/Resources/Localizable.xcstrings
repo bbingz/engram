@@ -1,6 +1,123 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "%lld days" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 天" } } }
+    },
+    "%lld unbound archives (not a sync failure)" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 个归档尚未绑定（不代表同步失败）" } } }
+    },
+    "%@: %lld verified, %lld retrying, %lld queued, %lld quarantined" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%1$@：已验证 %2$lld，重试中 %3$lld，排队 %4$lld，隔离 %5$lld" } } }
+    },
+    "%@ recovery drill passed." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@ 恢复演练已通过。" } } }
+    },
+    "Archive & Storage" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "归档与存储" } } }
+    },
+    "Archive Sync Status" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "归档同步状态" } } }
+    },
+    "Archive synchronization complete" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "归档同步已完成" } } }
+    },
+    "Archive synchronization disabled" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "归档同步已停用" } } }
+    },
+    "Archive synchronization in progress" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "归档同步进行中" } } }
+    },
+    "Archive synchronization needs attention" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "归档同步需要处理" } } }
+    },
+    "Automatic Local Reclamation" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动精简本地数据" } } }
+    },
+    "Automatic reclamation disabled." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动精简已停用。" } } }
+    },
+    "Automatic reclamation enabled." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动精简已启用。" } } }
+    },
+    "Automatically reclaim old local transcripts" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动精简旧的本地会话记录" } } }
+    },
+    "Dual-copy verified: %lld of %lld" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "双副本已验证：%1$lld / %2$lld" } } }
+    },
+    "Each drill restores and verifies one bounded archived transcript. It does not scan the entire archive." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "每次演练仅恢复并验证一条有界的已归档会话，不会扫描整个归档。" } } }
+    },
+    "Error: %@ recovery drill failed." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误：%@ 恢复演练失败。" } } }
+    },
+    "Error: archive status unavailable." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误：归档状态暂不可用。" } } }
+    },
+    "Error: exact archive storage is disabled." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误：精确归档存储已停用。" } } }
+    },
+    "Error: preview unavailable." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误：暂时无法预览。" } } }
+    },
+    "Error: reclamation failed." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误：精简失败。" } } }
+    },
+    "Error: reclamation is paused until its safety gates are current." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误：安全条件恢复有效前，精简已暂停。" } } }
+    },
+    "Error: reclamation run failed." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误：精简运行失败。" } } }
+    },
+    "Error: reclamation was cancelled." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误：精简已取消。" } } }
+    },
+    "Error: save failed because the service is unavailable." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误：服务不可用，保存失败。" } } }
+    },
+    "Error: save failed. Verify both recovery drills are current and the service is available." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误：保存失败。请确认两端恢复演练均有效且服务可用。" } } }
+    },
+    "Keep full local transcripts" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "完整本地记录保留时长" } } }
+    },
+    "Lightweight Recovery Drills" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "轻量恢复演练" } } }
+    },
+    "Preview" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "预览" } } }
+    },
+    "Preview: %lld files, about %@." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "预览：%1$lld 个文件，约 %2$@。" } } }
+    },
+    "Recovery drills current" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "恢复演练有效" } } }
+    },
+    "Recovery drills required" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需要完成恢复演练" } } }
+    },
+    "Refresh Status" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "刷新状态" } } }
+    },
+    "Released %@." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已释放 %@。" } } }
+    },
+    "Run Now" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "立即运行" } } }
+    },
+    "Search metadata and summaries remain local. Older source files and local archive objects are reclaimed only after both remote copies and both current recovery drills are verified." : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "搜索元数据和摘要仍保留在本机。只有在两个远端副本和两端当前恢复演练均验证通过后，才会精简较旧的源文件和本地归档对象。" } } }
+    },
+    "Sync status unavailable" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "同步状态暂不可用" } } }
+    },
+    "Verify HQ" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "验证 HQ" } } }
+    },
+    "Verify M1" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "验证 M1" } } }
+    },
     "(unknown)" : {
       "extractionState" : "stale",
       "localizations" : {
