@@ -238,7 +238,7 @@ describe('remote server package implementation contract', () => {
 
   it('verifies signatures, architecture, framework rpath, and dependency closure', () => {
     expect(packageScript).toContain('codesign --verify --deep --strict');
-    expect(packageScript).toContain('lipo -verify_arch arm64');
+    expect(packageScript).toContain('lipo "$binary" -verify_arch arm64');
     expect(packageScript).toContain('verify_arm64_only');
     expect(packageScript).toContain('[[ "$architectures" == "arm64" ]]');
     expect(packageScript).toContain('@executable_path/../Frameworks');

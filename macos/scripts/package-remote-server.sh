@@ -59,7 +59,7 @@ thin_macho_to_arm64() {
     /bin/mv -f "$temporary" "$binary"
   fi
 
-  /usr/bin/lipo -verify_arch arm64 "$binary" >/dev/null
+  /usr/bin/lipo "$binary" -verify_arch arm64 >/dev/null
 }
 
 codesign_bundle() {
@@ -286,7 +286,7 @@ verify_arm64_only() {
   local binary="$1"
   local architectures
 
-  /usr/bin/lipo -verify_arch arm64 "$binary" >/dev/null
+  /usr/bin/lipo "$binary" -verify_arch arm64 >/dev/null
   architectures="$(/usr/bin/lipo -archs "$binary")"
   [[ "$architectures" == "arm64" ]] ||
     fail "packaged Mach-O is not arm64-only: $binary ($architectures)"
