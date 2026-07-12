@@ -2031,7 +2031,11 @@ final class ArchiveCatalogTests: XCTestCase {
                 inflight: 1,
                 retry: 0,
                 quarantine: 1,
-                verified: 1
+                verified: 1,
+                oldestOutstandingAt: "2026-07-11T00:10:00.000Z",
+                retryReasons: [
+                    ArchiveRetryReasonCount(symbol: "status_test", count: 1),
+                ]
             )
         )
         XCTAssertEqual(
@@ -2041,7 +2045,9 @@ final class ArchiveCatalogTests: XCTestCase {
                 inflight: 0,
                 retry: 1,
                 quarantine: 0,
-                verified: 1
+                verified: 1,
+                oldestOutstandingAt: "2026-07-11T00:10:00.000Z",
+                nextRetryAt: "2026-07-11T01:00:00.000Z"
             )
         )
         XCTAssertEqual(status.singleVerified, 0)
@@ -2150,6 +2156,102 @@ final class ArchiveCatalogTests: XCTestCase {
         XCTAssertTrue(status.latestReceipts.allSatisfy {
             ArchiveV2Hash.isValidSHA256($0.receiptSHA256)
         })
+    }
+
+    func testArchiveStatusAggregatesReplicaBacklogDiagnostics() throws {
+        let first = try eligibleBoundCatalog()
+        let catalog = first.0
+        let second = try addBinding(
+            to: catalog,
+            captureSeed: "status-diagnostics-second",
+            sessionID: "status-diagnostics-second"
+        )
+        let third = try addBinding(
+            to: catalog,
+            captureSeed: "status-diagnostics-third",
+            sessionID: "status-diagnostics-third"
+        )
+        for binding in [second, third] {
+            XCTAssertTrue(
+                try catalog.setRemotePolicySnapshot(
+                    manifestSHA256: binding.manifestSHA256,
+                    projectRootSnapshot: "/tmp/\(binding.sessionID)",
+                    eligibility: .eligible
+                )
+            )
+        }
+        XCTAssertEqual(
+            try catalog.reconcileEligibleReplicaRows(
+                updatedAt: "2026-07-11T00:02:00.000Z"
+            ),
+            4
+        )
+
+        try writeArchiveDatabase { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_replica_receipts
+                SET state = 'retryWait',
+                    next_retry_at = '2026-07-11T01:00:00.000Z',
+                    last_error = 'transport_network',
+                    updated_at = '2026-07-11T00:03:00.000Z'
+                WHERE manifest_sha256 = ? AND replica_id = 'hq';
+
+                UPDATE archive_replica_receipts
+                SET state = 'quarantined',
+                    next_retry_at = NULL,
+                    last_error = 'transport_network',
+                    updated_at = '2026-07-11T00:04:00.000Z'
+                WHERE manifest_sha256 = ? AND replica_id = 'hq';
+
+                UPDATE archive_replica_receipts
+                SET state = 'retryWait',
+                    next_retry_at = '2026-07-11T00:30:00.000Z',
+                    last_error = 'transport_timeout',
+                    updated_at = '2026-07-11T00:05:00.000Z'
+                WHERE manifest_sha256 = ? AND replica_id = 'm1';
+
+                UPDATE archive_replica_receipts
+                SET state = 'retryWait',
+                    next_retry_at = '2026-07-11T00:40:00.000Z',
+                    last_error = 'transport_network',
+                    updated_at = '2026-07-11T00:06:00.000Z'
+                WHERE manifest_sha256 = ? AND replica_id = 'm1';
+
+                UPDATE archive_replica_receipts
+                SET state = 'quarantined',
+                    next_retry_at = NULL,
+                    last_error = 'transport_timeout',
+                    updated_at = '2026-07-11T00:07:00.000Z'
+                WHERE manifest_sha256 = ? AND replica_id = 'm1';
+                """,
+                arguments: [
+                    first.binding.manifestSHA256,
+                    second.manifestSHA256,
+                    first.binding.manifestSHA256,
+                    second.manifestSHA256,
+                    third.manifestSHA256,
+                ]
+            )
+        }
+
+        let status = try catalog.archiveStatus()
+
+        XCTAssertEqual(status.hq.oldestOutstandingAt, "2026-07-11T00:02:00.000Z")
+        XCTAssertEqual(status.hq.nextRetryAt, "2026-07-11T01:00:00.000Z")
+        XCTAssertEqual(
+            status.hq.retryReasons,
+            [ArchiveRetryReasonCount(symbol: "transport_network", count: 2)]
+        )
+        XCTAssertEqual(status.m1.oldestOutstandingAt, "2026-07-11T00:05:00.000Z")
+        XCTAssertEqual(status.m1.nextRetryAt, "2026-07-11T00:30:00.000Z")
+        XCTAssertEqual(
+            status.m1.retryReasons,
+            [
+                ArchiveRetryReasonCount(symbol: "transport_timeout", count: 2),
+                ArchiveRetryReasonCount(symbol: "transport_network", count: 1),
+            ]
+        )
     }
 
     private struct ReplicaDatabaseRow {

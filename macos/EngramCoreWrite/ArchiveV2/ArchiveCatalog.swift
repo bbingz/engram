@@ -320,25 +320,44 @@ public struct ArchiveReplicaClaim: Equatable, Sendable {
     public let attempts: Int
 }
 
+public struct ArchiveRetryReasonCount: Equatable, Sendable {
+    public let symbol: String
+    public let count: Int
+
+    public init(symbol: String, count: Int) {
+        self.symbol = symbol
+        self.count = count
+    }
+}
+
 public struct ArchiveReplicaStatusCounts: Equatable, Sendable {
     public let pending: Int
     public let inflight: Int
     public let retry: Int
     public let quarantine: Int
     public let verified: Int
+    public let oldestOutstandingAt: String?
+    public let nextRetryAt: String?
+    public let retryReasons: [ArchiveRetryReasonCount]
 
     public init(
         pending: Int,
         inflight: Int,
         retry: Int,
         quarantine: Int,
-        verified: Int
+        verified: Int,
+        oldestOutstandingAt: String? = nil,
+        nextRetryAt: String? = nil,
+        retryReasons: [ArchiveRetryReasonCount] = []
     ) {
         self.pending = pending
         self.inflight = inflight
         self.retry = retry
         self.quarantine = quarantine
         self.verified = verified
+        self.oldestOutstandingAt = oldestOutstandingAt
+        self.nextRetryAt = nextRetryAt
+        self.retryReasons = Array(retryReasons.prefix(8))
     }
 }
 
@@ -2252,6 +2271,12 @@ public final class ArchiveCatalog: @unchecked Sendable {
                        COALESCE(SUM(state = 'retryWait'), 0) AS retry_count,
                        COALESCE(SUM(state = 'quarantined'), 0) AS quarantine_count,
                        COALESCE(SUM(state = 'verified'), 0) AS verified_count,
+                       MIN(CASE WHEN state IN ('pending', 'uploadingObjects',
+                                               'uploadingManifest', 'requestingReceipt',
+                                               'verifyingReceipt', 'retryWait', 'quarantined')
+                                THEN updated_at END) AS oldest_outstanding_at,
+                       MIN(CASE WHEN state = 'retryWait'
+                                THEN next_retry_at END) AS next_retry_at,
                        COALESCE(SUM(state NOT IN ('pending', 'uploadingObjects',
                                                   'uploadingManifest', 'requestingReceipt',
                                                   'verifyingReceipt', 'verified',
@@ -2262,6 +2287,40 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 GROUP BY replica_id
                 """
             )
+            var retryReasons: [String: [ArchiveRetryReasonCount]] = [:]
+            let reasonRows = try Row.fetchAll(
+                db,
+                sql: """
+                WITH reasons AS (
+                    SELECT replica_id, last_error, COUNT(*) AS reason_count
+                    FROM archive_replica_receipts
+                    WHERE replica_id IN ('hq', 'm1')
+                      AND state IN ('retryWait', 'quarantined')
+                      AND last_error IS NOT NULL
+                    GROUP BY replica_id, last_error
+                ), ranked AS (
+                    SELECT replica_id, last_error, reason_count,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY replica_id
+                               ORDER BY reason_count DESC, last_error ASC
+                           ) AS reason_rank
+                    FROM reasons
+                )
+                SELECT replica_id, last_error, reason_count
+                FROM ranked
+                WHERE reason_rank <= 8
+                ORDER BY replica_id ASC, reason_count DESC, last_error ASC
+                """
+            )
+            for row in reasonRows {
+                let replicaID: String = row["replica_id"]
+                retryReasons[replicaID, default: []].append(
+                    ArchiveRetryReasonCount(
+                        symbol: row["last_error"],
+                        count: row["reason_count"]
+                    )
+                )
+            }
             for row in countRows {
                 let invalidStateCount: Int = row["invalid_count"]
                 guard invalidStateCount == 0 else {
@@ -2273,7 +2332,10 @@ public final class ArchiveCatalog: @unchecked Sendable {
                     inflight: row["inflight_count"],
                     retry: row["retry_count"],
                     quarantine: row["quarantine_count"],
-                    verified: row["verified_count"]
+                    verified: row["verified_count"],
+                    oldestOutstandingAt: row["oldest_outstanding_at"],
+                    nextRetryAt: row["next_retry_at"],
+                    retryReasons: retryReasons[replicaID] ?? []
                 )
             }
 
