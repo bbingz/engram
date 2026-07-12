@@ -494,6 +494,9 @@ public enum EngramServiceRunner {
                 consecutiveIdleScans: scheduleBox.policy.consecutiveIdleScans,
                 backend: activityScheduler.backendName
             )
+            await archiveV2Coordinator?.recordNextScheduledCycle(
+                at: Date().addingTimeInterval(sleepSeconds)
+            )
 
             let tolerance = min(5 * 60.0, sleepSeconds * 0.25)
             let opportunity = await activityScheduler.performWhenDue(

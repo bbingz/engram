@@ -89,6 +89,74 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertTrue(status.remoteReplicationEnabled)
     }
 
+    func testStatusRecordsLatestReplicationCycleAndNextScheduledOpportunity() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let events = EventLog()
+        let results = ReplicationResultQueue([
+            ArchiveReplicationCycleResult(
+                claimed: 4,
+                verified: 2,
+                retryScheduled: 2,
+                staleRecovered: 1,
+                reconciled: 3
+            ),
+            ArchiveReplicationCycleResult(
+                claimed: 1,
+                verified: 1,
+                quarantined: 1,
+                lostClaims: 1,
+                cycleError: "catalog_failure"
+            ),
+        ])
+        let clock = CoordinatorDateQueue([
+            Date(timeIntervalSince1970: 1_752_278_400),
+            Date(timeIntervalSince1970: 1_752_278_401.5),
+            Date(timeIntervalSince1970: 1_752_278_460),
+            Date(timeIntervalSince1970: 1_752_278_461),
+        ])
+        var operations = makeOperations(events: events)
+        operations.replicate = { _ in await results.next() }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations,
+            now: clock.next
+        )
+        _ = try await coordinator.runCycle(adapters: [], cursorScope: .recent) { _ in
+            try await self.emptyIndexResult(gate: harness.gate)
+        }
+        await coordinator.recordNextScheduledCycle(
+            at: Date(timeIntervalSince1970: 1_752_279_300)
+        )
+        var status = await coordinator.status()
+
+        XCTAssertEqual(status.nextScheduledCycleAt, "2025-07-12T00:15:00.000Z")
+        XCTAssertEqual(status.lastReplicationCycle?.startedAt, "2025-07-12T00:00:00.000Z")
+        XCTAssertEqual(status.lastReplicationCycle?.finishedAt, "2025-07-12T00:00:01.500Z")
+        XCTAssertEqual(status.lastReplicationCycle?.durationMs, 1_500)
+        XCTAssertEqual(status.lastReplicationCycle?.claimedCount, 4)
+        XCTAssertEqual(status.lastReplicationCycle?.verifiedCount, 2)
+        XCTAssertEqual(status.lastReplicationCycle?.retryScheduledCount, 2)
+        XCTAssertEqual(status.lastReplicationCycle?.staleRecoveredCount, 1)
+        XCTAssertEqual(status.lastReplicationCycle?.reconciledCount, 3)
+
+        _ = try await coordinator.runCycle(adapters: [], cursorScope: .recent) { _ in
+            try await self.emptyIndexResult(gate: harness.gate)
+        }
+        status = await coordinator.status()
+
+        XCTAssertEqual(status.lastReplicationCycle?.startedAt, "2025-07-12T00:01:00.000Z")
+        XCTAssertEqual(status.lastReplicationCycle?.finishedAt, "2025-07-12T00:01:01.000Z")
+        XCTAssertEqual(status.lastReplicationCycle?.durationMs, 1_000)
+        XCTAssertEqual(status.lastReplicationCycle?.claimedCount, 1)
+        XCTAssertEqual(status.lastReplicationCycle?.verifiedCount, 1)
+        XCTAssertEqual(status.lastReplicationCycle?.quarantinedCount, 1)
+        XCTAssertEqual(status.lastReplicationCycle?.lostClaimCount, 1)
+        XCTAssertEqual(status.lastReplicationCycle?.cycleError, "catalog_failure")
+    }
+
     func testConcurrentCyclesCoalesceWithoutRepeatingCaptureOrIndex() async throws {
         let harness = try makeHarness(remoteReady: true)
         let events = EventLog()
@@ -1338,6 +1406,35 @@ private final class FactoryProbes: @unchecked Sendable {
 
     func incrementTokenFactories() { lock.withLock { _tokenFactories += 1 } }
     func incrementBackends() { lock.withLock { _backends += 1 } }
+}
+
+private final class CoordinatorDateQueue: @unchecked Sendable {
+    private let lock = NSLock()
+    private var dates: [Date]
+
+    init(_ dates: [Date]) {
+        self.dates = dates
+    }
+
+    func next() -> Date {
+        lock.withLock {
+            precondition(!dates.isEmpty, "test date queue exhausted")
+            return dates.removeFirst()
+        }
+    }
+}
+
+private actor ReplicationResultQueue {
+    private var results: [ArchiveReplicationCycleResult]
+
+    init(_ results: [ArchiveReplicationCycleResult]) {
+        self.results = results
+    }
+
+    func next() -> ArchiveReplicationCycleResult {
+        precondition(!results.isEmpty, "test replication result queue exhausted")
+        return results.removeFirst()
+    }
 }
 
 private extension FileHandle {

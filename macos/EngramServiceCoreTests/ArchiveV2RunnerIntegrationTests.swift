@@ -489,6 +489,14 @@ final class ArchiveV2RunnerIntegrationTests: XCTestCase {
         XCTAssertLessThan(waitForInitial.lowerBound, startLoop.lowerBound)
         XCTAssertTrue(indexingBlock.contains("archiveV2Coordinator: archiveV2Coordinator"))
 
+        let loopStart = try XCTUnwrap(source.range(of: "private static func runIndexingLoop("))
+        let loopEnd = try XCTUnwrap(
+            source.range(of: "private static func runOnePeriodicIndexCycle(", range: loopStart.lowerBound ..< source.endIndex)
+        )
+        let loopBlock = String(source[loopStart.lowerBound ..< loopEnd.lowerBound])
+        XCTAssertTrue(loopBlock.contains("await archiveV2Coordinator?.recordNextScheduledCycle("))
+        XCTAssertTrue(loopBlock.contains("Date().addingTimeInterval(sleepSeconds)"))
+
         let waitHelperStart = try XCTUnwrap(source.range(of: "static func runAfterInitialScan("))
         let waitHelperEnd = try XCTUnwrap(
             source.range(of: "static func runArchiveV2IndexCycle(", range: waitHelperStart.lowerBound ..< source.endIndex)

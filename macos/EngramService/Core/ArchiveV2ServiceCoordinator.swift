@@ -197,6 +197,7 @@ actor ArchiveV2ServiceCoordinator {
     private let operations: ArchiveV2ServiceCoordinatorOperations?
     private let batchSize: Int
     private let captureRetryLocatorLimit: Int
+    private let now: @Sendable () -> Date
     nonisolated let transcriptResolverSnapshot: ArchiveTranscriptResolver?
     nonisolated let reclamationCoordinatorSnapshot: ArchiveReclamationCoordinator?
 
@@ -209,6 +210,8 @@ actor ArchiveV2ServiceCoordinator {
     private var unsafeLocatorCount = 0
     private var captureRetryLocators: [SourceName: [String]] = [:]
     private var fullCapturePending = false
+    private var lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?
+    private var nextScheduledCycleAt: String?
 
     init(
         settings: ArchiveV2Settings,
@@ -217,7 +220,8 @@ actor ArchiveV2ServiceCoordinator {
         configurationError: String?,
         operations: ArchiveV2ServiceCoordinatorOperations,
         transcriptResolverSnapshot: ArchiveTranscriptResolver? = nil,
-        reclamationCoordinatorSnapshot: ArchiveReclamationCoordinator? = nil
+        reclamationCoordinatorSnapshot: ArchiveReclamationCoordinator? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.settings = settings
         self.writerGate = writerGate
@@ -227,6 +231,7 @@ actor ArchiveV2ServiceCoordinator {
             && settings.configurationError == nil
         self.configurationError = configurationError
         self.operations = operations
+        self.now = now
         self.transcriptResolverSnapshot = transcriptResolverSnapshot
         self.reclamationCoordinatorSnapshot = reclamationCoordinatorSnapshot
         batchSize = settings.remoteConfiguration?.batchSize
@@ -245,7 +250,8 @@ actor ArchiveV2ServiceCoordinator {
         configurationError: String?,
         operations: ArchiveV2ServiceCoordinatorOperations?,
         transcriptResolverSnapshot: ArchiveTranscriptResolver? = nil,
-        reclamationCoordinatorSnapshot: ArchiveReclamationCoordinator? = nil
+        reclamationCoordinatorSnapshot: ArchiveReclamationCoordinator? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.settings = settings
         self.writerGate = writerGate
@@ -255,6 +261,7 @@ actor ArchiveV2ServiceCoordinator {
             && settings.configurationError == nil
         self.configurationError = configurationError
         self.operations = operations
+        self.now = now
         self.transcriptResolverSnapshot = transcriptResolverSnapshot
         self.reclamationCoordinatorSnapshot = reclamationCoordinatorSnapshot
         batchSize = settings.remoteConfiguration?.batchSize
@@ -272,7 +279,8 @@ actor ArchiveV2ServiceCoordinator {
         settingsURL: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".engram/settings.json"),
         environment: [String: String] = [:],
         tokenLoaderFactory: @escaping TokenLoaderFactory = { ArchiveCredentialStore() },
-        backendFactory: @escaping BackendFactory = { HTTPArchiveReplicaBackend(connection: $0) }
+        backendFactory: @escaping BackendFactory = { HTTPArchiveReplicaBackend(connection: $0) },
+        now: @escaping @Sendable () -> Date = { Date() }
     ) -> ArchiveV2ServiceCoordinator {
         guard settings.exactArchiveEnabled else {
             return ArchiveV2ServiceCoordinator(
@@ -281,7 +289,8 @@ actor ArchiveV2ServiceCoordinator {
                 localCaptureReady: false,
                 remoteReady: false,
                 configurationError: settings.configurationError?.rawValue,
-                operations: nil
+                operations: nil,
+                now: now
             )
         }
 
@@ -301,7 +310,8 @@ actor ArchiveV2ServiceCoordinator {
                 localCaptureReady: false,
                 remoteReady: false,
                 configurationError: "local_archive_unavailable",
-                operations: nil
+                operations: nil,
+                now: now
             )
         }
 
@@ -330,7 +340,8 @@ actor ArchiveV2ServiceCoordinator {
                 replicationCoordinator = try ArchiveReplicationCoordinator(
                     catalog: catalog,
                     cas: cas,
-                    backends: backends
+                    backends: backends,
+                    clock: now
                 )
             } catch {
                 resolvedConfigurationError = Self.remoteConfigurationSymbol(error)
@@ -374,7 +385,8 @@ actor ArchiveV2ServiceCoordinator {
             configurationError: resolvedConfigurationError,
             operations: operations,
             transcriptResolverSnapshot: transcriptResolver,
-            reclamationCoordinatorSnapshot: reclamationCoordinator
+            reclamationCoordinatorSnapshot: reclamationCoordinator,
+            now: now
         )
     }
 
@@ -391,6 +403,7 @@ actor ArchiveV2ServiceCoordinator {
         }
 
         cycleCoalesced = false
+        nextScheduledCycleAt = nil
         let id = UUID()
         let task = Task<ArchiveV2ServiceCycleResult, Error> { [self] in
             try await executeCycle(
@@ -437,8 +450,14 @@ actor ArchiveV2ServiceCoordinator {
             lastCaptureError: lastCaptureError,
             lastReplicationError: lastReplicationError,
             cycleRunning: inFlight != nil,
-            cycleCoalesced: cycleCoalesced
+            cycleCoalesced: cycleCoalesced,
+            lastReplicationCycle: lastReplicationCycle,
+            nextScheduledCycleAt: nextScheduledCycleAt
         )
+    }
+
+    func recordNextScheduledCycle(at date: Date) {
+        nextScheduledCycleAt = Self.timestamp(date)
     }
 
     func retryQuarantined(replicaID: String?) async -> EngramServiceArchiveV2RetryResponse {
@@ -602,7 +621,27 @@ actor ArchiveV2ServiceCoordinator {
                 }
             }
             if remoteReady {
+                let replicationStartedAt = now()
                 let replication = await operations.replicate(batchSize)
+                let replicationFinishedAt = now()
+                lastReplicationCycle = Self.replicationCycleSummary(
+                    result: replication,
+                    startedAt: replicationStartedAt,
+                    finishedAt: replicationFinishedAt
+                )
+                if let summary = lastReplicationCycle {
+                    ServiceLogger.info(
+                        "archive v2 replication cycle completed "
+                            + "duration_ms=\(Int(summary.durationMs.rounded())) "
+                            + "claimed=\(summary.claimedCount) "
+                            + "verified=\(summary.verifiedCount) "
+                            + "retry=\(summary.retryScheduledCount) "
+                            + "quarantined=\(summary.quarantinedCount) "
+                            + "cancelled=\(summary.cancelled) "
+                            + "error=\(summary.cycleError ?? "none")",
+                        category: .runner
+                    )
+                }
                 if replication.cancelled { throw CancellationError() }
                 lastReplicationError = replication.cycleError
             }
@@ -1372,7 +1411,9 @@ actor ArchiveV2ServiceCoordinator {
         lastCaptureError: String?,
         lastReplicationError: String?,
         cycleRunning: Bool,
-        cycleCoalesced: Bool
+        cycleCoalesced: Bool,
+        lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?,
+        nextScheduledCycleAt: String?
     ) -> EngramServiceArchiveV2StatusResponse {
         let replicas = [
             replicaStatus(id: "hq", counts: aggregate.hq),
@@ -1406,7 +1447,30 @@ actor ArchiveV2ServiceCoordinator {
             lastCaptureError: lastCaptureError,
             lastReplicationError: lastReplicationError,
             cycleRunning: cycleRunning,
-            cycleCoalesced: cycleCoalesced
+            cycleCoalesced: cycleCoalesced,
+            lastReplicationCycle: lastReplicationCycle,
+            nextScheduledCycleAt: nextScheduledCycleAt
+        )
+    }
+
+    private static func replicationCycleSummary(
+        result: ArchiveReplicationCycleResult,
+        startedAt: Date,
+        finishedAt: Date
+    ) -> EngramServiceArchiveV2ReplicationCycleSummary? {
+        try? EngramServiceArchiveV2ReplicationCycleSummary(
+            startedAt: timestamp(startedAt),
+            finishedAt: timestamp(finishedAt),
+            durationMs: max(finishedAt.timeIntervalSince(startedAt) * 1_000, 0),
+            claimedCount: result.claimed,
+            verifiedCount: result.verified,
+            retryScheduledCount: result.retryScheduled,
+            quarantinedCount: result.quarantined,
+            lostClaimCount: result.lostClaims,
+            staleRecoveredCount: result.staleRecovered,
+            reconciledCount: result.reconciled,
+            cancelled: result.cancelled,
+            cycleError: result.cycleError
         )
     }
 
