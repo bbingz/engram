@@ -600,6 +600,7 @@
 		E5D808C1AE89AAA2664BE88E /* ProjectLongOperationSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC55B3774C9BD2884B06D525 /* ProjectLongOperationSession.swift */; };
 		E600B9EEB99F91648BFD992B /* ParentDetection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 934EBFE453FFD59097C93962 /* ParentDetection.swift */; };
 		E60B5DA612C583506A197CF3 /* UndoSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A073E57949C134DAB06B9732 /* UndoSheet.swift */; };
+		E644B841FA4A30198697399C /* ArchiveReclamationPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 663E8B62FCFF1F8E8CC1C0A7 /* ArchiveReclamationPolicyTests.swift */; };
 		E6A466923A58503A821B8FC3 /* MessageTypeChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51340A6BE270D03F14C4925F /* MessageTypeChip.swift */; };
 		E707BAD663F02A3148FC3C19 /* BundleCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45F72DE542471E0F577EEF92 /* BundleCodec.swift */; };
 		E78D19A217EA790B3172C9D4 /* ArchiveReplicationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E42392A1EEAFB6C03B149F4A /* ArchiveReplicationCoordinator.swift */; };
@@ -665,6 +666,7 @@
 		FD8E728491884EABB815DC7A /* VsCodeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B771FAB5DA8D579D4BA2FAE5 /* VsCodeAdapter.swift */; };
 		FE6B4C4D1D9D73A3081D2E9A /* CommandPaletteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6D4548C4482AB2B8F10659 /* CommandPaletteView.swift */; };
 		FE78A3B024FEB0484F194DB2 /* SectionHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFB811E3F5CB59716B1B99A2 /* SectionHeader.swift */; };
+		FE83A60CE92CF23B99278F29 /* ArchiveReclamationPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B459CDDD6BBE3C7178120DC0 /* ArchiveReclamationPolicy.swift */; };
 		FEE7E98596384452922BD504 /* NavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDFC1C80BCB0A33D2AC80EC7 /* NavigationTests.swift */; };
 		FEF41524285AB5B8CB6BDE1B /* EngramServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = F157FA0F7C17FA4398BCC146 /* EngramServiceProtocol.swift */; };
 		FFBE6A0D3326FA2ED0A57BA4 /* ModuleBoundaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C286156D48C55BBD0507B588 /* ModuleBoundaryTests.swift */; };
@@ -1063,6 +1065,7 @@
 		64F4C75BEAFCC55495138AA2 /* AdapterParityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdapterParityTests.swift; sourceTree = "<group>"; };
 		6517DA2EA76B3A5C369919FF /* AISettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISettingsSection.swift; sourceTree = "<group>"; };
 		6607FBDF5FFB473323EBA333 /* SessionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsTests.swift; sourceTree = "<group>"; };
+		663E8B62FCFF1F8E8CC1C0A7 /* ArchiveReclamationPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveReclamationPolicyTests.swift; sourceTree = "<group>"; };
 		6657485996BD6F4F23A89F71 /* RecoverMigrationsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoverMigrationsTests.swift; sourceTree = "<group>"; };
 		67732E532A4FF2BA35D84743 /* MCPProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPProtocol.swift; sourceTree = "<group>"; };
 		67C03A12BF8F24EA3BC60214 /* TranscriptFindTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptFindTests.swift; sourceTree = "<group>"; };
@@ -1212,6 +1215,7 @@
 		B1EDBD167B353A11028F3DD4 /* EngramCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EngramCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B1F134DA4D2562A469A87144 /* ServiceUnavailableMutatingToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceUnavailableMutatingToolTests.swift; sourceTree = "<group>"; };
 		B3C18806F51FE19FEA8F5E5C /* ArchiveCanonicalJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveCanonicalJSON.swift; sourceTree = "<group>"; };
+		B459CDDD6BBE3C7178120DC0 /* ArchiveReclamationPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveReclamationPolicy.swift; sourceTree = "<group>"; };
 		B4B94C3E09D20F677BFE6355 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		B4DCF53422ED7AE4384968ED /* PopoverUsageSectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverUsageSectionTests.swift; sourceTree = "<group>"; };
 		B56D7E78932B9DFDD9A96741 /* HeatmapGrid.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeatmapGrid.swift; sourceTree = "<group>"; };
@@ -2406,6 +2410,7 @@
 				5B912698978B88FBA5612E30 /* ArchiveCaptureCoordinatorTests.swift */,
 				7FDCB4E62919C8E7D3985162 /* ArchiveCatalogTests.swift */,
 				7E88F20261BDB5D92EDF539D /* ArchiveModelTests.swift */,
+				663E8B62FCFF1F8E8CC1C0A7 /* ArchiveReclamationPolicyTests.swift */,
 				3A4F94AE48569070E7F4D1C2 /* ArchiveReplicationCoordinatorTests.swift */,
 				C3CA0581E58BF21CF223E38B /* ArchiveV2RecentAdapterTests.swift */,
 				92A49BE9BF5D5C5AF1188E09 /* ExactSourceCapturerTests.swift */,
@@ -2504,6 +2509,7 @@
 				2A5C1E4F3D7200FAFF5420BD /* ArchiveCatalogMigrations.swift */,
 				08C0C6EBB8A9A2BCFA9CDB77 /* ArchiveCredentialStore.swift */,
 				01FF39174465690B23E9367F /* ArchiveLocatorClassifier.swift */,
+				B459CDDD6BBE3C7178120DC0 /* ArchiveReclamationPolicy.swift */,
 				5F75599BDACF57E380569A9E /* ArchiveReplicaBackend.swift */,
 				E42392A1EEAFB6C03B149F4A /* ArchiveReplicationCoordinator.swift */,
 				435D37FFA95674394E6BE3AB /* ExactSourceCapturer.swift */,
@@ -3123,6 +3129,7 @@
 				76F5EF80ADB3F6A366412C58 /* ArchiveCaptureCoordinatorTests.swift in Sources */,
 				026C6ACFD70D1E1E8665C054 /* ArchiveCatalogTests.swift in Sources */,
 				BD5C4BD7580A606F32A3625E /* ArchiveModelTests.swift in Sources */,
+				E644B841FA4A30198697399C /* ArchiveReclamationPolicyTests.swift in Sources */,
 				C3CB69A48C677D5F422D66B1 /* ArchiveReplicationCoordinatorTests.swift in Sources */,
 				B8A6B1CE954B81574D18E72B /* ArchiveTests.swift in Sources */,
 				C4FC98E5FB24AC0A2D01EECB /* ArchiveV2RecentAdapterTests.swift in Sources */,
@@ -3538,6 +3545,7 @@
 				60980F23DA35F02B4ABF9F16 /* ArchiveCatalogMigrations.swift in Sources */,
 				74AD2933760317276B9C7A36 /* ArchiveCredentialStore.swift in Sources */,
 				9F9F74F3538E6A5388A6BF25 /* ArchiveLocatorClassifier.swift in Sources */,
+				FE83A60CE92CF23B99278F29 /* ArchiveReclamationPolicy.swift in Sources */,
 				302DC41D3E9E664C22DAE792 /* ArchiveReplicaBackend.swift in Sources */,
 				E78D19A217EA790B3172C9D4 /* ArchiveReplicationCoordinator.swift in Sources */,
 				0DD10D250D0E20BF30D1DE75 /* Batch.swift in Sources */,
