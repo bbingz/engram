@@ -21,6 +21,8 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             "archiveSync_m1",
             "archiveSync_hqDiagnostics",
             "archiveSync_m1Diagnostics",
+            "archiveSync_hqRemoteTelemetry",
+            "archiveSync_m1RemoteTelemetry",
             "archiveSync_lastCycle",
             "archiveSync_nextCycle",
             "archiveSync_unbound",
@@ -34,11 +36,109 @@ final class ArchiveSettingsSectionTests: XCTestCase {
         XCTAssertFalse(source.contains("ContinuousClock"))
         XCTAssertTrue(source.contains("syncRefreshGeneration"))
         XCTAssertTrue(source.contains("guard requestGeneration == syncRefreshGeneration"))
+        XCTAssertEqual(source.components(separatedBy: ".task { await refresh() }").count - 1, 1)
         XCTAssertEqual(
             source.components(separatedBy: "await refresh(reportError: false)").count - 1,
             3,
             "Save, Run Now, and recovery drill refreshes must preserve their action result message"
         )
+    }
+
+    func testRemoteSummaryShowsOnlineTelemetryWithoutRawSymbols() throws {
+        let revision = "0123456789abcdef0123456789abcdef01234567"
+        let telemetry = try remoteTelemetry(
+            replicaID: "hq",
+            revision: revision,
+            persistenceError: "snapshot_write_failed",
+            recentErrors: [try remoteError(category: "storage_unavailable")]
+        )
+
+        let summary = ArchiveRemoteTelemetryPresentation.summary(
+            replicaID: "hq",
+            telemetry: telemetry,
+            error: nil
+        )
+
+        XCTAssertTrue(summary.contains("HQ"))
+        XCTAssertTrue(summary.contains(String(revision.prefix(8))))
+        XCTAssertFalse(summary.contains(revision))
+        XCTAssertTrue(summary.contains(String(localized: "Online")))
+        XCTAssertTrue(summary.contains(":28"), "Snapshot time must be shown: \(summary)")
+        XCTAssertTrue(summary.contains(":24"), "Last mutation time must be shown: \(summary)")
+        for count in ["41", "3", "2", "64", "128"] {
+            XCTAssertTrue(summary.contains(count), "Missing \(count) in \(summary)")
+        }
+        XCTAssertTrue(summary.contains(String(localized: "Storage unavailable")))
+        XCTAssertTrue(summary.contains(String(localized: "Snapshot persistence failed")))
+        XCTAssertFalse(summary.contains("storage_unavailable"))
+        XCTAssertFalse(summary.contains("snapshot_write_failed"))
+    }
+
+    func testRemoteSummaryHandlesUnavailableAndPartialSuccessIndependently() throws {
+        let hq = ArchiveRemoteTelemetryPresentation.summary(
+            replicaID: "hq",
+            telemetry: try remoteTelemetry(replicaID: "hq"),
+            error: nil
+        )
+        let m1 = ArchiveRemoteTelemetryPresentation.summary(
+            replicaID: "m1",
+            telemetry: nil,
+            error: "transport_timeout"
+        )
+        let missing = ArchiveRemoteTelemetryPresentation.summary(
+            replicaID: "m1",
+            telemetry: nil,
+            error: nil
+        )
+
+        XCTAssertTrue(hq.contains("HQ"))
+        XCTAssertTrue(hq.contains(String(localized: "Online")))
+        XCTAssertTrue(m1.contains("M1"))
+        XCTAssertTrue(m1.contains(String(localized: "Remote status unavailable")))
+        XCTAssertTrue(m1.contains(String(localized: "Request timed out")))
+        XCTAssertFalse(m1.contains("transport_timeout"))
+        XCTAssertTrue(missing.contains(String(localized: "Other remote error")))
+    }
+
+    func testRemoteErrorSymbolsAndSanitizedCategoriesNeverRenderRawValues() {
+        let fetchSymbols = [
+            "final_url_mismatch",
+            "invalid_canonical_response",
+            "invalid_request",
+            "not_http_response",
+            "redirect_rejected",
+            "remote_telemetry_unavailable",
+            "response_too_large",
+            "telemetry_unsupported",
+            "transport_cancelled",
+            "transport_network",
+            "transport_timeout",
+            "transport_tls",
+            "unexpected_status",
+            "future_private_detail",
+        ]
+        for symbol in fetchSymbols {
+            let presentation = ArchiveRemoteTelemetryPresentation.remoteErrorName(symbol)
+            XCTAssertFalse(presentation.isEmpty)
+            XCTAssertFalse(presentation.contains(symbol), "Leaked raw error symbol: \(symbol)")
+        }
+
+        let categories = [
+            "unauthorized",
+            "malformed_request",
+            "not_found",
+            "conflict",
+            "payload_too_large",
+            "invalid_content",
+            "storage_unavailable",
+            "internal_error",
+            "future_private_detail",
+        ]
+        for category in categories {
+            let presentation = ArchiveRemoteTelemetryPresentation.errorCategoryName(category)
+            XCTAssertFalse(presentation.isEmpty)
+            XCTAssertFalse(presentation.contains(category), "Leaked raw error category: \(category)")
+        }
     }
 
     func testSyncPresentationPrioritizesConfigurationFailureOverDisabledRemote() throws {
@@ -132,6 +232,9 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             "%lld unbound archives (not a sync failure)",
             "%@: %lld verified, %lld retrying, %lld queued, %lld quarantined",
             "%@ s",
+            "%lld d, %lld hr",
+            "%lld hr, %lld min",
+            "%lld min",
             "Cancelled",
             "Configuration",
             "Credentials",
@@ -147,6 +250,12 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             "Automatic reclamation enabled.",
             "Automatically reclaim old local transcripts",
             "Dual-copy verified: %lld of %lld",
+            "Build: %@",
+            "Client errors: %lld",
+            "Conflict",
+            "Disk free: %@",
+            "Disk free: %@ of %@",
+            "Disk free: unavailable",
             "Each drill restores and verifies one bounded archived transcript. It does not scan the entire archive.",
             "Error: %@ recovery drill failed.",
             "Error: archive status unavailable.",
@@ -159,20 +268,39 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             "Error: save failed because the service is unavailable.",
             "Error: save failed. Verify both recovery drills are current and the service is available.",
             "Keep full local transcripts",
+            "Internal server error",
+            "Invalid content",
+            "Invalid remote response",
             "Issue: %@",
             "Last pass %@ · %@ · verified %lld · retry %lld · quarantined %lld",
             "Lightweight Recovery Drills",
             "Local archive",
+            "Last write: %@",
+            "Last write: none",
+            "Latest error: %@",
+            "Latest error: none",
             "Network",
+            "Network error",
             "Next background opportunity around %@",
             "Next retry: %@",
             "Oldest pending: %@",
             "Other",
+            "Other remote error",
+            "Malformed request",
+            "Not found",
+            "Online",
+            "Payload too large",
+            "Persistence: %@",
             "Preview",
             "Preview: %lld files, about %@.",
             "Recovery drills current",
             "Recovery drills required",
             "Remote verification",
+            "Remote status unavailable",
+            "Remote telemetry unavailable",
+            "Request cancelled",
+            "Request timed out",
+            "Requests: %lld",
             "Retry reasons: %@",
             "Refresh Status",
             "Released %@.",
@@ -180,6 +308,15 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             "Save",
             "Search metadata and summaries remain local. Older source files and local archive objects are reclaimed only after both remote copies and both current recovery drills are verified.",
             "Sync status unavailable",
+            "Server errors: %lld",
+            "Snapshot: %@",
+            "Snapshot persistence failed",
+            "Storage unavailable",
+            "TLS error",
+            "Telemetry unsupported",
+            "Unauthorized",
+            "Unknown build",
+            "Uptime: %@",
             "Verify HQ",
             "Verify M1",
         ]
@@ -287,5 +424,38 @@ final class ArchiveSettingsSectionTests: XCTestCase {
         _ count: Int
     ) throws -> EngramServiceArchiveV2RetryReasonCount {
         try EngramServiceArchiveV2RetryReasonCount(symbol: symbol, count: count)
+    }
+
+    private func remoteTelemetry(
+        replicaID: String,
+        revision: String = "abcdef0123456789abcdef0123456789abcdef01",
+        persistenceError: String? = nil,
+        recentErrors: [EngramServiceArchiveV2RemoteError] = []
+    ) throws -> EngramServiceArchiveV2RemoteTelemetry {
+        try EngramServiceArchiveV2RemoteTelemetry(
+            serverID: replicaID,
+            sourceRevision: revision,
+            snapshotAt: "2026-07-12T17:28:00.000Z",
+            uptimeSeconds: 5_408,
+            diskAvailableBytes: 64 * 1_024 * 1_024 * 1_024,
+            diskTotalBytes: 128 * 1_024 * 1_024 * 1_024,
+            requestCount: 41,
+            clientErrorCount: 3,
+            serverErrorCount: 2,
+            lastArchiveMutationAt: "2026-07-12T17:24:00.000Z",
+            persistenceError: persistenceError,
+            endpoints: [],
+            recentErrors: recentErrors
+        )
+    }
+
+    private func remoteError(category: String) throws -> EngramServiceArchiveV2RemoteError {
+        try EngramServiceArchiveV2RemoteError(
+            timestamp: "2026-07-12T17:27:00.000Z",
+            endpoint: "object",
+            method: "PUT",
+            statusCode: 507,
+            category: category
+        )
     }
 }

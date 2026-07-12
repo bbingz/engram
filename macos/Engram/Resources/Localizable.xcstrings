@@ -16,6 +16,15 @@
     "%@ s" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@ 秒" } } }
     },
+    "%lld d, %lld hr" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%1$lld 天 %2$lld 小时" } } }
+    },
+    "%lld hr, %lld min" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%1$lld 小时 %2$lld 分钟" } } }
+    },
+    "%lld min" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 分钟" } } }
+    },
     "%@ recovery drill passed." : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@ 恢复演练已通过。" } } }
     },
@@ -49,17 +58,35 @@
     "Automatically reclaim old local transcripts" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动精简旧的本地会话记录" } } }
     },
+    "Build: %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "构建：%@" } } }
+    },
     "Cancelled" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已取消" } } }
     },
+    "Client errors: %lld" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "客户端错误：%lld" } } }
+    },
     "Configuration" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "配置" } } }
+    },
+    "Conflict" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "冲突" } } }
     },
     "Credentials" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "凭据" } } }
     },
     "Dual-copy verified: %lld of %lld" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "双副本已验证：%1$lld / %2$lld" } } }
+    },
+    "Disk free: %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可用磁盘空间：%@" } } }
+    },
+    "Disk free: %@ of %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可用磁盘空间：%1$@ / %2$@" } } }
+    },
+    "Disk free: unavailable" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可用磁盘空间：暂不可用" } } }
     },
     "Each drill restores and verifies one bounded archived transcript. It does not scan the entire archive." : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "每次演练仅恢复并验证一条有界的已归档会话，不会扫描整个归档。" } } }
@@ -97,6 +124,15 @@
     "Keep full local transcripts" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "完整本地记录保留时长" } } }
     },
+    "Internal server error" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "服务器内部错误" } } }
+    },
+    "Invalid content" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "内容无效" } } }
+    },
+    "Invalid remote response" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "远端响应无效" } } }
+    },
     "Issue: %@" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "问题：%@" } } }
     },
@@ -109,6 +145,24 @@
     "Local archive" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地归档" } } }
     },
+    "Last write: %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "上次写入：%@" } } }
+    },
+    "Last write: none" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "上次写入：无" } } }
+    },
+    "Latest error: %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最近错误：%@" } } }
+    },
+    "Latest error: none" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最近错误：无" } } }
+    },
+    "Malformed request" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请求格式错误" } } }
+    },
+    "Network error" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "网络错误" } } }
+    },
     "Next background opportunity around %@" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "预计下轮后台检查：%@" } } }
     },
@@ -118,8 +172,23 @@
     "Oldest pending: %@" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最早积压：%@" } } }
     },
+    "Not found" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未找到" } } }
+    },
+    "Online" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "在线" } } }
+    },
     "Other" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "其他" } } }
+    },
+    "Other remote error" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "其他远端错误" } } }
+    },
+    "Payload too large" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "负载过大" } } }
+    },
+    "Persistence: %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "持久化：%@" } } }
     },
     "Preview" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "预览" } } }
@@ -136,6 +205,21 @@
     "Remote verification" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "远端校验" } } }
     },
+    "Remote status unavailable" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "远端状态暂不可用" } } }
+    },
+    "Remote telemetry unavailable" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "远端遥测暂不可用" } } }
+    },
+    "Request cancelled" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请求已取消" } } }
+    },
+    "Request timed out" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请求超时" } } }
+    },
+    "Requests: %lld" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请求：%lld" } } }
+    },
     "Refresh Status" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "刷新状态" } } }
     },
@@ -151,8 +235,35 @@
     "Search metadata and summaries remain local. Older source files and local archive objects are reclaimed only after both remote copies and both current recovery drills are verified." : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "搜索元数据和摘要仍保留在本机。只有在两个远端副本和两端当前恢复演练均验证通过后，才会精简较旧的源文件和本地归档对象。" } } }
     },
+    "Server errors: %lld" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "服务器错误：%lld" } } }
+    },
+    "Snapshot: %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "快照：%@" } } }
+    },
+    "Snapshot persistence failed" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "快照持久化失败" } } }
+    },
+    "Storage unavailable" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "存储不可用" } } }
+    },
     "Sync status unavailable" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "同步状态暂不可用" } } }
+    },
+    "Telemetry unsupported" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "不支持遥测" } } }
+    },
+    "TLS error" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "TLS 错误" } } }
+    },
+    "Unauthorized" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未授权" } } }
+    },
+    "Unknown build" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未知构建" } } }
+    },
+    "Uptime: %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "运行时间：%@" } } }
     },
     "Verify HQ" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "验证 HQ" } } }

@@ -116,6 +116,139 @@ enum ArchiveSyncPresentationState: Equatable {
     }
 }
 
+enum ArchiveRemoteTelemetryPresentation {
+    static func summary(
+        replicaID: String,
+        telemetry: EngramServiceArchiveV2RemoteTelemetry?,
+        error: String?
+    ) -> String {
+        let replicaName = replicaID.uppercased()
+        guard let telemetry else {
+            return [
+                replicaName,
+                String(localized: "Remote status unavailable"),
+                remoteErrorName(error),
+            ].joined(separator: " · ")
+        }
+
+        let build = telemetry.sourceRevision == "unknown"
+            ? String(localized: "Unknown build")
+            : String(telemetry.sourceRevision.prefix(8))
+        var parts = [
+            replicaName,
+            String(localized: "Online"),
+            formatted("Build: %@", build),
+            formatted("Snapshot: %@", localizedTimestamp(telemetry.snapshotAt)),
+            formatted("Uptime: %@", localizedUptime(telemetry.uptimeSeconds)),
+            diskSummary(available: telemetry.diskAvailableBytes, total: telemetry.diskTotalBytes),
+            telemetry.lastArchiveMutationAt.map {
+                formatted("Last write: %@", localizedTimestamp($0))
+            } ?? String(localized: "Last write: none"),
+            formatted("Requests: %lld", telemetry.requestCount),
+            formatted("Client errors: %lld", telemetry.clientErrorCount),
+            formatted("Server errors: %lld", telemetry.serverErrorCount),
+            telemetry.recentErrors.last.map {
+                formatted("Latest error: %@", errorCategoryName($0.category))
+            } ?? String(localized: "Latest error: none"),
+        ]
+        if telemetry.persistenceError != nil {
+            parts.append(
+                formatted("Persistence: %@", String(localized: "Snapshot persistence failed"))
+            )
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    static func remoteErrorName(_ symbol: String?) -> String {
+        switch symbol {
+        case "transport_network":
+            String(localized: "Network error")
+        case "transport_timeout":
+            String(localized: "Request timed out")
+        case "transport_tls":
+            String(localized: "TLS error")
+        case "transport_cancelled":
+            String(localized: "Request cancelled")
+        case "remote_telemetry_unavailable":
+            String(localized: "Remote telemetry unavailable")
+        case "telemetry_unsupported":
+            String(localized: "Telemetry unsupported")
+        case "final_url_mismatch", "invalid_canonical_response", "invalid_request",
+             "not_http_response", "redirect_rejected", "response_too_large",
+             "unexpected_status":
+            String(localized: "Invalid remote response")
+        default:
+            String(localized: "Other remote error")
+        }
+    }
+
+    static func errorCategoryName(_ category: String) -> String {
+        switch category {
+        case "unauthorized": String(localized: "Unauthorized")
+        case "malformed_request": String(localized: "Malformed request")
+        case "not_found": String(localized: "Not found")
+        case "conflict": String(localized: "Conflict")
+        case "payload_too_large": String(localized: "Payload too large")
+        case "invalid_content": String(localized: "Invalid content")
+        case "storage_unavailable": String(localized: "Storage unavailable")
+        case "internal_error": String(localized: "Internal server error")
+        default: String(localized: "Other remote error")
+        }
+    }
+
+    private static func diskSummary(available: Int64?, total: Int64?) -> String {
+        guard let available else { return String(localized: "Disk free: unavailable") }
+        let availableText = ByteCountFormatter.string(fromByteCount: available, countStyle: .binary)
+        guard let total else { return formatted("Disk free: %@", availableText) }
+        return formatted(
+            "Disk free: %@ of %@",
+            availableText,
+            ByteCountFormatter.string(fromByteCount: total, countStyle: .binary)
+        )
+    }
+
+    private static func localizedUptime(_ seconds: Double) -> String {
+        let minutes = Int64(seconds / 60)
+        let days = minutes / (24 * 60)
+        let hours = (minutes / 60) % 24
+        if days > 0 {
+            return String.localizedStringWithFormat(
+                String(localized: "%lld d, %lld hr"),
+                days,
+                hours
+            )
+        }
+        let remainingMinutes = minutes % 60
+        if hours > 0 {
+            return String.localizedStringWithFormat(
+                String(localized: "%lld hr, %lld min"),
+                hours,
+                remainingMinutes
+            )
+        }
+        return formatted("%lld min", minutes)
+    }
+
+    private static func localizedTimestamp(_ value: String) -> String {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = parser.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+        return date?.formatted(date: .numeric, time: .shortened) ?? value
+    }
+
+    private static func formatted(_ key: String.LocalizationValue, _ value: CVarArg) -> String {
+        String.localizedStringWithFormat(String(localized: key), value)
+    }
+
+    private static func formatted(
+        _ key: String.LocalizationValue,
+        _ first: CVarArg,
+        _ second: CVarArg
+    ) -> String {
+        String.localizedStringWithFormat(String(localized: key), first, second)
+    }
+}
+
 struct ArchiveSettingsSection: View {
     @Environment(EngramServiceClient.self) private var serviceClient
 
@@ -272,6 +405,20 @@ struct ArchiveSettingsSection: View {
                                             : "archiveSync_m1Diagnostics"
                                     )
                             }
+                            Text(
+                                ArchiveRemoteTelemetryPresentation.summary(
+                                    replicaID: replica.replicaID,
+                                    telemetry: replica.remoteTelemetry,
+                                    error: replica.remoteTelemetryError
+                                )
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .accessibilityIdentifier(
+                                replica.replicaID == "hq"
+                                    ? "archiveSync_hqRemoteTelemetry"
+                                    : "archiveSync_m1RemoteTelemetry"
+                            )
                         }
                     }
 
