@@ -9,11 +9,12 @@ struct SettingsScreen {
 
     // MARK: - Sections
 
-    static let sectionNames = ["general", "ai", "sources", "advanced", "about"]
+    static let sectionNames = ["general", "ai", "sources", "archive", "advanced", "about"]
 
     var generalSection: XCUIElement { app.group(id: "settings_section_general") }
     var aiSection: XCUIElement { app.group(id: "settings_section_ai") }
     var sourcesSection: XCUIElement { app.group(id: "settings_section_sources") }
+    var archiveSection: XCUIElement { app.group(id: "settings_section_archive") }
     var advancedSection: XCUIElement { app.group(id: "settings_section_advanced") }
     var aboutSection: XCUIElement { app.group(id: "settings_section_about") }
 
