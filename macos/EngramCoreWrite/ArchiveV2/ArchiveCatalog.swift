@@ -730,6 +730,7 @@ public final class ArchiveCatalog: @unchecked Sendable {
                         object_sha256, raw_byte_count, residency, updated_at
                     ) VALUES (?, ?, 'resident', ?)
                     ON CONFLICT(object_sha256) DO UPDATE SET
+                        residency = 'resident',
                         updated_at = excluded.updated_at
                     WHERE archive_local_objects.raw_byte_count = excluded.raw_byte_count
                     """,
@@ -946,6 +947,26 @@ public final class ArchiveCatalog: @unchecked Sendable {
         }
         try Self.validateTimestamp(updatedAt, field: "updatedAt")
         try pool.write { db in
+            guard let identity = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT b.capture_id, b.session_id, c.locator
+                FROM archive_session_bindings AS b
+                JOIN archive_captures AS c ON c.capture_id = b.capture_id
+                WHERE b.manifest_sha256 = ?
+                """,
+                arguments: [manifestSHA256]
+            ) else {
+                throw ArchiveCatalogError.bindingNotFound(manifestSHA256: manifestSHA256)
+            }
+            let boundCaptureID: String = identity["capture_id"]
+            let boundSessionID: String = identity["session_id"]
+            let boundLocator: String = identity["locator"]
+            guard boundCaptureID == captureID,
+                  boundSessionID == sessionID,
+                  boundLocator == locator else {
+                throw ArchiveCatalogError.bindingConflict(manifestSHA256: manifestSHA256)
+            }
             try db.execute(
                 sql: """
                 INSERT INTO archive_reclamation_intents(
@@ -987,6 +1008,7 @@ public final class ArchiveCatalog: @unchecked Sendable {
         manifestSHA256: String,
         from: ArchiveReclamationPhase,
         to: ArchiveReclamationPhase,
+        expectedClaimGeneration: Int,
         quarantinePath: String?,
         updatedAt: String
     ) throws -> Bool {
@@ -996,6 +1018,9 @@ public final class ArchiveCatalog: @unchecked Sendable {
         guard ArchiveV2Hash.isValidSHA256(manifestSHA256) else {
             throw ArchiveCatalogError.invalidSHA256(field: "manifestSHA256")
         }
+        guard expectedClaimGeneration >= 0 else {
+            throw ArchiveCatalogError.invalidClaimGeneration(expectedClaimGeneration)
+        }
         if to == .quarantinePlanned || to == .sourceQuarantined {
             guard let quarantinePath, !quarantinePath.isEmpty else { return false }
         }
@@ -1004,11 +1029,18 @@ public final class ArchiveCatalog: @unchecked Sendable {
             try db.execute(
                 sql: """
                 UPDATE archive_reclamation_intents
-                SET phase = ?, quarantine_path = ?, updated_at = ?,
+                SET phase = ?, quarantine_path = COALESCE(?, quarantine_path), updated_at = ?,
                     claim_generation = claim_generation + 1
-                WHERE manifest_sha256 = ? AND phase = ?
+                WHERE manifest_sha256 = ? AND phase = ? AND claim_generation = ?
                 """,
-                arguments: [to.rawValue, quarantinePath, updatedAt, manifestSHA256, from.rawValue]
+                arguments: [
+                    to.rawValue,
+                    quarantinePath,
+                    updatedAt,
+                    manifestSHA256,
+                    from.rawValue,
+                    expectedClaimGeneration,
+                ]
             )
             return db.changesCount == 1
         }

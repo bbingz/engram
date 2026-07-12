@@ -191,6 +191,9 @@ enum ArchiveCatalogMigrations {
                 REFERENCES archive_session_bindings(manifest_sha256) ON DELETE RESTRICT,
             FOREIGN KEY(capture_id) REFERENCES archive_captures(capture_id) ON DELETE RESTRICT,
             CHECK(
+                quarantine_path IS NULL OR length(quarantine_path) > 0
+            ),
+            CHECK(
                 (phase IN ('quarantinePlanned', 'sourceQuarantined') AND quarantine_path IS NOT NULL)
                 OR (phase NOT IN ('quarantinePlanned', 'sourceQuarantined'))
             )
@@ -220,6 +223,7 @@ enum ArchiveCatalogMigrations {
                         object_sha256, raw_byte_count, residency, updated_at
                     ) VALUES (?, ?, 'resident', ?)
                     ON CONFLICT(object_sha256) DO UPDATE SET
+                        residency = 'resident',
                         updated_at = excluded.updated_at
                     WHERE archive_local_objects.raw_byte_count = excluded.raw_byte_count
                     """,
@@ -237,10 +241,25 @@ enum ArchiveCatalogMigrations {
                     INSERT INTO archive_manifest_objects(
                         manifest_sha256, ordinal, object_sha256, raw_byte_count
                     ) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(manifest_sha256, ordinal) DO NOTHING
+                    ON CONFLICT(manifest_sha256, ordinal) DO UPDATE SET
+                        object_sha256 = excluded.object_sha256,
+                        raw_byte_count = excluded.raw_byte_count
+                    WHERE archive_manifest_objects.object_sha256 = excluded.object_sha256
+                      AND archive_manifest_objects.raw_byte_count = excluded.raw_byte_count
                     """,
                     arguments: [manifestSHA256, chunk.ordinal, chunk.rawSHA256, chunk.rawByteCount]
                 )
+                guard try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*) FROM archive_manifest_objects
+                    WHERE manifest_sha256 = ? AND ordinal = ?
+                      AND object_sha256 = ? AND raw_byte_count = ?
+                    """,
+                    arguments: [manifestSHA256, chunk.ordinal, chunk.rawSHA256, chunk.rawByteCount]
+                ) == 1 else {
+                    throw ArchiveCatalogError.boundManifestMismatch(field: "chunks.reference")
+                }
             }
         }
 

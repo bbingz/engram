@@ -125,6 +125,20 @@ final class ArchiveCatalogTests: XCTestCase {
             try result.0.localObject(objectSHA256: objects[0].objectSHA256)?.residency,
             .evicted
         )
+
+        _ = try addBinding(
+            to: result.0,
+            captureSeed: "second-binding-same-object",
+            sessionID: "session-2"
+        )
+        XCTAssertEqual(
+            try result.0.localObject(objectSHA256: objects[0].objectSHA256)?.residency,
+            .resident
+        )
+        XCTAssertEqual(
+            try result.0.referencingManifests(objectSHA256: objects[0].objectSHA256).count,
+            2
+        )
     }
 
     func testRecoveryLeaseAndReclamationIntentTransitionsAreFailClosed() throws {
@@ -151,11 +165,21 @@ final class ArchiveCatalogTests: XCTestCase {
             updatedAt: "2026-07-11T00:07:00.000Z"
         )
         XCTAssertEqual(intent.phase, .eligible)
+        XCTAssertThrowsError(
+            try result.0.upsertReclamationIntent(
+                manifestSHA256: result.binding.manifestSHA256,
+                captureID: result.binding.captureID,
+                sessionID: result.binding.sessionID,
+                locator: manifest.locator + ".wrong",
+                updatedAt: "2026-07-11T00:07:30.000Z"
+            )
+        )
         XCTAssertTrue(
             try result.0.transitionReclamationIntent(
                 manifestSHA256: intent.manifestSHA256,
                 from: .eligible,
                 to: .quarantinePlanned,
+                expectedClaimGeneration: intent.claimGeneration,
                 quarantinePath: manifest.locator + ".engram-reclaim",
                 updatedAt: "2026-07-11T00:08:00.000Z"
             )
@@ -165,6 +189,7 @@ final class ArchiveCatalogTests: XCTestCase {
                 manifestSHA256: intent.manifestSHA256,
                 from: .eligible,
                 to: .sourceDeleted,
+                expectedClaimGeneration: intent.claimGeneration,
                 quarantinePath: nil,
                 updatedAt: "2026-07-11T00:09:00.000Z"
             )
@@ -172,6 +197,49 @@ final class ArchiveCatalogTests: XCTestCase {
         XCTAssertEqual(
             try result.0.reclamationIntent(manifestSHA256: intent.manifestSHA256)?.phase,
             .quarantinePlanned
+        )
+
+        let planned = try XCTUnwrap(
+            try result.0.reclamationIntent(manifestSHA256: intent.manifestSHA256)
+        )
+        XCTAssertFalse(
+            try result.0.transitionReclamationIntent(
+                manifestSHA256: intent.manifestSHA256,
+                from: .quarantinePlanned,
+                to: .sourceQuarantined,
+                expectedClaimGeneration: intent.claimGeneration,
+                quarantinePath: planned.quarantinePath,
+                updatedAt: "2026-07-11T00:09:30.000Z"
+            ),
+            "stale claim generation must not advance a resumed phase"
+        )
+        XCTAssertTrue(
+            try result.0.transitionReclamationIntent(
+                manifestSHA256: intent.manifestSHA256,
+                from: .quarantinePlanned,
+                to: .sourceQuarantined,
+                expectedClaimGeneration: planned.claimGeneration,
+                quarantinePath: planned.quarantinePath,
+                updatedAt: "2026-07-11T00:10:00.000Z"
+            )
+        )
+        let quarantined = try XCTUnwrap(
+            try result.0.reclamationIntent(manifestSHA256: intent.manifestSHA256)
+        )
+        XCTAssertTrue(
+            try result.0.transitionReclamationIntent(
+                manifestSHA256: intent.manifestSHA256,
+                from: .sourceQuarantined,
+                to: .sourceDeleted,
+                expectedClaimGeneration: quarantined.claimGeneration,
+                quarantinePath: nil,
+                updatedAt: "2026-07-11T00:11:00.000Z"
+            )
+        )
+        XCTAssertEqual(
+            try result.0.reclamationIntent(manifestSHA256: intent.manifestSHA256)?.quarantinePath,
+            planned.quarantinePath,
+            "completed source deletion keeps the quarantine path for audit"
         )
     }
 
@@ -216,6 +284,7 @@ final class ArchiveCatalogTests: XCTestCase {
             1
         )
         XCTAssertEqual(try replicaIDs(manifestSHA256: manifestSHA256), ["hq", "m1"])
+        XCTAssertEqual(try catalog.localObjects(manifestSHA256: manifestSHA256).count, 1)
     }
 
     func testGeneratedMachineIDPersistsAcrossCatalogInstances() throws {
