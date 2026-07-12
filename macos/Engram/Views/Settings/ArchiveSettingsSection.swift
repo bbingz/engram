@@ -100,6 +100,7 @@ struct ArchiveSettingsSection: View {
     private func save() async {
         busy = true
         defer { busy = false }
+        let requestedEnabled = enabled
         do {
             status = try await serviceClient.archiveReclamationUpdateSettings(
                 .init(enabled: enabled, hotWindowDays: hotWindowDays)
@@ -107,7 +108,7 @@ struct ArchiveSettingsSection: View {
             message = enabled ? "Automatic reclamation enabled." : "Automatic reclamation disabled."
         } catch {
             await refresh()
-            message = enabled
+            message = requestedEnabled
                 ? "Error: save failed. Verify both recovery drills are current and the service is available."
                 : "Error: save failed because the service is unavailable."
         }

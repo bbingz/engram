@@ -104,6 +104,7 @@ public enum ArchiveCursorKey: String, CaseIterable, Sendable {
     case policyCycle = "archive_cursor_policy_v1"
     case recoveryDrillHQ = "archive_recovery_drill_cursor_hq_v1"
     case recoveryDrillM1 = "archive_recovery_drill_cursor_m1_v1"
+    case reclamationCycle = "archive_reclamation_cursor_v1"
 }
 
 public struct ArchiveCursorCheckpoint: Equatable, Sendable {
@@ -1216,9 +1217,23 @@ public final class ArchiveCatalog: @unchecked Sendable {
         }
     }
 
-    public func reclamationCandidates(limit: Int) throws -> [ArchiveReclamationCatalogCandidate] {
+    public func reclamationCandidates(
+        limit: Int,
+        after cursor: ArchiveBindingCursor? = nil
+    ) throws -> [ArchiveReclamationCatalogCandidate] {
         guard limit > 0 else { throw ArchiveCatalogError.invalidLimit(limit) }
+        if let cursor {
+            try Self.validateBindingCursor(cursor, fieldPrefix: "reclamationCursor")
+        }
         return try pool.read { db in
+            let cursorSQL = cursor == nil ? "" : """
+                AND (b.bound_at > ? OR (b.bound_at = ? AND b.manifest_sha256 > ?))
+                """
+            var arguments = StatementArguments()
+            if let cursor {
+                arguments += [cursor.boundAt, cursor.boundAt, cursor.manifestSHA256]
+            }
+            arguments += [limit]
             let rows = try Row.fetchAll(db, sql: """
                 SELECT b.*, c.*,
                   EXISTS(
@@ -1233,9 +1248,22 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 FROM archive_session_bindings b
                 JOIN archive_captures c ON c.capture_id = b.capture_id
                 WHERE b.remote_eligibility = 'eligible'
+                  AND (SELECT COUNT(DISTINCT r.replica_id)
+                       FROM archive_replica_receipts r
+                       WHERE r.manifest_sha256 = b.manifest_sha256
+                         AND r.state = 'verified'
+                         AND r.receipt_bytes IS NOT NULL
+                         AND r.receipt_sha256 IS NOT NULL) = 2
+                  AND NOT EXISTS(
+                    SELECT 1 FROM archive_replica_receipts active
+                    WHERE active.manifest_sha256 = b.manifest_sha256
+                      AND active.state IN ('pending', 'uploadingObjects', 'uploadingManifest',
+                                           'requestingReceipt', 'verifyingReceipt')
+                  )
+                \(cursorSQL)
                 ORDER BY b.bound_at ASC, b.manifest_sha256 ASC
                 LIMIT ?
-                """, arguments: [limit])
+                """, arguments: arguments)
             return try rows.map { row in
                 let binding = try Self.binding(from: row)
                 let capture = try Self.capture(from: row)

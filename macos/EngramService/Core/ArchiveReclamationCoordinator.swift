@@ -13,6 +13,11 @@ actor ArchiveReclamationCoordinator {
         let isFavorite: Bool
     }
 
+    private struct CandidateCursorPayload: Codable {
+        let boundAt: String
+        let manifestSHA256: String
+    }
+
     private let settingsURL: URL
     private let environment: [String: String]
     private let catalog: ArchiveCatalog
@@ -149,7 +154,7 @@ actor ArchiveReclamationCoordinator {
                 released += result.releasedBytes
             }
 
-            for (candidate, decision, _) in try evaluateCandidates(now: now) {
+            for (candidate, decision, _) in try evaluateCandidates(now: now, advanceCursor: true) {
                 guard sourceCount < Self.maximumCandidatesPerCycle,
                       case .eligible = decision,
                       candidate.capture.rawByteCount <= sourceBudget else { continue }
@@ -189,7 +194,8 @@ actor ArchiveReclamationCoordinator {
     }
 
     private func evaluateCandidates(
-        now: Date
+        now: Date,
+        advanceCursor: Bool = false
     ) throws -> [(ArchiveReclamationCatalogCandidate, ArchiveReclamationDecision, ProductState)] {
         let settings = loadSettings()
         let leases = recoveryLeases(now: now) ?? [:]
@@ -200,7 +206,23 @@ actor ArchiveReclamationCoordinator {
             nowNs: nowNs,
             recoveryLeaseVerifiedAtNs: leases
         )
-        return try catalog.reclamationCandidates(limit: 1_000).compactMap { candidate in
+        let storedCursor = try reclamationCursor()
+        var page = try catalog.reclamationCandidates(limit: 1_000, after: storedCursor)
+        if page.isEmpty, storedCursor != nil {
+            page = try catalog.reclamationCandidates(limit: 1_000)
+        }
+        if advanceCursor, let last = page.last?.binding {
+            let payload = CandidateCursorPayload(
+                boundAt: last.boundAt,
+                manifestSHA256: last.manifestSHA256
+            )
+            _ = try catalog.storeArchiveCursorCheckpoint(
+                JSONEncoder().encode(payload),
+                for: .reclamationCycle,
+                updatedAt: Self.timestamp(now)
+            )
+        }
+        return try page.compactMap { candidate in
             guard let state = try productState(sessionID: candidate.binding.sessionID) else { return nil }
             let policyCandidate = ArchiveReclamationCandidate(
                 source: candidate.capture.source,
@@ -215,6 +237,17 @@ actor ArchiveReclamationCoordinator {
             )
             return (candidate, ArchiveReclamationPolicy.evaluate(candidate: policyCandidate, context: context), state)
         }
+    }
+
+    private func reclamationCursor() throws -> ArchiveBindingCursor? {
+        guard let checkpoint = try catalog.archiveCursorCheckpoint(for: .reclamationCycle) else {
+            return nil
+        }
+        let payload = try JSONDecoder().decode(CandidateCursorPayload.self, from: checkpoint.payload)
+        return ArchiveBindingCursor(
+            boundAt: payload.boundAt,
+            manifestSHA256: payload.manifestSHA256
+        )
     }
 
     private func productState(sessionID: String) throws -> ProductState? {
