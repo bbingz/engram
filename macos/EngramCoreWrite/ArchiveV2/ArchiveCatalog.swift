@@ -153,6 +153,57 @@ public struct ArchiveBinding: Equatable, Sendable {
     }
 }
 
+public enum ArchiveLocalResidency: String, Equatable, Sendable {
+    case resident
+    case evicted
+}
+
+public struct ArchiveLocalObject: Equatable, Sendable {
+    public let objectSHA256: String
+    public let rawByteCount: Int64
+    public let residency: ArchiveLocalResidency
+    public let updatedAt: String
+}
+
+public struct ArchiveManifestObject: Equatable, Sendable {
+    public let manifestSHA256: String
+    public let ordinal: Int
+    public let objectSHA256: String
+    public let rawByteCount: Int64
+    public let residency: ArchiveLocalResidency
+}
+
+public struct ArchiveRecoveryLease: Equatable, Sendable {
+    public let replicaID: String
+    public let manifestSHA256: String
+    public let verifiedAt: String
+    public let verifiedBytes: Int64
+}
+
+public enum ArchiveReclamationPhase: String, Equatable, Sendable {
+    case eligible
+    case quarantinePlanned
+    case sourceQuarantined
+    case sourceDeleted
+    case localContentEvicted
+    case paused
+}
+
+public struct ArchiveReclamationIntent: Equatable, Sendable {
+    public let manifestSHA256: String
+    public let captureID: String
+    public let sessionID: String
+    public let locator: String
+    public let phase: ArchiveReclamationPhase
+    public let quarantinePath: String?
+    public let attempts: Int
+    public let releasedSourceBytes: Int64
+    public let releasedCASBytes: Int64
+    public let lastError: String?
+    public let claimGeneration: Int
+    public let updatedAt: String
+}
+
 public struct ArchiveBindingCursor: Equatable, Sendable {
     public let boundAt: String
     public let manifestSHA256: String
@@ -672,6 +723,34 @@ public final class ArchiveCatalog: @unchecked Sendable {
                     resolvedBoundAt,
                 ]
             )
+            for chunk in manifest.chunks {
+                try db.execute(
+                    sql: """
+                    INSERT INTO archive_local_objects(
+                        object_sha256, raw_byte_count, residency, updated_at
+                    ) VALUES (?, ?, 'resident', ?)
+                    ON CONFLICT(object_sha256) DO UPDATE SET
+                        updated_at = excluded.updated_at
+                    WHERE archive_local_objects.raw_byte_count = excluded.raw_byte_count
+                    """,
+                    arguments: [chunk.rawSHA256, chunk.rawByteCount, resolvedBoundAt]
+                )
+                guard try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM archive_local_objects WHERE object_sha256 = ? AND raw_byte_count = ?",
+                    arguments: [chunk.rawSHA256, chunk.rawByteCount]
+                ) == 1 else {
+                    throw ArchiveCatalogError.boundManifestMismatch(field: "chunks.rawByteCount")
+                }
+                try db.execute(
+                    sql: """
+                    INSERT INTO archive_manifest_objects(
+                        manifest_sha256, ordinal, object_sha256, raw_byte_count
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    arguments: [manifestSHA256, chunk.ordinal, chunk.rawSHA256, chunk.rawByteCount]
+                )
+            }
             return ArchiveBinding(
                 manifestSHA256: manifestSHA256,
                 sessionID: sessionID,
@@ -698,6 +777,240 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 """,
                 arguments: [sessionID]
             ).map { try Self.binding(from: $0) }
+        }
+    }
+
+    public func localObjects(manifestSHA256: String) throws -> [ArchiveManifestObject] {
+        guard ArchiveV2Hash.isValidSHA256(manifestSHA256) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "manifestSHA256")
+        }
+        return try pool.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT mo.manifest_sha256, mo.ordinal, mo.object_sha256,
+                       mo.raw_byte_count, lo.residency
+                FROM archive_manifest_objects AS mo
+                JOIN archive_local_objects AS lo
+                  ON lo.object_sha256 = mo.object_sha256
+                WHERE mo.manifest_sha256 = ?
+                ORDER BY mo.ordinal
+                """,
+                arguments: [manifestSHA256]
+            ).map { row in
+                ArchiveManifestObject(
+                    manifestSHA256: row["manifest_sha256"],
+                    ordinal: row["ordinal"],
+                    objectSHA256: row["object_sha256"],
+                    rawByteCount: row["raw_byte_count"],
+                    residency: try Self.localResidency(row["residency"])
+                )
+            }
+        }
+    }
+
+    public func localObject(objectSHA256: String) throws -> ArchiveLocalObject? {
+        guard ArchiveV2Hash.isValidSHA256(objectSHA256) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "objectSHA256")
+        }
+        return try pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM archive_local_objects WHERE object_sha256 = ?",
+                arguments: [objectSHA256]
+            ).map { row in
+                ArchiveLocalObject(
+                    objectSHA256: row["object_sha256"],
+                    rawByteCount: row["raw_byte_count"],
+                    residency: try Self.localResidency(row["residency"]),
+                    updatedAt: row["updated_at"]
+                )
+            }
+        }
+    }
+
+    public func referencingManifests(objectSHA256: String) throws -> [String] {
+        guard ArchiveV2Hash.isValidSHA256(objectSHA256) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "objectSHA256")
+        }
+        return try pool.read { db in
+            try String.fetchAll(
+                db,
+                sql: """
+                SELECT manifest_sha256 FROM archive_manifest_objects
+                WHERE object_sha256 = ? ORDER BY manifest_sha256
+                """,
+                arguments: [objectSHA256]
+            )
+        }
+    }
+
+    @discardableResult
+    public func markLocalObjectEvicted(
+        objectSHA256: String,
+        updatedAt: String
+    ) throws -> Bool {
+        guard ArchiveV2Hash.isValidSHA256(objectSHA256) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "objectSHA256")
+        }
+        try Self.validateTimestamp(updatedAt, field: "updatedAt")
+        return try pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_local_objects
+                SET residency = 'evicted', updated_at = ?
+                WHERE object_sha256 = ? AND residency = 'resident'
+                """,
+                arguments: [updatedAt, objectSHA256]
+            )
+            return db.changesCount == 1
+        }
+    }
+
+    @discardableResult
+    public func recordRecoveryLease(
+        replicaID: String,
+        manifestSHA256: String,
+        verifiedAt: String,
+        verifiedBytes: Int64
+    ) throws -> ArchiveRecoveryLease {
+        guard Self.currentReplicaIDs.contains(replicaID) else {
+            throw ArchiveCatalogError.invalidReplicaID
+        }
+        guard ArchiveV2Hash.isValidSHA256(manifestSHA256) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "manifestSHA256")
+        }
+        guard verifiedBytes >= 0 else {
+            throw ArchiveCatalogError.invalidLimit(Int(verifiedBytes))
+        }
+        try Self.validateTimestamp(verifiedAt, field: "verifiedAt")
+        let lease = ArchiveRecoveryLease(
+            replicaID: replicaID,
+            manifestSHA256: manifestSHA256,
+            verifiedAt: verifiedAt,
+            verifiedBytes: verifiedBytes
+        )
+        try pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO archive_recovery_leases(
+                    replica_id, manifest_sha256, verified_at, verified_bytes, result, error
+                ) VALUES (?, ?, ?, ?, 'verified', NULL)
+                ON CONFLICT(replica_id) DO UPDATE SET
+                    manifest_sha256 = excluded.manifest_sha256,
+                    verified_at = excluded.verified_at,
+                    verified_bytes = excluded.verified_bytes,
+                    result = 'verified', error = NULL
+                """,
+                arguments: [replicaID, manifestSHA256, verifiedAt, verifiedBytes]
+            )
+        }
+        return lease
+    }
+
+    public func recoveryLease(replicaID: String) throws -> ArchiveRecoveryLease? {
+        guard Self.currentReplicaIDs.contains(replicaID) else {
+            throw ArchiveCatalogError.invalidReplicaID
+        }
+        return try pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM archive_recovery_leases WHERE replica_id = ?",
+                arguments: [replicaID]
+            ).map { row in
+                ArchiveRecoveryLease(
+                    replicaID: row["replica_id"],
+                    manifestSHA256: row["manifest_sha256"],
+                    verifiedAt: row["verified_at"],
+                    verifiedBytes: row["verified_bytes"]
+                )
+            }
+        }
+    }
+
+    public func upsertReclamationIntent(
+        manifestSHA256: String,
+        captureID: String,
+        sessionID: String,
+        locator: String,
+        updatedAt: String
+    ) throws -> ArchiveReclamationIntent {
+        guard ArchiveV2Hash.isValidSHA256(manifestSHA256) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "manifestSHA256")
+        }
+        guard ArchiveV2Hash.isValidSHA256(captureID) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "captureID")
+        }
+        guard !sessionID.isEmpty, !locator.isEmpty else {
+            throw ArchiveCatalogError.boundManifestMismatch(field: "reclamationIdentity")
+        }
+        try Self.validateTimestamp(updatedAt, field: "updatedAt")
+        try pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO archive_reclamation_intents(
+                    manifest_sha256, capture_id, session_id, locator, phase,
+                    quarantine_path, attempts, released_source_bytes,
+                    released_cas_bytes, last_error, claim_generation, updated_at
+                ) VALUES (?, ?, ?, ?, 'eligible', NULL, 0, 0, 0, NULL, 0, ?)
+                ON CONFLICT(manifest_sha256) DO NOTHING
+                """,
+                arguments: [manifestSHA256, captureID, sessionID, locator, updatedAt]
+            )
+        }
+        guard let intent = try reclamationIntent(manifestSHA256: manifestSHA256),
+              intent.captureID == captureID,
+              intent.sessionID == sessionID,
+              intent.locator == locator else {
+            throw ArchiveCatalogError.bindingConflict(manifestSHA256: manifestSHA256)
+        }
+        return intent
+    }
+
+    public func reclamationIntent(
+        manifestSHA256: String
+    ) throws -> ArchiveReclamationIntent? {
+        guard ArchiveV2Hash.isValidSHA256(manifestSHA256) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "manifestSHA256")
+        }
+        return try pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM archive_reclamation_intents WHERE manifest_sha256 = ?",
+                arguments: [manifestSHA256]
+            ).map { try Self.reclamationIntent(from: $0) }
+        }
+    }
+
+    @discardableResult
+    public func transitionReclamationIntent(
+        manifestSHA256: String,
+        from: ArchiveReclamationPhase,
+        to: ArchiveReclamationPhase,
+        quarantinePath: String?,
+        updatedAt: String
+    ) throws -> Bool {
+        guard Self.isAllowedReclamationTransition(from: from, to: to) else {
+            return false
+        }
+        guard ArchiveV2Hash.isValidSHA256(manifestSHA256) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "manifestSHA256")
+        }
+        if to == .quarantinePlanned || to == .sourceQuarantined {
+            guard let quarantinePath, !quarantinePath.isEmpty else { return false }
+        }
+        try Self.validateTimestamp(updatedAt, field: "updatedAt")
+        return try pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_reclamation_intents
+                SET phase = ?, quarantine_path = ?, updated_at = ?,
+                    claim_generation = claim_generation + 1
+                WHERE manifest_sha256 = ? AND phase = ?
+                """,
+                arguments: [to.rawValue, quarantinePath, updatedAt, manifestSHA256, from.rawValue]
+            )
+            return db.changesCount == 1
         }
     }
 
@@ -2213,6 +2526,54 @@ public final class ArchiveCatalog: @unchecked Sendable {
             throw ArchiveCatalogError.bindingConflict(
                 manifestSHA256: claim.manifestSHA256
             )
+        }
+    }
+
+    private static func localResidency(_ raw: String) throws -> ArchiveLocalResidency {
+        guard let value = ArchiveLocalResidency(rawValue: raw) else {
+            throw ArchiveCatalogError.boundManifestMismatch(field: "localObject.residency")
+        }
+        return value
+    }
+
+    private static func reclamationIntent(from row: Row) throws -> ArchiveReclamationIntent {
+        let rawPhase: String = row["phase"]
+        guard let phase = ArchiveReclamationPhase(rawValue: rawPhase) else {
+            throw ArchiveCatalogError.boundManifestMismatch(field: "reclamation.phase")
+        }
+        return ArchiveReclamationIntent(
+            manifestSHA256: row["manifest_sha256"],
+            captureID: row["capture_id"],
+            sessionID: row["session_id"],
+            locator: row["locator"],
+            phase: phase,
+            quarantinePath: row["quarantine_path"],
+            attempts: row["attempts"],
+            releasedSourceBytes: row["released_source_bytes"],
+            releasedCASBytes: row["released_cas_bytes"],
+            lastError: row["last_error"],
+            claimGeneration: row["claim_generation"],
+            updatedAt: row["updated_at"]
+        )
+    }
+
+    private static func isAllowedReclamationTransition(
+        from: ArchiveReclamationPhase,
+        to: ArchiveReclamationPhase
+    ) -> Bool {
+        switch (from, to) {
+        case (.eligible, .quarantinePlanned),
+             (.quarantinePlanned, .sourceQuarantined),
+             (.sourceQuarantined, .sourceDeleted),
+             (.sourceDeleted, .localContentEvicted),
+             (.eligible, .paused),
+             (.quarantinePlanned, .paused),
+             (.sourceQuarantined, .paused),
+             (.sourceDeleted, .paused),
+             (.paused, .eligible):
+            true
+        default:
+            false
         }
     }
 

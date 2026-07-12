@@ -40,7 +40,7 @@ final class ArchiveCatalogTests: XCTestCase {
         }
     }
 
-    func testMigrationCreatesOnlyFourArchiveTablesWithFullDurability() throws {
+    func testMigrationCreatesReclamationTablesWithFullDurability() throws {
         let catalog = try ArchiveCatalog(root: root, machineID: machineID)
         try catalog.migrate()
         try catalog.migrate()
@@ -81,7 +81,11 @@ final class ArchiveCatalogTests: XCTestCase {
 
         XCTAssertEqual(values.tables, [
             "archive_captures",
+            "archive_local_objects",
+            "archive_manifest_objects",
             "archive_metadata",
+            "archive_reclamation_intents",
+            "archive_recovery_leases",
             "archive_replica_receipts",
             "archive_session_bindings",
         ])
@@ -91,10 +95,84 @@ final class ArchiveCatalogTests: XCTestCase {
         XCTAssertTrue(values.bindingColumns.contains("project_root_snapshot"))
         XCTAssertTrue(values.bindingColumns.contains("remote_eligibility"))
         XCTAssertTrue(values.receiptColumns.contains("claim_generation"))
-        XCTAssertEqual(values.schemaVersion, "2")
+        XCTAssertEqual(values.schemaVersion, "3")
         XCTAssertEqual(try catalog.machineID(), machineID)
         XCTAssertEqual(try permissions(root.path), 0o700)
         XCTAssertEqual(try permissions(root.appendingPathComponent("archive.sqlite").path), 0o600)
+    }
+
+    func testBindingRecordsObjectGraphAndResidencyTransactionally() throws {
+        let result = try boundCatalog()
+        let objects = try result.0.localObjects(
+            manifestSHA256: result.binding.manifestSHA256
+        )
+
+        XCTAssertEqual(objects.count, 1)
+        XCTAssertEqual(objects[0].ordinal, 0)
+        XCTAssertEqual(objects[0].residency, .resident)
+        XCTAssertEqual(objects[0].rawByteCount, 5)
+        XCTAssertEqual(
+            try result.0.referencingManifests(objectSHA256: objects[0].objectSHA256),
+            [result.binding.manifestSHA256]
+        )
+        XCTAssertTrue(
+            try result.0.markLocalObjectEvicted(
+                objectSHA256: objects[0].objectSHA256,
+                updatedAt: "2026-07-11T00:06:00.000Z"
+            )
+        )
+        XCTAssertEqual(
+            try result.0.localObject(objectSHA256: objects[0].objectSHA256)?.residency,
+            .evicted
+        )
+    }
+
+    func testRecoveryLeaseAndReclamationIntentTransitionsAreFailClosed() throws {
+        let result = try boundCatalog()
+        let manifest = try ArchiveCanonicalJSON.decode(
+            ArchiveSourceManifest.self,
+            from: result.manifestBytes
+        )
+
+        let lease = try result.0.recordRecoveryLease(
+            replicaID: "hq",
+            manifestSHA256: result.binding.manifestSHA256,
+            verifiedAt: "2026-07-11T00:06:00.000Z",
+            verifiedBytes: 5
+        )
+        XCTAssertEqual(lease.replicaID, "hq")
+        XCTAssertEqual(try result.0.recoveryLease(replicaID: "hq"), lease)
+
+        let intent = try result.0.upsertReclamationIntent(
+            manifestSHA256: result.binding.manifestSHA256,
+            captureID: result.binding.captureID,
+            sessionID: result.binding.sessionID,
+            locator: manifest.locator,
+            updatedAt: "2026-07-11T00:07:00.000Z"
+        )
+        XCTAssertEqual(intent.phase, .eligible)
+        XCTAssertTrue(
+            try result.0.transitionReclamationIntent(
+                manifestSHA256: intent.manifestSHA256,
+                from: .eligible,
+                to: .quarantinePlanned,
+                quarantinePath: manifest.locator + ".engram-reclaim",
+                updatedAt: "2026-07-11T00:08:00.000Z"
+            )
+        )
+        XCTAssertFalse(
+            try result.0.transitionReclamationIntent(
+                manifestSHA256: intent.manifestSHA256,
+                from: .eligible,
+                to: .sourceDeleted,
+                quarantinePath: nil,
+                updatedAt: "2026-07-11T00:09:00.000Z"
+            )
+        )
+        XCTAssertEqual(
+            try result.0.reclamationIntent(manifestSHA256: intent.manifestSHA256)?.phase,
+            .quarantinePlanned
+        )
     }
 
     func testVersionOneMigrationAddsPolicyAndLeaseColumnsIdempotentlyAndFailsClosed() throws {

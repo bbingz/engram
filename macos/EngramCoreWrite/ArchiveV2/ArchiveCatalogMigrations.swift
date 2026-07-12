@@ -1,7 +1,9 @@
+import Foundation
+import EngramCoreRead
 import GRDB
 
 enum ArchiveCatalogMigrations {
-    static let currentSchemaVersion = "2"
+    static let currentSchemaVersion = "3"
 
     static func migrate(_ db: Database, machineID: String) throws {
         try db.execute(sql: """
@@ -129,6 +131,118 @@ enum ArchiveCatalogMigrations {
         CREATE INDEX IF NOT EXISTS archive_replica_receipts_pending
         ON archive_replica_receipts(state, next_retry_at, updated_at)
         """)
+
+        try db.execute(sql: """
+        CREATE TABLE IF NOT EXISTS archive_local_objects (
+            object_sha256 TEXT PRIMARY KEY NOT NULL,
+            raw_byte_count INTEGER NOT NULL CHECK(raw_byte_count > 0),
+            residency TEXT NOT NULL CHECK(residency IN ('resident', 'evicted')),
+            updated_at TEXT NOT NULL
+        ) WITHOUT ROWID
+        """)
+        try db.execute(sql: """
+        CREATE TABLE IF NOT EXISTS archive_manifest_objects (
+            manifest_sha256 TEXT NOT NULL,
+            ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+            object_sha256 TEXT NOT NULL,
+            raw_byte_count INTEGER NOT NULL CHECK(raw_byte_count > 0),
+            PRIMARY KEY(manifest_sha256, ordinal),
+            FOREIGN KEY(manifest_sha256)
+                REFERENCES archive_session_bindings(manifest_sha256) ON DELETE RESTRICT,
+            FOREIGN KEY(object_sha256)
+                REFERENCES archive_local_objects(object_sha256) ON DELETE RESTRICT
+        ) WITHOUT ROWID
+        """)
+        try db.execute(sql: """
+        CREATE INDEX IF NOT EXISTS archive_manifest_objects_by_object
+        ON archive_manifest_objects(object_sha256, manifest_sha256)
+        """)
+        try db.execute(sql: """
+        CREATE TABLE IF NOT EXISTS archive_recovery_leases (
+            replica_id TEXT PRIMARY KEY NOT NULL CHECK(replica_id IN ('hq', 'm1')),
+            manifest_sha256 TEXT NOT NULL,
+            verified_at TEXT NOT NULL,
+            verified_bytes INTEGER NOT NULL CHECK(verified_bytes >= 0),
+            result TEXT NOT NULL CHECK(result = 'verified'),
+            error TEXT,
+            CHECK(error IS NULL),
+            FOREIGN KEY(manifest_sha256)
+                REFERENCES archive_session_bindings(manifest_sha256) ON DELETE RESTRICT
+        ) WITHOUT ROWID
+        """)
+        try db.execute(sql: """
+        CREATE TABLE IF NOT EXISTS archive_reclamation_intents (
+            manifest_sha256 TEXT PRIMARY KEY NOT NULL,
+            capture_id TEXT NOT NULL,
+            session_id TEXT NOT NULL CHECK(length(session_id) > 0),
+            locator TEXT NOT NULL CHECK(length(locator) > 0),
+            phase TEXT NOT NULL CHECK(phase IN (
+                'eligible', 'quarantinePlanned', 'sourceQuarantined',
+                'sourceDeleted', 'localContentEvicted', 'paused'
+            )),
+            quarantine_path TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+            released_source_bytes INTEGER NOT NULL DEFAULT 0 CHECK(released_source_bytes >= 0),
+            released_cas_bytes INTEGER NOT NULL DEFAULT 0 CHECK(released_cas_bytes >= 0),
+            last_error TEXT,
+            claim_generation INTEGER NOT NULL DEFAULT 0 CHECK(claim_generation >= 0),
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(manifest_sha256)
+                REFERENCES archive_session_bindings(manifest_sha256) ON DELETE RESTRICT,
+            FOREIGN KEY(capture_id) REFERENCES archive_captures(capture_id) ON DELETE RESTRICT,
+            CHECK(
+                (phase IN ('quarantinePlanned', 'sourceQuarantined') AND quarantine_path IS NOT NULL)
+                OR (phase NOT IN ('quarantinePlanned', 'sourceQuarantined'))
+            )
+        ) WITHOUT ROWID
+        """)
+        try db.execute(sql: """
+        CREATE INDEX IF NOT EXISTS archive_reclamation_intents_by_phase
+        ON archive_reclamation_intents(phase, updated_at, manifest_sha256)
+        """)
+
+        let bindings = try Row.fetchAll(
+            db,
+            sql: "SELECT manifest_sha256, bound_manifest_bytes, bound_at FROM archive_session_bindings"
+        )
+        for row in bindings {
+            let manifestSHA256: String = row["manifest_sha256"]
+            let bytes: Data = row["bound_manifest_bytes"]
+            let updatedAt: String = row["bound_at"]
+            let manifest = try ArchiveCanonicalJSON.decode(ArchiveSourceManifest.self, from: bytes)
+            guard ArchiveV2Hash.sha256(bytes) == manifestSHA256 else {
+                throw ArchiveCatalogError.bindingConflict(manifestSHA256: manifestSHA256)
+            }
+            for chunk in manifest.chunks {
+                try db.execute(
+                    sql: """
+                    INSERT INTO archive_local_objects(
+                        object_sha256, raw_byte_count, residency, updated_at
+                    ) VALUES (?, ?, 'resident', ?)
+                    ON CONFLICT(object_sha256) DO UPDATE SET
+                        updated_at = excluded.updated_at
+                    WHERE archive_local_objects.raw_byte_count = excluded.raw_byte_count
+                    """,
+                    arguments: [chunk.rawSHA256, chunk.rawByteCount, updatedAt]
+                )
+                guard try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM archive_local_objects WHERE object_sha256 = ? AND raw_byte_count = ?",
+                    arguments: [chunk.rawSHA256, chunk.rawByteCount]
+                ) == 1 else {
+                    throw ArchiveCatalogError.boundManifestMismatch(field: "chunks.rawByteCount")
+                }
+                try db.execute(
+                    sql: """
+                    INSERT INTO archive_manifest_objects(
+                        manifest_sha256, ordinal, object_sha256, raw_byte_count
+                    ) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(manifest_sha256, ordinal) DO NOTHING
+                    """,
+                    arguments: [manifestSHA256, chunk.ordinal, chunk.rawSHA256, chunk.rawByteCount]
+                )
+            }
+        }
 
         try db.execute(
             sql: """
