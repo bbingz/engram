@@ -133,8 +133,13 @@ describe('CI workflow hardening', () => {
     const isolatedInvocation =
       'run_xcode_tests EngramRemoteServerCore -derivedDataPath "$RUNNER_TEMP/engram-remote-tests-derived"';
 
-    expect(normalWorkflow).toContain(isolatedInvocation);
+    expect(normalWorkflow).toContain(
+      `ENGRAM_CODE_COVERAGE=NO ${isolatedInvocation}`,
+    );
     expect(releaseWorkflow).toContain(isolatedInvocation);
+    expect(normalWorkflow).toContain(
+      '-enableCodeCoverage "${ENGRAM_CODE_COVERAGE:-YES}"',
+    );
   });
 
   it('runs bundle hygiene against the Debug app built in Swift CI', () => {
