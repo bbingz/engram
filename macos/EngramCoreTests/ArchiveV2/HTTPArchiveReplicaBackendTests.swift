@@ -266,6 +266,26 @@ final class HTTPArchiveReplicaBackendTests: XCTestCase {
         )
     }
 
+    func testRemoteTelemetrySnapshotAllowsOnlyFixedPersistenceErrorSymbols() throws {
+        var allowed = validTelemetryObject
+        allowed["persistenceError"] = "snapshot_write_failed"
+        XCTAssertNoThrow(
+            try ArchiveCanonicalJSON.decode(
+                ArchiveRemoteTelemetrySnapshot.self,
+                from: canonicalJSON(allowed)
+            )
+        )
+
+        var secretShaped = validTelemetryObject
+        secretShaped["persistenceError"] = "secrettoken123"
+        XCTAssertThrowsError(
+            try ArchiveCanonicalJSON.decode(
+                ArchiveRemoteTelemetrySnapshot.self,
+                from: canonicalJSON(secretShaped)
+            )
+        )
+    }
+
     func testRemoteTelemetryEndpointAndErrorRejectUnboundedValues() throws {
         XCTAssertThrowsError(
             try ArchiveRemoteTelemetryEndpoint(

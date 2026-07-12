@@ -193,7 +193,7 @@ public struct ArchiveRemoteTelemetrySnapshot: Codable, Equatable, Sendable {
             throw ArchiveV2ValidationError.invalidValue(field: "lastArchiveMutationAt")
         }
         if let persistenceError,
-           !ArchiveRemoteTelemetryValidation.isSymbol(persistenceError) {
+           !ArchiveRemoteTelemetryValidation.persistenceErrors.contains(persistenceError) {
             throw ArchiveV2ValidationError.invalidValue(field: "persistenceError")
         }
         guard endpoints.count <= Self.maximumEndpoints else {
@@ -276,6 +276,7 @@ private enum ArchiveRemoteTelemetryValidation {
         "object", "manifest", "receipt", "machines", "receipts", "status", "unknown",
     ]
     static let methods: Set<String> = ["GET", "HEAD", "PUT", "DELETE"]
+    static let persistenceErrors: Set<String> = ["snapshot_write_failed"]
     static let errorCategories: Set<String> = [
         "unauthorized",
         "malformed_request",
@@ -292,14 +293,6 @@ private enum ArchiveRemoteTelemetryValidation {
             || (value.utf8.count == 40 && value.utf8.allSatisfy { byte in
                 (48...57).contains(byte) || (97...102).contains(byte)
             })
-    }
-
-    static func isSymbol(_ value: String) -> Bool {
-        !value.isEmpty
-            && value.utf8.count <= 64
-            && value.utf8.allSatisfy { byte in
-                (48...57).contains(byte) || (97...122).contains(byte) || byte == 95
-            }
     }
 
     static func isCanonicalTimestamp(_ value: String) -> Bool {
