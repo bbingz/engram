@@ -142,7 +142,7 @@ actor ArchiveReclamationCoordinator {
             var casCount = 0
             var released: Int64 = 0
             var sourceBudget = Self.maximumSourceBytesPerCycle
-            let claudeProfiles = profileResolver.resolve().profiles
+            let claudeProfiles = resolvedClaudeProfilesForReclamation()
 
             let casSnapshot = try catalog.reclamationIntents(
                 phases: [.sourceDeleted],
@@ -240,7 +240,7 @@ actor ArchiveReclamationCoordinator {
                 updatedAt: Self.timestamp(now)
             )
         }
-        let resolvedClaudeProfiles = claudeProfiles ?? profileResolver.resolve().profiles
+        let resolvedClaudeProfiles = claudeProfiles ?? resolvedClaudeProfilesForReclamation()
         return try page.compactMap { candidate in
             guard let state = try productState(sessionID: candidate.binding.sessionID) else { return nil }
             let policyCandidate = ArchiveReclamationCandidate(
@@ -275,8 +275,14 @@ actor ArchiveReclamationCoordinator {
         return Self.sourceReclamationAllowed(
             locator: locator,
             source: source,
-            claudeProfiles: profileResolver.resolve().profiles
+            claudeProfiles: resolvedClaudeProfilesForReclamation()
         )
+    }
+
+    private func resolvedClaudeProfilesForReclamation() -> [ClaudeCodeProfile] {
+        let resolution = profileResolver.resolve()
+        guard resolution.configurationError == nil else { return [] }
+        return resolution.profiles
     }
 
     private static func sourceReclamationAllowed(

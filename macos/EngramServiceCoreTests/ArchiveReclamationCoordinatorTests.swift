@@ -283,6 +283,149 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         }
     }
 
+    func testInvalidClaudeProfileConfigurationFailsClosedForSourceOnly() async throws {
+        let defaultRoot = try makeProjectsRoot(
+            parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
+        )
+        let privateRoot = try makeProjectsRoot(
+            parent: homeDirectory.appendingPathComponent(".claude-private", isDirectory: true)
+        )
+        let codexRoot = try makeProjectsRoot(
+            parent: root.appendingPathComponent("codex-sessions", isDirectory: true)
+        )
+        try writeSettings(
+            autoDiscover: false,
+            customProjectsRoots: [privateRoot.path]
+        )
+
+        let resolver = ClaudeCodeProfileResolver(
+            homeDirectory: homeDirectory,
+            settingsURL: settingsURL
+        )
+        let validResolution = resolver.resolve()
+        XCTAssertNil(validResolution.configurationError)
+        let validPrivateProfile = try XCTUnwrap(
+            validResolution.profiles.first { $0.projectsRoot == privateRoot.path }
+        )
+        XCTAssertEqual(validPrivateProfile.origin, .custom)
+        XCTAssertFalse(validPrivateProfile.sourceReclamationAllowed)
+        let validCoordinator = try makeCoordinator()
+        let validPrivateAllowed = await validCoordinator.sourceReclamationAllowed(
+            locator: privateRoot.appendingPathComponent("project/valid.jsonl").path,
+            source: "claude-code"
+        )
+        XCTAssertFalse(validPrivateAllowed)
+
+        let defaultFixture = try addEligibleBinding(
+            seed: "invalid-default",
+            source: "claude-code",
+            projectsRoot: defaultRoot
+        )
+        let privateFixture = try addEligibleBinding(
+            seed: "invalid-private",
+            source: "claude-code",
+            projectsRoot: privateRoot
+        )
+        let legacyFixture = try addEligibleBinding(
+            seed: "invalid-legacy",
+            source: "claude-code",
+            projectsRoot: privateRoot
+        )
+        let codexFixture = try addEligibleBinding(
+            seed: "invalid-codex",
+            source: "codex",
+            projectsRoot: codexRoot
+        )
+        let casFixture = try addEligibleBinding(
+            seed: "invalid-cas",
+            source: "claude-code",
+            projectsRoot: privateRoot
+        )
+        let allFixtures = [
+            defaultFixture,
+            privateFixture,
+            legacyFixture,
+            codexFixture,
+            casFixture,
+        ]
+        try await replicate(allFixtures)
+        try recordCurrentRecoveryLeases(manifestSHA256: defaultFixture.binding.manifestSHA256)
+
+        let legacyIntent = try catalog.upsertReclamationIntent(
+            manifestSHA256: legacyFixture.binding.manifestSHA256,
+            captureID: legacyFixture.capture.captureID,
+            sessionID: legacyFixture.binding.sessionID,
+            locator: legacyFixture.capture.locator,
+            updatedAt: "2026-07-12T23:59:00.000Z"
+        )
+        XCTAssertTrue(try catalog.transitionReclamationIntent(
+            manifestSHA256: legacyIntent.manifestSHA256,
+            from: .eligible,
+            to: .quarantinePlanned,
+            expectedClaimGeneration: legacyIntent.claimGeneration,
+            quarantinePath: legacyFixture.sourceURL.deletingLastPathComponent()
+                .appendingPathComponent(".engram-reclaim-invalid-profile-test")
+                .path,
+            updatedAt: nowString
+        ))
+        try markSourceDeleted(casFixture)
+        try writeInvalidProfileSettings()
+
+        let invalidResolution = resolver.resolve()
+        XCTAssertNotNil(invalidResolution.configurationError)
+        let coordinator = try makeCoordinator()
+        let defaultAllowed = await coordinator.sourceReclamationAllowed(
+            locator: defaultFixture.capture.locator,
+            source: defaultFixture.capture.source
+        )
+        let privateAllowed = await coordinator.sourceReclamationAllowed(
+            locator: privateFixture.capture.locator,
+            source: privateFixture.capture.source
+        )
+        let codexAllowed = await coordinator.sourceReclamationAllowed(
+            locator: codexFixture.capture.locator,
+            source: codexFixture.capture.source
+        )
+        XCTAssertFalse(defaultAllowed)
+        XCTAssertFalse(privateAllowed)
+        XCTAssertTrue(codexAllowed)
+
+        let preview = await coordinator.preview(now: now)
+        XCTAssertEqual(preview.eligibleCount, 1)
+        XCTAssertEqual(preview.blockedCounts["unsupported_source"], 4)
+
+        let run = await coordinator.runNow(now: now)
+
+        XCTAssertTrue(run.accepted)
+        XCTAssertEqual(run.sourceFilesReclaimed, 1)
+        XCTAssertEqual(run.casObjectsEvicted, 1)
+        for fixture in [defaultFixture, privateFixture, legacyFixture, casFixture] {
+            XCTAssertEqual(try Data(contentsOf: fixture.sourceURL), fixture.bytes)
+        }
+        for fixture in [defaultFixture, privateFixture] {
+            XCTAssertNil(try catalog.reclamationIntent(
+                manifestSHA256: fixture.binding.manifestSHA256
+            ))
+        }
+        XCTAssertEqual(
+            try catalog.reclamationIntent(manifestSHA256: legacyFixture.binding.manifestSHA256)?.phase,
+            .quarantinePlanned
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: codexFixture.sourceURL.path))
+        XCTAssertEqual(
+            try catalog.reclamationIntent(manifestSHA256: codexFixture.binding.manifestSHA256)?.phase,
+            .sourceDeleted
+        )
+        XCTAssertEqual(
+            try catalog.localObject(objectSHA256: casFixture.objectSHA256)?.residency,
+            .evicted
+        )
+        XCTAssertEqual(
+            try catalog.reclamationIntent(manifestSHA256: casFixture.binding.manifestSHA256)?.phase,
+            .localContentEvicted
+        )
+    }
+
     private struct BindingFixture {
         let sourceURL: URL
         let bytes: Data
@@ -311,7 +454,10 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         return projectsRoot
     }
 
-    private func writeSettings(customProjectsRoots: [String]) throws {
+    private func writeSettings(
+        autoDiscover: Bool = true,
+        customProjectsRoots: [String]
+    ) throws {
         try FileManager.default.createDirectory(
             at: settingsURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -320,9 +466,20 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
             withJSONObject: [
                 "archiveReclamation": ["enabled": true, "hotWindowDays": 30],
                 "claudeCodeProfiles": [
-                    "autoDiscover": true,
+                    "autoDiscover": autoDiscover,
                     "customProjectsRoots": customProjectsRoots,
                 ],
+            ],
+            options: [.sortedKeys]
+        )
+        try data.write(to: settingsURL, options: .atomic)
+    }
+
+    private func writeInvalidProfileSettings() throws {
+        let data = try JSONSerialization.data(
+            withJSONObject: [
+                "archiveReclamation": ["enabled": true, "hotWindowDays": 30],
+                "claudeCodeProfiles": ["autoDiscover": false],
             ],
             options: [.sortedKeys]
         )
