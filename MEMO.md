@@ -2,6 +2,13 @@
 
 ## Changelog Memo
 
+### 2026-07-14
+
+- [清理] 刷新 `origin`（含 prune）后，删除 3 个干净且 HEAD 已被 `origin/main`（`3b0b5b1d`）包含的本地 worktree 及对应分支：`.worktrees/archive-drain-fairness` / `codex/archive-drain-fairness`、`.worktrees/archive-v2-backlog-drain` / `codex/archive-v2-backlog-drain`、`.worktrees/claude-profile-registry` / `codex/claude-profile-registry`。
+- [归档与清理] 进一步用 `git cherry -v origin/main <branch>` 确认 `claude-profile-empty-capture` 的 3 个、`claude-profile-reclamation` 的 2 个独有 SHA 均已有等价补丁在 `main`；删除两项 worktree/分支。已合入的 `archive-review-gpt56` 的 5 个未跟踪 handoff 文档迁入 `docs/archive/reviews/2026-07-11-archive-review-gpt56/`，仅 `round2-clusters.md` 的 1 个行尾空格为通过格式检查而规范化，再删除 worktree/分支。
+- [验证] 对每个 worktree 核验 `git status --porcelain`、`git merge-base --is-ancestor HEAD origin/main`、`git rev-list --left-right --count origin/main...HEAD` 与（非祖先分支）`git cherry -v`；归档包 SHA-256 已复核。`git worktree prune --verbose` 后仅剩 `main`，当前仅本轮耐久文档有修改。
+- [保留] `git fsck --full` 未报告对象损坏，但列出历史与已删分支留下的 dangling objects；未运行破坏性的 `git gc --prune=now`，以保留可恢复历史。工作树 clean 不等于立即物理回收 Git 对象。
+
 ### 2026-07-06
 
 - [完成] Feature-cut Top 10 已按 `docs/followups.md` 的自主执行协议完成：PR #103-#112 连续合并，ITEM 0-10 均落地；后续验收确认 keep-list、孤儿清扫、墓碑测试、默认关闭归档来源等关键约束均通过。

@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-11): 95 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-14): 96 dated entries; regenerate after adding sections -->
+- [2026-07-14 - Merged-worktree cleanup and durable-state synchronization (Codex)](#2026-07-14---merged-worktree-cleanup-and-durable-state-synchronization-codex)
 - [2026-07-11 - Wave 8 Round 4 engineering-zero durable closeout (Grok)](#2026-07-11---wave-8-round-4-engineering-zero-durable-closeout-grok)
 - [2026-07-07 - Orca comparative study: verified adoption backlog + 5 real bugs found (Fable/Claude)](#2026-07-07---orca-comparative-study-verified-adoption-backlog--5-real-bugs-found-fableclaude)
 - [2026-07-06 - Feature-cut Top 10 completed + low residual cleanup merged (Codex)](#2026-07-06---feature-cut-top-10-completed--low-residual-cleanup-merged-codex)
@@ -99,6 +100,35 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-14 - Merged-worktree cleanup and durable-state synchronization (Codex)
+
+- Scope: refreshed `origin` with prune, reconciled every registered worktree
+  against `origin/main` at `3b0b5b1d`, then updated `MEMO.md`,
+  `CHANGELOG.md`, and this local memory record.
+- Removed only clean, merged worktrees and their local branches:
+  `.worktrees/archive-drain-fairness` / `codex/archive-drain-fairness`,
+  `.worktrees/archive-v2-backlog-drain` / `codex/archive-v2-backlog-drain`, and
+  `.worktrees/claude-profile-registry` / `codex/claude-profile-registry`.
+- Reconciled the remaining non-ancestor branches with `git cherry -v
+  origin/main`: all 3 graph-unique commits on
+  `codex/claude-profile-empty-capture` and all 2 on
+  `codex/claude-profile-reclamation` were already present as equivalent patches
+  in `main`, so both worktrees and local branches were removed without dropping
+  code. The merged `bbingz/archive-review-gpt56` worktree's five untracked
+  handoff documents were moved to
+  `docs/archive/reviews/2026-07-11-archive-review-gpt56/` before its worktree
+  and branch were removed; one trailing whitespace character in
+  `round2-clusters.md` was normalized to satisfy `git diff --check`.
+- Evidence: for each worktree, checked `git status --porcelain`,
+  `git merge-base --is-ancestor HEAD origin/main`, and
+  `git rev-list --left-right --count origin/main...HEAD`; used `git cherry -v`
+  for the two non-ancestor branches. Source and archived document hashes were
+  read back, then `git worktree prune --verbose` confirmed only `main` remains.
+- Final integrity check: `git fsck --full` reported no corruption but did list
+  dangling objects from historical and deleted refs. Deliberately did not run
+  `git gc --prune=now`; these objects are retained as a recoverability buffer
+  and do not make the worktree dirty.
 
 ## 2026-07-11 - Wave 8 Round 4 engineering-zero durable closeout (Grok)
 

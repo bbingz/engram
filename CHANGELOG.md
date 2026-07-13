@@ -7,6 +7,28 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Maintenance: prune merged local worktrees and synchronize durable state (2026-07-14)
+
+- Refreshed and pruned `origin`, then removed three clean worktrees whose HEAD
+  commits are contained by `origin/main` (`3b0b5b1d`), together with their
+  local branches: `codex/archive-drain-fairness`,
+  `codex/archive-v2-backlog-drain`, and `codex/claude-profile-registry`.
+- Removed `codex/claude-profile-empty-capture` and
+  `codex/claude-profile-reclamation` after `git cherry -v origin/main` proved
+  their three and two graph-unique commits, respectively, were already present
+  as equivalent patches in `main`.
+- Rescued the five untracked `review-handoff/` documents from the already
+  merged `bbingz/archive-review-gpt56` worktree into
+  `docs/archive/reviews/2026-07-11-archive-review-gpt56/`; only one trailing
+  whitespace character in `round2-clusters.md` was normalized to pass the
+  repository format check before removing that worktree and its branch.
+- Verification: each candidate was checked for a clean status, containment in
+  `origin/main`, and `origin/main...HEAD` unique-commit counts before removal;
+  non-ancestor candidates also passed patch-equivalence checks. `git worktree
+  prune --verbose` and final worktree/status readback leave only `main`.
+- `git fsck --full` found no object corruption. Dangling objects were retained
+  as Git recovery history; no destructive `git gc --prune=now` was run.
+
 ### Changed: CI migrated to self-hosted runners on macmini-m1 (2026-07-12)
 
 - Routed GitHub Actions off GitHub-hosted `macos-15` / `ubuntu-latest` to
