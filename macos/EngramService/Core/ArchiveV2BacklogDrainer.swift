@@ -211,6 +211,10 @@ actor ArchiveV2BacklogDrainer {
                 let summary = try await runPass()
                 guard !stopped, !Task.isCancelled else { break }
                 lastPass = summary
+                ServiceLogger.info(
+                    "archive backlog pass captured=\(summary.capturedFiles) bytes=\(summary.capturedSourceBytes) bound=\(summary.boundRows) policy=\(summary.policyRows) hq=\(summary.hqVerified) m1=\(summary.m1Verified) retry=\(summary.retryScheduled) quarantine=\(summary.quarantined) runnable=\(summary.hasRunnableWork)",
+                    category: .runner
+                )
                 activeStages = []
                 if summary.needsAttention, !summary.hasRunnableWork {
                     state = .needsAttention

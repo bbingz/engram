@@ -508,7 +508,8 @@ actor ArchiveV2ServiceCoordinator {
                 operations: operations,
                 bindingLimit: 100,
                 historicalLimit: 100,
-                policyLimit: 100
+                policyLimit: 100,
+                reportDrainStages: true
             )
         }
 
@@ -555,6 +556,7 @@ actor ArchiveV2ServiceCoordinator {
     func status() async -> EngramServiceArchiveV2StatusResponse {
         let aggregate: ArchiveStatusAggregate
         let remoteTelemetry: ArchiveV2ServiceCoordinatorOperations.RemoteTelemetryResults
+        let drainSnapshot = await drainer?.snapshot()
         if let operations, localCaptureReady {
             do {
                 aggregate = try await operations.status()
@@ -580,7 +582,8 @@ actor ArchiveV2ServiceCoordinator {
             cycleRunning: inFlight != nil,
             cycleCoalesced: cycleCoalesced,
             lastReplicationCycle: lastReplicationCycle,
-            nextScheduledCycleAt: nextScheduledCycleAt
+            nextScheduledCycleAt: nextScheduledCycleAt,
+            drainSnapshot: drainSnapshot
         )
     }
 
@@ -750,7 +753,8 @@ actor ArchiveV2ServiceCoordinator {
         operations: ArchiveV2ServiceCoordinatorOperations,
         bindingLimit: Int,
         historicalLimit: Int,
-        policyLimit: Int
+        policyLimit: Int,
+        reportDrainStages: Bool = false
     ) async throws -> ReconcileSummary {
         let bindingTargets = try await operations.bindingTargets(bindingLimit)
         let historicalPage = policySnapshotReady
@@ -780,6 +784,9 @@ actor ArchiveV2ServiceCoordinator {
 
         var appliedPolicy = 0
         if policySnapshotReady {
+            if reportDrainStages {
+                await drainer?.setActiveStages([.policy])
+            }
             var remainingPolicyBudget = policyLimit
             for target in historicalPage.targets.prefix(remainingPolicyBudget) {
                 try Task.checkCancellation()
@@ -1626,7 +1633,8 @@ actor ArchiveV2ServiceCoordinator {
         cycleRunning: Bool,
         cycleCoalesced: Bool,
         lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?,
-        nextScheduledCycleAt: String?
+        nextScheduledCycleAt: String?,
+        drainSnapshot: ArchiveV2DrainSnapshot?
     ) -> EngramServiceArchiveV2StatusResponse {
         let replicas = [
             replicaStatus(id: "hq", counts: aggregate.hq, remote: remoteTelemetry["hq"]),
@@ -1662,7 +1670,35 @@ actor ArchiveV2ServiceCoordinator {
             cycleRunning: cycleRunning,
             cycleCoalesced: cycleCoalesced,
             lastReplicationCycle: lastReplicationCycle,
-            nextScheduledCycleAt: nextScheduledCycleAt
+            nextScheduledCycleAt: nextScheduledCycleAt,
+            drainState: drainStateSymbol(drainSnapshot?.state),
+            activeStages: drainSnapshot?.activeStages.map(\.rawValue) ?? [],
+            lastDrainPass: drainPassSummary(drainSnapshot?.lastPass),
+            nextDrainWakeAt: drainSnapshot?.nextWakeAt.map(timestamp)
+        )
+    }
+
+    private static func drainStateSymbol(_ state: ArchiveV2DrainState?) -> String {
+        guard let state, state != .stopped else { return ArchiveV2DrainState.idle.rawValue }
+        return state.rawValue
+    }
+
+    private static func drainPassSummary(
+        _ summary: ArchiveV2DrainPassSummary?
+    ) -> EngramServiceArchiveV2DrainPassSummary? {
+        guard let summary else { return nil }
+        return try? EngramServiceArchiveV2DrainPassSummary(
+            startedAt: timestamp(summary.startedAt),
+            finishedAt: timestamp(summary.finishedAt),
+            durationMs: max(summary.finishedAt.timeIntervalSince(summary.startedAt) * 1_000, 0),
+            capturedFiles: summary.capturedFiles,
+            capturedSourceBytes: summary.capturedSourceBytes,
+            boundRows: summary.boundRows,
+            policyRows: summary.policyRows,
+            hqVerified: summary.hqVerified,
+            m1Verified: summary.m1Verified,
+            retryScheduled: summary.retryScheduled,
+            quarantined: summary.quarantined
         )
     }
 

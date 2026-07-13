@@ -82,6 +82,57 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         )
     }
 
+    func testStatusPublishesBoundedBacklogDrainerSnapshot() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: makeOperations(events: EventLog())
+        )
+        let pass = ArchiveV2DrainPassSummary(
+            startedAt: Date(timeIntervalSince1970: 1_752_278_400),
+            finishedAt: Date(timeIntervalSince1970: 1_752_278_401.5),
+            capturedFiles: 3,
+            capturedSourceBytes: 4_096,
+            boundRows: 2,
+            policyRows: 1,
+            hqVerified: 2,
+            m1Verified: 1,
+            retryScheduled: 1,
+            quarantined: 0
+        )
+        let drainer = ArchiveV2BacklogDrainer(
+            conditions: { ArchiveV2DrainConditions(lowPower: false, thermalPressure: false) },
+            runPass: { pass }
+        )
+        await coordinator.attachDrainer(drainer)
+        await drainer.start()
+        await drainer.signal()
+        for _ in 0 ..< 200 {
+            if await drainer.snapshot().lastPass != nil { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        let status = await coordinator.status()
+        await drainer.stop()
+
+        XCTAssertEqual(status.drainState, "idle")
+        XCTAssertEqual(status.activeStages, [])
+        XCTAssertEqual(status.lastDrainPass?.startedAt, "2025-07-12T00:00:00.000Z")
+        XCTAssertEqual(status.lastDrainPass?.finishedAt, "2025-07-12T00:00:01.500Z")
+        XCTAssertEqual(status.lastDrainPass?.durationMs, 1_500)
+        XCTAssertEqual(status.lastDrainPass?.capturedFiles, 3)
+        XCTAssertEqual(status.lastDrainPass?.capturedSourceBytes, 4_096)
+        XCTAssertEqual(status.lastDrainPass?.boundRows, 2)
+        XCTAssertEqual(status.lastDrainPass?.policyRows, 1)
+        XCTAssertEqual(status.lastDrainPass?.hqVerified, 2)
+        XCTAssertEqual(status.lastDrainPass?.m1Verified, 1)
+        XCTAssertEqual(status.lastDrainPass?.retryScheduled, 1)
+        XCTAssertNotNil(status.nextDrainWakeAt)
+    }
+
     func testIndexFailurePropagatesAndSkipsEveryPostIndexArchivePhase() async throws {
         let harness = try makeHarness(remoteReady: true)
         let events = EventLog()

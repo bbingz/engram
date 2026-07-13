@@ -2007,6 +2007,84 @@ struct EngramServiceArchiveV2ReplicationCycleSummary: Codable, Equatable, Sendab
     }
 }
 
+struct EngramServiceArchiveV2DrainPassSummary: Codable, Equatable, Sendable {
+    let startedAt: String
+    let finishedAt: String
+    let durationMs: Double
+    let capturedFiles: Int
+    let capturedSourceBytes: Int64
+    let boundRows: Int
+    let policyRows: Int
+    let hqVerified: Int
+    let m1Verified: Int
+    let retryScheduled: Int
+    let quarantined: Int
+
+    init(
+        startedAt: String,
+        finishedAt: String,
+        durationMs: Double,
+        capturedFiles: Int,
+        capturedSourceBytes: Int64,
+        boundRows: Int,
+        policyRows: Int,
+        hqVerified: Int,
+        m1Verified: Int,
+        retryScheduled: Int,
+        quarantined: Int
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.validateTimestamp(startedAt, field: "startedAt")
+        try EngramServiceArchiveV2WireValidation.validateTimestamp(finishedAt, field: "finishedAt")
+        try EngramServiceArchiveV2WireValidation.require(
+            durationMs.isFinite && durationMs >= 0,
+            field: "durationMs"
+        )
+        for (field, value) in [
+            ("capturedFiles", capturedFiles),
+            ("boundRows", boundRows),
+            ("policyRows", policyRows),
+            ("hqVerified", hqVerified),
+            ("m1Verified", m1Verified),
+            ("retryScheduled", retryScheduled),
+            ("quarantined", quarantined),
+        ] {
+            try EngramServiceArchiveV2WireValidation.validateNonNegative(value, field: field)
+        }
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            capturedSourceBytes,
+            field: "capturedSourceBytes"
+        )
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+        self.durationMs = durationMs
+        self.capturedFiles = capturedFiles
+        self.capturedSourceBytes = capturedSourceBytes
+        self.boundRows = boundRows
+        self.policyRows = policyRows
+        self.hqVerified = hqVerified
+        self.m1Verified = m1Verified
+        self.retryScheduled = retryScheduled
+        self.quarantined = quarantined
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            startedAt: container.decode(String.self, forKey: .startedAt),
+            finishedAt: container.decode(String.self, forKey: .finishedAt),
+            durationMs: container.decode(Double.self, forKey: .durationMs),
+            capturedFiles: container.decode(Int.self, forKey: .capturedFiles),
+            capturedSourceBytes: container.decode(Int64.self, forKey: .capturedSourceBytes),
+            boundRows: container.decode(Int.self, forKey: .boundRows),
+            policyRows: container.decode(Int.self, forKey: .policyRows),
+            hqVerified: container.decode(Int.self, forKey: .hqVerified),
+            m1Verified: container.decode(Int.self, forKey: .m1Verified),
+            retryScheduled: container.decode(Int.self, forKey: .retryScheduled),
+            quarantined: container.decode(Int.self, forKey: .quarantined)
+        )
+    }
+}
+
 struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
     let enabled: Bool
     let localCaptureEnabled: Bool
@@ -2030,6 +2108,10 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
     let cycleCoalesced: Bool
     let lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?
     let nextScheduledCycleAt: String?
+    let drainState: String
+    let activeStages: [String]
+    let lastDrainPass: EngramServiceArchiveV2DrainPassSummary?
+    let nextDrainWakeAt: String?
 
     init(
         enabled: Bool,
@@ -2053,7 +2135,11 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
         cycleRunning: Bool,
         cycleCoalesced: Bool,
         lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary? = nil,
-        nextScheduledCycleAt: String? = nil
+        nextScheduledCycleAt: String? = nil,
+        drainState: String = "idle",
+        activeStages: [String] = [],
+        lastDrainPass: EngramServiceArchiveV2DrainPassSummary? = nil,
+        nextDrainWakeAt: String? = nil
     ) throws {
         if !enabled {
             try EngramServiceArchiveV2WireValidation.require(
@@ -2083,6 +2169,26 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
             try EngramServiceArchiveV2WireValidation.validateTimestamp(
                 nextScheduledCycleAt,
                 field: "nextScheduledCycleAt"
+            )
+        }
+        try EngramServiceArchiveV2WireValidation.require(
+            ["idle", "draining", "waitingRetry", "pausedLowPower", "pausedThermal", "needsAttention"]
+                .contains(drainState),
+            field: "drainState"
+        )
+        let validStages = Set(["capture", "binding", "policy", "hq", "m1"])
+        try EngramServiceArchiveV2WireValidation.require(
+            activeStages.count <= 2
+                && Set(activeStages).count == activeStages.count
+                && activeStages.allSatisfy(validStages.contains)
+                && (activeStages.count < 2 || activeStages == ["hq", "m1"])
+                && (drainState == "draining" || activeStages.isEmpty),
+            field: "activeStages"
+        )
+        if let nextDrainWakeAt {
+            try EngramServiceArchiveV2WireValidation.validateTimestamp(
+                nextDrainWakeAt,
+                field: "nextDrainWakeAt"
             )
         }
 
@@ -2135,6 +2241,10 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
         self.cycleCoalesced = cycleCoalesced
         self.lastReplicationCycle = lastReplicationCycle
         self.nextScheduledCycleAt = nextScheduledCycleAt
+        self.drainState = drainState
+        self.activeStages = activeStages
+        self.lastDrainPass = lastDrainPass
+        self.nextDrainWakeAt = nextDrainWakeAt
     }
 
     init(from decoder: Decoder) throws {
@@ -2167,7 +2277,14 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
             nextScheduledCycleAt: container.decodeIfPresent(
                 String.self,
                 forKey: .nextScheduledCycleAt
-            )
+            ),
+            drainState: try container.decodeIfPresent(String.self, forKey: .drainState) ?? "idle",
+            activeStages: try container.decodeIfPresent([String].self, forKey: .activeStages) ?? [],
+            lastDrainPass: try container.decodeIfPresent(
+                EngramServiceArchiveV2DrainPassSummary.self,
+                forKey: .lastDrainPass
+            ),
+            nextDrainWakeAt: try container.decodeIfPresent(String.self, forKey: .nextDrainWakeAt)
         )
     }
 
@@ -2194,6 +2311,10 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
         case cycleCoalesced
         case lastReplicationCycle
         case nextScheduledCycleAt
+        case drainState
+        case activeStages
+        case lastDrainPass
+        case nextDrainWakeAt
     }
 }
 

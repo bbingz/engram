@@ -56,6 +56,19 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
             cancelled: false,
             cycleError: nil
         )
+        let drainPass = try EngramServiceArchiveV2DrainPassSummary(
+            startedAt: "2026-07-12T00:00:02.000Z",
+            finishedAt: "2026-07-12T00:00:03.500Z",
+            durationMs: 1_500,
+            capturedFiles: 3,
+            capturedSourceBytes: 4_096,
+            boundRows: 2,
+            policyRows: 2,
+            hqVerified: 2,
+            m1Verified: 1,
+            retryScheduled: 1,
+            quarantined: 0
+        )
         let status = try makeStatus(
             replicas: [
                 try replica(
@@ -68,7 +81,11 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
                 try replica("m1", remoteTelemetryError: "transport_network"),
             ],
             lastReplicationCycle: cycle,
-            nextScheduledCycleAt: "2026-07-12T00:15:00.000Z"
+            nextScheduledCycleAt: "2026-07-12T00:15:00.000Z",
+            drainState: "draining",
+            activeStages: ["hq", "m1"],
+            lastDrainPass: drainPass,
+            nextDrainWakeAt: "2026-07-12T00:05:00.000Z"
         )
         let encoded = try JSONEncoder().encode(status)
         let decoded = try JSONDecoder().decode(
@@ -81,6 +98,10 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         XCTAssertEqual(decoded.latestReceipts.map(\.replicaID), ["hq", "m1"])
         XCTAssertEqual(decoded.replicas[0].remoteTelemetry?.serverID, "hq")
         XCTAssertEqual(decoded.replicas[1].remoteTelemetryError, "transport_network")
+        XCTAssertEqual(decoded.drainState, "draining")
+        XCTAssertEqual(decoded.activeStages, ["hq", "m1"])
+        XCTAssertEqual(decoded.lastDrainPass, drainPass)
+        XCTAssertEqual(decoded.nextDrainWakeAt, "2026-07-12T00:05:00.000Z")
     }
 
     func testStatusDecodesOlderPayloadWithoutDiagnostics() throws {
@@ -108,6 +129,10 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         )
         object.removeValue(forKey: "lastReplicationCycle")
         object.removeValue(forKey: "nextScheduledCycleAt")
+        object.removeValue(forKey: "drainState")
+        object.removeValue(forKey: "activeStages")
+        object.removeValue(forKey: "lastDrainPass")
+        object.removeValue(forKey: "nextDrainWakeAt")
         var replicas = try XCTUnwrap(object["replicas"] as? [[String: Any]])
         for index in replicas.indices {
             replicas[index].removeValue(forKey: "oldestOutstandingAt")
@@ -125,6 +150,10 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
 
         XCTAssertNil(decoded.lastReplicationCycle)
         XCTAssertNil(decoded.nextScheduledCycleAt)
+        XCTAssertEqual(decoded.drainState, "idle")
+        XCTAssertEqual(decoded.activeStages, [])
+        XCTAssertNil(decoded.lastDrainPass)
+        XCTAssertNil(decoded.nextDrainWakeAt)
         XCTAssertTrue(decoded.replicas.allSatisfy {
             $0.oldestOutstandingAt == nil
                 && $0.nextRetryAt == nil
@@ -132,6 +161,48 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
                 && $0.remoteTelemetry == nil
                 && $0.remoteTelemetryError == nil
         })
+    }
+
+    func testDrainStatusRejectsInvalidSymbolsStagesCountsAndTimestamps() throws {
+        let pass = try EngramServiceArchiveV2DrainPassSummary(
+            startedAt: timestamp,
+            finishedAt: timestamp,
+            durationMs: 0,
+            capturedFiles: 0,
+            capturedSourceBytes: 0,
+            boundRows: 0,
+            policyRows: 0,
+            hqVerified: 0,
+            m1Verified: 0,
+            retryScheduled: 0,
+            quarantined: 0
+        )
+
+        for state in ["unknown", "contains/path", ""] {
+            XCTAssertThrowsError(try makeStatus(drainState: state))
+        }
+        for stages in [["hq", "capture"], ["capture", "binding"], ["hq", "hq"], ["other"]] {
+            XCTAssertThrowsError(try makeStatus(drainState: "draining", activeStages: stages))
+        }
+        XCTAssertThrowsError(try makeStatus(activeStages: ["hq"]))
+        XCTAssertNoThrow(try makeStatus(drainState: "draining", activeStages: ["hq", "m1"]))
+        XCTAssertThrowsError(try makeStatus(nextDrainWakeAt: "not-a-timestamp"))
+        XCTAssertThrowsError(
+            try EngramServiceArchiveV2DrainPassSummary(
+                startedAt: timestamp,
+                finishedAt: timestamp,
+                durationMs: -1,
+                capturedFiles: -1,
+                capturedSourceBytes: -1,
+                boundRows: 0,
+                policyRows: 0,
+                hqVerified: 0,
+                m1Verified: 0,
+                retryScheduled: 0,
+                quarantined: 0
+            )
+        )
+        XCTAssertEqual(try makeStatus(lastDrainPass: pass).lastDrainPass, pass)
     }
 
     func testRemoteTelemetryRejectsMalformedOrUnboundedIPCValues() throws {
@@ -526,7 +597,11 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         cycleRunning: Bool = true,
         cycleCoalesced: Bool = false,
         lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary? = nil,
-        nextScheduledCycleAt: String? = nil
+        nextScheduledCycleAt: String? = nil,
+        drainState: String = "idle",
+        activeStages: [String] = [],
+        lastDrainPass: EngramServiceArchiveV2DrainPassSummary? = nil,
+        nextDrainWakeAt: String? = nil
     ) throws -> EngramServiceArchiveV2StatusResponse {
         try EngramServiceArchiveV2StatusResponse(
             enabled: enabled,
@@ -553,7 +628,11 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
             cycleRunning: cycleRunning,
             cycleCoalesced: cycleCoalesced,
             lastReplicationCycle: lastReplicationCycle,
-            nextScheduledCycleAt: nextScheduledCycleAt
+            nextScheduledCycleAt: nextScheduledCycleAt,
+            drainState: drainState,
+            activeStages: activeStages,
+            lastDrainPass: lastDrainPass,
+            nextDrainWakeAt: nextDrainWakeAt
         )
     }
 

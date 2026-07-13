@@ -28,6 +28,9 @@
     "%@ recovery drill passed." : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@ 恢复演练已通过。" } } }
     },
+    "Active stages: %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "活动阶段：%@" } } }
+    },
     "Archive & Storage" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "归档与存储" } } }
     },
@@ -46,6 +49,27 @@
     "Archive synchronization needs attention" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "归档同步需要处理" } } }
     },
+    "Backlog drain: Draining" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "积压处理：正在运行" } } }
+    },
+    "Backlog drain: Idle" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "积压处理：空闲" } } }
+    },
+    "Backlog drain: Needs attention" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "积压处理：需要处理" } } }
+    },
+    "Backlog drain: Paused for Low Power Mode" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "积压处理：因低电量模式暂停" } } }
+    },
+    "Backlog drain: Paused for thermal pressure" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "积压处理：因温度压力暂停" } } }
+    },
+    "Backlog drain: Waiting to retry" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "积压处理：等待重试" } } }
+    },
+    "Binding" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "绑定" } } }
+    },
     "Automatic Local Reclamation" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动精简本地数据" } } }
     },
@@ -63,6 +87,9 @@
     },
     "Cancelled" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已取消" } } }
+    },
+    "Capture" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "捕获" } } }
     },
     "Client errors: %lld" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "客户端错误：%lld" } } }
@@ -139,6 +166,12 @@
     "Last pass %@ · %@ · verified %lld · retry %lld · quarantined %lld" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "上次同步 %1$@ · 用时 %2$@ · 验证 %3$lld · 重试 %4$lld · 隔离 %5$lld" } } }
     },
+    "Last backlog pass %@ · %@ · captured %lld · bound %lld · policy %lld · HQ %lld · M1 %lld" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "上次积压处理 %1$@ · 用时 %2$@ · 捕获 %3$lld · 绑定 %4$lld · 策略 %5$lld · HQ %6$lld · M1 %7$lld" } } }
+    },
+    "HQ replication" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "HQ 复制" } } }
+    },
     "Lightweight Recovery Drills" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "轻量恢复演练" } } }
     },
@@ -160,11 +193,17 @@
     "Malformed request" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请求格式错误" } } }
     },
+    "M1 replication" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "M1 复制" } } }
+    },
     "Network error" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "网络错误" } } }
     },
     "Next background opportunity around %@" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "预计下轮后台检查：%@" } } }
+    },
+    "Next backlog wake around %@" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "预计下次积压处理唤醒：%@" } } }
     },
     "Next retry: %@" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "下次重试：%@" } } }
@@ -189,6 +228,9 @@
     },
     "Persistence: %@" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "持久化：%@" } } }
+    },
+    "Policy" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "策略" } } }
     },
     "Preview" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "预览" } } }

@@ -390,6 +390,44 @@ struct ArchiveSettingsSection: View {
                     .font(.caption)
                     .accessibilityIdentifier("archiveSync_progress")
 
+                    Text(backlogDrainStateSummary(archiveStatus.drainState))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("archiveSync_drainState")
+
+                    if !archiveStatus.activeStages.isEmpty {
+                        Text(
+                            String.localizedStringWithFormat(
+                                String(localized: "Active stages: %@"),
+                                ListFormatter.localizedString(
+                                    byJoining: archiveStatus.activeStages.map(backlogDrainStageName)
+                                )
+                            )
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("archiveSync_activeStages")
+                    }
+
+                    if let pass = archiveStatus.lastDrainPass {
+                        Text(lastDrainPassSummary(pass))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("archiveSync_lastDrainPass")
+                    }
+
+                    if let nextWake = archiveStatus.nextDrainWakeAt {
+                        Text(
+                            String.localizedStringWithFormat(
+                                String(localized: "Next backlog wake around %@"),
+                                localizedTimestamp(nextWake)
+                            )
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .accessibilityIdentifier("archiveSync_nextWake")
+                    }
+
                     if let cycle = archiveStatus.lastReplicationCycle {
                         Text(lastCycleSummary(cycle))
                             .font(.caption2)
@@ -540,6 +578,47 @@ struct ArchiveSettingsSection: View {
             summary += " · " + String(localized: "Cancelled")
         }
         return summary
+    }
+
+    private func backlogDrainStateSummary(_ state: String) -> String {
+        switch state {
+        case "draining":
+            return String(localized: "Backlog drain: Draining")
+        case "waitingRetry":
+            return String(localized: "Backlog drain: Waiting to retry")
+        case "pausedLowPower":
+            return String(localized: "Backlog drain: Paused for Low Power Mode")
+        case "pausedThermal":
+            return String(localized: "Backlog drain: Paused for thermal pressure")
+        case "needsAttention":
+            return String(localized: "Backlog drain: Needs attention")
+        default:
+            return String(localized: "Backlog drain: Idle")
+        }
+    }
+
+    private func backlogDrainStageName(_ stage: String) -> String {
+        switch stage {
+        case "capture": String(localized: "Capture")
+        case "binding": String(localized: "Binding")
+        case "policy": String(localized: "Policy")
+        case "hq": String(localized: "HQ replication")
+        case "m1": String(localized: "M1 replication")
+        default: stage
+        }
+    }
+
+    private func lastDrainPassSummary(_ pass: EngramServiceArchiveV2DrainPassSummary) -> String {
+        String.localizedStringWithFormat(
+            String(localized: "Last backlog pass %@ · %@ · captured %lld · bound %lld · policy %lld · HQ %lld · M1 %lld"),
+            localizedTimestamp(pass.finishedAt),
+            localizedDuration(milliseconds: pass.durationMs),
+            Int64(pass.capturedFiles),
+            Int64(pass.boundRows),
+            Int64(pass.policyRows),
+            Int64(pass.hqVerified),
+            Int64(pass.m1Verified)
+        )
     }
 
     private func localizedTimestamp(_ value: String) -> String {

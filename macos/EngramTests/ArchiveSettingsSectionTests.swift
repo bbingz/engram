@@ -25,6 +25,10 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             "archiveSync_m1RemoteTelemetry",
             "archiveSync_lastCycle",
             "archiveSync_nextCycle",
+            "archiveSync_drainState",
+            "archiveSync_activeStages",
+            "archiveSync_lastDrainPass",
+            "archiveSync_nextWake",
             "archiveSync_unbound",
             "archiveSync_refresh",
         ] {
@@ -42,6 +46,27 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             3,
             "Save, Run Now, and recovery drill refreshes must preserve their action result message"
         )
+    }
+
+    func testArchiveSettingsLocalizesBacklogDrainStatesAndStages() throws {
+        let sourceURL = macOSRoot
+            .appendingPathComponent("Engram/Views/Settings/ArchiveSettingsSection.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        for key in [
+            "Backlog drain: Idle",
+            "Backlog drain: Draining",
+            "Backlog drain: Waiting to retry",
+            "Backlog drain: Paused for Low Power Mode",
+            "Backlog drain: Paused for thermal pressure",
+            "Backlog drain: Needs attention",
+            "Active stages: %@",
+            "Capture", "Binding", "Policy", "HQ replication", "M1 replication",
+            "Last backlog pass %@ · %@ · captured %lld · bound %lld · policy %lld · HQ %lld · M1 %lld",
+            "Next backlog wake around %@",
+        ] {
+            XCTAssertTrue(source.contains(key), "Missing localized UI key: \(key)")
+        }
     }
 
     func testRemoteSummaryShowsOnlineTelemetryWithoutRawSymbols() throws {
