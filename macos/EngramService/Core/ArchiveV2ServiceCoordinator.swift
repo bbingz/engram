@@ -1037,7 +1037,7 @@ actor ArchiveV2ServiceCoordinator {
                 )
             },
             ignoreOne: { target in
-                _ = try catalog.ignoreUnboundCapture(
+                _ = try await captureCoordinator.ignoreLockedBindingTarget(
                     captureID: target.captureID,
                     reason: "no_visible_messages",
                     updatedAt: Self.timestamp(Date())

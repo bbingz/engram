@@ -642,6 +642,63 @@ public actor ArchiveCaptureCoordinator {
         return targets
     }
 
+    @discardableResult
+    public func ignoreLockedBindingTarget(
+        captureID: String,
+        reason: String,
+        updatedAt: String
+    ) throws -> Bool {
+        try Task.checkCancellation()
+        var progress = try bindingProgress()
+        if let expectedBindingBatchFingerprint,
+           try Self.bindingBatchFingerprint(progress.lockedBatch)
+            != expectedBindingBatchFingerprint {
+            throw ArchiveCaptureCoordinatorError.invalidBindingContinuation
+        }
+        let lockedTargets = try lockedBindingTargets(progress)
+        guard let capture = lockedTargets.first,
+              capture.captureID == captureID,
+              let boundary = progress.boundary?.value else {
+            throw ArchiveCaptureCoordinatorError.invalidBindingContinuation
+        }
+
+        progress.after = PersistedCaptureCursor(
+            ArchiveCaptureCursor(
+                capturedAt: capture.capturedAt,
+                captureID: capture.captureID
+            )
+        )
+        let remainingTargets = Array(lockedTargets.dropFirst())
+        progress.lockedBatch = remainingTargets.isEmpty
+            ? nil
+            : try Self.lockedBatch(for: remainingTargets)
+        if remainingTargets.isEmpty,
+           try catalog.unboundCaptures(
+               limit: 1,
+               after: progress.after?.value,
+               through: boundary
+           ).isEmpty {
+            progress = BindingProgress(
+                schemaVersion: 2,
+                boundary: nil,
+                after: nil,
+                lockedBatch: nil
+            )
+        }
+        try persistBindingProgress(progress)
+        expectedBindingBatchFingerprint = try Self.bindingBatchFingerprint(
+            progress.lockedBatch
+        )
+        testHooks.afterBindingRowAdvanced?(capture)
+        try Task.checkCancellation()
+
+        return try catalog.ignoreUnboundCapture(
+            captureID: capture.captureID,
+            reason: reason,
+            updatedAt: updatedAt
+        )
+    }
+
     public func bind(
         _ sessions: [ArchiveSessionIdentity]
     ) throws -> ArchiveBindingCycleResult {

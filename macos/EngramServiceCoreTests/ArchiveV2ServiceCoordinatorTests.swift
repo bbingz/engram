@@ -896,6 +896,9 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertEqual(try catalog.unboundCaptures(limit: 10), [])
         let status = await coordinator.status()
         XCTAssertEqual(status.ignoredEmptyCaptureCount, 1)
+
+        let nextPass = try await coordinator.runBacklogPass(adapters: [])
+        XCTAssertEqual(nextPass.boundRows, 0)
     }
 
     func testSnapshotRejectsStaleGenerationForNoVisibleMessages() async throws {
