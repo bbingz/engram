@@ -175,8 +175,20 @@
     "%@: %lld verified, %lld retrying, %lld queued, %lld quarantined" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%1$@：已验证 %2$lld，重试中 %3$lld，排队 %4$lld，隔离 %5$lld" } } }
     },
+    "%@ paused — needs attention" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%1$@ paused — needs attention" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%1$@ 已暂停 — 需要处理" } }
+      }
+    },
     "%@ s" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@ 秒" } } }
+    },
+    "%@ temporarily paused until %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%1$@ temporarily paused until %2$@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%1$@ 暂时暂停至 %2$@" } }
+      }
     },
     "%lld d, %lld hr" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%1$lld 天 %2$lld 小时" } } }
@@ -369,6 +381,18 @@
     },
     "Next backlog wake around %@" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "预计下次积压处理唤醒：%@" } } }
+    },
+    "Next pass starts with local capture and indexing" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Next pass starts with local capture and indexing" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "下一轮从本地捕获和索引开始" } }
+      }
+    },
+    "Next pass starts with remote replication" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Next pass starts with remote replication" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "下一轮从远端复制开始" } }
+      }
     },
     "Next retry: %@" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "下次重试：%@" } } }

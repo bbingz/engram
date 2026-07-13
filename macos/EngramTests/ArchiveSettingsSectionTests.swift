@@ -29,6 +29,9 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             "archiveSync_activeStages",
             "archiveSync_lastDrainPass",
             "archiveSync_nextWake",
+            "archiveSync_nextPassPriority",
+            "archiveSync_hqPause",
+            "archiveSync_m1Pause",
             "archiveSync_unbound",
             "archiveSync_refresh",
         ] {
@@ -38,8 +41,12 @@ final class ArchiveSettingsSectionTests: XCTestCase {
         XCTAssertFalse(source.contains("Timer.publish"))
         XCTAssertFalse(source.contains("Task.sleep"))
         XCTAssertFalse(source.contains("ContinuousClock"))
+        XCTAssertFalse(source.contains(".refreshable"))
+        XCTAssertFalse(source.contains(".task(id:"))
         XCTAssertTrue(source.contains("syncRefreshGeneration"))
         XCTAssertTrue(source.contains("guard requestGeneration == syncRefreshGeneration"))
+        XCTAssertTrue(source.contains("localizedTimestamp: localizedTimestamp"))
+        XCTAssertEqual(source.components(separatedBy: ".task {").count - 1, 1)
         XCTAssertEqual(source.components(separatedBy: ".task { await refresh() }").count - 1, 1)
         XCTAssertEqual(
             source.components(separatedBy: "await refresh(reportError: false)").count - 1,
@@ -64,9 +71,88 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             "Capture", "Indexing", "Binding", "Policy", "HQ replication", "M1 replication",
             "Last backlog pass %@ · %@ · captured %lld · bound %lld · policy %lld · HQ %lld · M1 %lld",
             "Next backlog wake around %@",
+            "Next pass starts with remote replication",
+            "Next pass starts with local capture and indexing",
+            "%@ temporarily paused until %@",
+            "%@ paused — needs attention",
         ] {
             XCTAssertTrue(source.contains(key), "Missing localized UI key: \(key)")
         }
+    }
+
+    func testSchedulerPresentationFormatsTransientPauseUsingLocalizedDeadline() {
+        let pausedUntil = "2026-07-13T12:45:00.000Z"
+        let localizedDeadline = "7/13/2026, 8:45 PM"
+        var timestampInput: String?
+
+        let line = ArchiveSyncSchedulerPresentation.pauseLine(
+            replicaID: "hq",
+            pauseReason: "transientInfrastructureBackoff",
+            pausedUntil: pausedUntil,
+            localizedTimestamp: { value in
+                timestampInput = value
+                return localizedDeadline
+            }
+        )
+
+        XCTAssertEqual(timestampInput, pausedUntil)
+        XCTAssertEqual(
+            line,
+            String.localizedStringWithFormat(
+                String(localized: "%@ temporarily paused until %@"),
+                "HQ",
+                localizedDeadline
+            )
+        )
+        XCTAssertFalse(line?.contains("transientInfrastructureBackoff") == true)
+        XCTAssertFalse(line?.contains(pausedUntil) == true)
+    }
+
+    func testSchedulerPresentationFormatsAttentionPauseWithoutDeadlineOrRawSymbol() {
+        let line = ArchiveSyncSchedulerPresentation.pauseLine(
+            replicaID: "m1",
+            pauseReason: "needsAttention",
+            pausedUntil: nil,
+            localizedTimestamp: { value in
+                XCTFail("Attention pause must not format a deadline: \(value)")
+                return value
+            }
+        )
+
+        XCTAssertEqual(
+            line,
+            String.localizedStringWithFormat(
+                String(localized: "%@ paused — needs attention"),
+                "M1"
+            )
+        )
+        XCTAssertFalse(line?.contains("needsAttention") == true)
+    }
+
+    func testSchedulerPresentationOmitsPauseLineWhenReasonIsAbsent() {
+        let line = ArchiveSyncSchedulerPresentation.pauseLine(
+            replicaID: "hq",
+            pauseReason: nil,
+            pausedUntil: nil,
+            localizedTimestamp: { value in
+                XCTFail("Absent pause must not format a deadline: \(value)")
+                return value
+            }
+        )
+
+        XCTAssertNil(line)
+    }
+
+    func testSchedulerPresentationLocalizesBothNextPassPriorities() {
+        XCTAssertEqual(
+            ArchiveSyncSchedulerPresentation.priorityLine("remote"),
+            String(localized: "Next pass starts with remote replication")
+        )
+        XCTAssertEqual(
+            ArchiveSyncSchedulerPresentation.priorityLine("local"),
+            String(localized: "Next pass starts with local capture and indexing")
+        )
+        XCTAssertNil(ArchiveSyncSchedulerPresentation.priorityLine("futurePriority"))
     }
 
     func testRemoteSummaryShowsOnlineTelemetryWithoutRawSymbols() throws {
@@ -335,6 +421,8 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             "Network",
             "Network error",
             "Next background opportunity around %@",
+            "Next pass starts with remote replication",
+            "Next pass starts with local capture and indexing",
             "Next retry: %@",
             "Oldest pending: %@",
             "Other",
@@ -355,6 +443,8 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             "Request timed out",
             "Requests: %lld",
             "Retry reasons: %@",
+            "%@ temporarily paused until %@",
+            "%@ paused — needs attention",
             "Refresh Status",
             "Released %@.",
             "Run Now",

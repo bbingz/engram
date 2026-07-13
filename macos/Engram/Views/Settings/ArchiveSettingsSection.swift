@@ -116,6 +116,44 @@ enum ArchiveSyncPresentationState: Equatable {
     }
 }
 
+enum ArchiveSyncSchedulerPresentation {
+    static func priorityLine(_ priority: String) -> String? {
+        switch priority {
+        case "remote":
+            String(localized: "Next pass starts with remote replication")
+        case "local":
+            String(localized: "Next pass starts with local capture and indexing")
+        default:
+            nil
+        }
+    }
+
+    static func pauseLine(
+        replicaID: String,
+        pauseReason: String?,
+        pausedUntil: String?,
+        localizedTimestamp: (String) -> String
+    ) -> String? {
+        guard let pauseReason else { return nil }
+        switch pauseReason {
+        case "transientInfrastructureBackoff":
+            guard let pausedUntil else { return nil }
+            return String.localizedStringWithFormat(
+                String(localized: "%@ temporarily paused until %@"),
+                replicaID.uppercased(),
+                localizedTimestamp(pausedUntil)
+            )
+        case "needsAttention":
+            return String.localizedStringWithFormat(
+                String(localized: "%@ paused — needs attention"),
+                replicaID.uppercased()
+            )
+        default:
+            return nil
+        }
+    }
+}
+
 enum ArchiveRemoteTelemetryPresentation {
     static func summary(
         replicaID: String,
@@ -395,6 +433,15 @@ struct ArchiveSettingsSection: View {
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("archiveSync_drainState")
 
+                    if let priorityLine = ArchiveSyncSchedulerPresentation.priorityLine(
+                        archiveStatus.nextPassPriority
+                    ) {
+                        Text(priorityLine)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("archiveSync_nextPassPriority")
+                    }
+
                     if !archiveStatus.activeStages.isEmpty {
                         Text(
                             String.localizedStringWithFormat(
@@ -443,6 +490,21 @@ struct ArchiveSettingsSection: View {
                                 .accessibilityIdentifier(
                                     replica.replicaID == "hq" ? "archiveSync_hq" : "archiveSync_m1"
                                 )
+                            if let pauseLine = ArchiveSyncSchedulerPresentation.pauseLine(
+                                replicaID: replica.replicaID,
+                                pauseReason: replica.pauseReason,
+                                pausedUntil: replica.pausedUntil,
+                                localizedTimestamp: localizedTimestamp
+                            ) {
+                                Text(pauseLine)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .accessibilityIdentifier(
+                                        replica.replicaID == "hq"
+                                            ? "archiveSync_hqPause"
+                                            : "archiveSync_m1Pause"
+                                    )
+                            }
                             if let diagnostics = replicaDiagnostics(replica) {
                                 Text(diagnostics)
                                     .font(.caption2)
