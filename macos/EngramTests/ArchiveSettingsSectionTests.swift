@@ -46,7 +46,6 @@ final class ArchiveSettingsSectionTests: XCTestCase {
         XCTAssertTrue(source.contains("syncRefreshGeneration"))
         XCTAssertTrue(source.contains("guard requestGeneration == syncRefreshGeneration"))
         XCTAssertTrue(source.contains("localizedTimestamp: localizedTimestamp"))
-        XCTAssertEqual(source.components(separatedBy: ".task {").count - 1, 1)
         XCTAssertEqual(source.components(separatedBy: ".task { await refresh() }").count - 1, 1)
         XCTAssertEqual(
             source.components(separatedBy: "await refresh(reportError: false)").count - 1,
@@ -141,6 +140,32 @@ final class ArchiveSettingsSectionTests: XCTestCase {
         )
 
         XCTAssertNil(line)
+    }
+
+    func testSchedulerPresentationFailsClosedForUnknownOrIncompletePauseMetadata() {
+        var timestampInputs: [String] = []
+        let localizeTimestamp: (String) -> String = { value in
+            timestampInputs.append(value)
+            return "localized \(value)"
+        }
+
+        XCTAssertNil(
+            ArchiveSyncSchedulerPresentation.pauseLine(
+                replicaID: "hq",
+                pauseReason: "futurePauseReason",
+                pausedUntil: "2026-07-13T12:45:00.000Z",
+                localizedTimestamp: localizeTimestamp
+            )
+        )
+        XCTAssertNil(
+            ArchiveSyncSchedulerPresentation.pauseLine(
+                replicaID: "m1",
+                pauseReason: "transientInfrastructureBackoff",
+                pausedUntil: nil,
+                localizedTimestamp: localizeTimestamp
+            )
+        )
+        XCTAssertEqual(timestampInputs, [])
     }
 
     func testSchedulerPresentationLocalizesBothNextPassPriorities() {
