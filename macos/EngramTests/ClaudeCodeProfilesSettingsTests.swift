@@ -47,6 +47,83 @@ final class ClaudeCodeProfilesSettingsTests: XCTestCase {
         XCTAssertTrue(state.rows[0].canRemoveCustomRegistration)
     }
 
+    func testStateDistinguishesPersistedUnavailableFromDraftPendingAfterRefreshFailure() throws {
+        let persistedRoot = "/persisted/projects"
+        let draftRoot = "/draft/projects"
+        var state = ClaudeCodeProfilesSettingsState()
+        state.applyStatusSuccess(
+            try status(
+                autoDiscover: true,
+                customProjectsRoots: [persistedRoot],
+                profiles: [
+                    try profile(id: "persisted", root: persistedRoot, origin: "custom"),
+                ]
+            )
+        )
+        XCTAssertEqual(state.addCustomRoot(draftRoot), .added)
+
+        state.applyStatusFailure()
+
+        let persistedRow = try XCTUnwrap(
+            state.rows.first { $0.projectsRoot == persistedRoot }
+        )
+        XCTAssertEqual(persistedRow.detailState, .statusUnavailable)
+        XCTAssertEqual(
+            persistedRow.placeholderStatusText,
+            String(localized: "Profile status unavailable.")
+        )
+
+        let draftRow = try XCTUnwrap(state.rows.first { $0.projectsRoot == draftRoot })
+        XCTAssertEqual(draftRow.detailState, .pendingSave)
+        XCTAssertEqual(draftRow.placeholderStatusText, String(localized: "Pending save"))
+    }
+
+    func testStateOnlyMarksCustomRootPersistedAfterSuccessfulResponse() throws {
+        let root = "/new-profile/projects"
+        var state = ClaudeCodeProfilesSettingsState()
+        state.applyStatusSuccess(try status(autoDiscover: true))
+        XCTAssertEqual(state.addCustomRoot(root), .added)
+
+        state.applyStatusFailure()
+        XCTAssertEqual(
+            try XCTUnwrap(state.rows.first { $0.projectsRoot == root }).detailState,
+            .pendingSave
+        )
+
+        state.applyStatusSuccess(
+            try status(
+                autoDiscover: true,
+                customProjectsRoots: [root],
+                profiles: [try profile(id: "saved", root: root, origin: "custom")]
+            )
+        )
+        state.applyStatusFailure()
+        XCTAssertEqual(
+            try XCTUnwrap(state.rows.first { $0.projectsRoot == root }).detailState,
+            .statusUnavailable
+        )
+    }
+
+    func testInvalidConfigurationResponseDoesNotMarkDraftRootPersisted() throws {
+        let root = "/draft-invalid/projects"
+        var state = ClaudeCodeProfilesSettingsState()
+        state.applyStatusSuccess(try status(autoDiscover: true))
+        XCTAssertEqual(state.addCustomRoot(root), .added)
+
+        state.applyStatusSuccess(
+            try status(
+                autoDiscover: true,
+                customProjectsRoots: [root],
+                configurationError: "invalid"
+            )
+        )
+
+        XCTAssertEqual(
+            try XCTUnwrap(state.rows.first { $0.projectsRoot == root }).detailState,
+            .pendingSave
+        )
+    }
+
     func testStateAddsRemovesAndBuildsCompleteConfigurationRequest() throws {
         var state = ClaudeCodeProfilesSettingsState()
         state.applyStatusSuccess(try status(autoDiscover: true))
@@ -66,6 +143,22 @@ final class ClaudeCodeProfilesSettingsTests: XCTestCase {
         state.removeCustomRoot("/a/projects")
 
         XCTAssertEqual(state.customProjectsRoots, ["/z/projects"])
+    }
+
+    func testStateRemovesSavedPureCustomProfileFromEditableRows() throws {
+        let root = "/saved-custom/projects"
+        var state = ClaudeCodeProfilesSettingsState()
+        state.applyStatusSuccess(
+            try status(
+                autoDiscover: true,
+                customProjectsRoots: [root],
+                profiles: [try profile(id: "saved-custom", root: root, origin: "custom")]
+            )
+        )
+
+        state.removeCustomRoot(root)
+
+        XCTAssertNil(state.rows.first { $0.projectsRoot == root })
     }
 
     func testStateClassifiesDuplicateBeforeCustomRootLimit() throws {
@@ -188,6 +281,19 @@ final class ClaudeCodeProfilesSettingsTests: XCTestCase {
         XCTAssertTrue(save.contains("Profile configuration is invalid."))
     }
 
+    func testPlaceholderProfileBranchAppliesStableRowAccessibilityIdentifier() throws {
+        let text = try source("macos/Engram/Views/Settings/SourcesSettingsSection.swift")
+        let pendingCall = try XCTUnwrap(
+            text.components(separatedBy: "ClaudeCodePendingProfileRow(row: row)").last
+        )
+
+        XCTAssertTrue(
+            pendingCall.prefix(300).contains(
+                ".accessibilityIdentifier(row.rowAccessibilityIdentifier)"
+            )
+        )
+    }
+
     func testProfileEditorUsesServiceAndDirectoryOnlyOpenPanel() throws {
         let text = try source("macos/Engram/Views/Settings/SourcesSettingsSection.swift")
 
@@ -261,13 +367,14 @@ final class ClaudeCodeProfilesSettingsTests: XCTestCase {
     private func status(
         autoDiscover: Bool,
         customProjectsRoots: [String] = [],
-        profiles: [EngramServiceClaudeCodeProfileStatus] = []
+        profiles: [EngramServiceClaudeCodeProfileStatus] = [],
+        configurationError: String? = nil
     ) throws -> EngramServiceClaudeCodeProfilesStatusResponse {
         try EngramServiceClaudeCodeProfilesStatusResponse(
             autoDiscover: autoDiscover,
             customProjectsRoots: customProjectsRoots,
             profiles: profiles,
-            configurationError: nil
+            configurationError: configurationError
         )
     }
 

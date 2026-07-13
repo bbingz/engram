@@ -29,9 +29,16 @@ struct SourcesSettingsSection: View {
 // MARK: - Claude Code Profiles
 
 struct ClaudeCodeProfilesSettingsRow: Equatable, Identifiable {
+    enum DetailState: Equatable {
+        case current
+        case statusUnavailable
+        case pendingSave
+    }
+
     let projectsRoot: String
     let profile: EngramServiceClaudeCodeProfileStatus?
     let canRemoveCustomRegistration: Bool
+    let detailState: DetailState
 
     var id: String { rowAccessibilityIdentifier }
 
@@ -60,6 +67,17 @@ struct ClaudeCodeProfilesSettingsRow: Equatable, Identifiable {
         return "claudeProfiles_remove_pending_\(Self.rootIdentifier(projectsRoot))"
     }
 
+    var placeholderStatusText: String? {
+        switch detailState {
+        case .current:
+            nil
+        case .statusUnavailable:
+            String(localized: "Profile status unavailable.")
+        case .pendingSave:
+            String(localized: "Pending save")
+        }
+    }
+
     private static func rootIdentifier(_ root: String) -> String {
         Data(root.utf8).base64EncodedString()
             .replacingOccurrences(of: "/", with: "_")
@@ -78,6 +96,7 @@ struct ClaudeCodeProfilesSettingsState: Equatable {
 
     private(set) var status: EngramServiceClaudeCodeProfilesStatusResponse?
     private(set) var customProjectsRoots: [String] = []
+    private var persistedCustomProjectsRoots = Set<String>()
     private(set) var hasLoadedConfiguration = false
     var autoDiscover = false
 
@@ -99,6 +118,9 @@ struct ClaudeCodeProfilesSettingsState: Equatable {
         if let status {
             for profile in status.profiles {
                 let registeredCustom = customRootSet.contains(profile.projectsRoot)
+                if profile.origin == "custom", !registeredCustom {
+                    continue
+                }
                 if profile.origin == "automatic", !autoDiscover, !registeredCustom {
                     continue
                 }
@@ -107,7 +129,8 @@ struct ClaudeCodeProfilesSettingsState: Equatable {
                     ClaudeCodeProfilesSettingsRow(
                         projectsRoot: profile.projectsRoot,
                         profile: profile,
-                        canRemoveCustomRegistration: registeredCustom
+                        canRemoveCustomRegistration: registeredCustom,
+                        detailState: .current
                     )
                 )
             }
@@ -118,7 +141,10 @@ struct ClaudeCodeProfilesSettingsState: Equatable {
                 ClaudeCodeProfilesSettingsRow(
                     projectsRoot: root,
                     profile: nil,
-                    canRemoveCustomRegistration: true
+                    canRemoveCustomRegistration: true,
+                    detailState: persistedCustomProjectsRoots.contains(root)
+                        ? .statusUnavailable
+                        : .pendingSave
                 )
             )
         }
@@ -135,6 +161,7 @@ struct ClaudeCodeProfilesSettingsState: Equatable {
         status = response
         autoDiscover = response.autoDiscover
         customProjectsRoots = response.customProjectsRoots
+        persistedCustomProjectsRoots = Set(response.customProjectsRoots)
         hasLoadedConfiguration = true
     }
 
@@ -245,6 +272,7 @@ struct ClaudeCodeProfilesSettingsCard: View {
                 ClaudeCodePendingProfileRow(row: row) {
                     removeCustomRoot(row.projectsRoot)
                 }
+                .accessibilityIdentifier(row.rowAccessibilityIdentifier)
             }
         }
 
@@ -461,9 +489,11 @@ private struct ClaudeCodePendingProfileRow: View {
                     .textSelection(.enabled)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text("Pending save")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                if let statusText = row.placeholderStatusText {
+                    Text(verbatim: statusText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Text("Source files protected from local reclamation")
                     .font(.caption2)
                     .foregroundStyle(.blue)
