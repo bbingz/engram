@@ -22,7 +22,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: 'npm'
       - run: npm ci
       - run: npm run lint
 
@@ -34,7 +33,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: 'npm'
       - run: npm ci
       - run: npm run build
       - run: npm run knip
@@ -47,7 +45,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: 'npm'
       - run: npm ci
       - run: npm audit --audit-level=moderate
         continue-on-error: ${{ github.event_name == 'pull_request' }}
@@ -60,7 +57,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: 'npm'
       - run: npm ci
       - name: Install archive safety gate tools
         run: |
