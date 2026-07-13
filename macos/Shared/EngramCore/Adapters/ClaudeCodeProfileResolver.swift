@@ -190,11 +190,44 @@ public struct ClaudeCodeProfileResolver: Sendable {
                 projectsRoot: canonicalPath,
                 origin: candidate.origin,
                 available: isAvailableDirectory(canonicalURL),
-                sourceReclamationAllowed: candidate.origin != .custom
+                sourceReclamationAllowed: sourceReclamationAllowed(
+                    for: candidate,
+                    canonicalRoot: canonicalURL
+                )
             )
         }
 
         return profilesByRoot.values.sorted { $0.projectsRoot < $1.projectsRoot }
+    }
+
+    private func sourceReclamationAllowed(
+        for candidate: RootCandidate,
+        canonicalRoot: URL
+    ) -> Bool {
+        let expectedParentName: String
+        switch candidate.origin {
+        case .default:
+            expectedParentName = ".claude"
+        case .automatic:
+            expectedParentName = candidate.url.deletingLastPathComponent().lastPathComponent
+            guard expectedParentName.hasPrefix(".claude-") else { return false }
+        case .custom:
+            return false
+        }
+
+        let canonicalHome = canonicalURL(homeDirectory)
+        let declaredParent = candidate.url.deletingLastPathComponent()
+        let canonicalParent = canonicalURL(declaredParent)
+        let expectedParent = canonicalHome
+            .appendingPathComponent(expectedParentName, isDirectory: true)
+            .standardizedFileURL
+        let expectedRoot = expectedParent
+            .appendingPathComponent("projects", isDirectory: true)
+            .standardizedFileURL
+
+        return declaredParent.lastPathComponent == expectedParentName
+            && canonicalParent.path == expectedParent.path
+            && canonicalRoot.path == expectedRoot.path
     }
 
     private func automaticCandidates() -> [RootCandidate] {

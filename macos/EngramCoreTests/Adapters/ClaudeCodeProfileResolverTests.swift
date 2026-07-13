@@ -118,6 +118,50 @@ final class ClaudeCodeProfileResolverTests: XCTestCase {
         XCTAssertTrue(resolution.profiles[0].sourceReclamationAllowed)
     }
 
+    func testDefaultProjectsSymlinkEscapeRemainsIndexableButNotReclaimable() throws {
+        let externalRoot = try makeProjectsRoot(
+            parent: fixtureRoot.appendingPathComponent("external-default")
+        )
+        let defaultParent = homeDirectory.appendingPathComponent(".claude", isDirectory: true)
+        try FileManager.default.createDirectory(at: defaultParent, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: defaultParent.appendingPathComponent("projects", isDirectory: true),
+            withDestinationURL: externalRoot
+        )
+
+        let profile = try XCTUnwrap(makeResolver().resolve().profiles.first { $0.origin == .default })
+
+        XCTAssertEqual(
+            profile.projectsRoot,
+            externalRoot.resolvingSymlinksInPath().standardizedFileURL.path
+        )
+        XCTAssertTrue(profile.available)
+        XCTAssertFalse(profile.sourceReclamationAllowed)
+    }
+
+    func testAutomaticProjectsSymlinkEscapeRemainsIndexableButNotReclaimable() throws {
+        let externalRoot = try makeProjectsRoot(
+            parent: fixtureRoot.appendingPathComponent("external-automatic")
+        )
+        let automaticParent = homeDirectory.appendingPathComponent(".claude-escaped", isDirectory: true)
+        try FileManager.default.createDirectory(at: automaticParent, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: automaticParent.appendingPathComponent("projects", isDirectory: true),
+            withDestinationURL: externalRoot
+        )
+
+        let profile = try XCTUnwrap(
+            makeResolver().resolve().profiles.first { $0.origin == .automatic }
+        )
+
+        XCTAssertEqual(
+            profile.projectsRoot,
+            externalRoot.resolvingSymlinksInPath().standardizedFileURL.path
+        )
+        XCTAssertTrue(profile.available)
+        XCTAssertFalse(profile.sourceReclamationAllowed)
+    }
+
     func testMissingConfiguredRootRemainsVisibleButUnavailable() throws {
         let missingRoot = fixtureRoot
             .appendingPathComponent("missing-profile", isDirectory: true)
