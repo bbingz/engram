@@ -14,8 +14,12 @@ public struct ArchiveReplicationCycleResult: Equatable, Sendable {
     public let cancelled: Bool
     public let cycleError: String?
     public let pausedReplicaIDs: [String]
-    public let retryPausedReplicaIDs: [String]
+    public let retryPausedUntilByReplica: [String: Date]
     public let verifiedByReplica: [String: Int]
+
+    public var retryPausedReplicaIDs: [String] {
+        retryPausedUntilByReplica.keys.sorted()
+    }
 
     public init(
         claimed: Int = 0,
@@ -28,7 +32,7 @@ public struct ArchiveReplicationCycleResult: Equatable, Sendable {
         cancelled: Bool = false,
         cycleError: String? = nil,
         pausedReplicaIDs: [String] = [],
-        retryPausedReplicaIDs: [String] = [],
+        retryPausedUntilByReplica: [String: Date] = [:],
         verifiedByReplica: [String: Int] = [:]
     ) {
         self.claimed = claimed
@@ -41,7 +45,9 @@ public struct ArchiveReplicationCycleResult: Equatable, Sendable {
         self.cancelled = cancelled
         self.cycleError = cycleError
         self.pausedReplicaIDs = pausedReplicaIDs.sorted()
-        self.retryPausedReplicaIDs = retryPausedReplicaIDs.sorted()
+        self.retryPausedUntilByReplica = retryPausedUntilByReplica.filter {
+            ArchiveCatalog.currentReplicaIDs.contains($0.key)
+        }
         self.verifiedByReplica = verifiedByReplica.filter {
             ArchiveCatalog.currentReplicaIDs.contains($0.key) && $0.value >= 0
         }
@@ -756,7 +762,7 @@ private struct CycleAccumulator {
             cancelled: cancelled,
             cycleError: cycleError,
             pausedReplicaIDs: Array(Set(pausedReplicaIDs)).sorted(),
-            retryPausedReplicaIDs: retryPausedUntil.keys.sorted(),
+            retryPausedUntilByReplica: retryPausedUntil,
             verifiedByReplica: verifiedByReplica
         )
     }

@@ -266,7 +266,7 @@ actor ArchiveV2ServiceCoordinator {
     private var unsafeLocatorCount = 0
     private var captureRetryLocators: [SourceName: [String]] = [:]
     private var fullCapturePending = true
-    private var fullCaptureRefreshPending = false
+    private var fullCaptureRefreshRequestID: UUID?
     private var lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?
     private var nextScheduledCycleAt: String?
     private var drainer: ArchiveV2BacklogDrainer?
@@ -505,7 +505,7 @@ actor ArchiveV2ServiceCoordinator {
     func requestFullCaptureSweep() async {
         guard localCaptureReady else { return }
         fullCapturePending = true
-        fullCaptureRefreshPending = true
+        fullCaptureRefreshRequestID = UUID()
         await drainer?.signal()
     }
 
@@ -534,17 +534,24 @@ actor ArchiveV2ServiceCoordinator {
 
         if fullCapturePending, shouldStartUnit() {
             await drainer?.setActiveStages([.capture])
+            let consumedRefreshRequestID = fullCaptureRefreshRequestID
             do {
                 capture = try await operations.backlogCapture(
                     adapters,
-                    fullCaptureRefreshPending,
+                    consumedRefreshRequestID != nil,
                     shouldStartUnit
                 )
                 unsupportedLocatorCount = max(capture.unsupported, 0)
                 unsafeLocatorCount = max(capture.unsafe, 0)
                 updateCaptureRetryLocators(with: capture)
-                fullCapturePending = capture.hasMore
-                fullCaptureRefreshPending = false
+                if fullCaptureRefreshRequestID == consumedRefreshRequestID {
+                    fullCapturePending = capture.hasMore
+                    fullCaptureRefreshRequestID = nil
+                } else {
+                    // A profile change arrived while this capture awaited I/O.
+                    // Keep the newer refresh request armed for the next pass.
+                    fullCapturePending = true
+                }
                 lastCaptureError = nil
             } catch is CancellationError {
                 throw CancellationError()
@@ -585,7 +592,10 @@ actor ArchiveV2ServiceCoordinator {
 
         await drainer?.setActiveStages([])
         let aggregate = try await operations.status()
-        let nextRetryAt = Self.earliestRetryDate(aggregate)
+        let nextRetryAt = Self.earliestRetryDate(
+            aggregate,
+            retryPausedUntilByReplica: replication.retryPausedUntilByReplica
+        )
         let pausedReplicas = Set(
             replication.pausedReplicaIDs + replication.retryPausedReplicaIDs
         )
@@ -1693,13 +1703,24 @@ actor ArchiveV2ServiceCoordinator {
         return formatter.string(from: date)
     }
 
-    private static func earliestRetryDate(_ aggregate: ArchiveStatusAggregate) -> Date? {
+    private static func earliestRetryDate(
+        _ aggregate: ArchiveStatusAggregate,
+        retryPausedUntilByReplica: [String: Date] = [:]
+    ) -> Date? {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        return [aggregate.hq.nextRetryAt, aggregate.m1.nextRetryAt]
-            .compactMap { $0.flatMap(formatter.date(from:)) }
-            .min()
+        let retryDates = [
+            "hq": aggregate.hq.nextRetryAt.flatMap(formatter.date(from:)),
+            "m1": aggregate.m1.nextRetryAt.flatMap(formatter.date(from:)),
+        ]
+        return ArchiveCatalog.currentReplicaIDs.compactMap { replicaID in
+            let catalogDate = retryDates[replicaID] ?? nil
+            guard let pauseDeadline = retryPausedUntilByReplica[replicaID] else {
+                return catalogDate
+            }
+            return max(catalogDate ?? .distantPast, pauseDeadline)
+        }.min()
     }
 
     private static let maximumCaptureRetryLocatorsPerSource = 100

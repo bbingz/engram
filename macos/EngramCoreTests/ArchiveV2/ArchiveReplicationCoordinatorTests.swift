@@ -260,6 +260,14 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(first.retryPausedReplicaIDs, ["hq"])
         XCTAssertEqual(beforeDeadline.retryPausedReplicaIDs, ["hq"])
+        XCTAssertEqual(
+            first.retryPausedUntilByReplica["hq"],
+            try date("2026-07-11T00:01:00.000Z")
+        )
+        XCTAssertEqual(
+            beforeDeadline.retryPausedUntilByReplica["hq"],
+            try date("2026-07-11T00:01:00.000Z")
+        )
         XCTAssertEqual(hq.events(), hqEventsBeforeDeadline)
 
         clock.set(try date("2026-07-11T00:01:00.000Z"))
