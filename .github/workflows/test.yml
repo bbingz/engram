@@ -99,7 +99,7 @@ jobs:
       - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/remote-server-package.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/product-boundary-scripts.test.ts tests/scripts/archive-v2-safety-gate.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/swift-conventions.test.ts tests/scripts/version-guard.test.ts
 
   swift-unit:
-    runs-on: [self-hosted, macOS, macmini-m1, xcode]
+    runs-on: macos-15
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7

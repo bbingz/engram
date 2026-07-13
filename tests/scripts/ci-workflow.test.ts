@@ -78,12 +78,9 @@ describe('CI workflow hardening', () => {
     );
   });
 
-  it('keeps non-UI macOS jobs self-hosted and runs UI jobs on a GUI-capable hosted runner', () => {
+  it('keeps headless macOS jobs self-hosted and runs app-hosted tests on a GUI-capable hosted runner', () => {
     expect(testWorkflow).toContain(
       'runs-on: [self-hosted, macOS, macmini-m1, lite]',
-    );
-    expect(testWorkflow).toContain(
-      'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
     );
     const liteJobs = [
       ['  macos-vitest:', '  swift-unit:'],
@@ -103,21 +100,28 @@ describe('CI workflow hardening', () => {
       testWorkflow.indexOf('  swift-unit:'),
       testWorkflow.indexOf('  remote-server-swift:'),
     );
-    expect(swiftUnit).toContain(
-      'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
-    );
-
     const uiSmoke = testWorkflow.slice(
       testWorkflow.indexOf('  ui-test-smoke:'),
       testWorkflow.indexOf('  ui-test-full:'),
     );
     const uiFull = testWorkflow.slice(testWorkflow.indexOf('  ui-test-full:'));
-    for (const job of [uiSmoke, uiFull]) {
+    const releaseTests = releaseWorkflow.slice(
+      releaseWorkflow.indexOf('  release-tests:'),
+      releaseWorkflow.indexOf('  release-remote-server-tests:'),
+    );
+    for (const job of [swiftUnit, uiSmoke, uiFull, releaseTests]) {
       expect(job).toContain('runs-on: macos-15');
       expect(job).not.toContain(
         'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
       );
     }
+
+    const releaseBundleGate = releaseWorkflow.slice(
+      releaseWorkflow.indexOf('  release-bundle-gate:'),
+    );
+    expect(releaseBundleGate).toContain(
+      'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
+    );
   });
 
   it('runs macOS-only vitest suites on pull requests', () => {
