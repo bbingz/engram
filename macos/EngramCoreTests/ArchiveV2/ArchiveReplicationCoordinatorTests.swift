@@ -466,6 +466,118 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         )
     }
 
+    func testBacklogPassManualResumeDuringAwaitDoesNotResurrectAttentionPause() async throws {
+        let store = try makeStore(name: "backlog-resume-attention-during-await")
+        _ = try addBinding(
+            to: store,
+            seed: "resume-attention-during-await-1",
+            eligibility: .eligible
+        )
+        _ = try addBinding(
+            to: store,
+            seed: "resume-attention-during-await-2",
+            eligibility: .eligible
+        )
+        let hq = FakeArchiveReplicaBackend(replicaID: "hq")
+        let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
+        m1.setFailure(operation: "headObject", error: .unexpectedStatus(401))
+        let coordinator = try makeCoordinator(store: store, hq: hq, m1: m1)
+
+        let first = await coordinator.runBacklogPass(perReplicaLimit: 1)
+        XCTAssertEqual(first.pausedReplicaIDs, ["m1"])
+
+        let gate = AsyncTestGate()
+        hq.setHeadObjectGate(gate)
+        let inFlightTask = Task {
+            await coordinator.runBacklogPass(perReplicaLimit: 1)
+        }
+        await gate.waitUntilEntered()
+
+        await coordinator.resumeAfterAttention(replicaID: "m1")
+        m1.clearFailure()
+        await gate.release()
+        let inFlight = await inFlightTask.value
+
+        XCTAssertTrue(inFlight.pausedReplicaIDs.isEmpty)
+
+        let afterResume = await coordinator.runBacklogPass(perReplicaLimit: 1)
+
+        XCTAssertTrue(afterResume.pausedReplicaIDs.isEmpty)
+        XCTAssertEqual(afterResume.verifiedByReplica["m1"], 1)
+    }
+
+    func testBacklogPassManualResumeDuringAwaitDoesNotResurrectTransientPause() async throws {
+        let store = try makeStore(name: "backlog-resume-transient-during-await")
+        _ = try addBinding(
+            to: store,
+            seed: "resume-transient-during-await-1",
+            eligibility: .eligible
+        )
+        _ = try addBinding(
+            to: store,
+            seed: "resume-transient-during-await-2",
+            eligibility: .eligible
+        )
+        let hq = FakeArchiveReplicaBackend(replicaID: "hq")
+        hq.setFailure(operation: "headObject", error: .transport(.network))
+        let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
+        let coordinator = try makeCoordinator(store: store, hq: hq, m1: m1)
+
+        let first = await coordinator.runBacklogPass(perReplicaLimit: 1)
+        XCTAssertEqual(first.retryPausedReplicaIDs, ["hq"])
+
+        let gate = AsyncTestGate()
+        m1.setHeadObjectGate(gate)
+        let inFlightTask = Task {
+            await coordinator.runBacklogPass(perReplicaLimit: 1)
+        }
+        await gate.waitUntilEntered()
+
+        await coordinator.resumeAfterAttention(replicaID: "hq")
+        hq.clearFailure()
+        await gate.release()
+        let inFlight = await inFlightTask.value
+
+        XCTAssertTrue(inFlight.retryPausedReplicaIDs.isEmpty)
+
+        let afterResume = await coordinator.runBacklogPass(perReplicaLimit: 1)
+
+        XCTAssertTrue(afterResume.retryPausedReplicaIDs.isEmpty)
+        XCTAssertEqual(afterResume.verifiedByReplica["hq"], 1)
+    }
+
+    func testBacklogPassFailureAfterConcurrentManualResumeCreatesNewPause() async throws {
+        let store = try makeStore(name: "backlog-failure-after-concurrent-resume")
+        _ = try addBinding(
+            to: store,
+            seed: "failure-after-concurrent-resume",
+            eligibility: .eligible
+        )
+        let hq = FakeArchiveReplicaBackend(replicaID: "hq")
+        let gate = AsyncTestGate()
+        hq.setDeferredFailure(
+            operation: "headObject",
+            error: .transport(.network),
+            gate: gate
+        )
+        let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
+        let coordinator = try makeCoordinator(store: store, hq: hq, m1: m1)
+        let inFlightTask = Task {
+            await coordinator.runBacklogPass(perReplicaLimit: 1)
+        }
+        await gate.waitUntilEntered()
+
+        await coordinator.resumeAfterAttention(replicaID: "hq")
+        await gate.release()
+        let inFlight = await inFlightTask.value
+
+        XCTAssertEqual(inFlight.retryPausedReplicaIDs, ["hq"])
+
+        let afterFailure = await coordinator.runBacklogPass(perReplicaLimit: 1)
+
+        XCTAssertEqual(afterFailure.retryPausedReplicaIDs, ["hq"])
+    }
+
     func testBacklogPassResourceGateStopsBeforeStartingAnotherReplicaRow() async throws {
         let store = try makeStore(name: "backlog-resource-gate")
         _ = try addBinding(to: store, seed: "resource-1", eligibility: .eligible)

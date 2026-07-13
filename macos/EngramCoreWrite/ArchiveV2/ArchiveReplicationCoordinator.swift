@@ -176,9 +176,7 @@ public actor ArchiveReplicationCoordinator {
 
         var cycle = CycleAccumulator()
         let cycleDate = clock()
-        retryPausedUntil = retryPausedUntil.filter { $0.value > cycleDate }
-        cycle.pausedReplicaIDs = Array(attentionPausedReplicaIDs)
-        cycle.retryPausedUntil = retryPausedUntil
+        replacePauseSnapshot(in: &cycle, at: cycleDate)
         do {
             guard !Task.isCancelled else {
                 cycle.cancelled = true
@@ -228,15 +226,14 @@ public actor ArchiveReplicationCoordinator {
             let batches = try await (hq, m1)
             cycle.merge(batches.0)
             cycle.merge(batches.1)
-            attentionPausedReplicaIDs.formUnion(cycle.pausedReplicaIDs)
-            for (replicaID, deadline) in cycle.retryPausedUntil {
-                retryPausedUntil[replicaID] = deadline
-            }
+            commitNewPauses(from: batches.0)
+            commitNewPauses(from: batches.1)
         } catch is CancellationError {
             cycle.cancelled = true
         } catch {
             cycle.cycleError = "catalog_failure"
         }
+        replacePauseSnapshot(in: &cycle, at: clock())
         return cycle.result
     }
 
@@ -263,6 +260,25 @@ public actor ArchiveReplicationCoordinator {
             attentionPausedReplicaIDs.removeAll()
             retryPausedUntil.removeAll()
         }
+    }
+
+    private func commitNewPauses(from batch: CycleAccumulator) {
+        attentionPausedReplicaIDs.formUnion(batch.pausedReplicaIDs)
+        for (replicaID, deadline) in batch.retryPausedUntil {
+            retryPausedUntil[replicaID] = max(
+                retryPausedUntil[replicaID] ?? .distantPast,
+                deadline
+            )
+        }
+    }
+
+    private func replacePauseSnapshot(
+        in cycle: inout CycleAccumulator,
+        at date: Date
+    ) {
+        retryPausedUntil = retryPausedUntil.filter { $0.value > date }
+        cycle.pausedReplicaIDs = Array(attentionPausedReplicaIDs)
+        cycle.retryPausedUntil = retryPausedUntil
     }
 
     private func processClaims(

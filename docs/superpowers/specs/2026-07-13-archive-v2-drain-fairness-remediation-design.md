@@ -178,6 +178,10 @@ polling is added.
 - The current pause snapshot is copied into each cycle result before the first
   cancellation or catalog operation, so an early cancelled or failed pass
   cannot falsely clear status telemetry.
+- A pass-entry pause snapshot is report-only. After a backend await, only pauses
+  newly produced by that pass are committed, then the returned snapshot is
+  refreshed from actor state. A concurrent manual clear therefore wins over old
+  state, while a genuine failure after that clear can establish a new pause.
 - A clock that advances beyond the pause makes pending work immediately
   claimable in the same pass.
 - Multiple transient failures retain the later bounded circuit-breaker deadline,
