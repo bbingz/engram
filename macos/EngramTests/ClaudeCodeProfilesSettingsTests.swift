@@ -13,6 +13,137 @@ final class ClaudeCodeProfilesSettingsTests: XCTestCase {
         try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
     }
 
+    func testStateKeepsSaveDisabledWhenInitialStatusLoadFails() {
+        var state = ClaudeCodeProfilesSettingsState()
+
+        state.applyStatusFailure()
+
+        XCTAssertFalse(state.canEdit)
+        XCTAssertNil(state.configurationRequest)
+        XCTAssertNil(state.status)
+        XCTAssertTrue(state.customProjectsRoots.isEmpty)
+    }
+
+    func testStateHidesStaleMetricsButPreservesTrustedEditsAfterRefreshFailure() throws {
+        let root = "/custom/projects"
+        var state = ClaudeCodeProfilesSettingsState()
+        state.applyStatusSuccess(
+            try status(
+                autoDiscover: true,
+                customProjectsRoots: [root],
+                profiles: [try profile(id: "custom-id", root: root, origin: "custom")]
+            )
+        )
+        state.autoDiscover = false
+
+        state.applyStatusFailure()
+
+        XCTAssertTrue(state.canEdit)
+        XCTAssertFalse(state.autoDiscover)
+        XCTAssertEqual(state.customProjectsRoots, [root])
+        XCTAssertNil(state.status)
+        XCTAssertEqual(state.rows.count, 1)
+        XCTAssertNil(state.rows[0].profile)
+        XCTAssertTrue(state.rows[0].canRemoveCustomRegistration)
+    }
+
+    func testStateAddsRemovesAndBuildsCompleteConfigurationRequest() throws {
+        var state = ClaudeCodeProfilesSettingsState()
+        state.applyStatusSuccess(try status(autoDiscover: true))
+        state.autoDiscover = false
+
+        XCTAssertEqual(state.addCustomRoot("/z/projects"), .added)
+        XCTAssertEqual(state.addCustomRoot("/a/projects"), .added)
+        XCTAssertEqual(state.addCustomRoot("/a/projects"), .duplicate)
+        XCTAssertEqual(
+            state.configurationRequest,
+            EngramServiceConfigureClaudeCodeProfilesRequest(
+                autoDiscover: false,
+                customProjectsRoots: ["/a/projects", "/z/projects"]
+            )
+        )
+
+        state.removeCustomRoot("/a/projects")
+
+        XCTAssertEqual(state.customProjectsRoots, ["/z/projects"])
+    }
+
+    func testStateClassifiesDuplicateBeforeCustomRootLimit() throws {
+        let roots = (0..<64).map { "/profiles/\($0)/projects" }
+        var state = ClaudeCodeProfilesSettingsState()
+        state.applyStatusSuccess(
+            try status(autoDiscover: false, customProjectsRoots: roots)
+        )
+
+        XCTAssertEqual(state.addCustomRoot(roots[0]), .duplicate)
+        XCTAssertEqual(state.addCustomRoot("/profiles/overflow/projects"), .limitReached)
+    }
+
+    func testStateMergesAutomaticCustomOverlapAndKeepsRedundantRegistrationRemovable() throws {
+        let overlap = "/profiles/overlap/projects"
+        let automaticOnly = "/profiles/automatic/projects"
+        let defaultRoot = "/home/.claude/projects"
+        var state = ClaudeCodeProfilesSettingsState()
+        state.applyStatusSuccess(
+            try status(
+                autoDiscover: true,
+                customProjectsRoots: [overlap, defaultRoot],
+                profiles: [
+                    try profile(
+                        id: "automatic-only",
+                        root: automaticOnly,
+                        origin: "automatic"
+                    ),
+                    try profile(
+                        id: "overlap",
+                        root: overlap,
+                        origin: "automatic"
+                    ),
+                    try profile(
+                        id: "default",
+                        displayName: "Server Default",
+                        root: defaultRoot,
+                        origin: "default"
+                    ),
+                ]
+            )
+        )
+
+        let overlapRow = try XCTUnwrap(state.rows.first { $0.projectsRoot == overlap })
+        XCTAssertEqual(state.rows.filter { $0.projectsRoot == overlap }.count, 1)
+        XCTAssertNotNil(overlapRow.profile)
+        XCTAssertTrue(overlapRow.canRemoveCustomRegistration)
+
+        let defaultRow = try XCTUnwrap(state.rows.first { $0.projectsRoot == defaultRoot })
+        XCTAssertEqual(state.rows.filter { $0.projectsRoot == defaultRoot }.count, 1)
+        XCTAssertNotNil(defaultRow.profile)
+        XCTAssertTrue(defaultRow.canRemoveCustomRegistration)
+        XCTAssertEqual(defaultRow.displayName, String(localized: "Default"))
+
+        state.autoDiscover = false
+
+        XCTAssertNil(state.rows.first { $0.projectsRoot == automaticOnly })
+        XCTAssertNotNil(state.rows.first { $0.projectsRoot == overlap })
+        XCTAssertNotNil(state.rows.first { $0.projectsRoot == defaultRoot })
+    }
+
+    func testPendingRowIdentifiersAreStableAndUniquePerRoot() throws {
+        var state = ClaudeCodeProfilesSettingsState()
+        state.applyStatusSuccess(
+            try status(
+                autoDiscover: false,
+                customProjectsRoots: ["/a/projects", "/b/projects"]
+            )
+        )
+
+        let firstRows = state.rows
+        let secondRows = state.rows
+
+        XCTAssertEqual(firstRows.map(\.rowAccessibilityIdentifier), secondRows.map(\.rowAccessibilityIdentifier))
+        XCTAssertEqual(Set(firstRows.map(\.rowAccessibilityIdentifier)).count, 2)
+        XCTAssertEqual(Set(firstRows.map(\.removeAccessibilityIdentifier)).count, 2)
+    }
+
     func testDataSourcesLoadsProfileStatusAndExposesStableControlsWithoutPolling() throws {
         let text = try source("macos/Engram/Views/Settings/SourcesSettingsSection.swift")
         let card = try XCTUnwrap(
@@ -31,14 +162,30 @@ final class ClaudeCodeProfilesSettingsTests: XCTestCase {
             "claudeProfiles_add",
             "claudeProfiles_save",
             "claudeProfiles_refresh",
-            "claudeProfiles_row_",
-            "claudeProfiles_remove_",
         ] {
             XCTAssertTrue(card.contains(identifier), "Missing accessibility identifier " + identifier)
         }
         XCTAssertFalse(card.contains("Timer.publish"))
         XCTAssertFalse(card.contains(".onReceive"))
         XCTAssertFalse(card.contains("Task.sleep"))
+        XCTAssertTrue(
+            card.contains(
+                "Button(\"Refresh\") { Task { await loadStatus() } }\n" +
+                    "                        .disabled(loading || saving)"
+            )
+        )
+        XCTAssertTrue(card.contains("editor.applyStatusFailure()"))
+    }
+
+    func testSaveDoesNotReportSuccessForInvalidConfigurationResponse() throws {
+        let text = try source("macos/Engram/Views/Settings/SourcesSettingsSection.swift")
+        let save = try XCTUnwrap(
+            text.components(separatedBy: "private func save() async {").last?
+                .components(separatedBy: "private func addProjectsFolder()").first
+        )
+
+        XCTAssertTrue(save.contains("if response.configurationError != nil"))
+        XCTAssertTrue(save.contains("Profile configuration is invalid."))
     }
 
     func testProfileEditorUsesServiceAndDirectoryOnlyOpenPanel() throws {
@@ -51,7 +198,7 @@ final class ClaudeCodeProfilesSettingsTests: XCTestCase {
         XCTAssertTrue(text.contains("panel.canChooseFiles = false"))
         XCTAssertTrue(text.contains("panel.allowsMultipleSelection = false"))
         XCTAssertTrue(text.contains("resolvingSymlinksInPath()"))
-        XCTAssertTrue(text.contains("origin == \"custom\""))
+        XCTAssertTrue(text.contains("canRemoveCustomRegistration"))
         XCTAssertTrue(text.contains("customProjectsRoots.removeAll"))
     }
 
@@ -109,6 +256,43 @@ final class ClaudeCodeProfilesSettingsTests: XCTestCase {
         ))
         let root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         return try XCTUnwrap(root["strings"] as? [String: Any])
+    }
+
+    private func status(
+        autoDiscover: Bool,
+        customProjectsRoots: [String] = [],
+        profiles: [EngramServiceClaudeCodeProfileStatus] = []
+    ) throws -> EngramServiceClaudeCodeProfilesStatusResponse {
+        try EngramServiceClaudeCodeProfilesStatusResponse(
+            autoDiscover: autoDiscover,
+            customProjectsRoots: customProjectsRoots,
+            profiles: profiles,
+            configurationError: nil
+        )
+    }
+
+    private func profile(
+        id: String,
+        displayName: String = "Profile",
+        root: String,
+        origin: String
+    ) throws -> EngramServiceClaudeCodeProfileStatus {
+        try EngramServiceClaudeCodeProfileStatus(
+            id: id,
+            displayName: displayName,
+            projectsRoot: root,
+            origin: origin,
+            available: true,
+            sourceReclamationAllowed: origin != "custom",
+            discoveredFileCount: 3,
+            discoveredSourceBytes: 512,
+            indexedLocatorCount: 2,
+            capturedCount: 2,
+            ignoredEmptyCaptureCount: 1,
+            hqVerifiedCount: 1,
+            m1VerifiedCount: 1,
+            error: nil
+        )
     }
 
     private static let localizedKeys = [

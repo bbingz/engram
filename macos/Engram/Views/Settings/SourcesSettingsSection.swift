@@ -28,12 +28,139 @@ struct SourcesSettingsSection: View {
 
 // MARK: - Claude Code Profiles
 
+struct ClaudeCodeProfilesSettingsRow: Equatable, Identifiable {
+    let projectsRoot: String
+    let profile: EngramServiceClaudeCodeProfileStatus?
+    let canRemoveCustomRegistration: Bool
+
+    var id: String { rowAccessibilityIdentifier }
+
+    var displayName: String {
+        guard let profile else {
+            return URL(fileURLWithPath: projectsRoot)
+                .deletingLastPathComponent()
+                .lastPathComponent
+        }
+        return profile.origin == "default"
+            ? String(localized: "Default")
+            : profile.displayName
+    }
+
+    var rowAccessibilityIdentifier: String {
+        if let profile {
+            return "claudeProfiles_row_\(profile.id)"
+        }
+        return "claudeProfiles_row_pending_\(Self.rootIdentifier(projectsRoot))"
+    }
+
+    var removeAccessibilityIdentifier: String {
+        if let profile {
+            return "claudeProfiles_remove_\(profile.id)"
+        }
+        return "claudeProfiles_remove_pending_\(Self.rootIdentifier(projectsRoot))"
+    }
+
+    private static func rootIdentifier(_ root: String) -> String {
+        Data(root.utf8).base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "=", with: "")
+    }
+}
+
+struct ClaudeCodeProfilesSettingsState: Equatable {
+    enum AddResult: Equatable {
+        case added
+        case duplicate
+        case limitReached
+        case notReady
+    }
+
+    private(set) var status: EngramServiceClaudeCodeProfilesStatusResponse?
+    private(set) var customProjectsRoots: [String] = []
+    private(set) var hasLoadedConfiguration = false
+    var autoDiscover = false
+
+    var canEdit: Bool { hasLoadedConfiguration }
+
+    var configurationRequest: EngramServiceConfigureClaudeCodeProfilesRequest? {
+        guard canEdit else { return nil }
+        return EngramServiceConfigureClaudeCodeProfilesRequest(
+            autoDiscover: autoDiscover,
+            customProjectsRoots: customProjectsRoots
+        )
+    }
+
+    var rows: [ClaudeCodeProfilesSettingsRow] {
+        var result: [ClaudeCodeProfilesSettingsRow] = []
+        var emittedRoots = Set<String>()
+        let customRootSet = Set(customProjectsRoots)
+
+        if let status {
+            for profile in status.profiles {
+                let registeredCustom = customRootSet.contains(profile.projectsRoot)
+                if profile.origin == "automatic", !autoDiscover, !registeredCustom {
+                    continue
+                }
+                guard emittedRoots.insert(profile.projectsRoot).inserted else { continue }
+                result.append(
+                    ClaudeCodeProfilesSettingsRow(
+                        projectsRoot: profile.projectsRoot,
+                        profile: profile,
+                        canRemoveCustomRegistration: registeredCustom
+                    )
+                )
+            }
+        }
+
+        for root in customProjectsRoots where emittedRoots.insert(root).inserted {
+            result.append(
+                ClaudeCodeProfilesSettingsRow(
+                    projectsRoot: root,
+                    profile: nil,
+                    canRemoveCustomRegistration: true
+                )
+            )
+        }
+        return result
+    }
+
+    mutating func applyStatusSuccess(
+        _ response: EngramServiceClaudeCodeProfilesStatusResponse
+    ) {
+        guard response.configurationError == nil else {
+            status = nil
+            return
+        }
+        status = response
+        autoDiscover = response.autoDiscover
+        customProjectsRoots = response.customProjectsRoots
+        hasLoadedConfiguration = true
+    }
+
+    mutating func applyStatusFailure() {
+        status = nil
+    }
+
+    mutating func addCustomRoot(_ root: String) -> AddResult {
+        guard canEdit else { return .notReady }
+        guard !customProjectsRoots.contains(root) else { return .duplicate }
+        guard customProjectsRoots.count < 64 else { return .limitReached }
+        customProjectsRoots.append(root)
+        customProjectsRoots.sort()
+        return .added
+    }
+
+    mutating func removeCustomRoot(_ root: String) {
+        guard canEdit else { return }
+        customProjectsRoots.removeAll { $0 == root }
+    }
+}
+
 struct ClaudeCodeProfilesSettingsCard: View {
     @Environment(EngramServiceClient.self) private var serviceClient
 
-    @State private var status: EngramServiceClaudeCodeProfilesStatusResponse?
-    @State private var autoDiscover = true
-    @State private var customProjectsRoots: [String] = []
+    @State private var editor = ClaudeCodeProfilesSettingsState()
     @State private var loading = false
     @State private var saving = false
     @State private var message: String?
@@ -45,9 +172,9 @@ struct ClaudeCodeProfilesSettingsCard: View {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle(
                     "Automatically discover ~/.claude-*/projects",
-                    isOn: $autoDiscover
+                    isOn: $editor.autoDiscover
                 )
-                .disabled(loading || saving)
+                .disabled(!editor.canEdit || loading || saving)
                 .accessibilityIdentifier("claudeProfiles_autoDiscover")
 
                 Text("Choose a Claude Code projects folder. Custom folders are indexed and archived, but their source files are protected from automatic local reclamation.")
@@ -59,11 +186,11 @@ struct ClaudeCodeProfilesSettingsCard: View {
 
                 HStack(spacing: 8) {
                     Button("Add Projects Folder…") { addProjectsFolder() }
-                        .disabled(loading || saving)
+                        .disabled(!editor.canEdit || loading || saving)
                         .accessibilityIdentifier("claudeProfiles_add")
 
                     Button("Save") { Task { await save() } }
-                        .disabled(loading || saving)
+                        .disabled(editor.configurationRequest == nil || loading || saving)
                         .accessibilityIdentifier("claudeProfiles_save")
 
                     Button("Refresh") { Task { await loadStatus() } }
@@ -104,46 +231,27 @@ struct ClaudeCodeProfilesSettingsCard: View {
 
     @ViewBuilder
     private var profileRows: some View {
-        if let status {
-            let automaticProfiles = status.profiles.filter { $0.origin != "custom" }
-            let customProfilesByRoot = status.profiles
-                .filter { $0.origin == "custom" }
-                .reduce(into: [String: EngramServiceClaudeCodeProfileStatus]()) { result, profile in
-                    if result[profile.projectsRoot] == nil {
-                        result[profile.projectsRoot] = profile
-                    }
-                }
-
-            ForEach(automaticProfiles, id: \.id) { profile in
-                ClaudeCodeProfileStatusRow(profile: profile)
-                    .accessibilityIdentifier("claudeProfiles_row_\(profile.id)")
-            }
-
-            ForEach(customProjectsRoots, id: \.self) { root in
-                if let profile = customProfilesByRoot[root] {
-                    ClaudeCodeProfileStatusRow(
-                        profile: profile,
-                        remove: { removeCustomRoot(root) }
-                    )
-                    .accessibilityIdentifier("claudeProfiles_row_\(profile.id)")
-                } else {
-                    ClaudeCodePendingProfileRow(projectsRoot: root) {
-                        removeCustomRoot(root)
-                    }
+        ForEach(editor.rows) { row in
+            if let profile = row.profile {
+                ClaudeCodeProfileStatusRow(
+                    row: row,
+                    profile: profile,
+                    remove: row.canRemoveCustomRegistration
+                        ? { removeCustomRoot(row.projectsRoot) }
+                        : nil
+                )
+                .accessibilityIdentifier(row.rowAccessibilityIdentifier)
+            } else {
+                ClaudeCodePendingProfileRow(row: row) {
+                    removeCustomRoot(row.projectsRoot)
                 }
             }
+        }
 
-            if automaticProfiles.isEmpty, customProjectsRoots.isEmpty, !loading {
-                Text("No Claude Code profiles found.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if status.configurationError != nil {
-                Label("Profile configuration is invalid.", systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
+        if editor.rows.isEmpty, editor.canEdit, !loading {
+            Text("No Claude Code profiles found.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -161,9 +269,17 @@ struct ClaudeCodeProfilesSettingsCard: View {
         do {
             let response = try await serviceClient.claudeCodeProfilesStatus()
             guard refreshGeneration == generation else { return }
-            apply(response)
+            editor.applyStatusSuccess(response)
+            if response.configurationError != nil {
+                message = String(localized: "Profile configuration is invalid.")
+                messageIsError = true
+            } else {
+                message = nil
+                messageIsError = false
+            }
         } catch {
             guard refreshGeneration == generation else { return }
+            editor.applyStatusFailure()
             message = String(localized: "Error: profile status is unavailable.")
             messageIsError = true
         }
@@ -172,19 +288,22 @@ struct ClaudeCodeProfilesSettingsCard: View {
     @MainActor
     private func save() async {
         guard !saving else { return }
+        guard let request = editor.configurationRequest else { return }
         saving = true
         message = nil
         defer { saving = false }
         do {
             let response = try await serviceClient.configureClaudeCodeProfiles(
-                EngramServiceConfigureClaudeCodeProfilesRequest(
-                    autoDiscover: autoDiscover,
-                    customProjectsRoots: customProjectsRoots
-                )
+                request
             )
-            apply(response)
-            message = String(localized: "Saved.")
-            messageIsError = false
+            editor.applyStatusSuccess(response)
+            if response.configurationError != nil {
+                message = String(localized: "Profile configuration is invalid.")
+                messageIsError = true
+            } else {
+                message = String(localized: "Saved.")
+                messageIsError = false
+            }
         } catch {
             message = String(localized: "Error: profile configuration could not be saved.")
             messageIsError = true
@@ -193,12 +312,6 @@ struct ClaudeCodeProfilesSettingsCard: View {
 
     @MainActor
     private func addProjectsFolder() {
-        guard customProjectsRoots.count < 64 else {
-            message = String(localized: "Error: no more than 64 custom projects folders can be added.")
-            messageIsError = true
-            return
-        }
-
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -219,35 +332,29 @@ struct ClaudeCodeProfilesSettingsCard: View {
             messageIsError = true
             return
         }
-        guard !customProjectsRoots.contains(canonicalURL.path) else { return }
-
-        customProjectsRoots.append(canonicalURL.path)
-        customProjectsRoots.sort()
-        message = nil
-        messageIsError = false
+        switch editor.addCustomRoot(canonicalURL.path) {
+        case .added, .duplicate:
+            message = nil
+            messageIsError = false
+        case .limitReached:
+            message = String(localized: "Error: no more than 64 custom projects folders can be added.")
+            messageIsError = true
+        case .notReady:
+            break
+        }
     }
 
     private func removeCustomRoot(_ projectsRoot: String) {
-        customProjectsRoots.removeAll { $0 == projectsRoot }
+        editor.removeCustomRoot(projectsRoot)
         message = nil
         messageIsError = false
-    }
-
-    private func apply(_ response: EngramServiceClaudeCodeProfilesStatusResponse) {
-        status = response
-        autoDiscover = response.autoDiscover
-        customProjectsRoots = response.customProjectsRoots
     }
 }
 
 private struct ClaudeCodeProfileStatusRow: View {
+    let row: ClaudeCodeProfilesSettingsRow
     let profile: EngramServiceClaudeCodeProfileStatus
     let remove: (() -> Void)?
-
-    init(profile: EngramServiceClaudeCodeProfileStatus, remove: (() -> Void)? = nil) {
-        self.profile = profile
-        self.remove = remove
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -255,7 +362,7 @@ private struct ClaudeCodeProfileStatusRow: View {
                 Circle()
                     .fill(profile.available ? Color.green : Color.orange)
                     .frame(width: 8, height: 8)
-                Text(verbatim: profile.displayName)
+                Text(verbatim: row.displayName)
                     .font(.caption.bold())
                 Text(
                     String.localizedStringWithFormat(
@@ -276,7 +383,7 @@ private struct ClaudeCodeProfileStatusRow: View {
                 if let remove {
                     Button("Remove", action: remove)
                         .buttonStyle(.borderless)
-                        .accessibilityIdentifier("claudeProfiles_remove_\(profile.id)")
+                        .accessibilityIdentifier(row.removeAccessibilityIdentifier)
                 }
             }
 
@@ -343,13 +450,13 @@ private struct ClaudeCodeProfileStatusRow: View {
 }
 
 private struct ClaudeCodePendingProfileRow: View {
-    let projectsRoot: String
+    let row: ClaudeCodeProfilesSettingsRow
     let remove: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(verbatim: projectsRoot)
+                Text(verbatim: row.projectsRoot)
                     .font(.caption2.monospaced())
                     .textSelection(.enabled)
                     .lineLimit(1)
@@ -364,7 +471,7 @@ private struct ClaudeCodePendingProfileRow: View {
             Spacer()
             Button("Remove", action: remove)
                 .buttonStyle(.borderless)
-                .accessibilityIdentifier("claudeProfiles_remove_pending")
+                .accessibilityIdentifier(row.removeAccessibilityIdentifier)
         }
         .padding(8)
         .background(Color.secondary.opacity(0.06))
