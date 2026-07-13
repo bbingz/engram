@@ -98,8 +98,11 @@ public enum EngramServiceRunner {
                     disabledSources: disabledSources
                 )
             )
-            let drainer = ArchiveV2BacklogDrainer {
-                try await archiveV2Coordinator.runBacklogPass(
+            let drainer = ArchiveV2BacklogDrainer { [weak archiveV2Coordinator] in
+                guard let archiveV2Coordinator else {
+                    throw CancellationError()
+                }
+                return try await archiveV2Coordinator.runBacklogPass(
                     adapters: backlogAdapters
                 )
             }
