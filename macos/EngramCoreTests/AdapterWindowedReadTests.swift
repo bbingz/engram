@@ -26,7 +26,10 @@ final class AdapterWindowedReadTests: XCTestCase {
         }
         try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
 
-        let adapter = ClaudeCodeAdapter(limits: ParserLimits(maxMessages: 10))
+        let adapter = ClaudeCodeAdapter(
+            projectsRoot: dir.path,
+            limits: ParserLimits(maxMessages: 10)
+        )
         var contents: [String] = []
         // A full (limit == nil) read must NOT throw .messageLimitExceeded; it
         // returns the first `maxMessages` messages so MessageParser never falls
@@ -72,7 +75,10 @@ final class AdapterWindowedReadTests: XCTestCase {
         }
         try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
 
-        let adapter = ClaudeCodeAdapter(limits: ParserLimits(maxMessages: 10))
+        let adapter = ClaudeCodeAdapter(
+            projectsRoot: dir.path,
+            limits: ParserLimits(maxMessages: 10)
+        )
         let result = try await adapter.streamMessagesWithMetadata(
             locator: file.path,
             options: StreamMessagesOptions()
@@ -232,7 +238,10 @@ final class AdapterWindowedReadTests: XCTestCase {
         }
         try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
 
-        let adapter = ClaudeCodeAdapter(limits: ParserLimits(maxMessages: 3))
+        let adapter = ClaudeCodeAdapter(
+            projectsRoot: dir.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
         let result = try await adapter.streamMessagesWithMetadata(
             locator: file.path,
             options: StreamMessagesOptions(offset: 0, limit: 2)

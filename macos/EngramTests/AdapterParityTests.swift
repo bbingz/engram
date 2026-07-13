@@ -719,7 +719,10 @@ final class AdapterParityTests: XCTestCase {
         let (root, path) = try writeLines(lines, named: "session.jsonl")
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let adapter = ClaudeCodeAdapter(limits: ParserLimits(maxMessages: 10))
+        let adapter = ClaudeCodeAdapter(
+            projectsRoot: root.path,
+            limits: ParserLimits(maxMessages: 10)
+        )
         var windowed: [String] = []
         for try await message in try await adapter.streamMessages(
             locator: path, options: StreamMessagesOptions(offset: 9, limit: 2)
