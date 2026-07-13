@@ -82,6 +82,47 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         )
     }
 
+    func testBacklogPassStopsRecapturingAfterFullSweepIsExhausted() async throws {
+        let harness = try makeHarness(remoteReady: true, batchSize: 3)
+        let events = EventLog()
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _ in
+            await events.append("backlogCapture")
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                processed: 1,
+                capturedSourceBytes: 64,
+                hasMore: false
+            )
+        }
+        operations.replicateBacklog = { limit in
+            await events.append("replicateBacklog:\(limit)")
+            return ArchiveReplicationCycleResult(
+                claimed: 1,
+                verified: 1,
+                verifiedByReplica: ["hq": 1]
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations
+        )
+
+        let first = try await coordinator.runBacklogPass(adapters: [])
+        let second = try await coordinator.runBacklogPass(adapters: [])
+        let captureCount = await events.count(of: "backlogCapture")
+        let replicationCount = await events.count(of: "replicateBacklog:16")
+
+        XCTAssertEqual(first.capturedFiles, 1)
+        XCTAssertEqual(second.capturedFiles, 0)
+        XCTAssertEqual(captureCount, 1)
+        XCTAssertEqual(replicationCount, 2)
+    }
+
     func testNonRunnableUnboundCountDoesNotCauseContinuousDrainPasses() async throws {
         let harness = try makeHarness(remoteReady: false)
         let events = EventLog()

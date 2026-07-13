@@ -240,7 +240,7 @@ actor ArchiveV2ServiceCoordinator {
     private var unsupportedLocatorCount = 0
     private var unsafeLocatorCount = 0
     private var captureRetryLocators: [SourceName: [String]] = [:]
-    private var fullCapturePending = false
+    private var fullCapturePending = true
     private var lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?
     private var nextScheduledCycleAt: String?
     private var drainer: ArchiveV2BacklogDrainer?
@@ -486,7 +486,7 @@ actor ArchiveV2ServiceCoordinator {
         var reconcile = ReconcileSummary(boundRows: 0, policyRows: 0, hasMore: false)
         var replication = ArchiveReplicationCycleResult()
 
-        if now() < deadline {
+        if fullCapturePending, now() < deadline {
             await drainer?.setActiveStages([.capture])
             do {
                 capture = try await operations.backlogCapture(adapters)
