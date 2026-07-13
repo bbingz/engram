@@ -179,6 +179,41 @@ final class ArchiveV2BacklogDrainerTests: XCTestCase {
         XCTAssertEqual(count, 2)
     }
 
+    func testSignalDuringPassBypassesReturnedRetryDeadline() async throws {
+        let retryAt = Date(timeIntervalSince1970: 160)
+        let recorder = BlockingFirstDrainPassRecorder(
+            firstResult: ArchiveV2DrainPassSummary(
+                startedAt: Date(timeIntervalSince1970: 100),
+                finishedAt: Date(timeIntervalSince1970: 101),
+                retryScheduled: 1,
+                nextRetryAt: retryAt
+            )
+        )
+        let sleeps = DrainSleepRecorder()
+        let drainer = ArchiveV2BacklogDrainer(
+            conditions: { ArchiveV2DrainConditions(lowPower: false, thermalPressure: false) },
+            sleepUntil: { deadline in try await sleeps.record(deadline) },
+            runPass: { try await recorder.run() }
+        )
+
+        await drainer.start()
+        await drainer.signal()
+        try await recorder.waitForPassCount(1)
+        await drainer.signal()
+        await recorder.releaseFirstPass()
+        try await recorder.waitForPassCount(2)
+        try await Task.sleep(for: .milliseconds(20))
+        let count = await recorder.passCount()
+        let deadlines = await sleeps.deadlines()
+        await drainer.stop()
+
+        XCTAssertEqual(count, 2)
+        XCTAssertTrue(
+            deadlines.isEmpty,
+            "an explicit signal received during the pass must outrank its stale retry deadline"
+        )
+    }
+
     func testThermalNotificationResumesPausedWorker() async throws {
         let notificationCenter = NotificationCenter()
         let conditions = DrainConditionsBox(
@@ -287,6 +322,11 @@ private actor DrainSleepRecorder {
 private actor BlockingFirstDrainPassRecorder {
     private var calls = 0
     private var firstPassContinuation: CheckedContinuation<Void, Never>?
+    private let firstResult: ArchiveV2DrainPassSummary
+
+    init(firstResult: ArchiveV2DrainPassSummary = ArchiveV2DrainPassSummary()) {
+        self.firstResult = firstResult
+    }
 
     func run() async throws -> ArchiveV2DrainPassSummary {
         calls += 1
@@ -294,6 +334,7 @@ private actor BlockingFirstDrainPassRecorder {
             await withCheckedContinuation { continuation in
                 firstPassContinuation = continuation
             }
+            return firstResult
         }
         return ArchiveV2DrainPassSummary()
     }

@@ -221,6 +221,10 @@ actor ArchiveV2BacklogDrainer {
                     category: .runner
                 )
                 activeStages = []
+                if pendingSignal {
+                    state = .idle
+                    continue
+                }
                 if summary.needsAttention,
                    !summary.hasRunnableWork,
                    summary.nextRetryAt == nil {

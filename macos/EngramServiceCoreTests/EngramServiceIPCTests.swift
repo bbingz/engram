@@ -793,6 +793,28 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(composition.contains("SessionAdapterFactory.defaultAdapters()"))
         XCTAssertTrue(composition.contains("adapterProvider: {"))
         XCTAssertTrue(composition.contains("Self.exactArchiveAdapters("))
+
+        let coordinator = try serviceCoreSource("EngramService/Core/ArchiveV2ServiceCoordinator.swift")
+        let provider = try XCTUnwrap(coordinator.range(of: "let adapters = adapterProvider()"))
+        let refreshSnapshot = try XCTUnwrap(
+            coordinator.range(
+                of: "let consumedRefreshRequestID = fullCaptureRefreshRequestID",
+                range: provider.upperBound ..< coordinator.endIndex
+            )
+        )
+        let firstDrainerAwait = try XCTUnwrap(
+            coordinator.range(
+                of: "await drainer?.setActiveStages",
+                range: provider.upperBound ..< coordinator.endIndex
+            )
+        )
+
+        XCTAssertLessThan(provider.lowerBound, refreshSnapshot.lowerBound)
+        XCTAssertLessThan(
+            refreshSnapshot.lowerBound,
+            firstDrainerAwait.lowerBound,
+            "adapter and refresh-generation snapshots must be atomic with respect to actor suspension"
+        )
     }
 
     func testRunnerRepoDiscoveryProbesOutsideWriteGate() throws {

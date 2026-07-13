@@ -531,6 +531,7 @@ actor ArchiveV2ServiceCoordinator {
         // pipeline. A configuration request that arrived while waiting is then
         // represented by both the current adapter snapshot and its refresh ID.
         let adapters = adapterProvider()
+        let consumedRefreshRequestID = fullCaptureRefreshRequestID
         let startedAt = now()
         let deadline = startedAt.addingTimeInterval(10)
         let shouldStartUnit: @Sendable () -> Bool = { [now, drainConditions] in
@@ -544,7 +545,6 @@ actor ArchiveV2ServiceCoordinator {
 
         if fullCapturePending, shouldStartUnit() {
             await drainer?.setActiveStages([.capture])
-            let consumedRefreshRequestID = fullCaptureRefreshRequestID
             do {
                 capture = try await operations.backlogCapture(
                     adapters,
