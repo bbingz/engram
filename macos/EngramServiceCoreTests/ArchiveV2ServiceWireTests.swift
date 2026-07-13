@@ -186,6 +186,7 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
             XCTAssertThrowsError(try makeStatus(drainState: "draining", activeStages: stages))
         }
         XCTAssertThrowsError(try makeStatus(activeStages: ["hq"]))
+        XCTAssertNoThrow(try makeStatus(drainState: "draining", activeStages: ["indexing"]))
         XCTAssertNoThrow(try makeStatus(drainState: "draining", activeStages: ["hq", "m1"]))
         XCTAssertThrowsError(try makeStatus(drainState: "waitingRetry", nextWakeAt: "not-a-timestamp"))
         XCTAssertThrowsError(try makeStatus(drainState: "waitingRetry"))

@@ -779,6 +779,10 @@ final class EngramServiceIPCTests: XCTestCase {
 
     func testArchiveDrainerResolvesProfileAdaptersInsideEveryPass() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        XCTAssertTrue(
+            source.contains("await archiveV2Coordinator.requestFullCaptureSweep()"),
+            "service restart must rebuild exact-index retry scheduling from durable capture state"
+        )
         let start = try XCTUnwrap(
             source.range(of: "let drainer = ArchiveV2BacklogDrainer")
         )

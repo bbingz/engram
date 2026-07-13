@@ -2366,7 +2366,7 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
                 .contains(drainState),
             field: "drainState"
         )
-        let validStages = Set(["capture", "binding", "policy", "hq", "m1"])
+        let validStages = Set(["capture", "indexing", "binding", "policy", "hq", "m1"])
         try EngramServiceArchiveV2WireValidation.require(
             activeStages.count <= 2
                 && Set(activeStages).count == activeStages.count

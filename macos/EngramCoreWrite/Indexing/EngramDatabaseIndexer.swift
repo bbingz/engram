@@ -412,6 +412,20 @@ public extension EngramDatabaseWriter {
         )
     }
 
+    /// Index an exact, already-captured locator batch without paying the global
+    /// startup parent-backfill cost for every archive drain unit. The caller is
+    /// responsible for constraining each adapter to captured locators only.
+    func indexCapturedSessions(
+        adapters: [any SessionAdapter]
+    ) async throws -> EngramDatabaseIndexResult {
+        try await indexSessions(
+            adapters: adapters,
+            runParentBackfills: false,
+            skipUnchangedFileLocators: true,
+            skipKnownFileLocators: false
+        )
+    }
+
     func indexAllSessions(
         adapters: [any SessionAdapter] = SessionAdapterFactory.defaultAdapters()
     ) async throws -> EngramDatabaseIndexResult {

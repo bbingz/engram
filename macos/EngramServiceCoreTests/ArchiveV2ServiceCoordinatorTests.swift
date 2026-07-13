@@ -82,6 +82,338 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         )
     }
 
+    func testBacklogPassIndexesSuccessfulCapturesBeforeBinding() async throws {
+        let harness = try makeHarness(remoteReady: false, batchSize: 3)
+        _ = try await emptyIndexResult(gate: harness.gate)
+        let events = EventLog()
+        let sourceURL = temporaryRoot("backlog-index")
+            .appendingPathComponent("session.jsonl")
+        try FileManager.default.createDirectory(
+            at: sourceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("{}\n".utf8).write(to: sourceURL)
+        let adapter = BacklogIndexingAdapter(locator: sourceURL.path, events: events)
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            await events.append("backlogCapture")
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                processed: 1,
+                capturedSourceBytes: 3,
+                successfulLocators: [.claudeCode: [sourceURL.path]],
+                hasMore: false
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: operations
+        )
+
+        _ = try await coordinator.runBacklogPass(adapters: [adapter])
+
+        let indexedSource = try await DatabaseQueue(path: harness.database.path).read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT source FROM sessions WHERE id = ?",
+                arguments: [BacklogIndexingAdapter.sessionID]
+            )
+        }
+        XCTAssertEqual(indexedSource, SourceName.claudeCode.rawValue)
+        let recorded = await events.values()
+        XCTAssertEqual(
+            recorded,
+            ["backlogCapture", "backlogIndex", "targets", "snapshot"]
+        )
+    }
+
+    func testBacklogPassDefersCapturedIndexingWhenResourcesChange() async throws {
+        let harness = try makeHarness(remoteReady: false, batchSize: 3)
+        _ = try await emptyIndexResult(gate: harness.gate)
+        let events = EventLog()
+        let conditions = CoordinatorConditionsBox(
+            ArchiveV2DrainConditions(lowPower: false, thermalPressure: false)
+        )
+        let sourceURL = temporaryRoot("backlog-index-deferred")
+            .appendingPathComponent("session.jsonl")
+        try FileManager.default.createDirectory(
+            at: sourceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("{}\n".utf8).write(to: sourceURL)
+        let adapter = BacklogIndexingAdapter(locator: sourceURL.path, events: events)
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            await events.append("backlogCapture")
+            conditions.set(
+                ArchiveV2DrainConditions(lowPower: true, thermalPressure: false)
+            )
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                processed: 1,
+                capturedSourceBytes: 3,
+                successfulLocators: [.claudeCode: [sourceURL.path]],
+                hasMore: false
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: operations,
+            drainConditions: { conditions.value() }
+        )
+
+        let deferred = try await coordinator.runBacklogPass(adapters: [adapter])
+        let deferredEvents = await events.values()
+        XCTAssertTrue(deferred.hasRunnableWork)
+        XCTAssertEqual(deferredEvents, ["backlogCapture"])
+
+        conditions.set(
+            ArchiveV2DrainConditions(lowPower: false, thermalPressure: false)
+        )
+        _ = try await coordinator.runBacklogPass(adapters: [adapter])
+        let resumedEvents = await events.values()
+        XCTAssertEqual(
+            resumedEvents,
+            ["backlogCapture", "backlogIndex", "targets", "snapshot"]
+        )
+    }
+
+    func testBacklogIndexRechecksResourceGateBeforeEveryLocator() async throws {
+        let harness = try makeHarness(remoteReady: false, batchSize: 3)
+        _ = try await emptyIndexResult(gate: harness.gate)
+        let events = EventLog()
+        let conditions = CoordinatorConditionsBox(
+            ArchiveV2DrainConditions(lowPower: false, thermalPressure: false)
+        )
+        let root = temporaryRoot("backlog-index-per-locator-gate")
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        let locators = ["a.jsonl", "b.jsonl"].map {
+            root.appendingPathComponent($0).path
+        }
+        for locator in locators {
+            try Data("{}\n".utf8).write(to: URL(fileURLWithPath: locator))
+        }
+        let adapter = GatedBacklogIndexingAdapter(
+            locators: locators,
+            events: events,
+            afterFirstScan: {
+                conditions.set(
+                    ArchiveV2DrainConditions(
+                        lowPower: true,
+                        thermalPressure: false
+                    )
+                )
+            }
+        )
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            await events.append("backlogCapture")
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                processed: 2,
+                capturedSourceBytes: 6,
+                successfulLocators: [.claudeCode: locators],
+                hasMore: false
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: operations,
+            drainConditions: { conditions.value() }
+        )
+
+        let summary = try await coordinator.runBacklogPass(adapters: [adapter])
+        let indexCount = await events.count(of: "backlogIndex")
+
+        XCTAssertEqual(indexCount, 1)
+        XCTAssertTrue(summary.hasRunnableWork)
+    }
+
+    func testBacklogPassSchedulesPersistedParserRetryDeadline() async throws {
+        let harness = try makeHarness(remoteReady: false, batchSize: 3)
+        _ = try await emptyIndexResult(gate: harness.gate)
+        let events = EventLog()
+        let sourceURL = temporaryRoot("backlog-index-retry")
+            .appendingPathComponent("session.jsonl")
+        try FileManager.default.createDirectory(
+            at: sourceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("{}\n".utf8).write(to: sourceURL)
+        let capturedGeneration = try XCTUnwrap(
+            ArchiveV2ServiceCoordinator.currentSourceGeneration(
+                locator: sourceURL.path
+            )
+        )
+        let adapter = RetryableBacklogIndexingAdapter(
+            locator: sourceURL.path,
+            events: events
+        )
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            await events.append("backlogCapture")
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                processed: 1,
+                capturedSourceBytes: 3,
+                successfulLocators: [.claudeCode: [sourceURL.path]],
+                successfulTargets: [
+                    ArchiveV2ServiceCaptureTarget(
+                        captureID: String(repeating: "b", count: 64),
+                        source: .claudeCode,
+                        locator: sourceURL.path,
+                        generation: capturedGeneration,
+                        capturedAt: "2026-07-13T00:00:00.000Z"
+                    ),
+                ],
+                hasMore: false
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: operations
+        )
+
+        let first = try await coordinator.runBacklogPass(adapters: [adapter])
+        let persistedState = try await harness.gate.performWriteCommand(
+            name: "testReadBacklogIndexRetry"
+        ) { writer in
+            try writer.knownFileIndexStates(
+                source: .claudeCode,
+                locators: [sourceURL.path]
+            )[sourceURL.path]
+        }.value
+        let retryEpoch = try XCTUnwrap(persistedState?.retryAfterEpochSeconds)
+        let firstIndexCount = await events.count(of: "backlogIndex")
+
+        XCTAssertEqual(persistedState?.parseStatus, .retry)
+        XCTAssertEqual(first.nextRetryAt, Date(timeIntervalSince1970: TimeInterval(retryEpoch)))
+        XCTAssertFalse(first.hasRunnableWork)
+        XCTAssertEqual(firstIndexCount, 1)
+
+        let restartedCoordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: operations
+        )
+        let second = try await restartedCoordinator.runBacklogPass(adapters: [adapter])
+        let secondIndexCount = await events.count(of: "backlogIndex")
+        XCTAssertEqual(second.nextRetryAt, first.nextRetryAt)
+        XCTAssertEqual(secondIndexCount, 1)
+    }
+
+    func testBacklogPassRecapturesChangedGenerationBeforeParserRetry() async throws {
+        let harness = try makeHarness(remoteReady: false, batchSize: 3)
+        _ = try await emptyIndexResult(gate: harness.gate)
+        let events = EventLog()
+        let clock = CoordinatorClock(Date())
+        let sourceURL = temporaryRoot("backlog-index-generation-retry")
+            .appendingPathComponent("session.jsonl")
+        try FileManager.default.createDirectory(
+            at: sourceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("{}\n".utf8).write(to: sourceURL)
+        let capturedGeneration = try XCTUnwrap(
+            ArchiveV2ServiceCoordinator.currentSourceGeneration(
+                locator: sourceURL.path
+            )
+        )
+        let adapter = RetryableBacklogIndexingAdapter(
+            locator: sourceURL.path,
+            events: events
+        )
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, refresh, _ in
+            await events.append("backlogCapture:\(refresh)")
+            let generation = refresh
+                ? try XCTUnwrap(
+                    ArchiveV2ServiceCoordinator.currentSourceGeneration(
+                        locator: sourceURL.path
+                    )
+                )
+                : capturedGeneration
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                processed: 1,
+                capturedSourceBytes: 3,
+                successfulLocators: [.claudeCode: [sourceURL.path]],
+                successfulTargets: [
+                    ArchiveV2ServiceCaptureTarget(
+                        captureID: String(repeating: "c", count: 64),
+                        source: .claudeCode,
+                        locator: sourceURL.path,
+                        generation: generation,
+                        capturedAt: "2026-07-13T00:00:00.000Z"
+                    ),
+                ],
+                hasMore: false
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: operations,
+            now: { clock.value() }
+        )
+
+        let first = try await coordinator.runBacklogPass(adapters: [adapter])
+        let retryAt = try XCTUnwrap(first.nextRetryAt)
+        let initialIndexCount = await events.count(of: "backlogIndex")
+        XCTAssertEqual(initialIndexCount, 1)
+
+        try Data("changed generation\n".utf8).write(to: sourceURL)
+        XCTAssertNotEqual(
+            ArchiveV2ServiceCoordinator.currentSourceGeneration(locator: sourceURL.path),
+            capturedGeneration
+        )
+        clock.set(retryAt.addingTimeInterval(1))
+
+        let changed = try await coordinator.runBacklogPass(adapters: [adapter])
+        let indexCountAfterChange = await events.count(of: "backlogIndex")
+        let captureEvents = await events.values().filter {
+            $0.hasPrefix("backlogCapture:")
+        }
+        XCTAssertEqual(indexCountAfterChange, 1)
+        XCTAssertTrue(changed.hasRunnableWork)
+        XCTAssertEqual(captureEvents, ["backlogCapture:false"])
+
+        _ = try await coordinator.runBacklogPass(adapters: [adapter])
+        let indexCountAfterRecapture = await events.count(of: "backlogIndex")
+        let finalCaptureEvents = await events.values().filter {
+            $0.hasPrefix("backlogCapture:")
+        }
+        XCTAssertEqual(indexCountAfterRecapture, 2)
+        XCTAssertEqual(
+            finalCaptureEvents,
+            ["backlogCapture:false", "backlogCapture:true"]
+        )
+    }
+
     func testBacklogPassStopsRecapturingAfterFullSweepIsExhausted() async throws {
         let harness = try makeHarness(remoteReady: true, batchSize: 3)
         let events = EventLog()
@@ -121,6 +453,30 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertEqual(second.capturedFiles, 0)
         XCTAssertEqual(captureCount, 1)
         XCTAssertEqual(replicationCount, 2)
+    }
+
+    func testBacklogCaptureFailureDoesNotCreateTwoSecondBusyLoop() async throws {
+        let harness = try makeHarness(remoteReady: false, batchSize: 3)
+        let events = EventLog()
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            await events.append("backlogCapture")
+            throw TestError.indexFailed
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: operations
+        )
+
+        let summary = try await coordinator.runBacklogPass(adapters: [])
+        let captureCount = await events.count(of: "backlogCapture")
+
+        XCTAssertFalse(summary.hasRunnableWork)
+        XCTAssertNil(summary.nextRetryAt)
+        XCTAssertEqual(captureCount, 1)
     }
 
     func testRequestFullCaptureSweepRestartsCaptureAfterExhaustion() async throws {
@@ -2289,6 +2645,197 @@ private actor EventLog {
 
     func count(of value: String) -> Int {
         events.filter { $0 == value }.count
+    }
+}
+
+private final class BacklogIndexingAdapter: ExactArchiveSourceAdapter, @unchecked Sendable {
+    static let sessionID = "backlog-index-session"
+
+    let source: SourceName = .claudeCode
+    private let locator: String
+    private let events: EventLog
+
+    init(locator: String, events: EventLog) {
+        self.locator = locator
+        self.events = events
+    }
+
+    func detect() async -> Bool { true }
+    func listSessionLocators() async throws -> [String] { [locator] }
+
+    func archiveSourceDescriptor(locator: String) async throws -> ArchiveSourceDescriptor {
+        try ArchiveSourceDescriptor.singleFile(
+            locator: locator,
+            sourceURL: URL(fileURLWithPath: locator),
+            replayRelativePath: "session.jsonl"
+        )
+    }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .success(info(locator: locator))
+    }
+
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        await events.append("backlogIndex")
+        return .success(
+            IndexingScan(
+                info: info(locator: locator),
+                messages: [NormalizedMessage(role: .user, content: "backlog index")]
+            )
+        )
+    }
+
+    func streamMessages(
+        locator _: String,
+        options _: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(NormalizedMessage(role: .user, content: "backlog index"))
+            continuation.finish()
+        }
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        locator == self.locator
+    }
+
+    private func info(locator: String) -> NormalizedSessionInfo {
+        NormalizedSessionInfo(
+            id: Self.sessionID,
+            source: .claudeCode,
+            startTime: "2026-07-13T00:00:00Z",
+            cwd: "/tmp/project",
+            messageCount: 1,
+            userMessageCount: 1,
+            assistantMessageCount: 0,
+            toolMessageCount: 0,
+            systemMessageCount: 0,
+            filePath: locator,
+            sizeBytes: 3,
+            originator: "claude-code"
+        )
+    }
+}
+
+private final class RetryableBacklogIndexingAdapter: ExactArchiveSourceAdapter, @unchecked Sendable {
+    let source: SourceName = .claudeCode
+    private let locator: String
+    private let events: EventLog
+
+    init(locator: String, events: EventLog) {
+        self.locator = locator
+        self.events = events
+    }
+
+    func detect() async -> Bool { true }
+    func listSessionLocators() async throws -> [String] { [locator] }
+
+    func archiveSourceDescriptor(locator: String) async throws -> ArchiveSourceDescriptor {
+        try ArchiveSourceDescriptor.singleFile(
+            locator: locator,
+            sourceURL: URL(fileURLWithPath: locator),
+            replayRelativePath: "session.jsonl"
+        )
+    }
+
+    func parseSessionInfo(locator _: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .failure(.malformedJSON)
+    }
+
+    func scanForIndexing(locator _: String) async throws -> AdapterParseResult<IndexingScan> {
+        await events.append("backlogIndex")
+        return .failure(.malformedJSON)
+    }
+
+    func streamMessages(
+        locator _: String,
+        options _: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        locator == self.locator
+    }
+}
+
+private final class GatedBacklogIndexingAdapter: ExactArchiveSourceAdapter, @unchecked Sendable {
+    let source: SourceName = .claudeCode
+    private let locators: [String]
+    private let events: EventLog
+    private let afterFirstScan: @Sendable () -> Void
+    private let lock = NSLock()
+    private var scanCount = 0
+
+    init(
+        locators: [String],
+        events: EventLog,
+        afterFirstScan: @escaping @Sendable () -> Void
+    ) {
+        self.locators = locators
+        self.events = events
+        self.afterFirstScan = afterFirstScan
+    }
+
+    func detect() async -> Bool { true }
+    func listSessionLocators() async throws -> [String] { locators }
+
+    func archiveSourceDescriptor(locator: String) async throws -> ArchiveSourceDescriptor {
+        try ArchiveSourceDescriptor.singleFile(
+            locator: locator,
+            sourceURL: URL(fileURLWithPath: locator),
+            replayRelativePath: URL(fileURLWithPath: locator).lastPathComponent
+        )
+    }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .success(info(locator: locator))
+    }
+
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        await events.append("backlogIndex")
+        let isFirst = lock.withLock {
+            scanCount += 1
+            return scanCount == 1
+        }
+        if isFirst { afterFirstScan() }
+        return .success(
+            IndexingScan(
+                info: info(locator: locator),
+                messages: [NormalizedMessage(role: .user, content: "indexed")]
+            )
+        )
+    }
+
+    func streamMessages(
+        locator _: String,
+        options _: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(NormalizedMessage(role: .user, content: "indexed"))
+            continuation.finish()
+        }
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        locators.contains(locator)
+    }
+
+    private func info(locator: String) -> NormalizedSessionInfo {
+        NormalizedSessionInfo(
+            id: "gated-\(URL(fileURLWithPath: locator).lastPathComponent)",
+            source: .claudeCode,
+            startTime: "2026-07-13T00:00:00Z",
+            cwd: "/tmp/project",
+            messageCount: 1,
+            userMessageCount: 1,
+            assistantMessageCount: 0,
+            toolMessageCount: 0,
+            systemMessageCount: 0,
+            filePath: locator,
+            sizeBytes: 3,
+            originator: "claude-code"
+        )
     }
 }
 

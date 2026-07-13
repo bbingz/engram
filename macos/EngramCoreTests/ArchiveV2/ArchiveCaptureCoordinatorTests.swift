@@ -693,6 +693,47 @@ final class ArchiveCaptureCoordinatorTests: XCTestCase {
         XCTAssertEqual(try reopenedCatalog.unboundCaptures(limit: 10).count, 4)
     }
 
+    func testRestartLocatorSweepRevisitsRowsBeforePersistedCursor() async throws {
+        let urls = try makeSourceFiles(
+            directory: "capture-restart-sweep",
+            names: ["first.jsonl", "second.jsonl"]
+        )
+        let adapter = CoordinatorExactAdapter(
+            source: .claudeCode,
+            locators: urls.map(\.path),
+            relativePaths: Dictionary(
+                uniqueKeysWithValues: urls.map { ($0.path, $0.lastPathComponent) }
+            )
+        )
+        let (cas, catalog) = try makeStore(name: "capture-restart-sweep")
+        let firstCoordinator = ArchiveCaptureCoordinator(cas: cas, catalog: catalog)
+        let first = try await firstCoordinator.capture(
+            adapters: [adapter],
+            budget: ArchiveCaptureBudget(locatorLimit: 1, sourceByteLimit: .max),
+            cursorScope: .full,
+            refreshLocatorSnapshot: true
+        )
+        XCTAssertEqual(first.items.map(\.locator), [urls[0].path])
+        XCTAssertTrue(first.hasMore)
+
+        let reopenedCatalog = try ArchiveCatalog(
+            root: archiveRoot(name: "capture-restart-sweep"),
+            machineID: machineID
+        )
+        try reopenedCatalog.migrate()
+        let restarted = ArchiveCaptureCoordinator(cas: cas, catalog: reopenedCatalog)
+        let replayed = try await restarted.capture(
+            adapters: [adapter],
+            budget: ArchiveCaptureBudget(locatorLimit: 1, sourceByteLimit: .max),
+            cursorScope: .full,
+            refreshLocatorSnapshot: true,
+            restartLocatorSweep: true
+        )
+
+        XCTAssertEqual(replayed.items.map(\.locator), [urls[0].path])
+        XCTAssertTrue(replayed.hasMore)
+    }
+
     func testCaptureCursorUsesStableLocatorIdentityAcrossReordering() async throws {
         let urls = try makeSourceFiles(
             directory: "capture-reorder",

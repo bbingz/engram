@@ -61,7 +61,7 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             "Backlog drain: Paused for thermal pressure",
             "Backlog drain: Needs attention",
             "Active stages: %@",
-            "Capture", "Binding", "Policy", "HQ replication", "M1 replication",
+            "Capture", "Indexing", "Binding", "Policy", "HQ replication", "M1 replication",
             "Last backlog pass %@ · %@ · captured %lld · bound %lld · policy %lld · HQ %lld · M1 %lld",
             "Next backlog wake around %@",
         ] {

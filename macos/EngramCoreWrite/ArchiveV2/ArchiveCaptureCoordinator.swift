@@ -379,6 +379,7 @@ public actor ArchiveCaptureCoordinator {
         budget: ArchiveCaptureBudget,
         cursorScope: ArchiveCaptureCursorScope = .full,
         refreshLocatorSnapshot: Bool,
+        restartLocatorSweep: Bool = false,
         shouldStartUnit: @escaping @Sendable () -> Bool = { true }
     ) async throws -> ArchiveCaptureCycleResult {
         guard budget.locatorLimit >= 0 else {
@@ -394,6 +395,10 @@ public actor ArchiveCaptureCoordinator {
             for: adapters,
             cursorScope: cursorScope
         )
+        if restartLocatorSweep {
+            progress = Self.initialCaptureProgress(for: adapters)
+            locatorSweepCaches[cursorScope] = nil
+        }
         if budget.locatorLimit == 0 || budget.sourceByteLimit == 0 {
             let payload = try ArchiveCanonicalJSON.encode(progress)
             _ = try catalog.storeArchiveCursorCheckpoint(

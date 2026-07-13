@@ -600,6 +600,7 @@ struct ArchiveSettingsSection: View {
     private func backlogDrainStageName(_ stage: String) -> String {
         switch stage {
         case "capture": String(localized: "Capture")
+        case "indexing": String(localized: "Indexing")
         case "binding": String(localized: "Binding")
         case "policy": String(localized: "Policy")
         case "hq": String(localized: "HQ replication")

@@ -31,6 +31,7 @@ final class ServiceWriterGateTests: XCTestCase {
     /// Wave 7C H02: index/FTS/embed phase names are long-running for queue timeout.
     func testIndexAndFtsNamesAreLongRunning_repro() {
         XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("indexRecent"))
+        XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("indexArchiveBacklog"))
         XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("initialScanIndex"))
         XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("periodicFtsDrain"))
         XCTAssertTrue(ServiceWriterGate.isLongRunningWriteCommand("embeddingBackfill"))

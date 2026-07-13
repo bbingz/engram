@@ -12,6 +12,7 @@ enum ArchiveV2DrainState: String, Equatable, Sendable {
 
 enum ArchiveV2DrainStage: String, CaseIterable, Equatable, Sendable {
     case capture
+    case indexing
     case binding
     case policy
     case hq

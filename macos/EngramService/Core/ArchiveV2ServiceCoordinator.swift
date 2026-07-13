@@ -1,5 +1,6 @@
 import EngramCoreRead
 import EngramCoreWrite
+import Darwin
 import Foundation
 import GRDB
 
@@ -11,6 +12,7 @@ struct ArchiveV2ServiceCaptureSummary: Equatable, Sendable {
     let transientRetryLocators: [SourceName: [String]]
     let resolvedRetryLocators: [SourceName: [String]]
     let successfulLocators: [SourceName: [String]]
+    let successfulTargets: [ArchiveV2ServiceCaptureTarget]
     let hasMore: Bool
 
     init(
@@ -21,6 +23,7 @@ struct ArchiveV2ServiceCaptureSummary: Equatable, Sendable {
         transientRetryLocators: [SourceName: [String]] = [:],
         resolvedRetryLocators: [SourceName: [String]] = [:],
         successfulLocators: [SourceName: [String]] = [:],
+        successfulTargets: [ArchiveV2ServiceCaptureTarget] = [],
         hasMore: Bool = false
     ) {
         self.unsupported = unsupported
@@ -30,6 +33,7 @@ struct ArchiveV2ServiceCaptureSummary: Equatable, Sendable {
         self.transientRetryLocators = transientRetryLocators
         self.resolvedRetryLocators = resolvedRetryLocators
         self.successfulLocators = successfulLocators
+        self.successfulTargets = successfulTargets
         self.hasMore = hasMore
     }
 }
@@ -243,6 +247,22 @@ actor ArchiveV2ServiceCoordinator {
         let hasMore: Bool
     }
 
+    private struct PendingIndexKey: Hashable, Sendable {
+        let source: SourceName
+        let locator: String
+    }
+
+    private struct BacklogIndexState: Sendable {
+        let evaluatedLocators: [SourceName: [String]]
+        let failedLocators: [SourceName: [String]]
+        let recaptureLocators: [SourceName: [String]]
+        let statesBySource: [SourceName: [String: FileIndexState]]
+    }
+
+    private static let backlogIndexLocatorLimit = 32
+    private static let backlogIndexSourceByteLimit: Int64 = 128 * 1_024 * 1_024
+    private static let backlogIndexRetryDelay: TimeInterval = 300
+
     private let settings: ArchiveV2Settings
     private let writerGate: ServiceWriterGate
     private let localCaptureReady: Bool
@@ -265,6 +285,10 @@ actor ArchiveV2ServiceCoordinator {
     private var unsupportedLocatorCount = 0
     private var unsafeLocatorCount = 0
     private var captureRetryLocators: [SourceName: [String]] = [:]
+    private var pendingIndexLocators: Set<PendingIndexKey> = []
+    private var pendingIndexRetryAfter: [PendingIndexKey: Date] = [:]
+    private var pendingIndexGeneration: [PendingIndexKey: ArchiveSourceGeneration] = [:]
+    private var pendingIndexAwaitingCapture: Set<PendingIndexKey> = []
     private var fullCapturePending = true
     private var fullCaptureRefreshRequestID: UUID?
     private var lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?
@@ -540,6 +564,7 @@ actor ArchiveV2ServiceCoordinator {
                 && drainConditions().allowsNewWork
         }
         var capture = ArchiveV2ServiceCaptureSummary(unsupported: 0, unsafe: 0)
+        var captureFailedThisPass = false
         var reconcile = ReconcileSummary(boundRows: 0, policyRows: 0, hasMore: false)
         var replication = ArchiveReplicationCycleResult()
 
@@ -567,7 +592,124 @@ actor ArchiveV2ServiceCoordinator {
                 throw CancellationError()
             } catch {
                 fullCapturePending = true
+                captureFailedThisPass = true
                 lastCaptureError = "capture_failure"
+            }
+        }
+
+        // `file_index_state` is the durable retry authority. This actor-owned
+        // set is only a bounded scheduling cache for the current full sweep;
+        // after restart, the initial full capture sweep re-emits every durable
+        // capture and rebuilds this cache from those persisted parse states.
+        enqueuePendingIndexLocators(
+            capture.successfulLocators,
+            targets: capture.successfulTargets
+        )
+        let dueIndexLocators = duePendingIndexLocators(
+            at: now(),
+            locatorLimit: Self.backlogIndexLocatorLimit,
+            sourceByteLimit: Self.backlogIndexSourceByteLimit
+        )
+
+        // A successful exact capture is not binding-ready until the matching
+        // parser snapshot has been written. Admission uses the same deadline,
+        // cancellation and power/thermal gate as every other drain unit.
+        if !dueIndexLocators.isEmpty, shouldStartUnit() {
+            await drainer?.setActiveStages([.indexing])
+            do {
+                let expectedGenerations = pendingIndexGeneration
+                let indexed = try await writerGate.performWriteCommand(
+                    name: "indexArchiveBacklog"
+                ) { writer in
+                    var evaluatedLocators: [SourceName: [String]] = [:]
+                    var failedLocators: [SourceName: [String]] = [:]
+                    var recaptureLocators: [SourceName: [String]] = [:]
+                    var statesBySource: [SourceName: [String: FileIndexState]] = [:]
+                    var stopAfterFailure = false
+                    for source in dueIndexLocators.keys.sorted(
+                        by: { $0.rawValue < $1.rawValue }
+                    ) {
+                        for locator in dueIndexLocators[source] ?? [] {
+                            guard shouldStartUnit(), !stopAfterFailure else { break }
+                            let pendingKey = PendingIndexKey(
+                                source: source,
+                                locator: locator
+                            )
+                            if let capturedGeneration = expectedGenerations[pendingKey],
+                               Self.currentSourceGeneration(locator: locator)
+                                != capturedGeneration {
+                                recaptureLocators[source, default: []].append(locator)
+                                continue
+                            }
+                            let singleLocator = [source: [locator]]
+                            let parserAdapters = SessionAdapterFactory.indexingAdapters(
+                                from: adapters,
+                                capturedExactLocators: singleLocator
+                            )
+                            guard !parserAdapters.isEmpty else {
+                                failedLocators[source, default: []].append(locator)
+                                stopAfterFailure = true
+                                break
+                            }
+                            do {
+                                _ = try await writer.indexCapturedSessions(
+                                    adapters: parserAdapters
+                                )
+                                evaluatedLocators[source, default: []].append(locator)
+                                if let state = try writer.knownFileIndexStates(
+                                    source: source,
+                                    locators: [locator]
+                                )[locator] {
+                                    statesBySource[source, default: [:]][locator] = state
+                                }
+                            } catch is CancellationError {
+                                throw CancellationError()
+                            } catch {
+                                failedLocators[source, default: []].append(locator)
+                                stopAfterFailure = true
+                                break
+                            }
+                        }
+                        if stopAfterFailure || !shouldStartUnit() {
+                            break
+                        }
+                    }
+                    return BacklogIndexState(
+                        evaluatedLocators: evaluatedLocators,
+                        failedLocators: failedLocators,
+                        recaptureLocators: recaptureLocators,
+                        statesBySource: statesBySource
+                    )
+                }.value
+                for (source, locators) in indexed.recaptureLocators {
+                    for locator in locators {
+                        markPendingIndexAwaitingRecapture(
+                            PendingIndexKey(source: source, locator: locator)
+                        )
+                    }
+                }
+                if !indexed.evaluatedLocators.isEmpty {
+                    updatePendingIndexLocators(
+                        indexed.evaluatedLocators,
+                        statesBySource: indexed.statesBySource,
+                        evaluatedAt: now()
+                    )
+                }
+                if !indexed.failedLocators.isEmpty {
+                    deferPendingIndexLocators(indexed.failedLocators, from: now())
+                    lastCaptureError = "index_failure"
+                } else if lastCaptureError == "index_failure" {
+                    lastCaptureError = nil
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // A top-level writer/index failure gets the same bounded retry
+                // delay as a first parser failure. Per-locator parser failures
+                // do not throw: their durable retry_after values are consumed
+                // by updatePendingIndexLocators above.
+                deferPendingIndexLocators(dueIndexLocators, from: now())
+                lastCaptureError = "index_failure"
             }
         }
 
@@ -602,16 +744,24 @@ actor ArchiveV2ServiceCoordinator {
 
         await drainer?.setActiveStages([])
         let aggregate = try await operations.status()
-        let nextRetryAt = Self.earliestRetryDate(
+        let remoteRetryAt = Self.earliestRetryDate(
             aggregate,
             retryPausedUntilByReplica: replication.retryPausedUntilByReplica,
             attentionPausedReplicaIDs: Set(replication.pausedReplicaIDs)
         )
+        let pendingIndex = pendingIndexSchedule(at: now())
+        let nextRetryAt = [remoteRetryAt, pendingIndex.nextRetryAt]
+            .compactMap { $0 }
+            .min()
         let pausedReplicas = Set(
             replication.pausedReplicaIDs + replication.retryPausedReplicaIDs
         )
         let hasRunnableWork = capture.hasMore
+            || (!captureFailedThisPass
+                && fullCapturePending
+                && !pendingIndexAwaitingCapture.isEmpty)
             || reconcile.hasMore
+            || pendingIndex.hasDueWork
             || (!pausedReplicas.contains("hq") && aggregate.hq.pending > 0)
             || (!pausedReplicas.contains("m1") && aggregate.m1.pending > 0)
         return ArchiveV2DrainPassSummary(
@@ -629,6 +779,160 @@ actor ArchiveV2ServiceCoordinator {
             nextRetryAt: nextRetryAt,
             needsAttention: !replication.pausedReplicaIDs.isEmpty
         )
+    }
+
+    private func enqueuePendingIndexLocators(
+        _ locatorsBySource: [SourceName: [String]],
+        targets: [ArchiveV2ServiceCaptureTarget]
+    ) {
+        for (source, locators) in locatorsBySource {
+            for locator in locators {
+                pendingIndexLocators.insert(
+                    PendingIndexKey(source: source, locator: locator)
+                )
+            }
+        }
+        for target in targets {
+            guard let generation = target.generation else { continue }
+            let key = PendingIndexKey(
+                source: target.source,
+                locator: target.locator
+            )
+            let generationChanged = pendingIndexGeneration[key] != generation
+            pendingIndexLocators.insert(key)
+            pendingIndexGeneration[key] = generation
+            pendingIndexAwaitingCapture.remove(key)
+            if generationChanged {
+                pendingIndexRetryAfter.removeValue(forKey: key)
+            }
+        }
+    }
+
+    private func duePendingIndexLocators(
+        at date: Date,
+        locatorLimit: Int,
+        sourceByteLimit: Int64
+    ) -> [SourceName: [String]] {
+        guard locatorLimit > 0, sourceByteLimit > 0 else { return [:] }
+        let candidates = pendingIndexLocators
+            .filter { key in
+                !pendingIndexAwaitingCapture.contains(key)
+                    && (pendingIndexRetryAfter[key].map { $0 <= date } ?? true)
+            }
+            .sorted {
+                ($0.source.rawValue, $0.locator) < ($1.source.rawValue, $1.locator)
+            }
+        var selected: [PendingIndexKey] = []
+        var selectedBytes: Int64 = 0
+        for key in candidates {
+            guard selected.count < locatorLimit else { break }
+            if let capturedGeneration = pendingIndexGeneration[key],
+               Self.currentSourceGeneration(locator: key.locator)
+                != capturedGeneration {
+                markPendingIndexAwaitingRecapture(key)
+                continue
+            }
+            let size = max(FileIndexStat.directFileStat(locator: key.locator)?.sizeBytes ?? 0, 0)
+            let addition = selectedBytes.addingReportingOverflow(size)
+            if !selected.isEmpty,
+               (addition.overflow || addition.partialValue > sourceByteLimit) {
+                continue
+            }
+            selected.append(key)
+            selectedBytes = addition.overflow ? .max : addition.partialValue
+        }
+        return Dictionary(grouping: selected, by: \.source)
+            .mapValues { $0.map(\.locator) }
+    }
+
+    private func updatePendingIndexLocators(
+        _ evaluated: [SourceName: [String]],
+        statesBySource: [SourceName: [String: FileIndexState]],
+        evaluatedAt: Date
+    ) {
+        for (source, locators) in evaluated {
+            for locator in locators {
+                let key = PendingIndexKey(source: source, locator: locator)
+                guard let stat = FileIndexStat.directFileStat(locator: locator) else {
+                    pendingIndexLocators.remove(key)
+                    pendingIndexRetryAfter.removeValue(forKey: key)
+                    pendingIndexGeneration.removeValue(forKey: key)
+                    pendingIndexAwaitingCapture.remove(key)
+                    continue
+                }
+                if let capturedGeneration = pendingIndexGeneration[key],
+                   Self.currentSourceGeneration(locator: locator)
+                    != capturedGeneration {
+                    markPendingIndexAwaitingRecapture(key)
+                    continue
+                }
+                guard let state = statesBySource[source]?[locator],
+                      state.schemaVersion == FileIndexState.currentSchemaVersion,
+                      state.sameFileIdentity(as: stat) else {
+                    pendingIndexRetryAfter[key] = evaluatedAt.addingTimeInterval(
+                        Self.backlogIndexRetryDelay
+                    )
+                    continue
+                }
+                switch state.parseStatus {
+                case .ok, .terminal:
+                    pendingIndexLocators.remove(key)
+                    pendingIndexRetryAfter.removeValue(forKey: key)
+                    pendingIndexGeneration.removeValue(forKey: key)
+                    pendingIndexAwaitingCapture.remove(key)
+                case .retry:
+                    let retryAt = state.retryAfterEpochSeconds.map {
+                        Date(timeIntervalSince1970: TimeInterval($0))
+                    } ?? evaluatedAt.addingTimeInterval(Self.backlogIndexRetryDelay)
+                    pendingIndexRetryAfter[key] = max(retryAt, evaluatedAt)
+                }
+            }
+        }
+    }
+
+    private func deferPendingIndexLocators(
+        _ locatorsBySource: [SourceName: [String]],
+        from date: Date
+    ) {
+        let retryAt = date.addingTimeInterval(Self.backlogIndexRetryDelay)
+        for (source, locators) in locatorsBySource {
+            for locator in locators {
+                pendingIndexRetryAfter[
+                    PendingIndexKey(source: source, locator: locator)
+                ] = retryAt
+            }
+        }
+    }
+
+    private func pendingIndexSchedule(
+        at date: Date
+    ) -> (hasDueWork: Bool, nextRetryAt: Date?) {
+        var hasDueWork = false
+        var nextRetryAt: Date?
+        for key in pendingIndexLocators {
+            if pendingIndexAwaitingCapture.contains(key) {
+                continue
+            }
+            guard let retryAt = pendingIndexRetryAfter[key] else {
+                hasDueWork = true
+                continue
+            }
+            if retryAt <= date {
+                hasDueWork = true
+            } else if nextRetryAt == nil || retryAt < nextRetryAt! {
+                nextRetryAt = retryAt
+            }
+        }
+        return (hasDueWork, nextRetryAt)
+    }
+
+    private func markPendingIndexAwaitingRecapture(_ key: PendingIndexKey) {
+        pendingIndexAwaitingCapture.insert(key)
+        pendingIndexRetryAfter.removeValue(forKey: key)
+        fullCapturePending = true
+        if fullCaptureRefreshRequestID == nil {
+            fullCaptureRefreshRequestID = UUID()
+        }
     }
 
     func status() async -> EngramServiceArchiveV2StatusResponse {
@@ -1089,6 +1393,7 @@ actor ArchiveV2ServiceCoordinator {
                     ),
                     cursorScope: .full,
                     refreshLocatorSnapshot: refreshLocatorSnapshot,
+                    restartLocatorSweep: refreshLocatorSnapshot,
                     shouldStartUnit: shouldStartUnit
                 )
                 return Self.captureSummary(from: result)
@@ -1314,6 +1619,9 @@ actor ArchiveV2ServiceCoordinator {
             transientRetryLocators: transientRetryLocators,
             resolvedRetryLocators: resolvedRetryLocators,
             successfulLocators: successfulLocators,
+            successfulTargets: result.captures.compactMap {
+                Self.captureTarget($0.capture)
+            },
             hasMore: result.hasMore
         )
     }
@@ -1692,6 +2000,42 @@ actor ArchiveV2ServiceCoordinator {
             locator: locator,
             generation: capture.generation,
             capturedAt: capture.capturedAt
+        )
+    }
+
+    static func currentSourceGeneration(
+        locator: String
+    ) -> ArchiveSourceGeneration? {
+        var info = stat()
+        guard Darwin.lstat(locator, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG else {
+            return nil
+        }
+        let mtimeSeconds = Int64(info.st_mtimespec.tv_sec)
+        let mtimeNanoseconds = Int64(info.st_mtimespec.tv_nsec)
+        let ctimeSeconds = Int64(info.st_ctimespec.tv_sec)
+        let ctimeNanoseconds = Int64(info.st_ctimespec.tv_nsec)
+        guard mtimeSeconds >= 0,
+              ctimeSeconds >= 0,
+              mtimeNanoseconds >= 0,
+              mtimeNanoseconds < 1_000_000_000,
+              ctimeNanoseconds >= 0,
+              ctimeNanoseconds < 1_000_000_000 else {
+            return nil
+        }
+        let mtime = mtimeSeconds.multipliedReportingOverflow(by: 1_000_000_000)
+        let ctime = ctimeSeconds.multipliedReportingOverflow(by: 1_000_000_000)
+        guard !mtime.overflow, !ctime.overflow else { return nil }
+        let mtimeNs = mtime.partialValue.addingReportingOverflow(mtimeNanoseconds)
+        let ctimeNs = ctime.partialValue.addingReportingOverflow(ctimeNanoseconds)
+        guard !mtimeNs.overflow, !ctimeNs.overflow else { return nil }
+        return try? ArchiveSourceGeneration(
+            device: Int64(info.st_dev),
+            inode: Int64(info.st_ino),
+            size: Int64(info.st_size),
+            mtimeNs: mtimeNs.partialValue,
+            ctimeNs: ctimeNs.partialValue,
+            mode: Int64(info.st_mode)
         )
     }
 

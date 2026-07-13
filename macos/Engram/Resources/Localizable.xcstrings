@@ -253,6 +253,9 @@
     "Capture" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "捕获" } } }
     },
+    "Indexing" : {
+      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "索引" } } }
+    },
     "Client errors: %lld" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "客户端错误：%lld" } } }
     },

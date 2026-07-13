@@ -226,6 +226,11 @@ public enum EngramServiceRunner {
         let archiveDrainStartTask = Task {
             await initialScanTask.value
             guard !Task.isCancelled, let archiveV2Drainer else { return }
+            // Rebuild the in-memory exact-index scheduler from the durable
+            // capture catalog and file_index_state after every service restart.
+            // Refreshing the full locator snapshot avoids stranding a retry if
+            // the prior process stopped after advancing its capture cursor.
+            await archiveV2Coordinator.requestFullCaptureSweep()
             await archiveV2Drainer.start()
             await archiveV2Drainer.signal()
         }
