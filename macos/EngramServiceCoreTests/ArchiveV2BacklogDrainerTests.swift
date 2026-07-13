@@ -77,6 +77,7 @@ final class ArchiveV2BacklogDrainerTests: XCTestCase {
             ArchiveV2DrainPassSummary(
                 startedAt: Date(timeIntervalSince1970: 100),
                 finishedAt: Date(timeIntervalSince1970: 101),
+                retryScheduled: 1,
                 nextRetryAt: retryAt
             ),
         ])

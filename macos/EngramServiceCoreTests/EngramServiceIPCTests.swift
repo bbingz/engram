@@ -777,6 +777,24 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(source.contains("adapters: parserAdapters"))
     }
 
+    func testArchiveDrainerResolvesProfileAdaptersInsideEveryPass() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
+        let start = try XCTUnwrap(
+            source.range(of: "let drainer = ArchiveV2BacklogDrainer")
+        )
+        let end = try XCTUnwrap(
+            source.range(
+                of: "await archiveV2Coordinator.attachDrainer(drainer)",
+                range: start.lowerBound ..< source.endIndex
+            )
+        )
+        let composition = String(source[start.lowerBound ..< end.lowerBound])
+
+        XCTAssertTrue(composition.contains("SessionAdapterFactory.defaultAdapters()"))
+        XCTAssertTrue(composition.contains("let passAdapters = Self.exactArchiveAdapters"))
+        XCTAssertTrue(composition.contains("adapters: passAdapters"))
+    }
+
     func testRunnerRepoDiscoveryProbesOutsideWriteGate() throws {
         let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
 

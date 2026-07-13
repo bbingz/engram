@@ -378,7 +378,8 @@ public actor ArchiveCaptureCoordinator {
         adapters: [any SessionAdapter],
         budget: ArchiveCaptureBudget,
         cursorScope: ArchiveCaptureCursorScope = .full,
-        refreshLocatorSnapshot: Bool
+        refreshLocatorSnapshot: Bool,
+        shouldStartUnit: @escaping @Sendable () -> Bool = { true }
     ) async throws -> ArchiveCaptureCycleResult {
         guard budget.locatorLimit >= 0 else {
             throw ArchiveCaptureCoordinatorError.invalidBudget(budget.locatorLimit)
@@ -499,6 +500,7 @@ public actor ArchiveCaptureCoordinator {
         var capturedSourceBytes: Int64 = 0
         while processed < budget.locatorLimit,
               capturedSourceBytes < budget.sourceByteLimit,
+              shouldStartUnit(),
               let sourceIndex = Self.nextCaptureSource(
                   in: progress,
                   availableSources: Set(locatorSnapshots.keys)

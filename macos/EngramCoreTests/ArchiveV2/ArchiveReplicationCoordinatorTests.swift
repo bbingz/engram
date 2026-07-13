@@ -237,6 +237,70 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         XCTAssertEqual(authHQStates.filter { $0 == .pending }.count, 1)
     }
 
+    func testBacklogPassDefersAffectedReplicaPendingRowsUntilRetryDeadline() async throws {
+        let store = try makeStore(name: "backlog-transient-deadline")
+        _ = try addBinding(to: store, seed: "deadline-1", eligibility: .eligible)
+        _ = try addBinding(to: store, seed: "deadline-2", eligibility: .eligible)
+        let hq = FakeArchiveReplicaBackend(replicaID: "hq")
+        hq.setFailure(operation: "headObject", error: .transport(.network))
+        let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
+        let clock = LockedTestClock(try date("2026-07-11T00:00:00.000Z"))
+        let coordinator = try makeCoordinator(
+            store: store,
+            hq: hq,
+            m1: m1,
+            clock: clock,
+            jitter: ArchiveRetryJitter(sampleUnit: { 1 })
+        )
+
+        let first = await coordinator.runBacklogPass(perReplicaLimit: 2)
+        let hqEventsBeforeDeadline = hq.events()
+        clock.set(try date("2026-07-11T00:00:30.000Z"))
+        let beforeDeadline = await coordinator.runBacklogPass(perReplicaLimit: 2)
+
+        XCTAssertEqual(first.retryPausedReplicaIDs, ["hq"])
+        XCTAssertEqual(beforeDeadline.retryPausedReplicaIDs, ["hq"])
+        XCTAssertEqual(hq.events(), hqEventsBeforeDeadline)
+
+        clock.set(try date("2026-07-11T00:01:00.000Z"))
+        let atDeadline = await coordinator.runBacklogPass(perReplicaLimit: 2)
+
+        XCTAssertEqual(atDeadline.retryPausedReplicaIDs, ["hq"])
+        XCTAssertEqual(hq.events().filter { $0 == "headObject" }.count, 2)
+    }
+
+    func testBacklogPassResourceGateStopsBeforeStartingAnotherReplicaRow() async throws {
+        let store = try makeStore(name: "backlog-resource-gate")
+        _ = try addBinding(to: store, seed: "resource-1", eligibility: .eligible)
+        _ = try addBinding(to: store, seed: "resource-2", eligibility: .eligible)
+        let hq = FakeArchiveReplicaBackend(replicaID: "hq")
+        let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
+        let hqGate = AsyncTestGate()
+        let m1Gate = AsyncTestGate()
+        hq.setHeadObjectGate(hqGate)
+        m1.setHeadObjectGate(m1Gate)
+        let workGate = WorkGateBox(true)
+        let coordinator = try makeCoordinator(store: store, hq: hq, m1: m1)
+        let task = Task {
+            await coordinator.runBacklogPass(
+                perReplicaLimit: 2,
+                shouldStartUnit: { workGate.value() }
+            )
+        }
+        async let hqEntered: Void = hqGate.waitUntilEntered()
+        async let m1Entered: Void = m1Gate.waitUntilEntered()
+        _ = await (hqEntered, m1Entered)
+
+        workGate.set(false)
+        await hqGate.release()
+        await m1Gate.release()
+        let result = await task.value
+
+        XCTAssertEqual(result.verified, 2)
+        XCTAssertEqual(hq.events().filter { $0 == "getReceipt" }.count, 1)
+        XCTAssertEqual(m1.events().filter { $0 == "getReceipt" }.count, 1)
+    }
+
     func testLimitCountsReplicaRowsRatherThanManifests() async throws {
         let store = try makeStore(name: "row-limit")
         let fixture = try addBinding(to: store, seed: "row-limit", eligibility: .eligible)
@@ -1226,6 +1290,23 @@ private final class LockedTestClock: @unchecked Sendable {
         lock.lock()
         value = newValue
         lock.unlock()
+    }
+}
+
+private final class WorkGateBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var allowed: Bool
+
+    init(_ allowed: Bool) {
+        self.allowed = allowed
+    }
+
+    func value() -> Bool {
+        lock.withLock { allowed }
+    }
+
+    func set(_ value: Bool) {
+        lock.withLock { allowed = value }
     }
 }
 

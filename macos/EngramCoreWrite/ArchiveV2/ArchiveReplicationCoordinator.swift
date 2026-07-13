@@ -14,6 +14,7 @@ public struct ArchiveReplicationCycleResult: Equatable, Sendable {
     public let cancelled: Bool
     public let cycleError: String?
     public let pausedReplicaIDs: [String]
+    public let retryPausedReplicaIDs: [String]
     public let verifiedByReplica: [String: Int]
 
     public init(
@@ -27,6 +28,7 @@ public struct ArchiveReplicationCycleResult: Equatable, Sendable {
         cancelled: Bool = false,
         cycleError: String? = nil,
         pausedReplicaIDs: [String] = [],
+        retryPausedReplicaIDs: [String] = [],
         verifiedByReplica: [String: Int] = [:]
     ) {
         self.claimed = claimed
@@ -39,6 +41,7 @@ public struct ArchiveReplicationCycleResult: Equatable, Sendable {
         self.cancelled = cancelled
         self.cycleError = cycleError
         self.pausedReplicaIDs = pausedReplicaIDs.sorted()
+        self.retryPausedReplicaIDs = retryPausedReplicaIDs.sorted()
         self.verifiedByReplica = verifiedByReplica.filter {
             ArchiveCatalog.currentReplicaIDs.contains($0.key) && $0.value >= 0
         }
@@ -81,6 +84,7 @@ public actor ArchiveReplicationCoordinator {
     private let jitter: ArchiveRetryJitter
     private var isRunning = false
     private var attentionPausedReplicaIDs = Set<String>()
+    private var retryPausedUntil: [String: Date] = [:]
 
     public init(
         catalog: ArchiveCatalog,
@@ -149,7 +153,10 @@ public actor ArchiveReplicationCoordinator {
         return cycle.result
     }
 
-    public func runBacklogPass(perReplicaLimit: Int) async -> ArchiveReplicationCycleResult {
+    public func runBacklogPass(
+        perReplicaLimit: Int,
+        shouldStartUnit: @escaping @Sendable () -> Bool = { true }
+    ) async -> ArchiveReplicationCycleResult {
         guard perReplicaLimit > 0 else {
             return ArchiveReplicationCycleResult(cycleError: "invalid_limit")
         }
@@ -165,7 +172,8 @@ public actor ArchiveReplicationCoordinator {
                 cycle.cancelled = true
                 return cycle.result
             }
-            let cycleNow = timestamp(clock())
+            let cycleDate = clock()
+            let cycleNow = timestamp(cycleDate)
             cycle.staleRecovered = try catalog.recoverStaleInflight(
                 now: cycleNow,
                 olderThanSeconds: 600
@@ -175,7 +183,11 @@ public actor ArchiveReplicationCoordinator {
             )
             let retryQuota = perReplicaLimit / 2
             cycle.pausedReplicaIDs = Array(attentionPausedReplicaIDs)
+            retryPausedUntil = retryPausedUntil.filter { $0.value > cycleDate }
+            cycle.retryPausedUntil = retryPausedUntil
             let hqClaims = attentionPausedReplicaIDs.contains("hq")
+                || retryPausedUntil["hq"] != nil
+                || !shouldStartUnit()
                 ? []
                 : try catalog.claimReplicaWork(
                     replicaID: "hq",
@@ -184,6 +196,8 @@ public actor ArchiveReplicationCoordinator {
                     now: cycleNow
                 )
             let m1Claims = attentionPausedReplicaIDs.contains("m1")
+                || retryPausedUntil["m1"] != nil
+                || !shouldStartUnit()
                 ? []
                 : try catalog.claimReplicaWork(
                     replicaID: "m1",
@@ -195,16 +209,21 @@ public actor ArchiveReplicationCoordinator {
 
             async let hq = processClaims(
                 hqClaims,
-                stopOnInfrastructureFailure: true
+                stopOnInfrastructureFailure: true,
+                shouldStartUnit: shouldStartUnit
             )
             async let m1 = processClaims(
                 m1Claims,
-                stopOnInfrastructureFailure: true
+                stopOnInfrastructureFailure: true,
+                shouldStartUnit: shouldStartUnit
             )
             let batches = try await (hq, m1)
             cycle.merge(batches.0)
             cycle.merge(batches.1)
             attentionPausedReplicaIDs.formUnion(cycle.pausedReplicaIDs)
+            for (replicaID, deadline) in cycle.retryPausedUntil {
+                retryPausedUntil[replicaID] = deadline
+            }
         } catch is CancellationError {
             cycle.cancelled = true
         } catch {
@@ -221,22 +240,27 @@ public actor ArchiveReplicationCoordinator {
         )
         if let replicaID {
             attentionPausedReplicaIDs.remove(replicaID)
+            retryPausedUntil.removeValue(forKey: replicaID)
         } else {
             attentionPausedReplicaIDs.removeAll()
+            retryPausedUntil.removeAll()
         }
     }
 
     public func resumeAfterAttention(replicaID: String?) {
         if let replicaID {
             attentionPausedReplicaIDs.remove(replicaID)
+            retryPausedUntil.removeValue(forKey: replicaID)
         } else {
             attentionPausedReplicaIDs.removeAll()
+            retryPausedUntil.removeAll()
         }
     }
 
     private func processClaims(
         _ claims: [ArchiveReplicaClaim],
-        stopOnInfrastructureFailure: Bool
+        stopOnInfrastructureFailure: Bool,
+        shouldStartUnit: @escaping @Sendable () -> Bool = { true }
     ) async throws -> CycleAccumulator {
         var cycle = CycleAccumulator()
         let transientInfrastructure = Set([
@@ -253,6 +277,13 @@ public actor ArchiveReplicationCoordinator {
         for (index, claim) in claims.enumerated() {
             guard !Task.isCancelled else {
                 cycle.cancelled = true
+                break
+            }
+            guard shouldStartUnit() else {
+                _ = try catalog.releaseUnstartedReplicaClaims(
+                    Array(claims[index...]),
+                    updatedAt: timestamp(clock())
+                )
                 break
             }
             guard let backend = backends[claim.replicaID] else {
@@ -301,7 +332,14 @@ public actor ArchiveReplicationCoordinator {
                         lastError: symbol,
                         updatedAt: failureAt
                     )
-                    if changed { cycle.retryScheduled += 1 }
+                    if changed {
+                        cycle.retryScheduled += 1
+                        if stopOnInfrastructureFailure,
+                           transientInfrastructure.contains(symbol) {
+                            cycle.retryPausedUntil[claim.replicaID] =
+                                failureDate.addingTimeInterval(delay)
+                        }
+                    }
                 case .quarantine:
                     guard !Task.isCancelled else {
                         cycle.cancelled = true
@@ -684,6 +722,7 @@ private struct CycleAccumulator {
     var cancelled = false
     var cycleError: String?
     var pausedReplicaIDs: [String] = []
+    var retryPausedUntil: [String: Date] = [:]
     var verifiedByReplica: [String: Int] = [:]
 
     mutating func merge(_ other: CycleAccumulator) {
@@ -694,6 +733,12 @@ private struct CycleAccumulator {
         cancelled = cancelled || other.cancelled
         if cycleError == nil { cycleError = other.cycleError }
         pausedReplicaIDs.append(contentsOf: other.pausedReplicaIDs)
+        for (replicaID, deadline) in other.retryPausedUntil {
+            retryPausedUntil[replicaID] = max(
+                retryPausedUntil[replicaID] ?? .distantPast,
+                deadline
+            )
+        }
         for (replicaID, count) in other.verifiedByReplica {
             verifiedByReplica[replicaID, default: 0] += count
         }
@@ -711,6 +756,7 @@ private struct CycleAccumulator {
             cancelled: cancelled,
             cycleError: cycleError,
             pausedReplicaIDs: Array(Set(pausedReplicaIDs)).sorted(),
+            retryPausedReplicaIDs: retryPausedUntil.keys.sorted(),
             verifiedByReplica: verifiedByReplica
         )
     }

@@ -21,6 +21,19 @@ enum ArchiveV2DrainStage: String, CaseIterable, Equatable, Sendable {
 struct ArchiveV2DrainConditions: Equatable, Sendable {
     let lowPower: Bool
     let thermalPressure: Bool
+
+    static func current() -> ArchiveV2DrainConditions {
+        let info = ProcessInfo.processInfo
+        return ArchiveV2DrainConditions(
+            lowPower: info.isLowPowerModeEnabled,
+            thermalPressure: info.thermalState == .serious
+                || info.thermalState == .critical
+        )
+    }
+
+    var allowsNewWork: Bool {
+        !lowPower && !thermalPressure
+    }
 }
 
 struct ArchiveV2DrainPassSummary: Equatable, Sendable {
@@ -74,7 +87,6 @@ struct ArchiveV2DrainPassSummary: Equatable, Sendable {
             || policyRows > 0
             || hqVerified > 0
             || m1Verified > 0
-            || retryScheduled > 0
             || quarantined > 0
             || hasRunnableWork
     }
@@ -111,14 +123,7 @@ actor ArchiveV2BacklogDrainer {
     private var nextWakeAt: Date?
 
     init(
-        conditions: @escaping Conditions = {
-            let info = ProcessInfo.processInfo
-            return ArchiveV2DrainConditions(
-                lowPower: info.isLowPowerModeEnabled,
-                thermalPressure: info.thermalState == .serious
-                    || info.thermalState == .critical
-            )
-        },
+        conditions: @escaping Conditions = { .current() },
         now: @escaping Clock = { Date() },
         sleepUntil: @escaping Sleeper = { deadline in
             let delay = max(deadline.timeIntervalSinceNow, 0)

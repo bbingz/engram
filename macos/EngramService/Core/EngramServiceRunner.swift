@@ -93,18 +93,18 @@ public enum EngramServiceRunner {
         let archiveV2Drainer: ArchiveV2BacklogDrainer?
         if archiveV2Settings.exactArchiveEnabled {
             let disabledSources = Self.readDisabledSources(environment: environment)
-            let backlogAdapters = Self.exactArchiveAdapters(
-                from: Self.adaptersExcludingDisabled(
-                    SessionAdapterFactory.defaultAdapters(),
-                    disabledSources: disabledSources
-                )
-            )
             let drainer = ArchiveV2BacklogDrainer { [weak archiveV2Coordinator] in
                 guard let archiveV2Coordinator else {
                     throw CancellationError()
                 }
+                let passAdapters = Self.exactArchiveAdapters(
+                    from: Self.adaptersExcludingDisabled(
+                        SessionAdapterFactory.defaultAdapters(),
+                        disabledSources: disabledSources
+                    )
+                )
                 return try await archiveV2Coordinator.runBacklogPass(
-                    adapters: backlogAdapters
+                    adapters: passAdapters
                 )
             }
             await archiveV2Coordinator.attachDrainer(drainer)
@@ -131,7 +131,7 @@ public enum EngramServiceRunner {
             archiveCatalog: profileArchiveCatalog,
             settingsURL: settingsURL,
             signalDrainer: {
-                await archiveV2Drainer?.signal()
+                await archiveV2Coordinator.requestFullCaptureSweep()
             }
         )
 

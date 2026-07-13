@@ -41,7 +41,7 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         let harness = try makeHarness(remoteReady: true, batchSize: 3)
         let events = EventLog()
         var operations = makeOperations(events: events)
-        operations.backlogCapture = { _ in
+        operations.backlogCapture = { _, _, _ in
             await events.append("backlogCapture")
             return ArchiveV2ServiceCaptureSummary(
                 unsupported: 0,
@@ -50,7 +50,7 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
                 capturedSourceBytes: 64
             )
         }
-        operations.replicateBacklog = { limit in
+        operations.replicateBacklog = { limit, _ in
             await events.append("replicateBacklog:\(limit)")
             return ArchiveReplicationCycleResult(
                 claimed: 2,
@@ -86,7 +86,7 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         let harness = try makeHarness(remoteReady: true, batchSize: 3)
         let events = EventLog()
         var operations = makeOperations(events: events)
-        operations.backlogCapture = { _ in
+        operations.backlogCapture = { _, _, _ in
             await events.append("backlogCapture")
             return ArchiveV2ServiceCaptureSummary(
                 unsupported: 0,
@@ -96,7 +96,7 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
                 hasMore: false
             )
         }
-        operations.replicateBacklog = { limit in
+        operations.replicateBacklog = { limit, _ in
             await events.append("replicateBacklog:\(limit)")
             return ArchiveReplicationCycleResult(
                 claimed: 1,
@@ -121,6 +121,106 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertEqual(second.capturedFiles, 0)
         XCTAssertEqual(captureCount, 1)
         XCTAssertEqual(replicationCount, 2)
+    }
+
+    func testRequestFullCaptureSweepRestartsCaptureAfterExhaustion() async throws {
+        let harness = try makeHarness(remoteReady: true, batchSize: 3)
+        let events = EventLog()
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, refreshLocatorSnapshot, _ in
+            await events.append("backlogCapture:\(refreshLocatorSnapshot)")
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                processed: 1,
+                capturedSourceBytes: 64,
+                hasMore: false
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations
+        )
+
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        await coordinator.requestFullCaptureSweep()
+        let restarted = try await coordinator.runBacklogPass(adapters: [])
+
+        XCTAssertEqual(restarted.capturedFiles, 1)
+        let recorded = await events.values().filter { $0.hasPrefix("backlogCapture:") }
+        XCTAssertEqual(recorded, ["backlogCapture:false", "backlogCapture:true"])
+    }
+
+    func testBacklogPassStopsBeforeNextStageWhenResourceConditionsChange() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let events = EventLog()
+        let conditions = CoordinatorConditionsBox(
+            ArchiveV2DrainConditions(lowPower: false, thermalPressure: false)
+        )
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            await events.append("backlogCapture")
+            conditions.set(
+                ArchiveV2DrainConditions(lowPower: true, thermalPressure: false)
+            )
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                processed: 1,
+                hasMore: true
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations,
+            drainConditions: { conditions.value() }
+        )
+
+        let summary = try await coordinator.runBacklogPass(adapters: [])
+        let recorded = await events.values()
+
+        XCTAssertEqual(summary.capturedFiles, 1)
+        XCTAssertTrue(summary.hasRunnableWork)
+        XCTAssertEqual(recorded, ["backlogCapture"])
+    }
+
+    func testBacklogPassDeadlineStopsBeforeNextStageAfterSlowUnitCompletes() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let events = EventLog()
+        let clock = CoordinatorClock(Date(timeIntervalSince1970: 100))
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            await events.append("backlogCapture")
+            clock.set(Date(timeIntervalSince1970: 111))
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                processed: 1,
+                hasMore: true
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations,
+            now: { clock.value() }
+        )
+
+        let summary = try await coordinator.runBacklogPass(adapters: [])
+        let recorded = await events.values()
+
+        XCTAssertEqual(summary.capturedFiles, 1)
+        XCTAssertTrue(summary.hasRunnableWork)
+        XCTAssertEqual(recorded, ["backlogCapture"])
     }
 
     func testNonRunnableUnboundCountDoesNotCauseContinuousDrainPasses() async throws {
@@ -1987,6 +2087,40 @@ private final class CoordinatorDateQueue: @unchecked Sendable {
             precondition(!dates.isEmpty, "test date queue exhausted")
             return dates.removeFirst()
         }
+    }
+}
+
+private final class CoordinatorConditionsBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var conditions: ArchiveV2DrainConditions
+
+    init(_ conditions: ArchiveV2DrainConditions) {
+        self.conditions = conditions
+    }
+
+    func value() -> ArchiveV2DrainConditions {
+        lock.withLock { conditions }
+    }
+
+    func set(_ value: ArchiveV2DrainConditions) {
+        lock.withLock { conditions = value }
+    }
+}
+
+private final class CoordinatorClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var date: Date
+
+    init(_ date: Date) {
+        self.date = date
+    }
+
+    func value() -> Date {
+        lock.withLock { date }
+    }
+
+    func set(_ value: Date) {
+        lock.withLock { date = value }
     }
 }
 

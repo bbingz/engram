@@ -114,7 +114,9 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
         ArchiveCaptureCursorScope
     ) async throws -> ArchiveV2ServiceCaptureSummary
     var backlogCapture: @Sendable (
-        [any SessionAdapter]
+        [any SessionAdapter],
+        Bool,
+        @escaping @Sendable () -> Bool
     ) async throws -> ArchiveV2ServiceCaptureSummary
     var bindingTargets: @Sendable (Int) async throws -> [ArchiveV2ServiceCaptureTarget]
     var historicalUnknown: @Sendable (Int) async throws -> ArchiveV2ServiceUnknownPage
@@ -134,7 +136,10 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
         ArchiveRemoteEligibility
     ) async throws -> Void
     var replicate: @Sendable (Int) async -> ArchiveReplicationCycleResult
-    var replicateBacklog: @Sendable (Int) async -> ArchiveReplicationCycleResult
+    var replicateBacklog: @Sendable (
+        Int,
+        @escaping @Sendable () -> Bool
+    ) async -> ArchiveReplicationCycleResult
     var status: @Sendable () async throws -> ArchiveStatusAggregate
     var remoteTelemetry: @Sendable () async -> RemoteTelemetryResults
     var retry: @Sendable (String?) async throws -> Int
@@ -147,7 +152,9 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
             ArchiveCaptureCursorScope
         ) async throws -> ArchiveV2ServiceCaptureSummary,
         backlogCapture: (@Sendable (
-            [any SessionAdapter]
+            [any SessionAdapter],
+            Bool,
+            @escaping @Sendable () -> Bool
         ) async throws -> ArchiveV2ServiceCaptureSummary)? = nil,
         bindingTargets: @escaping @Sendable (Int) async throws -> [ArchiveV2ServiceCaptureTarget],
         historicalUnknown: @escaping @Sendable (Int) async throws -> ArchiveV2ServiceUnknownPage,
@@ -167,7 +174,10 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
             ArchiveRemoteEligibility
         ) async throws -> Void,
         replicate: @escaping @Sendable (Int) async -> ArchiveReplicationCycleResult,
-        replicateBacklog: (@Sendable (Int) async -> ArchiveReplicationCycleResult)? = nil,
+        replicateBacklog: (@Sendable (
+            Int,
+            @escaping @Sendable () -> Bool
+        ) async -> ArchiveReplicationCycleResult)? = nil,
         status: @escaping @Sendable () async throws -> ArchiveStatusAggregate,
         remoteTelemetry: @escaping @Sendable () async -> RemoteTelemetryResults = { [:] },
         retry: @escaping @Sendable (String?) async throws -> Int,
@@ -176,7 +186,7 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
         }
     ) {
         self.capture = capture
-        self.backlogCapture = backlogCapture ?? { adapters in
+        self.backlogCapture = backlogCapture ?? { adapters, _, _ in
             try await capture(adapters, 32, .full)
         }
         self.bindingTargets = bindingTargets
@@ -187,7 +197,9 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
         self.ignoreOne = ignoreOne
         self.applyRemotePolicy = applyRemotePolicy
         self.replicate = replicate
-        self.replicateBacklog = replicateBacklog ?? replicate
+        self.replicateBacklog = replicateBacklog ?? { limit, _ in
+            await replicate(limit)
+        }
         self.status = status
         self.remoteTelemetry = remoteTelemetry
         self.retry = retry
@@ -241,6 +253,7 @@ actor ArchiveV2ServiceCoordinator {
     private let batchSize: Int
     private let captureRetryLocatorLimit: Int
     private let now: @Sendable () -> Date
+    private let drainConditions: @Sendable () -> ArchiveV2DrainConditions
     nonisolated let transcriptResolverSnapshot: ArchiveTranscriptResolver?
     nonisolated let reclamationCoordinatorSnapshot: ArchiveReclamationCoordinator?
 
@@ -253,6 +266,7 @@ actor ArchiveV2ServiceCoordinator {
     private var unsafeLocatorCount = 0
     private var captureRetryLocators: [SourceName: [String]] = [:]
     private var fullCapturePending = true
+    private var fullCaptureRefreshPending = false
     private var lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?
     private var nextScheduledCycleAt: String?
     private var drainer: ArchiveV2BacklogDrainer?
@@ -268,7 +282,10 @@ actor ArchiveV2ServiceCoordinator {
         operations: ArchiveV2ServiceCoordinatorOperations,
         transcriptResolverSnapshot: ArchiveTranscriptResolver? = nil,
         reclamationCoordinatorSnapshot: ArchiveReclamationCoordinator? = nil,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        drainConditions: @escaping @Sendable () -> ArchiveV2DrainConditions = {
+            .current()
+        }
     ) {
         self.settings = settings
         self.writerGate = writerGate
@@ -279,6 +296,7 @@ actor ArchiveV2ServiceCoordinator {
         self.configurationError = configurationError
         self.operations = operations
         self.now = now
+        self.drainConditions = drainConditions
         self.transcriptResolverSnapshot = transcriptResolverSnapshot
         self.reclamationCoordinatorSnapshot = reclamationCoordinatorSnapshot
         batchSize = settings.remoteConfiguration?.batchSize
@@ -298,7 +316,10 @@ actor ArchiveV2ServiceCoordinator {
         operations: ArchiveV2ServiceCoordinatorOperations?,
         transcriptResolverSnapshot: ArchiveTranscriptResolver? = nil,
         reclamationCoordinatorSnapshot: ArchiveReclamationCoordinator? = nil,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        drainConditions: @escaping @Sendable () -> ArchiveV2DrainConditions = {
+            .current()
+        }
     ) {
         self.settings = settings
         self.writerGate = writerGate
@@ -309,6 +330,7 @@ actor ArchiveV2ServiceCoordinator {
         self.configurationError = configurationError
         self.operations = operations
         self.now = now
+        self.drainConditions = drainConditions
         self.transcriptResolverSnapshot = transcriptResolverSnapshot
         self.reclamationCoordinatorSnapshot = reclamationCoordinatorSnapshot
         batchSize = settings.remoteConfiguration?.batchSize
@@ -480,6 +502,13 @@ actor ArchiveV2ServiceCoordinator {
         self.drainer = drainer
     }
 
+    func requestFullCaptureSweep() async {
+        guard localCaptureReady else { return }
+        fullCapturePending = true
+        fullCaptureRefreshPending = true
+        await drainer?.signal()
+    }
+
     func runBacklogPass(
         adapters: [any SessionAdapter]
     ) async throws -> ArchiveV2DrainPassSummary {
@@ -494,18 +523,28 @@ actor ArchiveV2ServiceCoordinator {
 
         let startedAt = now()
         let deadline = startedAt.addingTimeInterval(10)
+        let shouldStartUnit: @Sendable () -> Bool = { [now, drainConditions] in
+            !Task.isCancelled
+                && now() < deadline
+                && drainConditions().allowsNewWork
+        }
         var capture = ArchiveV2ServiceCaptureSummary(unsupported: 0, unsafe: 0)
         var reconcile = ReconcileSummary(boundRows: 0, policyRows: 0, hasMore: false)
         var replication = ArchiveReplicationCycleResult()
 
-        if fullCapturePending, now() < deadline {
+        if fullCapturePending, shouldStartUnit() {
             await drainer?.setActiveStages([.capture])
             do {
-                capture = try await operations.backlogCapture(adapters)
+                capture = try await operations.backlogCapture(
+                    adapters,
+                    fullCaptureRefreshPending,
+                    shouldStartUnit
+                )
                 unsupportedLocatorCount = max(capture.unsupported, 0)
                 unsafeLocatorCount = max(capture.unsafe, 0)
                 updateCaptureRetryLocators(with: capture)
                 fullCapturePending = capture.hasMore
+                fullCaptureRefreshPending = false
                 lastCaptureError = nil
             } catch is CancellationError {
                 throw CancellationError()
@@ -515,21 +554,25 @@ actor ArchiveV2ServiceCoordinator {
             }
         }
 
-        if now() < deadline {
+        if shouldStartUnit() {
             await drainer?.setActiveStages([.binding])
             reconcile = try await reconcileArchive(
                 operations: operations,
                 bindingLimit: 100,
                 historicalLimit: 100,
                 policyLimit: 100,
-                reportDrainStages: true
+                reportDrainStages: true,
+                shouldStartUnit: shouldStartUnit
             )
         }
 
-        if remoteReady, now() < deadline {
+        if remoteReady, shouldStartUnit() {
             await drainer?.setActiveStages([.hq, .m1])
             let replicationStartedAt = now()
-            replication = await operations.replicateBacklog(16)
+            replication = await operations.replicateBacklog(
+                16,
+                shouldStartUnit
+            )
             let replicationFinishedAt = now()
             lastReplicationCycle = Self.replicationCycleSummary(
                 result: replication,
@@ -543,7 +586,9 @@ actor ArchiveV2ServiceCoordinator {
         await drainer?.setActiveStages([])
         let aggregate = try await operations.status()
         let nextRetryAt = Self.earliestRetryDate(aggregate)
-        let pausedReplicas = Set(replication.pausedReplicaIDs)
+        let pausedReplicas = Set(
+            replication.pausedReplicaIDs + replication.retryPausedReplicaIDs
+        )
         let hasRunnableWork = capture.hasMore
             || reconcile.hasMore
             || (!pausedReplicas.contains("hq") && aggregate.hq.pending > 0)
@@ -766,10 +811,14 @@ actor ArchiveV2ServiceCoordinator {
         bindingLimit: Int,
         historicalLimit: Int,
         policyLimit: Int,
-        reportDrainStages: Bool = false
+        reportDrainStages: Bool = false,
+        shouldStartUnit: @escaping @Sendable () -> Bool = { true }
     ) async throws -> ReconcileSummary {
+        guard shouldStartUnit() else {
+            return ReconcileSummary(boundRows: 0, policyRows: 0, hasMore: true)
+        }
         let bindingTargets = try await operations.bindingTargets(bindingLimit)
-        let historicalPage = policySnapshotReady
+        let historicalPage = policySnapshotReady && shouldStartUnit()
             ? try await operations.historicalUnknown(historicalLimit)
             : ArchiveV2ServiceUnknownPage(targets: [])
         let historicalCaptureTargets = historicalPage.targets.map {
@@ -782,12 +831,20 @@ actor ArchiveV2ServiceCoordinator {
             )
         }
         let snapshotTargets = Self.uniqueTargets(bindingTargets + historicalCaptureTargets)
+        guard shouldStartUnit() else {
+            return ReconcileSummary(boundRows: 0, policyRows: 0, hasMore: true)
+        }
         let snapshot = try await operations.snapshot(writerGate, snapshotTargets)
         try Task.checkCancellation()
 
         var newlyBound: [ArchiveV2ServicePolicyTarget] = []
+        var deferredWork = false
         for target in bindingTargets.prefix(bindingLimit) {
             try Task.checkCancellation()
+            guard shouldStartUnit() else {
+                deferredWork = true
+                break
+            }
             if snapshot.trustedTerminalFailuresByCaptureID[target.captureID]
                 == .noVisibleMessages {
                 try await operations.ignoreOne(target)
@@ -807,6 +864,10 @@ actor ArchiveV2ServiceCoordinator {
             var remainingPolicyBudget = policyLimit
             for target in historicalPage.targets.prefix(remainingPolicyBudget) {
                 try Task.checkCancellation()
+                guard shouldStartUnit() else {
+                    deferredWork = true
+                    break
+                }
                 try await applyPolicy(target, snapshot: snapshot, operations: operations)
                 try await operations.advancePolicyCursor(target)
                 remainingPolicyBudget -= 1
@@ -814,6 +875,10 @@ actor ArchiveV2ServiceCoordinator {
             }
             for target in newlyBound.prefix(remainingPolicyBudget) {
                 try Task.checkCancellation()
+                guard shouldStartUnit() else {
+                    deferredWork = true
+                    break
+                }
                 try await applyPolicy(target, snapshot: snapshot, operations: operations)
                 appliedPolicy += 1
             }
@@ -821,7 +886,8 @@ actor ArchiveV2ServiceCoordinator {
         return ReconcileSummary(
             boundRows: newlyBound.count,
             policyRows: appliedPolicy,
-            hasMore: (bindingLimit > 0 && bindingTargets.count >= bindingLimit)
+            hasMore: deferredWork
+                || (bindingLimit > 0 && bindingTargets.count >= bindingLimit)
                 || (historicalLimit > 0 && historicalPage.targets.count >= historicalLimit)
                 || (policySnapshotReady
                     && historicalPage.targets.count + newlyBound.count > appliedPolicy)
@@ -992,7 +1058,7 @@ actor ArchiveV2ServiceCoordinator {
                 )
                 return Self.captureSummary(from: result)
             },
-            backlogCapture: { adapters in
+            backlogCapture: { adapters, refreshLocatorSnapshot, shouldStartUnit in
                 let result = try await captureCoordinator.capture(
                     adapters: adapters,
                     budget: ArchiveCaptureBudget(
@@ -1000,7 +1066,8 @@ actor ArchiveV2ServiceCoordinator {
                         sourceByteLimit: 128 * 1_024 * 1_024
                     ),
                     cursorScope: .full,
-                    refreshLocatorSnapshot: false
+                    refreshLocatorSnapshot: refreshLocatorSnapshot,
+                    shouldStartUnit: shouldStartUnit
                 )
                 return Self.captureSummary(from: result)
             },
@@ -1056,12 +1123,13 @@ actor ArchiveV2ServiceCoordinator {
                 }
                 return await replicationCoordinator.runOnce(limit: limit)
             },
-            replicateBacklog: { limit in
+            replicateBacklog: { limit, shouldStartUnit in
                 guard let replicationCoordinator else {
                     return ArchiveReplicationCycleResult()
                 }
                 return await replicationCoordinator.runBacklogPass(
-                    perReplicaLimit: limit
+                    perReplicaLimit: limit,
+                    shouldStartUnit: shouldStartUnit
                 )
             },
             status: { try catalog.archiveStatus() },

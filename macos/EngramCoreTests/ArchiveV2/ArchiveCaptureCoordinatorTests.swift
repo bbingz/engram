@@ -889,6 +889,33 @@ final class ArchiveCaptureCoordinatorTests: XCTestCase {
         XCTAssertFalse(second.items.isEmpty)
     }
 
+    func testCaptureResourceGateStopsBeforeStartingAnotherLocator() async throws {
+        let urls = try makeSourceFiles(
+            directory: "capture-resource-gate",
+            names: ["first.jsonl", "second.jsonl", "third.jsonl"]
+        )
+        let adapter = CoordinatorCountingExactAdapter(
+            source: .claudeCode,
+            locators: urls.map(\.path)
+        )
+        let (cas, catalog) = try makeStore(name: "capture-resource-gate")
+        let coordinator = ArchiveCaptureCoordinator(cas: cas, catalog: catalog)
+        let gate = CaptureUnitGate(allowedUnits: 1)
+
+        let result = try await coordinator.capture(
+            adapters: [adapter],
+            budget: ArchiveCaptureBudget(locatorLimit: 32, sourceByteLimit: .max),
+            cursorScope: .full,
+            refreshLocatorSnapshot: false,
+            shouldStartUnit: { gate.take() }
+        )
+
+        let listingCount = await adapter.listCount()
+        XCTAssertEqual(result.processed, 1)
+        XCTAssertTrue(result.hasMore)
+        XCTAssertEqual(listingCount, 1)
+    }
+
     func testRecentCaptureRefreshReenumeratesLocatorSnapshot() async throws {
         let urls = try makeSourceFiles(
             directory: "capture-recent-refresh",
@@ -1787,6 +1814,23 @@ private final class ArchiveEventRecorder: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return events
+    }
+}
+
+private final class CaptureUnitGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var allowedUnits: Int
+
+    init(allowedUnits: Int) {
+        self.allowedUnits = allowedUnits
+    }
+
+    func take() -> Bool {
+        lock.withLock {
+            guard allowedUnits > 0 else { return false }
+            allowedUnits -= 1
+            return true
+        }
     }
 }
 
