@@ -22,7 +22,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - run: npm ci
+      - run: ONNXRUNTIME_NODE_INSTALL=skip npm ci
       - run: npm run lint
 
   dead-code:
@@ -33,7 +33,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - run: npm ci
+      - run: ONNXRUNTIME_NODE_INSTALL=skip npm ci
       - run: npm run build
       - run: npm run knip
 
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - run: npm ci
+      - run: ONNXRUNTIME_NODE_INSTALL=skip npm ci
       - run: npm audit --audit-level=moderate
         continue-on-error: ${{ github.event_name == 'pull_request' }}
 
@@ -57,7 +57,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - run: npm ci
+      - run: ONNXRUNTIME_NODE_INSTALL=skip npm ci
       - name: Install archive safety gate tools
         run: |
           sudo apt-get update
