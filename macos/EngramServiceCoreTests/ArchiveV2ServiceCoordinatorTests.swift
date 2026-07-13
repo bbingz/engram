@@ -971,6 +971,67 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertGreaterThan(summary.nextRetryAt ?? .distantPast, staleHQRetryDeadline)
     }
 
+    func testTransientPauseWithOrdinaryPendingWakesAtBreakerBeforeDurableRetry() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let breakerDeadline = try coordinatorDate("2026-07-13T00:01:00.000Z")
+        let durableRetryDeadline = "2026-07-13T08:00:00.000Z"
+        var operations = makeOperations(events: EventLog())
+        operations.backlogCapture = { _, _, _ in
+            ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                hasMore: false
+            )
+        }
+        operations.replicateBacklog = { _, _ in
+            ArchiveReplicationCycleResult(
+                retryPausedUntilByReplica: ["hq": breakerDeadline]
+            )
+        }
+        operations.status = {
+            let hq = ArchiveReplicaStatusCounts(
+                pending: 1,
+                inflight: 0,
+                retry: 1,
+                quarantine: 0,
+                verified: 0,
+                nextRetryAt: durableRetryDeadline
+            )
+            let m1 = ArchiveReplicaStatusCounts(
+                pending: 0,
+                inflight: 0,
+                retry: 0,
+                quarantine: 0,
+                verified: 0
+            )
+            return ArchiveStatusAggregate(
+                captured: 0,
+                bound: 0,
+                unbound: 0,
+                unknown: 0,
+                eligible: 0,
+                excluded: 0,
+                hq: hq,
+                m1: m1,
+                singleVerified: 0,
+                dualVerified: 0,
+                latestReceipts: []
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations
+        )
+
+        let summary = try await coordinator.runBacklogPass(adapters: [])
+
+        XCTAssertFalse(summary.hasRunnableWork)
+        XCTAssertEqual(summary.nextRetryAt, breakerDeadline)
+    }
+
     func testAttentionPausedReplicaDoesNotHideHealthyReplicaRetryDeadline() async throws {
         let harness = try makeHarness(remoteReady: true)
         let healthyRetryDeadline = try coordinatorDate("2026-07-13T00:01:30.000Z")
@@ -1099,6 +1160,48 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
             $0.pauseReason == nil && $0.pausedUntil == nil
         })
         XCTAssertEqual(afterFreshReplication.nextPassPriority, "local")
+    }
+
+    func testStatusExpiresTransientPauseAtDeadlineWithoutAnotherPass() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let pauseDeadline = try coordinatorDate("2026-07-13T11:01:00.000Z")
+        let clock = CoordinatorClock(pauseDeadline.addingTimeInterval(-1))
+        var operations = makeOperations(events: EventLog())
+        operations.backlogCapture = { _, _, _ in
+            ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                hasMore: true
+            )
+        }
+        operations.replicateBacklog = { _, _ in
+            ArchiveReplicationCycleResult(
+                pausedReplicaIDs: ["m1"],
+                retryPausedUntilByReplica: ["hq": pauseDeadline]
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations,
+            now: { clock.value() }
+        )
+
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        let beforeDeadline = await coordinator.status()
+        XCTAssertEqual(
+            beforeDeadline.replicas.map(\.pauseReason),
+            ["transientInfrastructureBackoff", "needsAttention"]
+        )
+
+        clock.set(pauseDeadline)
+        let atDeadline = await coordinator.status()
+        XCTAssertNil(atDeadline.replicas[0].pauseReason)
+        XCTAssertNil(atDeadline.replicas[0].pausedUntil)
+        XCTAssertEqual(atDeadline.replicas[1].pauseReason, "needsAttention")
+        XCTAssertNil(atDeadline.replicas[1].pausedUntil)
     }
 
     func testAcceptedManualRetryClearsOnlyRequestedReplicaPause() async throws {

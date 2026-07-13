@@ -843,6 +843,12 @@ actor ArchiveV2ServiceCoordinator {
         replicaPauseStateByID = updated
     }
 
+    private func effectiveReplicaPauseState(at date: Date) -> [String: ReplicaPauseState] {
+        replicaPauseStateByID.filter { _, state in
+            state.until.map { $0 > date } ?? true
+        }
+    }
+
     private func enqueuePendingIndexLocators(
         _ locatorsBySource: [SourceName: [String]],
         targets: [ArchiveV2ServiceCaptureTarget]
@@ -1012,6 +1018,12 @@ actor ArchiveV2ServiceCoordinator {
             aggregate = Self.zeroAggregate
             remoteTelemetry = [:]
         }
+        let effectiveReplicaPauseStateByID: [String: ReplicaPauseState]
+        if replicaPauseStateByID.values.contains(where: { $0.until != nil }) {
+            effectiveReplicaPauseStateByID = effectiveReplicaPauseState(at: now())
+        } else {
+            effectiveReplicaPauseStateByID = replicaPauseStateByID
+        }
         return Self.statusResponse(
             settings: settings,
             localCaptureReady: localCaptureReady,
@@ -1028,7 +1040,7 @@ actor ArchiveV2ServiceCoordinator {
             lastReplicationCycle: lastReplicationCycle,
             nextScheduledCycleAt: nextScheduledCycleAt,
             nextPassPriority: nextBacklogPassPriority,
-            replicaPauseStateByID: replicaPauseStateByID,
+            replicaPauseStateByID: effectiveReplicaPauseStateByID,
             drainSnapshot: drainSnapshot
         )
     }
@@ -2140,6 +2152,10 @@ actor ArchiveV2ServiceCoordinator {
             "hq": aggregate.hq.nextRetryAt.flatMap(formatter.date(from:)),
             "m1": aggregate.m1.nextRetryAt.flatMap(formatter.date(from:)),
         ]
+        let pendingCounts = [
+            "hq": aggregate.hq.pending,
+            "m1": aggregate.m1.pending,
+        ]
         return ArchiveCatalog.currentReplicaIDs.compactMap { replicaID in
             guard !attentionPausedReplicaIDs.contains(replicaID) else {
                 return nil
@@ -2147,6 +2163,9 @@ actor ArchiveV2ServiceCoordinator {
             let catalogDate = retryDates[replicaID] ?? nil
             guard let pauseDeadline = retryPausedUntilByReplica[replicaID] else {
                 return catalogDate
+            }
+            if pendingCounts[replicaID, default: 0] > 0 {
+                return pauseDeadline
             }
             return max(catalogDate ?? .distantPast, pauseDeadline)
         }.min()
