@@ -791,8 +791,8 @@ final class EngramServiceIPCTests: XCTestCase {
         let composition = String(source[start.lowerBound ..< end.lowerBound])
 
         XCTAssertTrue(composition.contains("SessionAdapterFactory.defaultAdapters()"))
-        XCTAssertTrue(composition.contains("let passAdapters = Self.exactArchiveAdapters"))
-        XCTAssertTrue(composition.contains("adapters: passAdapters"))
+        XCTAssertTrue(composition.contains("adapterProvider: {"))
+        XCTAssertTrue(composition.contains("Self.exactArchiveAdapters("))
     }
 
     func testRunnerRepoDiscoveryProbesOutsideWriteGate() throws {

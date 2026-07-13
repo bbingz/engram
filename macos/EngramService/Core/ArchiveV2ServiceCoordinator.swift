@@ -512,6 +512,12 @@ actor ArchiveV2ServiceCoordinator {
     func runBacklogPass(
         adapters: [any SessionAdapter]
     ) async throws -> ArchiveV2DrainPassSummary {
+        try await runBacklogPass(adapterProvider: { adapters })
+    }
+
+    func runBacklogPass(
+        adapterProvider: @escaping @Sendable () -> [any SessionAdapter]
+    ) async throws -> ArchiveV2DrainPassSummary {
         guard localCaptureReady, let operations else {
             return ArchiveV2DrainPassSummary(
                 startedAt: now(),
@@ -521,6 +527,10 @@ actor ArchiveV2ServiceCoordinator {
         await acquirePipeline(indexPriority: false)
         defer { releasePipeline() }
 
+        // Resolve profile-backed adapters only after this pass owns the archive
+        // pipeline. A configuration request that arrived while waiting is then
+        // represented by both the current adapter snapshot and its refresh ID.
+        let adapters = adapterProvider()
         let startedAt = now()
         let deadline = startedAt.addingTimeInterval(10)
         let shouldStartUnit: @Sendable () -> Bool = { [now, drainConditions] in
@@ -594,7 +604,8 @@ actor ArchiveV2ServiceCoordinator {
         let aggregate = try await operations.status()
         let nextRetryAt = Self.earliestRetryDate(
             aggregate,
-            retryPausedUntilByReplica: replication.retryPausedUntilByReplica
+            retryPausedUntilByReplica: replication.retryPausedUntilByReplica,
+            attentionPausedReplicaIDs: Set(replication.pausedReplicaIDs)
         )
         let pausedReplicas = Set(
             replication.pausedReplicaIDs + replication.retryPausedReplicaIDs
@@ -754,6 +765,7 @@ actor ArchiveV2ServiceCoordinator {
             indexPlan = .captured(summary.successfulLocators)
             if cursorScope == .full {
                 fullCapturePending = summary.hasMore
+                    || fullCaptureRefreshRequestID != nil
             }
             lastCaptureError = nil
         } catch is CancellationError {
@@ -1705,7 +1717,8 @@ actor ArchiveV2ServiceCoordinator {
 
     private static func earliestRetryDate(
         _ aggregate: ArchiveStatusAggregate,
-        retryPausedUntilByReplica: [String: Date] = [:]
+        retryPausedUntilByReplica: [String: Date] = [:],
+        attentionPausedReplicaIDs: Set<String> = []
     ) -> Date? {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -1715,6 +1728,9 @@ actor ArchiveV2ServiceCoordinator {
             "m1": aggregate.m1.nextRetryAt.flatMap(formatter.date(from:)),
         ]
         return ArchiveCatalog.currentReplicaIDs.compactMap { replicaID in
+            guard !attentionPausedReplicaIDs.contains(replicaID) else {
+                return nil
+            }
             let catalogDate = retryDates[replicaID] ?? nil
             guard let pauseDeadline = retryPausedUntilByReplica[replicaID] else {
                 return catalogDate

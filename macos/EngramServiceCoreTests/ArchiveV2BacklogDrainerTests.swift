@@ -131,6 +131,32 @@ final class ArchiveV2BacklogDrainerTests: XCTestCase {
         XCTAssertEqual(count, 2)
     }
 
+    func testAttentionOnOneReplicaStillWaitsForHealthyReplicaRetry() async throws {
+        let retryAt = Date(timeIntervalSince1970: 160)
+        let recorder = DrainPassRecorder(results: [
+            ArchiveV2DrainPassSummary(
+                nextRetryAt: retryAt,
+                needsAttention: true
+            ),
+        ])
+        let sleeps = DrainSleepRecorder(blocking: true)
+        let drainer = ArchiveV2BacklogDrainer(
+            conditions: { ArchiveV2DrainConditions(lowPower: false, thermalPressure: false) },
+            now: { Date(timeIntervalSince1970: 100) },
+            sleepUntil: { deadline in try await sleeps.record(deadline) },
+            runPass: { try await recorder.run() }
+        )
+
+        await drainer.start()
+        await drainer.signal()
+        try await recorder.waitForPassCount(1)
+        try await waitForState(.waitingRetry, drainer: drainer)
+        let deadlines = await sleeps.deadlines()
+        await drainer.stop()
+
+        XCTAssertEqual(deadlines, [retryAt])
+    }
+
     func testSignalsCoalesceToOneAdditionalPassWhileRunning() async throws {
         let recorder = BlockingFirstDrainPassRecorder()
         let drainer = ArchiveV2BacklogDrainer(

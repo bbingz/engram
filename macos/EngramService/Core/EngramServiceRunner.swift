@@ -97,14 +97,15 @@ public enum EngramServiceRunner {
                 guard let archiveV2Coordinator else {
                     throw CancellationError()
                 }
-                let passAdapters = Self.exactArchiveAdapters(
-                    from: Self.adaptersExcludingDisabled(
-                        SessionAdapterFactory.defaultAdapters(),
-                        disabledSources: disabledSources
-                    )
-                )
                 return try await archiveV2Coordinator.runBacklogPass(
-                    adapters: passAdapters
+                    adapterProvider: {
+                        Self.exactArchiveAdapters(
+                            from: Self.adaptersExcludingDisabled(
+                                SessionAdapterFactory.defaultAdapters(),
+                                disabledSources: disabledSources
+                            )
+                        )
+                    }
                 )
             }
             await archiveV2Coordinator.attachDrainer(drainer)
