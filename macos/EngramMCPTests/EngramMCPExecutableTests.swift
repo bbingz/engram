@@ -674,7 +674,7 @@ final class EngramMCPExecutableTests: XCTestCase {
         let dbURL = try mcpContractCopy(in: temp)
 
         // 120 plain user/assistant messages, pageSize=50 → exactly 3 dense pages.
-        let transcriptURL = temp.appendingPathComponent("session.jsonl")
+        let transcriptURL = try claudeTranscriptURL(in: temp, name: "session.jsonl")
         try writeClaudeTranscript(count: 120, to: transcriptURL)
         try setSession(dbPath: dbURL.path, filePath: transcriptURL.path, messageCount: 120)
 
@@ -706,7 +706,7 @@ final class EngramMCPExecutableTests: XCTestCase {
 
         // 120 visible turns, each preceded by a hidden system-injection record:
         // raw_stream_length == 240, visible == 120, pageSize == 50.
-        let transcriptURL = temp.appendingPathComponent("session.jsonl")
+        let transcriptURL = try claudeTranscriptURL(in: temp, name: "session.jsonl")
         try writeInterleavedClaudeTranscript(visibleTurns: 120, to: transcriptURL)
         try setSession(dbPath: dbURL.path, filePath: transcriptURL.path, messageCount: 120)
 
@@ -737,7 +737,7 @@ final class EngramMCPExecutableTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: temp) }
         let dbURL = try mcpContractCopy(in: temp)
 
-        let transcriptURL = temp.appendingPathComponent("session.jsonl")
+        let transcriptURL = try claudeTranscriptURL(in: temp, name: "session.jsonl")
         try writeInterleavedClaudeTranscript(visibleTurns: 120, to: transcriptURL)
 
         let expected = (1...120).map { "Message \($0)" }
@@ -760,7 +760,7 @@ final class EngramMCPExecutableTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: temp) }
         let dbURL = try mcpContractCopy(in: temp)
 
-        let transcriptURL = temp.appendingPathComponent("session.jsonl")
+        let transcriptURL = try claudeTranscriptURL(in: temp, name: "session.jsonl")
         try writeInterleavedClaudeTranscript(visibleTurns: 120, to: transcriptURL)
         try setSession(dbPath: dbURL.path, filePath: transcriptURL.path, messageCount: 120)
 
@@ -771,7 +771,10 @@ final class EngramMCPExecutableTests: XCTestCase {
                 #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-fixture-01","page":1}}}"#,
                 #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-fixture-01","page":2}}}"#,
             ],
-            environment: ["ENGRAM_MCP_DB_PATH": dbURL.path]
+            environment: [
+                "CFFIXED_USER_HOME": temp.path,
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+            ]
         )
         let byId = Dictionary(uniqueKeysWithValues: responses.compactMap { response -> (Int, OrderedTestJSONValue)? in
             guard let id = response["id"]?.intValue else { return nil }
@@ -794,7 +797,7 @@ final class EngramMCPExecutableTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: temp) }
         let dbURL = try mcpContractCopy(in: temp)
 
-        let transcriptURL = temp.appendingPathComponent("oversized-session.jsonl")
+        let transcriptURL = try claudeTranscriptURL(in: temp, name: "oversized-session.jsonl")
         try writeClaudeTranscript(count: 10_020, to: transcriptURL)
         try setSession(dbPath: dbURL.path, filePath: transcriptURL.path, messageCount: 10_020)
 
@@ -803,7 +806,10 @@ final class EngramMCPExecutableTests: XCTestCase {
                 #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-fixture-01","page":1}}}"#,
                 #"{"jsonrpc":"2.0","id":201,"method":"tools/call","params":{"name":"get_session","arguments":{"id":"mcp-fixture-01","page":201}}}"#,
             ],
-            environment: ["ENGRAM_MCP_DB_PATH": dbURL.path]
+            environment: [
+                "CFFIXED_USER_HOME": temp.path,
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+            ]
         )
         let byId = Dictionary(uniqueKeysWithValues: responses.compactMap { response -> (Int, OrderedTestJSONValue)? in
             guard let id = response["id"]?.intValue else { return nil }
@@ -835,7 +841,7 @@ final class EngramMCPExecutableTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: temp) }
         let dbURL = try mcpContractCopy(in: temp)
 
-        let transcriptURL = temp.appendingPathComponent("session.jsonl")
+        let transcriptURL = try claudeTranscriptURL(in: temp, name: "session.jsonl")
         try writeClaudeTranscript(count: 120, to: transcriptURL) // 3 dense pages
         try setSession(dbPath: dbURL.path, filePath: transcriptURL.path, messageCount: 120)
 
@@ -910,8 +916,13 @@ final class EngramMCPExecutableTests: XCTestCase {
     ) throws -> (first: OrderedTestJSONValue, second: OrderedTestJSONValue) {
         let process = Process()
         process.executableURL = executableURL()
+        let fixedHome = URL(fileURLWithPath: dbPath).deletingLastPathComponent().path
         process.environment = ProcessInfo.processInfo.environment
-            .merging(["TZ": "UTC", "ENGRAM_MCP_DB_PATH": dbPath]) { _, new in new }
+            .merging([
+                "CFFIXED_USER_HOME": fixedHome,
+                "TZ": "UTC",
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]) { _, new in new }
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -960,6 +971,16 @@ final class EngramMCPExecutableTests: XCTestCase {
         return dbURL
     }
 
+    private func claudeTranscriptURL(in home: URL, name: String) throws -> URL {
+        let projectDirectory = home
+            .appendingPathComponent(".claude/projects/-fixture", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: projectDirectory,
+            withIntermediateDirectories: true
+        )
+        return projectDirectory.appendingPathComponent(name)
+    }
+
     private func setSession(dbPath: String, filePath: String, messageCount: Int) throws {
         try DatabaseQueue(path: dbPath).write { db in
             try db.execute(
@@ -975,7 +996,10 @@ final class EngramMCPExecutableTests: XCTestCase {
     ) throws -> (roles: [String], texts: [String], totalPages: Int, currentPage: Int) {
         let capture = try rpc(
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_session\",\"arguments\":{\"id\":\"mcp-fixture-01\",\"page\":\(page)}}}",
-            environment: ["ENGRAM_MCP_DB_PATH": dbPath]
+            environment: [
+                "CFFIXED_USER_HOME": URL(fileURLWithPath: dbPath).deletingLastPathComponent().path,
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]
         )
         let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
         let messages = try XCTUnwrap(structured["messages"]?.arrayValue)
