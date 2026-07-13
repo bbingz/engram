@@ -6,6 +6,8 @@ import GRDB
 struct ArchiveV2ServiceCaptureSummary: Equatable, Sendable {
     let unsupported: Int
     let unsafe: Int
+    let processed: Int
+    let capturedSourceBytes: Int64
     let transientRetryLocators: [SourceName: [String]]
     let resolvedRetryLocators: [SourceName: [String]]
     let successfulLocators: [SourceName: [String]]
@@ -14,6 +16,8 @@ struct ArchiveV2ServiceCaptureSummary: Equatable, Sendable {
     init(
         unsupported: Int,
         unsafe: Int,
+        processed: Int = 0,
+        capturedSourceBytes: Int64 = 0,
         transientRetryLocators: [SourceName: [String]] = [:],
         resolvedRetryLocators: [SourceName: [String]] = [:],
         successfulLocators: [SourceName: [String]] = [:],
@@ -21,6 +25,8 @@ struct ArchiveV2ServiceCaptureSummary: Equatable, Sendable {
     ) {
         self.unsupported = unsupported
         self.unsafe = unsafe
+        self.processed = processed
+        self.capturedSourceBytes = capturedSourceBytes
         self.transientRetryLocators = transientRetryLocators
         self.resolvedRetryLocators = resolvedRetryLocators
         self.successfulLocators = successfulLocators
@@ -98,6 +104,9 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
         Int,
         ArchiveCaptureCursorScope
     ) async throws -> ArchiveV2ServiceCaptureSummary
+    var backlogCapture: @Sendable (
+        [any SessionAdapter]
+    ) async throws -> ArchiveV2ServiceCaptureSummary
     var bindingTargets: @Sendable (Int) async throws -> [ArchiveV2ServiceCaptureTarget]
     var historicalUnknown: @Sendable (Int) async throws -> ArchiveV2ServiceUnknownPage
     var advancePolicyCursor: @Sendable (ArchiveV2ServicePolicyTarget) async throws -> Void
@@ -126,6 +135,9 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
             Int,
             ArchiveCaptureCursorScope
         ) async throws -> ArchiveV2ServiceCaptureSummary,
+        backlogCapture: (@Sendable (
+            [any SessionAdapter]
+        ) async throws -> ArchiveV2ServiceCaptureSummary)? = nil,
         bindingTargets: @escaping @Sendable (Int) async throws -> [ArchiveV2ServiceCaptureTarget],
         historicalUnknown: @escaping @Sendable (Int) async throws -> ArchiveV2ServiceUnknownPage,
         advancePolicyCursor: @escaping @Sendable (ArchiveV2ServicePolicyTarget) async throws -> Void,
@@ -151,6 +163,9 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
         }
     ) {
         self.capture = capture
+        self.backlogCapture = backlogCapture ?? { adapters in
+            try await capture(adapters, 32, .full)
+        }
         self.bindingTargets = bindingTargets
         self.historicalUnknown = historicalUnknown
         self.advancePolicyCursor = advancePolicyCursor
@@ -811,6 +826,18 @@ actor ArchiveV2ServiceCoordinator {
                 )
                 return Self.captureSummary(from: result)
             },
+            backlogCapture: { adapters in
+                let result = try await captureCoordinator.capture(
+                    adapters: adapters,
+                    budget: ArchiveCaptureBudget(
+                        locatorLimit: 32,
+                        sourceByteLimit: 128 * 1_024 * 1_024
+                    ),
+                    cursorScope: .full,
+                    refreshLocatorSnapshot: false
+                )
+                return Self.captureSummary(from: result)
+            },
             bindingTargets: { budget in
                 try await captureCoordinator.bindingTargets(rowBudget: budget).compactMap(
                     Self.captureTarget
@@ -1007,6 +1034,8 @@ actor ArchiveV2ServiceCoordinator {
         return ArchiveV2ServiceCaptureSummary(
             unsupported: unsupported,
             unsafe: unsafe,
+            processed: result.processed,
+            capturedSourceBytes: result.capturedSourceBytes,
             transientRetryLocators: transientRetryLocators,
             resolvedRetryLocators: resolvedRetryLocators,
             successfulLocators: successfulLocators,

@@ -975,13 +975,17 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
                     diagnostic: "synthetic enumeration failure"
                 ),
             ],
-            captures: []
+            captures: [],
+            processed: 7,
+            capturedSourceBytes: 4_096
         )
 
         let summary = ArchiveV2ServiceCoordinator.captureSummary(from: result)
 
         XCTAssertEqual(summary.unsupported, 1)
         XCTAssertEqual(summary.unsafe, 4)
+        XCTAssertEqual(summary.processed, 7)
+        XCTAssertEqual(summary.capturedSourceBytes, 4_096)
         XCTAssertEqual(summary.transientRetryLocators, [.claudeCode: [retry, missing]])
         XCTAssertEqual(
             summary.resolvedRetryLocators,

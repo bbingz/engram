@@ -854,6 +854,104 @@ final class ArchiveCaptureCoordinatorTests: XCTestCase {
         XCTAssertTrue(discoveredNewLocator)
     }
 
+    func testCaptureBudgetStopsAfterSourceByteLimitAndReusesFullSweepSnapshot() async throws {
+        let urls = try makeSourceFiles(
+            directory: "capture-byte-budget",
+            names: ["first.jsonl", "second.jsonl", "third.jsonl"]
+        )
+        let adapter = CoordinatorCountingExactAdapter(
+            source: .claudeCode,
+            locators: urls.map(\.path)
+        )
+        let (cas, catalog) = try makeStore(name: "capture-byte-budget")
+        let coordinator = ArchiveCaptureCoordinator(cas: cas, catalog: catalog)
+        let budget = ArchiveCaptureBudget(locatorLimit: 32, sourceByteLimit: 5)
+
+        let first = try await coordinator.capture(
+            adapters: [adapter],
+            budget: budget,
+            cursorScope: .full,
+            refreshLocatorSnapshot: false
+        )
+        let second = try await coordinator.capture(
+            adapters: [adapter],
+            budget: budget,
+            cursorScope: .full,
+            refreshLocatorSnapshot: false
+        )
+
+        XCTAssertGreaterThanOrEqual(first.capturedSourceBytes, 5)
+        XCTAssertEqual(first.processed, 1)
+        XCTAssertTrue(first.hasMore)
+        let listingCountAfterSecondPass = await adapter.listCount()
+        XCTAssertEqual(listingCountAfterSecondPass, 1)
+        XCTAssertEqual(second.processed, 1)
+        XCTAssertFalse(second.items.isEmpty)
+    }
+
+    func testRecentCaptureRefreshReenumeratesLocatorSnapshot() async throws {
+        let urls = try makeSourceFiles(
+            directory: "capture-recent-refresh",
+            names: ["first.jsonl", "second.jsonl"]
+        )
+        let adapter = CoordinatorCountingExactAdapter(
+            source: .claudeCode,
+            locators: urls.map(\.path)
+        )
+        let (cas, catalog) = try makeStore(name: "capture-recent-refresh")
+        let coordinator = ArchiveCaptureCoordinator(cas: cas, catalog: catalog)
+        let budget = ArchiveCaptureBudget(locatorLimit: 1, sourceByteLimit: .max)
+
+        _ = try await coordinator.capture(
+            adapters: [adapter],
+            budget: budget,
+            cursorScope: .recent,
+            refreshLocatorSnapshot: true
+        )
+        _ = try await coordinator.capture(
+            adapters: [adapter],
+            budget: budget,
+            cursorScope: .recent,
+            refreshLocatorSnapshot: true
+        )
+
+        let listingCount = await adapter.listCount()
+        XCTAssertEqual(listingCount, 2)
+    }
+
+    func testExhaustedFullSweepDiscardsCachedLocatorSnapshot() async throws {
+        let urls = try makeSourceFiles(
+            directory: "capture-cache-exhausted",
+            names: ["only.jsonl"]
+        )
+        let adapter = CoordinatorCountingExactAdapter(
+            source: .claudeCode,
+            locators: urls.map(\.path)
+        )
+        let (cas, catalog) = try makeStore(name: "capture-cache-exhausted")
+        let coordinator = ArchiveCaptureCoordinator(cas: cas, catalog: catalog)
+        let budget = ArchiveCaptureBudget(locatorLimit: 1, sourceByteLimit: .max)
+
+        let exhausted = try await coordinator.capture(
+            adapters: [adapter],
+            budget: budget,
+            cursorScope: .full,
+            refreshLocatorSnapshot: false
+        )
+        XCTAssertFalse(exhausted.hasMore)
+        let listingCountAfterExhaustion = await adapter.listCount()
+        XCTAssertEqual(listingCountAfterExhaustion, 1)
+
+        _ = try await coordinator.capture(
+            adapters: [adapter],
+            budget: budget,
+            cursorScope: .full,
+            refreshLocatorSnapshot: false
+        )
+        let listingCountAfterRestart = await adapter.listCount()
+        XCTAssertEqual(listingCountAfterRestart, 2)
+    }
+
     func testFullAndRecentCaptureScopesPersistIndependentFairCursors() async throws {
         let fullURLs = try makeSourceFiles(
             directory: "scope/full",
@@ -1600,6 +1698,52 @@ private final class CoordinatorMutableExactAdapter: ExactArchiveSourceAdapter, @
             locator: locator,
             sourceURL: URL(fileURLWithPath: locator),
             replayRelativePath: "mutable/\(URL(fileURLWithPath: locator).lastPathComponent)"
+        )
+    }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .failure(.malformedJSON)
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+
+    func isAccessible(locator: String) async -> Bool { true }
+}
+
+private final class CoordinatorCountingExactAdapter: ExactArchiveSourceAdapter, @unchecked Sendable {
+    let source: SourceName
+    private let lock = NSLock()
+    private let locators: [String]
+    private var listings = 0
+
+    init(source: SourceName, locators: [String]) {
+        self.source = source
+        self.locators = locators
+    }
+
+    func listCount() async -> Int {
+        lock.withLock { listings }
+    }
+
+    func detect() async -> Bool { true }
+
+    func listSessionLocators() async throws -> [String] {
+        lock.withLock {
+            listings += 1
+            return locators
+        }
+    }
+
+    func archiveSourceDescriptor(locator: String) async throws -> ArchiveSourceDescriptor {
+        try ArchiveSourceDescriptor.singleFile(
+            locator: locator,
+            sourceURL: URL(fileURLWithPath: locator),
+            replayRelativePath: "counting/\(URL(fileURLWithPath: locator).lastPathComponent)"
         )
     }
 

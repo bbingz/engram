@@ -29,6 +29,7 @@ public struct ArchiveCaptureCycleResult: Equatable, Sendable {
     public let processed: Int
     public let hasMore: Bool
     public let continuation: String?
+    public let capturedSourceBytes: Int64
     public let failures: [ArchiveCaptureCycleItem]
 
     public init(
@@ -36,19 +37,36 @@ public struct ArchiveCaptureCycleResult: Equatable, Sendable {
         captures: [ArchiveCaptureResult],
         processed: Int? = nil,
         hasMore: Bool = false,
-        continuation: String? = nil
+        continuation: String? = nil,
+        capturedSourceBytes: Int64? = nil
     ) {
         self.items = items
         self.captures = captures
         self.processed = processed ?? items.filter { !$0.locator.isEmpty }.count
         self.hasMore = hasMore
         self.continuation = continuation
+        self.capturedSourceBytes = capturedSourceBytes
+            ?? captures.reduce(into: 0) { total, capture in
+                let addition = total.addingReportingOverflow(capture.manifest.rawByteCount)
+                total = addition.overflow ? .max : addition.partialValue
+            }
         failures = items.filter { $0.diagnostic != nil }
+    }
+}
+
+public struct ArchiveCaptureBudget: Equatable, Sendable {
+    public let locatorLimit: Int
+    public let sourceByteLimit: Int64
+
+    public init(locatorLimit: Int, sourceByteLimit: Int64) {
+        self.locatorLimit = locatorLimit
+        self.sourceByteLimit = sourceByteLimit
     }
 }
 
 public enum ArchiveCaptureCoordinatorError: Error, Equatable, Sendable {
     case invalidBudget(Int)
+    case invalidSourceByteLimit(Int64)
     case invalidCaptureContinuation
     case invalidBindingContinuation
 }
@@ -261,6 +279,13 @@ public actor ArchiveCaptureCoordinator {
         let key: String
     }
 
+    private struct LocatorSweepCache {
+        let adapterSources: [SourceName]
+        let exactAdapters: [Int: any ExactArchiveSourceAdapter]
+        let locatorSnapshots: [Int: [LocatorSnapshot]]
+        let enumerationItems: [ArchiveCaptureCycleItem]
+    }
+
     private struct PersistedCaptureCursor: Codable, Equatable {
         let capturedAt: String
         let captureID: String
@@ -293,6 +318,7 @@ public actor ArchiveCaptureCoordinator {
     private let unboundBatchLimit: Int
     private let testHooks: ArchiveCaptureCoordinatorTestHooks
     private var expectedBindingBatchFingerprint: String?
+    private var locatorSweepCaches: [ArchiveCaptureCursorScope: LocatorSweepCache]
 
     public init(
         cas: ImmutableArchiveCAS,
@@ -318,6 +344,7 @@ public actor ArchiveCaptureCoordinator {
         self.unboundBatchLimit = max(unboundBatchLimit, 1)
         self.testHooks = testHooks
         expectedBindingBatchFingerprint = nil
+        locatorSweepCaches = [:]
     }
 
     public func capture(
@@ -325,8 +352,9 @@ public actor ArchiveCaptureCoordinator {
     ) async throws -> ArchiveCaptureCycleResult {
         try await capture(
             adapters: adapters,
-            locatorBudget: Int.max,
-            cursorScope: .full
+            budget: ArchiveCaptureBudget(locatorLimit: .max, sourceByteLimit: .max),
+            cursorScope: .full,
+            refreshLocatorSnapshot: true
         )
     }
 
@@ -335,8 +363,28 @@ public actor ArchiveCaptureCoordinator {
         locatorBudget: Int,
         cursorScope: ArchiveCaptureCursorScope = .full
     ) async throws -> ArchiveCaptureCycleResult {
-        guard locatorBudget >= 0 else {
-            throw ArchiveCaptureCoordinatorError.invalidBudget(locatorBudget)
+        try await capture(
+            adapters: adapters,
+            budget: ArchiveCaptureBudget(
+                locatorLimit: locatorBudget,
+                sourceByteLimit: .max
+            ),
+            cursorScope: cursorScope,
+            refreshLocatorSnapshot: true
+        )
+    }
+
+    public func capture(
+        adapters: [any SessionAdapter],
+        budget: ArchiveCaptureBudget,
+        cursorScope: ArchiveCaptureCursorScope = .full,
+        refreshLocatorSnapshot: Bool
+    ) async throws -> ArchiveCaptureCycleResult {
+        guard budget.locatorLimit >= 0 else {
+            throw ArchiveCaptureCoordinatorError.invalidBudget(budget.locatorLimit)
+        }
+        guard budget.sourceByteLimit >= 0 else {
+            throw ArchiveCaptureCoordinatorError.invalidSourceByteLimit(budget.sourceByteLimit)
         }
         let machineID = try catalog.machineID()
         var items: [ArchiveCaptureCycleItem] = []
@@ -345,7 +393,7 @@ public actor ArchiveCaptureCoordinator {
             for: adapters,
             cursorScope: cursorScope
         )
-        if locatorBudget == 0 {
+        if budget.locatorLimit == 0 || budget.sourceByteLimit == 0 {
             let payload = try ArchiveCanonicalJSON.encode(progress)
             _ = try catalog.storeArchiveCursorCheckpoint(
                 payload,
@@ -363,69 +411,94 @@ public actor ArchiveCaptureCoordinator {
         var exactAdapters: [Int: any ExactArchiveSourceAdapter] = [:]
         var locatorSnapshots: [Int: [LocatorSnapshot]] = [:]
         var unavailableSources = Set<Int>()
-        for (sourceIndex, adapter) in adapters.enumerated() {
-            try Task.checkCancellation()
-            guard let exactAdapter = adapter as? any ExactArchiveSourceAdapter else {
-                let emptyDigest = try Self.locatorSetDigest([])
-                progress.sources[sourceIndex].locatorSetDigest = emptyDigest
-                progress.sources[sourceIndex].lastLocator = nil
-                progress.sources[sourceIndex].sweepUpperBound = nil
-                progress.sources[sourceIndex].wrapEnd = nil
-                progress.sources[sourceIndex].didWrap = true
-                progress.sources[sourceIndex].exhaustedDigest = emptyDigest
-                items.append(
-                    ArchiveCaptureCycleItem(
-                        source: adapter.source,
-                        locator: "",
-                        classification: .unsupportedAdapter,
-                        captureID: nil,
-                        diagnostic: nil
-                    )
-                )
-                continue
+        let adapterSources = adapters.map(\.source)
+        let cachedSweep = refreshLocatorSnapshot
+            ? nil
+            : locatorSweepCaches[cursorScope].flatMap { cache in
+                cache.adapterSources == adapterSources ? cache : nil
             }
-            do {
-                let listed = try await adapter.listSessionLocators()
-                let snapshots = Self.stableLocatorSnapshots(listed)
-                let digest = try Self.locatorSetDigest(snapshots)
-                var sourceProgress = progress.sources[sourceIndex]
-                if sourceProgress.locatorSetDigest == nil
-                    || (sourceProgress.locatorSetDigest != digest
-                        && sourceProgress.exhaustedDigest == sourceProgress.locatorSetDigest) {
-                    Self.startSweep(
-                        &sourceProgress,
-                        digest: digest,
-                        snapshots: snapshots
+        if let cachedSweep {
+            exactAdapters = cachedSweep.exactAdapters
+            locatorSnapshots = cachedSweep.locatorSnapshots
+            items.append(contentsOf: cachedSweep.enumerationItems)
+        } else {
+            locatorSweepCaches[cursorScope] = nil
+            var enumerationItems: [ArchiveCaptureCycleItem] = []
+            for (sourceIndex, adapter) in adapters.enumerated() {
+                try Task.checkCancellation()
+                guard let exactAdapter = adapter as? any ExactArchiveSourceAdapter else {
+                    let emptyDigest = try Self.locatorSetDigest([])
+                    progress.sources[sourceIndex].locatorSetDigest = emptyDigest
+                    progress.sources[sourceIndex].lastLocator = nil
+                    progress.sources[sourceIndex].sweepUpperBound = nil
+                    progress.sources[sourceIndex].wrapEnd = nil
+                    progress.sources[sourceIndex].didWrap = true
+                    progress.sources[sourceIndex].exhaustedDigest = emptyDigest
+                    enumerationItems.append(
+                        ArchiveCaptureCycleItem(
+                            source: adapter.source,
+                            locator: "",
+                            classification: .unsupportedAdapter,
+                            captureID: nil,
+                            diagnostic: nil
+                        )
+                    )
+                    continue
+                }
+                do {
+                    let listed = try await adapter.listSessionLocators()
+                    let snapshots = Self.stableLocatorSnapshots(listed)
+                    let digest = try Self.locatorSetDigest(snapshots)
+                    var sourceProgress = progress.sources[sourceIndex]
+                    if sourceProgress.locatorSetDigest == nil
+                        || (sourceProgress.locatorSetDigest != digest
+                            && sourceProgress.exhaustedDigest == sourceProgress.locatorSetDigest) {
+                        Self.startSweep(
+                            &sourceProgress,
+                            digest: digest,
+                            snapshots: snapshots
+                        )
+                    }
+                    if snapshots.isEmpty {
+                        sourceProgress.lastLocator = nil
+                        sourceProgress.sweepUpperBound = nil
+                        sourceProgress.wrapEnd = nil
+                        sourceProgress.didWrap = true
+                        sourceProgress.exhaustedDigest = sourceProgress.locatorSetDigest
+                    }
+                    progress.sources[sourceIndex] = sourceProgress
+                    exactAdapters[sourceIndex] = exactAdapter
+                    locatorSnapshots[sourceIndex] = snapshots
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    unavailableSources.insert(sourceIndex)
+                    enumerationItems.append(
+                        ArchiveCaptureCycleItem(
+                            source: adapter.source,
+                            locator: "",
+                            classification: .unsafe("locator enumeration failed"),
+                            captureID: nil,
+                            diagnostic: String(describing: error)
+                        )
                     )
                 }
-                if snapshots.isEmpty {
-                    sourceProgress.lastLocator = nil
-                    sourceProgress.sweepUpperBound = nil
-                    sourceProgress.wrapEnd = nil
-                    sourceProgress.didWrap = true
-                    sourceProgress.exhaustedDigest = sourceProgress.locatorSetDigest
-                }
-                progress.sources[sourceIndex] = sourceProgress
-                exactAdapters[sourceIndex] = exactAdapter
-                locatorSnapshots[sourceIndex] = snapshots
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                unavailableSources.insert(sourceIndex)
-                items.append(
-                    ArchiveCaptureCycleItem(
-                        source: adapter.source,
-                        locator: "",
-                        classification: .unsafe("locator enumeration failed"),
-                        captureID: nil,
-                        diagnostic: String(describing: error)
-                    )
+            }
+            items.append(contentsOf: enumerationItems)
+            if unavailableSources.isEmpty {
+                locatorSweepCaches[cursorScope] = LocatorSweepCache(
+                    adapterSources: adapterSources,
+                    exactAdapters: exactAdapters,
+                    locatorSnapshots: locatorSnapshots,
+                    enumerationItems: enumerationItems
                 )
             }
         }
 
         var processed = 0
-        while processed < locatorBudget,
+        var capturedSourceBytes: Int64 = 0
+        while processed < budget.locatorLimit,
+              capturedSourceBytes < budget.sourceByteLimit,
               let sourceIndex = Self.nextCaptureSource(
                   in: progress,
                   availableSources: Set(locatorSnapshots.keys)
@@ -463,6 +536,10 @@ public actor ArchiveCaptureCoordinator {
             items.append(outcome.item)
             if let capture = outcome.capture {
                 captures.append(capture)
+                let addition = capturedSourceBytes.addingReportingOverflow(
+                    capture.manifest.rawByteCount
+                )
+                capturedSourceBytes = addition.overflow ? .max : addition.partialValue
             }
             progress.sources[sourceIndex].lastLocator = selection.snapshot.key
             Self.finishSweepIfAtCurrentBoundary(
@@ -493,6 +570,7 @@ public actor ArchiveCaptureCoordinator {
         }
         if !hasMore {
             progress = Self.initialCaptureProgress(for: adapters)
+            locatorSweepCaches[cursorScope] = nil
         }
         let payload = try persistCaptureProgress(
             progress,
@@ -503,7 +581,8 @@ public actor ArchiveCaptureCoordinator {
             captures: captures,
             processed: processed,
             hasMore: hasMore,
-            continuation: hasMore ? ArchiveV2Hash.sha256(payload) : nil
+            continuation: hasMore ? ArchiveV2Hash.sha256(payload) : nil,
+            capturedSourceBytes: capturedSourceBytes
         )
     }
 
