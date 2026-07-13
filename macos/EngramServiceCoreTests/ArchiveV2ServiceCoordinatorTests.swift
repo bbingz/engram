@@ -76,9 +76,196 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertEqual(
             recordedEvents,
             [
-                "backlogCapture", "targets", "historical", "snapshot",
-                "replicateBacklog:16",
+                "replicateBacklog:16", "backlogCapture", "targets", "historical",
+                "snapshot",
             ]
+        )
+    }
+
+    func testBacklogPassAlternatesRemoteAndLocalAdmissionOrder() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let events = EventLog()
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            await events.append("capture")
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                hasMore: true
+            )
+        }
+        operations.replicateBacklog = { _, _ in
+            await events.append("replicate")
+            return ArchiveReplicationCycleResult()
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations
+        )
+
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        let firstPass = await events.values()
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        let allEvents = await events.values()
+        let secondPass = Array(allEvents.dropFirst(firstPass.count))
+
+        XCTAssertEqual(
+            firstPass,
+            ["replicate", "capture", "targets", "historical", "snapshot"]
+        )
+        XCTAssertEqual(
+            secondPass,
+            ["capture", "targets", "historical", "snapshot", "replicate"]
+        )
+    }
+
+    func testRemoteFirstDeadlineYieldsLocalAdmissionOnNextPass() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let events = EventLog()
+        let clock = CoordinatorClock(Date(timeIntervalSince1970: 100))
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            await events.append("capture")
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                hasMore: true
+            )
+        }
+        operations.replicateBacklog = { _, _ in
+            await events.append("replicate")
+            if await events.count(of: "replicate") == 1 {
+                clock.set(Date(timeIntervalSince1970: 111))
+            }
+            return ArchiveReplicationCycleResult()
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations,
+            now: { clock.value() }
+        )
+
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        let firstPass = await events.values()
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        let allEvents = await events.values()
+        let secondPass = Array(allEvents.dropFirst(firstPass.count))
+
+        XCTAssertEqual(firstPass, ["replicate"])
+        XCTAssertEqual(
+            secondPass,
+            ["capture", "targets", "historical", "snapshot", "replicate"]
+        )
+    }
+
+    func testLocalFirstDeadlineYieldsRemoteAdmissionOnFollowingPass() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let events = EventLog()
+        let clock = CoordinatorClock(Date(timeIntervalSince1970: 100))
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            await events.append("capture")
+            if await events.count(of: "capture") == 2 {
+                clock.set(Date(timeIntervalSince1970: 111))
+            }
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                hasMore: true
+            )
+        }
+        operations.replicateBacklog = { _, _ in
+            await events.append("replicate")
+            return ArchiveReplicationCycleResult()
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations,
+            now: { clock.value() }
+        )
+
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        let firstPass = await events.values()
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        let throughSecondPass = await events.values()
+        let secondPass = Array(throughSecondPass.dropFirst(firstPass.count))
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        let allEvents = await events.values()
+        let thirdPass = Array(allEvents.dropFirst(throughSecondPass.count))
+
+        XCTAssertEqual(
+            firstPass,
+            ["replicate", "capture", "targets", "historical", "snapshot"]
+        )
+        XCTAssertEqual(secondPass, ["capture"])
+        XCTAssertEqual(
+            thirdPass,
+            ["replicate", "capture", "targets", "historical", "snapshot"]
+        )
+    }
+
+    func testThrownLocalStageDoesNotPinFollowingPassAwayFromRemote() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let events = EventLog()
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            await events.append("capture")
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                hasMore: true
+            )
+        }
+        operations.bindingTargets = { _ in
+            await events.append("bind")
+            if await events.count(of: "bind") == 2 {
+                throw TestError.indexFailed
+            }
+            return []
+        }
+        operations.replicateBacklog = { _, _ in
+            await events.append("replicate")
+            return ArchiveReplicationCycleResult()
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations
+        )
+
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        let firstPass = await events.values()
+        do {
+            _ = try await coordinator.runBacklogPass(adapters: [])
+            XCTFail("expected local binding failure")
+        } catch TestError.indexFailed {
+            // expected
+        }
+        let throughSecondPass = await events.values()
+        let secondPass = Array(throughSecondPass.dropFirst(firstPass.count))
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        let allEvents = await events.values()
+        let thirdPass = Array(allEvents.dropFirst(throughSecondPass.count))
+
+        XCTAssertEqual(
+            firstPass,
+            ["replicate", "capture", "bind", "historical", "snapshot"]
+        )
+        XCTAssertEqual(secondPass, ["capture", "bind"])
+        XCTAssertEqual(
+            thirdPass,
+            ["replicate", "capture", "bind", "historical", "snapshot"]
         )
     }
 
@@ -684,7 +871,7 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(summary.capturedFiles, 1)
         XCTAssertTrue(summary.hasRunnableWork)
-        XCTAssertEqual(recorded, ["backlogCapture"])
+        XCTAssertEqual(recorded, ["replicate", "backlogCapture"])
     }
 
     func testBacklogPassDeadlineStopsBeforeNextStageAfterSlowUnitCompletes() async throws {
@@ -716,7 +903,7 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(summary.capturedFiles, 1)
         XCTAssertTrue(summary.hasRunnableWork)
-        XCTAssertEqual(recorded, ["backlogCapture"])
+        XCTAssertEqual(recorded, ["replicate", "backlogCapture"])
     }
 
     func testRetryPauseClampsOnlyAffectedReplicaWakeDeadline() async throws {
@@ -842,6 +1029,113 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertTrue(summary.needsAttention)
         XCTAssertFalse(summary.hasRunnableWork)
         XCTAssertEqual(summary.nextRetryAt, healthyRetryDeadline)
+    }
+
+    func testStatusPublishesAndRefreshesEffectiveReplicaPausesAndNextPriority() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let events = EventLog()
+        let clock = CoordinatorClock(Date(timeIntervalSince1970: 100))
+        let pauseDeadline = try coordinatorDate("2026-07-13T11:01:00.000Z")
+        let results = ReplicationResultQueue([
+            ArchiveReplicationCycleResult(
+                pausedReplicaIDs: ["m1"],
+                retryPausedUntilByReplica: [
+                    "hq": pauseDeadline,
+                    "m1": pauseDeadline,
+                ]
+            ),
+            ArchiveReplicationCycleResult(),
+        ])
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            await events.append("capture")
+            if await events.count(of: "capture") == 2 {
+                clock.set(Date(timeIntervalSince1970: 111))
+            }
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                hasMore: true
+            )
+        }
+        operations.replicateBacklog = { _, _ in await results.next() }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations,
+            now: { clock.value() }
+        )
+
+        let initial = await coordinator.status()
+        XCTAssertEqual(initial.nextPassPriority, "remote")
+
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        let afterReplication = await coordinator.status()
+        XCTAssertEqual(
+            afterReplication.replicas[0].pauseReason,
+            "transientInfrastructureBackoff"
+        )
+        XCTAssertEqual(
+            afterReplication.replicas[0].pausedUntil,
+            "2026-07-13T11:01:00.000Z"
+        )
+        XCTAssertEqual(afterReplication.replicas[1].pauseReason, "needsAttention")
+        XCTAssertNil(afterReplication.replicas[1].pausedUntil)
+        XCTAssertEqual(afterReplication.nextPassPriority, "local")
+
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        let afterDeadlineSkippedReplication = await coordinator.status()
+        XCTAssertEqual(
+            afterDeadlineSkippedReplication.replicas.map(\.pauseReason),
+            ["transientInfrastructureBackoff", "needsAttention"]
+        )
+        XCTAssertEqual(afterDeadlineSkippedReplication.nextPassPriority, "remote")
+
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        let afterFreshReplication = await coordinator.status()
+        XCTAssertTrue(afterFreshReplication.replicas.allSatisfy {
+            $0.pauseReason == nil && $0.pausedUntil == nil
+        })
+        XCTAssertEqual(afterFreshReplication.nextPassPriority, "local")
+    }
+
+    func testAcceptedManualRetryClearsOnlyRequestedReplicaPause() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let pauseDeadline = try coordinatorDate("2026-07-13T11:01:00.000Z")
+        var operations = makeOperations(events: EventLog())
+        operations.backlogCapture = { _, _, _ in
+            ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                hasMore: false
+            )
+        }
+        operations.replicateBacklog = { _, _ in
+            ArchiveReplicationCycleResult(
+                pausedReplicaIDs: ["m1"],
+                retryPausedUntilByReplica: ["hq": pauseDeadline]
+            )
+        }
+        operations.retry = { _ in 1 }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations
+        )
+
+        _ = try await coordinator.runBacklogPass(adapters: [])
+        let response = await coordinator.retryQuarantined(replicaID: "hq")
+        let status = await coordinator.status()
+
+        XCTAssertTrue(response.accepted)
+        XCTAssertNil(status.replicas[0].pauseReason)
+        XCTAssertNil(status.replicas[0].pausedUntil)
+        XCTAssertEqual(status.replicas[1].pauseReason, "needsAttention")
+        XCTAssertNil(status.replicas[1].pausedUntil)
     }
 
     func testNonRunnableUnboundCountDoesNotCauseContinuousDrainPasses() async throws {

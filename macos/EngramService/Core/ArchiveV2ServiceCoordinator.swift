@@ -219,6 +219,18 @@ enum ArchiveV2ServiceCoordinatorError: Error, Equatable, Sendable {
     case recoveryDrillTimedOut
 }
 
+enum ArchiveV2BacklogPassPriority: String, Sendable {
+    case remote
+    case local
+
+    var opposite: Self {
+        switch self {
+        case .remote: .local
+        case .local: .remote
+        }
+    }
+}
+
 actor ArchiveV2ServiceCoordinator {
     typealias TokenLoaderFactory = @Sendable () -> any ArchiveReplicaTokenLoading
     typealias BackendFactory = @Sendable (
@@ -259,6 +271,11 @@ actor ArchiveV2ServiceCoordinator {
         let statesBySource: [SourceName: [String: FileIndexState]]
     }
 
+    private struct ReplicaPauseState: Sendable {
+        let reason: String
+        let until: Date?
+    }
+
     private static let backlogIndexLocatorLimit = 32
     private static let backlogIndexSourceByteLimit: Int64 = 128 * 1_024 * 1_024
     private static let backlogIndexRetryDelay: TimeInterval = 300
@@ -292,6 +309,8 @@ actor ArchiveV2ServiceCoordinator {
     private var fullCapturePending = true
     private var fullCaptureRefreshRequestID: UUID?
     private var lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?
+    private var nextBacklogPassPriority: ArchiveV2BacklogPassPriority = .remote
+    private var replicaPauseStateByID: [String: ReplicaPauseState] = [:]
     private var nextScheduledCycleAt: String?
     private var drainer: ArchiveV2BacklogDrainer?
     private var pipelineBusy = false
@@ -549,6 +568,8 @@ actor ArchiveV2ServiceCoordinator {
             )
         }
         await acquirePipeline(indexPriority: false)
+        let passPriority = nextBacklogPassPriority
+        nextBacklogPassPriority = passPriority.opposite
         defer { releasePipeline() }
 
         // Resolve profile-backed adapters only after this pass owns the archive
@@ -567,6 +588,13 @@ actor ArchiveV2ServiceCoordinator {
         var captureFailedThisPass = false
         var reconcile = ReconcileSummary(boundRows: 0, policyRows: 0, hasMore: false)
         var replication = ArchiveReplicationCycleResult()
+
+        if passPriority == .remote {
+            replication = try await runBacklogReplication(
+                operations: operations,
+                shouldStartUnit: shouldStartUnit
+            )
+        }
 
         if fullCapturePending, shouldStartUnit() {
             await drainer?.setActiveStages([.capture])
@@ -725,21 +753,11 @@ actor ArchiveV2ServiceCoordinator {
             )
         }
 
-        if remoteReady, shouldStartUnit() {
-            await drainer?.setActiveStages([.hq, .m1])
-            let replicationStartedAt = now()
-            replication = await operations.replicateBacklog(
-                16,
-                shouldStartUnit
+        if passPriority == .local {
+            replication = try await runBacklogReplication(
+                operations: operations,
+                shouldStartUnit: shouldStartUnit
             )
-            let replicationFinishedAt = now()
-            lastReplicationCycle = Self.replicationCycleSummary(
-                result: replication,
-                startedAt: replicationStartedAt,
-                finishedAt: replicationFinishedAt
-            )
-            lastReplicationError = replication.cycleError
-            if replication.cancelled { throw CancellationError() }
         }
 
         await drainer?.setActiveStages([])
@@ -779,6 +797,50 @@ actor ArchiveV2ServiceCoordinator {
             nextRetryAt: nextRetryAt,
             needsAttention: !replication.pausedReplicaIDs.isEmpty
         )
+    }
+
+    private func runBacklogReplication(
+        operations: ArchiveV2ServiceCoordinatorOperations,
+        shouldStartUnit: @escaping @Sendable () -> Bool
+    ) async throws -> ArchiveReplicationCycleResult {
+        guard remoteReady, shouldStartUnit() else {
+            return ArchiveReplicationCycleResult()
+        }
+        await drainer?.setActiveStages([.hq, .m1])
+        let replicationStartedAt = now()
+        let replication = await operations.replicateBacklog(
+            16,
+            shouldStartUnit
+        )
+        let replicationFinishedAt = now()
+        lastReplicationCycle = Self.replicationCycleSummary(
+            result: replication,
+            startedAt: replicationStartedAt,
+            finishedAt: replicationFinishedAt
+        )
+        lastReplicationError = replication.cycleError
+        updateReplicaPauseState(with: replication)
+        if replication.cancelled { throw CancellationError() }
+        return replication
+    }
+
+    private func updateReplicaPauseState(with replication: ArchiveReplicationCycleResult) {
+        var updated: [String: ReplicaPauseState] = [:]
+        for replicaID in ["hq", "m1"] {
+            if let deadline = replication.retryPausedUntilByReplica[replicaID] {
+                updated[replicaID] = ReplicaPauseState(
+                    reason: "transientInfrastructureBackoff",
+                    until: deadline
+                )
+            }
+        }
+        for replicaID in replication.pausedReplicaIDs where replicaID == "hq" || replicaID == "m1" {
+            updated[replicaID] = ReplicaPauseState(
+                reason: "needsAttention",
+                until: nil
+            )
+        }
+        replicaPauseStateByID = updated
     }
 
     private func enqueuePendingIndexLocators(
@@ -965,6 +1027,8 @@ actor ArchiveV2ServiceCoordinator {
             cycleCoalesced: cycleCoalesced,
             lastReplicationCycle: lastReplicationCycle,
             nextScheduledCycleAt: nextScheduledCycleAt,
+            nextPassPriority: nextBacklogPassPriority,
+            replicaPauseStateByID: replicaPauseStateByID,
             drainSnapshot: drainSnapshot
         )
     }
@@ -982,6 +1046,11 @@ actor ArchiveV2ServiceCoordinator {
         }
         do {
             let count = try await operations.retry(replicaID)
+            if let replicaID {
+                replicaPauseStateByID.removeValue(forKey: replicaID)
+            } else {
+                replicaPauseStateByID.removeAll()
+            }
             await drainer?.signal()
             return Self.retryResponse(accepted: true, resetRows: count, error: nil)
         } catch is CancellationError {
@@ -2123,11 +2192,23 @@ actor ArchiveV2ServiceCoordinator {
         cycleCoalesced: Bool,
         lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?,
         nextScheduledCycleAt: String?,
+        nextPassPriority: ArchiveV2BacklogPassPriority,
+        replicaPauseStateByID: [String: ReplicaPauseState],
         drainSnapshot: ArchiveV2DrainSnapshot?
     ) -> EngramServiceArchiveV2StatusResponse {
         let replicas = [
-            replicaStatus(id: "hq", counts: aggregate.hq, remote: remoteTelemetry["hq"]),
-            replicaStatus(id: "m1", counts: aggregate.m1, remote: remoteTelemetry["m1"]),
+            replicaStatus(
+                id: "hq",
+                counts: aggregate.hq,
+                pauseState: replicaPauseStateByID["hq"],
+                remote: remoteTelemetry["hq"]
+            ),
+            replicaStatus(
+                id: "m1",
+                counts: aggregate.m1,
+                pauseState: replicaPauseStateByID["m1"],
+                remote: remoteTelemetry["m1"]
+            ),
         ]
         let receipts = aggregate.latestReceipts.compactMap { receipt in
             try? EngramServiceArchiveV2LatestReceipt(
@@ -2161,6 +2242,7 @@ actor ArchiveV2ServiceCoordinator {
             cycleCoalesced: cycleCoalesced,
             lastReplicationCycle: lastReplicationCycle,
             nextScheduledCycleAt: nextScheduledCycleAt,
+            nextPassPriority: nextPassPriority.rawValue,
             drainState: drainStateSymbol(drainSnapshot?.state),
             activeStages: drainSnapshot?.activeStages.map(\.rawValue) ?? [],
             lastDrainPass: drainPassSummary(drainSnapshot?.lastPass),
@@ -2231,6 +2313,7 @@ actor ArchiveV2ServiceCoordinator {
     private static func replicaStatus(
         id: String,
         counts: ArchiveReplicaStatusCounts,
+        pauseState: ReplicaPauseState?,
         remote: Result<ArchiveRemoteTelemetrySnapshot, any Error>?
     ) -> EngramServiceArchiveV2ReplicaStatus {
         let (queued, overflow) = counts.pending.addingReportingOverflow(counts.inflight)
@@ -2264,6 +2347,8 @@ actor ArchiveV2ServiceCoordinator {
             oldestOutstandingAt: counts.oldestOutstandingAt,
             nextRetryAt: counts.nextRetryAt,
             retryReasons: retryReasons,
+            pauseReason: pauseState?.reason,
+            pausedUntil: pauseState?.until.map(timestamp),
             remoteTelemetry: remoteStatus.0,
             remoteTelemetryError: remoteStatus.1
         )
