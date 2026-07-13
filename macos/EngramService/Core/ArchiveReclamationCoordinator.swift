@@ -1,4 +1,5 @@
 import Darwin
+import EngramCoreRead
 import EngramCoreWrite
 import Foundation
 import GRDB
@@ -23,6 +24,7 @@ actor ArchiveReclamationCoordinator {
     private let catalog: ArchiveCatalog
     private let sourceReclaimer: ArchiveSourceReclaimer
     private let casEvictor: ArchiveCASEvictor
+    private let profileResolver: ClaudeCodeProfileResolver
     private let productPool: DatabasePool
     private var cycleTask: Task<EngramServiceArchiveReclamationRunResponse, Never>?
     private var lastError: String?
@@ -32,13 +34,18 @@ actor ArchiveReclamationCoordinator {
         environment: [String: String],
         databasePath: String,
         catalog: ArchiveCatalog,
-        cas: ImmutableArchiveCAS
+        cas: ImmutableArchiveCAS,
+        profileResolver: ClaudeCodeProfileResolver? = nil
     ) throws {
         self.settingsURL = settingsURL
         self.environment = environment
         self.catalog = catalog
         sourceReclaimer = ArchiveSourceReclaimer(catalog: catalog)
         casEvictor = ArchiveCASEvictor(catalog: catalog, cas: cas)
+        self.profileResolver = profileResolver ?? ClaudeCodeProfileResolver(
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            settingsURL: settingsURL
+        )
         var configuration = Configuration()
         configuration.readonly = true
         productPool = try DatabasePool(path: databasePath, configuration: configuration)
@@ -135,6 +142,7 @@ actor ArchiveReclamationCoordinator {
             var casCount = 0
             var released: Int64 = 0
             var sourceBudget = Self.maximumSourceBytesPerCycle
+            let claudeProfiles = profileResolver.resolve().profiles
 
             let casSnapshot = try catalog.reclamationIntents(
                 phases: [.sourceDeleted],
@@ -147,6 +155,11 @@ actor ArchiveReclamationCoordinator {
             for intent in recovery {
                 guard sourceCount < Self.maximumCandidatesPerCycle,
                       let capture = try catalog.capture(captureID: intent.captureID),
+                      Self.sourceReclamationAllowed(
+                          locator: capture.locator,
+                          source: capture.source,
+                          claudeProfiles: claudeProfiles
+                      ),
                       capture.rawByteCount <= sourceBudget else { continue }
                 let result = try sourceReclaimer.recover(intent: intent, capture: capture)
                 sourceCount += 1
@@ -154,7 +167,11 @@ actor ArchiveReclamationCoordinator {
                 released += result.releasedBytes
             }
 
-            for (candidate, decision, _) in try evaluateCandidates(now: now, advanceCursor: true) {
+            for (candidate, decision, _) in try evaluateCandidates(
+                now: now,
+                advanceCursor: true,
+                claudeProfiles: claudeProfiles
+            ) {
                 guard sourceCount < Self.maximumCandidatesPerCycle,
                       case .eligible = decision,
                       candidate.capture.rawByteCount <= sourceBudget else { continue }
@@ -195,7 +212,8 @@ actor ArchiveReclamationCoordinator {
 
     private func evaluateCandidates(
         now: Date,
-        advanceCursor: Bool = false
+        advanceCursor: Bool = false,
+        claudeProfiles: [ClaudeCodeProfile]? = nil
     ) throws -> [(ArchiveReclamationCatalogCandidate, ArchiveReclamationDecision, ProductState)] {
         let settings = loadSettings()
         let leases = recoveryLeases(now: now) ?? [:]
@@ -222,6 +240,7 @@ actor ArchiveReclamationCoordinator {
                 updatedAt: Self.timestamp(now)
             )
         }
+        let resolvedClaudeProfiles = claudeProfiles ?? profileResolver.resolve().profiles
         return try page.compactMap { candidate in
             guard let state = try productState(sessionID: candidate.binding.sessionID) else { return nil }
             let policyCandidate = ArchiveReclamationCandidate(
@@ -235,8 +254,59 @@ actor ArchiveReclamationCoordinator {
                 hasActiveOperation: candidate.hasActiveOperation,
                 sourceByteCount: candidate.capture.rawByteCount
             )
-            return (candidate, ArchiveReclamationPolicy.evaluate(candidate: policyCandidate, context: context), state)
+            let decision = ArchiveReclamationPolicy.evaluate(
+                candidate: policyCandidate,
+                context: context
+            )
+            if case .eligible = decision,
+               !Self.sourceReclamationAllowed(
+                   locator: candidate.capture.locator,
+                   source: candidate.capture.source,
+                   claudeProfiles: resolvedClaudeProfiles
+               ) {
+                return (candidate, .blocked(.unsupportedSource), state)
+            }
+            return (candidate, decision, state)
         }
+    }
+
+    func sourceReclamationAllowed(locator: String, source: String) -> Bool {
+        guard source == SourceName.claudeCode.rawValue else { return true }
+        return Self.sourceReclamationAllowed(
+            locator: locator,
+            source: source,
+            claudeProfiles: profileResolver.resolve().profiles
+        )
+    }
+
+    private static func sourceReclamationAllowed(
+        locator: String,
+        source: String,
+        claudeProfiles: [ClaudeCodeProfile]
+    ) -> Bool {
+        guard source == SourceName.claudeCode.rawValue,
+              (locator as NSString).isAbsolutePath else {
+            return source != SourceName.claudeCode.rawValue
+        }
+        let locatorComponents = URL(fileURLWithPath: locator)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .pathComponents
+        for profile in claudeProfiles.sorted(by: {
+            URL(fileURLWithPath: $0.projectsRoot).pathComponents.count
+                > URL(fileURLWithPath: $1.projectsRoot).pathComponents.count
+        }) {
+            let rootComponents = URL(fileURLWithPath: profile.projectsRoot)
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+                .pathComponents
+            guard locatorComponents.count > rootComponents.count,
+                  Array(locatorComponents.prefix(rootComponents.count)) == rootComponents else {
+                continue
+            }
+            return profile.sourceReclamationAllowed
+        }
+        return false
     }
 
     private func reclamationCursor() throws -> ArchiveBindingCursor? {
