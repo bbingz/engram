@@ -8,12 +8,25 @@ public enum SessionAdapterFactory {
     public static let maximumRecentDays = 7
     public static let maximumTransientRetryLocatorsPerSource = 100
 
+    private static func defaultClaudeCodeAdapter(
+        sourceHintCacheDirectory: URL? = nil
+    ) -> ClaudeCodeAdapter {
+        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
+        return ClaudeCodeAdapter(
+            profileResolver: ClaudeCodeProfileResolver(
+                homeDirectory: homeDirectory,
+                settingsURL: homeDirectory.appendingPathComponent(".engram/settings.json")
+            ),
+            sourceHintCacheDirectory: sourceHintCacheDirectory
+        )
+    }
+
     public static func defaultAdapters() -> [any SessionAdapter] {
         // Persist the derived-source (minimax/lobsterai) signature cache so a
         // cold scan skips head-sniffing every Claude file it has already seen.
         let cacheDirectory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".engram/cache", isDirectory: true)
-        let claudeCode = ClaudeCodeAdapter(sourceHintCacheDirectory: cacheDirectory)
+        let claudeCode = defaultClaudeCodeAdapter(sourceHintCacheDirectory: cacheDirectory)
         return [
             CodexAdapter(),
             claudeCode,
@@ -66,7 +79,7 @@ public enum SessionAdapterFactory {
     ) -> [any SessionAdapter] {
         let boundedDays = min(max(days, 1), maximumRecentDays)
         let cutoff = now.addingTimeInterval(-Double(boundedDays) * 24 * 60 * 60)
-        let claudeCode = ClaudeCodeAdapter()
+        let claudeCode = defaultClaudeCodeAdapter()
         let fileBackedAdapters: [any SessionAdapter] = [
             claudeCode,
             ClaudeCodeDerivedSourceAdapter(source: .minimax, base: claudeCode),
@@ -140,7 +153,7 @@ public enum SessionAdapterFactory {
             switch adapter.source {
             case .claudeCode where adapter is ClaudeCodeAdapter
                 || adapter is RecentlyModifiedExactArchiveSourceAdapter:
-                parserBase = ClaudeCodeAdapter()
+                parserBase = defaultClaudeCodeAdapter()
             case .codex where adapter is CodexAdapter:
                 parserBase = CodexAdapter()
             default:

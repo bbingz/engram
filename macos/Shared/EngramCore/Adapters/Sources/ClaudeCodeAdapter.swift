@@ -2,7 +2,13 @@ import Foundation
 
 final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, ModificationFilteredSessionAdapter, ExactArchiveSourceAdapter, Sendable {
     let source: SourceName = .claudeCode
-    private let projectsRoot: URL
+
+    private enum ProfileSource: Sendable {
+        case resolver(ClaudeCodeProfileResolver)
+        case fixed(ClaudeCodeProfile)
+    }
+
+    private let profileSource: ProfileSource
     private let limits: ParserLimits
     private let sourceHintCache: ClaudeCodeSourceHintCache
     private static let sourceHintScanByteLimit = 1024 * 1024
@@ -22,17 +28,61 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         limits: ParserLimits = .default,
         sourceHintCacheDirectory: URL? = nil
     ) {
-        self.projectsRoot = URL(fileURLWithPath: projectsRoot)
+        let canonicalRoot = URL(fileURLWithPath: projectsRoot, isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        self.profileSource = .fixed(
+            ClaudeCodeProfile(
+                id: "default-fixed",
+                displayName: "Default",
+                projectsRoot: canonicalRoot.path,
+                origin: .default,
+                available: JSONLAdapterSupport.isDirectory(canonicalRoot),
+                sourceReclamationAllowed: true
+            )
+        )
+        self.limits = limits
+        self.sourceHintCache = ClaudeCodeSourceHintCache(directory: sourceHintCacheDirectory)
+    }
+
+    init(
+        profileResolver: ClaudeCodeProfileResolver,
+        limits: ParserLimits = .default,
+        sourceHintCacheDirectory: URL? = nil
+    ) {
+        self.profileSource = .resolver(profileResolver)
         self.limits = limits
         self.sourceHintCache = ClaudeCodeSourceHintCache(directory: sourceHintCacheDirectory)
     }
 
     func detect() async -> Bool {
-        JSONLAdapterSupport.isDirectory(projectsRoot)
+        resolvedProfiles().contains { profile in
+            JSONLAdapterSupport.isDirectory(URL(fileURLWithPath: profile.projectsRoot, isDirectory: true))
+        }
     }
 
     func listSessionLocators() async throws -> [String] {
+        try await listSessionLocators(profiles: resolvedProfiles())
+    }
+
+    private func listSessionLocators(profiles: [ClaudeCodeProfile]) async throws -> [String] {
         try Task.checkCancellation()
+        var locators = Set<String>()
+        for profile in profiles {
+            try Task.checkCancellation()
+            let projectsRoot = URL(fileURLWithPath: profile.projectsRoot, isDirectory: true)
+            for locator in try await listSessionLocators(projectsRoot: projectsRoot) {
+                let canonicalLocator = Self.canonicalURL(path: locator).path
+                guard Self.isDescendant(canonicalLocator, of: profile.projectsRoot) else { continue }
+                locators.insert(canonicalLocator)
+            }
+        }
+        try Task.checkCancellation()
+        return locators.sorted()
+    }
+
+    private func listSessionLocators(projectsRoot: URL) async throws -> [String] {
         var locators: [String] = []
         for projectURL in JSONLAdapterSupport.directChildren(of: projectsRoot, includingHidden: true)
             where JSONLAdapterSupport.isDirectory(projectURL)
@@ -55,19 +105,32 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 }
             }
         }
-        try Task.checkCancellation()
-        return locators.sorted()
+        return locators
+    }
+
+    func profile(for locator: String) -> ClaudeCodeProfile? {
+        Self.profile(for: locator, profiles: resolvedProfiles())
     }
 
     func archiveSourceDescriptor(locator: String) async throws -> ArchiveSourceDescriptor {
-        let sourceURL = URL(fileURLWithPath: locator).standardizedFileURL
-        let replayRoot = projectsRoot.resolvingSymlinksInPath().standardizedFileURL
+        guard ArchiveSourceDescriptor.normalizedAbsolutePath(locator) != nil else {
+            throw ArchiveSourceDescriptorError.invalidLocator(locator)
+        }
+        let sourceURL = Self.canonicalURL(path: locator)
+        let profiles = resolvedProfiles()
+        guard let profile = Self.profile(for: sourceURL.path, profiles: profiles) else {
+            throw ArchiveSourceDescriptorError.pathOutsideRoot(
+                path: sourceURL.path,
+                root: profiles.map(\.projectsRoot).joined(separator: ":")
+            )
+        }
+        let replayRoot = URL(fileURLWithPath: profile.projectsRoot, isDirectory: true)
         let relativePath = try ArchiveSourceDescriptor.relativePath(
             path: sourceURL,
             under: replayRoot
         )
         return try ArchiveSourceDescriptor.singleFile(
-            locator: locator,
+            locator: sourceURL.path,
             sourceURL: sourceURL,
             replayRelativePath: relativePath
         )
@@ -85,9 +148,14 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         modifiedSince: Date? = nil,
         fileManager: FileManager = .default
     ) async throws -> [String] {
+        let profiles = resolvedProfiles()
+        let defaultProfiles = profiles.filter { $0.origin == .default }
         var locators: [String] = []
-        for locator in try await listSessionLocators() {
+        for locator in try await listSessionLocators(profiles: defaultProfiles) {
             try Task.checkCancellation()
+            guard Self.profile(for: locator, profiles: profiles)?.origin == .default else {
+                continue
+            }
             if let modifiedSince {
                 guard let modifiedAt = try? Self.modifiedAt(locator: locator, fileManager: fileManager),
                       modifiedAt >= modifiedSince
@@ -108,10 +176,17 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        guard let profile = profile(for: locator) else {
+            return .failure(.unsupportedVirtualLocator)
+        }
         do {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
             if let failure { return .failure(failure) }
-            return Self.sessionInfo(from: objects, locator: locator)
+            return Self.sessionInfo(
+                from: objects,
+                locator: locator,
+                forceClaudeCodeSource: profile.origin != .default
+            )
         } catch let failure as ParserFailure {
             return .failure(failure)
         } catch {
@@ -126,6 +201,9 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     /// surfaces the same failures the streamed path throws, so the indexer
     /// records an identical outcome on failure.
     func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        guard let profile = profile(for: locator) else {
+            return .failure(.unsupportedVirtualLocator)
+        }
         do {
             let (objects, failure) = try JSONLAdapterSupport.readObjects(
                 locator: locator,
@@ -133,7 +211,11 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 reportFailures: true
             )
             if let failure { return .failure(failure) }
-            switch Self.sessionInfo(from: objects, locator: locator) {
+            switch Self.sessionInfo(
+                from: objects,
+                locator: locator,
+                forceClaudeCodeSource: profile.origin != .default
+            ) {
             case .failure(let reason):
                 return .failure(reason)
             case .success(let info):
@@ -162,6 +244,9 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         from parsedOffset: Int64,
         expectedBoundaryHash: String
     ) async throws -> IndexingTailScanResult {
+        guard let profile = profile(for: locator) else {
+            return .failure(.unsupportedVirtualLocator)
+        }
         do {
             let result = try JSONLAdapterSupport.readTailObjects(
                 locator: locator,
@@ -177,7 +262,9 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 IndexingTailScan(
                     infoDelta: IndexingTailInfoDelta(
                         id: aggregate.id(locator: locator),
-                        source: aggregate.source(locator: locator),
+                        source: profile.origin == .default
+                            ? aggregate.source(locator: locator)
+                            : .claudeCode,
                         endTime: aggregate.endTime.isEmpty ? nil : aggregate.endTime,
                         model: aggregate.detectedModel.isEmpty ? nil : aggregate.detectedModel,
                         messageCount: aggregate.messageCount,
@@ -201,7 +288,8 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
 
     private static func sessionInfo(
         from objects: [JSONLAdapterSupport.JSONObject],
-        locator: String
+        locator: String,
+        forceClaudeCodeSource: Bool
     ) -> AdapterParseResult<NormalizedSessionInfo> {
         let aggregate = aggregateSessionInfo(from: objects)
         guard let id = aggregate.id(locator: locator) else { return .failure(.malformedJSON) }
@@ -210,7 +298,9 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         return .success(
             NormalizedSessionInfo(
                 id: id,
-                source: aggregate.source(locator: locator) ?? .claudeCode,
+                source: forceClaudeCodeSource
+                    ? .claudeCode
+                    : aggregate.source(locator: locator) ?? .claudeCode,
                 startTime: aggregate.startTime,
                 endTime: aggregate.endTime != aggregate.startTime ? aggregate.endTime : nil,
                 cwd: aggregate.cwd,
@@ -226,7 +316,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
                 indexedAt: nil,
                 agentRole: locator.contains("/subagents/") ? "subagent" : nil,
-                originator: nil,
+                originator: forceClaudeCodeSource ? "claude-code" : nil,
                 origin: nil,
                 summaryMessageCount: nil,
                 tier: nil,
@@ -322,6 +412,9 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        guard profile(for: locator) != nil else {
+            throw ParserFailure.unsupportedVirtualLocator
+        }
         let messages = try JSONLAdapterSupport.windowedMessages(
             locator: locator,
             options: options,
@@ -335,6 +428,9 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> StreamMessagesResult {
+        guard profile(for: locator) != nil else {
+            throw ParserFailure.unsupportedVirtualLocator
+        }
         let result = try JSONLAdapterSupport.windowedMessagesWithMetadata(
             locator: locator,
             options: options,
@@ -350,7 +446,46 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     }
 
     func isAccessible(locator: String) async -> Bool {
-        JSONLAdapterSupport.fileExists(locator)
+        profile(for: locator) != nil && JSONLAdapterSupport.fileExists(locator)
+    }
+
+    private func resolvedProfiles() -> [ClaudeCodeProfile] {
+        switch profileSource {
+        case .resolver(let resolver):
+            return resolver.resolve().profiles
+        case .fixed(let profile):
+            return [profile]
+        }
+    }
+
+    private static func profile(
+        for locator: String,
+        profiles: [ClaudeCodeProfile]
+    ) -> ClaudeCodeProfile? {
+        guard ArchiveSourceDescriptor.normalizedAbsolutePath(locator) != nil else { return nil }
+        let canonicalLocator = canonicalURL(path: locator).path
+        return profiles
+            .filter { isDescendant(canonicalLocator, of: $0.projectsRoot) }
+            .max { lhs, rhs in
+                let lhsCount = URL(fileURLWithPath: lhs.projectsRoot).pathComponents.count
+                let rhsCount = URL(fileURLWithPath: rhs.projectsRoot).pathComponents.count
+                if lhsCount != rhsCount { return lhsCount < rhsCount }
+                return lhs.projectsRoot < rhs.projectsRoot
+            }
+    }
+
+    private static func canonicalURL(path: String) -> URL {
+        URL(fileURLWithPath: path)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+    }
+
+    private static func isDescendant(_ path: String, of root: String) -> Bool {
+        let pathComponents = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
+        let rootComponents = URL(fileURLWithPath: root).standardizedFileURL.pathComponents
+        return pathComponents.count > rootComponents.count
+            && Array(pathComponents.prefix(rootComponents.count)) == rootComponents
     }
 
     private static func projectName(fromCwd cwd: String) -> String? {

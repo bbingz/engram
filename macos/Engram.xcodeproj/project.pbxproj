@@ -97,6 +97,7 @@
 		1F16C2D9468ACFAE3A162F17 /* ScreenSectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD6B58C28284EBE9B9980BE3 /* ScreenSectionTests.swift */; };
 		208DF7B9F3EF92BE3F48FE8F /* SessionSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DB524C7D024C84A86B5E826 /* SessionSyncTests.swift */; };
 		20BE5017D98463BD36DB0828 /* SkeletonRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCBDF2E74FDC6BE088A6B2E4 /* SkeletonRow.swift */; };
+		21EE0F6987940339D170CFFB /* ClaudeCodeMultiRootAdapterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EBE91E3F2810DF8F3841A74 /* ClaudeCodeMultiRootAdapterTests.swift */; };
 		2210E93A466A4DF792A4C6AF /* LiveSessionCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C37BCCB1ACAB67E7F8B9C8E /* LiveSessionCard.swift */; };
 		2243A460D591F994BA355947 /* EngramServiceReadProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1544BE45F851B69E9F5DD3EE /* EngramServiceReadProvider.swift */; };
 		2245BCE65E909B20414E75B4 /* EngramServiceTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A84EE165301392E05DA4055 /* EngramServiceTransport.swift */; };
@@ -1076,6 +1077,7 @@
 		5DA97DD6E739DF83DD84BB1B /* JsonlPatch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JsonlPatch.swift; sourceTree = "<group>"; };
 		5E00E7BD7A7E59CED8D3CE54 /* SourceCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceCatalogTests.swift; sourceTree = "<group>"; };
 		5E9C7B5F0F14C680A5AD0F87 /* IndexingSchedulePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexingSchedulePolicy.swift; sourceTree = "<group>"; };
+		5EBE91E3F2810DF8F3841A74 /* ClaudeCodeMultiRootAdapterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeCodeMultiRootAdapterTests.swift; sourceTree = "<group>"; };
 		5ED247967A05A65CC875DA32 /* EmptyState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmptyState.swift; sourceTree = "<group>"; };
 		5F067E1E7AA90D1466F0533E /* UnixSocketTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnixSocketTransportTests.swift; sourceTree = "<group>"; };
 		5F75599BDACF57E380569A9E /* ArchiveReplicaBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveReplicaBackend.swift; sourceTree = "<group>"; };
@@ -1958,6 +1960,7 @@
 		7BEAB6186EF1E2A03CCBEB11 /* Adapters */ = {
 			isa = PBXGroup;
 			children = (
+				5EBE91E3F2810DF8F3841A74 /* ClaudeCodeMultiRootAdapterTests.swift */,
 				0B6EAF9406D4C1CF78A526A5 /* ClaudeCodeProfileResolverTests.swift */,
 			);
 			path = Adapters;
@@ -3193,6 +3196,7 @@
 				B8A6B1CE954B81574D18E72B /* ArchiveTests.swift in Sources */,
 				C4FC98E5FB24AC0A2D01EECB /* ArchiveV2RecentAdapterTests.swift in Sources */,
 				D7845DFA6F44F9C29F508094 /* BatchTests.swift in Sources */,
+				21EE0F6987940339D170CFFB /* ClaudeCodeMultiRootAdapterTests.swift in Sources */,
 				FDB256AEE1D4E8D334F613D6 /* ClaudeCodeProfileResolverTests.swift in Sources */,
 				00093C34D7276731694455A0 /* EmbeddingCircuitBreakerTests.swift in Sources */,
 				A9970C894BBEBDC7A1B33675 /* EmbeddingSettingsKeychainTests.swift in Sources */,

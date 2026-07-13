@@ -1157,6 +1157,59 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(streamed.map(\.content), ["real task", "done"])
     }
 
+    func testClaudeCodeMultiRootIndexingScanForcesNonDefaultSourceAndOriginator() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let projectsRoot = home
+            .appendingPathComponent(".claude-minimax", isDirectory: true)
+            .appendingPathComponent("projects", isDirectory: true)
+        let projectDir = projectsRoot.appendingPathComponent("-Users-test-minimax", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        let settingsURL = home.appendingPathComponent(".engram/settings.json")
+        try FileManager.default.createDirectory(
+            at: settingsURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let settings = try JSONSerialization.data(
+            withJSONObject: [
+                "claudeCodeProfiles": [
+                    "autoDiscover": true,
+                    "customProjectsRoots": [],
+                ],
+            ],
+            options: [.sortedKeys]
+        )
+        try settings.write(to: settingsURL)
+        let file = projectDir.appendingPathComponent("minimax.jsonl")
+        let lines: [[String: Any]] = [
+            [
+                "type": "user",
+                "sessionId": "cc-minimax-profile",
+                "cwd": "/Users/test/minimax",
+                "timestamp": "2026-07-13T00:00:00Z",
+                "message": ["role": "user", "content": "request"],
+            ],
+            [
+                "type": "assistant",
+                "sessionId": "cc-minimax-profile",
+                "timestamp": "2026-07-13T00:00:01Z",
+                "message": ["role": "assistant", "model": "MiniMax-M2.1", "content": "response"],
+            ],
+        ]
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+        let resolver = ClaudeCodeProfileResolver(homeDirectory: home, settingsURL: settingsURL)
+        let adapter = ClaudeCodeAdapter(profileResolver: resolver)
+
+        let scan = try sessionInfo(await adapter.scanForIndexing(locator: file.path))
+
+        XCTAssertEqual(scan.info.source, .claudeCode)
+        XCTAssertEqual(scan.info.originator, "claude-code")
+        XCTAssertEqual(scan.info.model, "MiniMax-M2.1")
+        XCTAssertEqual(scan.messages.count, 2)
+    }
+
     // MARK: - Copilot
 
     func testCopilotAttachesShutdownModelMetricsToLastAssistantMessage() async throws {
