@@ -67,7 +67,8 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
             hqVerified: 2,
             m1Verified: 1,
             retryScheduled: 1,
-            quarantined: 0
+            quarantined: 0,
+            cancelled: false
         )
         let status = try makeStatus(
             replicas: [
@@ -82,10 +83,10 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
             ],
             lastReplicationCycle: cycle,
             nextScheduledCycleAt: "2026-07-12T00:15:00.000Z",
-            drainState: "draining",
-            activeStages: ["hq", "m1"],
+            drainState: "waitingRetry",
+            activeStages: [],
             lastDrainPass: drainPass,
-            nextDrainWakeAt: "2026-07-12T00:05:00.000Z"
+            nextWakeAt: "2026-07-12T00:05:00.000Z"
         )
         let encoded = try JSONEncoder().encode(status)
         let decoded = try JSONDecoder().decode(
@@ -98,10 +99,10 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         XCTAssertEqual(decoded.latestReceipts.map(\.replicaID), ["hq", "m1"])
         XCTAssertEqual(decoded.replicas[0].remoteTelemetry?.serverID, "hq")
         XCTAssertEqual(decoded.replicas[1].remoteTelemetryError, "transport_network")
-        XCTAssertEqual(decoded.drainState, "draining")
-        XCTAssertEqual(decoded.activeStages, ["hq", "m1"])
+        XCTAssertEqual(decoded.drainState, "waitingRetry")
+        XCTAssertEqual(decoded.activeStages, [])
         XCTAssertEqual(decoded.lastDrainPass, drainPass)
-        XCTAssertEqual(decoded.nextDrainWakeAt, "2026-07-12T00:05:00.000Z")
+        XCTAssertEqual(decoded.nextWakeAt, "2026-07-12T00:05:00.000Z")
     }
 
     func testStatusDecodesOlderPayloadWithoutDiagnostics() throws {
@@ -132,7 +133,7 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         object.removeValue(forKey: "drainState")
         object.removeValue(forKey: "activeStages")
         object.removeValue(forKey: "lastDrainPass")
-        object.removeValue(forKey: "nextDrainWakeAt")
+        object.removeValue(forKey: "nextWakeAt")
         var replicas = try XCTUnwrap(object["replicas"] as? [[String: Any]])
         for index in replicas.indices {
             replicas[index].removeValue(forKey: "oldestOutstandingAt")
@@ -153,7 +154,7 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         XCTAssertEqual(decoded.drainState, "idle")
         XCTAssertEqual(decoded.activeStages, [])
         XCTAssertNil(decoded.lastDrainPass)
-        XCTAssertNil(decoded.nextDrainWakeAt)
+        XCTAssertNil(decoded.nextWakeAt)
         XCTAssertTrue(decoded.replicas.allSatisfy {
             $0.oldestOutstandingAt == nil
                 && $0.nextRetryAt == nil
@@ -186,7 +187,9 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         }
         XCTAssertThrowsError(try makeStatus(activeStages: ["hq"]))
         XCTAssertNoThrow(try makeStatus(drainState: "draining", activeStages: ["hq", "m1"]))
-        XCTAssertThrowsError(try makeStatus(nextDrainWakeAt: "not-a-timestamp"))
+        XCTAssertThrowsError(try makeStatus(drainState: "waitingRetry", nextWakeAt: "not-a-timestamp"))
+        XCTAssertThrowsError(try makeStatus(drainState: "waitingRetry"))
+        XCTAssertThrowsError(try makeStatus(nextWakeAt: timestamp))
         XCTAssertThrowsError(
             try EngramServiceArchiveV2DrainPassSummary(
                 startedAt: timestamp,
@@ -601,7 +604,7 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         drainState: String = "idle",
         activeStages: [String] = [],
         lastDrainPass: EngramServiceArchiveV2DrainPassSummary? = nil,
-        nextDrainWakeAt: String? = nil
+        nextWakeAt: String? = nil
     ) throws -> EngramServiceArchiveV2StatusResponse {
         try EngramServiceArchiveV2StatusResponse(
             enabled: enabled,
@@ -632,7 +635,7 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
             drainState: drainState,
             activeStages: activeStages,
             lastDrainPass: lastDrainPass,
-            nextDrainWakeAt: nextDrainWakeAt
+            nextWakeAt: nextWakeAt
         )
     }
 

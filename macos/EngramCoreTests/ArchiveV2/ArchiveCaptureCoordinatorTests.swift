@@ -952,6 +952,38 @@ final class ArchiveCaptureCoordinatorTests: XCTestCase {
         XCTAssertEqual(listingCountAfterRestart, 2)
     }
 
+    func testEnumerationFailureIsNotReportedAsImmediatelyRunnableBacklog() async throws {
+        let adapter = CoordinatorFailingExactAdapter(source: .claudeCode)
+        let (cas, catalog) = try makeStore(name: "enumeration-failure-backoff")
+        let coordinator = ArchiveCaptureCoordinator(cas: cas, catalog: catalog)
+        let budget = ArchiveCaptureBudget(
+            locatorLimit: 32,
+            sourceByteLimit: 128 * 1_024 * 1_024
+        )
+
+        let first = try await coordinator.capture(
+            adapters: [adapter],
+            budget: budget,
+            cursorScope: .full,
+            refreshLocatorSnapshot: false
+        )
+        let second = try await coordinator.capture(
+            adapters: [adapter],
+            budget: budget,
+            cursorScope: .full,
+            refreshLocatorSnapshot: false
+        )
+
+        let listingCount = await adapter.listCount()
+        XCTAssertFalse(first.hasMore)
+        XCTAssertFalse(second.hasMore)
+        XCTAssertEqual(listingCount, 2, "A later real signal must retry enumeration")
+        XCTAssertEqual(first.items.count, 1)
+        guard case .unsafe = first.items[0].classification else {
+            return XCTFail("expected bounded unsafe enumeration diagnostic")
+        }
+    }
+
     func testFullAndRecentCaptureScopesPersistIndependentFairCursors() async throws {
         let fullURLs = try makeSourceFiles(
             directory: "scope/full",
@@ -1759,6 +1791,45 @@ private final class CoordinatorCountingExactAdapter: ExactArchiveSourceAdapter, 
     }
 
     func isAccessible(locator: String) async -> Bool { true }
+}
+
+private final class CoordinatorFailingExactAdapter: ExactArchiveSourceAdapter, @unchecked Sendable {
+    let source: SourceName
+    private let lock = NSLock()
+    private var listings = 0
+
+    init(source: SourceName) {
+        self.source = source
+    }
+
+    func listCount() async -> Int { lock.withLock { listings } }
+    func detect() async -> Bool { true }
+
+    func listSessionLocators() async throws -> [String] {
+        lock.withLock { listings += 1 }
+        throw CoordinatorFailingExactAdapterError.enumerationFailed
+    }
+
+    func archiveSourceDescriptor(locator: String) async throws -> ArchiveSourceDescriptor {
+        throw CoordinatorFailingExactAdapterError.enumerationFailed
+    }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .failure(.malformedJSON)
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+
+    func isAccessible(locator: String) async -> Bool { false }
+}
+
+private enum CoordinatorFailingExactAdapterError: Error {
+    case enumerationFailed
 }
 
 private final class CoordinatorUndeclaredAdapter: SessionAdapter, @unchecked Sendable {

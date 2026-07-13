@@ -82,6 +82,45 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         )
     }
 
+    func testNonRunnableUnboundCountDoesNotCauseContinuousDrainPasses() async throws {
+        let harness = try makeHarness(remoteReady: false)
+        let events = EventLog()
+        var operations = makeOperations(events: events)
+        operations.status = {
+            let zero = ArchiveReplicaStatusCounts(
+                pending: 0,
+                inflight: 0,
+                retry: 0,
+                quarantine: 0,
+                verified: 0
+            )
+            return ArchiveStatusAggregate(
+                captured: 1,
+                bound: 0,
+                unbound: 1,
+                unknown: 0,
+                eligible: 0,
+                excluded: 0,
+                hq: zero,
+                m1: zero,
+                singleVerified: 0,
+                dualVerified: 0,
+                latestReceipts: []
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: operations
+        )
+
+        let summary = try await coordinator.runBacklogPass(adapters: [])
+
+        XCTAssertFalse(summary.hasRunnableWork)
+    }
+
     func testStatusPublishesBoundedBacklogDrainerSnapshot() async throws {
         let harness = try makeHarness(remoteReady: true)
         let coordinator = ArchiveV2ServiceCoordinator(
@@ -130,7 +169,8 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertEqual(status.lastDrainPass?.hqVerified, 2)
         XCTAssertEqual(status.lastDrainPass?.m1Verified, 1)
         XCTAssertEqual(status.lastDrainPass?.retryScheduled, 1)
-        XCTAssertNotNil(status.nextDrainWakeAt)
+        XCTAssertFalse(status.lastDrainPass?.cancelled ?? true)
+        XCTAssertNil(status.nextWakeAt)
     }
 
     func testIndexFailurePropagatesAndSkipsEveryPostIndexArchivePhase() async throws {

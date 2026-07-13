@@ -416,7 +416,7 @@ struct ArchiveSettingsSection: View {
                             .accessibilityIdentifier("archiveSync_lastDrainPass")
                     }
 
-                    if let nextWake = archiveStatus.nextDrainWakeAt {
+                    if let nextWake = archiveStatus.nextWakeAt {
                         Text(
                             String.localizedStringWithFormat(
                                 String(localized: "Next backlog wake around %@"),
@@ -609,7 +609,7 @@ struct ArchiveSettingsSection: View {
     }
 
     private func lastDrainPassSummary(_ pass: EngramServiceArchiveV2DrainPassSummary) -> String {
-        String.localizedStringWithFormat(
+        var summary = String.localizedStringWithFormat(
             String(localized: "Last backlog pass %@ · %@ · captured %lld · bound %lld · policy %lld · HQ %lld · M1 %lld"),
             localizedTimestamp(pass.finishedAt),
             localizedDuration(milliseconds: pass.durationMs),
@@ -619,6 +619,10 @@ struct ArchiveSettingsSection: View {
             Int64(pass.hqVerified),
             Int64(pass.m1Verified)
         )
+        if pass.cancelled {
+            summary += " · " + String(localized: "Cancelled")
+        }
+        return summary
     }
 
     private func localizedTimestamp(_ value: String) -> String {

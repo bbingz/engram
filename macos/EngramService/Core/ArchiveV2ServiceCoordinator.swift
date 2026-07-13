@@ -216,6 +216,7 @@ actor ArchiveV2ServiceCoordinator {
     private struct ReconcileSummary {
         let boundRows: Int
         let policyRows: Int
+        let hasMore: Bool
     }
 
     private let settings: ArchiveV2Settings
@@ -482,7 +483,7 @@ actor ArchiveV2ServiceCoordinator {
         let startedAt = now()
         let deadline = startedAt.addingTimeInterval(10)
         var capture = ArchiveV2ServiceCaptureSummary(unsupported: 0, unsafe: 0)
-        var reconcile = ReconcileSummary(boundRows: 0, policyRows: 0)
+        var reconcile = ReconcileSummary(boundRows: 0, policyRows: 0, hasMore: false)
         var replication = ArchiveReplicationCycleResult()
 
         if now() < deadline {
@@ -532,8 +533,7 @@ actor ArchiveV2ServiceCoordinator {
         let nextRetryAt = Self.earliestRetryDate(aggregate)
         let pausedReplicas = Set(replication.pausedReplicaIDs)
         let hasRunnableWork = capture.hasMore
-            || aggregate.unbound > 0
-            || aggregate.unknown > 0
+            || reconcile.hasMore
             || (!pausedReplicas.contains("hq") && aggregate.hq.pending > 0)
             || (!pausedReplicas.contains("m1") && aggregate.m1.pending > 0)
         return ArchiveV2DrainPassSummary(
@@ -803,7 +803,11 @@ actor ArchiveV2ServiceCoordinator {
         }
         return ReconcileSummary(
             boundRows: newlyBound.count,
-            policyRows: appliedPolicy
+            policyRows: appliedPolicy,
+            hasMore: (bindingLimit > 0 && bindingTargets.count >= bindingLimit)
+                || (historicalLimit > 0 && historicalPage.targets.count >= historicalLimit)
+                || (policySnapshotReady
+                    && historicalPage.targets.count + newlyBound.count > appliedPolicy)
         )
     }
 
@@ -1674,7 +1678,9 @@ actor ArchiveV2ServiceCoordinator {
             drainState: drainStateSymbol(drainSnapshot?.state),
             activeStages: drainSnapshot?.activeStages.map(\.rawValue) ?? [],
             lastDrainPass: drainPassSummary(drainSnapshot?.lastPass),
-            nextDrainWakeAt: drainSnapshot?.nextWakeAt.map(timestamp)
+            nextWakeAt: drainSnapshot?.state == .waitingRetry
+                ? drainSnapshot?.nextWakeAt.map(timestamp)
+                : nil
         )
     }
 
@@ -1698,7 +1704,8 @@ actor ArchiveV2ServiceCoordinator {
             hqVerified: summary.hqVerified,
             m1Verified: summary.m1Verified,
             retryScheduled: summary.retryScheduled,
-            quarantined: summary.quarantined
+            quarantined: summary.quarantined,
+            cancelled: false
         )
     }
 

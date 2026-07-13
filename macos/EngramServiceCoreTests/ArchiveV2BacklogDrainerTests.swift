@@ -130,6 +130,73 @@ final class ArchiveV2BacklogDrainerTests: XCTestCase {
         XCTAssertEqual(count, 2)
     }
 
+    func testSignalsCoalesceToOneAdditionalPassWhileRunning() async throws {
+        let recorder = BlockingFirstDrainPassRecorder()
+        let drainer = ArchiveV2BacklogDrainer(
+            conditions: { ArchiveV2DrainConditions(lowPower: false, thermalPressure: false) },
+            runPass: { try await recorder.run() }
+        )
+
+        await drainer.start()
+        await drainer.signal()
+        try await recorder.waitForPassCount(1)
+        await drainer.signal()
+        await drainer.signal()
+        await drainer.signal()
+        await recorder.releaseFirstPass()
+        try await recorder.waitForPassCount(2)
+        try await Task.sleep(for: .milliseconds(20))
+        let count = await recorder.passCount()
+        await drainer.stop()
+
+        XCTAssertEqual(count, 2)
+    }
+
+    func testThermalNotificationResumesPausedWorker() async throws {
+        let notificationCenter = NotificationCenter()
+        let conditions = DrainConditionsBox(
+            ArchiveV2DrainConditions(lowPower: false, thermalPressure: true)
+        )
+        let recorder = DrainPassRecorder(results: [ArchiveV2DrainPassSummary()])
+        let drainer = ArchiveV2BacklogDrainer(
+            conditions: { conditions.value() },
+            notificationCenter: notificationCenter,
+            runPass: { try await recorder.run() }
+        )
+
+        await drainer.start()
+        await drainer.signal()
+        try await waitForState(.pausedThermal, drainer: drainer)
+        conditions.set(ArchiveV2DrainConditions(lowPower: false, thermalPressure: false))
+        notificationCenter.post(name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
+        try await recorder.waitForPassCount(1)
+        try await waitForState(.idle, drainer: drainer)
+        let count = await recorder.passCount()
+        await drainer.stop()
+
+        XCTAssertEqual(count, 1)
+    }
+
+    func testStopCancelsAnInFlightPassAndPublishesStoppedState() async throws {
+        let recorder = DrainStartRecorder()
+        let drainer = ArchiveV2BacklogDrainer(
+            conditions: { ArchiveV2DrainConditions(lowPower: false, thermalPressure: false) },
+            runPass: {
+                await recorder.recordStart()
+                try await Task.sleep(for: .seconds(60))
+                return ArchiveV2DrainPassSummary()
+            }
+        )
+
+        await drainer.start()
+        await drainer.signal()
+        try await recorder.waitUntilStarted()
+        await drainer.stop()
+        let state = await drainer.snapshot().state
+
+        XCTAssertEqual(state, .stopped)
+    }
+
     private func waitForState(
         _ state: ArchiveV2DrainState,
         drainer: ArchiveV2BacklogDrainer
@@ -188,6 +255,48 @@ private actor DrainSleepRecorder {
     }
 
     func deadlines() -> [Date] { values }
+}
+
+private actor BlockingFirstDrainPassRecorder {
+    private var calls = 0
+    private var firstPassContinuation: CheckedContinuation<Void, Never>?
+
+    func run() async throws -> ArchiveV2DrainPassSummary {
+        calls += 1
+        if calls == 1 {
+            await withCheckedContinuation { continuation in
+                firstPassContinuation = continuation
+            }
+        }
+        return ArchiveV2DrainPassSummary()
+    }
+
+    func releaseFirstPass() {
+        firstPassContinuation?.resume()
+        firstPassContinuation = nil
+    }
+
+    func waitForPassCount(_ expected: Int) async throws {
+        for _ in 0 ..< 200 where calls < expected {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        if calls < expected { throw DrainTestError.timeout }
+    }
+
+    func passCount() -> Int { calls }
+}
+
+private actor DrainStartRecorder {
+    private var started = false
+
+    func recordStart() { started = true }
+
+    func waitUntilStarted() async throws {
+        for _ in 0 ..< 200 where !started {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        if !started { throw DrainTestError.timeout }
+    }
 }
 
 private final class DrainConditionsBox: @unchecked Sendable {

@@ -565,8 +565,14 @@ public actor ArchiveCaptureCoordinator {
             try Task.checkCancellation()
         }
         try Task.checkCancellation()
-        let hasMore = !unavailableSources.isEmpty || progress.sources.contains { source in
-            source.locatorSetDigest == nil || source.exhaustedDigest != source.locatorSetDigest
+        // Enumeration failures are not immediately runnable backlog. Treating
+        // them as `hasMore` would make the event-driven worker retry a broken
+        // source every cool-down interval. A later discovery/index signal will
+        // rebuild the uncached snapshot and retry the source.
+        let hasMore = progress.sources.enumerated().contains { index, source in
+            !unavailableSources.contains(index)
+                && (source.locatorSetDigest == nil
+                    || source.exhaustedDigest != source.locatorSetDigest)
         }
         if !hasMore {
             progress = Self.initialCaptureProgress(for: adapters)

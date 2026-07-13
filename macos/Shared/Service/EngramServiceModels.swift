@@ -2019,6 +2019,7 @@ struct EngramServiceArchiveV2DrainPassSummary: Codable, Equatable, Sendable {
     let m1Verified: Int
     let retryScheduled: Int
     let quarantined: Int
+    let cancelled: Bool
 
     init(
         startedAt: String,
@@ -2031,7 +2032,8 @@ struct EngramServiceArchiveV2DrainPassSummary: Codable, Equatable, Sendable {
         hqVerified: Int,
         m1Verified: Int,
         retryScheduled: Int,
-        quarantined: Int
+        quarantined: Int,
+        cancelled: Bool = false
     ) throws {
         try EngramServiceArchiveV2WireValidation.validateTimestamp(startedAt, field: "startedAt")
         try EngramServiceArchiveV2WireValidation.validateTimestamp(finishedAt, field: "finishedAt")
@@ -2065,6 +2067,7 @@ struct EngramServiceArchiveV2DrainPassSummary: Codable, Equatable, Sendable {
         self.m1Verified = m1Verified
         self.retryScheduled = retryScheduled
         self.quarantined = quarantined
+        self.cancelled = cancelled
     }
 
     init(from decoder: Decoder) throws {
@@ -2080,7 +2083,8 @@ struct EngramServiceArchiveV2DrainPassSummary: Codable, Equatable, Sendable {
             hqVerified: container.decode(Int.self, forKey: .hqVerified),
             m1Verified: container.decode(Int.self, forKey: .m1Verified),
             retryScheduled: container.decode(Int.self, forKey: .retryScheduled),
-            quarantined: container.decode(Int.self, forKey: .quarantined)
+            quarantined: container.decode(Int.self, forKey: .quarantined),
+            cancelled: container.decodeIfPresent(Bool.self, forKey: .cancelled) ?? false
         )
     }
 }
@@ -2111,7 +2115,7 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
     let drainState: String
     let activeStages: [String]
     let lastDrainPass: EngramServiceArchiveV2DrainPassSummary?
-    let nextDrainWakeAt: String?
+    let nextWakeAt: String?
 
     init(
         enabled: Bool,
@@ -2139,7 +2143,7 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
         drainState: String = "idle",
         activeStages: [String] = [],
         lastDrainPass: EngramServiceArchiveV2DrainPassSummary? = nil,
-        nextDrainWakeAt: String? = nil
+        nextWakeAt: String? = nil
     ) throws {
         if !enabled {
             try EngramServiceArchiveV2WireValidation.require(
@@ -2185,12 +2189,16 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
                 && (drainState == "draining" || activeStages.isEmpty),
             field: "activeStages"
         )
-        if let nextDrainWakeAt {
+        if let nextWakeAt {
             try EngramServiceArchiveV2WireValidation.validateTimestamp(
-                nextDrainWakeAt,
-                field: "nextDrainWakeAt"
+                nextWakeAt,
+                field: "nextWakeAt"
             )
         }
+        try EngramServiceArchiveV2WireValidation.require(
+            (drainState == "waitingRetry") == (nextWakeAt != nil),
+            field: "nextWakeAt"
+        )
 
         let counts = [
             ("capturedCount", capturedCount),
@@ -2244,7 +2252,7 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
         self.drainState = drainState
         self.activeStages = activeStages
         self.lastDrainPass = lastDrainPass
-        self.nextDrainWakeAt = nextDrainWakeAt
+        self.nextWakeAt = nextWakeAt
     }
 
     init(from decoder: Decoder) throws {
@@ -2284,7 +2292,7 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
                 EngramServiceArchiveV2DrainPassSummary.self,
                 forKey: .lastDrainPass
             ),
-            nextDrainWakeAt: try container.decodeIfPresent(String.self, forKey: .nextDrainWakeAt)
+            nextWakeAt: try container.decodeIfPresent(String.self, forKey: .nextWakeAt)
         )
     }
 
@@ -2314,7 +2322,7 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
         case drainState
         case activeStages
         case lastDrainPass
-        case nextDrainWakeAt
+        case nextWakeAt
     }
 }
 
