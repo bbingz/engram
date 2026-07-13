@@ -116,17 +116,20 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain('tests/scripts/version-guard.test.ts');
   });
 
-  it('installs ripgrep before Ubuntu coverage runs the archive safety gate', () => {
+  it('provides ripgrep without sudo before Linux coverage runs the archive safety gate', () => {
     const typescriptJob = testWorkflow.slice(
       testWorkflow.indexOf('  typescript:'),
       testWorkflow.indexOf('  macos-vitest:'),
     );
-    const installIndex = typescriptJob.indexOf(
-      'sudo apt-get install --yes ripgrep',
-    );
+    const installIndex = typescriptJob.indexOf('apt-get download ripgrep');
     const coverageIndex = typescriptJob.indexOf('npm run test:coverage');
 
     expect(installIndex).toBeGreaterThan(-1);
+    expect(typescriptJob).toContain('dpkg-deb --extract ripgrep_*.deb root');
+    expect(typescriptJob).toContain(
+      'echo "$install_root/root/usr/bin" >> "$GITHUB_PATH"',
+    );
+    expect(typescriptJob).not.toContain('sudo apt-get');
     expect(coverageIndex).toBeGreaterThan(installIndex);
   });
 

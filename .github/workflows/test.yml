@@ -60,8 +60,17 @@ jobs:
       - run: ONNXRUNTIME_NODE_INSTALL=skip npm ci
       - name: Install archive safety gate tools
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes ripgrep
+          if ! command -v rg >/dev/null 2>&1; then
+            install_root="$RUNNER_TEMP/ripgrep"
+            rm -rf "$install_root"
+            mkdir -p "$install_root"
+            (
+              cd "$install_root"
+              apt-get download ripgrep
+              dpkg-deb --extract ripgrep_*.deb root
+            )
+            echo "$install_root/root/usr/bin" >> "$GITHUB_PATH"
+          fi
       - run: npm run build
       - run: npm run typecheck:test
       - run: npm run test:coverage
