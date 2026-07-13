@@ -1,6 +1,168 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "%lld files · %@ · %lld indexed · %lld archived · %lld empty ignored" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%1$lld files · %2$@ · %3$lld indexed · %4$lld archived · %5$lld empty ignored" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%1$lld 个文件 · %2$@ · 已索引 %3$lld · 已归档 %4$lld · 已忽略空会话 %5$lld" } }
+      }
+    },
+    "Add Projects Folder" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Add Projects Folder" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "添加 Projects 文件夹" } }
+      }
+    },
+    "Add Projects Folder…" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Add Projects Folder…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "添加 Projects 文件夹…" } }
+      }
+    },
+    "Automatic" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Automatic" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动发现" } }
+      }
+    },
+    "Automatically discover ~/.claude-*/projects" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Automatically discover ~/.claude-*/projects" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动发现 ~/.claude-*/projects" } }
+      }
+    },
+    "Available" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Available" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可用" } }
+      }
+    },
+    "Choose a Claude Code projects folder. Custom folders are indexed and archived, but their source files are protected from automatic local reclamation." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Choose a Claude Code projects folder. Custom folders are indexed and archived, but their source files are protected from automatic local reclamation." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请选择 Claude Code 的 projects 文件夹。自定义文件夹会被索引和归档，但其中的源文件不会被自动本地精简。" } }
+      }
+    },
+    "Claude Code Profiles" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Claude Code Profiles" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Claude Code 配置目录" } }
+      }
+    },
+    "Configuration changes never delete existing sessions or archives." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Configuration changes never delete existing sessions or archives." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "配置变更不会删除已有会话或归档。" } }
+      }
+    },
+    "Error: no more than 64 custom projects folders can be added." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Error: no more than 64 custom projects folders can be added." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误：最多只能添加 64 个自定义 projects 文件夹。" } }
+      }
+    },
+    "Error: profile configuration could not be saved." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Error: profile configuration could not be saved." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误：无法保存配置目录设置。" } }
+      }
+    },
+    "Error: profile status is unavailable." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Error: profile status is unavailable." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误：无法读取配置目录状态。" } }
+      }
+    },
+    "Error: selected folder must be a Claude Code projects directory." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Error: selected folder must be a Claude Code projects directory." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误：所选文件夹必须是 Claude Code 的 projects 目录。" } }
+      }
+    },
+    "HQ %lld · M1 %lld" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "HQ %1$lld · M1 %2$lld" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "HQ %1$lld · M1 %2$lld" } }
+      }
+    },
+    "Loading profiles…" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Loading profiles…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在加载配置目录…" } }
+      }
+    },
+    "Local source reclamation allowed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local source reclamation allowed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "允许精简本地源文件" } }
+      }
+    },
+    "No Claude Code profiles found." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No Claude Code profiles found." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未发现 Claude Code 配置目录。" } }
+      }
+    },
+    "Origin: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Origin: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "来源：%@" } }
+      }
+    },
+    "Pending save" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Pending save" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "等待保存" } }
+      }
+    },
+    "Profile configuration is invalid." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Profile configuration is invalid." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "配置目录设置无效。" } }
+      }
+    },
+    "Profile status unavailable." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Profile status unavailable." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "配置目录状态不可用。" } }
+      }
+    },
+    "Refresh" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Refresh" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "刷新" } }
+      }
+    },
+    "Remove" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Remove" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "移除" } }
+      }
+    },
+    "Saved." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saved." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已保存。" } }
+      }
+    },
+    "Saving…" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saving…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在保存…" } }
+      }
+    },
+    "Source files protected from local reclamation" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Source files protected from local reclamation" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "源文件受保护，不参与本地精简" } }
+      }
+    },
+    "Unavailable" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unavailable" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "不可用" } }
+      }
+    },
     "%lld days" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 天" } } }
     },
@@ -539,7 +701,10 @@
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "配置" } } }
     },
     "Custom" : {
-      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自定义" } } }
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Custom" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自定义" } }
+      }
     },
     "Custom Prompt" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自定义提示词" } } }
@@ -899,7 +1064,10 @@
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "天" } } }
     },
     "Default" : {
-      "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "默认" } } }
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Default" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "默认" } }
+      }
     },
     "Generation" : {
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "生成" } } }
@@ -1682,8 +1850,13 @@
       "localizations" : { "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "跳过" } } }
     },
     "Save" : {
-      "extractionState" : "stale",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save"
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",

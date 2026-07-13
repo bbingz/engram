@@ -61,13 +61,16 @@ final class SourcesSyncTests: XCTestCase {
         XCTAssertTrue(text.contains("source.liveSyncDisabled"))
     }
 
-    func testSourcesSettingsHasNoDeadPathKeysAndIsReadOnly() throws {
+    func testSourcesSettingsHasNoDeadPathKeysAndKeepsCatalogReadOnly() throws {
         let text = try source("macos/Engram/Views/Settings/SourcesSettingsSection.swift")
         XCTAssertFalse(text.contains("\"path."))
         XCTAssertTrue(text.contains("read-only"))
         XCTAssertTrue(text.contains("Archived"))
         XCTAssertTrue(text.contains("stay off until enabled"))
         XCTAssertTrue(text.contains("Workspace > Sources > Archived"))
+        XCTAssertFalse(text.contains("UserDefaults.standard.string(forKey:"))
+        XCTAssertFalse(text.contains("UserDefaults.standard.set("))
+        XCTAssertTrue(text.contains("configureClaudeCodeProfiles"))
     }
 
     func testSourceCatalogMatchesRegisteredAdapters() throws {
