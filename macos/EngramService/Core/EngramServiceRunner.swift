@@ -89,6 +89,25 @@ public enum EngramServiceRunner {
             settingsURL: engramSettingsURL(environment: environment),
             environment: environment
         )
+        let archiveV2Drainer: ArchiveV2BacklogDrainer?
+        if archiveV2Settings.exactArchiveEnabled {
+            let disabledSources = Self.readDisabledSources(environment: environment)
+            let backlogAdapters = Self.exactArchiveAdapters(
+                from: Self.adaptersExcludingDisabled(
+                    SessionAdapterFactory.defaultAdapters(),
+                    disabledSources: disabledSources
+                )
+            )
+            let drainer = ArchiveV2BacklogDrainer {
+                try await archiveV2Coordinator.runBacklogPass(
+                    adapters: backlogAdapters
+                )
+            }
+            await archiveV2Coordinator.attachDrainer(drainer)
+            archiveV2Drainer = drainer
+        } else {
+            archiveV2Drainer = nil
+        }
         let archiveTranscriptResolver = archiveV2Coordinator.transcriptResolverSnapshot
 
         let statusMonitor = ServiceStatusMonitor()
@@ -177,6 +196,12 @@ public enum EngramServiceRunner {
                 )
             }
         }
+        let archiveDrainStartTask = Task {
+            await initialScanTask.value
+            guard !Task.isCancelled, let archiveV2Drainer else { return }
+            await archiveV2Drainer.start()
+            await archiveV2Drainer.signal()
+        }
 
         // Best-effort startup TRUNCATE: PASSIVE never shrinks the WAL file on
         // disk, so without this the file grows monotonically. Created AFTER
@@ -228,6 +253,7 @@ public enum EngramServiceRunner {
         defer {
             initialScanTask.cancel()
             indexingTask.cancel()
+            archiveDrainStartTask.cancel()
             checkpointTask.cancel()
             server.stop()
         }
@@ -251,8 +277,11 @@ public enum EngramServiceRunner {
         // gate alive (and its locks held) past `run()` returning.
         initialScanTask.cancel()
         indexingTask.cancel()
+        archiveDrainStartTask.cancel()
         await initialScanTask.value
         await indexingTask.value
+        await archiveDrainStartTask.value
+        await archiveV2Drainer?.stop()
 
         // Wait for the startup truncate to finish before tearing down the gate.
         // SQLite's PRAGMA call doesn't observe Task cancellation, so the value

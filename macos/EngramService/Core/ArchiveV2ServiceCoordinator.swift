@@ -124,6 +124,7 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
         ArchiveRemoteEligibility
     ) async throws -> Void
     var replicate: @Sendable (Int) async -> ArchiveReplicationCycleResult
+    var replicateBacklog: @Sendable (Int) async -> ArchiveReplicationCycleResult
     var status: @Sendable () async throws -> ArchiveStatusAggregate
     var remoteTelemetry: @Sendable () async -> RemoteTelemetryResults
     var retry: @Sendable (String?) async throws -> Int
@@ -155,6 +156,7 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
             ArchiveRemoteEligibility
         ) async throws -> Void,
         replicate: @escaping @Sendable (Int) async -> ArchiveReplicationCycleResult,
+        replicateBacklog: (@Sendable (Int) async -> ArchiveReplicationCycleResult)? = nil,
         status: @escaping @Sendable () async throws -> ArchiveStatusAggregate,
         remoteTelemetry: @escaping @Sendable () async -> RemoteTelemetryResults = { [:] },
         retry: @escaping @Sendable (String?) async throws -> Int,
@@ -173,6 +175,7 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
         self.bindOne = bindOne
         self.applyRemotePolicy = applyRemotePolicy
         self.replicate = replicate
+        self.replicateBacklog = replicateBacklog ?? replicate
         self.status = status
         self.remoteTelemetry = remoteTelemetry
         self.retry = retry
@@ -210,6 +213,11 @@ actor ArchiveV2ServiceCoordinator {
         case leaveUnknown
     }
 
+    private struct ReconcileSummary {
+        let boundRows: Int
+        let policyRows: Int
+    }
+
     private let settings: ArchiveV2Settings
     private let writerGate: ServiceWriterGate
     private let localCaptureReady: Bool
@@ -234,6 +242,10 @@ actor ArchiveV2ServiceCoordinator {
     private var fullCapturePending = false
     private var lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?
     private var nextScheduledCycleAt: String?
+    private var drainer: ArchiveV2BacklogDrainer?
+    private var pipelineBusy = false
+    private var indexPipelineWaiters: [CheckedContinuation<Void, Never>] = []
+    private var backlogPipelineWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(
         settings: ArchiveV2Settings,
@@ -451,6 +463,95 @@ actor ArchiveV2ServiceCoordinator {
         }
     }
 
+    func attachDrainer(_ drainer: ArchiveV2BacklogDrainer) {
+        self.drainer = drainer
+    }
+
+    func runBacklogPass(
+        adapters: [any SessionAdapter]
+    ) async throws -> ArchiveV2DrainPassSummary {
+        guard localCaptureReady, let operations else {
+            return ArchiveV2DrainPassSummary(
+                startedAt: now(),
+                finishedAt: now()
+            )
+        }
+        await acquirePipeline(indexPriority: false)
+        defer { releasePipeline() }
+
+        let startedAt = now()
+        let deadline = startedAt.addingTimeInterval(10)
+        var capture = ArchiveV2ServiceCaptureSummary(unsupported: 0, unsafe: 0)
+        var reconcile = ReconcileSummary(boundRows: 0, policyRows: 0)
+        var replication = ArchiveReplicationCycleResult()
+
+        if now() < deadline {
+            await drainer?.setActiveStages([.capture])
+            do {
+                capture = try await operations.backlogCapture(adapters)
+                unsupportedLocatorCount = max(capture.unsupported, 0)
+                unsafeLocatorCount = max(capture.unsafe, 0)
+                updateCaptureRetryLocators(with: capture)
+                fullCapturePending = capture.hasMore
+                lastCaptureError = nil
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                fullCapturePending = true
+                lastCaptureError = "capture_failure"
+            }
+        }
+
+        if now() < deadline {
+            await drainer?.setActiveStages([.binding])
+            reconcile = try await reconcileArchive(
+                operations: operations,
+                bindingLimit: 100,
+                historicalLimit: 100,
+                policyLimit: 100
+            )
+        }
+
+        if remoteReady, now() < deadline {
+            await drainer?.setActiveStages([.hq, .m1])
+            let replicationStartedAt = now()
+            replication = await operations.replicateBacklog(16)
+            let replicationFinishedAt = now()
+            lastReplicationCycle = Self.replicationCycleSummary(
+                result: replication,
+                startedAt: replicationStartedAt,
+                finishedAt: replicationFinishedAt
+            )
+            lastReplicationError = replication.cycleError
+            if replication.cancelled { throw CancellationError() }
+        }
+
+        await drainer?.setActiveStages([])
+        let aggregate = try await operations.status()
+        let nextRetryAt = Self.earliestRetryDate(aggregate)
+        let pausedReplicas = Set(replication.pausedReplicaIDs)
+        let hasRunnableWork = capture.hasMore
+            || aggregate.unbound > 0
+            || aggregate.unknown > 0
+            || (!pausedReplicas.contains("hq") && aggregate.hq.pending > 0)
+            || (!pausedReplicas.contains("m1") && aggregate.m1.pending > 0)
+        return ArchiveV2DrainPassSummary(
+            startedAt: startedAt,
+            finishedAt: now(),
+            capturedFiles: capture.processed,
+            capturedSourceBytes: capture.capturedSourceBytes,
+            boundRows: reconcile.boundRows,
+            policyRows: reconcile.policyRows,
+            hqVerified: replication.verifiedByReplica["hq"] ?? 0,
+            m1Verified: replication.verifiedByReplica["m1"] ?? 0,
+            retryScheduled: replication.retryScheduled,
+            quarantined: replication.quarantined,
+            hasRunnableWork: hasRunnableWork,
+            nextRetryAt: nextRetryAt,
+            needsAttention: !replication.pausedReplicaIDs.isEmpty
+        )
+    }
+
     func status() async -> EngramServiceArchiveV2StatusResponse {
         let aggregate: ArchiveStatusAggregate
         let remoteTelemetry: ArchiveV2ServiceCoordinatorOperations.RemoteTelemetryResults
@@ -496,6 +597,7 @@ actor ArchiveV2ServiceCoordinator {
         }
         do {
             let count = try await operations.retry(replicaID)
+            await drainer?.signal()
             return Self.retryResponse(accepted: true, resetRows: count, error: nil)
         } catch is CancellationError {
             return Self.retryResponse(accepted: false, resetRows: 0, error: "cancelled")
@@ -553,7 +655,7 @@ actor ArchiveV2ServiceCoordinator {
     }
 
     func needsFullCaptureContinuation() -> Bool {
-        localCaptureReady && fullCapturePending
+        localCaptureReady && drainer == nil && fullCapturePending
     }
 
     private func executeCycle(
@@ -570,6 +672,8 @@ actor ArchiveV2ServiceCoordinator {
                 indexPlan: .unrestricted
             )
         }
+        await acquirePipeline(indexPriority: true)
+        defer { releasePipeline() }
 
         var indexPlan = ArchiveV2ServiceIndexPlan.captured([:])
         do {
@@ -596,58 +700,13 @@ actor ArchiveV2ServiceCoordinator {
         try Task.checkCancellation()
 
         do {
-            let bindingTargets = try await operations.bindingTargets(batchSize)
-            let historicalBudget = policySnapshotReady ? max(1, batchSize / 2) : 0
-            let historicalPage = policySnapshotReady
-                ? try await operations.historicalUnknown(historicalBudget)
-                : ArchiveV2ServiceUnknownPage(targets: [])
-            let historicalCaptureTargets = historicalPage.targets.map {
-                ArchiveV2ServiceCaptureTarget(
-                    captureID: $0.captureID,
-                    source: $0.source,
-                    locator: $0.locator,
-                    generation: nil,
-                    capturedAt: $0.boundAt
-                )
-            }
-            let snapshotTargets = Self.uniqueTargets(
-                bindingTargets + historicalCaptureTargets
+            _ = try await reconcileArchive(
+                operations: operations,
+                bindingLimit: batchSize,
+                historicalLimit: policySnapshotReady ? max(1, batchSize / 2) : 0,
+                policyLimit: batchSize
             )
-            let snapshot = try await operations.snapshot(writerGate, snapshotTargets)
-            try Task.checkCancellation()
-
-            var newlyBound: [ArchiveV2ServicePolicyTarget] = []
-            for target in bindingTargets.prefix(batchSize) {
-                try Task.checkCancellation()
-                let identities = Self.identities(for: target, snapshot: snapshot)
-                if let bound = try await operations.bindOne(target, identities) {
-                    newlyBound.append(bound)
-                }
-            }
-
-            if policySnapshotReady {
-                var remainingPolicyBudget = batchSize
-                for target in historicalPage.targets.prefix(remainingPolicyBudget) {
-                    try Task.checkCancellation()
-                    try await applyPolicy(
-                        target,
-                        snapshot: snapshot,
-                        operations: operations
-                    )
-                    try await operations.advancePolicyCursor(target)
-                    remainingPolicyBudget -= 1
-                    try Task.checkCancellation()
-                }
-                for target in newlyBound.prefix(remainingPolicyBudget) {
-                    try Task.checkCancellation()
-                    try await applyPolicy(
-                        target,
-                        snapshot: snapshot,
-                        operations: operations
-                    )
-                }
-            }
-            if remoteReady {
+            if remoteReady, drainer == nil {
                 let replicationStartedAt = now()
                 let replication = await operations.replicate(batchSize)
                 let replicationFinishedAt = now()
@@ -672,6 +731,7 @@ actor ArchiveV2ServiceCoordinator {
                 if replication.cancelled { throw CancellationError() }
                 lastReplicationError = replication.cycleError
             }
+            await drainer?.signal()
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -684,6 +744,84 @@ actor ArchiveV2ServiceCoordinator {
             indexResult: indexResult,
             indexPlan: indexPlan
         )
+    }
+
+    private func reconcileArchive(
+        operations: ArchiveV2ServiceCoordinatorOperations,
+        bindingLimit: Int,
+        historicalLimit: Int,
+        policyLimit: Int
+    ) async throws -> ReconcileSummary {
+        let bindingTargets = try await operations.bindingTargets(bindingLimit)
+        let historicalPage = policySnapshotReady
+            ? try await operations.historicalUnknown(historicalLimit)
+            : ArchiveV2ServiceUnknownPage(targets: [])
+        let historicalCaptureTargets = historicalPage.targets.map {
+            ArchiveV2ServiceCaptureTarget(
+                captureID: $0.captureID,
+                source: $0.source,
+                locator: $0.locator,
+                generation: nil,
+                capturedAt: $0.boundAt
+            )
+        }
+        let snapshotTargets = Self.uniqueTargets(bindingTargets + historicalCaptureTargets)
+        let snapshot = try await operations.snapshot(writerGate, snapshotTargets)
+        try Task.checkCancellation()
+
+        var newlyBound: [ArchiveV2ServicePolicyTarget] = []
+        for target in bindingTargets.prefix(bindingLimit) {
+            try Task.checkCancellation()
+            let identities = Self.identities(for: target, snapshot: snapshot)
+            if let bound = try await operations.bindOne(target, identities) {
+                newlyBound.append(bound)
+            }
+        }
+
+        var appliedPolicy = 0
+        if policySnapshotReady {
+            var remainingPolicyBudget = policyLimit
+            for target in historicalPage.targets.prefix(remainingPolicyBudget) {
+                try Task.checkCancellation()
+                try await applyPolicy(target, snapshot: snapshot, operations: operations)
+                try await operations.advancePolicyCursor(target)
+                remainingPolicyBudget -= 1
+                appliedPolicy += 1
+            }
+            for target in newlyBound.prefix(remainingPolicyBudget) {
+                try Task.checkCancellation()
+                try await applyPolicy(target, snapshot: snapshot, operations: operations)
+                appliedPolicy += 1
+            }
+        }
+        return ReconcileSummary(
+            boundRows: newlyBound.count,
+            policyRows: appliedPolicy
+        )
+    }
+
+    private func acquirePipeline(indexPriority: Bool) async {
+        if !pipelineBusy {
+            pipelineBusy = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            if indexPriority {
+                indexPipelineWaiters.append(continuation)
+            } else {
+                backlogPipelineWaiters.append(continuation)
+            }
+        }
+    }
+
+    private func releasePipeline() {
+        if !indexPipelineWaiters.isEmpty {
+            indexPipelineWaiters.removeFirst().resume()
+        } else if !backlogPipelineWaiters.isEmpty {
+            backlogPipelineWaiters.removeFirst().resume()
+        } else {
+            pipelineBusy = false
+        }
     }
 
     private func updateCaptureRetryLocators(
@@ -883,6 +1021,14 @@ actor ArchiveV2ServiceCoordinator {
                 }
                 return await replicationCoordinator.runOnce(limit: limit)
             },
+            replicateBacklog: { limit in
+                guard let replicationCoordinator else {
+                    return ArchiveReplicationCycleResult()
+                }
+                return await replicationCoordinator.runBacklogPass(
+                    perReplicaLimit: limit
+                )
+            },
             status: { try catalog.archiveStatus() },
             remoteTelemetry: {
                 async let hq = remoteTelemetryResult(
@@ -896,10 +1042,14 @@ actor ArchiveV2ServiceCoordinator {
                 return Dictionary(uniqueKeysWithValues: await [hq, m1].compactMap { $0 })
             },
             retry: { replicaID in
-                try catalog.retryQuarantined(
+                let count = try catalog.retryQuarantined(
                     replicaID: replicaID,
                     now: Self.timestamp(Date())
                 )
+                await replicationCoordinator?.resumeAfterAttention(
+                    replicaID: replicaID
+                )
+                return count
             },
             recoveryDrill: { replicaID in
                 try await Self.executeRecoveryDrill(
@@ -1426,6 +1576,15 @@ actor ArchiveV2ServiceCoordinator {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         return formatter.string(from: date)
+    }
+
+    private static func earliestRetryDate(_ aggregate: ArchiveStatusAggregate) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return [aggregate.hq.nextRetryAt, aggregate.m1.nextRetryAt]
+            .compactMap { $0.flatMap(formatter.date(from:)) }
+            .min()
     }
 
     private static let maximumCaptureRetryLocatorsPerSource = 100

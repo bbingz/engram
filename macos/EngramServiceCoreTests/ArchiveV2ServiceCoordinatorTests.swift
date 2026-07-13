@@ -37,6 +37,51 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertEqual(snapshotCount, 1)
     }
 
+    func testBacklogPassUsesIndependentBudgetsAndBacklogReplication() async throws {
+        let harness = try makeHarness(remoteReady: true, batchSize: 3)
+        let events = EventLog()
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _ in
+            await events.append("backlogCapture")
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                processed: 1,
+                capturedSourceBytes: 64
+            )
+        }
+        operations.replicateBacklog = { limit in
+            await events.append("replicateBacklog:\(limit)")
+            return ArchiveReplicationCycleResult(
+                claimed: 2,
+                verified: 2,
+                verifiedByReplica: ["hq": 1, "m1": 1]
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations
+        )
+
+        let summary = try await coordinator.runBacklogPass(adapters: [])
+        let recordedEvents = await events.values()
+
+        XCTAssertEqual(summary.capturedFiles, 1)
+        XCTAssertEqual(summary.capturedSourceBytes, 64)
+        XCTAssertEqual(summary.hqVerified, 1)
+        XCTAssertEqual(summary.m1Verified, 1)
+        XCTAssertEqual(
+            recordedEvents,
+            [
+                "backlogCapture", "targets", "historical", "snapshot",
+                "replicateBacklog:16",
+            ]
+        )
+    }
+
     func testIndexFailurePropagatesAndSkipsEveryPostIndexArchivePhase() async throws {
         let harness = try makeHarness(remoteReady: true)
         let events = EventLog()

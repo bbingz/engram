@@ -14,6 +14,7 @@ public struct ArchiveReplicationCycleResult: Equatable, Sendable {
     public let cancelled: Bool
     public let cycleError: String?
     public let pausedReplicaIDs: [String]
+    public let verifiedByReplica: [String: Int]
 
     public init(
         claimed: Int = 0,
@@ -25,7 +26,8 @@ public struct ArchiveReplicationCycleResult: Equatable, Sendable {
         reconciled: Int = 0,
         cancelled: Bool = false,
         cycleError: String? = nil,
-        pausedReplicaIDs: [String] = []
+        pausedReplicaIDs: [String] = [],
+        verifiedByReplica: [String: Int] = [:]
     ) {
         self.claimed = claimed
         self.verified = verified
@@ -37,6 +39,9 @@ public struct ArchiveReplicationCycleResult: Equatable, Sendable {
         self.cancelled = cancelled
         self.cycleError = cycleError
         self.pausedReplicaIDs = pausedReplicaIDs.sorted()
+        self.verifiedByReplica = verifiedByReplica.filter {
+            ArchiveCatalog.currentReplicaIDs.contains($0.key) && $0.value >= 0
+        }
     }
 }
 
@@ -221,6 +226,14 @@ public actor ArchiveReplicationCoordinator {
         }
     }
 
+    public func resumeAfterAttention(replicaID: String?) {
+        if let replicaID {
+            attentionPausedReplicaIDs.remove(replicaID)
+        } else {
+            attentionPausedReplicaIDs.removeAll()
+        }
+    }
+
     private func processClaims(
         _ claims: [ArchiveReplicaClaim],
         stopOnInfrastructureFailure: Bool
@@ -260,6 +273,7 @@ public actor ArchiveReplicationCoordinator {
             switch outcome {
             case .verified:
                 cycle.verified += 1
+                cycle.verifiedByReplica[claim.replicaID, default: 0] += 1
             case .lostClaim:
                 cycle.lostClaims += 1
             case .cancelled:
@@ -670,6 +684,7 @@ private struct CycleAccumulator {
     var cancelled = false
     var cycleError: String?
     var pausedReplicaIDs: [String] = []
+    var verifiedByReplica: [String: Int] = [:]
 
     mutating func merge(_ other: CycleAccumulator) {
         verified += other.verified
@@ -679,6 +694,9 @@ private struct CycleAccumulator {
         cancelled = cancelled || other.cancelled
         if cycleError == nil { cycleError = other.cycleError }
         pausedReplicaIDs.append(contentsOf: other.pausedReplicaIDs)
+        for (replicaID, count) in other.verifiedByReplica {
+            verifiedByReplica[replicaID, default: 0] += count
+        }
     }
 
     var result: ArchiveReplicationCycleResult {
@@ -692,7 +710,8 @@ private struct CycleAccumulator {
             reconciled: reconciled,
             cancelled: cancelled,
             cycleError: cycleError,
-            pausedReplicaIDs: Array(Set(pausedReplicaIDs)).sorted()
+            pausedReplicaIDs: Array(Set(pausedReplicaIDs)).sorted(),
+            verifiedByReplica: verifiedByReplica
         )
     }
 }
