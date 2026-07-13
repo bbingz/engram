@@ -278,6 +278,66 @@ final class MessageParserTests: XCTestCase {
         XCTAssertEqual(paged.map(\.1), whole.map(\.1))
     }
 
+    func testClaudeCustomProfileReplayAndWindowingUseResolverBackedRegistry() async throws {
+        let fixtureRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-message-parser-claude-profile-\(UUID().uuidString)", isDirectory: true)
+        let homeDirectory = fixtureRoot.appendingPathComponent("home", isDirectory: true)
+        let projectsRoot = fixtureRoot.appendingPathComponent("custom/projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("-Users-custom", isDirectory: true)
+        let settingsURL = homeDirectory.appendingPathComponent(".engram/settings.json")
+        let locator = projectDirectory.appendingPathComponent("custom.jsonl")
+        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: settingsURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+
+        let settings = try JSONSerialization.data(
+            withJSONObject: [
+                "claudeCodeProfiles": [
+                    "autoDiscover": false,
+                    "customProjectsRoots": [projectsRoot.path],
+                ],
+            ]
+        )
+        try settings.write(to: settingsURL)
+        let lines = [
+            ##"{"type":"user","sessionId":"custom","timestamp":"2026-07-13T00:00:00Z","message":{"role":"user","content":"# AGENTS.md instructions for custom"}}"##,
+            #"{"type":"user","sessionId":"custom","timestamp":"2026-07-13T00:00:01Z","message":{"role":"user","content":"visible request"}}"#,
+            #"{"type":"assistant","sessionId":"custom","timestamp":"2026-07-13T00:00:02Z","message":{"role":"assistant","model":"claude-sonnet-4","content":"visible response"}}"#,
+        ]
+        try (lines.joined(separator: "\n") + "\n").write(to: locator, atomically: true, encoding: .utf8)
+        let resolver = ClaudeCodeProfileResolver(homeDirectory: homeDirectory, settingsURL: settingsURL)
+
+        let full = await MessageParser.parse(
+            filePath: locator.path,
+            source: "claude-code",
+            claudeCodeProfileResolver: resolver
+        )
+        XCTAssertEqual(full.map(\.content), ["visible request", "visible response"])
+
+        let firstPage = await MessageParser.parseWindowed(
+            filePath: locator.path,
+            source: "claude-code",
+            offset: 0,
+            limit: 1,
+            claudeCodeProfileResolver: resolver
+        )
+        XCTAssertEqual(firstPage.producedCount, 1)
+        XCTAssertEqual(firstPage.messages.map(\.content), ["visible request"])
+
+        let secondPage = await MessageParser.parseWindowed(
+            filePath: locator.path,
+            source: "claude-code",
+            offset: firstPage.producedCount,
+            limit: 1,
+            claudeCodeProfileResolver: resolver
+        )
+        XCTAssertEqual(secondPage.producedCount, 1)
+        XCTAssertEqual(secondPage.messages.map(\.content), ["visible response"])
+    }
+
     /// `parseWindowed` reports a PRODUCED count that includes filtered (tool)
     /// messages, so the detail-view pager advances its offset in produced-message
     /// space. Paging by the displayable count instead (the pre-fix behaviour)

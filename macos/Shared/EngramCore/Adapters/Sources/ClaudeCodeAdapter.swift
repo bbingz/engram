@@ -3,12 +3,8 @@ import Foundation
 final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, ModificationFilteredSessionAdapter, ExactArchiveSourceAdapter, Sendable {
     let source: SourceName = .claudeCode
 
-    private enum ProfileSource: Sendable {
-        case resolver(ClaudeCodeProfileResolver)
-        case fixed(ClaudeCodeProfile)
-    }
-
-    private let profileSource: ProfileSource
+    private let profileResolutionProvider: (@Sendable () -> [ClaudeCodeProfile])?
+    private let profileSnapshot: ClaudeCodeProfileSnapshot
     private let limits: ParserLimits
     private let sourceHintCache: ClaudeCodeSourceHintCache
     private static let sourceHintScanByteLimit = 1024 * 1024
@@ -32,15 +28,18 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             .standardizedFileURL
             .resolvingSymlinksInPath()
             .standardizedFileURL
-        self.profileSource = .fixed(
-            ClaudeCodeProfile(
-                id: "default-fixed",
-                displayName: "Default",
-                projectsRoot: canonicalRoot.path,
-                origin: .default,
-                available: JSONLAdapterSupport.isDirectory(canonicalRoot),
-                sourceReclamationAllowed: true
-            )
+        self.profileResolutionProvider = nil
+        self.profileSnapshot = ClaudeCodeProfileSnapshot(
+            profiles: [
+                ClaudeCodeProfile(
+                    id: "default-fixed",
+                    displayName: "Default",
+                    projectsRoot: canonicalRoot.path,
+                    origin: .default,
+                    available: JSONLAdapterSupport.isDirectory(canonicalRoot),
+                    sourceReclamationAllowed: true
+                ),
+            ]
         )
         self.limits = limits
         self.sourceHintCache = ClaudeCodeSourceHintCache(directory: sourceHintCacheDirectory)
@@ -51,19 +50,34 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         limits: ParserLimits = .default,
         sourceHintCacheDirectory: URL? = nil
     ) {
-        self.profileSource = .resolver(profileResolver)
+        let provider: @Sendable () -> [ClaudeCodeProfile] = {
+            profileResolver.resolve().profiles
+        }
+        self.profileResolutionProvider = provider
+        self.profileSnapshot = ClaudeCodeProfileSnapshot(profiles: provider())
+        self.limits = limits
+        self.sourceHintCache = ClaudeCodeSourceHintCache(directory: sourceHintCacheDirectory)
+    }
+
+    init(
+        profileResolutionProvider: @escaping @Sendable () -> [ClaudeCodeProfile],
+        limits: ParserLimits = .default,
+        sourceHintCacheDirectory: URL? = nil
+    ) {
+        self.profileResolutionProvider = profileResolutionProvider
+        self.profileSnapshot = ClaudeCodeProfileSnapshot(profiles: profileResolutionProvider())
         self.limits = limits
         self.sourceHintCache = ClaudeCodeSourceHintCache(directory: sourceHintCacheDirectory)
     }
 
     func detect() async -> Bool {
-        resolvedProfiles().contains { profile in
+        currentProfiles().contains { profile in
             JSONLAdapterSupport.isDirectory(URL(fileURLWithPath: profile.projectsRoot, isDirectory: true))
         }
     }
 
     func listSessionLocators() async throws -> [String] {
-        try await listSessionLocators(profiles: resolvedProfiles())
+        try await listSessionLocators(profiles: refreshProfilesForListing())
     }
 
     private func listSessionLocators(profiles: [ClaudeCodeProfile]) async throws -> [String] {
@@ -109,7 +123,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     }
 
     func profile(for locator: String) -> ClaudeCodeProfile? {
-        Self.profile(for: locator, profiles: resolvedProfiles())
+        Self.profile(for: locator, profiles: currentProfiles())
     }
 
     func archiveSourceDescriptor(locator: String) async throws -> ArchiveSourceDescriptor {
@@ -117,7 +131,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             throw ArchiveSourceDescriptorError.invalidLocator(locator)
         }
         let sourceURL = Self.canonicalURL(path: locator)
-        let profiles = resolvedProfiles()
+        let profiles = currentProfiles()
         guard let profile = Self.profile(for: sourceURL.path, profiles: profiles) else {
             throw ArchiveSourceDescriptorError.pathOutsideRoot(
                 path: sourceURL.path,
@@ -148,7 +162,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         modifiedSince: Date? = nil,
         fileManager: FileManager = .default
     ) async throws -> [String] {
-        let profiles = resolvedProfiles()
+        let profiles = refreshProfilesForListing()
         let defaultProfiles = profiles.filter { $0.origin == .default }
         var locators: [String] = []
         for locator in try await listSessionLocators(profiles: defaultProfiles) {
@@ -449,13 +463,17 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         profile(for: locator) != nil && JSONLAdapterSupport.fileExists(locator)
     }
 
-    private func resolvedProfiles() -> [ClaudeCodeProfile] {
-        switch profileSource {
-        case .resolver(let resolver):
-            return resolver.resolve().profiles
-        case .fixed(let profile):
-            return [profile]
+    private func currentProfiles() -> [ClaudeCodeProfile] {
+        profileSnapshot.read()
+    }
+
+    private func refreshProfilesForListing() -> [ClaudeCodeProfile] {
+        guard let profileResolutionProvider else {
+            return currentProfiles()
         }
+        let profiles = profileResolutionProvider()
+        profileSnapshot.replace(with: profiles)
+        return profiles
     }
 
     private static func profile(
@@ -917,6 +935,27 @@ private actor ClaudeCodeSourceHintCache {
                 source: source
             )
         }
+    }
+}
+
+private final class ClaudeCodeProfileSnapshot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var profiles: [ClaudeCodeProfile]
+
+    init(profiles: [ClaudeCodeProfile]) {
+        self.profiles = profiles
+    }
+
+    func read() -> [ClaudeCodeProfile] {
+        lock.lock()
+        defer { lock.unlock() }
+        return profiles
+    }
+
+    func replace(with profiles: [ClaudeCodeProfile]) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.profiles = profiles
     }
 }
 

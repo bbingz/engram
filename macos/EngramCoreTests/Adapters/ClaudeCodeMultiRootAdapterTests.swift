@@ -193,8 +193,106 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
 
         try writeSettings(autoDiscover: true, customProjectsRoots: [customRoot.path])
 
+        let automaticBeforeListing = try failure(
+            await adapter.parseSessionInfo(locator: automaticFile.path)
+        )
+        XCTAssertEqual(
+            automaticBeforeListing,
+            .unsupportedVirtualLocator,
+            "settings changes must not alter the immutable snapshot before the next listing"
+        )
+        let customBeforeListing = try failure(
+            await adapter.parseSessionInfo(locator: customFile.path)
+        )
+        XCTAssertEqual(
+            customBeforeListing,
+            .unsupportedVirtualLocator,
+            "custom roots must not become addressable until the next listing refresh"
+        )
+        _ = try success(await adapter.parseSessionInfo(locator: defaultFile.path))
+
         let updatedLocators = try await adapter.listSessionLocators()
         XCTAssertEqual(updatedLocators, [defaultFile.path, automaticFile.path, customFile.path].sorted())
+        _ = try success(await adapter.parseSessionInfo(locator: automaticFile.path))
+        _ = try success(await adapter.parseSessionInfo(locator: customFile.path))
+    }
+
+    func testProfileResolutionIsBoundToListingAndTailKeepsAutomaticSource() async throws {
+        let automaticRoot = try makeProjectsRoot(parent: homeDirectory.appendingPathComponent(".claude-api"))
+        let locator = try makeTranscript(
+            root: automaticRoot,
+            project: "-Users-automatic",
+            name: "automatic",
+            model: "MiniMax-M2.1"
+        )
+        let profile = ClaudeCodeProfile(
+            id: "automatic-test",
+            displayName: "Automatic",
+            projectsRoot: automaticRoot.resolvingSymlinksInPath().standardizedFileURL.path,
+            origin: .automatic,
+            available: true,
+            sourceReclamationAllowed: false
+        )
+        let provider = CountingProfileProvider(profiles: [profile])
+        let adapter = ClaudeCodeAdapter(profileResolutionProvider: { provider.resolve() })
+
+        XCTAssertEqual(provider.invocationCount, 1, "resolver-backed adapters need one initial snapshot")
+        let detected = await adapter.detect()
+        XCTAssertTrue(detected)
+        XCTAssertNotNil(adapter.profile(for: locator.path))
+        _ = try await adapter.archiveSourceDescriptor(locator: locator.path)
+        _ = try success(await adapter.parseSessionInfo(locator: locator.path))
+        let scan = try success(await adapter.scanForIndexing(locator: locator.path))
+        _ = try await adapter.streamMessages(locator: locator.path, options: StreamMessagesOptions())
+        _ = try await adapter.streamMessagesWithMetadata(
+            locator: locator.path,
+            options: StreamMessagesOptions()
+        )
+        let accessible = await adapter.isAccessible(locator: locator.path)
+        XCTAssertTrue(accessible)
+        XCTAssertEqual(
+            provider.invocationCount,
+            1,
+            "descriptor, parse, scan, stream, detect, and accessibility must use the current snapshot"
+        )
+
+        let parsedOffset = try XCTUnwrap(scan.checkpointParsedOffset)
+        let boundaryHash = try XCTUnwrap(scan.checkpointBoundaryHash)
+        try appendTranscriptRecord(
+            [
+                "type": "assistant",
+                "sessionId": "session-automatic",
+                "timestamp": "2026-07-13T00:00:02Z",
+                "message": [
+                    "role": "assistant",
+                    "model": "MiniMax-M2.1",
+                    "content": "tail response",
+                ],
+            ],
+            to: locator
+        )
+        switch try await adapter.scanTailForIndexing(
+            locator: locator.path,
+            from: parsedOffset,
+            expectedBoundaryHash: boundaryHash
+        ) {
+        case .success(let tail):
+            XCTAssertEqual(tail.infoDelta.source, .claudeCode)
+            XCTAssertEqual(tail.messages.map(\.content), ["tail response"])
+        case .fallback:
+            XCTFail("expected an incremental tail scan")
+        case .failure(let failure):
+            XCTFail("unexpected tail scan failure: \(failure)")
+        }
+        XCTAssertEqual(provider.invocationCount, 1, "tail scanning must use the current snapshot")
+
+        _ = try await adapter.listSessionLocators()
+        XCTAssertEqual(provider.invocationCount, 2, "base listing refreshes profiles exactly once")
+        _ = try await adapter.listSessionLocators(modifiedSince: .distantPast, fileManager: .default)
+        XCTAssertEqual(provider.invocationCount, 3, "modified listing refreshes profiles exactly once")
+        _ = try await ClaudeCodeDerivedSourceAdapter(source: .minimax, base: adapter)
+            .listSessionLocators()
+        XCTAssertEqual(provider.invocationCount, 4, "derived listing refreshes profiles exactly once")
     }
 
     func testLegacyInitializerKeepsSingleRootDerivedClassification() async throws {
@@ -291,6 +389,14 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
         try data.write(to: settingsURL)
     }
 
+    private func appendTranscriptRecord(_ record: [String: Any], to url: URL) throws {
+        let data = try JSONSerialization.data(withJSONObject: record, options: [.withoutEscapingSlashes])
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: data + Data("\n".utf8))
+    }
+
     private func success<T>(_ result: AdapterParseResult<T>) throws -> T {
         switch result {
         case .success(let value):
@@ -308,5 +414,28 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
         case .failure(let failure):
             return failure
         }
+    }
+}
+
+private final class CountingProfileProvider: @unchecked Sendable {
+    private let lock = NSLock()
+    private let profiles: [ClaudeCodeProfile]
+    private var count = 0
+
+    init(profiles: [ClaudeCodeProfile]) {
+        self.profiles = profiles
+    }
+
+    var invocationCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func resolve() -> [ClaudeCodeProfile] {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+        return profiles
     }
 }

@@ -211,10 +211,11 @@ final class AdapterParityTests: XCTestCase {
 
     func testClaudeDerivedAdaptersShareBaseAndSourceHintCache() throws {
         let factory = try source("macos/Shared/EngramCore/Adapters/SessionAdapterFactory.swift")
+        let messageParser = try source("macos/Engram/Core/MessageParser.swift")
         let adapter = try source("macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift")
 
         XCTAssertTrue(
-            factory.contains("let claudeCode = ClaudeCodeAdapter(sourceHintCacheDirectory: cacheDirectory)"),
+            factory.contains("let claudeCode = defaultClaudeCodeAdapter(sourceHintCacheDirectory: cacheDirectory)"),
             "Default adapter construction should share one Claude base between Claude and derived sources"
         )
         XCTAssertTrue(
@@ -224,6 +225,15 @@ final class AdapterParityTests: XCTestCase {
         XCTAssertTrue(
             factory.contains("ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: claudeCode)"),
             "LobsterAI derived source should reuse the shared Claude base instead of re-enumerating its own base"
+        )
+        XCTAssertTrue(
+            messageParser.contains("let claudeCode = ClaudeCodeAdapter(profileResolver: resolver)"),
+            "The UI registry should construct Claude from the profile resolver"
+        )
+        XCTAssertTrue(
+            messageParser.contains("ClaudeCodeDerivedSourceAdapter(source: .minimax, base: claudeCode)") &&
+                messageParser.contains("ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: claudeCode)"),
+            "The UI registry should share one resolver-backed Claude base with both derived sources"
         )
         XCTAssertTrue(
             adapter.contains("sourceHintCache"),

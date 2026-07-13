@@ -19,8 +19,20 @@ struct ChatMessage: Identifiable {
 
 struct MessageParser {
 
-    static func parse(filePath: String, source: String, offset: Int? = nil, limit: Int? = nil) async -> [ChatMessage] {
-        if let adapterMessages = await parseWithAdapterRegistry(filePath: filePath, source: source, offset: offset, limit: limit),
+    static func parse(
+        filePath: String,
+        source: String,
+        offset: Int? = nil,
+        limit: Int? = nil,
+        claudeCodeProfileResolver: ClaudeCodeProfileResolver? = nil
+    ) async -> [ChatMessage] {
+        if let adapterMessages = await parseWithAdapterRegistry(
+            filePath: filePath,
+            source: source,
+            offset: offset,
+            limit: limit,
+            claudeCodeProfileResolver: claudeCodeProfileResolver
+        ),
            !adapterMessages.isEmpty {
             return adapterMessages
         }
@@ -57,10 +69,13 @@ struct MessageParser {
         filePath: String,
         source: String,
         offset: Int?,
-        limit: Int?
+        limit: Int?,
+        claudeCodeProfileResolver: ClaudeCodeProfileResolver?
     ) async -> [ChatMessage]? {
         guard let sourceName = SourceName(rawValue: source),
-              let adapter = uiAdapterRegistry().adapter(for: sourceName)
+              let adapter = uiAdapterRegistry(
+                claudeCodeProfileResolver: claudeCodeProfileResolver
+              ).adapter(for: sourceName)
         else {
             return nil
         }
@@ -85,10 +100,13 @@ struct MessageParser {
         filePath: String,
         source: String,
         offset: Int,
-        limit: Int?
+        limit: Int?,
+        claudeCodeProfileResolver: ClaudeCodeProfileResolver? = nil
     ) async -> (messages: [ChatMessage], producedCount: Int) {
         if let sourceName = SourceName(rawValue: source),
-           let adapter = uiAdapterRegistry().adapter(for: sourceName) {
+           let adapter = uiAdapterRegistry(
+               claudeCodeProfileResolver: claudeCodeProfileResolver
+           ).adapter(for: sourceName) {
             // Trust the adapter on success, INCLUDING a legitimately empty window
             // (paging past EOF, or a window that is entirely tool messages). Only a
             // nil result — adapter error / no stream — falls back to the legacy
@@ -109,13 +127,21 @@ struct MessageParser {
         return (windowed, windowed.count)
     }
 
-    private static func uiAdapterRegistry() -> AdapterRegistry {
-        AdapterRegistry(
+    private static func uiAdapterRegistry(
+        claudeCodeProfileResolver: ClaudeCodeProfileResolver?
+    ) -> AdapterRegistry {
+        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
+        let resolver = claudeCodeProfileResolver ?? ClaudeCodeProfileResolver(
+            homeDirectory: homeDirectory,
+            settingsURL: homeDirectory.appendingPathComponent(".engram/settings.json")
+        )
+        let claudeCode = ClaudeCodeAdapter(profileResolver: resolver)
+        return AdapterRegistry(
             adapters: [
                 CodexAdapter(),
-                ClaudeCodeAdapter(),
-                ClaudeCodeDerivedSourceAdapter(source: .minimax),
-                ClaudeCodeDerivedSourceAdapter(source: .lobsterai),
+                claudeCode,
+                ClaudeCodeDerivedSourceAdapter(source: .minimax, base: claudeCode),
+                ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: claudeCode),
                 GeminiCliAdapter(),
                 OpenCodeAdapter(),
                 IflowAdapter(),
