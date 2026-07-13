@@ -472,6 +472,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     private let commandLocator: @Sendable (String) -> String?
     private let embeddingEnvironment: [String: String]
     private let embeddingProviderFactory: @Sendable (EmbeddingConfig) -> any EmbeddingProvider
+    private let sessionAdapterProvider: @Sendable () -> [any SessionAdapter]
 
     init(
         databasePath: String,
@@ -485,6 +486,9 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         embeddingEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         embeddingProviderFactory: @escaping @Sendable (EmbeddingConfig) -> any EmbeddingProvider = {
             EngramServiceRunner.defaultGuardedEmbeddingProvider(config: $0)
+        },
+        sessionAdapterProvider: @escaping @Sendable () -> [any SessionAdapter] = {
+            SessionAdapterFactory.defaultAdapters()
         }
     ) throws {
         self.databaseReader = try makeDatabaseReader(databasePath)
@@ -492,6 +496,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         self.commandLocator = commandLocator
         self.embeddingEnvironment = embeddingEnvironment
         self.embeddingProviderFactory = embeddingProviderFactory
+        self.sessionAdapterProvider = sessionAdapterProvider
     }
 
     func search(_ request: EngramServiceSearchRequest) async throws -> EngramServiceSearchResponse {
@@ -1224,7 +1229,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
            let streamed = try? await Self.streamReplayMessages(
                source: source,
                locator: scalar.locator,
-               limit: limit + 1
+               limit: limit + 1,
+               adapters: sessionAdapterProvider()
            ),
            !streamed.isEmpty {
             let entries = Self.replayEntries(from: streamed, limit: limit)
@@ -1292,7 +1298,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
     private static func streamReplayMessages(
         source: String,
         locator: String,
-        limit: Int
+        limit: Int,
+        adapters: [any SessionAdapter]
     ) async throws -> [ReplayMessage] {
         let trimmed = locator.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !trimmed.hasPrefix("sync://") else { return [] }
@@ -1300,7 +1307,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             ? .antigravity
             : SourceName(rawValue: source)
         guard let sourceName,
-              let adapter = SessionAdapterFactory.defaultAdapters().first(where: { $0.source == sourceName })
+              let adapter = adapters.first(where: { $0.source == sourceName })
         else {
             return []
         }

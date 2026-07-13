@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 import Foundation
+@testable import EngramCoreRead
 @testable import EngramServiceCore
 
 /// Parity coverage for the read/render-path perf changes:
@@ -65,7 +66,13 @@ final class ReplayAndPrimerParityTests: XCTestCase {
         }
         defer { try? FileManager.default.removeItem(atPath: dbPath) }
 
-        let provider = try SQLiteEngramServiceReadProvider(databasePath: dbPath)
+        let fixtureRoot = URL(fileURLWithPath: fixture).deletingLastPathComponent().path
+        let provider = try SQLiteEngramServiceReadProvider(
+            databasePath: dbPath,
+            sessionAdapterProvider: {
+                [ClaudeCodeAdapter(projectsRoot: fixtureRoot)]
+            }
+        )
         let replay = try await provider.replayTimeline(
             EngramServiceReplayTimelineRequest(sessionId: "disk1", limit: 500)
         )
