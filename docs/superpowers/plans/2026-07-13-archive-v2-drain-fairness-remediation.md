@@ -4,14 +4,14 @@
 
 **Goal:** Restore sustained HQ and M1 replication progress during a large local archive backlog by bounding the extra replica-wide transient pause and alternating which side of the shared ten-second drain pass receives first admission.
 
-**Architecture:** Keep durable per-row retry deadlines, the single archive pipeline, and the existing event-driven drainer. `ArchiveReplicationCoordinator` will cap only its process-local transient circuit breaker at 60 seconds. `ArchiveV2ServiceCoordinator` will flip a process-local `remote`/`local` priority as soon as each pass acquires the pipeline and execute the existing stages in that order. The existing status DTO and settings card will expose only bounded scheduler state: effective per-replica pause metadata and the next pass priority.
+**Architecture:** Keep durable per-row retry deadlines, the single archive pipeline, and the existing event-driven drainer. `ArchiveReplicationCoordinator` will hold its process-local transient circuit breaker for 60 seconds independently of row jitter. `ArchiveV2ServiceCoordinator` will flip a process-local `remote`/`local` priority as soon as each pass acquires the pipeline and execute the existing stages in that order. The existing status DTO and settings card will expose only bounded scheduler state: effective per-replica pause metadata and the next pass priority.
 
 **Tech Stack:** Swift 5.9, Swift concurrency actors/tasks, Foundation dates and Codable, GRDB/SQLite, XCTest, SwiftUI, String Catalog localization, Xcode/XcodeGen.
 
 ## Global Constraints
 
 - Preserve immutable CAS objects, manifests, receipt formats, dual-receipt verification, row-level exponential full-jitter deadlines, stale-claim recovery, recovery drills, reclamation gates, and zero-delete behavior.
-- A transient infrastructure failure may pause unrelated rows for that replica for at most 60 seconds; `remote_auth_rejected` and `replica_configuration_failure` remain indefinite attention pauses.
+- Absent manual retry or resume, a transient infrastructure failure pauses unrelated rows for that replica for exactly 60 seconds even when row jitter is shorter; `remote_auth_rejected` and `replica_configuration_failure` remain indefinite attention pauses.
 - HQ and M1 remain independent, with at most one active claim processor per replica and two globally.
 - Preserve the single archive pipeline, existing ten-second pass deadline, two-second productive cool-down, cancellation checks, Low Power Mode and thermal gates, writer-gate admission, and the existing 32-locator/128-MiB capture budget.
 - Alternate first admission by pass: process start is `remote`; then `local`; then `remote`. Flip once immediately after pipeline acquisition, even if a later stage throws, is cancelled, or consumes the deadline.
@@ -44,13 +44,19 @@ XCTAssertGreaterThan(try retryDate(row), now.addingTimeInterval(60))
 XCTAssertEqual(result.retryPausedUntilByReplica["hq"], now.addingTimeInterval(60))
 ```
 
-Also cover a jitter delay below 60 seconds so the circuit breaker ends at the earlier row deadline.
+Also cover zero and sub-minute jitter delays so the durable row deadline remains
+unchanged while no second replica request starts before the 60-second breaker
+deadline.
 
 - [ ] **Step 2: Write failing expiry and replica-independence tests**
 
 Use an injected mutable clock and ordinary pending rows behind the failed HQ row. Before the pause expires, assert no additional HQ claim starts while M1 remains able to verify. Advance the clock to the breaker deadline, run another pass, and assert an ordinary HQ pending row is claimed while the original retry row remains deferred at its unchanged multi-hour deadline.
 
 Extend the existing manual retry/resume tests to prove clearing one replica removes both its transient and attention pause without clearing the other replica.
+
+Add a pre-cancelled backlog pass after establishing a pause and assert the
+cancelled cycle still reports the existing pause snapshot. This protects the
+service status cache from false clears on cancellation and early catalog errors.
 
 - [ ] **Step 3: Run the focused test and verify RED**
 
@@ -64,19 +70,18 @@ xcodebuild test -project Engram.xcodeproj -scheme EngramCoreTests -destination '
 
 Expected: the new long-delay assertion fails because the current replica-wide deadline equals the full row retry deadline.
 
-- [ ] **Step 4: Cap only the process-local breaker**
+- [ ] **Step 4: Rate-limit with the process-local breaker**
 
 Keep the existing row transition unchanged, then calculate the separate breaker deadline:
 
 ```swift
 let rowRetryAt = failureDate.addingTimeInterval(delay)
-let circuitBreakerAt = min(
-    rowRetryAt,
-    failureDate.addingTimeInterval(Self.maximumTransientPause)
+let circuitBreakerAt = failureDate.addingTimeInterval(
+    Self.transientPauseInterval
 )
 ```
 
-Store `rowRetryAt` in `markReplicaRetry` and `circuitBreakerAt` in `retryPausedUntil`. Prune expired breakers before claiming, retain the later bounded breaker if results are merged, and leave indefinite attention pauses unchanged. Do not change `runOnce(limit:)` semantics.
+Store `rowRetryAt` in `markReplicaRetry` and `circuitBreakerAt` in `retryPausedUntil`. Snapshot current pauses before cancellation or catalog work, prune expired breakers before claiming, retain the later bounded breaker if results are merged, and leave indefinite attention pauses unchanged. Do not change `runOnce(limit:)` semantics.
 
 - [ ] **Step 5: Run focused tests and verify GREEN**
 

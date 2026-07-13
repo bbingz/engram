@@ -344,7 +344,7 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         XCTAssertEqual(deferredAfterExpiry.nextRetryAt, deferredAfterFailure.nextRetryAt)
     }
 
-    func testBacklogPassUsesEarlierShortRowRetryForTransientPause() async throws {
+    func testBacklogPassKeepsShortRowRetryButPausesReplicaForSixtySeconds() async throws {
         let store = try makeStore(name: "backlog-short-transient-deadline")
         let fixture = try addBinding(
             to: store,
@@ -355,15 +355,16 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         hq.setFailure(operation: "headObject", error: .transport(.network))
         let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
         let now = try date("2026-07-11T00:00:00.000Z")
+        let clock = LockedTestClock(now)
         let coordinator = try makeCoordinator(
             store: store,
             hq: hq,
             m1: m1,
-            clock: LockedTestClock(now),
+            clock: clock,
             jitter: ArchiveRetryJitter(sampleUnit: { 0.5 })
         )
 
-        let result = await coordinator.runBacklogPass(perReplicaLimit: 1)
+        let first = await coordinator.runBacklogPass(perReplicaLimit: 1)
 
         let row = try XCTUnwrap(try store.catalog.replicaWork(
             manifestSHA256: fixture.binding.manifestSHA256,
@@ -371,8 +372,97 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         ))
         XCTAssertEqual(try date(try XCTUnwrap(row.nextRetryAt)), now.addingTimeInterval(30))
         XCTAssertEqual(
-            result.retryPausedUntilByReplica["hq"],
-            now.addingTimeInterval(30)
+            first.retryPausedUntilByReplica["hq"],
+            now.addingTimeInterval(60)
+        )
+
+        let hqEvents = hq.events()
+        clock.set(now.addingTimeInterval(30))
+        let beforePauseDeadline = await coordinator.runBacklogPass(perReplicaLimit: 1)
+
+        XCTAssertEqual(beforePauseDeadline.retryPausedReplicaIDs, ["hq"])
+        XCTAssertEqual(hq.events(), hqEvents)
+
+        hq.clearFailure()
+        clock.set(now.addingTimeInterval(60))
+        let atPauseDeadline = await coordinator.runBacklogPass(perReplicaLimit: 1)
+
+        XCTAssertTrue(atPauseDeadline.retryPausedReplicaIDs.isEmpty)
+        XCTAssertEqual(atPauseDeadline.verifiedByReplica["hq"], 1)
+    }
+
+    func testBacklogPassZeroJitterDoesNotRetryReplicaBeforeSixtySeconds() async throws {
+        let store = try makeStore(name: "backlog-zero-jitter-deadline")
+        _ = try addBinding(
+            to: store,
+            seed: "zero-jitter-deadline",
+            eligibility: .eligible
+        )
+        let hq = FakeArchiveReplicaBackend(replicaID: "hq")
+        hq.setFailure(operation: "headObject", error: .transport(.network))
+        let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
+        let now = try date("2026-07-11T00:00:00.000Z")
+        let clock = LockedTestClock(now)
+        let coordinator = try makeCoordinator(
+            store: store,
+            hq: hq,
+            m1: m1,
+            clock: clock,
+            jitter: ArchiveRetryJitter(sampleUnit: { 0 })
+        )
+
+        let first = await coordinator.runBacklogPass(perReplicaLimit: 1)
+
+        XCTAssertEqual(
+            first.retryPausedUntilByReplica["hq"],
+            now.addingTimeInterval(60)
+        )
+        let hqEvents = hq.events()
+
+        clock.set(now.addingTimeInterval(59))
+        let beforePauseDeadline = await coordinator.runBacklogPass(perReplicaLimit: 1)
+
+        XCTAssertEqual(beforePauseDeadline.retryPausedReplicaIDs, ["hq"])
+        XCTAssertEqual(hq.events(), hqEvents)
+    }
+
+    func testBacklogPassCancellationRetainsExistingReplicaPauseSnapshot() async throws {
+        let store = try makeStore(name: "backlog-cancel-retains-pause")
+        _ = try addBinding(
+            to: store,
+            seed: "cancel-retains-pause",
+            eligibility: .eligible
+        )
+        let hq = FakeArchiveReplicaBackend(replicaID: "hq")
+        hq.setFailure(operation: "headObject", error: .transport(.network))
+        let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
+        m1.setFailure(operation: "headObject", error: .unexpectedStatus(401))
+        let now = try date("2026-07-11T00:00:00.000Z")
+        let coordinator = try makeCoordinator(
+            store: store,
+            hq: hq,
+            m1: m1,
+            clock: LockedTestClock(now)
+        )
+        let first = await coordinator.runBacklogPass(perReplicaLimit: 1)
+        XCTAssertEqual(first.retryPausedReplicaIDs, ["hq"])
+        XCTAssertEqual(first.pausedReplicaIDs, ["m1"])
+        let gate = AsyncTestGate()
+        let task = Task {
+            await gate.enterAndWait()
+            return await coordinator.runBacklogPass(perReplicaLimit: 1)
+        }
+        await gate.waitUntilEntered()
+
+        task.cancel()
+        await gate.release()
+        let cancelled = await task.value
+
+        XCTAssertTrue(cancelled.cancelled)
+        XCTAssertEqual(cancelled.pausedReplicaIDs, first.pausedReplicaIDs)
+        XCTAssertEqual(
+            cancelled.retryPausedUntilByReplica,
+            first.retryPausedUntilByReplica
         )
     }
 

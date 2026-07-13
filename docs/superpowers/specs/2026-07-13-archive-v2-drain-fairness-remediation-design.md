@@ -42,7 +42,8 @@ can therefore repeatedly leave no admission time for remote work.
   stale-claim recovery, recovery drills, reclamation gates, and zero-delete
   behavior.
 - Preserve row-level exponential full-jitter retry deadlines exactly; the
-  remediation only bounds the additional replica-wide circuit breaker.
+  remediation independently rate-limits the additional replica-wide circuit
+  breaker to one failed request per replica per minute.
 - Preserve a maximum of one active claim processor per replica and two globally.
 - Preserve the existing ten-second active pass slice and two-second productive
   cool-down; do not add a polling loop or another worker.
@@ -56,10 +57,10 @@ can therefore repeatedly leave no admission time for remote work.
 
 ### A. Bounded circuit breaker plus alternating pass priority
 
-Keep per-row exponential backoff. Cap the additional replica-wide transient
-pause at 60 seconds and alternate each backlog pass between remote-first and
-local-first execution. Expose the effective replica pause and next pass priority
-through the existing bounded status response.
+Keep per-row exponential backoff. Hold the additional replica-wide transient
+pause for 60 seconds after a failure and alternate each backlog pass between
+remote-first and local-first execution. Expose the effective replica pause and
+next pass priority through the existing bounded status response.
 
 This preserves outage backpressure, guarantees admission opportunities for both
 local and remote work, and requires no new worker or durable state. It is
@@ -87,8 +88,9 @@ When a claim fails with `transport_timeout`, `transport_network`,
 1. The failed receipt keeps the existing exponential full-jitter
    `next_retry_at` value without truncation.
 2. Remaining claims for that replica in the current pass return to `pending`.
-3. The in-memory replica circuit breaker expires at the earlier of the row's
-   retry deadline and 60 seconds after the failure.
+3. Absent an explicit manual retry or resume, the in-memory replica circuit
+   breaker expires exactly 60 seconds after the failure, independently of the
+   row's retry deadline.
 4. The other replica continues independently.
 5. After the circuit breaker expires, ordinary pending work for that replica is
    claimable even if the failed receipt remains in `retryWait` for hours.
@@ -98,9 +100,10 @@ attention pause. Manual retry clears the requested replica's transient and
 attention pause immediately. A service restart continues to clear process-local
 pause state while preserving durable receipt states.
 
-The 60-second limit is an implementation constant. It bounds repeated outage
+The 60-second interval is an implementation constant. It bounds repeated outage
 traffic to at most one failed claim per replica per minute while ordinary
-backlog exists; it is not exposed as a setting.
+backlog exists, including when full jitter produces a zero or sub-minute row
+retry; it is not exposed as a setting.
 
 ### Pass-level fairness
 
@@ -130,6 +133,10 @@ existing cool-down.
 The archive pipeline remains single-flight. Alternation does not run local and
 remote stages concurrently with each other; only HQ and M1 may run concurrently
 inside the existing replication coordinator.
+
+While the drainer is waiting to acquire that pipeline, `activeStages` remains
+empty. The coordinator publishes capture or replica stages only after it has
+pipeline ownership, so telemetry never attributes queueing time to capture.
 
 ### Capture byte budget
 
@@ -168,6 +175,9 @@ polling is added.
 ## Error Handling
 
 - Expired transient pauses are pruned before claiming.
+- The current pause snapshot is copied into each cycle result before the first
+  cancellation or catalog operation, so an early cancelled or failed pass
+  cannot falsely clear status telemetry.
 - A clock that advances beyond the pause makes pending work immediately
   claimable in the same pass.
 - Multiple transient failures retain the later bounded circuit-breaker deadline,
@@ -183,23 +193,26 @@ polling is added.
 
 Use failing-then-passing tests for each production behavior:
 
-1. A transient failure with a multi-hour row retry creates a replica pause of no
-   more than 60 seconds while preserving the row deadline.
+1. A transient failure with a zero, short, or multi-hour row retry creates a
+   replica pause that expires 60 seconds after the failure while preserving the
+   row deadline.
 2. Before the pause expires, the affected replica claims nothing and the healthy
    replica continues.
 3. After 60 seconds, another ordinary pending row for the affected replica is
    claimed while the original retry row remains deferred.
-4. Manual retry clears transient and attention pauses for only the requested
+4. A pre-cancelled or early catalog-failed pass preserves the current transient
+   and attention pause snapshot in its result.
+5. Manual retry clears transient and attention pauses for only the requested
    replica.
-5. Consecutive backlog passes alternate remote-first and local-first order.
-6. A local unit consuming the first pass deadline cannot prevent replication
+6. Consecutive backlog passes alternate remote-first and local-first order.
+7. A local unit consuming the first pass deadline cannot prevent replication
    from starting first in the next pass, and the converse also holds.
-7. Cancellation or a thrown stage still flips the next-pass priority once.
-8. The 128 MiB capture budget admits one over-budget file but does not start a
+8. Cancellation or a thrown stage still flips the next-pass priority once.
+9. The 128 MiB capture budget admits one over-budget file but does not start a
    second locator in that pass.
-9. Wire decoding remains backward compatible and rejects inconsistent pause
+10. Wire decoding remains backward compatible and rejects inconsistent pause
    metadata.
-10. Settings source and localization tests cover both pause reasons, deadlines,
+11. Settings source and localization tests cover both pause reasons, deadlines,
     next-pass priority, and unchanged manual-refresh behavior.
 
 Run the focused CoreWrite, ServiceCore, and App tests, then the full Core,
@@ -223,8 +236,8 @@ After deployment:
 4. Verify `claimedCount > 0` and `verifiedCount > 0` for both replicas while local
    bound/indexed counts also continue increasing.
 5. Verify queued counts decrease or verified counts increase on both replicas.
-6. Verify pause metadata agrees with the effective circuit breaker and clears no
-   later than 60 seconds after a transient failure.
+6. Verify pause metadata agrees with the effective circuit breaker and clears
+   60 seconds after a transient failure unless manually cleared sooner.
 7. Confirm zero quarantine growth, zero server-error growth, no repeated-request
    storm, and no sustained memory growth.
 

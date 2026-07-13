@@ -211,7 +211,7 @@ actor ArchiveV2BacklogDrainer {
             }
 
             state = .draining
-            activeStages = [.capture]
+            activeStages = []
             nextWakeAt = nil
             do {
                 let summary = try await runPass()

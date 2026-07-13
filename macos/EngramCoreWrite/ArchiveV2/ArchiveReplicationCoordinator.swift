@@ -83,7 +83,7 @@ public struct ArchiveRetryJitter: Sendable {
 }
 
 public actor ArchiveReplicationCoordinator {
-    private static let maximumTransientPause: TimeInterval = 60
+    private static let transientPauseInterval: TimeInterval = 60
 
     private let catalog: ArchiveCatalog
     private let cas: ImmutableArchiveCAS
@@ -175,12 +175,15 @@ public actor ArchiveReplicationCoordinator {
         defer { isRunning = false }
 
         var cycle = CycleAccumulator()
+        let cycleDate = clock()
+        retryPausedUntil = retryPausedUntil.filter { $0.value > cycleDate }
+        cycle.pausedReplicaIDs = Array(attentionPausedReplicaIDs)
+        cycle.retryPausedUntil = retryPausedUntil
         do {
             guard !Task.isCancelled else {
                 cycle.cancelled = true
                 return cycle.result
             }
-            let cycleDate = clock()
             let cycleNow = timestamp(cycleDate)
             cycle.staleRecovered = try catalog.recoverStaleInflight(
                 now: cycleNow,
@@ -190,9 +193,6 @@ public actor ArchiveReplicationCoordinator {
                 updatedAt: cycleNow
             )
             let retryQuota = perReplicaLimit / 2
-            cycle.pausedReplicaIDs = Array(attentionPausedReplicaIDs)
-            retryPausedUntil = retryPausedUntil.filter { $0.value > cycleDate }
-            cycle.retryPausedUntil = retryPausedUntil
             let hqClaims = attentionPausedReplicaIDs.contains("hq")
                 || retryPausedUntil["hq"] != nil
                 || !shouldStartUnit()
@@ -330,9 +330,8 @@ public actor ArchiveReplicationCoordinator {
                         )
                     )
                     let rowRetryAt = failureDate.addingTimeInterval(delay)
-                    let circuitBreakerAt = min(
-                        rowRetryAt,
-                        failureDate.addingTimeInterval(Self.maximumTransientPause)
+                    let circuitBreakerAt = failureDate.addingTimeInterval(
+                        Self.transientPauseInterval
                     )
                     guard !Task.isCancelled else {
                         cycle.cancelled = true
