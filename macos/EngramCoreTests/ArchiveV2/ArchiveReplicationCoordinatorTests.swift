@@ -141,6 +141,102 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         )
     }
 
+    func testBacklogPassRunsHQAndM1ConcurrentlyButSeriallyWithinEachReplica() async throws {
+        let store = try makeStore(name: "backlog-concurrency")
+        _ = try addBinding(to: store, seed: "concurrency-1", eligibility: .eligible)
+        _ = try addBinding(to: store, seed: "concurrency-2", eligibility: .eligible)
+        let hq = FakeArchiveReplicaBackend(replicaID: "hq")
+        let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
+        let hqGate = AsyncTestGate()
+        let m1Gate = AsyncTestGate()
+        hq.setHeadObjectGate(hqGate)
+        m1.setHeadObjectGate(m1Gate)
+        let coordinator = try makeCoordinator(store: store, hq: hq, m1: m1)
+        let task = Task { await coordinator.runBacklogPass(perReplicaLimit: 2) }
+        let hqEntered = expectation(description: "HQ entered its first request")
+        let m1Entered = expectation(description: "M1 entered its first request")
+        Task {
+            await hqGate.waitUntilEntered()
+            hqEntered.fulfill()
+        }
+        Task {
+            await m1Gate.waitUntilEntered()
+            m1Entered.fulfill()
+        }
+
+        await fulfillment(of: [hqEntered, m1Entered], timeout: 2)
+        XCTAssertEqual(hq.events(), ["headObject"])
+        XCTAssertEqual(m1.events(), ["headObject"])
+        await hqGate.release()
+        await m1Gate.release()
+        let result = await task.value
+
+        XCTAssertEqual(result.claimed, 4)
+        XCTAssertEqual(result.verified, 4)
+        XCTAssertEqual(hq.events().filter { $0 == "getReceipt" }.count, 2)
+        XCTAssertEqual(m1.events().filter { $0 == "getReceipt" }.count, 2)
+    }
+
+    func testBacklogPassStopsOnlyFailedReplicaBatchAndReportsAttentionPause() async throws {
+        let networkStore = try makeStore(name: "backlog-network-short-circuit")
+        let networkFixtures = try [
+            addBinding(to: networkStore, seed: "network-1", eligibility: .eligible),
+            addBinding(to: networkStore, seed: "network-2", eligibility: .eligible),
+        ]
+        let failingHQ = FakeArchiveReplicaBackend(replicaID: "hq")
+        failingHQ.setFailure(operation: "headObject", error: .transport(.network))
+        let healthyM1 = FakeArchiveReplicaBackend(replicaID: "m1")
+        let networkCoordinator = try makeCoordinator(
+            store: networkStore,
+            hq: failingHQ,
+            m1: healthyM1
+        )
+
+        let networkResult = await networkCoordinator.runBacklogPass(perReplicaLimit: 2)
+
+        XCTAssertEqual(networkResult.retryScheduled, 1)
+        XCTAssertEqual(networkResult.verified, 2)
+        XCTAssertEqual(failingHQ.events(), ["headObject"])
+        XCTAssertEqual(healthyM1.events().filter { $0 == "getReceipt" }.count, 2)
+        XCTAssertTrue(networkResult.pausedReplicaIDs.isEmpty)
+        let networkHQStates = try networkFixtures.compactMap {
+            try networkStore.catalog.replicaWork(
+                manifestSHA256: $0.binding.manifestSHA256,
+                replicaID: "hq"
+            )?.state
+        }
+        XCTAssertEqual(networkHQStates.filter { $0 == .retryWait }.count, 1)
+        XCTAssertEqual(networkHQStates.filter { $0 == .pending }.count, 1)
+
+        let authStore = try makeStore(name: "backlog-auth-short-circuit")
+        let authFixtures = try [
+            addBinding(to: authStore, seed: "auth-1", eligibility: .eligible),
+            addBinding(to: authStore, seed: "auth-2", eligibility: .eligible),
+        ]
+        let unauthorizedHQ = FakeArchiveReplicaBackend(replicaID: "hq")
+        unauthorizedHQ.setFailure(operation: "headObject", error: .unexpectedStatus(401))
+        let authM1 = FakeArchiveReplicaBackend(replicaID: "m1")
+        let authCoordinator = try makeCoordinator(
+            store: authStore,
+            hq: unauthorizedHQ,
+            m1: authM1
+        )
+
+        let authResult = await authCoordinator.runBacklogPass(perReplicaLimit: 2)
+
+        XCTAssertEqual(authResult.pausedReplicaIDs, ["hq"])
+        XCTAssertEqual(unauthorizedHQ.events(), ["headObject"])
+        XCTAssertEqual(authM1.events().filter { $0 == "getReceipt" }.count, 2)
+        let authHQStates = try authFixtures.compactMap {
+            try authStore.catalog.replicaWork(
+                manifestSHA256: $0.binding.manifestSHA256,
+                replicaID: "hq"
+            )?.state
+        }
+        XCTAssertEqual(authHQStates.filter { $0 == .quarantined }.count, 1)
+        XCTAssertEqual(authHQStates.filter { $0 == .pending }.count, 1)
+    }
+
     func testLimitCountsReplicaRowsRatherThanManifests() async throws {
         let store = try makeStore(name: "row-limit")
         let fixture = try addBinding(to: store, seed: "row-limit", eligibility: .eligible)

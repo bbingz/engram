@@ -796,6 +796,82 @@ final class ArchiveCatalogTests: XCTestCase {
         XCTAssertEqual(racedClaims.first?.claimGeneration, 1)
     }
 
+    func testPerReplicaClaimReservesRetryQuotaThenBorrowsUnusedCapacity() throws {
+        let catalog = try ArchiveCatalog(root: root, machineID: machineID)
+        try catalog.migrate()
+        var bindings: [ArchiveBinding] = []
+        for index in 0 ..< 20 {
+            let binding = try addBinding(
+                to: catalog,
+                captureSeed: "fair-\(index)",
+                sessionID: "fair-session-\(index)"
+            )
+            XCTAssertTrue(
+                try catalog.setRemotePolicySnapshot(
+                    manifestSHA256: binding.manifestSHA256,
+                    projectRootSnapshot: "/tmp/fair/\(index)",
+                    eligibility: .eligible
+                )
+            )
+            bindings.append(binding)
+        }
+        XCTAssertEqual(
+            try catalog.reconcileEligibleReplicaRows(
+                updatedAt: "2026-07-11T00:00:00.000Z"
+            ),
+            40
+        )
+        let retryDigests = bindings.prefix(10).map(\.manifestSHA256)
+        try writeArchiveDatabase { db in
+            for (index, digest) in retryDigests.enumerated() {
+                try db.execute(
+                    sql: """
+                    UPDATE archive_replica_receipts
+                    SET state = 'retryWait', attempts = 1,
+                        next_retry_at = '2026-07-11T00:01:00.000Z',
+                        updated_at = ?
+                    WHERE manifest_sha256 = ? AND replica_id = 'hq'
+                    """,
+                    arguments: [
+                        String(format: "2026-07-11T00:00:%02d.000Z", index),
+                        digest,
+                    ]
+                )
+            }
+        }
+
+        let claims = try catalog.claimReplicaWork(
+            replicaID: "hq",
+            limit: 16,
+            retryQuota: 8,
+            now: "2026-07-11T00:02:00.000Z"
+        )
+
+        XCTAssertEqual(Set(claims.map(\.replicaID)), ["hq"])
+        XCTAssertEqual(claims.count, 16)
+        XCTAssertEqual(claims.filter { $0.attempts > 0 }.count, 8)
+
+        let borrowed = try catalog.claimReplicaWork(
+            replicaID: "m1",
+            limit: 16,
+            retryQuota: 8,
+            now: "2026-07-11T00:02:00.000Z"
+        )
+        XCTAssertEqual(borrowed.count, 16)
+        XCTAssertEqual(borrowed.filter { $0.attempts > 0 }.count, 0)
+
+        XCTAssertThrowsError(
+            try catalog.claimReplicaWork(
+                replicaID: "obsolete",
+                limit: 1,
+                retryQuota: 1,
+                now: "2026-07-11T00:02:00.000Z"
+            )
+        ) { error in
+            XCTAssertEqual(error as? ArchiveCatalogError, .invalidReplicaID)
+        }
+    }
+
     func testTransitionsAndHeartbeatRequireExpectedStateAndGeneration() throws {
         let (catalog, _, _) = try eligibleBoundCatalog()
         let claim = try XCTUnwrap(

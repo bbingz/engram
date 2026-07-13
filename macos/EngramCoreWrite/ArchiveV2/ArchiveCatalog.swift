@@ -1764,6 +1764,192 @@ public final class ArchiveCatalog: @unchecked Sendable {
         return claims
     }
 
+    public func claimReplicaWork(
+        replicaID: String,
+        limit: Int,
+        retryQuota: Int,
+        now: String
+    ) throws -> [ArchiveReplicaClaim] {
+        guard Self.currentReplicaIDs.contains(replicaID) else {
+            throw ArchiveCatalogError.invalidReplicaID
+        }
+        guard limit > 0 else {
+            throw ArchiveCatalogError.invalidLimit(limit)
+        }
+        guard retryQuota >= 0, retryQuota <= limit else {
+            throw ArchiveCatalogError.invalidLimit(retryQuota)
+        }
+        try Self.validateTimestamp(now, field: "now")
+
+        struct Candidate {
+            let manifestSHA256: String
+            let updatedAt: String
+            let isRetry: Bool
+        }
+
+        let claims = try pool.write { db in
+            func candidates(state: String, limit: Int) throws -> [Candidate] {
+                guard limit > 0 else { return [] }
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT r.manifest_sha256, r.updated_at
+                    FROM archive_replica_receipts AS r
+                    JOIN archive_session_bindings AS b
+                      ON b.manifest_sha256 = r.manifest_sha256
+                    WHERE b.remote_eligibility = 'eligible'
+                      AND r.replica_id = ?
+                      AND r.state = ?
+                      AND (
+                          r.state != 'retryWait'
+                          OR r.next_retry_at IS NULL
+                          OR r.next_retry_at <= ?
+                      )
+                    ORDER BY r.updated_at ASC, r.manifest_sha256 ASC
+                    LIMIT ?
+                    """,
+                    arguments: [replicaID, state, now, limit]
+                )
+                return rows.map { row in
+                    Candidate(
+                        manifestSHA256: row["manifest_sha256"],
+                        updatedAt: row["updated_at"],
+                        isRetry: state == ArchiveReplicaState.retryWait.rawValue
+                    )
+                }
+            }
+
+            let retryCandidates = try candidates(
+                state: ArchiveReplicaState.retryWait.rawValue,
+                limit: limit
+            )
+            let pendingCandidates = try candidates(
+                state: ArchiveReplicaState.pending.rawValue,
+                limit: limit
+            )
+            let pendingQuota = limit - retryQuota
+            var selected = Array(retryCandidates.prefix(retryQuota))
+                + Array(pendingCandidates.prefix(pendingQuota))
+            if selected.count < limit {
+                let leftovers = (
+                    Array(retryCandidates.dropFirst(retryQuota))
+                        + Array(pendingCandidates.dropFirst(pendingQuota))
+                ).sorted {
+                    ($0.updatedAt, $0.manifestSHA256, $0.isRetry ? 0 : 1)
+                        < ($1.updatedAt, $1.manifestSHA256, $1.isRetry ? 0 : 1)
+                }
+                selected.append(contentsOf: leftovers.prefix(limit - selected.count))
+            }
+
+            var claims: [ArchiveReplicaClaim] = []
+            claims.reserveCapacity(selected.count)
+            for candidate in selected {
+                let row = try Row.fetchOne(
+                    db,
+                    sql: """
+                    UPDATE archive_replica_receipts
+                    SET state = 'uploadingObjects',
+                        claim_generation = claim_generation + 1,
+                        next_retry_at = NULL,
+                        last_error = NULL,
+                        updated_at = ?
+                    WHERE manifest_sha256 = ? AND replica_id = ?
+                      AND (
+                          state = 'pending'
+                          OR (
+                              state = 'retryWait'
+                              AND (next_retry_at IS NULL OR next_retry_at <= ?)
+                          )
+                      )
+                    RETURNING capture_id, attempts, claim_generation
+                    """,
+                    arguments: [now, candidate.manifestSHA256, replicaID, now]
+                )
+                guard let row else { continue }
+                guard let bindingRow = try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT * FROM archive_session_bindings
+                    WHERE manifest_sha256 = ? AND remote_eligibility = 'eligible'
+                    """,
+                    arguments: [candidate.manifestSHA256]
+                ) else {
+                    throw ArchiveCatalogError.bindingNotFound(
+                        manifestSHA256: candidate.manifestSHA256
+                    )
+                }
+                let binding = try Self.binding(from: bindingRow)
+                let captureID: String = row["capture_id"]
+                guard binding.captureID == captureID else {
+                    throw ArchiveCatalogError.bindingConflict(
+                        manifestSHA256: candidate.manifestSHA256
+                    )
+                }
+                let claim = ArchiveReplicaClaim(
+                    manifestSHA256: candidate.manifestSHA256,
+                    captureID: captureID,
+                    sessionID: binding.sessionID,
+                    replicaID: replicaID,
+                    canonicalManifestBytes: binding.canonicalManifestBytes,
+                    claimGeneration: row["claim_generation"],
+                    attempts: row["attempts"]
+                )
+                try Self.validateClaim(
+                    claim,
+                    claimGeneration: claim.claimGeneration
+                )
+                claims.append(claim)
+            }
+            return claims
+        }
+        if !claims.isEmpty { try secureDatabaseFiles() }
+        return claims
+    }
+
+    @discardableResult
+    public func releaseUnstartedReplicaClaims(
+        _ claims: [ArchiveReplicaClaim],
+        updatedAt: String
+    ) throws -> Int {
+        try Self.validateTimestamp(updatedAt, field: "updatedAt")
+        guard !claims.isEmpty else { return 0 }
+        let released = try pool.write { db in
+            var count = 0
+            for claim in claims {
+                try Self.validateClaim(
+                    claim,
+                    claimGeneration: claim.claimGeneration
+                )
+                try db.execute(
+                    sql: """
+                    UPDATE archive_replica_receipts
+                    SET state = 'pending',
+                        claim_generation = claim_generation + 1,
+                        next_retry_at = NULL,
+                        last_error = NULL,
+                        updated_at = ?
+                    WHERE manifest_sha256 = ?
+                      AND capture_id = ?
+                      AND replica_id = ?
+                      AND state = 'uploadingObjects'
+                      AND claim_generation = ?
+                    """,
+                    arguments: [
+                        updatedAt,
+                        claim.manifestSHA256,
+                        claim.captureID,
+                        claim.replicaID,
+                        claim.claimGeneration,
+                    ]
+                )
+                count += db.changesCount
+            }
+            return count
+        }
+        if released > 0 { try secureDatabaseFiles() }
+        return released
+    }
+
     @discardableResult
     public func transitionReplicaClaim(
         _ claim: ArchiveReplicaClaim,
