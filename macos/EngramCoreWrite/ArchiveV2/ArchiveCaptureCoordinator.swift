@@ -685,18 +685,23 @@ public actor ArchiveCaptureCoordinator {
                 lockedBatch: nil
             )
         }
-        try persistBindingProgress(progress)
+        let progressPayload = try ArchiveCanonicalJSON.encode(progress)
+        try Task.checkCancellation()
+        let changed = try catalog.ignoreUnboundCaptureAndStoreBindingCursorCheckpoint(
+            captureID: capture.captureID,
+            reason: reason,
+            updatedAt: updatedAt,
+            bindingCursorPayload: progressPayload
+        )
+        guard changed else {
+            throw ArchiveCaptureCoordinatorError.invalidBindingContinuation
+        }
         expectedBindingBatchFingerprint = try Self.bindingBatchFingerprint(
             progress.lockedBatch
         )
         testHooks.afterBindingRowAdvanced?(capture)
         try Task.checkCancellation()
-
-        return try catalog.ignoreUnboundCapture(
-            captureID: capture.captureID,
-            reason: reason,
-            updatedAt: updatedAt
-        )
+        return changed
     }
 
     public func bind(

@@ -541,6 +541,51 @@ final class ArchiveCatalogTests: XCTestCase {
         XCTAssertEqual(status.ignoredEmpty, 1)
     }
 
+    func testAtomicIgnoredCaptureDispositionRollsBackWhenBindingCursorWriteFails() throws {
+        let catalog = try migratedCatalog()
+        let capture = try manifest(
+            captureSeed: "atomic-ignore-rollback",
+            sessionID: nil
+        )
+        _ = try catalog.recordCapture(
+            canonicalManifestBytes: ArchiveCanonicalJSON.encode(capture)
+        )
+        let originalCursor = Data(#"{"after":null,"schemaVersion":2}"#.utf8)
+        let advancedCursor = Data(#"{"after":"advanced","schemaVersion":2}"#.utf8)
+        _ = try catalog.storeArchiveCursorCheckpoint(
+            originalCursor,
+            for: .bindingCycle,
+            updatedAt: "2026-07-11T00:01:00.000Z"
+        )
+        try writeArchiveDatabase { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_atomic_binding_cursor_update
+                BEFORE UPDATE OF value ON archive_metadata
+                WHEN OLD.key = 'archive_cursor_binding_v1'
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected binding cursor failure');
+                END
+                """)
+        }
+
+        XCTAssertThrowsError(
+            try catalog.ignoreUnboundCaptureAndStoreBindingCursorCheckpoint(
+                captureID: capture.captureID,
+                reason: "no_visible_messages",
+                updatedAt: "2026-07-11T00:02:00.000Z",
+                bindingCursorPayload: advancedCursor
+            )
+        )
+
+        let persisted = try XCTUnwrap(try catalog.capture(captureID: capture.captureID))
+        XCTAssertEqual(persisted.status, "captured")
+        XCTAssertNil(persisted.diagnostic)
+        XCTAssertEqual(
+            try catalog.archiveCursorCheckpoint(for: .bindingCycle)?.payload,
+            originalCursor
+        )
+    }
+
     func testRecordCaptureRejectsChangedImmutableFieldsForSameCaptureID() throws {
         let catalog = try migratedCatalog()
         let original = try manifest(captureSeed: "stable-id", sessionID: nil)

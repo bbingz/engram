@@ -537,49 +537,20 @@ public final class ArchiveCatalog: @unchecked Sendable {
         for key: ArchiveCursorKey,
         updatedAt: String? = nil
     ) throws -> Bool {
-        guard (1 ... Self.maximumArchiveCursorPayloadBytes).contains(payload.count) else {
-            throw ArchiveCatalogError.invalidArchiveCursorPayloadSize(payload.count)
-        }
         let resolvedUpdatedAt = updatedAt ?? Self.currentTimestamp()
-        try Self.validateTimestamp(
-            resolvedUpdatedAt,
-            field: "archiveCursor.updatedAt"
-        )
-        let envelope = ArchiveCursorEnvelope(
-            schemaVersion: 1,
-            key: key.rawValue,
+        let storedValue = try Self.archiveCursorStoredValue(
             payload: payload,
-            payloadSHA256: ArchiveV2Hash.sha256(payload),
+            key: key,
             updatedAt: resolvedUpdatedAt
         )
-        let canonicalBytes = try ArchiveCanonicalJSON.encode(envelope)
-        guard let storedValue = String(data: canonicalBytes, encoding: .utf8) else {
-            throw ArchiveCatalogError.invalidArchiveCursorCheckpoint(key.rawValue)
-        }
 
         let changed = try pool.write { db in
-            if let existingValue = try String.fetchOne(
-                db,
-                sql: "SELECT value FROM archive_metadata WHERE key = ?",
-                arguments: [key.rawValue]
-            ) {
-                let existing = try Self.archiveCursorCheckpoint(
-                    from: existingValue,
-                    expectedKey: key
-                )
-                guard existing.payload != payload else { return false }
-                guard existingValue != storedValue else { return false }
-                try db.execute(
-                    sql: "UPDATE archive_metadata SET value = ? WHERE key = ?",
-                    arguments: [storedValue, key.rawValue]
-                )
-            } else {
-                try db.execute(
-                    sql: "INSERT INTO archive_metadata(key, value) VALUES (?, ?)",
-                    arguments: [key.rawValue, storedValue]
-                )
-            }
-            return true
+            try Self.upsertArchiveCursorCheckpoint(
+                storedValue: storedValue,
+                payload: payload,
+                key: key,
+                db: db
+            )
         }
         if changed { try secureDatabaseFiles() }
         return changed
@@ -1528,6 +1499,60 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 ]
             )
             return db.changesCount == 1
+        }
+        if changed { try secureDatabaseFiles() }
+        return changed
+    }
+
+    @discardableResult
+    func ignoreUnboundCaptureAndStoreBindingCursorCheckpoint(
+        captureID: String,
+        reason: String,
+        updatedAt: String,
+        bindingCursorPayload: Data
+    ) throws -> Bool {
+        guard ArchiveV2Hash.isValidSHA256(captureID) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "captureID")
+        }
+        try Self.validateLastError(reason)
+        try Self.validateTimestamp(updatedAt, field: "updatedAt")
+        let storedCursorValue = try Self.archiveCursorStoredValue(
+            payload: bindingCursorPayload,
+            key: .bindingCycle,
+            updatedAt: updatedAt
+        )
+
+        let changed = try pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_captures
+                SET status = ?, diagnostic = ?, updated_at = ?
+                WHERE capture_id = ? AND status = ?
+                  AND NOT EXISTS (
+                    SELECT 1 FROM archive_session_bindings AS b
+                    WHERE b.capture_id = archive_captures.capture_id
+                  )
+                """,
+                arguments: [
+                    Self.ignoredCaptureStatus,
+                    reason,
+                    updatedAt,
+                    captureID,
+                    Self.captureStatus,
+                ]
+            )
+            guard db.changesCount == 1 else { return false }
+            guard try Self.upsertArchiveCursorCheckpoint(
+                storedValue: storedCursorValue,
+                payload: bindingCursorPayload,
+                key: .bindingCycle,
+                db: db
+            ) else {
+                throw ArchiveCatalogError.invalidArchiveCursorCheckpoint(
+                    ArchiveCursorKey.bindingCycle.rawValue
+                )
+            }
+            return true
         }
         if changed { try secureDatabaseFiles() }
         return changed
@@ -3387,6 +3412,60 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 expectedKey.rawValue
             )
         }
+    }
+
+    private static func archiveCursorStoredValue(
+        payload: Data,
+        key: ArchiveCursorKey,
+        updatedAt: String
+    ) throws -> String {
+        guard (1 ... maximumArchiveCursorPayloadBytes).contains(payload.count) else {
+            throw ArchiveCatalogError.invalidArchiveCursorPayloadSize(payload.count)
+        }
+        try validateTimestamp(updatedAt, field: "archiveCursor.updatedAt")
+        let envelope = ArchiveCursorEnvelope(
+            schemaVersion: 1,
+            key: key.rawValue,
+            payload: payload,
+            payloadSHA256: ArchiveV2Hash.sha256(payload),
+            updatedAt: updatedAt
+        )
+        let canonicalBytes = try ArchiveCanonicalJSON.encode(envelope)
+        guard let storedValue = String(data: canonicalBytes, encoding: .utf8) else {
+            throw ArchiveCatalogError.invalidArchiveCursorCheckpoint(key.rawValue)
+        }
+        _ = try archiveCursorCheckpoint(from: storedValue, expectedKey: key)
+        return storedValue
+    }
+
+    private static func upsertArchiveCursorCheckpoint(
+        storedValue: String,
+        payload: Data,
+        key: ArchiveCursorKey,
+        db: Database
+    ) throws -> Bool {
+        if let existingValue = try String.fetchOne(
+            db,
+            sql: "SELECT value FROM archive_metadata WHERE key = ?",
+            arguments: [key.rawValue]
+        ) {
+            let existing = try archiveCursorCheckpoint(
+                from: existingValue,
+                expectedKey: key
+            )
+            guard existing.payload != payload else { return false }
+            guard existingValue != storedValue else { return false }
+            try db.execute(
+                sql: "UPDATE archive_metadata SET value = ? WHERE key = ?",
+                arguments: [storedValue, key.rawValue]
+            )
+        } else {
+            try db.execute(
+                sql: "INSERT INTO archive_metadata(key, value) VALUES (?, ?)",
+                arguments: [key.rawValue, storedValue]
+            )
+        }
+        return true
     }
 
     private static func recoveryDrillCursorKey(replicaID: String) throws -> ArchiveCursorKey {

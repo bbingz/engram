@@ -1247,69 +1247,82 @@ final class ArchiveCaptureCoordinatorTests: XCTestCase {
         XCTAssertFalse(third.hasMore)
     }
 
-    func testIgnoredLockedTargetProgressRecoversAcrossRestartBeforeDisposition() async throws {
-        let fixture = try await capturedBindingFixture(name: "ignored-restart")
-        let storeRoot = archiveRoot(name: "binding-ignored-restart")
+    func testIgnoredLockedTargetCancellationCommitsMixedBatchProgressAtomicallyAcrossRestart() async throws {
+        let urls = try makeSourceFiles(
+            directory: "ignored-cancel-restart",
+            names: ["empty.jsonl", "runnable.jsonl"]
+        )
+        let adapter = CoordinatorExactAdapter(
+            source: .claudeCode,
+            locators: urls.map(\.path),
+            relativePaths: Dictionary(
+                uniqueKeysWithValues: urls.map { ($0.path, "project/\($0.lastPathComponent)") }
+            )
+        )
+        let storeRoot = archiveRoot(name: "ignored-cancel-restart")
+        let cas = try ImmutableArchiveCAS(root: storeRoot)
+        let catalog = try ArchiveCatalog(root: storeRoot, machineID: machineID)
+        try catalog.migrate()
+        let captureCoordinator = ArchiveCaptureCoordinator(cas: cas, catalog: catalog)
+        _ = try await captureCoordinator.capture(adapters: [adapter])
+        let ordered = try catalog.unboundCaptures(limit: 10)
+        XCTAssertEqual(ordered.count, 2)
         let coordinator = ArchiveCaptureCoordinator(
-            cas: try ImmutableArchiveCAS(root: storeRoot),
-            catalog: fixture.catalog,
-            unboundBatchLimit: 1,
+            cas: cas,
+            catalog: catalog,
+            unboundBatchLimit: 2,
             testHooks: ArchiveCaptureCoordinatorTestHooks(
                 afterBindingRowAdvanced: { _ in
                     withUnsafeCurrentTask { $0?.cancel() }
                 }
             )
         )
-        let targets = try await coordinator.bindingTargets(rowBudget: 1)
-        XCTAssertEqual(targets.map(\.captureID), [fixture.capture.captureID])
+        let targets = try await coordinator.bindingTargets(rowBudget: 2)
+        XCTAssertEqual(targets.map(\.captureID), ordered.map(\.captureID))
 
         let cancelledIgnore = Task {
             try await coordinator.ignoreLockedBindingTarget(
-                captureID: fixture.capture.captureID,
+                captureID: ordered[0].captureID,
                 reason: "no_visible_messages",
                 updatedAt: "2026-07-11T00:05:00.000Z"
             )
         }
         do {
             _ = try await cancelledIgnore.value
-            XCTFail("expected cancellation after binding progress advanced")
+            XCTFail("expected cancellation after atomic disposition committed")
         } catch is CancellationError {
-            // Progress is durable, while the capture remains runnable for a fresh snapshot.
+            // Disposition and progress must both be durable before cancellation surfaces.
         }
-        XCTAssertEqual(
-            try fixture.catalog.capture(captureID: fixture.capture.captureID)?.status,
-            "captured"
-        )
+        XCTAssertEqual(try catalog.capture(captureID: ordered[0].captureID)?.status, "ignored")
+        XCTAssertEqual(try catalog.capture(captureID: ordered[1].captureID)?.status, "captured")
 
         let reopenedCatalog = try ArchiveCatalog(root: storeRoot, machineID: machineID)
         try reopenedCatalog.migrate()
         let restarted = ArchiveCaptureCoordinator(
-            cas: try ImmutableArchiveCAS(root: storeRoot),
+            cas: cas,
             catalog: reopenedCatalog,
-            unboundBatchLimit: 1
+            unboundBatchLimit: 2
         )
-        let retriedTargets = try await restarted.bindingTargets(rowBudget: 1)
-        XCTAssertEqual(retriedTargets.map(\.captureID), [fixture.capture.captureID])
-        let ignored = try await restarted.ignoreLockedBindingTarget(
-            captureID: fixture.capture.captureID,
-            reason: "no_visible_messages",
-            updatedAt: "2026-07-11T00:06:00.000Z"
+        let resumedTargets = try await restarted.bindingTargets(rowBudget: 2)
+        XCTAssertEqual(resumedTargets.map(\.captureID), [ordered[1].captureID])
+        let identity = try sessionIdentity(
+            capture: ordered[1],
+            source: .claudeCode,
+            locator: ordered[1].locator,
+            id: "ignored-cancel-runnable"
         )
-        XCTAssertTrue(ignored)
+        let resumed = try await restarted.bind([identity], rowBudget: 1)
+        XCTAssertEqual(resumed.bindings.map(\.captureID), [ordered[1].captureID])
 
         let finalCatalog = try ArchiveCatalog(root: storeRoot, machineID: machineID)
         try finalCatalog.migrate()
         let finalCoordinator = ArchiveCaptureCoordinator(
-            cas: try ImmutableArchiveCAS(root: storeRoot),
+            cas: cas,
             catalog: finalCatalog,
-            unboundBatchLimit: 1
+            unboundBatchLimit: 2
         )
-        let finalTargets = try await finalCoordinator.bindingTargets(rowBudget: 1)
+        let finalTargets = try await finalCoordinator.bindingTargets(rowBudget: 2)
         XCTAssertEqual(finalTargets, [])
-        XCTAssertEqual(
-            try finalCatalog.capture(captureID: fixture.capture.captureID)?.status,
-            "ignored"
-        )
     }
 
     func testIgnoredFirstLockedTargetStillAllowsRunnableSiblingToBind() async throws {
