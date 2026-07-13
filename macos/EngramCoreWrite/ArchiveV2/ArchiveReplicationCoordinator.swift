@@ -83,6 +83,8 @@ public struct ArchiveRetryJitter: Sendable {
 }
 
 public actor ArchiveReplicationCoordinator {
+    private static let maximumTransientPause: TimeInterval = 60
+
     private let catalog: ArchiveCatalog
     private let cas: ImmutableArchiveCAS
     private let backends: [String: any ArchiveReplicaBackend]
@@ -327,6 +329,11 @@ public actor ArchiveReplicationCoordinator {
                             afterAttempts: claim.attempts
                         )
                     )
+                    let rowRetryAt = failureDate.addingTimeInterval(delay)
+                    let circuitBreakerAt = min(
+                        rowRetryAt,
+                        failureDate.addingTimeInterval(Self.maximumTransientPause)
+                    )
                     guard !Task.isCancelled else {
                         cycle.cancelled = true
                         return cycle
@@ -334,7 +341,7 @@ public actor ArchiveReplicationCoordinator {
                     changed = try catalog.markReplicaRetry(
                         claim,
                         from: state,
-                        nextRetryAt: timestamp(failureDate.addingTimeInterval(delay)),
+                        nextRetryAt: timestamp(rowRetryAt),
                         lastError: symbol,
                         updatedAt: failureAt
                     )
@@ -342,8 +349,7 @@ public actor ArchiveReplicationCoordinator {
                         cycle.retryScheduled += 1
                         if stopOnInfrastructureFailure,
                            transientInfrastructure.contains(symbol) {
-                            cycle.retryPausedUntil[claim.replicaID] =
-                                failureDate.addingTimeInterval(delay)
+                            cycle.retryPausedUntil[claim.replicaID] = circuitBreakerAt
                         }
                     }
                 case .quarantine:

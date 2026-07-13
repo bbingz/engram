@@ -237,14 +237,29 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         XCTAssertEqual(authHQStates.filter { $0 == .pending }.count, 1)
     }
 
-    func testBacklogPassDefersAffectedReplicaPendingRowsUntilRetryDeadline() async throws {
-        let store = try makeStore(name: "backlog-transient-deadline")
-        _ = try addBinding(to: store, seed: "deadline-1", eligibility: .eligible)
-        _ = try addBinding(to: store, seed: "deadline-2", eligibility: .eligible)
+    func testBacklogPassBoundsLongTransientPauseAndResumesPendingWorkAtExpiry() async throws {
+        let store = try makeStore(name: "backlog-long-transient-deadline")
+        let deferred = try addBinding(
+            to: store,
+            seed: "long-deadline",
+            eligibility: .eligible
+        )
+        try seedRetryAttempts(
+            count: 8,
+            fixture: deferred,
+            replicaID: "hq",
+            catalog: store.catalog
+        )
+        let ordinary = try addBinding(
+            to: store,
+            seed: "ordinary-after-long-deadline",
+            eligibility: .eligible
+        )
         let hq = FakeArchiveReplicaBackend(replicaID: "hq")
         hq.setFailure(operation: "headObject", error: .transport(.network))
         let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
-        let clock = LockedTestClock(try date("2026-07-11T00:00:00.000Z"))
+        let now = try date("2026-07-11T00:00:00.000Z")
+        let clock = LockedTestClock(now)
         let coordinator = try makeCoordinator(
             store: store,
             hq: hq,
@@ -254,27 +269,111 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         )
 
         let first = await coordinator.runBacklogPass(perReplicaLimit: 2)
+        let deferredAfterFailure = try XCTUnwrap(try store.catalog.replicaWork(
+            manifestSHA256: deferred.binding.manifestSHA256,
+            replicaID: "hq"
+        ))
+        let durableRetryAt = try date(try XCTUnwrap(deferredAfterFailure.nextRetryAt))
+
+        XCTAssertEqual(deferredAfterFailure.attempts, 9)
+        XCTAssertEqual(durableRetryAt, now.addingTimeInterval(15_360))
+        XCTAssertGreaterThan(durableRetryAt, now.addingTimeInterval(60))
+        XCTAssertEqual(
+            first.retryPausedUntilByReplica["hq"],
+            now.addingTimeInterval(60)
+        )
+        XCTAssertEqual(first.verifiedByReplica["m1"], 2)
+
         let hqEventsBeforeDeadline = hq.events()
+        let independent = try addBinding(
+            to: store,
+            seed: "m1-independent-during-hq-pause",
+            eligibility: .eligible
+        )
         clock.set(try date("2026-07-11T00:00:30.000Z"))
         let beforeDeadline = await coordinator.runBacklogPass(perReplicaLimit: 2)
 
         XCTAssertEqual(first.retryPausedReplicaIDs, ["hq"])
         XCTAssertEqual(beforeDeadline.retryPausedReplicaIDs, ["hq"])
         XCTAssertEqual(
-            first.retryPausedUntilByReplica["hq"],
-            try date("2026-07-11T00:01:00.000Z")
-        )
-        XCTAssertEqual(
             beforeDeadline.retryPausedUntilByReplica["hq"],
             try date("2026-07-11T00:01:00.000Z")
         )
         XCTAssertEqual(hq.events(), hqEventsBeforeDeadline)
+        XCTAssertEqual(beforeDeadline.verifiedByReplica["m1"], 1)
+        XCTAssertEqual(
+            try store.catalog.replicaWork(
+                manifestSHA256: independent.binding.manifestSHA256,
+                replicaID: "m1"
+            )?.state,
+            .verified
+        )
+        XCTAssertEqual(
+            try store.catalog.replicaWork(
+                manifestSHA256: ordinary.binding.manifestSHA256,
+                replicaID: "hq"
+            )?.state,
+            .pending
+        )
 
+        hq.clearFailure()
         clock.set(try date("2026-07-11T00:01:00.000Z"))
         let atDeadline = await coordinator.runBacklogPass(perReplicaLimit: 2)
 
-        XCTAssertEqual(atDeadline.retryPausedReplicaIDs, ["hq"])
-        XCTAssertEqual(hq.events().filter { $0 == "headObject" }.count, 2)
+        XCTAssertTrue(atDeadline.retryPausedReplicaIDs.isEmpty)
+        XCTAssertEqual(atDeadline.verifiedByReplica["hq"], 2)
+        XCTAssertEqual(
+            try store.catalog.replicaWork(
+                manifestSHA256: ordinary.binding.manifestSHA256,
+                replicaID: "hq"
+            )?.state,
+            .verified
+        )
+        XCTAssertEqual(
+            try store.catalog.replicaWork(
+                manifestSHA256: independent.binding.manifestSHA256,
+                replicaID: "hq"
+            )?.state,
+            .verified
+        )
+        let deferredAfterExpiry = try XCTUnwrap(try store.catalog.replicaWork(
+            manifestSHA256: deferred.binding.manifestSHA256,
+            replicaID: "hq"
+        ))
+        XCTAssertEqual(deferredAfterExpiry.state, .retryWait)
+        XCTAssertEqual(deferredAfterExpiry.nextRetryAt, deferredAfterFailure.nextRetryAt)
+    }
+
+    func testBacklogPassUsesEarlierShortRowRetryForTransientPause() async throws {
+        let store = try makeStore(name: "backlog-short-transient-deadline")
+        let fixture = try addBinding(
+            to: store,
+            seed: "short-deadline",
+            eligibility: .eligible
+        )
+        let hq = FakeArchiveReplicaBackend(replicaID: "hq")
+        hq.setFailure(operation: "headObject", error: .transport(.network))
+        let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
+        let now = try date("2026-07-11T00:00:00.000Z")
+        let coordinator = try makeCoordinator(
+            store: store,
+            hq: hq,
+            m1: m1,
+            clock: LockedTestClock(now),
+            jitter: ArchiveRetryJitter(sampleUnit: { 0.5 })
+        )
+
+        let result = await coordinator.runBacklogPass(perReplicaLimit: 1)
+
+        let row = try XCTUnwrap(try store.catalog.replicaWork(
+            manifestSHA256: fixture.binding.manifestSHA256,
+            replicaID: "hq"
+        ))
+        XCTAssertEqual(try date(try XCTUnwrap(row.nextRetryAt)), now.addingTimeInterval(30))
+        XCTAssertEqual(
+            result.retryPausedUntilByReplica["hq"],
+            now.addingTimeInterval(30)
+        )
     }
 
     func testBacklogPassResourceGateStopsBeforeStartingAnotherReplicaRow() async throws {
@@ -982,39 +1081,82 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         }
     }
 
-    func testManualRetryTouchesOnlySelectedQuarantinedReplica() async throws {
+    func testManualRetryClearsBothPauseKindsForSelectedReplicaOnly() async throws {
         let store = try makeStore(name: "manual-retry")
-        let fixture = try addBinding(to: store, seed: "manual-retry", eligibility: .eligible)
+        let fixtures = try [
+            addBinding(to: store, seed: "manual-retry-1", eligibility: .eligible),
+            addBinding(to: store, seed: "manual-retry-2", eligibility: .eligible),
+        ]
         let hq = FakeArchiveReplicaBackend(replicaID: "hq")
         let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
-        hq.setFailure(operation: "headObject", error: .unexpectedStatus(422))
-        m1.setFailure(operation: "headObject", error: .unexpectedStatus(422))
+        hq.setFailure(operation: "headObject", error: .transport(.network))
+        m1.setFailure(operation: "headObject", error: .unexpectedStatus(401))
         let coordinator = try makeCoordinator(store: store, hq: hq, m1: m1)
-        _ = await coordinator.runOnce(limit: 2)
-        let hqBefore = try XCTUnwrap(try store.catalog.replicaWork(
-            manifestSHA256: fixture.binding.manifestSHA256,
-            replicaID: "hq"
-        ))
-        let m1Before = try XCTUnwrap(try store.catalog.replicaWork(
-            manifestSHA256: fixture.binding.manifestSHA256,
-            replicaID: "m1"
-        ))
+
+        let first = await coordinator.runBacklogPass(perReplicaLimit: 2)
+
+        XCTAssertEqual(first.retryPausedReplicaIDs, ["hq"])
+        XCTAssertEqual(first.pausedReplicaIDs, ["m1"])
+        let hqEventsWhilePaused = hq.events()
 
         try await coordinator.retryQuarantined(replicaID: "m1")
+        m1.clearFailure()
+        let afterAttentionRetry = await coordinator.runBacklogPass(perReplicaLimit: 2)
 
-        let hqAfter = try XCTUnwrap(try store.catalog.replicaWork(
-            manifestSHA256: fixture.binding.manifestSHA256,
-            replicaID: "hq"
-        ))
-        let m1After = try XCTUnwrap(try store.catalog.replicaWork(
-            manifestSHA256: fixture.binding.manifestSHA256,
-            replicaID: "m1"
-        ))
-        XCTAssertEqual(hqAfter, hqBefore)
-        XCTAssertEqual(m1After.state, .pending)
-        XCTAssertEqual(m1After.attempts, 0)
-        XCTAssertNil(m1After.lastError)
-        XCTAssertEqual(m1After.claimGeneration, m1Before.claimGeneration + 1)
+        XCTAssertEqual(afterAttentionRetry.retryPausedReplicaIDs, ["hq"])
+        XCTAssertTrue(afterAttentionRetry.pausedReplicaIDs.isEmpty)
+        XCTAssertEqual(afterAttentionRetry.verifiedByReplica["m1"], 2)
+        XCTAssertEqual(hq.events(), hqEventsWhilePaused)
+
+        hq.clearFailure()
+        try await coordinator.retryQuarantined(replicaID: "hq")
+        let afterTransientRetry = await coordinator.runBacklogPass(perReplicaLimit: 2)
+
+        XCTAssertTrue(afterTransientRetry.retryPausedReplicaIDs.isEmpty)
+        XCTAssertTrue(afterTransientRetry.pausedReplicaIDs.isEmpty)
+        XCTAssertEqual(afterTransientRetry.verifiedByReplica["hq"], 1)
+        let hqStates = try fixtures.compactMap {
+            try store.catalog.replicaWork(
+                manifestSHA256: $0.binding.manifestSHA256,
+                replicaID: "hq"
+            )?.state
+        }
+        XCTAssertEqual(hqStates.filter { $0 == .retryWait }.count, 1)
+        XCTAssertEqual(hqStates.filter { $0 == .verified }.count, 1)
+    }
+
+    func testResumeClearsBothPauseKindsForSelectedReplicaOnly() async throws {
+        let store = try makeStore(name: "manual-resume")
+        _ = try addBinding(to: store, seed: "manual-resume-1", eligibility: .eligible)
+        _ = try addBinding(to: store, seed: "manual-resume-2", eligibility: .eligible)
+        let hq = FakeArchiveReplicaBackend(replicaID: "hq")
+        let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
+        hq.setFailure(operation: "headObject", error: .transport(.network))
+        m1.setFailure(operation: "headObject", error: .unexpectedStatus(401))
+        let coordinator = try makeCoordinator(store: store, hq: hq, m1: m1)
+
+        let first = await coordinator.runBacklogPass(perReplicaLimit: 2)
+
+        XCTAssertEqual(first.retryPausedReplicaIDs, ["hq"])
+        XCTAssertEqual(first.pausedReplicaIDs, ["m1"])
+        let m1EventsWhilePaused = m1.events()
+
+        hq.clearFailure()
+        await coordinator.resumeAfterAttention(replicaID: "hq")
+        let afterTransientResume = await coordinator.runBacklogPass(perReplicaLimit: 2)
+
+        XCTAssertTrue(afterTransientResume.retryPausedReplicaIDs.isEmpty)
+        XCTAssertEqual(afterTransientResume.pausedReplicaIDs, ["m1"])
+        XCTAssertEqual(afterTransientResume.verifiedByReplica["hq"], 1)
+        XCTAssertEqual(m1.events(), m1EventsWhilePaused)
+
+        m1.clearFailure()
+        await coordinator.resumeAfterAttention(replicaID: "m1")
+        let afterAttentionResume = await coordinator.runBacklogPass(perReplicaLimit: 2)
+
+        XCTAssertTrue(afterAttentionResume.retryPausedReplicaIDs.isEmpty)
+        XCTAssertTrue(afterAttentionResume.pausedReplicaIDs.isEmpty)
+        XCTAssertEqual(afterAttentionResume.verifiedByReplica["m1"], 1)
     }
 
     func testCoordinatorSourceHasNoLegacyOffloadOrDestructiveSurface() throws {
@@ -1191,6 +1333,31 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
             clock: { resolvedClock.now() },
             jitter: jitter
         )
+    }
+
+    private func seedRetryAttempts(
+        count: Int,
+        fixture: Fixture,
+        replicaID: String,
+        catalog: ArchiveCatalog
+    ) throws {
+        let retryAt = "2026-07-10T23:59:00.000Z"
+        _ = try catalog.reconcileEligibleReplicaRows(updatedAt: retryAt)
+        for _ in 0 ..< count {
+            let claim = try XCTUnwrap(try catalog.claimReplicaWork(
+                replicaID: replicaID,
+                limit: 1,
+                retryQuota: 1,
+                now: retryAt
+            ).first { $0.manifestSHA256 == fixture.binding.manifestSHA256 })
+            XCTAssertTrue(try catalog.markReplicaRetry(
+                claim,
+                from: .uploadingObjects,
+                nextRetryAt: retryAt,
+                lastError: "transport_network",
+                updatedAt: retryAt
+            ))
+        }
     }
 
     private func objectURL(store: Store, digest: String) -> URL {
