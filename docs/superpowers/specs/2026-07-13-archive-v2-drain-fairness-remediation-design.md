@@ -182,6 +182,17 @@ polling is added.
   newly produced by that pass are committed, then the returned snapshot is
   refreshed from actor state. A concurrent manual clear therefore wins over old
   state, while a genuine failure after that clear can establish a new pause.
+- Each replica has a process-local monotonic pause revision. A failure batch
+  records the revision at the failure event point, after its durable row
+  transition when one applies, and may commit only while that base revision is
+  still current; a successful pause commit advances the revision. Manual clear
+  advances the revision even when no pause is currently cached, creating an
+  invalidation barrier for delayed work.
+- Replication results and accepted retry outcomes carry those revisions only
+  between the Core and Service process components. The Service applies cache
+  changes only when the incoming replica revision is not older than its current
+  revision and builds drain scheduling from that filtered effective pause view.
+  Revisions are not persisted or added to the wire, remote, or UI contracts.
 - A clock that advances beyond the pause makes pending work immediately
   claimable in the same pass.
 - Multiple transient failures retain the later bounded circuit-breaker deadline,
@@ -218,6 +229,12 @@ Use failing-then-passing tests for each production behavior:
    metadata.
 11. Settings source and localization tests cover both pause reasons, deadlines,
     next-pass priority, and unchanged manual-refresh behavior.
+12. A replica failure that reaches `retryWait` or `quarantined` before a manual
+    clear cannot re-establish its pause when another replica delays batch commit.
+13. A delayed Service replication continuation cannot overwrite a newer manual
+    clear in status or drain scheduling.
+14. A delayed manual-retry continuation cannot erase a genuine failure with a
+    newer replica pause revision.
 
 Run the focused CoreWrite, ServiceCore, and App tests, then the full Core,
 Service, App, MCP, RemoteServer, and TypeScript suites. Build and verify a signed

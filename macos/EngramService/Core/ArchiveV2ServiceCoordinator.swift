@@ -107,6 +107,21 @@ struct ArchiveV2ServiceUnknownPage: Equatable, Sendable {
     let targets: [ArchiveV2ServicePolicyTarget]
 }
 
+struct ArchiveV2ServiceRetryOutcome: Equatable, Sendable {
+    let resetRows: Int
+    let pauseRevisionByReplica: [String: UInt64]
+
+    init(
+        resetRows: Int,
+        pauseRevisionByReplica: [String: UInt64] = [:]
+    ) {
+        self.resetRows = resetRows
+        self.pauseRevisionByReplica = pauseRevisionByReplica.filter {
+            ArchiveCatalog.currentReplicaIDs.contains($0.key)
+        }
+    }
+}
+
 struct ArchiveV2ServiceCoordinatorOperations: Sendable {
     typealias RemoteTelemetryResults = [
         String: Result<ArchiveRemoteTelemetrySnapshot, any Error>
@@ -146,7 +161,7 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
     ) async -> ArchiveReplicationCycleResult
     var status: @Sendable () async throws -> ArchiveStatusAggregate
     var remoteTelemetry: @Sendable () async -> RemoteTelemetryResults
-    var retry: @Sendable (String?) async throws -> Int
+    var retry: @Sendable (String?) async throws -> ArchiveV2ServiceRetryOutcome
     var recoveryDrill: @Sendable (String) async throws -> ArchiveRecoveryLease
 
     init(
@@ -184,7 +199,9 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
         ) async -> ArchiveReplicationCycleResult)? = nil,
         status: @escaping @Sendable () async throws -> ArchiveStatusAggregate,
         remoteTelemetry: @escaping @Sendable () async -> RemoteTelemetryResults = { [:] },
-        retry: @escaping @Sendable (String?) async throws -> Int,
+        retry: @escaping @Sendable (
+            String?
+        ) async throws -> ArchiveV2ServiceRetryOutcome,
         recoveryDrill: @escaping @Sendable (String) async throws -> ArchiveRecoveryLease = { _ in
             throw ArchiveV2ServiceCoordinatorError.recoveryDrillUnavailable
         }
@@ -311,6 +328,10 @@ actor ArchiveV2ServiceCoordinator {
     private var lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?
     private var nextBacklogPassPriority: ArchiveV2BacklogPassPriority = .remote
     private var replicaPauseStateByID: [String: ReplicaPauseState] = [:]
+    private var replicaPauseRevisionByID: [String: UInt64] = [
+        "hq": 0,
+        "m1": 0,
+    ]
     private var nextScheduledCycleAt: String?
     private var drainer: ArchiveV2BacklogDrainer?
     private var pipelineBusy = false
@@ -819,34 +840,77 @@ actor ArchiveV2ServiceCoordinator {
             finishedAt: replicationFinishedAt
         )
         lastReplicationError = replication.cycleError
-        updateReplicaPauseState(with: replication)
+        let effectiveReplication = updateReplicaPauseState(with: replication)
         if replication.cancelled { throw CancellationError() }
-        return replication
+        return effectiveReplication
     }
 
-    private func updateReplicaPauseState(with replication: ArchiveReplicationCycleResult) {
-        var updated: [String: ReplicaPauseState] = [:]
-        for replicaID in ["hq", "m1"] {
-            if let deadline = replication.retryPausedUntilByReplica[replicaID] {
-                updated[replicaID] = ReplicaPauseState(
+    private func updateReplicaPauseState(
+        with replication: ArchiveReplicationCycleResult
+    ) -> ArchiveReplicationCycleResult {
+        let attentionPausedReplicaIDs = Set(replication.pausedReplicaIDs)
+        for replicaID in ArchiveCatalog.currentReplicaIDs {
+            let currentRevision = replicaPauseRevisionByID[replicaID, default: 0]
+            let incomingRevision = replication.pauseRevisionByReplica[replicaID] ?? 0
+            guard incomingRevision >= currentRevision else { continue }
+
+            replicaPauseRevisionByID[replicaID] = incomingRevision
+            if attentionPausedReplicaIDs.contains(replicaID) {
+                replicaPauseStateByID[replicaID] = ReplicaPauseState(
+                    reason: "needsAttention",
+                    until: nil
+                )
+            } else if let deadline = replication.retryPausedUntilByReplica[replicaID] {
+                replicaPauseStateByID[replicaID] = ReplicaPauseState(
                     reason: "transientInfrastructureBackoff",
                     until: deadline
                 )
+            } else {
+                replicaPauseStateByID.removeValue(forKey: replicaID)
             }
         }
-        for replicaID in replication.pausedReplicaIDs where replicaID == "hq" || replicaID == "m1" {
-            updated[replicaID] = ReplicaPauseState(
-                reason: "needsAttention",
-                until: nil
-            )
-        }
-        replicaPauseStateByID = updated
+        return replicationResult(
+            replication,
+            pauseStateByID: replicaPauseStateByID
+        )
     }
 
     private func effectiveReplicaPauseState(at date: Date) -> [String: ReplicaPauseState] {
         replicaPauseStateByID.filter { _, state in
             state.until.map { $0 > date } ?? true
         }
+    }
+
+    private func replicationResult(
+        _ result: ArchiveReplicationCycleResult,
+        pauseStateByID: [String: ReplicaPauseState]
+    ) -> ArchiveReplicationCycleResult {
+        let attentionPausedReplicaIDs = pauseStateByID.compactMap { replicaID, state in
+            state.reason == "needsAttention" ? replicaID : nil
+        }
+        let retryPausedUntilByReplica = pauseStateByID.reduce(
+            into: [String: Date]()
+        ) { deadlines, entry in
+            if entry.value.reason == "transientInfrastructureBackoff",
+               let deadline = entry.value.until {
+                deadlines[entry.key] = deadline
+            }
+        }
+        return ArchiveReplicationCycleResult(
+            claimed: result.claimed,
+            verified: result.verified,
+            retryScheduled: result.retryScheduled,
+            quarantined: result.quarantined,
+            lostClaims: result.lostClaims,
+            staleRecovered: result.staleRecovered,
+            reconciled: result.reconciled,
+            cancelled: result.cancelled,
+            cycleError: result.cycleError,
+            pausedReplicaIDs: attentionPausedReplicaIDs,
+            retryPausedUntilByReplica: retryPausedUntilByReplica,
+            pauseRevisionByReplica: replicaPauseRevisionByID,
+            verifiedByReplica: result.verifiedByReplica
+        )
     }
 
     private func enqueuePendingIndexLocators(
@@ -1057,18 +1121,37 @@ actor ArchiveV2ServiceCoordinator {
             return Self.retryResponse(accepted: false, resetRows: 0, error: "archive_v2_disabled")
         }
         do {
-            let count = try await operations.retry(replicaID)
-            if let replicaID {
-                replicaPauseStateByID.removeValue(forKey: replicaID)
-            } else {
-                replicaPauseStateByID.removeAll()
-            }
+            let outcome = try await operations.retry(replicaID)
+            applyRetryOutcome(outcome, replicaID: replicaID)
             await drainer?.signal()
-            return Self.retryResponse(accepted: true, resetRows: count, error: nil)
+            return Self.retryResponse(
+                accepted: true,
+                resetRows: outcome.resetRows,
+                error: nil
+            )
         } catch is CancellationError {
             return Self.retryResponse(accepted: false, resetRows: 0, error: "cancelled")
         } catch {
             return Self.retryResponse(accepted: false, resetRows: 0, error: "catalog_failure")
+        }
+    }
+
+    private func applyRetryOutcome(
+        _ outcome: ArchiveV2ServiceRetryOutcome,
+        replicaID: String?
+    ) {
+        let replicaIDs = replicaID.map { [$0] } ?? ArchiveCatalog.currentReplicaIDs
+        for replicaID in replicaIDs {
+            let currentRevision = replicaPauseRevisionByID[replicaID, default: 0]
+            if let incomingRevision = outcome.pauseRevisionByReplica[replicaID] {
+                guard incomingRevision >= currentRevision else { continue }
+                replicaPauseRevisionByID[replicaID] = incomingRevision
+            } else {
+                replicaPauseRevisionByID[replicaID] = currentRevision == .max
+                    ? .max
+                    : currentRevision + 1
+            }
+            replicaPauseStateByID.removeValue(forKey: replicaID)
         }
     }
 
@@ -1557,10 +1640,13 @@ actor ArchiveV2ServiceCoordinator {
                     replicaID: replicaID,
                     now: Self.timestamp(Date())
                 )
-                await replicationCoordinator?.resumeAfterAttention(
+                let revisions = await replicationCoordinator?.resumeAfterAttention(
                     replicaID: replicaID
+                ) ?? [:]
+                return ArchiveV2ServiceRetryOutcome(
+                    resetRows: count,
+                    pauseRevisionByReplica: revisions
                 )
-                return count
             },
             recoveryDrill: { replicaID in
                 try await Self.executeRecoveryDrill(

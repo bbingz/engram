@@ -567,15 +567,100 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         }
         await gate.waitUntilEntered()
 
-        await coordinator.resumeAfterAttention(replicaID: "hq")
+        let clearedRevisions = await coordinator.resumeAfterAttention(replicaID: "hq")
         await gate.release()
         let inFlight = await inFlightTask.value
 
         XCTAssertEqual(inFlight.retryPausedReplicaIDs, ["hq"])
+        XCTAssertEqual(
+            inFlight.pauseRevisionByReplica["hq"],
+            try XCTUnwrap(clearedRevisions["hq"]) + 1
+        )
 
         let afterFailure = await coordinator.runBacklogPass(perReplicaLimit: 1)
 
         XCTAssertEqual(afterFailure.retryPausedReplicaIDs, ["hq"])
+    }
+
+    func testBacklogPassTransientFailureCommittedAfterManualClearDoesNotRePause() async throws {
+        let store = try makeStore(name: "backlog-delayed-transient-commit-after-clear")
+        let fixture = try addBinding(
+            to: store,
+            seed: "delayed-transient-commit-after-clear",
+            eligibility: .eligible
+        )
+        let hq = FakeArchiveReplicaBackend(replicaID: "hq")
+        hq.setFailure(operation: "headObject", error: .transport(.network))
+        let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
+        let m1Gate = AsyncTestGate()
+        m1.setHeadObjectGate(m1Gate)
+        let coordinator = try makeCoordinator(
+            store: store,
+            hq: hq,
+            m1: m1,
+            jitter: ArchiveRetryJitter(sampleUnit: { 0 })
+        )
+        let inFlightTask = Task {
+            await coordinator.runBacklogPass(perReplicaLimit: 1)
+        }
+        await m1Gate.waitUntilEntered()
+        try await waitForReplicaState(
+            .retryWait,
+            fixture: fixture,
+            replicaID: "hq",
+            catalog: store.catalog
+        )
+
+        let clearedRevisions = await coordinator.resumeAfterAttention(replicaID: "hq")
+        hq.clearFailure()
+        await m1Gate.release()
+        let inFlight = await inFlightTask.value
+
+        XCTAssertTrue(inFlight.retryPausedReplicaIDs.isEmpty)
+        XCTAssertEqual(inFlight.pauseRevisionByReplica["hq"], clearedRevisions["hq"])
+
+        let afterClear = await coordinator.runBacklogPass(perReplicaLimit: 1)
+
+        XCTAssertTrue(afterClear.retryPausedReplicaIDs.isEmpty)
+        XCTAssertEqual(afterClear.verifiedByReplica["hq"], 1)
+    }
+
+    func testBacklogPassAttentionFailureCommittedAfterManualRetryDoesNotRePause() async throws {
+        let store = try makeStore(name: "backlog-delayed-attention-commit-after-clear")
+        let fixture = try addBinding(
+            to: store,
+            seed: "delayed-attention-commit-after-clear",
+            eligibility: .eligible
+        )
+        let hq = FakeArchiveReplicaBackend(replicaID: "hq")
+        hq.setFailure(operation: "headObject", error: .unexpectedStatus(401))
+        let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
+        let m1Gate = AsyncTestGate()
+        m1.setHeadObjectGate(m1Gate)
+        let coordinator = try makeCoordinator(store: store, hq: hq, m1: m1)
+        let inFlightTask = Task {
+            await coordinator.runBacklogPass(perReplicaLimit: 1)
+        }
+        await m1Gate.waitUntilEntered()
+        try await waitForReplicaState(
+            .quarantined,
+            fixture: fixture,
+            replicaID: "hq",
+            catalog: store.catalog
+        )
+
+        let clearedRevisions = try await coordinator.retryQuarantined(replicaID: "hq")
+        hq.clearFailure()
+        await m1Gate.release()
+        let inFlight = await inFlightTask.value
+
+        XCTAssertTrue(inFlight.pausedReplicaIDs.isEmpty)
+        XCTAssertEqual(inFlight.pauseRevisionByReplica["hq"], clearedRevisions["hq"])
+
+        let afterRetry = await coordinator.runBacklogPass(perReplicaLimit: 1)
+
+        XCTAssertTrue(afterRetry.pausedReplicaIDs.isEmpty)
+        XCTAssertEqual(afterRetry.verifiedByReplica["hq"], 1)
     }
 
     func testBacklogPassResourceGateStopsBeforeStartingAnotherReplicaRow() async throws {
@@ -1562,6 +1647,25 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         }
     }
 
+    private func waitForReplicaState(
+        _ expectedState: ArchiveReplicaState,
+        fixture: Fixture,
+        replicaID: String,
+        catalog: ArchiveCatalog
+    ) async throws {
+        for _ in 0 ..< 1_000 {
+            if try catalog.replicaWork(
+                manifestSHA256: fixture.binding.manifestSHA256,
+                replicaID: replicaID
+            )?.state == expectedState {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        XCTFail("timed out waiting for \(replicaID) state \(expectedState.rawValue)")
+        throw TestFailure.unexpectedReplicaState
+    }
+
     private func objectURL(store: Store, digest: String) -> URL {
         store.root
             .appendingPathComponent("objects/sha256", isDirectory: true)
@@ -1634,6 +1738,7 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
 private enum TestFailure: Error {
     case missingManifest
     case unexpectedLostClaim
+    case unexpectedReplicaState
 }
 
 private enum FakeReceiptMutation: String, Sendable {

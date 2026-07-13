@@ -1221,7 +1221,7 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
                 retryPausedUntilByReplica: ["hq": pauseDeadline]
             )
         }
-        operations.retry = { _ in 1 }
+        operations.retry = { _ in ArchiveV2ServiceRetryOutcome(resetRows: 1) }
         let coordinator = ArchiveV2ServiceCoordinator(
             settings: harness.settings,
             writerGate: harness.gate,
@@ -1239,6 +1239,113 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertNil(status.replicas[0].pausedUntil)
         XCTAssertEqual(status.replicas[1].pauseReason, "needsAttention")
         XCTAssertNil(status.replicas[1].pausedUntil)
+    }
+
+    func testAcceptedManualRetryWinsOverOlderBacklogContinuation() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let pauseDeadline = Date().addingTimeInterval(3_600)
+        let staleReplication = ArchiveReplicationCycleResult(
+            pausedReplicaIDs: ["hq"],
+            retryPausedUntilByReplica: ["m1": pauseDeadline],
+            pauseRevisionByReplica: ["hq": 1, "m1": 1]
+        )
+        let replicationGate = CoordinatorCaptureGate()
+        var operations = makeOperations(events: EventLog())
+        operations.backlogCapture = { _, _, _ in
+            ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                hasMore: false
+            )
+        }
+        operations.replicateBacklog = { _, _ in
+            await replicationGate.enterAndWait()
+            return staleReplication
+        }
+        operations.status = { pendingReplicaAggregate() }
+        operations.retry = { _ in
+            ArchiveV2ServiceRetryOutcome(
+                resetRows: 2,
+                pauseRevisionByReplica: ["hq": 2, "m1": 2]
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations
+        )
+        let passTask = Task {
+            try await coordinator.runBacklogPass(adapters: [])
+        }
+        await replicationGate.waitUntilEntered()
+
+        let retry = await coordinator.retryQuarantined(replicaID: nil)
+        await replicationGate.release()
+        let summary = try await passTask.value
+        let status = await coordinator.status()
+
+        XCTAssertTrue(retry.accepted)
+        XCTAssertFalse(summary.needsAttention)
+        XCTAssertNil(summary.nextRetryAt)
+        XCTAssertTrue(summary.hasRunnableWork)
+        XCTAssertTrue(status.replicas.allSatisfy {
+            $0.pauseReason == nil && $0.pausedUntil == nil
+        })
+    }
+
+    func testNewerBacklogFailureWinsOverOlderManualRetryContinuation() async throws {
+        let harness = try makeHarness(remoteReady: true)
+        let pauseDeadline = Date().addingTimeInterval(3_600)
+        let freshReplication = ArchiveReplicationCycleResult(
+            pausedReplicaIDs: ["hq"],
+            retryPausedUntilByReplica: ["m1": pauseDeadline],
+            pauseRevisionByReplica: ["hq": 2, "m1": 2]
+        )
+        let retryGate = CoordinatorCaptureGate()
+        var operations = makeOperations(events: EventLog())
+        operations.backlogCapture = { _, _, _ in
+            ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                hasMore: false
+            )
+        }
+        operations.replicateBacklog = { _, _ in freshReplication }
+        operations.status = { pendingReplicaAggregate() }
+        operations.retry = { _ in
+            await retryGate.enterAndWait()
+            return ArchiveV2ServiceRetryOutcome(
+                resetRows: 2,
+                pauseRevisionByReplica: ["hq": 1, "m1": 1]
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: true,
+            configurationError: nil,
+            operations: operations
+        )
+        let retryTask = Task {
+            await coordinator.retryQuarantined(replicaID: nil)
+        }
+        await retryGate.waitUntilEntered()
+
+        let summary = try await coordinator.runBacklogPass(adapters: [])
+        await retryGate.release()
+        let retry = await retryTask.value
+        let status = await coordinator.status()
+
+        XCTAssertTrue(summary.needsAttention)
+        XCTAssertEqual(summary.nextRetryAt, pauseDeadline)
+        XCTAssertFalse(summary.hasRunnableWork)
+        XCTAssertTrue(retry.accepted)
+        XCTAssertEqual(
+            status.replicas.map(\.pauseReason),
+            ["needsAttention", "transientInfrastructureBackoff"]
+        )
     }
 
     func testNonRunnableUnboundCountDoesNotCauseContinuousDrainPasses() async throws {
@@ -1491,7 +1598,7 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         var operations = makeOperations(events: events)
         operations.retry = { replicaID in
             await events.append("retry:\(replicaID ?? "all")")
-            return 7
+            return ArchiveV2ServiceRetryOutcome(resetRows: 7)
         }
         let coordinator = ArchiveV2ServiceCoordinator(
             settings: harness.settings,
@@ -2824,7 +2931,7 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
                 return ArchiveReplicationCycleResult()
             },
             status: { zeroAggregate() },
-            retry: { _ in 0 }
+            retry: { _ in ArchiveV2ServiceRetryOutcome(resetRows: 0) }
         )
     }
 
@@ -3530,6 +3637,29 @@ private func zeroAggregate() -> ArchiveStatusAggregate {
         excluded: 0,
         hq: zero,
         m1: zero,
+        singleVerified: 0,
+        dualVerified: 0,
+        latestReceipts: []
+    )
+}
+
+private func pendingReplicaAggregate() -> ArchiveStatusAggregate {
+    let pending = ArchiveReplicaStatusCounts(
+        pending: 1,
+        inflight: 0,
+        retry: 0,
+        quarantine: 0,
+        verified: 0
+    )
+    return ArchiveStatusAggregate(
+        captured: 1,
+        bound: 1,
+        unbound: 0,
+        unknown: 0,
+        eligible: 1,
+        excluded: 0,
+        hq: pending,
+        m1: pending,
         singleVerified: 0,
         dualVerified: 0,
         latestReceipts: []
