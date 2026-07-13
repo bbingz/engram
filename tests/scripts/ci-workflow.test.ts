@@ -78,27 +78,50 @@ describe('CI workflow hardening', () => {
     );
   });
 
-  it('routes macOS jobs to xcode and lite self-hosted runners', () => {
+  it('keeps headless macOS jobs self-hosted and runs app-hosted tests on a GUI-capable hosted runner', () => {
     expect(testWorkflow).toContain(
       'runs-on: [self-hosted, macOS, macmini-m1, lite]',
     );
-    expect(testWorkflow).toContain(
-      'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
-    );
-    const liteJobs = ['macos-vitest:', 'fixture-check:'];
-    const xcodeJobs = ['swift-unit:', 'ui-test-smoke:', 'ui-test-full:'];
-    for (const job of liteJobs) {
-      const section = testWorkflow.slice(testWorkflow.indexOf(job));
+    const liteJobs = [
+      ['  macos-vitest:', '  swift-unit:'],
+      ['  fixture-check:', '  ui-test-smoke:'],
+    ];
+    for (const [job, nextJob] of liteJobs) {
+      const section = testWorkflow.slice(
+        testWorkflow.indexOf(job),
+        testWorkflow.indexOf(nextJob),
+      );
       expect(section).toContain(
         'runs-on: [self-hosted, macOS, macmini-m1, lite]',
       );
     }
-    for (const job of xcodeJobs) {
-      const section = testWorkflow.slice(testWorkflow.indexOf(job));
-      expect(section).toContain(
+
+    const swiftUnit = testWorkflow.slice(
+      testWorkflow.indexOf('  swift-unit:'),
+      testWorkflow.indexOf('  remote-server-swift:'),
+    );
+    const uiSmoke = testWorkflow.slice(
+      testWorkflow.indexOf('  ui-test-smoke:'),
+      testWorkflow.indexOf('  ui-test-full:'),
+    );
+    const uiFull = testWorkflow.slice(testWorkflow.indexOf('  ui-test-full:'));
+    const releaseTests = releaseWorkflow.slice(
+      releaseWorkflow.indexOf('  release-tests:'),
+      releaseWorkflow.indexOf('  release-remote-server-tests:'),
+    );
+    for (const job of [swiftUnit, uiSmoke, uiFull, releaseTests]) {
+      expect(job).toContain('runs-on: macos-15');
+      expect(job).not.toContain(
         'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
       );
     }
+
+    const releaseBundleGate = releaseWorkflow.slice(
+      releaseWorkflow.indexOf('  release-bundle-gate:'),
+    );
+    expect(releaseBundleGate).toContain(
+      'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
+    );
   });
 
   it('runs macOS-only vitest suites on pull requests', () => {
@@ -116,17 +139,37 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain('tests/scripts/version-guard.test.ts');
   });
 
-  it('installs ripgrep before Ubuntu coverage runs the archive safety gate', () => {
+  it('provisions Git LFS before UI jobs check out screenshot baselines', () => {
+    const smokeJob = testWorkflow.slice(
+      testWorkflow.indexOf('  ui-test-smoke:'),
+      testWorkflow.indexOf('  ui-test-full:'),
+    );
+    const fullJob = testWorkflow.slice(testWorkflow.indexOf('  ui-test-full:'));
+
+    for (const job of [smokeJob, fullJob]) {
+      const installIndex = job.indexOf('brew install git-lfs');
+      const checkoutIndex = job.indexOf('- uses: actions/checkout@v7');
+      expect(installIndex).toBeGreaterThan(-1);
+      expect(job).toContain('git lfs version');
+      expect(checkoutIndex).toBeGreaterThan(installIndex);
+      expect(job).toContain('lfs: true');
+    }
+  });
+
+  it('provides ripgrep without sudo before Linux coverage runs the archive safety gate', () => {
     const typescriptJob = testWorkflow.slice(
       testWorkflow.indexOf('  typescript:'),
       testWorkflow.indexOf('  macos-vitest:'),
     );
-    const installIndex = typescriptJob.indexOf(
-      'sudo apt-get install --yes ripgrep',
-    );
+    const installIndex = typescriptJob.indexOf('apt-get download ripgrep');
     const coverageIndex = typescriptJob.indexOf('npm run test:coverage');
 
     expect(installIndex).toBeGreaterThan(-1);
+    expect(typescriptJob).toContain('dpkg-deb --extract ripgrep_*.deb root');
+    expect(typescriptJob).toContain(
+      'echo "$install_root/root/usr/bin" >> "$GITHUB_PATH"',
+    );
+    expect(typescriptJob).not.toContain('sudo apt-get');
     expect(coverageIndex).toBeGreaterThan(installIndex);
   });
 

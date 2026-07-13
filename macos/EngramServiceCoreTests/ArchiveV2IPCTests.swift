@@ -231,7 +231,7 @@ final class ArchiveV2IPCTests: XCTestCase {
         var operations = makeOperations()
         operations.retry = { replicaID in
             await probes.recordRetry(replicaID)
-            return 7
+            return ArchiveV2ServiceRetryOutcome(resetRows: 7)
         }
         operations.replicate = { _ in
             await probes.recordReplication()
@@ -363,7 +363,7 @@ final class ArchiveV2IPCTests: XCTestCase {
             applyRemotePolicy: { _, _, _ in },
             replicate: { _ in ArchiveReplicationCycleResult() },
             status: { archiveV2IPCZeroAggregate() },
-            retry: { _ in 0 }
+            retry: { _ in ArchiveV2ServiceRetryOutcome(resetRows: 0) }
         )
     }
 

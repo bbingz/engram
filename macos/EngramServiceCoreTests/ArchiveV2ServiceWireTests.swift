@@ -77,12 +77,19 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
                     oldestOutstandingAt: "2026-07-11T23:30:00.000Z",
                     nextRetryAt: "2026-07-12T00:05:00.000Z",
                     retryReasons: reasons,
+                    pauseReason: "transientInfrastructureBackoff",
+                    pausedUntil: "2026-07-13T11:01:00.000Z",
                     remoteTelemetry: try remoteTelemetry("hq")
                 ),
-                try replica("m1", remoteTelemetryError: "transport_network"),
+                try replica(
+                    "m1",
+                    pauseReason: "needsAttention",
+                    remoteTelemetryError: "transport_network"
+                ),
             ],
             lastReplicationCycle: cycle,
             nextScheduledCycleAt: "2026-07-12T00:15:00.000Z",
+            nextPassPriority: "local",
             drainState: "waitingRetry",
             activeStages: [],
             lastDrainPass: drainPass,
@@ -103,6 +110,11 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         XCTAssertEqual(decoded.activeStages, [])
         XCTAssertEqual(decoded.lastDrainPass, drainPass)
         XCTAssertEqual(decoded.nextWakeAt, "2026-07-12T00:05:00.000Z")
+        XCTAssertEqual(decoded.replicas[0].pauseReason, "transientInfrastructureBackoff")
+        XCTAssertEqual(decoded.replicas[0].pausedUntil, "2026-07-13T11:01:00.000Z")
+        XCTAssertEqual(decoded.replicas[1].pauseReason, "needsAttention")
+        XCTAssertNil(decoded.replicas[1].pausedUntil)
+        XCTAssertEqual(decoded.nextPassPriority, "local")
     }
 
     func testStatusDecodesOlderPayloadWithoutDiagnostics() throws {
@@ -134,6 +146,7 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         object.removeValue(forKey: "activeStages")
         object.removeValue(forKey: "lastDrainPass")
         object.removeValue(forKey: "nextWakeAt")
+        object.removeValue(forKey: "nextPassPriority")
         var replicas = try XCTUnwrap(object["replicas"] as? [[String: Any]])
         for index in replicas.indices {
             replicas[index].removeValue(forKey: "oldestOutstandingAt")
@@ -141,6 +154,8 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
             replicas[index].removeValue(forKey: "retryReasons")
             replicas[index].removeValue(forKey: "remoteTelemetry")
             replicas[index].removeValue(forKey: "remoteTelemetryError")
+            replicas[index].removeValue(forKey: "pauseReason")
+            replicas[index].removeValue(forKey: "pausedUntil")
         }
         object["replicas"] = replicas
 
@@ -155,13 +170,78 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         XCTAssertEqual(decoded.activeStages, [])
         XCTAssertNil(decoded.lastDrainPass)
         XCTAssertNil(decoded.nextWakeAt)
+        XCTAssertEqual(decoded.nextPassPriority, "remote")
         XCTAssertTrue(decoded.replicas.allSatisfy {
             $0.oldestOutstandingAt == nil
                 && $0.nextRetryAt == nil
                 && $0.retryReasons.isEmpty
                 && $0.remoteTelemetry == nil
                 && $0.remoteTelemetryError == nil
+                && $0.pauseReason == nil
+                && $0.pausedUntil == nil
         })
+    }
+
+    func testSchedulerStatusRejectsInvalidPauseShapesAndPriority() throws {
+        let valid = try JSONEncoder().encode(
+            makeStatus(
+                replicas: [
+                    try replica(
+                        "hq",
+                        pauseReason: "transientInfrastructureBackoff",
+                        pausedUntil: timestamp
+                    ),
+                    try replica("m1", pauseReason: "needsAttention"),
+                ]
+            )
+        )
+        let invalidPauseShapes: [(reason: String?, until: String?)] = [
+            ("unknown_pause", timestamp),
+            ("transientInfrastructureBackoff", nil),
+            ("transientInfrastructureBackoff", "not-a-timestamp"),
+            ("needsAttention", timestamp),
+            (nil, timestamp),
+        ]
+        for shape in invalidPauseShapes {
+            var object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: valid) as? [String: Any]
+            )
+            var replicas = try XCTUnwrap(object["replicas"] as? [[String: Any]])
+            if let reason = shape.reason {
+                replicas[0]["pauseReason"] = reason
+            } else {
+                replicas[0].removeValue(forKey: "pauseReason")
+            }
+            if let until = shape.until {
+                replicas[0]["pausedUntil"] = until
+            } else {
+                replicas[0].removeValue(forKey: "pausedUntil")
+            }
+            object["replicas"] = replicas
+            let payload = try JSONSerialization.data(
+                withJSONObject: object,
+                options: [.sortedKeys]
+            )
+
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(
+                    EngramServiceArchiveV2StatusResponse.self,
+                    from: payload
+                )
+            )
+        }
+
+        XCTAssertThrowsError(try makeStatus(nextPassPriority: "third"))
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(
+                EngramServiceArchiveV2StatusResponse.self,
+                from: replacingJSONValue(
+                    in: valid,
+                    key: "nextPassPriority",
+                    value: "third"
+                )
+            )
+        )
     }
 
     func testDrainStatusRejectsInvalidSymbolsStagesCountsAndTimestamps() throws {
@@ -602,6 +682,7 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         cycleCoalesced: Bool = false,
         lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary? = nil,
         nextScheduledCycleAt: String? = nil,
+        nextPassPriority: String = "remote",
         drainState: String = "idle",
         activeStages: [String] = [],
         lastDrainPass: EngramServiceArchiveV2DrainPassSummary? = nil,
@@ -633,6 +714,7 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
             cycleCoalesced: cycleCoalesced,
             lastReplicationCycle: lastReplicationCycle,
             nextScheduledCycleAt: nextScheduledCycleAt,
+            nextPassPriority: nextPassPriority,
             drainState: drainState,
             activeStages: activeStages,
             lastDrainPass: lastDrainPass,
@@ -645,6 +727,8 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
         oldestOutstandingAt: String? = nil,
         nextRetryAt: String? = nil,
         retryReasons: [EngramServiceArchiveV2RetryReasonCount] = [],
+        pauseReason: String? = nil,
+        pausedUntil: String? = nil,
         remoteTelemetry: EngramServiceArchiveV2RemoteTelemetry? = nil,
         remoteTelemetryError: String? = nil
     ) throws -> EngramServiceArchiveV2ReplicaStatus {
@@ -657,6 +741,8 @@ final class ArchiveV2ServiceWireTests: XCTestCase {
             oldestOutstandingAt: oldestOutstandingAt,
             nextRetryAt: nextRetryAt,
             retryReasons: retryReasons,
+            pauseReason: pauseReason,
+            pausedUntil: pausedUntil,
             remoteTelemetry: remoteTelemetry,
             remoteTelemetryError: remoteTelemetryError
         )

@@ -179,6 +179,24 @@ final class ArchiveV2BacklogDrainerTests: XCTestCase {
         XCTAssertEqual(count, 2)
     }
 
+    func testWaitingForPipelineDoesNotPublishCaptureStage() async throws {
+        let recorder = BlockingFirstDrainPassRecorder()
+        let drainer = ArchiveV2BacklogDrainer(
+            conditions: { ArchiveV2DrainConditions(lowPower: false, thermalPressure: false) },
+            runPass: { try await recorder.run() }
+        )
+
+        await drainer.start()
+        await drainer.signal()
+        try await recorder.waitForPassCount(1)
+        let snapshot = await drainer.snapshot()
+        await recorder.releaseFirstPass()
+        await drainer.stop()
+
+        XCTAssertEqual(snapshot.state, .draining)
+        XCTAssertTrue(snapshot.activeStages.isEmpty)
+    }
+
     func testSignalDuringPassBypassesReturnedRetryDeadline() async throws {
         let retryAt = Date(timeIntervalSince1970: 160)
         let recorder = BlockingFirstDrainPassRecorder(

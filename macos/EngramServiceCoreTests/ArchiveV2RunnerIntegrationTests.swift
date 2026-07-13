@@ -83,7 +83,7 @@ final class ArchiveV2RunnerIntegrationTests: XCTestCase {
                 return ArchiveReplicationCycleResult(cycleError: "transport_failure")
             },
             status: { Self.zeroAggregate() },
-            retry: { _ in 0 }
+            retry: { _ in ArchiveV2ServiceRetryOutcome(resetRows: 0) }
         )
         let coordinator = ArchiveV2ServiceCoordinator(
             settings: settings,
@@ -318,7 +318,7 @@ final class ArchiveV2RunnerIntegrationTests: XCTestCase {
             applyRemotePolicy: { _, _, _ in },
             replicate: { _ in ArchiveReplicationCycleResult() },
             status: { Self.zeroAggregate() },
-            retry: { _ in 0 }
+            retry: { _ in ArchiveV2ServiceRetryOutcome(resetRows: 0) }
         )
         let coordinator = ArchiveV2ServiceCoordinator(
             settings: settings,
@@ -605,7 +605,7 @@ final class ArchiveV2RunnerIntegrationTests: XCTestCase {
             applyRemotePolicy: { _, _, _ in },
             replicate: { _ in ArchiveReplicationCycleResult() },
             status: { zeroAggregate() },
-            retry: { _ in 0 }
+            retry: { _ in ArchiveV2ServiceRetryOutcome(resetRows: 0) }
         )
     }
 }

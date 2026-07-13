@@ -1891,6 +1891,8 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
     let oldestOutstandingAt: String?
     let nextRetryAt: String?
     let retryReasons: [EngramServiceArchiveV2RetryReasonCount]
+    let pauseReason: String?
+    let pausedUntil: String?
     let remoteTelemetry: EngramServiceArchiveV2RemoteTelemetry?
     let remoteTelemetryError: String?
 
@@ -1903,6 +1905,8 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
         oldestOutstandingAt: String? = nil,
         nextRetryAt: String? = nil,
         retryReasons: [EngramServiceArchiveV2RetryReasonCount] = [],
+        pauseReason: String? = nil,
+        pausedUntil: String? = nil,
         remoteTelemetry: EngramServiceArchiveV2RemoteTelemetry? = nil,
         remoteTelemetryError: String? = nil
     ) throws {
@@ -1934,6 +1938,28 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
                 nextRetryAt,
                 field: "nextRetryAt"
             )
+        }
+        switch pauseReason {
+        case nil:
+            try EngramServiceArchiveV2WireValidation.require(
+                pausedUntil == nil,
+                field: "pausedUntil"
+            )
+        case "transientInfrastructureBackoff":
+            guard let pausedUntil else {
+                throw EngramServiceArchiveV2WireError.invalidField("pausedUntil")
+            }
+            try EngramServiceArchiveV2WireValidation.validateTimestamp(
+                pausedUntil,
+                field: "pausedUntil"
+            )
+        case "needsAttention":
+            try EngramServiceArchiveV2WireValidation.require(
+                pausedUntil == nil,
+                field: "pausedUntil"
+            )
+        default:
+            throw EngramServiceArchiveV2WireError.invalidField("pauseReason")
         }
         try EngramServiceArchiveV2WireValidation.require(
             retryReasons.count <= 8,
@@ -1967,6 +1993,8 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
         self.oldestOutstandingAt = oldestOutstandingAt
         self.nextRetryAt = nextRetryAt
         self.retryReasons = retryReasons
+        self.pauseReason = pauseReason
+        self.pausedUntil = pausedUntil
         self.remoteTelemetry = remoteTelemetry
         self.remoteTelemetryError = remoteTelemetryError
     }
@@ -1988,6 +2016,8 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
                 [EngramServiceArchiveV2RetryReasonCount].self,
                 forKey: .retryReasons
             ) ?? [],
+            pauseReason: container.decodeIfPresent(String.self, forKey: .pauseReason),
+            pausedUntil: container.decodeIfPresent(String.self, forKey: .pausedUntil),
             remoteTelemetry: container.decodeIfPresent(
                 EngramServiceArchiveV2RemoteTelemetry.self,
                 forKey: .remoteTelemetry
@@ -2008,6 +2038,8 @@ struct EngramServiceArchiveV2ReplicaStatus: Codable, Equatable, Sendable {
         case oldestOutstandingAt
         case nextRetryAt
         case retryReasons
+        case pauseReason
+        case pausedUntil
         case remoteTelemetry
         case remoteTelemetryError
     }
@@ -2297,6 +2329,7 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
     let cycleCoalesced: Bool
     let lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?
     let nextScheduledCycleAt: String?
+    let nextPassPriority: String
     let drainState: String
     let activeStages: [String]
     let lastDrainPass: EngramServiceArchiveV2DrainPassSummary?
@@ -2326,6 +2359,7 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
         cycleCoalesced: Bool,
         lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary? = nil,
         nextScheduledCycleAt: String? = nil,
+        nextPassPriority: String = "remote",
         drainState: String = "idle",
         activeStages: [String] = [],
         lastDrainPass: EngramServiceArchiveV2DrainPassSummary? = nil,
@@ -2361,6 +2395,10 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
                 field: "nextScheduledCycleAt"
             )
         }
+        try EngramServiceArchiveV2WireValidation.require(
+            ["remote", "local"].contains(nextPassPriority),
+            field: "nextPassPriority"
+        )
         try EngramServiceArchiveV2WireValidation.require(
             ["idle", "draining", "waitingRetry", "pausedLowPower", "pausedThermal", "needsAttention"]
                 .contains(drainState),
@@ -2437,6 +2475,7 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
         self.cycleCoalesced = cycleCoalesced
         self.lastReplicationCycle = lastReplicationCycle
         self.nextScheduledCycleAt = nextScheduledCycleAt
+        self.nextPassPriority = nextPassPriority
         self.drainState = drainState
         self.activeStages = activeStages
         self.lastDrainPass = lastDrainPass
@@ -2478,6 +2517,10 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
                 String.self,
                 forKey: .nextScheduledCycleAt
             ),
+            nextPassPriority: try container.decodeIfPresent(
+                String.self,
+                forKey: .nextPassPriority
+            ) ?? "remote",
             drainState: try container.decodeIfPresent(String.self, forKey: .drainState) ?? "idle",
             activeStages: try container.decodeIfPresent([String].self, forKey: .activeStages) ?? [],
             lastDrainPass: try container.decodeIfPresent(
@@ -2512,6 +2555,7 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
         case cycleCoalesced
         case lastReplicationCycle
         case nextScheduledCycleAt
+        case nextPassPriority
         case drainState
         case activeStages
         case lastDrainPass

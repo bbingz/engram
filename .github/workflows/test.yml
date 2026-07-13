@@ -22,8 +22,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: 'npm'
-      - run: npm ci
+      - run: ONNXRUNTIME_NODE_INSTALL=skip npm ci
       - run: npm run lint
 
   dead-code:
@@ -34,8 +33,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: 'npm'
-      - run: npm ci
+      - run: ONNXRUNTIME_NODE_INSTALL=skip npm ci
       - run: npm run build
       - run: npm run knip
 
@@ -47,8 +45,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: 'npm'
-      - run: npm ci
+      - run: ONNXRUNTIME_NODE_INSTALL=skip npm ci
       - run: npm audit --audit-level=moderate
         continue-on-error: ${{ github.event_name == 'pull_request' }}
 
@@ -60,12 +57,20 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: 'npm'
-      - run: npm ci
+      - run: ONNXRUNTIME_NODE_INSTALL=skip npm ci
       - name: Install archive safety gate tools
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes ripgrep
+          if ! command -v rg >/dev/null 2>&1; then
+            install_root="$RUNNER_TEMP/ripgrep"
+            rm -rf "$install_root"
+            mkdir -p "$install_root"
+            (
+              cd "$install_root"
+              apt-get download ripgrep
+              dpkg-deb --extract ripgrep_*.deb root
+            )
+            echo "$install_root/root/usr/bin" >> "$GITHUB_PATH"
+          fi
       - run: npm run build
       - run: npm run typecheck:test
       - run: npm run test:coverage
@@ -94,7 +99,7 @@ jobs:
       - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/remote-server-package.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/product-boundary-scripts.test.ts tests/scripts/archive-v2-safety-gate.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/swift-conventions.test.ts tests/scripts/version-guard.test.ts
 
   swift-unit:
-    runs-on: [self-hosted, macOS, macmini-m1, xcode]
+    runs-on: macos-15
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
@@ -267,7 +272,7 @@ jobs:
           git diff --exit-code test-fixtures/test-index.sqlite
 
   ui-test-smoke:
-    runs-on: [self-hosted, macOS, macmini-m1, xcode]
+    runs-on: macos-15
     if: github.event_name == 'pull_request'
     timeout-minutes: 10
     needs: [typescript, swift-unit]
@@ -277,6 +282,10 @@ jobs:
     steps:
       - name: Set screenshots dir
         run: echo "SCREENSHOTS_DIR=$RUNNER_TEMP/screenshots" >> "$GITHUB_ENV"
+      - name: Install Git LFS
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install git-lfs
+          git lfs version
       - uses: actions/checkout@v7
         with:
           lfs: true
@@ -373,13 +382,17 @@ jobs:
             });
 
   ui-test-full:
-    runs-on: [self-hosted, macOS, macmini-m1, xcode]
+    runs-on: macos-15
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     timeout-minutes: 20
     needs: [typescript, swift-unit]
     steps:
       - name: Set screenshots dir
         run: echo "SCREENSHOTS_DIR=$RUNNER_TEMP/screenshots" >> "$GITHUB_ENV"
+      - name: Install Git LFS
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install git-lfs
+          git lfs version
       - uses: actions/checkout@v7
         with:
           lfs: true
