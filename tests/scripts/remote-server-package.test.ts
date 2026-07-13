@@ -244,6 +244,10 @@ describe('remote server package implementation contract', () => {
     expect(verifyTemplates).toContain('/usr/bin/cmp -s');
     expect(verifyTemplates).toContain('trusted source template');
     expect(verifyTemplates).toContain('TEMPLATE_DIR');
+    expect(verifyTemplates).toContain('/usr/bin/uname -s');
+    expect(verifyTemplates).toContain("/usr/bin/stat -f '%Lp'");
+    expect(verifyTemplates).toContain("/usr/bin/stat -c '%a'");
+    expect(verifyTemplates).toContain('plistlib.loads');
   });
 
   it('accepts only a resolved matching credential-free wrapper revision', () => {

@@ -250,19 +250,36 @@ verify_templates() {
   local wrapper="$1"
   local launch_agent="$2"
   local expected_revision="$3"
-  local wrapper_mode launch_agent_mode trusted_wrapper trusted_launch_agent
+  local platform wrapper_mode launch_agent_mode trusted_wrapper trusted_launch_agent
 
   trusted_wrapper="$TEMPLATE_DIR/run-engram-remote.zsh.template"
   trusted_launch_agent="$TEMPLATE_DIR/com.engram.remote-server.plist.template"
   [[ -f "$trusted_wrapper" && -f "$trusted_launch_agent" ]] ||
     fail "trusted deployment source template is missing"
 
-  wrapper_mode="$(/usr/bin/stat -f '%Lp' "$wrapper")"
-  launch_agent_mode="$(/usr/bin/stat -f '%Lp' "$launch_agent")"
+  platform="$(/usr/bin/uname -s)"
+  case "$platform" in
+    Darwin)
+      wrapper_mode="$(/usr/bin/stat -f '%Lp' "$wrapper")"
+      launch_agent_mode="$(/usr/bin/stat -f '%Lp' "$launch_agent")"
+      ;;
+    Linux)
+      wrapper_mode="$(/usr/bin/stat -c '%a' "$wrapper")"
+      launch_agent_mode="$(/usr/bin/stat -c '%a' "$launch_agent")"
+      ;;
+    *) fail "cannot verify template modes on unsupported platform: $platform" ;;
+  esac
   [[ "$wrapper_mode" == "700" ]] || fail "wrapper template mode must be 0700"
   [[ "$launch_agent_mode" == "600" ]] ||
     fail "LaunchAgent template mode must be 0600"
-  /usr/bin/plutil -lint "$launch_agent" >/dev/null
+  case "$platform" in
+    Darwin) /usr/bin/plutil -lint "$launch_agent" >/dev/null ;;
+    Linux)
+      /usr/bin/python3 -c \
+        'import pathlib, plistlib, sys; plistlib.loads(pathlib.Path(sys.argv[1]).read_bytes())' \
+        "$launch_agent"
+      ;;
+  esac
 
   [[ "$expected_revision" =~ ^[0-9a-f]{40}$ ]] ||
     fail "cannot verify templates against an invalid source revision"
