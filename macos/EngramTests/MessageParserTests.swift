@@ -234,8 +234,28 @@ final class MessageParserTests: XCTestCase {
 
     /// 12. System prompt detection — systemPrompt category
     func testSystemPromptDetection() async throws {
-        let path = try fixturePath("system-prompts.jsonl")
-        let messages = await MessageParser.parse(filePath: path, source: "claude-code")
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-system-prompts-\(UUID().uuidString)", isDirectory: true)
+        let homeDirectory = root.appendingPathComponent("home", isDirectory: true)
+        let projectDirectory = homeDirectory
+            .appendingPathComponent(".claude/projects/-fixture", isDirectory: true)
+        let transcript = projectDirectory.appendingPathComponent("system-prompts.jsonl")
+        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            atPath: try fixturePath("system-prompts.jsonl"),
+            toPath: transcript.path
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resolver = ClaudeCodeProfileResolver(
+            homeDirectory: homeDirectory,
+            settingsURL: homeDirectory.appendingPathComponent(".engram/settings.json")
+        )
+
+        let messages = await MessageParser.parse(
+            filePath: transcript.path,
+            source: "claude-code",
+            claudeCodeProfileResolver: resolver
+        )
 
         XCTAssertEqual(messages.count, 3)
         guard messages.count == 3 else { return }
