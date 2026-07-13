@@ -78,24 +78,43 @@ describe('CI workflow hardening', () => {
     );
   });
 
-  it('routes macOS jobs to xcode and lite self-hosted runners', () => {
+  it('keeps non-UI macOS jobs self-hosted and runs UI jobs on a GUI-capable hosted runner', () => {
     expect(testWorkflow).toContain(
       'runs-on: [self-hosted, macOS, macmini-m1, lite]',
     );
     expect(testWorkflow).toContain(
       'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
     );
-    const liteJobs = ['macos-vitest:', 'fixture-check:'];
-    const xcodeJobs = ['swift-unit:', 'ui-test-smoke:', 'ui-test-full:'];
-    for (const job of liteJobs) {
-      const section = testWorkflow.slice(testWorkflow.indexOf(job));
+    const liteJobs = [
+      ['  macos-vitest:', '  swift-unit:'],
+      ['  fixture-check:', '  ui-test-smoke:'],
+    ];
+    for (const [job, nextJob] of liteJobs) {
+      const section = testWorkflow.slice(
+        testWorkflow.indexOf(job),
+        testWorkflow.indexOf(nextJob),
+      );
       expect(section).toContain(
         'runs-on: [self-hosted, macOS, macmini-m1, lite]',
       );
     }
-    for (const job of xcodeJobs) {
-      const section = testWorkflow.slice(testWorkflow.indexOf(job));
-      expect(section).toContain(
+
+    const swiftUnit = testWorkflow.slice(
+      testWorkflow.indexOf('  swift-unit:'),
+      testWorkflow.indexOf('  remote-server-swift:'),
+    );
+    expect(swiftUnit).toContain(
+      'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
+    );
+
+    const uiSmoke = testWorkflow.slice(
+      testWorkflow.indexOf('  ui-test-smoke:'),
+      testWorkflow.indexOf('  ui-test-full:'),
+    );
+    const uiFull = testWorkflow.slice(testWorkflow.indexOf('  ui-test-full:'));
+    for (const job of [uiSmoke, uiFull]) {
+      expect(job).toContain('runs-on: macos-15');
+      expect(job).not.toContain(
         'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
       );
     }
