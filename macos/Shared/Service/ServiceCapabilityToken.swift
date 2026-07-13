@@ -56,6 +56,7 @@ enum ServiceCapabilityToken {
         "archiveReclamationUpdateSettings",
         "archiveReclamationRun",
         "archiveV2RecoveryDrill",
+        "configureClaudeCodeProfiles",
     ]
 
     static func requiresToken(_ command: String) -> Bool {

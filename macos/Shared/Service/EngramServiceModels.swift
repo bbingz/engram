@@ -1010,6 +1010,190 @@ struct EngramServiceTriggerSyncResponse: Codable, Equatable, Sendable {
     let results: [ResultItem]
 }
 
+// MARK: - Claude Code profile service wire contract
+
+struct EngramServiceConfigureClaudeCodeProfilesRequest: Codable, Equatable, Sendable {
+    let autoDiscover: Bool
+    let customProjectsRoots: [String]
+}
+
+struct EngramServiceClaudeCodeProfileStatus: Codable, Equatable, Sendable {
+    let id: String
+    let displayName: String
+    let projectsRoot: String
+    let origin: String
+    let available: Bool
+    let sourceReclamationAllowed: Bool
+    let discoveredFileCount: Int
+    let discoveredSourceBytes: Int64
+    let indexedLocatorCount: Int
+    let capturedCount: Int
+    let ignoredEmptyCaptureCount: Int
+    let hqVerifiedCount: Int
+    let m1VerifiedCount: Int
+    let error: String?
+
+    init(
+        id: String,
+        displayName: String,
+        projectsRoot: String,
+        origin: String,
+        available: Bool,
+        sourceReclamationAllowed: Bool,
+        discoveredFileCount: Int,
+        discoveredSourceBytes: Int64,
+        indexedLocatorCount: Int,
+        capturedCount: Int,
+        ignoredEmptyCaptureCount: Int,
+        hqVerifiedCount: Int,
+        m1VerifiedCount: Int,
+        error: String?
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.require(
+            !id.isEmpty && id.utf8.count <= 256 && !id.utf8.contains(0),
+            field: "id"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            !displayName.isEmpty
+                && displayName.utf8.count <= 256
+                && !displayName.utf8.contains(0),
+            field: "displayName"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            projectsRoot.hasPrefix("/")
+                && projectsRoot != "/"
+                && projectsRoot.utf8.count <= 4_096
+                && !projectsRoot.utf8.contains(0),
+            field: "projectsRoot"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            ["default", "automatic", "custom"].contains(origin),
+            field: "origin"
+        )
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            discoveredFileCount,
+            field: "discoveredFileCount"
+        )
+        try EngramServiceArchiveV2WireValidation.validateNonNegative(
+            discoveredSourceBytes,
+            field: "discoveredSourceBytes"
+        )
+        for (field, value) in [
+            ("indexedLocatorCount", indexedLocatorCount),
+            ("capturedCount", capturedCount),
+            ("ignoredEmptyCaptureCount", ignoredEmptyCaptureCount),
+            ("hqVerifiedCount", hqVerifiedCount),
+            ("m1VerifiedCount", m1VerifiedCount),
+        ] {
+            try EngramServiceArchiveV2WireValidation.validateNonNegative(value, field: field)
+        }
+        try EngramServiceArchiveV2WireValidation.validateSymbol(error, field: "error")
+        self.id = id
+        self.displayName = displayName
+        self.projectsRoot = projectsRoot
+        self.origin = origin
+        self.available = available
+        self.sourceReclamationAllowed = sourceReclamationAllowed
+        self.discoveredFileCount = discoveredFileCount
+        self.discoveredSourceBytes = discoveredSourceBytes
+        self.indexedLocatorCount = indexedLocatorCount
+        self.capturedCount = capturedCount
+        self.ignoredEmptyCaptureCount = ignoredEmptyCaptureCount
+        self.hqVerifiedCount = hqVerifiedCount
+        self.m1VerifiedCount = m1VerifiedCount
+        self.error = error
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            id: container.decode(String.self, forKey: .id),
+            displayName: container.decode(String.self, forKey: .displayName),
+            projectsRoot: container.decode(String.self, forKey: .projectsRoot),
+            origin: container.decode(String.self, forKey: .origin),
+            available: container.decode(Bool.self, forKey: .available),
+            sourceReclamationAllowed: container.decode(
+                Bool.self,
+                forKey: .sourceReclamationAllowed
+            ),
+            discoveredFileCount: container.decodeIfPresent(
+                Int.self,
+                forKey: .discoveredFileCount
+            ) ?? 0,
+            discoveredSourceBytes: container.decodeIfPresent(
+                Int64.self,
+                forKey: .discoveredSourceBytes
+            ) ?? 0,
+            indexedLocatorCount: container.decodeIfPresent(
+                Int.self,
+                forKey: .indexedLocatorCount
+            ) ?? 0,
+            capturedCount: container.decodeIfPresent(Int.self, forKey: .capturedCount) ?? 0,
+            ignoredEmptyCaptureCount: container.decodeIfPresent(
+                Int.self,
+                forKey: .ignoredEmptyCaptureCount
+            ) ?? 0,
+            hqVerifiedCount: container.decodeIfPresent(Int.self, forKey: .hqVerifiedCount) ?? 0,
+            m1VerifiedCount: container.decodeIfPresent(Int.self, forKey: .m1VerifiedCount) ?? 0,
+            error: container.decodeIfPresent(String.self, forKey: .error)
+        )
+    }
+}
+
+struct EngramServiceClaudeCodeProfilesStatusResponse: Codable, Equatable, Sendable {
+    let autoDiscover: Bool
+    let customProjectsRoots: [String]
+    let profiles: [EngramServiceClaudeCodeProfileStatus]
+    let configurationError: String?
+
+    init(
+        autoDiscover: Bool,
+        customProjectsRoots: [String],
+        profiles: [EngramServiceClaudeCodeProfileStatus],
+        configurationError: String?
+    ) throws {
+        try EngramServiceArchiveV2WireValidation.require(
+            customProjectsRoots.count <= 64,
+            field: "customProjectsRoots"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            Set(customProjectsRoots).count == customProjectsRoots.count
+                && customProjectsRoots.allSatisfy {
+                    $0.hasPrefix("/")
+                        && $0 != "/"
+                        && $0.utf8.count <= 4_096
+                        && !$0.utf8.contains(0)
+                },
+            field: "customProjectsRoots"
+        )
+        try EngramServiceArchiveV2WireValidation.require(
+            profiles.count <= 128,
+            field: "profiles"
+        )
+        try EngramServiceArchiveV2WireValidation.validateSymbol(
+            configurationError,
+            field: "configurationError"
+        )
+        self.autoDiscover = autoDiscover
+        self.customProjectsRoots = customProjectsRoots
+        self.profiles = profiles
+        self.configurationError = configurationError
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            autoDiscover: container.decode(Bool.self, forKey: .autoDiscover),
+            customProjectsRoots: container.decode([String].self, forKey: .customProjectsRoots),
+            profiles: container.decode(
+                [EngramServiceClaudeCodeProfileStatus].self,
+                forKey: .profiles
+            ),
+            configurationError: container.decodeIfPresent(String.self, forKey: .configurationError)
+        )
+    }
+}
+
 // MARK: - Archive v2 service wire contract
 
 enum EngramServiceArchiveV2WireError: Error, Equatable, Sendable {

@@ -172,6 +172,16 @@ final class EngramServiceClient: EngramServiceClientProtocol, Sendable {
         try await command("triggerSync", payload: request)
     }
 
+    func claudeCodeProfilesStatus() async throws -> EngramServiceClaudeCodeProfilesStatusResponse {
+        try await commandWithAbsentPayload("claudeCodeProfilesStatus")
+    }
+
+    func configureClaudeCodeProfiles(
+        _ request: EngramServiceConfigureClaudeCodeProfilesRequest
+    ) async throws -> EngramServiceClaudeCodeProfilesStatusResponse {
+        try await command("configureClaudeCodeProfiles", payload: request)
+    }
+
     func archiveV2Status() async throws -> EngramServiceArchiveV2StatusResponse {
         try await commandWithAbsentPayload("archiveV2Status")
     }

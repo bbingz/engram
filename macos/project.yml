@@ -127,6 +127,7 @@ targets:
       - path: EngramServiceCoreTests
     dependencies:
       - target: EngramServiceCore
+      - target: EngramCoreRead
       - target: EngramCoreWrite
       - package: GRDB
         product: GRDB-dynamic

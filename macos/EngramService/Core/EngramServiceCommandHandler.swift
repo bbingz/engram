@@ -12,6 +12,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     let archiveV2Coordinator: ArchiveV2ServiceCoordinator?
     let archiveTranscriptResolver: ArchiveTranscriptResolver?
     let archiveV2CredentialProvisioner: ArchiveV2CredentialProvisioner
+    private let claudeCodeProfileService: ClaudeCodeProfileService?
     private let readProvider: any EngramServiceReadProvider
     private let statusMonitor: ServiceStatusMonitor
     private let telemetry: ServiceTelemetryCollector?
@@ -32,6 +33,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         "telemetry",
         "costs",
         "serviceLogs",
+        "claudeCodeProfilesStatus",
         "archiveV2Status",
         "archiveReclamationStatus",
         "archiveReclamationPreview",
@@ -55,6 +57,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         archiveV2Coordinator: ArchiveV2ServiceCoordinator? = nil,
         archiveTranscriptResolver: ArchiveTranscriptResolver? = nil,
         archiveV2CredentialProvisioner: ArchiveV2CredentialProvisioner = ArchiveV2CredentialProvisioner(),
+        claudeCodeProfileService: ClaudeCodeProfileService? = nil,
         readProvider: any EngramServiceReadProvider = EmptyEngramServiceReadProvider(),
         statusMonitor: ServiceStatusMonitor = ServiceStatusMonitor(),
         telemetry: ServiceTelemetryCollector? = nil,
@@ -72,6 +75,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         self.archiveV2Coordinator = archiveV2Coordinator
         self.archiveTranscriptResolver = archiveTranscriptResolver
         self.archiveV2CredentialProvisioner = archiveV2CredentialProvisioner
+        self.claudeCodeProfileService = claudeCodeProfileService
         self.readProvider = readProvider
         self.statusMonitor = statusMonitor
         self.telemetry = telemetry
@@ -117,6 +121,37 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     private func dispatch(_ request: EngramServiceRequestEnvelope) async -> EngramServiceResponseEnvelope {
         do {
             switch request.command {
+            case "claudeCodeProfilesStatus":
+                guard request.payload == nil else {
+                    throw EngramServiceError.invalidRequest(
+                        message: "claudeCodeProfilesStatus does not accept a payload"
+                    )
+                }
+                guard let claudeCodeProfileService else {
+                    throw EngramServiceError.serviceUnavailable(message: "feature_unavailable")
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(await claudeCodeProfileService.status())
+                )
+            case "configureClaudeCodeProfiles":
+                try requireExactPayloadKeys(
+                    request,
+                    allowed: [["autoDiscover", "customProjectsRoots"]]
+                )
+                let payload = try decodePayload(
+                    EngramServiceConfigureClaudeCodeProfilesRequest.self,
+                    from: request
+                )
+                guard let claudeCodeProfileService else {
+                    throw EngramServiceError.serviceUnavailable(message: "feature_unavailable")
+                }
+                return .success(
+                    requestId: request.requestId,
+                    result: try Self.encode(
+                        try await claudeCodeProfileService.configure(payload)
+                    )
+                )
             case "archiveReadSessionPage":
                 let payload: EngramServiceArchiveReadSessionPageRequest
                 do {

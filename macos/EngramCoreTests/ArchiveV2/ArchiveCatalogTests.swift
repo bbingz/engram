@@ -22,6 +22,110 @@ final class ArchiveCatalogTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    func testClaudeProfileStatusCountsUseExactSourceAndCanonicalRootBoundary() throws {
+        let catalog = try migratedCatalog()
+        let projectsRoot = "/tmp/profile%_one/projects"
+
+        let captured = try manifest(
+            captureSeed: "profile-captured",
+            sessionID: nil,
+            source: "claude-code",
+            locator: "\(projectsRoot)/project/captured.jsonl"
+        )
+        _ = try catalog.recordCapture(
+            canonicalManifestBytes: ArchiveCanonicalJSON.encode(captured)
+        )
+
+        let ignored = try manifest(
+            captureSeed: "profile-ignored",
+            sessionID: nil,
+            source: "claude-code",
+            locator: "\(projectsRoot)/project/ignored.jsonl"
+        )
+        _ = try catalog.recordCapture(
+            canonicalManifestBytes: ArchiveCanonicalJSON.encode(ignored)
+        )
+        XCTAssertTrue(
+            try catalog.ignoreUnboundCapture(
+                captureID: ignored.captureID,
+                reason: "no_visible_messages",
+                updatedAt: "2026-07-11T00:01:00.000Z"
+            )
+        )
+
+        let binding = try addBinding(
+            to: catalog,
+            captureSeed: "profile-bound",
+            sessionID: "profile-session",
+            source: "claude-code",
+            locator: "\(projectsRoot)/project/bound.jsonl"
+        )
+        XCTAssertTrue(
+            try catalog.setRemotePolicySnapshot(
+                manifestSHA256: binding.manifestSHA256,
+                projectRootSnapshot: projectsRoot,
+                eligibility: .eligible
+            )
+        )
+        XCTAssertEqual(
+            try catalog.reconcileEligibleReplicaRows(
+                updatedAt: "2026-07-11T00:02:00.000Z"
+            ),
+            2
+        )
+        let claims = try catalog.claimReplicaWork(
+            limit: 2,
+            now: "2026-07-11T00:03:00.000Z"
+        )
+        for claim in claims {
+            try advanceToVerifying(catalog, claim: claim)
+            let bytes = try receiptBytes(
+                serverID: claim.replicaID,
+                manifestBytes: binding.canonicalManifestBytes
+            )
+            XCTAssertTrue(
+                try catalog.recordVerifiedReceipt(
+                    claim,
+                    receipt: ArchiveVerifiedReceipt(
+                        canonicalBytes: bytes,
+                        sha256: ArchiveV2Hash.sha256(bytes),
+                        verifiedAt: "2026-07-11T00:05:00.000Z"
+                    ),
+                    updatedAt: "2026-07-11T00:05:00.000Z"
+                )
+            )
+        }
+
+        let otherSource = try manifest(
+            captureSeed: "profile-other-source",
+            sessionID: nil,
+            source: "minimax",
+            locator: "\(projectsRoot)/project/minimax.jsonl"
+        )
+        _ = try catalog.recordCapture(
+            canonicalManifestBytes: ArchiveCanonicalJSON.encode(otherSource)
+        )
+        let siblingPrefix = try manifest(
+            captureSeed: "profile-sibling-prefix",
+            sessionID: nil,
+            source: "claude-code",
+            locator: "\(projectsRoot)-other/project/sibling.jsonl"
+        )
+        _ = try catalog.recordCapture(
+            canonicalManifestBytes: ArchiveCanonicalJSON.encode(siblingPrefix)
+        )
+
+        XCTAssertEqual(
+            try catalog.claudeProfileStatusCounts(canonicalProjectsRoot: projectsRoot),
+            ArchiveClaudeProfileStatusCounts(
+                capturedCount: 3,
+                ignoredEmptyCaptureCount: 1,
+                hqVerifiedCount: 1,
+                m1VerifiedCount: 1
+            )
+        )
+    }
+
     func testReclamationQueriesAreBoundedAndEmptyOnFreshCatalog() throws {
         let catalog = try ArchiveCatalog(root: root, machineID: machineID)
         try catalog.migrate()
@@ -2482,12 +2586,15 @@ final class ArchiveCatalogTests: XCTestCase {
         to catalog: ArchiveCatalog,
         captureSeed: String,
         sessionID: String,
+        source: String = "codex",
+        locator: String? = nil,
         boundAt: String = "2026-07-11T00:04:00.000Z"
     ) throws -> ArchiveBinding {
-        let locator = "/tmp/\(captureSeed).jsonl"
+        let locator = locator ?? "/tmp/\(captureSeed).jsonl"
         let unbound = try manifest(
             captureSeed: captureSeed,
             sessionID: nil,
+            source: source,
             locator: locator
         )
         _ = try catalog.recordCapture(
@@ -2496,6 +2603,7 @@ final class ArchiveCatalogTests: XCTestCase {
         let bound = try manifest(
             captureSeed: captureSeed,
             sessionID: sessionID,
+            source: source,
             locator: locator
         )
         return try catalog.bind(
@@ -2831,6 +2939,7 @@ final class ArchiveCatalogTests: XCTestCase {
     private func manifest(
         captureSeed: String,
         sessionID: String?,
+        source: String = "codex",
         locator: String = "/tmp/source.jsonl",
         capturedAt: String = "2026-07-11T00:00:00.000Z"
     ) throws -> ArchiveSourceManifest {
@@ -2839,7 +2948,7 @@ final class ArchiveCatalogTests: XCTestCase {
         return try ArchiveSourceManifest(
             captureID: ArchiveV2Hash.sha256(Data(captureSeed.utf8)),
             machineID: machineID,
-            source: "codex",
+            source: source,
             locator: locator,
             sessionID: sessionID,
             capturedAt: capturedAt,

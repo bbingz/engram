@@ -34,6 +34,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     let removeSessionRelationResult: Result<EngramServiceLinkResponse, Error>
     let relatedSessionsResult: Result<[String], Error>
     let triggerSyncResult: Result<EngramServiceTriggerSyncResponse, Error>
+    let claudeCodeProfilesStatusResult: Result<EngramServiceClaudeCodeProfilesStatusResponse, Error>
     let archiveV2StatusResult: Result<EngramServiceArchiveV2StatusResponse, Error>
     let archiveV2RetryResult: Result<EngramServiceArchiveV2RetryResponse, Error>
     let archiveV2RemoteRecoveryProbeResult: Result<EngramServiceArchiveV2RemoteRecoveryProbeResponse, Error>
@@ -96,6 +97,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         removeSessionRelation: EngramServiceLinkResponse = EngramServiceLinkResponse(ok: true, error: nil),
         relatedSessions: [String] = [],
         triggerSync: EngramServiceTriggerSyncResponse = EngramServiceTriggerSyncResponse(results: []),
+        claudeCodeProfilesStatus: EngramServiceClaudeCodeProfilesStatusResponse = MockEngramServiceClient.defaultClaudeCodeProfilesStatus,
         archiveV2Status: EngramServiceArchiveV2StatusResponse = MockEngramServiceClient.defaultArchiveV2Status,
         archiveV2Retry: EngramServiceArchiveV2RetryResponse = MockEngramServiceClient.defaultArchiveV2Retry,
         archiveV2RemoteRecoveryProbe: EngramServiceArchiveV2RemoteRecoveryProbeResponse = try! EngramServiceArchiveV2RemoteRecoveryProbeResponse(
@@ -159,6 +161,7 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         self.removeSessionRelationResult = .success(removeSessionRelation)
         self.relatedSessionsResult = .success(relatedSessions)
         self.triggerSyncResult = .success(triggerSync)
+        self.claudeCodeProfilesStatusResult = .success(claudeCodeProfilesStatus)
         self.archiveV2StatusResult = .success(archiveV2Status)
         self.archiveV2RetryResult = .success(archiveV2Retry)
         self.archiveV2RemoteRecoveryProbeResult = .success(archiveV2RemoteRecoveryProbe)
@@ -286,6 +289,16 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
         try triggerSyncResult.get()
     }
 
+    func claudeCodeProfilesStatus() async throws -> EngramServiceClaudeCodeProfilesStatusResponse {
+        try claudeCodeProfilesStatusResult.get()
+    }
+
+    func configureClaudeCodeProfiles(
+        _ request: EngramServiceConfigureClaudeCodeProfilesRequest
+    ) async throws -> EngramServiceClaudeCodeProfilesStatusResponse {
+        try claudeCodeProfilesStatusResult.get()
+    }
+
     func archiveV2Status() async throws -> EngramServiceArchiveV2StatusResponse {
         try archiveV2StatusResult.get()
     }
@@ -401,6 +414,13 @@ final class MockEngramServiceClient: EngramServiceClientProtocol, Sendable {
     }
 
     func close() {}
+
+    private static let defaultClaudeCodeProfilesStatus = try! EngramServiceClaudeCodeProfilesStatusResponse(
+        autoDiscover: true,
+        customProjectsRoots: [],
+        profiles: [],
+        configurationError: nil
+    )
 
     private static let defaultArchiveV2Status = try! EngramServiceArchiveV2StatusResponse(
         enabled: false,

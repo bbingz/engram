@@ -437,6 +437,25 @@ private struct ArchiveCursorEnvelope: Codable, Equatable {
     let updatedAt: String
 }
 
+public struct ArchiveClaudeProfileStatusCounts: Equatable, Sendable {
+    public let capturedCount: Int
+    public let ignoredEmptyCaptureCount: Int
+    public let hqVerifiedCount: Int
+    public let m1VerifiedCount: Int
+
+    public init(
+        capturedCount: Int,
+        ignoredEmptyCaptureCount: Int,
+        hqVerifiedCount: Int,
+        m1VerifiedCount: Int
+    ) {
+        self.capturedCount = max(capturedCount, 0)
+        self.ignoredEmptyCaptureCount = max(ignoredEmptyCaptureCount, 0)
+        self.hqVerifiedCount = max(hqVerifiedCount, 0)
+        self.m1VerifiedCount = max(m1VerifiedCount, 0)
+    }
+}
+
 /// Rebuildable archive metadata isolated from Engram's product index database.
 /// The immutable byte authority remains `ImmutableArchiveCAS`.
 public final class ArchiveCatalog: @unchecked Sendable {
@@ -1569,6 +1588,73 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 """,
                 arguments: [Self.ignoredCaptureStatus, reason]
             ) ?? 0
+        }
+    }
+
+    /// Aggregate exact Claude Code captures for one canonical `projects` root.
+    /// `substr` plus the explicit slash boundary avoids both SQL wildcard
+    /// interpretation and sibling-prefix matches such as `/foo` vs `/foobar`.
+    public func claudeProfileStatusCounts(
+        canonicalProjectsRoot: String
+    ) throws -> ArchiveClaudeProfileStatusCounts {
+        let standardized = URL(
+            fileURLWithPath: canonicalProjectsRoot,
+            isDirectory: true
+        ).standardizedFileURL.path
+        guard canonicalProjectsRoot.hasPrefix("/"),
+              canonicalProjectsRoot != "/",
+              canonicalProjectsRoot == standardized
+        else {
+            throw ArchiveCatalogError.unsafeRoot(canonicalProjectsRoot)
+        }
+
+        return try pool.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: """
+                WITH matching_captures AS (
+                    SELECT capture_id, status, diagnostic
+                    FROM archive_captures
+                    WHERE source = 'claude-code'
+                      AND (
+                        locator = ?
+                        OR substr(locator, 1, length(?) + 1) = ? || '/'
+                      )
+                )
+                SELECT
+                    COUNT(DISTINCT c.capture_id) AS captured_count,
+                    COUNT(DISTINCT CASE
+                        WHEN c.status = 'ignored'
+                         AND c.diagnostic = 'no_visible_messages'
+                        THEN c.capture_id END
+                    ) AS ignored_empty_count,
+                    COUNT(DISTINCT CASE
+                        WHEN r.replica_id = 'hq' AND r.state = 'verified'
+                        THEN c.capture_id END
+                    ) AS hq_verified_count,
+                    COUNT(DISTINCT CASE
+                        WHEN r.replica_id = 'm1' AND r.state = 'verified'
+                        THEN c.capture_id END
+                    ) AS m1_verified_count
+                FROM matching_captures AS c
+                LEFT JOIN archive_session_bindings AS b
+                  ON b.capture_id = c.capture_id
+                LEFT JOIN archive_replica_receipts AS r
+                  ON r.manifest_sha256 = b.manifest_sha256
+                 AND r.capture_id = c.capture_id
+                """,
+                arguments: [
+                    canonicalProjectsRoot,
+                    canonicalProjectsRoot,
+                    canonicalProjectsRoot,
+                ]
+            )!
+            return ArchiveClaudeProfileStatusCounts(
+                capturedCount: row["captured_count"],
+                ignoredEmptyCaptureCount: row["ignored_empty_count"],
+                hqVerifiedCount: row["hq_verified_count"],
+                m1VerifiedCount: row["m1_verified_count"]
+            )
         }
     }
 

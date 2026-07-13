@@ -78,15 +78,16 @@ public enum EngramServiceRunner {
         // Archive V2 has one process-wide coordinator. Its default-off factory
         // only reads settings and returns a dormant actor: it does not create
         // archive storage, read Keychain credentials, or construct backends.
+        let settingsURL = engramSettingsURL(environment: environment)
         let archiveV2Settings = ArchiveV2Settings.load(
-            settingsURL: engramSettingsURL(environment: environment),
+            settingsURL: settingsURL,
             environment: environment
         )
         let archiveV2Coordinator = Self.makeArchiveV2Coordinator(
             gate: gate,
             databasePath: databasePath,
             settings: archiveV2Settings,
-            settingsURL: engramSettingsURL(environment: environment),
+            settingsURL: settingsURL,
             environment: environment
         )
         let archiveV2Drainer: ArchiveV2BacklogDrainer?
@@ -112,6 +113,27 @@ public enum EngramServiceRunner {
             archiveV2Drainer = nil
         }
         let archiveTranscriptResolver = archiveV2Coordinator.transcriptResolverSnapshot
+        let profileArchiveCatalog: ArchiveCatalog?
+        if archiveV2Settings.exactArchiveEnabled {
+            let archiveRoot = URL(fileURLWithPath: databasePath)
+                .deletingLastPathComponent()
+                .appendingPathComponent("archive-v2", isDirectory: true)
+            profileArchiveCatalog = try? ArchiveCatalog(root: archiveRoot)
+        } else {
+            profileArchiveCatalog = nil
+        }
+        let claudeCodeProfileService = ClaudeCodeProfileService(
+            profileResolver: ClaudeCodeProfileResolver(
+                homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+                settingsURL: settingsURL
+            ),
+            writerGate: gate,
+            archiveCatalog: profileArchiveCatalog,
+            settingsURL: settingsURL,
+            signalDrainer: {
+                await archiveV2Drainer?.signal()
+            }
+        )
 
         let statusMonitor = ServiceStatusMonitor()
         // Wire breaker transition logs once at process start (os_log subsystem
@@ -134,6 +156,7 @@ public enum EngramServiceRunner {
             writerGate: gate,
             archiveV2Coordinator: archiveV2Coordinator,
             archiveTranscriptResolver: archiveTranscriptResolver,
+            claudeCodeProfileService: claudeCodeProfileService,
             readProvider: try SQLiteEngramServiceReadProvider(databasePath: databasePath),
             statusMonitor: statusMonitor,
             telemetry: telemetry,

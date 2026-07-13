@@ -31,6 +31,10 @@ protocol EngramServiceClientProtocol: AnyObject, Sendable {
     func removeSessionRelation(aId: String, bId: String) async throws -> EngramServiceLinkResponse
     func relatedSessions(sessionId: String) async throws -> [String]
     func triggerSync(_ request: EngramServiceTriggerSyncRequest) async throws -> EngramServiceTriggerSyncResponse
+    func claudeCodeProfilesStatus() async throws -> EngramServiceClaudeCodeProfilesStatusResponse
+    func configureClaudeCodeProfiles(
+        _ request: EngramServiceConfigureClaudeCodeProfilesRequest
+    ) async throws -> EngramServiceClaudeCodeProfilesStatusResponse
     func archiveV2Status() async throws -> EngramServiceArchiveV2StatusResponse
     func archiveV2Retry(
         _ request: EngramServiceArchiveV2RetryRequest
