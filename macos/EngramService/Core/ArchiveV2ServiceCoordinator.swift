@@ -88,6 +88,15 @@ struct ArchiveV2ServiceSnapshotRow: Equatable, Sendable {
 
 struct ArchiveV2ServiceIndexSnapshot: Equatable, Sendable {
     let rows: [ArchiveV2ServiceSnapshotRow]
+    let trustedTerminalFailuresByCaptureID: [String: ParserFailure]
+
+    init(
+        rows: [ArchiveV2ServiceSnapshotRow],
+        trustedTerminalFailuresByCaptureID: [String: ParserFailure] = [:]
+    ) {
+        self.rows = rows
+        self.trustedTerminalFailuresByCaptureID = trustedTerminalFailuresByCaptureID
+    }
 }
 
 struct ArchiveV2ServiceUnknownPage: Equatable, Sendable {
@@ -118,6 +127,7 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
         ArchiveV2ServiceCaptureTarget,
         [ArchiveSessionIdentity]
     ) async throws -> ArchiveV2ServicePolicyTarget?
+    var ignoreOne: @Sendable (ArchiveV2ServiceCaptureTarget) async throws -> Void
     var applyRemotePolicy: @Sendable (
         ArchiveV2ServicePolicyTarget,
         String?,
@@ -150,6 +160,7 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
             ArchiveV2ServiceCaptureTarget,
             [ArchiveSessionIdentity]
         ) async throws -> ArchiveV2ServicePolicyTarget?,
+        ignoreOne: @escaping @Sendable (ArchiveV2ServiceCaptureTarget) async throws -> Void = { _ in },
         applyRemotePolicy: @escaping @Sendable (
             ArchiveV2ServicePolicyTarget,
             String?,
@@ -173,6 +184,7 @@ struct ArchiveV2ServiceCoordinatorOperations: Sendable {
         self.advancePolicyCursor = advancePolicyCursor
         self.snapshot = snapshot
         self.bindOne = bindOne
+        self.ignoreOne = ignoreOne
         self.applyRemotePolicy = applyRemotePolicy
         self.replicate = replicate
         self.replicateBacklog = replicateBacklog ?? replicate
@@ -776,6 +788,11 @@ actor ArchiveV2ServiceCoordinator {
         var newlyBound: [ArchiveV2ServicePolicyTarget] = []
         for target in bindingTargets.prefix(bindingLimit) {
             try Task.checkCancellation()
+            if snapshot.trustedTerminalFailuresByCaptureID[target.captureID]
+                == .noVisibleMessages {
+                try await operations.ignoreOne(target)
+                continue
+            }
             let identities = Self.identities(for: target, snapshot: snapshot)
             if let bound = try await operations.bindOne(target, identities) {
                 newlyBound.append(bound)
@@ -1019,6 +1036,13 @@ actor ArchiveV2ServiceCoordinator {
                     historical: false
                 )
             },
+            ignoreOne: { target in
+                _ = try catalog.ignoreUnboundCapture(
+                    captureID: target.captureID,
+                    reason: "no_visible_messages",
+                    updatedAt: Self.timestamp(Date())
+                )
+            },
             applyRemotePolicy: { target, root, eligibility in
                 _ = try catalog.setRemotePolicySnapshot(
                     manifestSHA256: target.manifestSHA256,
@@ -1239,6 +1263,7 @@ actor ArchiveV2ServiceCoordinator {
         targets: [ArchiveV2ServiceCaptureTarget]
     ) throws -> ArchiveV2ServiceIndexSnapshot {
         var result: [ArchiveV2ServiceSnapshotRow] = []
+        var trustedTerminalFailuresByCaptureID: [String: ParserFailure] = [:]
         let grouped = Dictionary(grouping: targets, by: \.source)
         for (source, sourceTargets) in grouped {
             let locators = Array(Set(sourceTargets.map(\.locator))).sorted()
@@ -1310,12 +1335,20 @@ actor ArchiveV2ServiceCoordinator {
                                 == stat.modifiedAtNanos
                         }
                     } == true
-                    let trusted = state?.schemaVersion == FileIndexState.currentSchemaVersion
-                        && state?.parseStatus.rawValue == FileIndexParseStatus.ok.rawValue
+                    let indexStateMatchesFreshStat = state?.schemaVersion
+                        == FileIndexState.currentSchemaVersion
                         && state?.inode != nil
                         && state?.device != nil
                         && freshStat.map { state?.sameFileIdentity(as: $0) == true } == true
+                    let trusted = indexStateMatchesFreshStat
+                        && state?.parseStatus == .ok
                         && captureMatchesFreshStat
+                    if indexStateMatchesFreshStat,
+                       captureMatchesFreshStat,
+                       state?.parseStatus == .terminal,
+                       state?.failureKind == .noVisibleMessages {
+                        trustedTerminalFailuresByCaptureID[target.captureID] = .noVisibleMessages
+                    }
                     let proof: ArchiveIndexedGenerationProof?
                     if trusted, let generation = target.generation {
                         proof = try? ArchiveIndexedGenerationProof(
@@ -1348,7 +1381,10 @@ actor ArchiveV2ServiceCoordinator {
                 }
             }
         }
-        return ArchiveV2ServiceIndexSnapshot(rows: result)
+        return ArchiveV2ServiceIndexSnapshot(
+            rows: result,
+            trustedTerminalFailuresByCaptureID: trustedTerminalFailuresByCaptureID
+        )
     }
 
     /// `file_index_state` and `FileIndexStat` originate from
@@ -1660,6 +1696,7 @@ actor ArchiveV2ServiceCoordinator {
             capturedCount: aggregate.captured,
             boundCount: aggregate.bound,
             unboundCount: aggregate.unbound,
+            ignoredEmptyCaptureCount: aggregate.ignoredEmpty,
             remotePolicyUnknownCount: aggregate.unknown,
             remotePolicyEligibleCount: aggregate.eligible,
             remotePolicyExcludedCount: aggregate.excluded,

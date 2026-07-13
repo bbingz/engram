@@ -472,6 +472,75 @@ final class ArchiveCatalogTests: XCTestCase {
         XCTAssertThrowsError(try catalog.recordCapture(canonicalManifestBytes: nonCanonical))
     }
 
+    func testIgnoredUnboundCaptureLeavesCatalogAndLocalObjectButExitsRunnablePages() throws {
+        let catalog = try migratedCatalog()
+        let ignoredManifest = try manifest(
+            captureSeed: "ignored-empty",
+            sessionID: nil,
+            capturedAt: "2026-07-11T00:00:00.000Z"
+        )
+        let runnableManifest = try manifest(
+            captureSeed: "still-runnable",
+            sessionID: nil,
+            locator: "/tmp/still-runnable.jsonl",
+            capturedAt: "2026-07-11T00:01:00.000Z"
+        )
+        _ = try catalog.recordCapture(
+            canonicalManifestBytes: ArchiveCanonicalJSON.encode(ignoredManifest)
+        )
+        _ = try catalog.recordCapture(
+            canonicalManifestBytes: ArchiveCanonicalJSON.encode(runnableManifest)
+        )
+        let object = try XCTUnwrap(ignoredManifest.chunks.first)
+        try writeArchiveDatabase { db in
+            try db.execute(
+                sql: """
+                INSERT INTO archive_local_objects(
+                    object_sha256, raw_byte_count, residency, updated_at
+                ) VALUES (?, ?, 'resident', '2026-07-11T00:00:30.000Z')
+                """,
+                arguments: [object.rawSHA256, object.rawByteCount]
+            )
+        }
+
+        XCTAssertTrue(
+            try catalog.ignoreUnboundCapture(
+                captureID: ignoredManifest.captureID,
+                reason: "no_visible_messages",
+                updatedAt: "2026-07-11T00:02:00.000Z"
+            )
+        )
+        XCTAssertFalse(
+            try catalog.ignoreUnboundCapture(
+                captureID: ignoredManifest.captureID,
+                reason: "no_visible_messages",
+                updatedAt: "2026-07-11T00:03:00.000Z"
+            ),
+            "terminal disposition must be idempotent without rewriting the row"
+        )
+
+        let persisted = try XCTUnwrap(try catalog.capture(captureID: ignoredManifest.captureID))
+        XCTAssertEqual(persisted.status, "ignored")
+        XCTAssertEqual(persisted.diagnostic, "no_visible_messages")
+        XCTAssertEqual(try catalog.localObject(objectSHA256: object.rawSHA256)?.residency, .resident)
+        XCTAssertEqual(try catalog.ignoredCaptureCount(reason: "no_visible_messages"), 1)
+        XCTAssertEqual(try catalog.replicaReceiptCount(captureID: ignoredManifest.captureID), 0)
+
+        let boundary = try XCTUnwrap(try catalog.unboundCaptureBoundary())
+        XCTAssertEqual(boundary.captureID, runnableManifest.captureID)
+        XCTAssertEqual(
+            try catalog.unboundCaptures(limit: 10, after: nil, through: boundary)
+                .map(\.captureID),
+            [runnableManifest.captureID]
+        )
+        XCTAssertEqual(try catalog.unboundCaptures(limit: 10).map(\.captureID), [runnableManifest.captureID])
+
+        let status = try catalog.archiveStatus()
+        XCTAssertEqual(status.captured, 2)
+        XCTAssertEqual(status.unbound, 1)
+        XCTAssertEqual(status.ignoredEmpty, 1)
+    }
+
     func testRecordCaptureRejectsChangedImmutableFieldsForSameCaptureID() throws {
         let catalog = try migratedCatalog()
         let original = try manifest(captureSeed: "stable-id", sessionID: nil)

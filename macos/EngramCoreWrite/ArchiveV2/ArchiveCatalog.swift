@@ -390,6 +390,7 @@ public struct ArchiveStatusAggregate: Equatable, Sendable {
     public let captured: Int
     public let bound: Int
     public let unbound: Int
+    public let ignoredEmpty: Int
     public let unknown: Int
     public let eligible: Int
     public let excluded: Int
@@ -403,6 +404,7 @@ public struct ArchiveStatusAggregate: Equatable, Sendable {
         captured: Int,
         bound: Int,
         unbound: Int,
+        ignoredEmpty: Int = 0,
         unknown: Int,
         eligible: Int,
         excluded: Int,
@@ -415,6 +417,7 @@ public struct ArchiveStatusAggregate: Equatable, Sendable {
         self.captured = captured
         self.bound = bound
         self.unbound = unbound
+        self.ignoredEmpty = ignoredEmpty
         self.unknown = unknown
         self.eligible = eligible
         self.excluded = excluded
@@ -440,6 +443,7 @@ public final class ArchiveCatalog: @unchecked Sendable {
     public static let currentReplicaIDs = ["hq", "m1"]
     private static let databaseFilename = "archive.sqlite"
     private static let captureStatus = "captured"
+    private static let ignoredCaptureStatus = "ignored"
     private static let maximumArchiveCursorPayloadBytes = 16_384
 
     private let pool: DatabasePool
@@ -1493,6 +1497,69 @@ public final class ArchiveCatalog: @unchecked Sendable {
         }
     }
 
+    @discardableResult
+    public func ignoreUnboundCapture(
+        captureID: String,
+        reason: String,
+        updatedAt: String
+    ) throws -> Bool {
+        guard ArchiveV2Hash.isValidSHA256(captureID) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "captureID")
+        }
+        try Self.validateLastError(reason)
+        try Self.validateTimestamp(updatedAt, field: "updatedAt")
+        let changed = try pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE archive_captures
+                SET status = ?, diagnostic = ?, updated_at = ?
+                WHERE capture_id = ? AND status = ?
+                  AND NOT EXISTS (
+                    SELECT 1 FROM archive_session_bindings AS b
+                    WHERE b.capture_id = archive_captures.capture_id
+                  )
+                """,
+                arguments: [
+                    Self.ignoredCaptureStatus,
+                    reason,
+                    updatedAt,
+                    captureID,
+                    Self.captureStatus,
+                ]
+            )
+            return db.changesCount == 1
+        }
+        if changed { try secureDatabaseFiles() }
+        return changed
+    }
+
+    public func ignoredCaptureCount(reason: String) throws -> Int {
+        try Self.validateLastError(reason)
+        return try pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*) FROM archive_captures
+                WHERE status = ? AND diagnostic = ?
+                """,
+                arguments: [Self.ignoredCaptureStatus, reason]
+            ) ?? 0
+        }
+    }
+
+    public func replicaReceiptCount(captureID: String) throws -> Int {
+        guard ArchiveV2Hash.isValidSHA256(captureID) else {
+            throw ArchiveCatalogError.invalidSHA256(field: "captureID")
+        }
+        return try pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM archive_replica_receipts WHERE capture_id = ?",
+                arguments: [captureID]
+            ) ?? 0
+        }
+    }
+
     /// Persisted unbound work is queried from the catalog rather than process
     /// memory so a crash after capture cannot strand a replayable generation.
     public func unboundCaptures(limit: Int) throws -> [ArchiveCapture] {
@@ -1512,10 +1579,11 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 FROM archive_captures AS c
                 LEFT JOIN archive_session_bindings AS b
                   ON b.capture_id = c.capture_id
-                WHERE b.capture_id IS NULL
+                WHERE b.capture_id IS NULL AND c.status = ?
                 ORDER BY c.captured_at DESC, c.capture_id DESC
                 LIMIT 1
-                """
+                """,
+                arguments: [Self.captureStatus]
             ) else {
                 return nil
             }
@@ -1546,7 +1614,7 @@ public final class ArchiveCatalog: @unchecked Sendable {
         }
         return try pool.read { db in
             let lowerBoundSQL: String
-            var arguments = StatementArguments()
+            var arguments: StatementArguments = [Self.captureStatus]
             if let cursor {
                 lowerBoundSQL = """
                   AND (c.captured_at > ? OR (c.captured_at = ? AND c.capture_id > ?))
@@ -1561,7 +1629,7 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 FROM archive_captures AS c
                 LEFT JOIN archive_session_bindings AS b
                   ON b.capture_id = c.capture_id
-                WHERE b.capture_id IS NULL
+                WHERE b.capture_id IS NULL AND c.status = ?
                 \(lowerBoundSQL)
                   AND (c.captured_at < ? OR (c.captured_at = ? AND c.capture_id <= ?))
                 ORDER BY c.captured_at ASC, c.capture_id ASC
@@ -2425,8 +2493,17 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 FROM archive_captures AS c
                 LEFT JOIN archive_session_bindings AS b
                   ON b.capture_id = c.capture_id
-                WHERE b.capture_id IS NULL
-                """
+                WHERE b.capture_id IS NULL AND c.status = ?
+                """,
+                arguments: [Self.captureStatus]
+            ) ?? 0
+            let ignoredEmpty = try Int.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*) FROM archive_captures
+                WHERE status = ? AND diagnostic = 'no_visible_messages'
+                """,
+                arguments: [Self.ignoredCaptureStatus]
             ) ?? 0
             let eligibility = try Row.fetchOne(
                 db,
@@ -2626,6 +2703,7 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 captured: captured,
                 bound: eligibility["bound"],
                 unbound: unbound,
+                ignoredEmpty: ignoredEmpty,
                 unknown: eligibility["unknown_count"],
                 eligible: eligibility["eligible_count"],
                 excluded: eligibility["excluded_count"],

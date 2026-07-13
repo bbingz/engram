@@ -464,6 +464,7 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
                 captured: 9,
                 bound: 8,
                 unbound: 1,
+                ignoredEmpty: 4,
                 unknown: 2,
                 eligible: 5,
                 excluded: 1,
@@ -494,11 +495,35 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         let status = await coordinator.status()
 
         XCTAssertEqual(status.capturedCount, 9)
+        XCTAssertEqual(status.ignoredEmptyCaptureCount, 4)
         XCTAssertEqual(status.replicas.map(\.replicaID), ["hq", "m1"])
         XCTAssertEqual(status.replicas[0].queuedCount, 3)
         XCTAssertEqual(status.replicas[1].queuedCount, 13)
         XCTAssertEqual(status.latestReceipts.count, 1)
         XCTAssertEqual(status.latestReceipts[0].receiptSHA256, String(repeating: "c", count: 64))
+    }
+
+    func testStatusDecodesLegacyResponseWithoutIgnoredEmptyCount() async throws {
+        let harness = try makeHarness(remoteReady: false)
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: makeOperations(events: EventLog())
+        )
+        let encoded = try JSONEncoder().encode(await coordinator.status())
+        var legacy = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        legacy.removeValue(forKey: "ignoredEmptyCaptureCount")
+
+        let decoded = try JSONDecoder().decode(
+            EngramServiceArchiveV2StatusResponse.self,
+            from: JSONSerialization.data(withJSONObject: legacy)
+        )
+
+        XCTAssertEqual(decoded.ignoredEmptyCaptureCount, 0)
     }
 
     func testStatusCollectsReplicaTelemetryConcurrentlyOnlyOnRequestAndKeepsPartialSuccess() async throws {
@@ -781,6 +806,236 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertFalse(recorded.contains("historical"))
         XCTAssertFalse(recorded.contains("policy-must-not-run"))
         XCTAssertFalse(recorded.contains("network-must-not-run"))
+    }
+
+    func testReconcileIgnoresTrustedEmptyTargetInsteadOfBinding() async throws {
+        let harness = try makeHarness(remoteReady: false)
+        let events = EventLog()
+        let target = ArchiveV2ServiceCaptureTarget(
+            captureID: String(repeating: "a", count: 64),
+            source: .codex,
+            locator: "/tmp/archive-v2-empty.jsonl",
+            generation: nil,
+            capturedAt: "2026-07-12T00:00:00.000Z"
+        )
+        var operations = makeOperations(events: events)
+        operations.bindingTargets = { _ in [target] }
+        operations.snapshot = { _, _ in
+            ArchiveV2ServiceIndexSnapshot(
+                rows: [],
+                trustedTerminalFailuresByCaptureID: [
+                    target.captureID: .noVisibleMessages,
+                ]
+            )
+        }
+        operations.ignoreOne = { ignored in
+            XCTAssertEqual(ignored, target)
+            await events.append("ignore")
+        }
+        operations.bindOne = { _, _ in
+            await events.append("bind-must-not-run")
+            return nil
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: operations
+        )
+
+        _ = try await coordinator.runCycle(adapters: [], cursorScope: .full) { _ in
+            try await self.emptyIndexResult(gate: harness.gate)
+        }
+
+        let recorded = await events.values()
+        XCTAssertTrue(recorded.contains("ignore"))
+        XCTAssertFalse(recorded.contains("bind-must-not-run"))
+    }
+
+    func testGenerationMatchedNoVisibleMessagesCaptureBecomesTerminalIgnored() async throws {
+        let harness = try makeHarness(remoteReady: false)
+        let archiveRoot = harness.database.deletingLastPathComponent()
+            .appendingPathComponent("archive-v2", isDirectory: true)
+        let machineID = "22222222-2222-4222-8222-222222222222"
+        let catalog = try ArchiveCatalog(root: archiveRoot, machineID: machineID)
+        try catalog.migrate()
+        let sourceURL = temporaryRoot("matched-empty").appendingPathComponent("session.jsonl")
+        try FileManager.default.createDirectory(
+            at: sourceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("{}\n".utf8).write(to: sourceURL)
+        let stat = try XCTUnwrap(FileIndexStat.directFileStat(locator: sourceURL.path))
+        let captureID = try recordUnboundCapture(
+            catalog: catalog,
+            machineID: machineID,
+            sourceURL: sourceURL,
+            stat: stat,
+            seed: "matched-empty"
+        )
+        try await seedSnapshotRows(
+            gate: harness.gate,
+            locator: sourceURL.path,
+            stat: stat,
+            parseStatus: .terminal,
+            failureKind: .noVisibleMessages,
+            sessions: []
+        )
+        let coordinator = ArchiveV2ServiceCoordinator.make(
+            settings: harness.settings,
+            databasePath: harness.database.path,
+            writerGate: harness.gate
+        )
+
+        let result = try await coordinator.runBacklogPass(adapters: [])
+
+        XCTAssertEqual(result.boundRows, 0)
+        XCTAssertEqual(try catalog.ignoredCaptureCount(reason: "no_visible_messages"), 1)
+        XCTAssertEqual(try catalog.replicaReceiptCount(captureID: captureID), 0)
+        XCTAssertEqual(try catalog.unboundCaptures(limit: 10), [])
+        let status = await coordinator.status()
+        XCTAssertEqual(status.ignoredEmptyCaptureCount, 1)
+    }
+
+    func testSnapshotRejectsStaleGenerationForNoVisibleMessages() async throws {
+        let harness = try makeHarness(remoteReady: false)
+        let sourceURL = try writeSnapshotFixture(label: "stale-empty")
+        let stat = try XCTUnwrap(FileIndexStat.directFileStat(locator: sourceURL.path))
+        let target = ArchiveV2ServiceCaptureTarget(
+            captureID: String(repeating: "b", count: 64),
+            source: .codex,
+            locator: sourceURL.path,
+            generation: try ArchiveSourceGeneration(
+                device: try XCTUnwrap(stat.device),
+                inode: try XCTUnwrap(stat.inode),
+                size: stat.sizeBytes + 1,
+                mtimeNs: stat.modifiedAtNanos,
+                ctimeNs: 0,
+                mode: 0o100600
+            ),
+            capturedAt: "2026-07-12T00:00:00.000Z"
+        )
+        try await seedSnapshotRows(
+            gate: harness.gate,
+            locator: sourceURL.path,
+            stat: stat,
+            parseStatus: .terminal,
+            failureKind: .noVisibleMessages,
+            sessions: []
+        )
+
+        let snapshot = try await ArchiveV2ServiceCoordinator.readIndexSnapshot(
+            gate: harness.gate,
+            targets: [target]
+        )
+
+        XCTAssertTrue(snapshot.trustedTerminalFailuresByCaptureID.isEmpty)
+    }
+
+    func testSnapshotRejectsOldSchemaNoVisibleMessages() async throws {
+        let harness = try makeHarness(remoteReady: false)
+        let sourceURL = try writeSnapshotFixture(label: "old-schema-empty")
+        let stat = try XCTUnwrap(FileIndexStat.directFileStat(locator: sourceURL.path))
+        let target = try captureTarget(digestCharacter: "c", locator: sourceURL.path, stat: stat)
+        try await seedSnapshotRows(
+            gate: harness.gate,
+            locator: sourceURL.path,
+            stat: stat,
+            parseStatus: .terminal,
+            failureKind: .noVisibleMessages,
+            schemaVersion: FileIndexState.currentSchemaVersion - 1,
+            sessions: []
+        )
+
+        let snapshot = try await ArchiveV2ServiceCoordinator.readIndexSnapshot(
+            gate: harness.gate,
+            targets: [target]
+        )
+
+        XCTAssertTrue(snapshot.trustedTerminalFailuresByCaptureID.isEmpty)
+    }
+
+    func testSnapshotRejectsMalformedJSONTerminalFailure() async throws {
+        let harness = try makeHarness(remoteReady: false)
+        let sourceURL = try writeSnapshotFixture(label: "malformed")
+        let stat = try XCTUnwrap(FileIndexStat.directFileStat(locator: sourceURL.path))
+        let target = try captureTarget(digestCharacter: "d", locator: sourceURL.path, stat: stat)
+        try await seedSnapshotRows(
+            gate: harness.gate,
+            locator: sourceURL.path,
+            stat: stat,
+            parseStatus: .terminal,
+            failureKind: .malformedJSON,
+            sessions: []
+        )
+
+        let snapshot = try await ArchiveV2ServiceCoordinator.readIndexSnapshot(
+            gate: harness.gate,
+            targets: [target]
+        )
+
+        XCTAssertTrue(snapshot.trustedTerminalFailuresByCaptureID.isEmpty)
+    }
+
+    func testSnapshotRejectsNoVisibleMessagesWhenFileIsMissing() async throws {
+        let harness = try makeHarness(remoteReady: false)
+        let sourceURL = try writeSnapshotFixture(label: "missing-empty")
+        let stat = try XCTUnwrap(FileIndexStat.directFileStat(locator: sourceURL.path))
+        let target = try captureTarget(digestCharacter: "e", locator: sourceURL.path, stat: stat)
+        try await seedSnapshotRows(
+            gate: harness.gate,
+            locator: sourceURL.path,
+            stat: stat,
+            parseStatus: .terminal,
+            failureKind: .noVisibleMessages,
+            sessions: []
+        )
+        try FileManager.default.removeItem(at: sourceURL)
+
+        let snapshot = try await ArchiveV2ServiceCoordinator.readIndexSnapshot(
+            gate: harness.gate,
+            targets: [target]
+        )
+
+        XCTAssertTrue(snapshot.trustedTerminalFailuresByCaptureID.isEmpty)
+    }
+
+    func testSnapshotRejectsOrdinaryNoMatchWithoutIndexState() async throws {
+        let harness = try makeHarness(remoteReady: false)
+        let sourceURL = try writeSnapshotFixture(label: "no-match")
+        let stat = try XCTUnwrap(FileIndexStat.directFileStat(locator: sourceURL.path))
+        let target = try captureTarget(digestCharacter: "f", locator: sourceURL.path, stat: stat)
+        _ = try await emptyIndexResult(gate: harness.gate)
+
+        let snapshot = try await ArchiveV2ServiceCoordinator.readIndexSnapshot(
+            gate: harness.gate,
+            targets: [target]
+        )
+
+        XCTAssertTrue(snapshot.trustedTerminalFailuresByCaptureID.isEmpty)
+    }
+
+    func testSnapshotRejectsNonTerminalNoVisibleMessagesState() async throws {
+        let harness = try makeHarness(remoteReady: false)
+        let sourceURL = try writeSnapshotFixture(label: "retry-empty")
+        let stat = try XCTUnwrap(FileIndexStat.directFileStat(locator: sourceURL.path))
+        let target = try captureTarget(digestCharacter: "1", locator: sourceURL.path, stat: stat)
+        try await seedSnapshotRows(
+            gate: harness.gate,
+            locator: sourceURL.path,
+            stat: stat,
+            parseStatus: .retry,
+            failureKind: .noVisibleMessages,
+            sessions: []
+        )
+
+        let snapshot = try await ArchiveV2ServiceCoordinator.readIndexSnapshot(
+            gate: harness.gate,
+            targets: [target]
+        )
+
+        XCTAssertTrue(snapshot.trustedTerminalFailuresByCaptureID.isEmpty)
     }
 
     func testSnapshotPreservesDuplicateLocatorRowsAndUsesCaptureExactProofFields() async throws {
@@ -1486,6 +1741,8 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         locator: String,
         stat: FileIndexStat,
         parseStatus: FileIndexParseStatus,
+        failureKind: ParserFailure? = nil,
+        schemaVersion: Int = FileIndexState.currentSchemaVersion,
         sessions: [(id: String, cwd: String)],
         migrate: Bool = true
     ) async throws {
@@ -1510,7 +1767,7 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
                       source, locator, size_bytes, mtime_ns, inode, device,
                       parsed_offset, boundary_hash, parse_status, failure_kind,
                       retry_after, retry_count, last_error, schema_version, updated_at
-                    ) VALUES ('codex', ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, 0, NULL, ?, 1)
+                    ) VALUES ('codex', ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, 0, ?, ?, 1)
                     """,
                     arguments: [
                         locator,
@@ -1520,11 +1777,68 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
                         stat.device,
                         stat.sizeBytes,
                         parseStatus.rawValue,
-                        FileIndexState.currentSchemaVersion,
+                        failureKind?.rawValue,
+                        failureKind?.rawValue,
+                        schemaVersion,
                     ]
                 )
             }
         }
+    }
+
+    private func writeSnapshotFixture(label: String) throws -> URL {
+        let sourceURL = temporaryRoot(label).appendingPathComponent("session.jsonl")
+        try FileManager.default.createDirectory(
+            at: sourceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("{}\n".utf8).write(to: sourceURL)
+        return sourceURL
+    }
+
+    private func recordUnboundCapture(
+        catalog: ArchiveCatalog,
+        machineID: String,
+        sourceURL: URL,
+        stat: FileIndexStat,
+        seed: String
+    ) throws -> String {
+        let bytes = try Data(contentsOf: sourceURL)
+        let captureID = ArchiveV2Hash.sha256(Data("capture-\(seed)".utf8))
+        let digest = ArchiveV2Hash.sha256(bytes)
+        let manifest = try ArchiveSourceManifest(
+            captureID: captureID,
+            machineID: machineID,
+            source: SourceName.codex.rawValue,
+            locator: sourceURL.path,
+            sessionID: nil,
+            capturedAt: "2026-07-12T00:00:00.000Z",
+            generation: ArchiveSourceGeneration(
+                device: try XCTUnwrap(stat.device),
+                inode: try XCTUnwrap(stat.inode),
+                size: stat.sizeBytes,
+                mtimeNs: stat.modifiedAtNanos,
+                ctimeNs: 0,
+                mode: 0o100600
+            ),
+            wholeSourceSHA256: digest,
+            rawByteCount: Int64(bytes.count),
+            chunks: [
+                ArchiveChunkReference(
+                    ordinal: 0,
+                    rawSHA256: digest,
+                    rawByteCount: Int64(bytes.count)
+                ),
+            ],
+            replayLayout: ArchiveReplayLayout(
+                strategy: .singleFile,
+                relativePaths: ["sessions/\(seed).jsonl"]
+            )
+        )
+        _ = try catalog.recordCapture(
+            canonicalManifestBytes: ArchiveCanonicalJSON.encode(manifest)
+        )
+        return captureID
     }
 
     private func addUnknownBinding(

@@ -2097,6 +2097,7 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
     let capturedCount: Int
     let boundCount: Int
     let unboundCount: Int
+    let ignoredEmptyCaptureCount: Int
     let remotePolicyUnknownCount: Int
     let remotePolicyEligibleCount: Int
     let remotePolicyExcludedCount: Int
@@ -2125,6 +2126,7 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
         capturedCount: Int,
         boundCount: Int,
         unboundCount: Int,
+        ignoredEmptyCaptureCount: Int = 0,
         remotePolicyUnknownCount: Int,
         remotePolicyEligibleCount: Int,
         remotePolicyExcludedCount: Int,
@@ -2204,6 +2206,7 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
             ("capturedCount", capturedCount),
             ("boundCount", boundCount),
             ("unboundCount", unboundCount),
+            ("ignoredEmptyCaptureCount", ignoredEmptyCaptureCount),
             ("remotePolicyUnknownCount", remotePolicyUnknownCount),
             ("remotePolicyEligibleCount", remotePolicyEligibleCount),
             ("remotePolicyExcludedCount", remotePolicyExcludedCount),
@@ -2234,6 +2237,7 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
         self.capturedCount = capturedCount
         self.boundCount = boundCount
         self.unboundCount = unboundCount
+        self.ignoredEmptyCaptureCount = ignoredEmptyCaptureCount
         self.remotePolicyUnknownCount = remotePolicyUnknownCount
         self.remotePolicyEligibleCount = remotePolicyEligibleCount
         self.remotePolicyExcludedCount = remotePolicyExcludedCount
@@ -2265,6 +2269,10 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
             capturedCount: container.decode(Int.self, forKey: .capturedCount),
             boundCount: container.decode(Int.self, forKey: .boundCount),
             unboundCount: container.decode(Int.self, forKey: .unboundCount),
+            ignoredEmptyCaptureCount: try container.decodeIfPresent(
+                Int.self,
+                forKey: .ignoredEmptyCaptureCount
+            ) ?? 0,
             remotePolicyUnknownCount: container.decode(Int.self, forKey: .remotePolicyUnknownCount),
             remotePolicyEligibleCount: container.decode(Int.self, forKey: .remotePolicyEligibleCount),
             remotePolicyExcludedCount: container.decode(Int.self, forKey: .remotePolicyExcludedCount),
@@ -2304,6 +2312,7 @@ struct EngramServiceArchiveV2StatusResponse: Codable, Equatable, Sendable {
         case capturedCount
         case boundCount
         case unboundCount
+        case ignoredEmptyCaptureCount
         case remotePolicyUnknownCount
         case remotePolicyEligibleCount
         case remotePolicyExcludedCount
