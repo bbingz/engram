@@ -175,6 +175,67 @@ final class ClaudeCodeProfileServiceTests: XCTestCase {
         XCTAssertEqual(response.profiles[0].indexedLocatorCount, 0)
     }
 
+    func testStatusRunsThroughInjectedBlockingExecutor() async throws {
+        let gate = try ServiceWriterGate(databasePath: database.path, runtimeDirectory: runtime)
+        _ = try await gate.performWriteCommand(name: "profile-test-migrate") { writer in
+            try writer.migrate()
+            return ()
+        }
+        let executorProbe = ProfileStatusExecutorProbe()
+        let service = ClaudeCodeProfileService(
+            profileResolver: ClaudeCodeProfileResolver(homeDirectory: home, settingsURL: settings),
+            writerGate: gate,
+            archiveCatalog: nil,
+            settingsURL: settings,
+            signalDrainer: {},
+            statusBlockingExecutor: { operation in
+                await executorProbe.record()
+                return operation()
+            }
+        )
+
+        _ = await service.status()
+
+        let invocationCount = await executorProbe.invocationCount
+        XCTAssertEqual(invocationCount, 1)
+    }
+
+    func testStatusCancellationStopsAtDirectoryBoundaryAndReturnsSafeStatus() async throws {
+        let projectsRoot = home
+            .appendingPathComponent(".claude-api", isDirectory: true)
+            .appendingPathComponent("projects", isDirectory: true)
+        let project = projectsRoot.appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try Data("one".utf8).write(to: project.appendingPathComponent("one.jsonl"))
+        try Data("two".utf8).write(to: project.appendingPathComponent("two.jsonl"))
+        let gate = try ServiceWriterGate(databasePath: database.path, runtimeDirectory: runtime)
+        _ = try await gate.performWriteCommand(name: "profile-test-migrate") { writer in
+            try writer.migrate()
+            return ()
+        }
+        let boundaryProbe = ProfileStatusBoundaryProbe()
+        let service = ClaudeCodeProfileService(
+            profileResolver: ClaudeCodeProfileResolver(homeDirectory: home, settingsURL: settings),
+            writerGate: gate,
+            archiveCatalog: nil,
+            settingsURL: settings,
+            signalDrainer: {},
+            statusTestHooks: ClaudeCodeProfileStatusTestHooks(
+                scanBoundary: { url in boundaryProbe.visit(url) }
+            )
+        )
+        let task = Task { await service.status() }
+        await boundaryProbe.waitUntilFirstBoundary()
+
+        task.cancel()
+        boundaryProbe.releaseFirstBoundary()
+        let response = await task.value
+
+        XCTAssertEqual(response.configurationError, "status_cancelled")
+        XCTAssertTrue(response.profiles.isEmpty)
+        XCTAssertEqual(boundaryProbe.visitCount, 1)
+    }
+
     func testConfigureReplacesCompleteProfileSettingsPreservesOtherKeysAndSignals() async throws {
         let first = root.appendingPathComponent("first/projects", isDirectory: true)
         let second = root.appendingPathComponent("second/projects", isDirectory: true)
@@ -259,5 +320,60 @@ private actor ProfileDrainerSignalProbe {
 
     func record() {
         count += 1
+    }
+}
+
+private actor ProfileStatusExecutorProbe {
+    private(set) var invocationCount = 0
+
+    func record() {
+        invocationCount += 1
+    }
+}
+
+private final class ProfileStatusBoundaryProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let release = DispatchSemaphore(value: 0)
+    private var firstBoundaryContinuation: CheckedContinuation<Void, Never>?
+    private var firstBoundaryVisited = false
+    private var visits = 0
+
+    var visitCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return visits
+    }
+
+    func visit(_ url: URL) {
+        _ = url
+        let continuation: CheckedContinuation<Void, Never>? = lock.withLock {
+            visits += 1
+            guard visits == 1 else { return nil }
+            firstBoundaryVisited = true
+            defer { firstBoundaryContinuation = nil }
+            return firstBoundaryContinuation
+        }
+        continuation?.resume()
+        if visitCount == 1 {
+            release.wait()
+        }
+    }
+
+    func waitUntilFirstBoundary() async {
+        if lock.withLock({ firstBoundaryVisited }) { return }
+        await withCheckedContinuation { continuation in
+            let resumeImmediately = lock.withLock {
+                if firstBoundaryVisited { return true }
+                firstBoundaryContinuation = continuation
+                return false
+            }
+            if resumeImmediately {
+                continuation.resume()
+            }
+        }
+    }
+
+    func releaseFirstBoundary() {
+        release.signal()
     }
 }
