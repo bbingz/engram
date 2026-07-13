@@ -282,6 +282,10 @@ jobs:
     steps:
       - name: Set screenshots dir
         run: echo "SCREENSHOTS_DIR=$RUNNER_TEMP/screenshots" >> "$GITHUB_ENV"
+      - name: Install Git LFS
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install git-lfs
+          git lfs version
       - uses: actions/checkout@v7
         with:
           lfs: true
@@ -385,6 +389,10 @@ jobs:
     steps:
       - name: Set screenshots dir
         run: echo "SCREENSHOTS_DIR=$RUNNER_TEMP/screenshots" >> "$GITHUB_ENV"
+      - name: Install Git LFS
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install git-lfs
+          git lfs version
       - uses: actions/checkout@v7
         with:
           lfs: true

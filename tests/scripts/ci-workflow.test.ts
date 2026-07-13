@@ -116,6 +116,23 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain('tests/scripts/version-guard.test.ts');
   });
 
+  it('provisions Git LFS before UI jobs check out screenshot baselines', () => {
+    const smokeJob = testWorkflow.slice(
+      testWorkflow.indexOf('  ui-test-smoke:'),
+      testWorkflow.indexOf('  ui-test-full:'),
+    );
+    const fullJob = testWorkflow.slice(testWorkflow.indexOf('  ui-test-full:'));
+
+    for (const job of [smokeJob, fullJob]) {
+      const installIndex = job.indexOf('brew install git-lfs');
+      const checkoutIndex = job.indexOf('- uses: actions/checkout@v7');
+      expect(installIndex).toBeGreaterThan(-1);
+      expect(job).toContain('git lfs version');
+      expect(checkoutIndex).toBeGreaterThan(installIndex);
+      expect(job).toContain('lfs: true');
+    }
+  });
+
   it('provides ripgrep without sudo before Linux coverage runs the archive safety gate', () => {
     const typescriptJob = testWorkflow.slice(
       testWorkflow.indexOf('  typescript:'),
