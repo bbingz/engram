@@ -229,8 +229,34 @@ final class ClaudeCodeProfileResolverTests: XCTestCase {
         XCTAssertThrowsError(try makeResolver().validateCustomProjectsRoots([missingProjects.path]))
         XCTAssertThrowsError(try makeResolver().validateCustomProjectsRoots([oversizedPath]))
         XCTAssertThrowsError(try makeResolver().validateCustomProjectsRoots([archiveProjects.path]))
+        XCTAssertEqual(
+            try makeResolver().validateCustomProjectsRoots([duplicateRoot.path]),
+            [validRoot.resolvingSymlinksInPath().standardizedFileURL.path]
+        )
         XCTAssertThrowsError(
             try makeResolver().validateCustomProjectsRoots([validRoot.path, duplicateRoot.path])
+        )
+    }
+
+    func testValidationRejectsProjectsAliasWithNonProjectsCanonicalBasename() throws {
+        let canonicalRoot = fixtureRoot.appendingPathComponent(
+            "canonical-session-root",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: canonicalRoot,
+            withIntermediateDirectories: true
+        )
+        let aliasParent = fixtureRoot.appendingPathComponent("alias", isDirectory: true)
+        try FileManager.default.createDirectory(at: aliasParent, withIntermediateDirectories: true)
+        let aliasRoot = aliasParent.appendingPathComponent("projects", isDirectory: true)
+        try FileManager.default.createSymbolicLink(
+            at: aliasRoot,
+            withDestinationURL: canonicalRoot
+        )
+
+        XCTAssertThrowsError(
+            try makeResolver().validateCustomProjectsRoots([aliasRoot.path])
         )
     }
 

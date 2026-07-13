@@ -286,7 +286,8 @@ public struct ClaudeCodeProfileResolver: Sendable {
 
             let canonical = canonicalURL(standardizedURL)
             let canonicalPath = canonical.path
-            guard canonicalPath != "/",
+            guard canonical.lastPathComponent == "projects",
+                  canonicalPath != "/",
                   canonicalPath != canonicalHome.path,
                   canonicalPath != engramRoot.path,
                   !isSameOrDescendant(canonicalPath, of: archiveRoot.path),
