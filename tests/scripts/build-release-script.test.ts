@@ -6,7 +6,7 @@
 // asserting on the resulting bundle's actual structure and the script's pass/fail
 // behavior — including that forbidden Node/dist artifacts are detected.
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   mkdirSync,
   mkdtempSync,
@@ -218,6 +218,16 @@ describe('macOS release-verify bundle hygiene', () => {
 describe('release workflow gate', () => {
   const workflow = readFileSync(releaseWorkflow, 'utf8');
 
+  function acceptsReleaseTag(tag: string): boolean {
+    const match = workflow.match(/\[\[ "\$GITHUB_REF_NAME" =~ ([^ ]+) \]\]/);
+    expect(match).not.toBeNull();
+    return (
+      spawnSync('bash', ['-c', '[[ "$TAG" =~ $TAG_REGEX ]]'], {
+        env: { ...process.env, TAG: tag, TAG_REGEX: match?.[1] ?? '' },
+      }).status === 0
+    );
+  }
+
   it('only runs for semver-style v tags', () => {
     expect(workflow).toContain("- 'v*'");
     expect(workflow).not.toContain("- '*'");
@@ -225,8 +235,20 @@ describe('release workflow gate', () => {
 
   it('validates the pushed tag against the app short version', () => {
     expect(workflow).toContain(
-      '[[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]',
+      '[[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$ ]]',
     );
+    for (const tag of ['v0.0.0', 'v1.2.3', 'v10.20.30']) {
+      expect(acceptsReleaseTag(tag), tag).toBe(true);
+    }
+    for (const tag of [
+      'v01.2.3',
+      'v1.02.3',
+      'v1.2.03',
+      'v1.2.3-rc.1',
+      'v1.2.3+build.1',
+    ]) {
+      expect(acceptsReleaseTag(tag), tag).toBe(false);
+    }
     expect(workflow).toContain('TAG_VERSION="' + '$' + '{GITHUB_REF_NAME#v}"');
     expect(workflow).toContain('--expected-short-version "$TAG_VERSION"');
   });

@@ -21,6 +21,31 @@ jobs:
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: moderate
+          fail-on-scopes: runtime, development, unknown
           retry-on-snapshot-warnings: true
           retry-on-snapshot-warnings-timeout: 60
           show-patched-versions: true
+      - name: Fail closed on incomplete dependency snapshots
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const response = await github.request(
+              'GET /repos/{owner}/{repo}/dependency-graph/compare/{basehead}',
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                basehead: `${context.payload.pull_request.base.sha}...${context.payload.pull_request.head.sha}`,
+                per_page: 1,
+              },
+            );
+            const encoded = response.headers[
+              'x-github-dependency-graph-snapshot-warnings'
+            ];
+            if (typeof encoded === 'string' && encoded.length > 0) {
+              const warnings = Buffer.from(encoded, 'base64')
+                .toString('utf8')
+                .trim();
+              if (warnings.length > 0) {
+                core.setFailed(`Dependency snapshot is incomplete: ${warnings}`);
+              }
+            }

@@ -43,6 +43,14 @@ describe('CodeQL aggregate gate', () => {
       'unexpected scan execution',
       ['success', 'false', 'success', 'false', 'skipped', 'false', 'skipped'],
     ],
+    [
+      'blank classifier output',
+      ['success', '', 'skipped', 'false', 'skipped', 'false', 'skipped'],
+    ],
+    [
+      'invalid classifier output',
+      ['success', 'yes', 'skipped', 'false', 'skipped', 'false', 'skipped'],
+    ],
   ])('rejects %s', (_name, args) => {
     expect(verify(args).status).not.toBe(0);
   });

@@ -138,9 +138,7 @@ describe('CI workflow hardening', () => {
   });
 
   it('fails CI when generated Xcode project is stale', () => {
-    expect(testWorkflow).toContain(
-      'git diff --exit-code Engram.xcodeproj/project.pbxproj',
-    );
+    expect(testWorkflow).toContain('git diff --exit-code Engram.xcodeproj');
   });
 
   it('keeps pull-request code off persistent self-hosted runners', () => {
@@ -335,13 +333,20 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain('name: CI Gate');
     expect(testWorkflow).toContain('if: always()');
     expect(testWorkflow).toContain('CHANGES: $' + '{{ needs.changes.result }}');
-    expect(testWorkflow).toContain('require_result changes "$CHANGES" success');
+    expect(testWorkflow).toContain('bash scripts/ci/verify-test-gate.sh');
     expect(testWorkflow).toContain('Detect durable-docs-only changes');
     expect(codeqlWorkflow).toContain('name: CodeQL Gate');
     expect(codeqlWorkflow).toContain(
       'CHANGES: $' + '{{ needs.changes.result }}',
     );
     expect(codeqlWorkflow).toContain('bash scripts/ci/verify-codeql-gate.sh');
+  });
+
+  it('keeps durable records and historical reviews off heavy product lanes', () => {
+    expect(testWorkflow).toContain(
+      '.memory|.memory/*|CHANGELOG.md|MEMO.md|docs/archive/*|docs/reviews/*|docs/roadmap.md|docs/TODO.md|docs/followups.md)',
+    );
+    expect(testWorkflow).not.toContain('.memory|*.md|docs/*)');
   });
 
   it('runs PR smoke and main full UI without exposing AI-triage secrets', () => {
@@ -436,18 +441,32 @@ describe('Perf workflow', () => {
     expect(perfWorkflow).toContain(
       'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
     );
-    expect(perfWorkflow).toContain('timeout-minutes: 30');
-    expect(perfWorkflow).toContain('npm run generate:fixtures');
+    expect(perfWorkflow).toContain('timeout-minutes: 15');
     expect(perfWorkflow).toContain(
-      '-only-testing:EngramCoreTests/IndexerPerformanceTests',
+      'group: perf-$' + '{{ github.ref }}-$' + '{{ github.event_name }}',
     );
+    expect(perfWorkflow).toContain('cancel-in-progress: true');
+    expect(perfWorkflow).toContain('npm run generate:fixtures');
     expect(perfWorkflow).toContain('-scheme EngramCoreTests');
-    expect(perfWorkflow).not.toContain('-scheme Engram \\');
+    expect(perfWorkflow).toContain('build-for-testing');
+    expect(perfWorkflow).toContain(
+      'xcrun xctest -XCTest IndexerPerformanceTests',
+    );
+    expect(perfWorkflow).not.toContain('xcodebuild test');
     expect(perfWorkflow).toContain('ENGRAM_PERF: "1"');
-    expect(perfWorkflow).toContain('TEST_RUNNER_ENGRAM_PERF=1');
-    expect(perfWorkflow).toContain('2>&1 | tee perf-xcodebuild.log');
+    expect(perfWorkflow).toContain('2>&1 | tee perf-xctest.log');
     expect(perfWorkflow).toContain('scripts/ci/check-perf-results.py');
-    expect(perfWorkflow).toContain('--max-average-seconds 0.250');
+    expect(perfWorkflow).toContain('--max-average-seconds 0.100');
+    expect(perfWorkflow).toContain('--max-rsd-percent 10.0');
+    expect(perfWorkflow).toContain('--build-exit-code');
+    expect(perfWorkflow).toContain('--test-exit-code');
+    expect(perfWorkflow).toContain('--expected-fixture-count 20');
+    expect(perfWorkflow).toContain(
+      '--fixture-root test-fixtures/sessions/generated',
+    );
+    expect(perfWorkflow).toContain(
+      '--baseline-id run-29206691519-macmini-m1-xcode26.6',
+    );
     expect(perfWorkflow).toContain('perf-results.json');
     expect(perfWorkflow).toContain(
       `uses: actions/upload-artifact@${actionPins['actions/upload-artifact']}`,
@@ -474,6 +493,13 @@ describe('Dependency Review workflow', () => {
       `actions/dependency-review-action@${actionPins['actions/dependency-review-action']}`,
     );
     expect(dependencyReviewWorkflow).toContain('fail-on-severity: moderate');
+    expect(dependencyReviewWorkflow).toContain(
+      'fail-on-scopes: runtime, development, unknown',
+    );
+    expect(dependencyReviewWorkflow).toContain(
+      'x-github-dependency-graph-snapshot-warnings',
+    );
+    expect(dependencyReviewWorkflow).toContain('core.setFailed');
     expect(dependencyReviewWorkflow).not.toContain('warn-only: true');
   });
 });

@@ -8,13 +8,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: perf-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
 env:
   XCODEGEN_VERSION: "2.45.4"
 
 jobs:
   indexer-throughput:
     runs-on: [self-hosted, macOS, macmini-m1, xcode]
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
@@ -50,29 +54,58 @@ jobs:
       - name: Generate test fixtures
         run: npm run generate:fixtures
 
-      - name: Run Swift indexer perf test
-        env:
-          ENGRAM_PERF: "1"
+      - name: Build Swift indexer perf test
+        id: perf_build
         run: |
+          set +e
           set -o pipefail
-          xcodebuild test \
+          xcodebuild build-for-testing \
             -project macos/Engram.xcodeproj \
             -scheme EngramCoreTests \
-            -only-testing:EngramCoreTests/IndexerPerformanceTests \
             -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/engram-perf-derived-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             -clonedSourcePackagesDirPath "$HOME/Library/Caches/EngramSourcePackages" \
             CODE_SIGNING_ALLOWED=NO \
-            TEST_RUNNER_ENGRAM_PERF=1 \
-            2>&1 | tee perf-xcodebuild.log
+            2>&1 | tee perf-build.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Run Swift indexer perf test without Xcode test-manager IPC
+        id: perf_test
+        if: steps.perf_build.outputs.exit_code == '0'
+        env:
+          ENGRAM_PERF: "1"
+        run: |
+          set +e
+          set -o pipefail
+          bundle="$RUNNER_TEMP/engram-perf-derived-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/Build/Products/Debug/EngramCoreTests.xctest"
+          xcrun xctest -XCTest IndexerPerformanceTests "$bundle" \
+            2>&1 | tee perf-xctest.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
 
       - name: Enforce perf budget
         if: always()
         run: |
           python3 scripts/ci/check-perf-results.py \
-            --log perf-xcodebuild.log \
+            --log perf-xctest.log \
             --results perf-results.json \
-            --max-average-seconds 0.250
+            --max-average-seconds 0.100 \
+            --max-rsd-percent 10.0 \
+            --build-exit-code "${{ steps.perf_build.outputs.exit_code || '125' }}" \
+            --test-exit-code "${{ steps.perf_test.outputs.exit_code || '125' }}" \
+            --fixture-root test-fixtures/sessions/generated \
+            --expected-fixture-count 20 \
+            --baseline-id run-29206691519-macmini-m1-xcode26.6 \
+            --baseline-average-seconds 0.047 \
+            --git-sha "$GITHUB_SHA" \
+            --runner-name "$RUNNER_NAME" \
+            --runner-os "$RUNNER_OS" \
+            --runner-arch "$RUNNER_ARCH" \
+            --xcode-version "$(xcodebuild -version | tr '\n' ' ')" \
+            --sdk-version "$(xcrun --sdk macosx --show-sdk-version)"
 
       - name: Upload perf results
         if: always()
@@ -81,5 +114,6 @@ jobs:
           name: indexer-perf-results
           path: |
             perf-results.json
-            perf-xcodebuild.log
+            perf-build.log
+            perf-xctest.log
           retention-days: 90

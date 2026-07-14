@@ -42,7 +42,7 @@ jobs:
             heavy=false
             while IFS= read -r path; do
               case "$path" in
-                .memory/*|CHANGELOG.md|MEMO.md|docs/archive/*|docs/roadmap.md|docs/TODO.md|docs/followups.md)
+                .memory|.memory/*|CHANGELOG.md|MEMO.md|docs/archive/*|docs/reviews/*|docs/roadmap.md|docs/TODO.md|docs/followups.md)
                   ;;
                 *)
                   heavy=true
@@ -166,7 +166,7 @@ jobs:
         run: |
           cd macos
           xcodegen generate
-          git diff --exit-code Engram.xcodeproj/project.pbxproj
+          git diff --exit-code Engram.xcodeproj
 
       - name: Generate test fixtures
         run: |
@@ -462,39 +462,10 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          set -euo pipefail
-          require_result() {
-            local name="$1"
-            local actual="$2"
-            local expected="$3"
-            if [ "$actual" != "$expected" ]; then
-              echo "$name: expected $expected, got $actual" >&2
-              exit 1
-            fi
-          }
-
-          require_result changes "$CHANGES" success
-
-          if [ "$HEAVY" = "true" ]; then
-            require_result typescript "$TYPESCRIPT" success
-            require_result macos-gates "$MACOS_GATES" success
-            require_result swift-unit "$SWIFT_UNIT" success
-            require_result remote-server "$REMOTE_SERVER" success
-            if [ "$EVENT_NAME" = "pull_request" ]; then
-              require_result ui-smoke "$UI_SMOKE" success
-              require_result ui-full "$UI_FULL" skipped
-            else
-              require_result ui-smoke "$UI_SMOKE" skipped
-              require_result ui-full "$UI_FULL" success
-            fi
-          else
-            require_result typescript "$TYPESCRIPT" skipped
-            require_result macos-gates "$MACOS_GATES" skipped
-            require_result swift-unit "$SWIFT_UNIT" skipped
-            require_result remote-server "$REMOTE_SERVER" skipped
-            require_result ui-smoke "$UI_SMOKE" skipped
-            require_result ui-full "$UI_FULL" skipped
-          fi
+          bash scripts/ci/verify-test-gate.sh \
+            "$CHANGES" "$HEAVY" \
+            "$TYPESCRIPT" "$MACOS_GATES" "$SWIFT_UNIT" "$REMOTE_SERVER" \
+            "$UI_SMOKE" "$UI_FULL" "$EVENT_NAME"
 
   ui-smoke-report:
     name: Report UI smoke failure
