@@ -6,10 +6,11 @@
 
 - [排查] Archive v2 慢同步的主因不是积压发现或双副本互相阻塞，而是单个瞬时网络错误会终止该副本剩余批次并暂停 60 秒。现场 `archive.sqlite` 仅有 HQ 2 条、M1 1 条 `retryWait`，却分别有 5112 与 2490 条普通 `pending`；最近半小时多数副本分钟仅完成 1–2 条。
 - [修复] PR #167 / `7cf190d1` 增加批内一次有界健康探针：首个瞬时错误仍保留行级 full-jitter 重试；下一条完整验证成功则继续余下批次，第二个瞬时错误、无可用探针或资源门关闭才触发原有 60 秒副本熔断。鉴权/配置错误、HQ/M1 隔离、每副本串行与双回执证明不变。
-- [验证] 新回归测试先复现旧行为（HQ 只请求 1 条、验证 0 条且进入暂停），修复后 `ArchiveReplicationCoordinatorTests` 39/39、相关 Service archive 调度测试 82/82、全量 `EngramCoreTests` 890 项（1 skip、0 failure）通过，PR #167 全部门禁通过并合并为 `834bf1f2`。未安装或重启本机 App/Service，运行中的 build 1188 尚不包含该修复。
-- [运行验证] 当前实际进程来自 `/Applications/Engram.app`，版本 `1.0.4 (1188)`；App / EngramService 于 10:25 启动，晚于 Developer ID 签名时间 03:01。`macos/scripts/release-verify.sh /Applications/Engram.app` 通过 bundle hygiene、结构、deep/strict codesign、Hardened Runtime、Developer ID authority 与 secure timestamp 检查。
-- [构建对应] build `1188` 与 `git rev-list --count 3b0b5b1d` 一致；该提交发生于 02:57，随后 03:01 签名。安装主程序与 `macos/build/EngramExport/Engram.app` 的 SHA-256 均为 `b46c78aaa3a7da7df08c261d88f3f1fd848aece15e1b46fad9e716d00f1c9769`。
-- [边界] 验证时基线 `HEAD == origin/main == 7bd536c6`，比安装构建多 7 个 CI、release tooling、测试、fixture 与文档提交，但没有产品运行时实现变更；因此当前 App 在功能运行时口径为最新，但不是从 `7bd536c6` 重新编译的字节级 HEAD build。远端最新 published release 仍为 `v1.0.3`，本机 `1.0.4` 更新。
+- [验证] 新回归测试先复现旧行为（HQ 只请求 1 条、验证 0 条且进入暂停），修复后 `ArchiveReplicationCoordinatorTests` 39/39、相关 Service archive 调度测试 82/82、全量 `EngramCoreTests` 890 项（1 skip、0 failure）通过，PR #167 全部门禁通过并合并为 `834bf1f2`。
+- [部署] 经明确授权，从 `main@9d9ae163` 构建并安装 Developer ID Engram `1.0.4 (1202)`，23:02 重启 App/Service。安装包通过 bundle hygiene、结构、deep/strict codesign、Hardened Runtime、Developer ID authority 与 secure timestamp 检查；ZIP SHA-256 为 `94a1d3a882daf4d606876f2206c2d78c741684c5483a92d24934cf2e815e3b06`，build 1188 回滚包保留在 `macos/build/rollback/Engram-1.0.4-1188.app`。
+- [现场验证] 30 分钟内 HQ verified `6178→6279`（+101）、pending `4939→4835`；M1 verified `8837→8995`（+158）、pending `2280→2118`，合计 +259、约 8.6 条/分钟。期间持续出现 `transport_network` / `NSURLError -1005` 和 retry，但普通队列仍推进、两副本均能暂停后恢复；quarantine 与 server error 均为 0。
+- [资源] Service 启动扫描时 RSS 峰值约 8.36 GiB，`vmmap` 显示主要是可回收 `Malloc Small (empty)`；随后回落并稳定到约 3.45 GiB，30 分钟内没有无界增长。App 约 85 MiB，socket、CLI archive status、MCP initialize/tools/list 均通过。
+- [上一安装] build `1188` 与 `git rev-list --count 3b0b5b1d` 一致；当时安装主程序与 `macos/build/EngramExport/Engram.app` 的 SHA-256 均为 `b46c78aaa3a7da7df08c261d88f3f1fd848aece15e1b46fad9e716d00f1c9769`。该包现仅作为回滚基线，不再是当前运行版本。
 - [CI] 以 3 个独立 review agent 加 coordinator 裁决完成 CI 编排审计，分 4 个 PR 合入：#161 按变更路径路由 CodeQL 并增加 fail-closed `CodeQL Gate`，#162 稳定 Swift product 的 SPM clone cache/timeout，#163 强制 MCP contract fixture 新鲜度，#164 收口 dependency/perf/release 与 `CI Gate`。
 - [性能] 旧 Perf run `29317039094` 在编译后卡于 Xcode test-manager IPC；改为 `build-for-testing` 后直接 `xcrun xctest`。最终 PR head `845d6d69` 的 run `29318748080` 在 macmini-m1 / Xcode 26.6 上 2m52s 完成，20/20 fixtures，平均 0.049s、RSD 1.315%，build/test exit code 均为 0。
 - [供应链] 启用 GitHub Dependency Graph，并新增 pinned Dependency Review：moderate 及以上漏洞覆盖 runtime/development/unknown scopes，snapshot warning 60 秒重试后仍不完整则 fail closed；当前 SPDX 2.3 SBOM 为 363 packages。
