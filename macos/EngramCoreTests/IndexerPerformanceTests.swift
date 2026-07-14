@@ -4,6 +4,8 @@ import XCTest
 @testable import EngramCoreWrite
 
 final class IndexerPerformanceTests: XCTestCase {
+    private static let expectedFixtureCount = 20
+
     func testSwiftIndexerThroughputForGeneratedSessionFixtures() throws {
         guard ProcessInfo.processInfo.environment["ENGRAM_PERF"] == "1" else {
             throw XCTSkip("perf run disabled")
@@ -11,17 +13,44 @@ final class IndexerPerformanceTests: XCTestCase {
 
         let options = XCTMeasureOptions()
         options.iterationCount = 3
+        let workload = try Self.fixtureWorkload()
+        XCTAssertEqual(workload.fixtureCount, Self.expectedFixtureCount)
 
         measure(metrics: [XCTClockMetric()], options: options) {
             do {
                 let indexed = try Self.waitForAsyncOperation(timeout: .seconds(120)) {
                     try await Self.indexGeneratedSessionFixturesOnce()
                 }
-                XCTAssertGreaterThan(indexed, 0)
+                XCTAssertEqual(indexed, workload.fixtureCount)
+                print(
+                    "ENGRAM_PERF_WORKLOAD fixtures=\(workload.fixtureCount) "
+                        + "bytes=\(workload.fixtureBytes) indexed=\(indexed)"
+                )
             } catch {
                 XCTFail("Swift indexer perf run failed: \(error)")
             }
         }
+    }
+
+    private static func fixtureWorkload() throws -> (fixtureCount: Int, fixtureBytes: Int64) {
+        guard let enumerator = FileManager.default.enumerator(
+            at: sessionFixtureRoot,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            throw PerformanceTestError.missingFixture(sessionFixtureRoot.path)
+        }
+
+        var fixtureCount = 0
+        var fixtureBytes: Int64 = 0
+        for case let url as URL in enumerator {
+            guard ["json", "jsonl"].contains(url.pathExtension) else { continue }
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true else { continue }
+            fixtureCount += 1
+            fixtureBytes += Int64(values.fileSize ?? 0)
+        }
+        return (fixtureCount, fixtureBytes)
     }
 
     private static func indexGeneratedSessionFixturesOnce() async throws -> Int {

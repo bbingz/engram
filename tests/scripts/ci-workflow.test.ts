@@ -20,6 +20,13 @@ const perfWorkflow = readFileSync(
   resolve(repoRoot, '.github/workflows/perf.yml'),
   'utf8',
 );
+const dependencyReviewPath = resolve(
+  repoRoot,
+  '.github/workflows/dependency-review.yml',
+);
+const dependencyReviewWorkflow = existsSync(dependencyReviewPath)
+  ? readFileSync(dependencyReviewPath, 'utf8')
+  : '';
 const macosProject = readFileSync(
   resolve(repoRoot, 'macos/project.yml'),
   'utf8',
@@ -28,6 +35,13 @@ const engramScheme = readFileSync(
   resolve(
     repoRoot,
     'macos/Engram.xcodeproj/xcshareddata/xcschemes/Engram.xcscheme',
+  ),
+  'utf8',
+);
+const engramCoreTestsScheme = readFileSync(
+  resolve(
+    repoRoot,
+    'macos/Engram.xcodeproj/xcshareddata/xcschemes/EngramCoreTests.xcscheme',
   ),
   'utf8',
 );
@@ -42,6 +56,7 @@ const allWorkflows = [
   releaseWorkflow,
   codeqlWorkflow,
   perfWorkflow,
+  dependencyReviewWorkflow,
 ];
 const actionPins = {
   'actions/cache': '55cc8345863c7cc4c66a329aec7e433d2d1c52a9',
@@ -50,6 +65,8 @@ const actionPins = {
   'actions/github-script': '373c709c69115d41ff229c7e5df9f8788daa9553',
   'actions/setup-node': '48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e',
   'actions/upload-artifact': '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
+  'actions/dependency-review-action':
+    'a1d282b36b6f3519aa1f3fc636f609c47dddb294',
   'github/codeql-action/analyze': '1ad29ea4a422cce9a242a9fae469541dcd08addc',
   'github/codeql-action/init': '1ad29ea4a422cce9a242a9fae469541dcd08addc',
 } as const;
@@ -121,9 +138,7 @@ describe('CI workflow hardening', () => {
   });
 
   it('fails CI when generated Xcode project is stale', () => {
-    expect(testWorkflow).toContain(
-      'git diff --exit-code Engram.xcodeproj/project.pbxproj',
-    );
+    expect(testWorkflow).toContain('git diff --exit-code Engram.xcodeproj');
   });
 
   it('keeps pull-request code off persistent self-hosted runners', () => {
@@ -318,13 +333,27 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain('name: CI Gate');
     expect(testWorkflow).toContain('if: always()');
     expect(testWorkflow).toContain('CHANGES: $' + '{{ needs.changes.result }}');
-    expect(testWorkflow).toContain('require_result changes "$CHANGES" success');
+    expect(testWorkflow).toContain('bash scripts/ci/verify-test-gate.sh');
+    const ciGate = testWorkflow.slice(
+      testWorkflow.indexOf('  ci-gate:'),
+      testWorkflow.indexOf('  ui-smoke-report:'),
+    );
+    expect(ciGate).toContain(
+      `uses: actions/checkout@${actionPins['actions/checkout']}`,
+    );
     expect(testWorkflow).toContain('Detect durable-docs-only changes');
     expect(codeqlWorkflow).toContain('name: CodeQL Gate');
     expect(codeqlWorkflow).toContain(
       'CHANGES: $' + '{{ needs.changes.result }}',
     );
     expect(codeqlWorkflow).toContain('bash scripts/ci/verify-codeql-gate.sh');
+  });
+
+  it('keeps durable records and historical reviews off heavy product lanes', () => {
+    expect(testWorkflow).toContain(
+      '.memory|.memory/*|CHANGELOG.md|MEMO.md|docs/archive/*|docs/reviews/*|docs/roadmap.md|docs/TODO.md|docs/followups.md)',
+    );
+    expect(testWorkflow).not.toContain('.memory|*.md|docs/*)');
   });
 
   it('runs PR smoke and main full UI without exposing AI-triage secrets', () => {
@@ -412,24 +441,39 @@ describe('CI workflow hardening', () => {
 });
 
 describe('Perf workflow', () => {
-  it('runs report-only indexer measurements on macOS nightly and on demand', () => {
+  it('runs budgeted indexer measurements on macOS nightly and on demand', () => {
     expect(perfWorkflow).toContain('name: Perf');
     expect(perfWorkflow).toContain('cron: "30 19 * * *"');
     expect(perfWorkflow).toContain('workflow_dispatch:');
     expect(perfWorkflow).toContain(
       'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
     );
-    expect(perfWorkflow).toContain('timeout-minutes: 30');
-    expect(perfWorkflow).toContain('npm run generate:fixtures');
+    expect(perfWorkflow).toContain('timeout-minutes: 15');
     expect(perfWorkflow).toContain(
-      '-only-testing:EngramCoreTests/IndexerPerformanceTests',
+      'group: perf-$' + '{{ github.ref }}-$' + '{{ github.event_name }}',
     );
+    expect(perfWorkflow).toContain('cancel-in-progress: true');
+    expect(perfWorkflow).toContain('npm run generate:fixtures');
+    expect(perfWorkflow).toContain('-scheme EngramCoreTests');
+    expect(perfWorkflow).toContain('build-for-testing');
+    expect(perfWorkflow).toContain(
+      'xcrun xctest -XCTest IndexerPerformanceTests',
+    );
+    expect(perfWorkflow).not.toContain('xcodebuild test');
     expect(perfWorkflow).toContain('ENGRAM_PERF: "1"');
-    expect(perfWorkflow).toContain('TEST_RUNNER_ENGRAM_PERF=1');
-    expect(perfWorkflow).toContain('2>&1 | tee perf-xcodebuild.log');
-    expect(perfWorkflow).toContain('if "measured" in line.lower()');
-    expect(perfWorkflow).toContain('"average_seconds"');
-    expect(perfWorkflow).toContain('No XCTest measured lines found');
+    expect(perfWorkflow).toContain('2>&1 | tee perf-xctest.log');
+    expect(perfWorkflow).toContain('scripts/ci/check-perf-results.py');
+    expect(perfWorkflow).toContain('--max-average-seconds 0.100');
+    expect(perfWorkflow).toContain('--max-rsd-percent 10.0');
+    expect(perfWorkflow).toContain('--build-exit-code');
+    expect(perfWorkflow).toContain('--test-exit-code');
+    expect(perfWorkflow).toContain('--expected-fixture-count 20');
+    expect(perfWorkflow).toContain(
+      '--fixture-root test-fixtures/sessions/generated',
+    );
+    expect(perfWorkflow).toContain(
+      '--baseline-id run-29206691519-macmini-m1-xcode26.6',
+    );
     expect(perfWorkflow).toContain('perf-results.json');
     expect(perfWorkflow).toContain(
       `uses: actions/upload-artifact@${actionPins['actions/upload-artifact']}`,
@@ -439,6 +483,31 @@ describe('Perf workflow', () => {
     expect(macosProject).toContain('ENGRAM_PERF: "$(TEST_RUNNER_ENGRAM_PERF)"');
     expect(engramScheme).toContain('key = "ENGRAM_PERF"');
     expect(engramScheme).toContain('value = "$(TEST_RUNNER_ENGRAM_PERF)"');
+    expect(engramCoreTestsScheme).toContain('key = "ENGRAM_PERF"');
+    expect(engramCoreTestsScheme).toContain(
+      'value = "$(TEST_RUNNER_ENGRAM_PERF)"',
+    );
+  });
+});
+
+describe('Dependency Review workflow', () => {
+  it('fail-closes pull requests that introduce moderate-or-higher vulnerabilities', () => {
+    expect(dependencyReviewWorkflow).toContain('name: Dependency Review');
+    expect(dependencyReviewWorkflow).toContain('pull_request:');
+    expect(dependencyReviewWorkflow).toContain('contents: read');
+    expect(dependencyReviewWorkflow).toContain('timeout-minutes: 5');
+    expect(dependencyReviewWorkflow).toContain(
+      `actions/dependency-review-action@${actionPins['actions/dependency-review-action']}`,
+    );
+    expect(dependencyReviewWorkflow).toContain('fail-on-severity: moderate');
+    expect(dependencyReviewWorkflow).toContain(
+      'fail-on-scopes: runtime, development, unknown',
+    );
+    expect(dependencyReviewWorkflow).toContain(
+      'x-github-dependency-graph-snapshot-warnings',
+    );
+    expect(dependencyReviewWorkflow).toContain('core.setFailed');
+    expect(dependencyReviewWorkflow).not.toContain('warn-only: true');
   });
 });
 
