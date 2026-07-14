@@ -458,6 +458,7 @@ jobs:
       UI_SMOKE: ${{ needs.ui-test-smoke.result }}
       UI_FULL: ${{ needs.ui-test-full.result }}
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - name: Verify expected CI results
         env:
           EVENT_NAME: ${{ github.event_name }}

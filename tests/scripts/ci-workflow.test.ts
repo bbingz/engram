@@ -334,6 +334,13 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain('if: always()');
     expect(testWorkflow).toContain('CHANGES: $' + '{{ needs.changes.result }}');
     expect(testWorkflow).toContain('bash scripts/ci/verify-test-gate.sh');
+    const ciGate = testWorkflow.slice(
+      testWorkflow.indexOf('  ci-gate:'),
+      testWorkflow.indexOf('  ui-smoke-report:'),
+    );
+    expect(ciGate).toContain(
+      `uses: actions/checkout@${actionPins['actions/checkout']}`,
+    );
     expect(testWorkflow).toContain('Detect durable-docs-only changes');
     expect(codeqlWorkflow).toContain('name: CodeQL Gate');
     expect(codeqlWorkflow).toContain(
