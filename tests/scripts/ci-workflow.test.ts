@@ -357,6 +357,25 @@ describe('CI workflow hardening', () => {
     );
   });
 
+  it('caches CodeQL Swift product package clones and leaves analysis timeout headroom', () => {
+    const swiftProduct = codeqlWorkflow.slice(
+      codeqlWorkflow.indexOf('  swift:'),
+      codeqlWorkflow.indexOf('  swift-remote-server:'),
+    );
+
+    expect(swiftProduct).toContain('timeout-minutes: 75');
+    expect(swiftProduct).toContain(
+      `uses: actions/cache@${actionPins['actions/cache']}`,
+    );
+    expect(swiftProduct).toContain('path: ~/.cache/engram-codeql-spm');
+    expect(swiftProduct).toContain(
+      "hashFiles('macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved')",
+    );
+    expect(swiftProduct).toContain(
+      '-clonedSourcePackagesDirPath "$HOME/.cache/engram-codeql-spm"',
+    );
+  });
+
   it('routes CodeQL targets through the tested path classifier', () => {
     expect(codeqlWorkflow).toContain(
       'bash scripts/ci/classify-codeql-changes.sh "$BASE_SHA" "$HEAD_SHA" "$GITHUB_OUTPUT"',
