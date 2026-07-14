@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parseDocument } from 'yaml';
 
 const repoRoot = resolve(import.meta.dirname, '../..');
 const testWorkflow = readFileSync(
@@ -36,6 +37,22 @@ const xcodegenWorkflows = [
   codeqlWorkflow,
   perfWorkflow,
 ];
+const allWorkflows = [
+  testWorkflow,
+  releaseWorkflow,
+  codeqlWorkflow,
+  perfWorkflow,
+];
+const actionPins = {
+  'actions/cache': '55cc8345863c7cc4c66a329aec7e433d2d1c52a9',
+  'actions/checkout': '9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0',
+  'actions/download-artifact': '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c',
+  'actions/github-script': '373c709c69115d41ff229c7e5df9f8788daa9553',
+  'actions/setup-node': '48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e',
+  'actions/upload-artifact': '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
+  'github/codeql-action/analyze': '1ad29ea4a422cce9a242a9fae469541dcd08addc',
+  'github/codeql-action/init': '1ad29ea4a422cce9a242a9fae469541dcd08addc',
+} as const;
 const packageJSON = JSON.parse(
   readFileSync(resolve(repoRoot, 'package.json'), 'utf8'),
 ) as { scripts: Record<string, string> };
@@ -51,6 +68,37 @@ const biomeConfig = JSON.parse(
 const gitignore = readFileSync(resolve(repoRoot, '.gitignore'), 'utf8');
 
 describe('CI workflow hardening', () => {
+  it('parses every workflow as YAML', () => {
+    for (const workflow of allWorkflows) {
+      expect(parseDocument(workflow).errors).toEqual([]);
+    }
+  });
+
+  it('pins every external action to an immutable commit SHA', () => {
+    const combined = allWorkflows.join('\n');
+    const uses = [...combined.matchAll(/^\s*(?:-\s*)?uses:\s*([^\s#]+)/gm)].map(
+      (match) => match[1],
+    );
+    expect(uses.length).toBeGreaterThan(0);
+    for (const specifier of uses) {
+      if (specifier.startsWith('./')) continue;
+      expect(specifier).toMatch(/^[^@\s]+@[0-9a-f]{40}$/);
+    }
+    for (const [action, sha] of Object.entries(actionPins)) {
+      expect(combined).toContain(`${action}@${sha}`);
+    }
+  });
+
+  it('runs checksum-pinned actionlint in the Node CI lane', () => {
+    expect(testWorkflow).toContain('ACTIONLINT_VERSION: "1.7.12"');
+    expect(testWorkflow).toContain(
+      'ACTIONLINT_LINUX_AMD64_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"',
+    );
+    expect(testWorkflow).toContain('Validate GitHub Actions workflows');
+    expect(testWorkflow).toContain('sha256sum --check -');
+    expect(testWorkflow).toContain('"$RUNNER_TEMP/actionlint"');
+  });
+
   it('does not hard-gate pull requests on npm audit advisory churn', () => {
     expect(testWorkflow).toContain(
       'continue-on-error: $' + "{{ github.event_name == 'pull_request' }}",
@@ -78,24 +126,14 @@ describe('CI workflow hardening', () => {
     );
   });
 
-  it('keeps headless macOS jobs self-hosted and runs app-hosted tests on a GUI-capable hosted runner', () => {
-    expect(testWorkflow).toContain(
-      'runs-on: [self-hosted, macOS, macmini-m1, lite]',
-    );
-    const liteJobs = [
-      ['  macos-vitest:', '  swift-unit:'],
-      ['  fixture-check:', '  ui-test-smoke:'],
-    ];
-    for (const [job, nextJob] of liteJobs) {
-      const section = testWorkflow.slice(
-        testWorkflow.indexOf(job),
-        testWorkflow.indexOf(nextJob),
-      );
-      expect(section).toContain(
-        'runs-on: [self-hosted, macOS, macmini-m1, lite]',
-      );
-    }
+  it('keeps pull-request code off persistent self-hosted runners', () => {
+    expect(testWorkflow).not.toContain('runs-on: [self-hosted');
+    expect(codeqlWorkflow).not.toContain('runs-on: [self-hosted');
 
+    const macosVitest = testWorkflow.slice(
+      testWorkflow.indexOf('  macos-vitest:'),
+      testWorkflow.indexOf('  swift-unit:'),
+    );
     const swiftUnit = testWorkflow.slice(
       testWorkflow.indexOf('  swift-unit:'),
       testWorkflow.indexOf('  remote-server-swift:'),
@@ -109,7 +147,7 @@ describe('CI workflow hardening', () => {
       releaseWorkflow.indexOf('  release-tests:'),
       releaseWorkflow.indexOf('  release-remote-server-tests:'),
     );
-    for (const job of [swiftUnit, uiSmoke, uiFull, releaseTests]) {
+    for (const job of [macosVitest, swiftUnit, uiSmoke, uiFull, releaseTests]) {
       expect(job).toContain('runs-on: macos-15');
       expect(job).not.toContain(
         'runs-on: [self-hosted, macOS, macmini-m1, xcode]',
@@ -137,6 +175,7 @@ describe('CI workflow hardening', () => {
       'tests/scripts/product-boundary-scripts.test.ts',
     );
     expect(testWorkflow).toContain('tests/scripts/version-guard.test.ts');
+    expect(testWorkflow).toContain('Verify fixture determinism');
   });
 
   it('provisions Git LFS before UI jobs check out screenshot baselines', () => {
@@ -148,7 +187,9 @@ describe('CI workflow hardening', () => {
 
     for (const job of [smokeJob, fullJob]) {
       const installIndex = job.indexOf('brew install git-lfs');
-      const checkoutIndex = job.indexOf('- uses: actions/checkout@v7');
+      const checkoutIndex = job.indexOf(
+        `- uses: actions/checkout@${actionPins['actions/checkout']}`,
+      );
       expect(installIndex).toBeGreaterThan(-1);
       expect(job).toContain('git lfs version');
       expect(checkoutIndex).toBeGreaterThan(installIndex);
@@ -156,20 +197,18 @@ describe('CI workflow hardening', () => {
     }
   });
 
-  it('provides ripgrep without sudo before Linux coverage runs the archive safety gate', () => {
+  it('provides ripgrep before Linux coverage runs the archive safety gate', () => {
     const typescriptJob = testWorkflow.slice(
       testWorkflow.indexOf('  typescript:'),
       testWorkflow.indexOf('  macos-vitest:'),
     );
-    const installIndex = typescriptJob.indexOf('apt-get download ripgrep');
+    const installIndex = typescriptJob.indexOf(
+      'sudo apt-get install -y ripgrep',
+    );
     const coverageIndex = typescriptJob.indexOf('npm run test:coverage');
 
     expect(installIndex).toBeGreaterThan(-1);
-    expect(typescriptJob).toContain('dpkg-deb --extract ripgrep_*.deb root');
-    expect(typescriptJob).toContain(
-      'echo "$install_root/root/usr/bin" >> "$GITHUB_PATH"',
-    );
-    expect(typescriptJob).not.toContain('sudo apt-get');
+    expect(typescriptJob).toContain('sudo apt-get update');
     expect(coverageIndex).toBeGreaterThan(installIndex);
   });
 
@@ -218,7 +257,7 @@ describe('CI workflow hardening', () => {
     );
     const swiftJob = normalWorkflow.slice(
       normalWorkflow.indexOf('  remote-server-swift:'),
-      normalWorkflow.indexOf('  fixture-check:'),
+      normalWorkflow.indexOf('  ui-test-smoke:'),
     );
     const releaseJob = releaseWorkflow.slice(
       releaseWorkflow.indexOf('  release-remote-server-tests:'),
@@ -242,17 +281,75 @@ describe('CI workflow hardening', () => {
     );
   });
 
-  it('keys SPM cache on Package.resolved and gives UI jobs restore keys', () => {
+  it('keys SPM cache on the real Package.resolved and scopes restore keys by runner lane', () => {
     expect(testWorkflow).toContain(
-      'spm-$' +
-        "{{ hashFiles('macos/project.yml', 'macos/Package.resolved') }}",
+      'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved',
     );
+    expect(testWorkflow).not.toContain("'macos/Package.resolved'");
     const uiSmoke = testWorkflow.slice(
       testWorkflow.indexOf('  ui-test-smoke:'),
     );
     const uiFull = testWorkflow.slice(testWorkflow.indexOf('  ui-test-full:'));
-    expect(uiSmoke).toContain('restore-keys: spm-');
-    expect(uiFull).toContain('restore-keys: spm-');
+    expect(uiSmoke).toContain(
+      'restore-keys: spm-$' +
+        '{{ runner.os }}-$' +
+        '{{ runner.arch }}-xcode15-',
+    );
+    expect(uiFull).toContain(
+      'restore-keys: spm-$' +
+        '{{ runner.os }}-$' +
+        '{{ runner.arch }}-xcode15-',
+    );
+  });
+
+  it('cancels superseded runs and exposes an always-run aggregate gate', () => {
+    for (const workflow of [testWorkflow, codeqlWorkflow]) {
+      expect(workflow).toContain(
+        'group: $' + '{{ github.workflow }}-$' + '{{ github.ref }}',
+      );
+      expect(workflow).toContain('cancel-in-progress: true');
+    }
+    expect(testWorkflow).toContain('name: CI Gate');
+    expect(testWorkflow).toContain('if: always()');
+    expect(testWorkflow).toContain('CHANGES: $' + '{{ needs.changes.result }}');
+    expect(testWorkflow).toContain('require_result changes "$CHANGES" success');
+    expect(testWorkflow).toContain('Detect durable-docs-only changes');
+  });
+
+  it('runs PR smoke and main full UI without exposing AI-triage secrets', () => {
+    const uiSmoke = testWorkflow.slice(
+      testWorkflow.indexOf('  ui-test-smoke:'),
+      testWorkflow.indexOf('  ui-test-full:'),
+    );
+    const uiFull = testWorkflow.slice(
+      testWorkflow.indexOf('  ui-test-full:'),
+      testWorkflow.indexOf('  ci-gate:'),
+    );
+    expect(uiSmoke).toContain("github.event_name == 'pull_request'");
+    expect(uiFull).toContain("github.event_name == 'push'");
+    expect(uiFull).not.toContain("github.event_name == 'pull_request'");
+    expect(uiSmoke).not.toContain('DASHSCOPE_API_KEY');
+    expect(uiSmoke).not.toContain('pull-requests: write');
+    const uiReport = testWorkflow.slice(
+      testWorkflow.indexOf('  ui-smoke-report:'),
+    );
+    expect(uiReport).toContain('pull-requests: write');
+    expect(uiReport).not.toContain('actions/checkout@');
+    expect(uiReport).toContain(
+      `actions/download-artifact@${actionPins['actions/download-artifact']}`,
+    );
+  });
+
+  it('scans the shipped Swift product and remote server in distinct CodeQL categories', () => {
+    expect(codeqlWorkflow).toContain('runs-on: macos-15');
+    expect(codeqlWorkflow).toContain('runs-on: macos-26');
+    expect(codeqlWorkflow).toContain('-scheme EngramRemoteServer');
+    expect(codeqlWorkflow).toContain(
+      'category: /language:swift/target:product',
+    );
+    expect(codeqlWorkflow).toContain(
+      'category: /language:swift/target:remote-server',
+    );
   });
 });
 
@@ -276,7 +373,9 @@ describe('Perf workflow', () => {
     expect(perfWorkflow).toContain('"average_seconds"');
     expect(perfWorkflow).toContain('No XCTest measured lines found');
     expect(perfWorkflow).toContain('perf-results.json');
-    expect(perfWorkflow).toContain('uses: actions/upload-artifact@v7');
+    expect(perfWorkflow).toContain(
+      `uses: actions/upload-artifact@${actionPins['actions/upload-artifact']}`,
+    );
     expect(perfWorkflow).toContain('name: indexer-perf-results');
     expect(perfWorkflow).toContain('retention-days: 90');
     expect(macosProject).toContain('ENGRAM_PERF: "$(TEST_RUNNER_ENGRAM_PERF)"');

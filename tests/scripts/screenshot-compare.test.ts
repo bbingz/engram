@@ -121,11 +121,20 @@ describe('screenshot-compare gate behavior', () => {
 });
 
 describe('UI workflow gates', () => {
-  it('runs the full UI suite on pull requests', () => {
+  it('runs the full UI suite on main while PRs use smoke coverage', () => {
     const workflow = readFileSync(workflowPath, 'utf8');
-    const fullJob = workflow.slice(workflow.indexOf('  ui-test-full:'));
+    const smokeJob = workflow.slice(
+      workflow.indexOf('  ui-test-smoke:'),
+      workflow.indexOf('  ui-test-full:'),
+    );
+    const fullJob = workflow.slice(
+      workflow.indexOf('  ui-test-full:'),
+      workflow.indexOf('  ci-gate:'),
+    );
 
-    expect(fullJob).toContain("github.event_name == 'pull_request'");
+    expect(smokeJob).toContain("github.event_name == 'pull_request'");
+    expect(fullJob).toContain("github.event_name == 'push'");
+    expect(fullJob).not.toContain("github.event_name == 'pull_request'");
     expect(fullJob).toContain('-only-testing:EngramUITests');
   });
 

@@ -26,9 +26,9 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
           cache: 'npm'
@@ -38,11 +38,11 @@ jobs:
           brew install xcodegen ripgrep
           test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
-          key: spm-${{ hashFiles('macos/project.yml', 'macos/Package.resolved') }}
-          restore-keys: spm-
+          key: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-
 
       - name: Generate Xcode project
         run: cd macos && xcodegen generate
@@ -81,7 +81,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Select Xcode 26.6
         run: sudo xcode-select -s /Applications/Xcode_26.6.app
@@ -109,9 +109,9 @@ jobs:
     needs: [release-tests, release-remote-server-tests]
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
           cache: 'npm'
@@ -121,11 +121,11 @@ jobs:
           brew install xcodegen
           test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
-          key: spm-${{ hashFiles('macos/project.yml', 'macos/Package.resolved') }}
-          restore-keys: spm-
+          key: spm-${{ runner.os }}-${{ runner.arch }}-selfhost-xcode-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-selfhost-xcode-
 
       - name: Generate Xcode project
         run: cd macos && xcodegen generate

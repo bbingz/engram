@@ -1,0 +1,6 @@
+self-hosted-runner:
+  labels:
+    - engram
+    - macmini-m1
+    - xcode
+    - lite

@@ -12,39 +12,77 @@ permissions:
   contents: read
   security-events: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   XCODEGEN_VERSION: "2.45.4"
 
 jobs:
+  changes:
+    name: Classify CodeQL changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      heavy: ${{ steps.classify.outputs.heavy }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+      - id: classify
+        name: Detect source-free changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          heavy=true
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]] &&
+             git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            heavy=false
+            while IFS= read -r path; do
+              case "$path" in
+                .memory|*.md|docs/*)
+                  ;;
+                *)
+                  heavy=true
+                  break
+                  ;;
+              esac
+            done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          fi
+          echo "heavy=$heavy" >> "$GITHUB_OUTPUT"
+
   typescript:
     name: CodeQL TypeScript
-    runs-on: [self-hosted, Linux, X64]
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@1ad29ea4a422cce9a242a9fae469541dcd08addc # v4
         with:
           languages: javascript-typescript
           build-mode: none
 
       - name: Analyze
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@1ad29ea4a422cce9a242a9fae469541dcd08addc # v4
 
   swift:
-    name: CodeQL Swift
-    runs-on: [self-hosted, macOS, macmini-m1, xcode]
+    name: CodeQL Swift product
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
           cache: 'npm'
@@ -55,7 +93,7 @@ jobs:
           test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@1ad29ea4a422cce9a242a9fae469541dcd08addc # v4
         with:
           languages: swift
           build-mode: manual
@@ -75,7 +113,55 @@ jobs:
             -project Engram.xcodeproj \
             -scheme Engram \
             -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/codeql-product-derived" \
+            ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO
 
       - name: Analyze
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@1ad29ea4a422cce9a242a9fae469541dcd08addc # v4
+        with:
+          category: /language:swift/target:product
+
+  swift-remote-server:
+    name: CodeQL Swift remote server
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+
+      - name: Install xcodegen
+        run: |
+          brew install xcodegen
+          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@1ad29ea4a422cce9a242a9fae469541dcd08addc # v4
+        with:
+          languages: swift
+          build-mode: manual
+
+      - name: Generate Xcode project
+        run: cd macos && xcodegen generate
+
+      - name: Build Swift remote server
+        run: |
+          cd macos
+          xcodebuild build \
+            -project Engram.xcodeproj \
+            -scheme EngramRemoteServer \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/codeql-remote-derived" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@1ad29ea4a422cce9a242a9fae469541dcd08addc # v4
+        with:
+          category: /language:swift/target:remote-server

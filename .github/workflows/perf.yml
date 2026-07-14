@@ -16,9 +16,9 @@ jobs:
     runs-on: [self-hosted, macOS, macmini-m1, xcode]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
           cache: 'npm'
@@ -27,7 +27,7 @@ jobs:
       - run: npm run build
 
       - name: Cache Homebrew (xcodegen)
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/Library/Caches/Homebrew
           key: brew-xcodegen-${{ runner.os }}
@@ -38,11 +38,11 @@ jobs:
           test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
 
       - name: Cache SPM packages
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
-          key: spm-${{ hashFiles('macos/project.yml', 'macos/Package.resolved') }}
-          restore-keys: spm-
+          path: ~/Library/Caches/EngramSourcePackages
+          key: spm-${{ runner.os }}-${{ runner.arch }}-selfhost-xcode-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-selfhost-xcode-
 
       - name: Generate Xcode project
         run: cd macos && xcodegen generate
@@ -60,6 +60,8 @@ jobs:
             -scheme Engram \
             -only-testing:EngramCoreTests/IndexerPerformanceTests \
             -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/engram-perf-derived" \
+            -clonedSourcePackagesDirPath "$HOME/Library/Caches/EngramSourcePackages" \
             CODE_SIGNING_ALLOWED=NO \
             TEST_RUNNER_ENGRAM_PERF=1 \
             2>&1 | tee perf-xcodebuild.log
@@ -107,7 +109,7 @@ jobs:
 
       - name: Upload perf results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: indexer-perf-results
           path: |
