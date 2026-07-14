@@ -68,7 +68,7 @@ jobs:
       contents: read
       security-events: write
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
@@ -76,6 +76,13 @@ jobs:
         with:
           node-version: 24
           cache: 'npm'
+
+      - name: Cache SPM package clones
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cache/engram-codeql-spm
+          key: codeql-spm-${{ runner.os }}-${{ runner.arch }}-xcode16-${{ hashFiles('macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: codeql-spm-${{ runner.os }}-${{ runner.arch }}-xcode16-
 
       - name: Install xcodegen
         run: |
@@ -104,6 +111,7 @@ jobs:
             -scheme Engram \
             -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/codeql-product-derived" \
+            -clonedSourcePackagesDirPath "$HOME/.cache/engram-codeql-spm" \
             ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO
 
