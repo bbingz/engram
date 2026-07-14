@@ -178,6 +178,12 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain('Verify fixture determinism');
   });
 
+  it('fails CI when generated MCP contract fixtures are stale', () => {
+    expect(packageJSON.scripts['check:mcp-contract-fixtures']).toBeDefined();
+    expect(testWorkflow).toContain('Check MCP contract fixture freshness');
+    expect(testWorkflow).toContain('npm run check:mcp-contract-fixtures');
+  });
+
   it('provisions Git LFS before UI jobs check out screenshot baselines', () => {
     const smokeJob = testWorkflow.slice(
       testWorkflow.indexOf('  ui-test-smoke:'),

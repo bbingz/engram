@@ -14,6 +14,7 @@
     "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "generate:fixtures": "tsx scripts/generate-test-fixtures.ts",
     "generate:mcp-contract-fixtures": "TZ=UTC tsx scripts/gen-mcp-contract-fixtures.ts",
+    "check:mcp-contract-fixtures": "bash scripts/ci/check-mcp-contract-fixtures.sh",
     "generate:adapter-parity-fixtures": "tsx scripts/gen-adapter-parity-fixtures.ts",
     "check:adapter-parity-fixtures": "tsx scripts/check-adapter-parity-fixtures.ts",
     "generate:parent-detection-fixtures": "tsx scripts/gen-parent-detection-fixtures.ts",

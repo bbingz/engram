@@ -17,4 +17,14 @@ describe('MCP contract fixture generator', () => {
     expect(generatorSource).not.toContain('extractToolNamesFromIndex');
     expect(generatorSource).not.toContain('extractInitializeResultFromIndex');
   });
+
+  it('keeps Swift executable goldens outside the generated fixture ownership boundary', () => {
+    expect(generatorSource).not.toContain('rmSync(goldenDir');
+    expect(generatorSource).not.toMatch(/from '\.\.\/src\/tools\//);
+    expect(generatorSource).not.toContain('const goldens:');
+  });
+
+  it('deduplicates tool names extracted from the Swift registry', () => {
+    expect(generatorSource).toContain('return [...new Set(toolNames)]');
+  });
 });

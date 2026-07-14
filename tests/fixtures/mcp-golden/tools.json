@@ -1,4 +1,5 @@
 [
+  "search",
   "list_sessions",
   "stats",
   "get_costs",
@@ -8,7 +9,6 @@
   "project_list_migrations",
   "live_sessions",
   "get_memory",
-  "search",
   "get_context",
   "get_insights",
   "link_sessions",

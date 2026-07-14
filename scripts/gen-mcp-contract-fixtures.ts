@@ -1,35 +1,19 @@
 #!/usr/bin/env tsx
-// IMPORTANT: always run with TZ=UTC so golden timestamps match the xctest
-// environment, which itself runs under UTC regardless of the host TZ.
+// IMPORTANT: always run with TZ=UTC so fixture timestamps and SQLite bytes are
+// stable across local and CI environments.
 // Example:  TZ=UTC npm run generate:mcp-contract-fixtures
-// Without TZ=UTC the generator emits host-local times (e.g. +08:00 CST) while
-// xctest outputs UTC — 5 goldens with timestamps would silently diverge.
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+// Behavioral response goldens are owned by the native Swift executable tests;
+// this generator only owns the database, runtime inputs, and Swift metadata.
+import {
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CodexAdapter } from '../src/adapters/codex.js';
 import { Database } from '../src/core/db.js';
-import { handleExport } from '../src/tools/export.js';
-import { handleFileActivity } from '../src/tools/file_activity.js';
-import { handleGetContext } from '../src/tools/get_context.js';
-import { handleGetCosts } from '../src/tools/get_costs.js';
-import { handleGetInsights } from '../src/tools/get_insights.js';
-import { handleGetMemory } from '../src/tools/get_memory.js';
-import { handleGetSession } from '../src/tools/get_session.js';
-import { handleHandoff } from '../src/tools/handoff.js';
-import { handleLinkSessions } from '../src/tools/link_sessions.js';
-import { handleListSessions } from '../src/tools/list_sessions.js';
-import { handleLiveSessions } from '../src/tools/live_sessions.js';
-import {
-  handleProjectListMigrations,
-  handleProjectRecover,
-  handleProjectReview,
-} from '../src/tools/project.js';
-import { handleProjectTimeline } from '../src/tools/project_timeline.js';
-import { handleSaveInsight } from '../src/tools/save_insight.js';
-import { handleSearch } from '../src/tools/search.js';
-import { handleStats } from '../src/tools/stats.js';
-import { handleToolAnalytics } from '../src/tools/tool_analytics.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
@@ -52,11 +36,14 @@ const exportHomeDir = resolve(runtimeDir, 'export-home');
 rmSync(fixtureDbPath, { force: true });
 rmSync(`${fixtureDbPath}-wal`, { force: true });
 rmSync(`${fixtureDbPath}-shm`, { force: true });
-rmSync(goldenDir, { recursive: true, force: true });
-rmSync(runtimeDir, { recursive: true, force: true });
+rmSync(linkTargetDir, { recursive: true, force: true });
+rmSync(transcriptDir, { recursive: true, force: true });
+rmSync(exportHomeDir, { recursive: true, force: true });
 mkdirSync(goldenDir, { recursive: true });
 mkdirSync(runtimeDir, { recursive: true });
 mkdirSync(transcriptDir, { recursive: true });
+mkdirSync(exportHomeDir, { recursive: true });
+writeFileSync(resolve(exportHomeDir, '.gitkeep'), '');
 
 const db = new Database(fixtureDbPath);
 const raw = db.raw;
@@ -66,13 +53,15 @@ const insertSession = raw.prepare(`
   INSERT INTO sessions (
     id, source, start_time, end_time, cwd, project, model,
     message_count, user_message_count, assistant_message_count,
-    tool_message_count, system_message_count, summary, file_path,
+    tool_message_count, system_message_count, summary,
+    instruction_count, human_turn_count, instruction_summary, file_path,
     size_bytes, indexed_at, agent_role, origin, tier, generated_title,
     quality_score
   ) VALUES (
     @id, @source, @startTime, @endTime, @cwd, @project, @model,
     @messageCount, @userMessageCount, @assistantMessageCount,
-    @toolMessageCount, @systemMessageCount, @summary, @filePath,
+    @toolMessageCount, @systemMessageCount, @summary,
+    @instructionCount, @humanTurnCount, @instructionSummary, @filePath,
     @sizeBytes, @indexedAt, @agentRole, @origin, @tier, @generatedTitle,
     @qualityScore
   )
@@ -159,6 +148,9 @@ for (const project of projects) {
       toolMessageCount: 2 + (sessionIndex % 2),
       systemMessageCount: 1,
       summary,
+      instructionCount: 2,
+      humanTurnCount: 7 + (sessionIndex % 4),
+      instructionSummary: `${project.name} asks about the Swift MCP contract`,
       filePath: `${project.cwd}/.fixtures/${id}.jsonl`,
       sizeBytes: 28000 + sessionIndex * 137,
       indexedAt: `2026-01-${day}T1${sessionIndex % 10}:40:00.000Z`,
@@ -240,6 +232,9 @@ for (let i = 1; i <= 10; i += 1) {
 db.addProjectAlias('engram-mcp', 'engram');
 db.addProjectAlias('engram-legacy', 'engram');
 db.addProjectAlias('apollo-old', 'apollo');
+raw
+  .prepare('UPDATE project_aliases SET created_at = ?')
+  .run('2026-02-01T09:00:00.000Z');
 
 insertMetric.run(
   'search.fts_ms',
@@ -443,7 +438,11 @@ insertSession.run({
   systemMessageCount: 0,
   summary:
     'Transcript fixture codex session for get_session/export contract tests',
-  filePath: transcriptPath,
+  instructionCount: 2,
+  humanTurnCount: 2,
+  instructionSummary: 'Summarize and implement the Swift MCP shim scope',
+  filePath:
+    '/Users/test/work/transcript-fixture/rollout-mcp-transcript-01.jsonl',
   sizeBytes: 2048,
   indexedAt: '2026-01-15T09:06:00.000Z',
   agentRole: null,
@@ -453,311 +452,24 @@ insertSession.run({
   qualityScore: 55,
 });
 
-const codexAdapter = new CodexAdapter();
-
-type MCPResponse = {
-  content: Array<{ type: string; text: string }>;
-  structuredContent?: unknown;
-  metadata?: Record<string, unknown>;
-  isError?: boolean;
-};
-
-function success(result: unknown): MCPResponse {
-  return {
-    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-    structuredContent: result,
-  };
+const linkedSessions = raw
+  .prepare(
+    `SELECT id, source, file_path AS filePath
+     FROM sessions
+     WHERE project = ?
+     ORDER BY source, id`,
+  )
+  .all('engram') as Array<{ id: string; source: string; filePath: string }>;
+for (const session of linkedSessions) {
+  const sourceDir = resolve(linkTargetDir, 'conversation_log', session.source);
+  mkdirSync(sourceDir, { recursive: true });
+  symlinkSync(session.filePath, resolve(sourceDir, `${session.id}.jsonl`));
 }
 
-function early(text: string, isError = false): MCPResponse {
-  return {
-    content: [{ type: 'text', text }],
-    ...(isError ? { isError: true } : {}),
-  };
-}
-
-function earlyWithMetadata(
-  text: string,
-  metadata: Record<string, unknown>,
-  isError = false,
-): MCPResponse {
-  return {
-    content: [{ type: 'text', text }],
-    metadata,
-    ...(isError ? { isError: true } : {}),
-  };
-}
-
-function normalizeDynamic(value: unknown): unknown {
-  const json = JSON.parse(
-    JSON.stringify(value, (_key, current) => {
-      if (typeof current === 'string') {
-        if (
-          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-            current,
-          )
-        ) {
-          return '<generated-uuid>';
-        }
-      }
-      return current;
-    }),
-  );
-  return json;
-}
-
-async function withMockedNow<T>(isoTimestamp: string, run: () => Promise<T>) {
-  const RealDate = Date;
-  const fixedTime = new RealDate(isoTimestamp).getTime();
-  class MockDate extends RealDate {
-    constructor(value?: string | number | Date) {
-      super(value === undefined ? fixedTime : value);
-    }
-
-    static now() {
-      return fixedTime;
-    }
-
-    static parse(text: string) {
-      return RealDate.parse(text);
-    }
-
-    static UTC(...args: Parameters<typeof RealDate.UTC>) {
-      return RealDate.UTC(...args);
-    }
-  }
-
-  globalThis.Date = MockDate as unknown as DateConstructor;
-  try {
-    return await run();
-  } finally {
-    globalThis.Date = RealDate;
-  }
-}
-
-const goldens: Record<string, unknown> = {
-  'initialize.result': extractInitializeResultFromSwiftServer(),
-  'stats.source': success(
-    await handleStats(db, {
-      group_by: 'source',
-      since: '2026-01-01T00:00:00.000Z',
-    }),
-  ),
-  'search.keyword': success(
-    await handleSearch(db, {
-      query: 'Swift MCP shim',
-      mode: 'keyword',
-      limit: 5,
-    }),
-  ),
-  'search.hybrid.keyword_only': success(
-    await handleSearch(db, {
-      query: 'single writer daemon HTTP',
-      mode: 'hybrid',
-      limit: 5,
-    }),
-  ),
-  'search.semantic.short_query': success(
-    await handleSearch(db, {
-      query: 'ab',
-      mode: 'semantic',
-      limit: 5,
-    }),
-  ),
-  'get_context.engram': early(
-    (
-      await handleGetContext(
-        db,
-        {
-          cwd: '/Users/test/work/engram',
-          task: 'port engram mcp shim to swift',
-          include_environment: false,
-          sort_by: 'score',
-        },
-        {},
-      )
-    ).contextText,
-  ),
-  'get_context.engram.with_memory': early(
-    (
-      await handleGetContext(
-        db,
-        {
-          cwd: '/Users/test/work/engram',
-          task: 'daemon HTTP single writer',
-          include_environment: false,
-          sort_by: 'score',
-        },
-        {},
-      )
-    ).contextText,
-  ),
-  'get_context.engram.abstract_environment': early(
-    (
-      await withMockedNow('2026-01-09T12:00:00.000Z', async () =>
-        handleGetContext(
-          db,
-          {
-            cwd: '/Users/test/work/engram',
-            detail: 'abstract',
-            include_environment: true,
-            sort_by: 'score',
-          },
-          {},
-        ),
-      )
-    ).contextText,
-  ),
-  'get_insights.empty': success(
-    await handleGetInsights(
-      db,
-      {},
-      {
-        since: '2026-02-15T00:00:00.000Z',
-      },
-    ),
-  ),
-  'get_session.transcript': success(
-    await handleGetSession(db, codexAdapter, {
-      id: 'mcp-transcript-01',
-      page: 1,
-    }),
-  ),
-  'list_sessions.engram': success(
-    await handleListSessions(db, {
-      project: 'engram',
-      since: '2026-01-01T00:00:00.000Z',
-      limit: 4,
-      offset: 0,
-    }),
-  ),
-  'get_costs.project': success(
-    handleGetCosts(db, {
-      group_by: 'project',
-      since: '2026-01-01T00:00:00.000Z',
-    }),
-  ),
-  'tool_analytics.tool': success(
-    handleToolAnalytics(db, {
-      group_by: 'tool',
-      since: '2026-01-01T00:00:00.000Z',
-    }),
-  ),
-  'file_activity.engram': success(
-    handleFileActivity(db, {
-      project: 'engram',
-      since: '2026-01-01T00:00:00.000Z',
-      limit: 4,
-    }),
-  ),
-  'project_timeline.engram': success(
-    await handleProjectTimeline(db, {
-      project: 'engram',
-      since: '2026-01-01T00:00:00.000Z',
-    }),
-  ),
-  'project_list_migrations.recent': success(
-    handleProjectListMigrations(db, {
-      since: '2026-03-01T00:00:00.000Z',
-      limit: 3,
-    }),
-  ),
-  'live_sessions.unavailable': success(handleLiveSessions(null)),
-  'get_memory.keyword': success(
-    await handleGetMemory({ query: 'single writer daemon HTTP' }, { db }),
-  ),
-  'export.transcript': success(
-    await (async () => {
-      const previousHome = process.env.HOME;
-      process.env.HOME = exportHomeDir;
-      try {
-        return await handleExport(db, codexAdapter, {
-          id: 'mcp-transcript-01',
-          format: 'json',
-        });
-      } finally {
-        process.env.HOME = previousHome;
-      }
-    })(),
-  ),
-  'handoff.empty': success(
-    await handleHandoff(
-      db,
-      {
-        cwd: '/Users/test/work/missing-project',
-        format: 'markdown',
-      },
-      undefined,
-    ),
-  ),
-  'link_sessions.engram': success(
-    await handleLinkSessions(db, {
-      targetDir: linkTargetDir,
-    }),
-  ),
-  'manage_project_alias.list': success(db.listProjectAliases()),
-  'manage_project_alias.add': success(
-    (() => {
-      db.addProjectAlias('apollo-next', 'apollo');
-      return { added: { alias: 'apollo-next', canonical: 'apollo' } };
-    })(),
-  ),
-  'manage_project_alias.remove': success(
-    (() => {
-      db.removeProjectAlias('apollo-next', 'apollo');
-      return { removed: { alias: 'apollo-next', canonical: 'apollo' } };
-    })(),
-  ),
-  'save_insight.text_only': success(
-    normalizeDynamic(
-      await handleSaveInsight(
-        {
-          content:
-            'Swift MCP contract tests should use deterministic fixture databases and byte-stable JSON golden files.',
-          wing: 'engram',
-          room: 'mcp-swift',
-          importance: 5,
-          source_session_id: 'mcp-fixture-01',
-        },
-        { db },
-      ),
-    ),
-  ),
-  'project_review.fixture': success(
-    await (async () => {
-      const previousHome = process.env.HOME;
-      process.env.HOME = reviewHomeDir;
-      try {
-        return await handleProjectReview({
-          old_path: '/Users/test/work/engram-old',
-          new_path: '/Users/test/work/engram-v2',
-          max_items: 100,
-        });
-      } finally {
-        process.env.HOME = previousHome;
-      }
-    })(),
-  ),
-  'project_recover.fixture': success(
-    await handleProjectRecover(db, {
-      since: '2026-03-01T00:00:00.000Z',
-    }),
-  ),
-};
-
-Object.assign(goldens, {
-  'generate_summary.fixture': earlyWithMetadata(
-    'Fixture summary: Phase C ports the stdio MCP shim and forwards writes through daemon HTTP.',
-    { sessionId: 'mcp-fixture-01' },
-  ),
-});
-
-for (const [name, payload] of Object.entries(goldens)) {
-  writeFileSync(
-    resolve(goldenDir, `${name}.json`),
-    `${JSON.stringify(payload, null, 2)}\n`,
-  );
-}
+writeFileSync(
+  resolve(goldenDir, 'initialize.result.json'),
+  `${JSON.stringify(extractInitializeResultFromSwiftServer(), null, 2)}\n`,
+);
 
 writeFileSync(
   resolve(goldenDir, 'tools.json'),
@@ -769,11 +481,12 @@ writeFileSync(
   [
     '# MCP Golden Fixtures',
     '',
-    'Generated by `npm run generate:mcp-contract-fixtures`.',
+    '`initialize.result.json` and `tools.json` are generated from the native Swift MCP source by `npm run generate:mcp-contract-fixtures`.',
+    'All other JSON files are executable behavior snapshots owned by `EngramMCPExecutableTests`; the retired TypeScript handlers must not overwrite them.',
     '',
     'Normalization rules:',
-    '- random UUIDs in write-tool responses are replaced with `<generated-uuid>`',
-    '- all timestamps come from fixed fixture rows, not `now()`',
+    '- executable snapshots normalize random UUIDs and absolute fixture roots in the Swift test harness',
+    '- generated fixture timestamps come from fixed rows, not `now()`',
     '- fixture DB is `tests/fixtures/mcp-contract.sqlite`; never use `~/.engram/index.sqlite` in contract tests',
     '',
   ].join('\n'),
@@ -790,11 +503,12 @@ function extractToolNamesFromSwiftRegistry(): string[] {
     registrySource,
     'unavailableNativeProjectOperationTools',
   );
-  return [
+  const toolNames = [
     ...registrySource.matchAll(/MCPToolDefinition\(\s*name:\s*"([^"]+)"/g),
   ]
     .map((match) => match[1])
     .filter((toolName) => !unavailableTools.has(toolName));
+  return [...new Set(toolNames)];
 }
 
 function extractInitializeResultFromSwiftServer(): Record<string, unknown> {
