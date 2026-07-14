@@ -26,10 +26,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Verification: red/green isolated-failure regression; 39/39 replication
   coordinator tests; 82/82 selected Service archive scheduling tests; full
   `EngramCoreTests` with 890 tests, one skipped and zero failures; and
-  `git diff --check`. This source change has not been installed or used to
-  restart the local App/Service yet.
+  `git diff --check`.
+- After explicit operator authorization, `main@9d9ae163` was exported and
+  installed as Developer ID Engram `1.0.4 (1202)`. Full release verification,
+  installed CLI archive status, MCP initialize/tools-list, App/Service process,
+  and service-socket checks passed. The distributable ZIP SHA-256 is
+  `94a1d3a882daf4d606876f2206c2d78c741684c5483a92d24934cf2e815e3b06`;
+  build 1188 remains available as the local rollback bundle.
+- During a 30-minute installed-runtime observation, HQ verified 101 rows and M1
+  verified 158 rows while both continued to encounter transient network retries.
+  Pending rows fell by 104 and 162 respectively; quarantine and remote server
+  errors remained zero. Combined throughput was about 8.6 verified receipts per
+  minute, versus the pre-fix observation where most replica-minutes completed
+  only one or two receipts.
+- Service RSS peaked near 8.36 GiB during startup indexing, with `vmmap` showing
+  the majority as reclaimable empty malloc pages, then fell and stabilized near
+  3.45 GiB. No monotonic memory growth or sustained CPU saturation was observed.
 
-### Verified: installed Engram 1.0.4 build 1188 is current for product runtime (2026-07-14)
+### Historical verification: installed Engram 1.0.4 build 1188 before build 1202 deployment (2026-07-14)
 
 - Rechecked the live `/Applications/Engram.app` rather than relying on an old
   deployment note: Engram and EngramService are running from that bundle as

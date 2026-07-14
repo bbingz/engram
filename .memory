@@ -126,13 +126,25 @@
   `ArchiveReplicationCoordinatorTests` passed 39/39; selected
   `EngramServiceCore` archive tests passed 82/82; full `EngramCoreTests` passed
   890 tests with one skipped and zero failures; `git diff --check` passed.
-- Merge and deployment boundary: PR #167 passed all required checks and merged
-  as `834bf1f2`, but no local App/Service install or restart was authorized or
-  performed. Installed build
-  1188 therefore does not contain this throughput fix; live post-install drain
-  rate remains unverified.
+- Merge and deployment: PR #167 passed all required checks and merged as
+  `834bf1f2`. After explicit operator authorization, `main@9d9ae163` was built,
+  exported, and installed as Developer ID Engram `1.0.4 (1202)`; App PID 28403
+  and Service PID 28412 started at 23:02 +0800. The installed bundle passed the
+  full release verifier, CLI archive status, MCP initialize/tools-list, and
+  socket checks. Package ZIP SHA-256:
+  `94a1d3a882daf4d606876f2206c2d78c741684c5483a92d24934cf2e815e3b06`.
+- Installed-runtime proof: over 30 minutes, HQ verified rose `6178→6279` (+101)
+  while pending fell `4939→4835`; M1 verified rose `8837→8995` (+158) while
+  pending fell `2280→2118`. Both replicas continued through real
+  `transport_network` / `NSURLError -1005` failures, resumed after bounded
+  pauses, and retained zero quarantined rows and zero remote server errors.
+  Combined throughput was about 8.6 verified receipts/minute.
+- Resource and rollback evidence: Service RSS peaked near 8.36 GiB during
+  startup indexing, mostly reclaimable `Malloc Small (empty)` pages, then fell
+  and stabilized near 3.45 GiB without monotonic growth. The prior signed build
+  1188 is retained at `macos/build/rollback/Engram-1.0.4-1188.app` for rollback.
 
-## 2026-07-14 - Installed Engram 1.0.4 build 1188 verified current for product runtime (Codex)
+## 2026-07-14 - Installed Engram 1.0.4 build 1188 verification before build 1202 deployment (Codex)
 
 - Objective: answer whether the Engram process currently in use is the latest
   product build using fresh installed-bundle, process, Git, remote-release,

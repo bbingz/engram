@@ -5,9 +5,11 @@ fresh install, but the current operator deployment has explicitly enabled local
 capture and both private replicas. HQ and M1 are draining an existing backlog;
 configuration in this document is still an example and never enables another
 installation by itself.
-**Production deployment is not part of this branch.** The existing enabled
-deployment does not authorize installing this throughput change or restarting
-the local App/Service.
+**Production deployment is not part of this branch.** A later explicit operator
+authorization installed the isolated-failure throughput change from PR #167
+locally in Engram `1.0.4 (1202)` from `main@9d9ae163`; App and Service were
+restarted at 2026-07-14 23:02 +0800. No remote-server wire or deployment change
+was required.
 
 Archive v2 preserves the exact source bytes behind supported sessions. It is a
 different feature from the older remote-offload protocol:
