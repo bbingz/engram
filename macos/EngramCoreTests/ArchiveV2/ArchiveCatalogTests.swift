@@ -220,6 +220,31 @@ final class ArchiveCatalogTests: XCTestCase {
         XCTAssertEqual(try permissions(root.appendingPathComponent("archive.sqlite").path), 0o600)
     }
 
+    func testCurrentSchemaMigrationDoesNotReplayManifestObjectBackfill() throws {
+        let (catalog, _, _) = try boundCatalog()
+        XCTAssertEqual(
+            try readArchiveDatabase { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM archive_manifest_objects") ?? 0
+            },
+            1
+        )
+
+        // Explicit integrity repair owns post-migration damage. A normal v5
+        // launch must not decode and replay every durable manifest again.
+        try writeArchiveDatabase { db in
+            try db.execute(sql: "DELETE FROM archive_manifest_objects")
+        }
+
+        try catalog.migrate()
+
+        XCTAssertEqual(
+            try readArchiveDatabase { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM archive_manifest_objects") ?? 0
+            },
+            0
+        )
+    }
+
     func testRepeatedMigrationPreservesIntentionalEviction() throws {
         let result = try boundCatalog()
         let object = try XCTUnwrap(

@@ -81,6 +81,52 @@ final class IndexerParseOnceTests: XCTestCase {
         XCTAssertEqual(adapter.streamMessagesCalls, 0, "the separate message pass must not run")
     }
 
+    /// Startup indexing skips every already-known locator, so it must not pay
+    /// the cost of materializing full tail-merge snapshots that can never be
+    /// consumed by `attemptTailIndexing` in that mode.
+    func testStartupSkipKnownDoesNotLoadTailMergeSnapshots() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("skip-known-tail-snapshots-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("session.jsonl")
+        try writeClaudeLines(mergeSafeClaudeLines(), to: locator)
+        let sink = TailSnapshotCountingSink()
+        let adapter = CountingTailAdapter(projectsRoot: root.path)
+        let indexer = SwiftIndexer(
+            sink: sink,
+            adapters: [adapter],
+            skipKnownFileLocators: true
+        )
+
+        _ = try await indexer.indexAll()
+
+        XCTAssertEqual(
+            sink.knownTailMergeSnapshotCalls,
+            0,
+            "startup skip-known mode must not materialize unused tail snapshots"
+        )
+    }
+
+    /// Startup callers need an adapter boundary where allocator pages can be
+    /// reclaimed before the next source adds another parser workload.
+    func testIndexerReportsEachCompletedAdapter() async throws {
+        let completion = AdapterCompletionRecorder()
+        let indexer = SwiftIndexer(
+            sink: CollectingNoopSink(),
+            adapters: [
+                ParseCountingSessionAdapter(locators: ["/tmp/source-a.jsonl"]),
+                ParseCountingSessionAdapter(locators: ["/tmp/source-b.jsonl"]),
+            ],
+            didFinishAdapter: { _ in completion.record() }
+        )
+
+        _ = try await indexer.indexAll()
+
+        XCTAssertEqual(completion.count, 2)
+    }
+
     // MARK: - #18: provable-skip digest short-circuit
 
     /// Provable-skip sessions must not persist implementation-digest work beats,
@@ -619,6 +665,30 @@ private struct CollectingNoopSink: IndexingWriteSink {
     }
 }
 
+private final class TailSnapshotCountingSink: IndexingWriteSink {
+    private(set) var knownTailMergeSnapshotCalls = 0
+
+    func upsertBatch(
+        _ snapshots: [AuthoritativeSessionSnapshot],
+        reason: IndexingWriteReason
+    ) throws -> SessionBatchUpsertResult {
+        SessionBatchUpsertResult(
+            reason: reason,
+            results: snapshots.map {
+                SessionBatchItemResult(sessionId: $0.id, action: .merge, enqueuedJobs: [])
+            }
+        )
+    }
+
+    func knownTailMergeSnapshots(
+        source: SourceName,
+        locators: [String]
+    ) throws -> [String: AuthoritativeSessionSnapshot] {
+        knownTailMergeSnapshotCalls += 1
+        return [:]
+    }
+}
+
 // MARK: - Test adapters
 
 private final class CountingTailAdapter: TailIndexingSessionAdapter {
@@ -744,6 +814,17 @@ private final class ParseCountingSessionAdapter: SessionAdapter {
     func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
         scanForIndexingCalls += 1
         return .success(IndexingScan(info: info(for: locator), messages: messages))
+    }
+}
+
+private final class AdapterCompletionRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedCount = 0
+
+    var count: Int { lock.withLock { recordedCount } }
+
+    func record() {
+        lock.withLock { recordedCount += 1 }
     }
 }
 

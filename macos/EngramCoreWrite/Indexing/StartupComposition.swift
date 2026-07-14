@@ -78,13 +78,12 @@ public final class WriterStartupIndexing: StartupIndexing {
 // MARK: - Database maintenance
 
 public extension EngramDatabaseWriter {
-    /// Periodic-path FTS optimize: min-interval gate + content-signature gate.
+    /// Periodic-path bounded FTS merge: min-interval + content-signature gate.
     ///
     /// Throw-safe throttle: the attempt timestamp is committed in its own write
-    /// **before** `optimizeFts` runs. A failing rewrite (missing FTS tables,
+    /// **before** the merge step runs. A failing step (missing FTS tables,
     /// SQLITE_ERROR, etc.) still advances the 24h floor so the 5-minute loop
-    /// does not retry every tick. Startup continues to call `optimizeFts()`
-    /// directly (no interval).
+    /// does not retry every tick.
     @discardableResult
     func optimizeFtsIfDue(
         now: Date = Date(),
@@ -100,17 +99,38 @@ public extension EngramDatabaseWriter {
             try StartupBackfills.recordFtsOptimizeAttempt(db, now: now)
         }
 
-        return try write { db in
-            try StartupBackfills.optimizeFts(db)
+        do {
+            return try write { db in
+                try StartupBackfills.optimizeFts(db)
+            }
+        } catch {
+            // A failed continuation must not bypass the attempt floor forever.
+            try? write { db in
+                try db.execute(
+                    sql: "DELETE FROM metadata WHERE key = ?",
+                    arguments: [StartupBackfills.ftsMergeInProgressKey]
+                )
+            }
+            throw error
         }
     }
 }
 
 public final class WriterStartupBackfillDatabase: StartupBackfillDatabase {
     private let writer: EngramDatabaseWriter
+    private let groupedDirRoots: @Sendable () -> [SourceRoot]
 
     public init(writer: EngramDatabaseWriter) {
         self.writer = writer
+        groupedDirRoots = { SessionSources.roots() }
+    }
+
+    init(
+        writer: EngramDatabaseWriter,
+        groupedDirRoots: @escaping @Sendable () -> [SourceRoot]
+    ) {
+        self.writer = writer
+        self.groupedDirRoots = groupedDirRoots
     }
 
     public func countSessions() throws -> Int {
@@ -146,22 +166,38 @@ public final class WriterStartupBackfillDatabase: StartupBackfillDatabase {
         try writer.write { db in try StartupBackfills.deduplicateFilePaths(db) }
     }
 
-    public func optimizeFts() throws {
-        _ = try writer.write { db in try StartupBackfills.optimizeFts(db) }
-    }
-
-    public func vacuumIfNeeded(_ fragmentationPercent: Int) throws -> Bool {
-        try writer.writeWithoutTransaction { db in
-            try StartupBackfills.vacuumIfNeeded(db, fragmentationPercent: fragmentationPercent)
-        }
-    }
-
     public func reconcileInsights() throws -> StartupInsightReconcileResult {
         try writer.write { db in try StartupBackfills.reconcileInsights(db) }
     }
 
     public func reconcileGroupedSourceDirs() throws -> GroupedDirReconcileResult {
-        GroupedDirReconcile.run(roots: SessionSources.roots())
+        let storedVersion = try writer.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT value FROM metadata WHERE key = ?",
+                arguments: [StartupBackfills.groupedDirReconcileMetadataKey]
+            )
+        }
+        guard storedVersion != StartupBackfills.groupedDirReconcileVersion else {
+            return GroupedDirReconcileResult()
+        }
+
+        let result = GroupedDirReconcile.run(roots: groupedDirRoots())
+        // Filesystem repairs are idempotent. Stamp the version only after the
+        // complete sweep so a crash retries instead of recording partial work.
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO metadata(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                arguments: [
+                    StartupBackfills.groupedDirReconcileMetadataKey,
+                    StartupBackfills.groupedDirReconcileVersion,
+                ]
+            )
+        }
+        return result
     }
 
     public func backfillFilePaths() throws -> Int {

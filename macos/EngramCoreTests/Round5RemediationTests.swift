@@ -36,31 +36,28 @@ final class Round5RemediationTests: XCTestCase {
         try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 
-    func testStartupVacuumUsesNonTransactionalWriterPath() throws {
-        let writerSource = try source("EngramCoreWrite/Database/EngramDatabaseWriter.swift")
-        XCTAssertTrue(writerSource.contains("func writeWithoutTransaction"))
-        XCTAssertTrue(writerSource.contains("pool.writeWithoutTransaction"))
-
-        let composition = try source("EngramCoreWrite/Indexing/StartupComposition.swift")
-        let start = try XCTUnwrap(composition.range(of: "public func vacuumIfNeeded(_ fragmentationPercent: Int) throws -> Bool"))
-        let end = try XCTUnwrap(composition.range(of: "public func reconcileInsights()", options: [], range: start.lowerBound..<composition.endIndex))
-        let vacuum = String(composition[start.lowerBound..<end.lowerBound])
-
-        XCTAssertTrue(vacuum.contains("writer.writeWithoutTransaction"))
-        XCTAssertFalse(vacuum.contains("writer.write {"))
-    }
-
-    func testStartupMaintenanceIsolatesVacuumFromReconcileSteps() throws {
+    func testStartupMaintenanceDoesNotRunBlockingFullDatabaseRewrites() throws {
         let source = try source("EngramCoreWrite/Indexing/StartupBackfills.swift")
-        let start = try XCTUnwrap(source.range(of: "if try database.vacuumIfNeeded(15)"))
-        let end = try XCTUnwrap(source.range(of: "do {\n            let pathsFixed", options: [], range: start.lowerBound..<source.endIndex))
+        let start = try XCTUnwrap(source.range(of: "public static func runStartupMaintenanceAndParents"))
+        let end = try XCTUnwrap(source.range(of: "public static func runStartupOrphanScan", options: [], range: start.lowerBound..<source.endIndex))
         let maintenance = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(maintenance.contains(#"log.warn("db vacuum failed""#))
+        XCTAssertFalse(maintenance.contains("vacuumIfNeeded"))
+        XCTAssertFalse(maintenance.contains("database.optimizeFts"))
+        XCTAssertFalse(maintenance.contains("db.execute(sql: \"VACUUM\")"))
         XCTAssertTrue(maintenance.contains("let reconciled = try database.reconcileInsights()"))
-        XCTAssertTrue(maintenance.contains(#"log.warn("db insight reconcile failed""#))
         XCTAssertTrue(maintenance.contains("let grouped = try database.reconcileGroupedSourceDirs()"))
-        XCTAssertTrue(maintenance.contains(#"log.warn("db grouped source dir reconcile failed""#))
+    }
+
+    func testFtsMaintenanceUsesBoundedMergeInsteadOfFullOptimize() throws {
+        let source = try source("EngramCoreWrite/Indexing/StartupBackfills.swift")
+        let start = try XCTUnwrap(source.range(of: "public static func optimizeFts("))
+        let end = try XCTUnwrap(source.range(of: "public static func isFtsOptimizeDue", options: [], range: start.lowerBound..<source.endIndex))
+        let maintenance = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(maintenance.contains("ftsMergePageBudget"))
+        XCTAssertTrue(maintenance.contains("VALUES('merge', ?)"))
+        XCTAssertFalse(maintenance.contains("VALUES('optimize')"))
     }
 
     func testDeterministicFtsParserFailuresAreTerminal() throws {

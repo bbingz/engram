@@ -427,13 +427,15 @@ public extension EngramDatabaseWriter {
     }
 
     func indexAllSessions(
-        adapters: [any SessionAdapter] = SessionAdapterFactory.defaultAdapters()
+        adapters: [any SessionAdapter] = SessionAdapterFactory.defaultAdapters(),
+        didFinishAdapter: @escaping @Sendable (SourceName) -> Void = { _ in }
     ) async throws -> EngramDatabaseIndexResult {
         try await indexSessions(
             adapters: adapters,
             runParentBackfills: true,
             skipUnchangedFileLocators: true,
-            skipKnownFileLocators: true
+            skipKnownFileLocators: true,
+            didFinishAdapter: didFinishAdapter
         )
     }
 
@@ -532,13 +534,15 @@ public extension EngramDatabaseWriter {
         adapters: [any SessionAdapter],
         runParentBackfills: Bool,
         skipUnchangedFileLocators: Bool,
-        skipKnownFileLocators: Bool
+        skipKnownFileLocators: Bool,
+        didFinishAdapter: @escaping @Sendable (SourceName) -> Void = { _ in }
     ) async throws -> EngramDatabaseIndexResult {
         let indexer = SwiftIndexer(
             sink: EngramDatabaseIndexingSink(writer: self),
             adapters: adapters,
             skipUnchangedFileLocators: skipUnchangedFileLocators,
-            skipKnownFileLocators: skipKnownFileLocators
+            skipKnownFileLocators: skipKnownFileLocators,
+            didFinishAdapter: didFinishAdapter
         )
         let indexed = try await indexer.indexAll()
 

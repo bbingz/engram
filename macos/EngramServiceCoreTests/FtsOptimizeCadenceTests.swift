@@ -39,6 +39,10 @@ final class FtsOptimizeCadenceTests: XCTestCase {
             try writer.write { db in
                 try db.execute(sql: "DROP TABLE IF EXISTS sessions_fts")
                 try db.execute(sql: "DROP TABLE IF EXISTS insights_fts")
+                try db.execute(
+                    sql: "INSERT INTO metadata(key, value) VALUES (?, '1')",
+                    arguments: ["fts_merge_in_progress"]
+                )
             }
         }
 
@@ -108,6 +112,10 @@ final class FtsOptimizeCadenceTests: XCTestCase {
                 // Break FTS so optimize SQL fails after the attempt is recorded.
                 try db.execute(sql: "DROP TABLE IF EXISTS sessions_fts")
                 try db.execute(sql: "DROP TABLE IF EXISTS insights_fts")
+                try db.execute(
+                    sql: "INSERT INTO metadata(key, value) VALUES (?, '1')",
+                    arguments: ["fts_merge_in_progress"]
+                )
             }
         }
 
@@ -132,6 +140,19 @@ final class FtsOptimizeCadenceTests: XCTestCase {
         XCTAssertNotNil(
             attemptAfterThrow,
             "attempt timestamp must survive optimize failure (throw-safe throttle)"
+        )
+        let mergeStillInProgress = try await gate.performWriteCommand(name: "read_merge_progress") { writer in
+            try writer.read { db in
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT value FROM metadata WHERE key = ?",
+                    arguments: ["fts_merge_in_progress"]
+                )
+            }
+        }.value
+        XCTAssertNil(
+            mergeStillInProgress,
+            "a failed continuation must clear progress so the attempt floor prevents retrying every tick"
         )
 
         let early = try await gate.performWriteCommand(name: "optimize_early_after_throw") { writer in

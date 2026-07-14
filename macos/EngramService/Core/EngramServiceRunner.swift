@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import GRDB
 import EngramCoreRead
@@ -187,20 +188,22 @@ public enum EngramServiceRunner {
         // serialized with incoming commands. This also drains the FTS backlog
         // (via IndexJobRunner) so search content is actually written.
         let initialScanTask = Task {
-            await Self.runInitialScan(
-                gate: gate,
-                statusMonitor: statusMonitor,
-                telemetry: telemetry,
-                environment: environment,
-                archiveV2Coordinator: archiveV2Coordinator,
-                archiveV2CaptureEnabled: archiveV2Settings.exactArchiveEnabled,
-                tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) },
-                testHooks: InitialScanTestHooks()
-            )
-            // First product caller of observability retention. Restart-cadence
-            // prune is adequate (the legacy metrics writer is dormant, so this
-            // is largely a one-time backlog cleanup of unbounded tables).
-            await Self.runObservabilityRetention(gate: gate)
+            await Self.runStartupMaintenanceWithMemoryRelief {
+                await Self.runInitialScan(
+                    gate: gate,
+                    statusMonitor: statusMonitor,
+                    telemetry: telemetry,
+                    environment: environment,
+                    archiveV2Coordinator: archiveV2Coordinator,
+                    archiveV2CaptureEnabled: archiveV2Settings.exactArchiveEnabled,
+                    tokenLimitsProvider: { Self.readUsageTokenLimits(environment: environment) },
+                    testHooks: InitialScanTestHooks()
+                )
+                // First product caller of observability retention. Restart-cadence
+                // prune is adequate (the legacy metrics writer is dormant, so this
+                // is largely a one-time backlog cleanup of unbounded tables).
+                await Self.runObservabilityRetention(gate: gate)
+            }
         }
 
         // Opt-in remote session offload (default OFF). When enabled, the indexing
@@ -372,6 +375,24 @@ public enum EngramServiceRunner {
         await operation()
     }
 
+    /// Startup indexing and maintenance intentionally create many short-lived
+    /// parser/GRDB allocations. Run pressure relief only after that operation
+    /// has returned, so its local snapshots and buffers have unwound before the
+    /// allocator is asked to return empty pages to macOS.
+    static func runStartupMaintenanceWithMemoryRelief(
+        relieveMemoryPressure: @Sendable () -> Int = {
+            Int(malloc_zone_pressure_relief(nil, 0))
+        },
+        operation: () async -> Void
+    ) async {
+        await operation()
+        let releasedBytes = relieveMemoryPressure()
+        ServiceLogger.notice(
+            "startup memory pressure relief complete: releasedBytes=\(releasedBytes)",
+            category: .runner
+        )
+    }
+
     static func runArchiveV2IndexCycle(
         coordinator: ArchiveV2ServiceCoordinator?,
         captureAdapters: [any SessionAdapter],
@@ -506,24 +527,23 @@ public enum EngramServiceRunner {
         }
     }
 
-    /// Periodic FTS5 segment merge. Runs through the writer gate, reuses the
-    /// content-signature + rebuild-version gates inside `optimizeFtsIfDue`,
-    /// and adds a 24h attempt floor so a busy corpus does not re-merge on
-    /// every 5-minute tick. Errors are isolated (match backup/embedding
-    /// best-effort helpers) so a failed optimize never aborts the loop.
+    /// Periodic FTS5 segment merge. Each writer-gated call has a fixed page
+    /// budget; a new merge cycle has a 24h floor, while an in-progress cycle
+    /// advances one bounded step per indexing tick. Errors are isolated so a
+    /// failed merge never aborts the loop.
     static func runPeriodicFtsOptimizeBestEffort(gate: ServiceWriterGate) async {
         do {
             let ran = try await gate.performWriteCommand(name: "periodicFtsOptimize") { writer in
                 try writer.optimizeFtsIfDue()
             }.value
             if ran {
-                ServiceLogger.notice("periodic FTS optimize completed", category: .runner)
+                ServiceLogger.notice("periodic FTS merge step completed", category: .runner)
             }
         } catch is CancellationError {
             return
         } catch {
             ServiceLogger.warn(
-                "periodic FTS optimize failed: \(error.localizedDescription)",
+                "periodic FTS merge failed: \(error.localizedDescription)",
                 category: .runner
             )
         }
@@ -813,7 +833,16 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                 cursorScope: .full
             ) { parserAdapters in
                 try await gate.performWriteCommand(name: "initialScanIndex") { writer in
-                    try await writer.indexAllSessions(adapters: parserAdapters)
+                    try await writer.indexAllSessions(
+                        adapters: parserAdapters,
+                        didFinishAdapter: { source in
+                            let releasedBytes = Int(malloc_zone_pressure_relief(nil, 0))
+                            ServiceLogger.notice(
+                                "startup adapter memory pressure relief complete: source=\(source.rawValue) releasedBytes=\(releasedBytes)",
+                                category: .runner
+                            )
+                        }
+                    )
                 }.value
             }
         }
@@ -1099,8 +1128,18 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         telemetry: ServiceTelemetryCollector? = nil,
         testHooks: InitialScanTestHooks = InitialScanTestHooks(),
         maxWriterBusyRetries: Int = 3,
+        relieveMemoryPressure: @Sendable () -> Int = {
+            Int(malloc_zone_pressure_relief(nil, 0))
+        },
         operation: () async throws -> Value
     ) async -> InitialScanPhaseOutcome<Value> {
+        defer {
+            let releasedBytes = relieveMemoryPressure()
+            ServiceLogger.notice(
+                "startup phase memory pressure relief complete: phase=\(name) releasedBytes=\(releasedBytes)",
+                category: .runner
+            )
+        }
         var writerBusyRetries = 0
         let phaseClock = ContinuousClock()
         let phaseStarted = phaseClock.now
