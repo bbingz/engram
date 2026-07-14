@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-14): 96 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-14): 97 dated entries; regenerate after adding sections -->
+- [2026-07-14 - CI orchestration audit, hardening, and clean-main closeout (Codex)](#2026-07-14---ci-orchestration-audit-hardening-and-clean-main-closeout-codex)
 - [2026-07-14 - Merged-worktree cleanup and durable-state synchronization (Codex)](#2026-07-14---merged-worktree-cleanup-and-durable-state-synchronization-codex)
 - [2026-07-11 - Wave 8 Round 4 engineering-zero durable closeout (Grok)](#2026-07-11---wave-8-round-4-engineering-zero-durable-closeout-grok)
 - [2026-07-07 - Orca comparative study: verified adoption backlog + 5 real bugs found (Fable/Claude)](#2026-07-07---orca-comparative-study-verified-adoption-backlog--5-real-bugs-found-fableclaude)
@@ -100,6 +101,49 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-14 - CI orchestration audit, hardening, and clean-main closeout (Codex)
+
+- Scope: coordinated three independent read-only CI reviewers covering
+  orchestration/coverage, supply-chain/release, and performance evidence, then
+  adjudicated every claim against workflows, scripts, tests, GitHub run
+  history, branch protection, and the live dependency graph.
+- Merged CI stack: #161 / `c0442ce8` routes CodeQL to the affected TypeScript,
+  Swift product, and Swift remote-server targets and adds a fail-closed
+  `CodeQL Gate`; #162 / `b5e2549b` adds bounded Swift product CodeQL dependency
+  caching/timeouts; #163 / `d81bfda1` enforces native MCP contract fixture
+  freshness; #164 / `e76b463c` hardens dependency review, perf evidence,
+  release verification, Xcode-project freshness, and the aggregate `CI Gate`.
+- Gate incident and correction: PR run `29318214092` proved that extracting
+  `CI Gate` from inline shell to `scripts/ci/verify-test-gate.sh` also required
+  a checkout step; every underlying lane passed but the gate failed with exit
+  127 because the script was absent. A red/green workflow regression test and
+  pinned checkout fixed it; final-head Tests run `29318747842` passed all
+  required lanes and `CI Gate`.
+- Perf incident and correction: cancelled run `29317039094` compiled, then
+  stalled in Xcode test-manager IPC. The replacement performs
+  `build-for-testing` and invokes the selected XCTest bundle directly. Final
+  PR-head run `29318748080` completed in 2m52s on macmini-m1 / Xcode 26.6,
+  indexed 20/20 fixtures, measured 0.049s average with 1.315% RSD, and recorded
+  build/test exit code 0 plus deterministic workload/environment metadata.
+- Supply/release state: GitHub Dependency Graph is enabled; the current SPDX
+  2.3 SBOM has 363 packages. Pinned Dependency Review covers runtime,
+  development, and unknown scopes at moderate severity and fails closed if
+  snapshot warnings remain after the bounded retry. Stable release tags reject
+  numeric leading zeroes; release verification checks notarization/stapling
+  when applicable.
+- Remote proof before merge: PR-head Dependency Review `29318747679`, Tests
+  `29318747842`, CodeQL `29318747789`, and Perf `29318748080` all succeeded.
+  `main` protection was then read back as strict with required `CI Gate`,
+  `CodeQL Gate`, and `Dependency Review`, all scoped to GitHub Actions app id
+  15368.
+- Post-merge main proof: Tests run `29321120090` passed Node, macOS gates,
+  Swift unit, remote-server tests/package, full UI, and `CI Gate` on
+  `e76b463c`.
+- Explicit boundary: `gh secret list --app actions` returned no configured
+  secrets, so the real Developer ID signing/notarization/stapling path was not
+  run. Only the ad-hoc release path and the notarization verification contract
+  were tested; no notarized artifact is claimed.
 
 ## 2026-07-14 - Merged-worktree cleanup and durable-state synchronization (Codex)
 
