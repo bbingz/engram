@@ -7,6 +7,42 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: path-routed, fail-closed CI orchestration (2026-07-14)
+
+- Split the CI hardening into reviewed PRs #161-#164: route CodeQL by affected
+  TypeScript, Swift product, and Swift remote-server surfaces; require stable
+  aggregate `CI Gate` / `CodeQL Gate` results; cache Swift product SPM clones;
+  reject stale MCP contract fixtures; and validate the complete generated
+  Xcode project rather than only `project.pbxproj`.
+- Added a pinned Dependency Review workflow that blocks moderate-or-higher
+  runtime, development, or unknown-scope vulnerabilities. GitHub Dependency
+  Graph is enabled, remaining snapshot warnings fail closed after the bounded
+  retry, and the current SPDX 2.3 SBOM contains 363 packages.
+- Rebuilt the scheduled/manual performance lane around `build-for-testing`
+  plus direct `xcrun xctest`, avoiding the Xcode test-manager IPC hang observed
+  in cancelled run `29317039094`. The gate now records build/test exit codes,
+  fixture count/bytes/hash, indexed workload, runner/Xcode/SDK identity,
+  baseline provenance, a 0.100-second absolute budget, and a 10% RSD ceiling.
+- Final PR-head perf run `29318748080` completed on macmini-m1 / Xcode 26.6 in
+  2m52s with all 20 fixtures indexed, 0.049s average, 1.315% RSD, and zero
+  build/test exit codes. PR-head Tests `29318747842`, CodeQL `29318747789`,
+  and Dependency Review `29318747679` also passed before #164 merged as
+  `e76b463c`.
+- Post-merge `main` Tests run `29321120090` passed Node, macOS gates, Swift
+  unit, remote-server package, full UI, and `CI Gate`; CodeQL run
+  `29321120012` passed TypeScript, Swift product, Swift remote-server, and
+  `CodeQL Gate` on `e76b463c`.
+- Closeout PR #165 then exercised the precise durable-doc route: Tests run
+  `29322068421` and CodeQL run `29322068445` skipped all heavy lanes while
+  their fail-closed gates passed; Dependency Review `29322068681` passed.
+- Tightened release tags to stable SemVer numeric components without leading
+  zeroes and made release verification explicitly check notarization and
+  stapling when those paths are used. No Actions signing/notarization secrets
+  are configured, so this closeout verified only the ad-hoc path and does not
+  claim a Developer ID notarization run.
+- `main` branch protection remains strict and now requires `CI Gate`,
+  `CodeQL Gate`, and `Dependency Review`, all bound to the GitHub Actions app.
+
 ### Maintenance: prune merged local worktrees and synchronize durable state (2026-07-14)
 
 - Refreshed and pruned `origin`, then removed three clean worktrees whose HEAD
