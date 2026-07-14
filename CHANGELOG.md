@@ -7,6 +7,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: archive backlog survives isolated replica transport failures (2026-07-14)
+
+- Diagnosed the slow Archive v2 drain from the live catalog: only two HQ and
+  one M1 rows were in `retryWait`, while 5,112 HQ and 2,490 M1 ordinary rows
+  remained pending. The old first-failure circuit breaker aborted every
+  unstarted row in that replica batch and then paused the replica for 60 seconds.
+- PR #167 (`7cf190d1`) now treats exactly one following claim as a bounded health
+  probe. A verified probe clears the candidate breaker and lets the serial batch
+  continue; a second transient failure, no available probe, or a closed resource
+  gate retains the existing 60-second breaker. A real outage therefore adds at
+  most one failed request per pass, while one sporadic failure no longer stalls
+  unrelated rows.
+- Durable per-row full-jitter deadlines, immediate authentication/configuration
+  attention pauses, one processor per replica, independent HQ/M1 progress, and
+  immutable receipt verification are unchanged.
+- Verification: red/green isolated-failure regression; 39/39 replication
+  coordinator tests; 82/82 selected Service archive scheduling tests; full
+  `EngramCoreTests` with 890 tests, one skipped and zero failures; and
+  `git diff --check`. This source change has not been installed or used to
+  restart the local App/Service yet.
+
 ### Verified: installed Engram 1.0.4 build 1188 is current for product runtime (2026-07-14)
 
 - Rechecked the live `/Applications/Engram.app` rather than relying on an old

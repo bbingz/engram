@@ -4,6 +4,17 @@
 
 **Status:** Approved in conversation (Approach A)
 
+> **2026-07-14 throughput amendment:** The original one-failure breaker below
+> proved too coarse under sporadic transport errors. Current behavior permits
+> one bounded next-claim health probe inside the same replica batch. A verified
+> probe clears the candidate breaker and the batch continues; a second transient
+> failure, no available probe, or a closed resource gate opens the existing
+> 60-second breaker. This amendment supersedes statements below that say every
+> first transient failure immediately releases the rest of the batch or limits
+> outage traffic to exactly one failed claim per minute. Durable row jitter,
+> replica independence, serial per-replica processing, and all safety boundaries
+> remain unchanged.
+
 ## Goal
 
 Restore continuous HQ and M1 progress while a large local capture, indexing, and

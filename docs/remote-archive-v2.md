@@ -1,8 +1,13 @@
 # Exact-source remote archive v2 — operations and safety boundary
 
-**Implementation status (2026-07-12):** local code and test branch only. It is
-**default OFF**, has not been installed on either Mac mini, and has not changed
-any Tailscale, Keychain, launchd, or production data. **Production deployment is not part of this branch.**
+**Implementation status (2026-07-14):** archive v2 remains default OFF for a
+fresh install, but the current operator deployment has explicitly enabled local
+capture and both private replicas. HQ and M1 are draining an existing backlog;
+configuration in this document is still an example and never enables another
+installation by itself.
+**Production deployment is not part of this branch.** The existing enabled
+deployment does not authorize installing this throughput change or restarting
+the local App/Service.
 
 Archive v2 preserves the exact source bytes behind supported sessions. It is a
 different feature from the older remote-offload protocol:
@@ -317,6 +322,18 @@ no separately shipped operator CLI or public HTTP status endpoint for them.
 - `GET /v1/health` confirms that the combined server process is listening but
   does not prove v2 durability. A verified archive receipt and a successful
   read-back are the v2 evidence; HEAD alone is not.
+
+Backlog replication keeps row-level exponential full-jitter deadlines separate
+from its process-local replica breaker. An isolated timeout, network error,
+rate-limit response, or server-unavailable response may use exactly one next
+claim as a health probe. If that claim verifies, the rest of the batch continues
+and only the failed row waits for its durable retry deadline. If the probe also
+fails, if no probe is available, or if the resource gate closes before it can
+start, the replica pauses for 60 seconds and releases all unstarted claims. This
+bounds a real outage to at most two failed claims in a pass without letting one
+sporadic request failure stall thousands of unrelated pending rows. HQ and M1
+remain independent; authentication and configuration failures still require
+explicit attention rather than an automatic probe.
 
 Operational alerts should treat any configuration error, growing quarantine,
 stale receipt age, or persistent single-replica count as degraded. One remote

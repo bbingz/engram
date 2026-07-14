@@ -4,6 +4,9 @@
 
 ### 2026-07-14
 
+- [排查] Archive v2 慢同步的主因不是积压发现或双副本互相阻塞，而是单个瞬时网络错误会终止该副本剩余批次并暂停 60 秒。现场 `archive.sqlite` 仅有 HQ 2 条、M1 1 条 `retryWait`，却分别有 5112 与 2490 条普通 `pending`；最近半小时多数副本分钟仅完成 1–2 条。
+- [修复] PR #167 / `7cf190d1` 增加批内一次有界健康探针：首个瞬时错误仍保留行级 full-jitter 重试；下一条完整验证成功则继续余下批次，第二个瞬时错误、无可用探针或资源门关闭才触发原有 60 秒副本熔断。鉴权/配置错误、HQ/M1 隔离、每副本串行与双回执证明不变。
+- [验证] 新回归测试先复现旧行为（HQ 只请求 1 条、验证 0 条且进入暂停），修复后 `ArchiveReplicationCoordinatorTests` 39/39、相关 Service archive 调度测试 82/82、全量 `EngramCoreTests` 890 项（1 skip、0 failure）通过，`git diff --check` 通过。当前只推送源码 PR，未安装或重启本机 App/Service，运行中的 build 1188 尚不包含该修复。
 - [运行验证] 当前实际进程来自 `/Applications/Engram.app`，版本 `1.0.4 (1188)`；App / EngramService 于 10:25 启动，晚于 Developer ID 签名时间 03:01。`macos/scripts/release-verify.sh /Applications/Engram.app` 通过 bundle hygiene、结构、deep/strict codesign、Hardened Runtime、Developer ID authority 与 secure timestamp 检查。
 - [构建对应] build `1188` 与 `git rev-list --count 3b0b5b1d` 一致；该提交发生于 02:57，随后 03:01 签名。安装主程序与 `macos/build/EngramExport/Engram.app` 的 SHA-256 均为 `b46c78aaa3a7da7df08c261d88f3f1fd848aece15e1b46fad9e716d00f1c9769`。
 - [边界] 验证时基线 `HEAD == origin/main == 7bd536c6`，比安装构建多 7 个 CI、release tooling、测试、fixture 与文档提交，但没有产品运行时实现变更；因此当前 App 在功能运行时口径为最新，但不是从 `7bd536c6` 重新编译的字节级 HEAD build。远端最新 published release 仍为 `v1.0.3`，本机 `1.0.4` 更新。
