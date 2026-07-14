@@ -373,6 +373,14 @@ describe('CI workflow hardening', () => {
     const codeqlGate = codeqlWorkflow.slice(
       codeqlWorkflow.indexOf('  codeql-gate:'),
     );
+    const checkoutIndex = codeqlGate.indexOf(
+      `actions/checkout@${actionPins['actions/checkout']}`,
+    );
+    const verifyIndex = codeqlGate.indexOf(
+      'bash scripts/ci/verify-codeql-gate.sh',
+    );
+    expect(checkoutIndex).toBeGreaterThan(-1);
+    expect(verifyIndex).toBeGreaterThan(checkoutIndex);
     expect(codeqlGate).not.toContain('security-events: write');
     expect(codeqlWorkflow.match(/security-events: write/g)).toHaveLength(3);
   });
