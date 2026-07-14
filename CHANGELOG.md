@@ -13,9 +13,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   one M1 rows were in `retryWait`, while 5,112 HQ and 2,490 M1 ordinary rows
   remained pending. The old first-failure circuit breaker aborted every
   unstarted row in that replica batch and then paused the replica for 60 seconds.
-- PR #167 (`7cf190d1`) now treats exactly one following claim as a bounded health
-  probe. A verified probe clears the candidate breaker and lets the serial batch
-  continue; a second transient failure, no available probe, or a closed resource
+- PR #167 (`7cf190d1`, merged as `834bf1f2`) now treats exactly one following
+  claim as a bounded health probe. A verified probe clears the candidate breaker
+  and lets the serial batch continue; a second transient failure, no available
+  probe, or a closed resource
   gate retains the existing 60-second breaker. A real outage therefore adds at
   most one failed request per pass, while one sporadic failure no longer stalls
   unrelated rows.

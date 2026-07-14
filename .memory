@@ -126,8 +126,9 @@
   `ArchiveReplicationCoordinatorTests` passed 39/39; selected
   `EngramServiceCore` archive tests passed 82/82; full `EngramCoreTests` passed
   890 tests with one skipped and zero failures; `git diff --check` passed.
-- Deployment boundary: the branch is pushed and PR #167 is open, but no local
-  App/Service install or restart was authorized or performed. Installed build
+- Merge and deployment boundary: PR #167 passed all required checks and merged
+  as `834bf1f2`, but no local App/Service install or restart was authorized or
+  performed. Installed build
   1188 therefore does not contain this throughput fix; live post-install drain
   rate remains unverified.
 
