@@ -314,6 +314,11 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain('CHANGES: $' + '{{ needs.changes.result }}');
     expect(testWorkflow).toContain('require_result changes "$CHANGES" success');
     expect(testWorkflow).toContain('Detect durable-docs-only changes');
+    expect(codeqlWorkflow).toContain('name: CodeQL Gate');
+    expect(codeqlWorkflow).toContain(
+      'CHANGES: $' + '{{ needs.changes.result }}',
+    );
+    expect(codeqlWorkflow).toContain('bash scripts/ci/verify-codeql-gate.sh');
   });
 
   it('runs PR smoke and main full UI without exposing AI-triage secrets', () => {
@@ -350,6 +355,26 @@ describe('CI workflow hardening', () => {
     expect(codeqlWorkflow).toContain(
       'category: /language:swift/target:remote-server',
     );
+  });
+
+  it('routes CodeQL targets through the tested path classifier', () => {
+    expect(codeqlWorkflow).toContain(
+      'bash scripts/ci/classify-codeql-changes.sh "$BASE_SHA" "$HEAD_SHA" "$GITHUB_OUTPUT"',
+    );
+    expect(codeqlWorkflow).toContain(
+      "if: needs.changes.outputs.typescript == 'true'",
+    );
+    expect(codeqlWorkflow).toContain(
+      "if: needs.changes.outputs.swift_product == 'true'",
+    );
+    expect(codeqlWorkflow).toContain(
+      "if: needs.changes.outputs.swift_remote_server == 'true'",
+    );
+    const codeqlGate = codeqlWorkflow.slice(
+      codeqlWorkflow.indexOf('  codeql-gate:'),
+    );
+    expect(codeqlGate).not.toContain('security-events: write');
+    expect(codeqlWorkflow.match(/security-events: write/g)).toHaveLength(3);
   });
 });
 
