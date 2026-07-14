@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-14): 97 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-14): 98 dated entries; regenerate after adding sections -->
+- [2026-07-14 - Installed Engram 1.0.4 build 1188 verified current for product runtime (Codex)](#2026-07-14---installed-engram-104-build-1188-verified-current-for-product-runtime-codex)
 - [2026-07-14 - CI orchestration audit, hardening, and clean-main closeout (Codex)](#2026-07-14---ci-orchestration-audit-hardening-and-clean-main-closeout-codex)
 - [2026-07-14 - Merged-worktree cleanup and durable-state synchronization (Codex)](#2026-07-14---merged-worktree-cleanup-and-durable-state-synchronization-codex)
 - [2026-07-11 - Wave 8 Round 4 engineering-zero durable closeout (Grok)](#2026-07-11---wave-8-round-4-engineering-zero-durable-closeout-grok)
@@ -101,6 +102,39 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-14 - Installed Engram 1.0.4 build 1188 verified current for product runtime (Codex)
+
+- Objective: answer whether the Engram process currently in use is the latest
+  product build using fresh installed-bundle, process, Git, remote-release,
+  signature, and binary evidence rather than a prior deployment summary.
+- Live state: PID 1192 runs
+  `/Applications/Engram.app/Contents/MacOS/Engram`, and PID 1240 runs its
+  bundled `EngramService`; both started at 2026-07-14 10:25 +0800, after the
+  bundle's Developer ID signature timestamp of 03:01:59 +0800. Installed
+  version is `1.0.4 (1188)`.
+- Bundle proof: `macos/scripts/release-verify.sh /Applications/Engram.app`
+  passed bundle hygiene, required helper/framework structure, deep/strict
+  codesign, Hardened Runtime, Developer ID authority, and secure timestamp.
+  The installed and exported Engram executables both hash to
+  `b46c78aaa3a7da7df08c261d88f3f1fd848aece15e1b46fad9e716d00f1c9769`.
+- Source mapping: `git rev-list --count 3b0b5b1d` returns 1188; that commit was
+  created at 02:57:03 +0800, immediately before signing. At verification time,
+  `HEAD == origin/main == 7bd536c6` was seven commits ahead, but their diff was
+  limited to CI, release tooling/configuration, tests, fixtures, docs, and a
+  deleted retained TypeScript tool; no shipped product-runtime implementation
+  path changed after the installed build.
+- Decision: the running app is current for product functionality, but it is
+  not claimed as a byte-for-byte rebuild of `7bd536c6`. The latest published
+  GitHub release observed on 2026-07-14 is `v1.0.3`, so installed `1.0.4` is
+  newer than the published release. No deployment or process restart occurred
+  during this verification.
+- Evidence commands: `pgrep -alf 'Engram|EngramService|EngramMCP'`;
+  `ps -p 1192,1240 -o pid=,lstart=,command=`; `codesign -dv --verbose=4
+  /Applications/Engram.app`; `macos/scripts/release-verify.sh
+  /Applications/Engram.app`; `shasum -a 256` on installed/exported Engram;
+  `git rev-list --count`; `git log`; `git diff --name-only 3b0b5b1d..main`;
+  and `gh release view --repo bbingz/engram`.
 
 ## 2026-07-14 - CI orchestration audit, hardening, and clean-main closeout (Codex)
 

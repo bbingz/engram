@@ -4,6 +4,9 @@
 
 ### 2026-07-14
 
+- [运行验证] 当前实际进程来自 `/Applications/Engram.app`，版本 `1.0.4 (1188)`；App / EngramService 于 10:25 启动，晚于 Developer ID 签名时间 03:01。`macos/scripts/release-verify.sh /Applications/Engram.app` 通过 bundle hygiene、结构、deep/strict codesign、Hardened Runtime、Developer ID authority 与 secure timestamp 检查。
+- [构建对应] build `1188` 与 `git rev-list --count 3b0b5b1d` 一致；该提交发生于 02:57，随后 03:01 签名。安装主程序与 `macos/build/EngramExport/Engram.app` 的 SHA-256 均为 `b46c78aaa3a7da7df08c261d88f3f1fd848aece15e1b46fad9e716d00f1c9769`。
+- [边界] 验证时基线 `HEAD == origin/main == 7bd536c6`，比安装构建多 7 个 CI、release tooling、测试、fixture 与文档提交，但没有产品运行时实现变更；因此当前 App 在功能运行时口径为最新，但不是从 `7bd536c6` 重新编译的字节级 HEAD build。远端最新 published release 仍为 `v1.0.3`，本机 `1.0.4` 更新。
 - [CI] 以 3 个独立 review agent 加 coordinator 裁决完成 CI 编排审计，分 4 个 PR 合入：#161 按变更路径路由 CodeQL 并增加 fail-closed `CodeQL Gate`，#162 稳定 Swift product 的 SPM clone cache/timeout，#163 强制 MCP contract fixture 新鲜度，#164 收口 dependency/perf/release 与 `CI Gate`。
 - [性能] 旧 Perf run `29317039094` 在编译后卡于 Xcode test-manager IPC；改为 `build-for-testing` 后直接 `xcrun xctest`。最终 PR head `845d6d69` 的 run `29318748080` 在 macmini-m1 / Xcode 26.6 上 2m52s 完成，20/20 fixtures，平均 0.049s、RSD 1.315%，build/test exit code 均为 0。
 - [供应链] 启用 GitHub Dependency Graph，并新增 pinned Dependency Review：moderate 及以上漏洞覆盖 runtime/development/unknown scopes，snapshot warning 60 秒重试后仍不完整则 fail closed；当前 SPDX 2.3 SBOM 为 363 packages。
