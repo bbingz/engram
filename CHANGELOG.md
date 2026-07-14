@@ -7,6 +7,34 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: bounded service startup memory and maintenance (2026-07-15)
+
+- Removed startup work that did not contribute to the current indexing result:
+  unused known-tail snapshot reads, unconditional archive manifest replay for
+  an already-current v5 catalog, full-database `VACUUM`, and full FTS optimize.
+- FTS maintenance now uses a resumable FTS5 merge capped at 500 pages per
+  invocation. Grouped-directory reconciliation releases per-file temporary
+  objects, avoids JSON decoding for lines without `"cwd"`, and records a
+  versioned completion marker so the complete historical scan runs once per
+  reconciliation version.
+- Added regressions for the archive schema gate, bounded/continuing FTS merge,
+  grouped-directory one-time gate, skipped tail snapshot query, and startup
+  memory-pressure callbacks. Full `EngramCoreTests` and `EngramServiceCore`
+  suites passed.
+- On the same installed dataset, the pre-fix startup sampled RSS peak was about
+  7.93 GiB. Developer ID build 1205's first one-time reconciliation peaked at
+  1.17 GiB sampled RSS / 974.4 MiB physical footprint and completed in about
+  226 seconds. A second launch was immediately socket-ready, completed initial
+  startup in 27 seconds, peaked at 926.3 MiB physical footprint, and settled to
+  127.7 MiB physical footprint after completion.
+- `/Applications/Engram.app` is installed as `1.0.4 (1205)` and passed the full
+  Developer ID release verifier. Build 1202 remains available locally at
+  `macos/build/rollback/Engram-1.0.4-1202.app`.
+- Archive draining remains live: recent passes captured 7–32 files per pass,
+  M1 had one queued item, and HQ had nine transient network retries under a
+  short infrastructure backoff. This verifies continued progress, not a claim
+  that all remote backlog is cleared.
+
 ### Fixed: archive backlog survives isolated replica transport failures (2026-07-14)
 
 - Diagnosed the slow Archive v2 drain from the live catalog: only two HQ and

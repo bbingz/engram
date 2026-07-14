@@ -15,19 +15,22 @@ public final class SwiftIndexer {
     private let authoritativeNode: String
     private let skipUnchangedFileLocators: Bool
     private let skipKnownFileLocators: Bool
+    private let didFinishAdapter: @Sendable (SourceName) -> Void
 
     public init(
         sink: any IndexingWriteSink,
         adapters: [any SessionAdapter] = [],
         authoritativeNode: String = "local",
         skipUnchangedFileLocators: Bool = false,
-        skipKnownFileLocators: Bool = false
+        skipKnownFileLocators: Bool = false,
+        didFinishAdapter: @escaping @Sendable (SourceName) -> Void = { _ in }
     ) {
         self.sink = sink
         self.adapters = adapters
         self.authoritativeNode = authoritativeNode
         self.skipUnchangedFileLocators = skipUnchangedFileLocators
         self.skipKnownFileLocators = skipKnownFileLocators
+        self.didFinishAdapter = didFinishAdapter
     }
 
     public func indexSnapshots(
@@ -148,6 +151,7 @@ public final class SwiftIndexer {
             try Task.checkCancellation()
             if let sources, !sources.contains(adapter.source) { continue }
             guard await adapter.detect() else { continue }
+            defer { didFinishAdapter(adapter.source) }
 
             let locators: [String]
             do {
@@ -167,9 +171,16 @@ public final class SwiftIndexer {
                 ? (try? sink.knownIndexedFileStates(source: adapter.source, locators: locators))
                 : nil
             let fileIndexStates = try? sink.knownFileIndexStates(source: adapter.source, locators: locators)
-            let tailMergeSnapshots = (adapter as? any TailIndexingSessionAdapter) == nil
-                ? nil
-                : (try? sink.knownTailMergeSnapshots(source: adapter.source, locators: locators))
+            // Startup scans set `skipKnownFileLocators`: they never enter
+            // `attemptTailIndexing` below, so materializing full snapshots for
+            // every known locator would be pure overhead. On large Claude
+            // histories that also fans out into tools/costs/work-beat reads and
+            // creates a multi-gigabyte transient allocation spike.
+            let shouldLoadTailMergeSnapshots = !skipKnownFileLocators
+                && adapter is any TailIndexingSessionAdapter
+            let tailMergeSnapshots = shouldLoadTailMergeSnapshots
+                ? (try? sink.knownTailMergeSnapshots(source: adapter.source, locators: locators))
+                : nil
             let activeFileCutoff = Date().addingTimeInterval(-Self.activeFileGraceInterval)
 
             for locator in locators {

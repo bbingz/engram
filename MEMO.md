@@ -2,6 +2,13 @@
 
 ## Changelog Memo
 
+### 2026-07-15
+
+- [内存修复] build 1205 收口 Service 启动峰值：跳过无消费者的 tail snapshot 查询；archive v2 仅在 catalog schema 升级时重放 manifest 绑定；grouped-dir 对账改为逐文件 autoreleasepool、先筛 `"cwd"` 再解析，并以版本标记只运行一次；FTS 维护改为每轮最多 500 页的可续跑 merge，启动不再执行全量 `VACUUM` / `optimize`。
+- [实机验证] 同一真实数据集下，修复前启动阶段 sampled RSS 峰值约 7.93 GiB；build 1205 首轮一次性 grouped-dir 对账的 sampled RSS 峰值约 1.17 GiB，`vmmap` 物理峰值 974.4 MiB，约 226 秒完成并写入版本 1。二次启动即时 ready、27 秒完成，物理峰值 926.3 MiB、完成后 127.7 MiB；Developer ID release verifier 与 Core/Service 全量测试通过。
+- [同步观测] Archive v2 最近 drain pass 每轮继续捕获 7–32 个文件，状态为 idle、无 active stage，M1 队列剩 1；HQ 有 9 个 `transport_network` 重试并处于短暂基础设施退避。同步仍在推进，但不宣称远端积压已经清零。
+- [部署] `/Applications/Engram.app` 已安装为 `1.0.4 (1205)`；完整 Developer ID、Hardened Runtime、secure timestamp 与 bundle hygiene 验证通过。build 1202 回滚包保留在 `macos/build/rollback/Engram-1.0.4-1202.app`。
+
 ### 2026-07-14
 
 - [排查] Archive v2 慢同步的主因不是积压发现或双副本互相阻塞，而是单个瞬时网络错误会终止该副本剩余批次并暂停 60 秒。现场 `archive.sqlite` 仅有 HQ 2 条、M1 1 条 `retryWait`，却分别有 5112 与 2490 条普通 `pending`；最近半小时多数副本分钟仅完成 1–2 条。

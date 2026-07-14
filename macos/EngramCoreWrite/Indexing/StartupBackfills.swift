@@ -81,8 +81,6 @@ public protocol StartupBackfillDatabase: AnyObject {
     func countTodayParentSessions() throws -> Int
     func backfillScores() throws -> Int
     func deduplicateFilePaths() throws -> Int
-    func optimizeFts() throws
-    func vacuumIfNeeded(_ fragmentationPercent: Int) throws -> Bool
     func reconcileInsights() throws -> StartupInsightReconcileResult
     func reconcileGroupedSourceDirs() throws -> GroupedDirReconcileResult
     func backfillFilePaths() throws -> Int
@@ -127,6 +125,8 @@ public enum StartupBackfills {
     static let codexModelBackfillVersion = "1"
     static let skipTierArtifactReconcileMetadataKey = "skip_tier_artifact_reconcile_version"
     static let skipTierArtifactReconcileVersion = "1"
+    static let groupedDirReconcileMetadataKey = "grouped_dir_reconcile_version"
+    static let groupedDirReconcileVersion = "1"
     // Codex rollout line 1 can include large base instructions; 256 KiB keeps
     // startup bounded while covering the early session_meta/turn_context lines.
     static let codexModelHeadScanBytes = 256 * 1024
@@ -273,19 +273,14 @@ public enum StartupBackfills {
             if deduped > 0 {
                 emit(StartupBackfillEvent(event: "db_maintenance", payload: ["action": .string("dedup"), "removed": .int(deduped)]))
             }
-            try database.optimizeFts()
         } catch {
             log.warn("db maintenance failed", error: error)
         }
 
-        do {
-            if try database.vacuumIfNeeded(15) {
-                emit(StartupBackfillEvent(event: "db_maintenance", payload: ["action": .string("vacuum")]))
-            }
-        } catch {
-            log.warn("db vacuum failed", error: error)
-        }
-
+        // Do not run full FTS optimize or VACUUM during startup. Both rewrite
+        // a large database, multiply transient allocator footprint, and delay
+        // readiness for minutes. FTS consolidation is handled by bounded
+        // periodic merge steps; space reclamation remains explicit maintenance.
         do {
             let reconciled = try database.reconcileInsights()
             if reconciled.resetEmbedding > 0 || reconciled.orphanedVector > 0 {
@@ -701,6 +696,8 @@ public enum StartupBackfills {
     }
 
     static let ftsOptimizeSignatureKey = "fts_optimize_signature"
+    static let ftsMergeInProgressKey = "fts_merge_in_progress"
+    static let ftsMergePageBudget = 500
     /// ISO8601 timestamp of the last periodic-path optimize attempt (whether
     /// the content-signature gate then ran or skipped the rewrite).
     public static let ftsOptimizeLastAttemptKey = "fts_optimize_last_attempt"
@@ -711,14 +708,11 @@ public enum StartupBackfills {
     /// still consolidates without waiting for a restart.
     public static let ftsOptimizeMinInterval: TimeInterval = 24 * 60 * 60
 
-    /// FTS5 'optimize' merges every b-tree segment into one — a full read+rewrite
-    /// of the (multi-hundred-MB) index. Running it unconditionally on every launch
-    /// re-merged an unchanged index and stalled user writes queued behind the held
-    /// write gate. Gate it on a cheap content signature stored in `metadata`: skip
-    /// entirely when no FTS-eligible content changed since the last optimize.
-    /// Content the drain writes AFTER this call is consolidated on the next launch
-    /// whose signature differs — an acceptable one-launch lag, since a permanently
-    /// idle corpus has no search-perf pressure. Returns true when optimize ran.
+    /// Performs one bounded FTS5 merge step instead of the unbounded `optimize`
+    /// command. SQLite documents `merge` as the way to split optimization into
+    /// page-budgeted transactions. A changed content signature starts a merge
+    /// with a negative budget; later periodic calls continue it with a positive
+    /// budget until both FTS tables report no work.
     @discardableResult
     public static func optimizeFts(_ db: Database) throws -> Bool {
         let signature = try ftsContentSignature(db)
@@ -727,10 +721,28 @@ public enum StartupBackfills {
             sql: "SELECT value FROM metadata WHERE key = ?",
             arguments: [ftsOptimizeSignatureKey]
         )
-        guard stored != signature else { return false }
+        let continuing = try String.fetchOne(
+            db,
+            sql: "SELECT value FROM metadata WHERE key = ?",
+            arguments: [ftsMergeInProgressKey]
+        ) == "1"
+        let signatureChanged = stored != signature
+        guard continuing || signatureChanged else { return false }
 
-        try db.execute(sql: "INSERT INTO sessions_fts(sessions_fts) VALUES('optimize')")
-        try db.execute(sql: "INSERT INTO insights_fts(insights_fts) VALUES('optimize')")
+        let pageBudget = continuing ? ftsMergePageBudget : -ftsMergePageBudget
+        let sessionsBefore = db.totalChangesCount
+        try db.execute(
+            sql: "INSERT INTO sessions_fts(sessions_fts, rank) VALUES('merge', ?)",
+            arguments: [pageBudget]
+        )
+        let sessionsDidWork = db.totalChangesCount - sessionsBefore >= 2
+        let insightsBefore = db.totalChangesCount
+        try db.execute(
+            sql: "INSERT INTO insights_fts(insights_fts, rank) VALUES('merge', ?)",
+            arguments: [pageBudget]
+        )
+        let insightsDidWork = db.totalChangesCount - insightsBefore >= 2
+        let didMergeWork = sessionsDidWork || insightsDidWork
         try db.execute(
             sql: """
             INSERT INTO metadata(key, value) VALUES (?, ?)
@@ -738,7 +750,21 @@ public enum StartupBackfills {
             """,
             arguments: [ftsOptimizeSignatureKey, signature]
         )
-        return true
+        if didMergeWork {
+            try db.execute(
+                sql: """
+                INSERT INTO metadata(key, value) VALUES (?, '1')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                arguments: [ftsMergeInProgressKey]
+            )
+        } else {
+            try db.execute(
+                sql: "DELETE FROM metadata WHERE key = ?",
+                arguments: [ftsMergeInProgressKey]
+            )
+        }
+        return signatureChanged || didMergeWork
     }
 
     /// Whether the periodic-path min-interval gate would admit an attempt at `now`.
@@ -747,6 +773,13 @@ public enum StartupBackfills {
         now: Date = Date(),
         minInterval: TimeInterval = ftsOptimizeMinInterval
     ) throws -> Bool {
+        if try String.fetchOne(
+            db,
+            sql: "SELECT value FROM metadata WHERE key = ?",
+            arguments: [ftsMergeInProgressKey]
+        ) == "1" {
+            return true
+        }
         if let lastRaw = try String.fetchOne(
             db,
             sql: "SELECT value FROM metadata WHERE key = ?",
@@ -901,18 +934,6 @@ public enum StartupBackfills {
             try markSkipTierArtifactFullScanComplete(db)
         }
         return deletedMessages + deletedFts + deletedFtsMap + deletedEmbeddings
-    }
-
-    public static func vacuumIfNeeded(_ db: Database, fragmentationPercent: Int) throws -> Bool {
-        let pageCount = try Int.fetchOne(db, sql: "PRAGMA page_count") ?? 0
-        let freeCount = try Int.fetchOne(db, sql: "PRAGMA freelist_count") ?? 0
-        guard pageCount > 0 else { return false }
-        let fragmentation = (Double(freeCount) / Double(pageCount)) * 100
-        if fragmentation > Double(fragmentationPercent) {
-            try db.execute(sql: "VACUUM")
-            return true
-        }
-        return false
     }
 
     public static func reconcileInsights(_ db: Database) throws -> StartupInsightReconcileResult {

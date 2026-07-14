@@ -357,13 +357,20 @@ public enum GroupedDirReconcile {
             maxFileBytes: structuredCwdReadCapBytes,
             onIssue: { _ in localIssues += 1 },
             onFile: { file in
-                guard let text = try? String(contentsOfFile: file, encoding: .utf8) else {
-                    localIssues += 1
-                    return
-                }
-                for line in text.split(whereSeparator: \.isNewline) {
-                    if let cwd = extractStructuredCwd(String(line)) {
-                        cwds.insert(cwd)
+                autoreleasepool {
+                    guard let text = try? String(contentsOfFile: file, encoding: .utf8) else {
+                        localIssues += 1
+                        return
+                    }
+                    for line in text.split(whereSeparator: \.isNewline) {
+                        // Session transcripts contain many large JSON message
+                        // rows but only a handful of structured cwd fields.
+                        // Avoid constructing Foundation JSON object graphs for
+                        // lines that cannot contribute reconciliation evidence.
+                        guard line.contains(#""cwd""#) else { continue }
+                        if let cwd = extractStructuredCwd(String(line)) {
+                            cwds.insert(cwd)
+                        }
                     }
                 }
             }

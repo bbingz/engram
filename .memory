@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-14): 99 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-15): 100 dated entries; regenerate after adding sections -->
+- [2026-07-15 - Bounded service startup memory deployed as build 1205 (Codex)](#2026-07-15---bounded-service-startup-memory-deployed-as-build-1205-codex)
 - [2026-07-14 - Archive v2 isolated-failure throughput remediation (Codex)](#2026-07-14---archive-v2-isolated-failure-throughput-remediation-codex)
 - [2026-07-14 - Installed Engram 1.0.4 build 1188 verified current for product runtime (Codex)](#2026-07-14---installed-engram-104-build-1188-verified-current-for-product-runtime-codex)
 - [2026-07-14 - CI orchestration audit, hardening, and clean-main closeout (Codex)](#2026-07-14---ci-orchestration-audit-hardening-and-clean-main-closeout-codex)
@@ -103,6 +104,35 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-15 - Bounded service startup memory deployed as build 1205 (Codex)
+
+- Root causes were independent startup amplifiers, not one permanent leak:
+  archive catalog migration replayed 18,193 bindings and 19,463 manifest-object
+  references even at schema v5; grouped-directory reconciliation parsed the
+  complete historical source corpus every launch; the indexer queried unused
+  tail snapshots; and startup maintenance requested whole-database FTS optimize
+  and `VACUUM` work.
+- The shipped fix gates archive replay on an actual schema transition, gives
+  grouped-directory reconciliation a version-1 completion marker, releases its
+  per-file temporary objects and skips JSON decoding when a line lacks `"cwd"`,
+  skips the unused tail-snapshot query, and replaces whole-FTS optimize with a
+  resumable 500-page merge. Startup no longer automatically runs a full vacuum.
+- Full `EngramCoreTests` and `EngramServiceCore` passed. The release archive and
+  export succeeded, and `/Applications/Engram.app` is installed as Developer ID
+  Engram `1.0.4 (1205)` with full release verification passing.
+- Live proof on the same catalog: before the fix, startup sampled RSS peaked at
+  8,315,648 KiB (about 7.93 GiB). Build 1205's first versioned reconciliation
+  peaked at 1,222,304 KiB sampled RSS and 974.4 MiB physical footprint, finished
+  in about 226 seconds, and stored `grouped_dir_reconcile_version=1`. The next
+  launch was socket-ready immediately, completed initial startup in 27 seconds,
+  peaked at 926.3 MiB physical footprint, and settled to 127.7 MiB.
+- Archive sync was still active after deployment: recent drain passes captured
+  7–32 files, `activeStages` was empty and drain state idle between passes, M1
+  had one queued row, and HQ had nine `transport_network` retries under transient
+  infrastructure backoff. Do not reinterpret this observation as backlog zero.
+- Rollback: build 1202 remains at
+  `macos/build/rollback/Engram-1.0.4-1202.app`.
 
 ## 2026-07-14 - Archive v2 isolated-failure throughput remediation (Codex)
 

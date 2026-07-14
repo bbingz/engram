@@ -861,8 +861,6 @@ final class StartupBackfillTests: XCTestCase {
                 "backfillCodexModelLabels",
                 "backfillScores",
                 "deduplicateFilePaths",
-                "optimizeFts",
-                "vacuumIfNeeded",
                 "reconcileInsights",
                 "reconcileGroupedSourceDirs",
                 "backfillFilePaths",
@@ -888,7 +886,6 @@ final class StartupBackfillTests: XCTestCase {
                 StartupBackfillEvent(event: "backfill", payload: ["type": .string("costs"), "count": .int(3)]),
                 StartupBackfillEvent(event: "backfill", payload: ["type": .string("scores"), "count": .int(4)]),
                 StartupBackfillEvent(event: "db_maintenance", payload: ["action": .string("dedup"), "removed": .int(5)]),
-                StartupBackfillEvent(event: "db_maintenance", payload: ["action": .string("vacuum")]),
                 StartupBackfillEvent(
                     event: "db_maintenance",
                     payload: [
@@ -957,6 +954,51 @@ final class StartupBackfillTests: XCTestCase {
         )
         XCTAssertTrue(usageCollector.didStart)
         XCTAssertTrue(logger.warnings.isEmpty)
+    }
+
+    func testGroupedDirectoryReconcileRunsOncePerVersion() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("grouped-reconcile-version-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let cwd = "/Users/bing/-Code-/engram"
+        let stale = root.appendingPathComponent("stale", isDirectory: true)
+        try FileManager.default.createDirectory(at: stale, withIntermediateDirectories: true)
+        try Data("{\"cwd\":\"\(cwd)\"}\n".utf8).write(
+            to: stale.appendingPathComponent("session.jsonl")
+        )
+        let sourceRoot = SourceRoot(
+            id: .claudeCode,
+            path: root.path,
+            encodeProjectDir: { ClaudeCodeProjectDir.encode($0) }
+        )
+        let database = WriterStartupBackfillDatabase(
+            writer: writer,
+            groupedDirRoots: { [sourceRoot] }
+        )
+
+        let first = try database.reconcileGroupedSourceDirs()
+        XCTAssertEqual(first.appliedRenames, 1)
+        XCTAssertEqual(
+            try writer.read { db in
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT value FROM metadata WHERE key = ?",
+                    arguments: [StartupBackfills.groupedDirReconcileMetadataKey]
+                )
+            },
+            StartupBackfills.groupedDirReconcileVersion
+        )
+
+        let secondStale = root.appendingPathComponent("second-stale", isDirectory: true)
+        try FileManager.default.createDirectory(at: secondStale, withIntermediateDirectories: true)
+        try Data("{\"cwd\":\"/Users/bing/-Code-/other\"}\n".utf8).write(
+            to: secondStale.appendingPathComponent("session.jsonl")
+        )
+
+        XCTAssertEqual(try database.reconcileGroupedSourceDirs(), GroupedDirReconcileResult())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: secondStale.path))
     }
 
     func testRunInitialScanKeepsReadyWhenRecoverableBackfillsFail() async throws {
@@ -1474,6 +1516,24 @@ final class StartupBackfillTests: XCTestCase {
             XCTAssertFalse(
                 try StartupBackfills.optimizeFtsIfDue(db, now: t25h, minInterval: minInterval),
                 "due interval must still defer to the content-signature gate"
+            )
+        }
+    }
+
+    func testInProgressFtsMergeContinuesBeforeNewCycleInterval() throws {
+        let t0 = ISO8601DateFormatter().date(from: "2026-07-09T00:00:00Z")!
+        let t1h = t0.addingTimeInterval(60 * 60)
+
+        try writer.write { db in
+            try StartupBackfills.recordFtsOptimizeAttempt(db, now: t0)
+            try db.execute(
+                sql: "INSERT INTO metadata(key, value) VALUES (?, '1')",
+                arguments: [StartupBackfills.ftsMergeInProgressKey]
+            )
+
+            XCTAssertTrue(
+                try StartupBackfills.isFtsOptimizeDue(db, now: t1h),
+                "a bounded merge already in progress must advance on the next periodic tick"
             )
         }
     }
@@ -2100,16 +2160,6 @@ private final class RecordingStartupDatabase: StartupBackfillDatabase {
     func deduplicateFilePaths() throws -> Int {
         callOrder.append("deduplicateFilePaths")
         return 5
-    }
-
-    func optimizeFts() throws {
-        callOrder.append("optimizeFts")
-    }
-
-    func vacuumIfNeeded(_ fragmentationPercent: Int) throws -> Bool {
-        callOrder.append("vacuumIfNeeded")
-        XCTAssertEqual(fragmentationPercent, 15)
-        return true
     }
 
     func reconcileInsights() throws -> StartupInsightReconcileResult {

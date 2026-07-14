@@ -173,6 +173,72 @@ final class ServiceTelemetryTests: XCTestCase {
         XCTAssertEqual(failed.errorName, "ScanPhaseFailed")
     }
 
+    /// Initial scanning has several early-return paths. Memory pressure relief
+    /// must still run after all scan-owned allocations unwind, including when a
+    /// required phase fails.
+    func testRunInitialScanRelievesMallocPressureAfterPhaseFailure() async throws {
+        let paths = try makeServicePaths()
+        FileManager.default.createFile(atPath: paths.database.path, contents: nil)
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime
+        )
+        _ = try await gate.performWriteCommand(name: "migrate") { writer in
+            try writer.migrate()
+            try writer.verifySchemaPresent()
+        }
+
+        let relief = MemoryPressureReliefRecorder(releasedBytes: 4096)
+        let emptyHome = paths.runtime.deletingLastPathComponent()
+            .appendingPathComponent("empty-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: emptyHome, withIntermediateDirectories: true)
+        let disabledAll = [
+            "codex", "claude-code", "copilot", "gemini-cli", "opencode", "iflow",
+            "qwen", "qoder", "kimi", "minimax", "lobsterai", "commandcode",
+            "cline", "cursor", "vscode", "antigravity", "windsurf",
+        ].joined(separator: ",")
+
+        await EngramServiceRunner.runStartupMaintenanceWithMemoryRelief(
+            relieveMemoryPressure: { relief.relieve() }
+        ) {
+            await EngramServiceRunner.runInitialScan(
+                gate: gate,
+                statusMonitor: ServiceStatusMonitor(),
+                environment: [
+                    "HOME": emptyHome.path,
+                    "ENGRAM_DISABLED_SOURCES": disabledAll,
+                ],
+                tokenLimitsProvider: { [:] },
+                testHooks: .init(
+                    failPhaseNamed: "initialScanBackfills",
+                    maxFtsDrainIterations: 0
+                )
+            )
+        }
+
+        XCTAssertEqual(relief.callCount, 1)
+    }
+
+    /// Each startup phase can accumulate allocator pages even after its local
+    /// parser/GRDB objects are released. Reclaim between phases so those empty
+    /// pages do not compound into the startup peak.
+    func testRunInitialScanPhaseRelievesMallocPressureOnCompletion() async {
+        let relief = MemoryPressureReliefRecorder(releasedBytes: 2048)
+
+        let outcome = await EngramServiceRunner.runInitialScanPhase(
+            name: "memoryReliefProbe",
+            statusMonitor: ServiceStatusMonitor(),
+            relieveMemoryPressure: { relief.relieve() }
+        ) {
+            42
+        }
+
+        XCTAssertEqual(outcome.value, 42)
+        XCTAssertFalse(outcome.failed)
+        XCTAssertFalse(outcome.cancelled)
+        XCTAssertEqual(relief.callCount, 1)
+    }
+
     /// L01: stdout event encoding must go through JSONEncoder so quotes/newlines
     /// in error text cannot break the JSON line.
     func testStdoutEventEncodingEscapesQuotesAndControlCharacters() throws {
@@ -350,5 +416,24 @@ final class ServiceTelemetryTests: XCTestCase {
                 );
             """)
         }
+    }
+}
+
+private final class MemoryPressureReliefRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private let releasedBytes: Int
+    private var calls = 0
+
+    init(releasedBytes: Int) {
+        self.releasedBytes = releasedBytes
+    }
+
+    var callCount: Int {
+        lock.withLock { calls }
+    }
+
+    func relieve() -> Int {
+        lock.withLock { calls += 1 }
+        return releasedBytes
     }
 }
