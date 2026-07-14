@@ -20,6 +20,13 @@ const perfWorkflow = readFileSync(
   resolve(repoRoot, '.github/workflows/perf.yml'),
   'utf8',
 );
+const dependencyReviewPath = resolve(
+  repoRoot,
+  '.github/workflows/dependency-review.yml',
+);
+const dependencyReviewWorkflow = existsSync(dependencyReviewPath)
+  ? readFileSync(dependencyReviewPath, 'utf8')
+  : '';
 const macosProject = readFileSync(
   resolve(repoRoot, 'macos/project.yml'),
   'utf8',
@@ -28,6 +35,13 @@ const engramScheme = readFileSync(
   resolve(
     repoRoot,
     'macos/Engram.xcodeproj/xcshareddata/xcschemes/Engram.xcscheme',
+  ),
+  'utf8',
+);
+const engramCoreTestsScheme = readFileSync(
+  resolve(
+    repoRoot,
+    'macos/Engram.xcodeproj/xcshareddata/xcschemes/EngramCoreTests.xcscheme',
   ),
   'utf8',
 );
@@ -42,6 +56,7 @@ const allWorkflows = [
   releaseWorkflow,
   codeqlWorkflow,
   perfWorkflow,
+  dependencyReviewWorkflow,
 ];
 const actionPins = {
   'actions/cache': '55cc8345863c7cc4c66a329aec7e433d2d1c52a9',
@@ -50,6 +65,8 @@ const actionPins = {
   'actions/github-script': '373c709c69115d41ff229c7e5df9f8788daa9553',
   'actions/setup-node': '48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e',
   'actions/upload-artifact': '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
+  'actions/dependency-review-action':
+    'a1d282b36b6f3519aa1f3fc636f609c47dddb294',
   'github/codeql-action/analyze': '1ad29ea4a422cce9a242a9fae469541dcd08addc',
   'github/codeql-action/init': '1ad29ea4a422cce9a242a9fae469541dcd08addc',
 } as const;
@@ -412,7 +429,7 @@ describe('CI workflow hardening', () => {
 });
 
 describe('Perf workflow', () => {
-  it('runs report-only indexer measurements on macOS nightly and on demand', () => {
+  it('runs budgeted indexer measurements on macOS nightly and on demand', () => {
     expect(perfWorkflow).toContain('name: Perf');
     expect(perfWorkflow).toContain('cron: "30 19 * * *"');
     expect(perfWorkflow).toContain('workflow_dispatch:');
@@ -424,12 +441,13 @@ describe('Perf workflow', () => {
     expect(perfWorkflow).toContain(
       '-only-testing:EngramCoreTests/IndexerPerformanceTests',
     );
+    expect(perfWorkflow).toContain('-scheme EngramCoreTests');
+    expect(perfWorkflow).not.toContain('-scheme Engram \\');
     expect(perfWorkflow).toContain('ENGRAM_PERF: "1"');
     expect(perfWorkflow).toContain('TEST_RUNNER_ENGRAM_PERF=1');
     expect(perfWorkflow).toContain('2>&1 | tee perf-xcodebuild.log');
-    expect(perfWorkflow).toContain('if "measured" in line.lower()');
-    expect(perfWorkflow).toContain('"average_seconds"');
-    expect(perfWorkflow).toContain('No XCTest measured lines found');
+    expect(perfWorkflow).toContain('scripts/ci/check-perf-results.py');
+    expect(perfWorkflow).toContain('--max-average-seconds 0.250');
     expect(perfWorkflow).toContain('perf-results.json');
     expect(perfWorkflow).toContain(
       `uses: actions/upload-artifact@${actionPins['actions/upload-artifact']}`,
@@ -439,6 +457,24 @@ describe('Perf workflow', () => {
     expect(macosProject).toContain('ENGRAM_PERF: "$(TEST_RUNNER_ENGRAM_PERF)"');
     expect(engramScheme).toContain('key = "ENGRAM_PERF"');
     expect(engramScheme).toContain('value = "$(TEST_RUNNER_ENGRAM_PERF)"');
+    expect(engramCoreTestsScheme).toContain('key = "ENGRAM_PERF"');
+    expect(engramCoreTestsScheme).toContain(
+      'value = "$(TEST_RUNNER_ENGRAM_PERF)"',
+    );
+  });
+});
+
+describe('Dependency Review workflow', () => {
+  it('fail-closes pull requests that introduce moderate-or-higher vulnerabilities', () => {
+    expect(dependencyReviewWorkflow).toContain('name: Dependency Review');
+    expect(dependencyReviewWorkflow).toContain('pull_request:');
+    expect(dependencyReviewWorkflow).toContain('contents: read');
+    expect(dependencyReviewWorkflow).toContain('timeout-minutes: 5');
+    expect(dependencyReviewWorkflow).toContain(
+      `actions/dependency-review-action@${actionPins['actions/dependency-review-action']}`,
+    );
+    expect(dependencyReviewWorkflow).toContain('fail-on-severity: moderate');
+    expect(dependencyReviewWorkflow).not.toContain('warn-only: true');
   });
 });
 

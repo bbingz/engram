@@ -224,8 +224,17 @@ describe('release workflow gate', () => {
   });
 
   it('validates the pushed tag against the app short version', () => {
+    expect(workflow).toContain(
+      '[[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]',
+    );
     expect(workflow).toContain('TAG_VERSION="' + '$' + '{GITHUB_REF_NAME#v}"');
     expect(workflow).toContain('--expected-short-version "$TAG_VERSION"');
+  });
+
+  it('states that the ad-hoc gate is not distribution approval', () => {
+    expect(workflow).toContain(
+      'not a signed or notarized distribution approval',
+    );
   });
 
   it('requires release tests before archive verification', () => {
@@ -273,5 +282,36 @@ describe('macOS release build script: no silent non-notarizable fallback', () =>
 
   it('uses a second-resolution UTC timestamp when a unique local build number is needed', () => {
     expect(script).toContain('date -u +%Y%m%d%H%M%S');
+  });
+
+  it('uses a Keychain profile and verifies the stapled release before distribution', () => {
+    expect(script).toContain(
+      'notarytool store-credentials \\"engram-notary\\"',
+    );
+    expect(script).toContain('--keychain-profile \\"engram-notary\\"');
+    expect(script).toContain('--require-notarization');
+    expect(script).not.toContain('--password "YOUR_APP_SPECIFIC_PASSWORD"');
+  });
+});
+
+describe('macOS release notarization verification', () => {
+  const script = readFileSync(verifyScript, 'utf8');
+
+  it('checks both the stapled ticket and Gatekeeper assessment', () => {
+    expect(script).toContain('--require-notarization');
+    expect(script).toContain('xcrun stapler validate');
+    expect(script).toContain('spctl --assess --type execute');
+  });
+
+  it('rejects notarization assertions for an ad-hoc bundle', () => {
+    workdir = mkdtempSync(join(tmpdir(), 'engram-release-verify-'));
+    try {
+      const app = buildBareApp();
+      const { code, out } = runVerify(app, ['--require-notarization']);
+      expect(code).not.toBe(0);
+      expect(out).toContain('cannot be combined with --adhoc');
+    } finally {
+      rmSync(workdir, { recursive: true, force: true });
+    }
   });
 });

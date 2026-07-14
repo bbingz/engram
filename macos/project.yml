@@ -474,6 +474,8 @@ schemes:
       config: Debug
       targets:
         - EngramCoreTests
+      environmentVariables:
+        ENGRAM_PERF: "$(TEST_RUNNER_ENGRAM_PERF)"
   EngramCoreSchemaTool:
     build:
       targets:

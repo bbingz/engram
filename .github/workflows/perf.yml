@@ -57,55 +57,22 @@ jobs:
           set -o pipefail
           xcodebuild test \
             -project macos/Engram.xcodeproj \
-            -scheme Engram \
+            -scheme EngramCoreTests \
             -only-testing:EngramCoreTests/IndexerPerformanceTests \
             -destination 'platform=macOS' \
-            -derivedDataPath "$RUNNER_TEMP/engram-perf-derived" \
+            -derivedDataPath "$RUNNER_TEMP/engram-perf-derived-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             -clonedSourcePackagesDirPath "$HOME/Library/Caches/EngramSourcePackages" \
             CODE_SIGNING_ALLOWED=NO \
             TEST_RUNNER_ENGRAM_PERF=1 \
             2>&1 | tee perf-xcodebuild.log
 
-      - name: Extract perf results
+      - name: Enforce perf budget
         if: always()
         run: |
-          python3 - <<'PY'
-          import json
-          import re
-          from pathlib import Path
-
-          log_path = Path("perf-xcodebuild.log")
-          measured_lines = []
-          if log_path.exists():
-              measured_lines = [
-                  line.strip()
-                  for line in log_path.read_text(errors="replace").splitlines()
-                  if "measured" in line.lower()
-              ]
-
-          average_pattern = re.compile(r"average:\s*([0-9.]+)")
-          measurements = []
-          for line in measured_lines:
-              match = average_pattern.search(line)
-              measurements.append({
-                  "line": line,
-                  "average_seconds": float(match.group(1)) if match else None,
-              })
-
-          Path("perf-results.json").write_text(
-              json.dumps(
-                  {
-                      "workflow": "Perf",
-                      "metric": "Swift indexer generated-fixture throughput",
-                      "measurements": measurements,
-                  },
-                  indent=2,
-              )
-              + "\n"
-          )
-          if not measurements:
-              raise SystemExit("No XCTest measured lines found; perf test may have skipped")
-          PY
+          python3 scripts/ci/check-perf-results.py \
+            --log perf-xcodebuild.log \
+            --results perf-results.json \
+            --max-average-seconds 0.250
 
       - name: Upload perf results
         if: always()

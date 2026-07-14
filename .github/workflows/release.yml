@@ -22,7 +22,19 @@ env:
   XCODEGEN_VERSION: "2.45.4"
 
 jobs:
+  validate-release-tag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require a stable semantic-version tag
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Release tags must match vMAJOR.MINOR.PATCH; got '$GITHUB_REF_NAME'" >&2
+            exit 1
+          }
+
   release-tests:
+    needs: validate-release-tag
     runs-on: macos-15
     timeout-minutes: 35
     steps:
@@ -78,6 +90,7 @@ jobs:
           run_xcode_tests EngramMCPTests
 
   release-remote-server-tests:
+    needs: validate-release-tag
     runs-on: macos-26
     timeout-minutes: 20
     steps:
@@ -169,3 +182,12 @@ jobs:
             --adhoc \
             --expected-build "${{ github.run_number }}" \
             --expected-short-version "$TAG_VERSION"
+
+      - name: Record release gate scope
+        if: always()
+        run: |
+          {
+            echo "### Release gate scope"
+            echo "This ad-hoc package gate is not a signed or notarized distribution approval."
+            echo "A distributable build still requires Developer ID export, notarization, stapling, and full release verification."
+          } >> "$GITHUB_STEP_SUMMARY"

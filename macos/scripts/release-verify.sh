@@ -14,7 +14,8 @@
 #   - Secure timestamp present
 #
 # Usage:
-#   release-verify.sh /path/to/Engram.app [--adhoc] [--hygiene-only] [--expected-build N] [--expected-short-version X.Y.Z]
+#   release-verify.sh /path/to/Engram.app [--adhoc] [--hygiene-only] [--require-notarization]
+#                     [--expected-build N] [--expected-short-version X.Y.Z]
 #
 # Exit nonzero on the first failed assertion.
 set -euo pipefail
@@ -26,10 +27,12 @@ ADHOC=0
 HYGIENE_ONLY=0
 EXPECTED_BUILD=""
 EXPECTED_SHORT_VERSION=""
+REQUIRE_NOTARIZATION=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --adhoc) ADHOC=1 ;;
     --hygiene-only) HYGIENE_ONLY=1 ;;
+    --require-notarization) REQUIRE_NOTARIZATION=1 ;;
     --expected-build) shift; EXPECTED_BUILD="${1:-}" ;;
     --expected-short-version) shift; EXPECTED_SHORT_VERSION="${1:-}" ;;
     *) echo "release-verify: unknown argument: $1" >&2; exit 2 ;;
@@ -45,6 +48,13 @@ fi
 fail() { echo "release-verify: FAIL: $*" >&2; exit 1; }
 ok() { echo "release-verify: ok: $*"; }
 
+if [ "$REQUIRE_NOTARIZATION" -eq 1 ] && [ "$ADHOC" -eq 1 ]; then
+  fail "--require-notarization cannot be combined with --adhoc"
+fi
+if [ "$REQUIRE_NOTARIZATION" -eq 1 ] && [ "$HYGIENE_ONLY" -eq 1 ]; then
+  fail "--require-notarization cannot be combined with --hygiene-only"
+fi
+
 echo "======================================"
 echo " release-verify: $APP"
 if [ "$HYGIENE_ONLY" -eq 1 ]; then
@@ -52,7 +62,11 @@ if [ "$HYGIENE_ONLY" -eq 1 ]; then
 elif [ "$ADHOC" -eq 1 ]; then
   echo " mode: ad-hoc"
 else
-  echo " mode: Developer ID (full)"
+  if [ "$REQUIRE_NOTARIZATION" -eq 1 ]; then
+    echo " mode: Developer ID + notarization (full)"
+  else
+    echo " mode: Developer ID (full)"
+  fi
 fi
 echo "======================================"
 
@@ -135,4 +149,16 @@ else
   fail "secure timestamp absent (no 'Timestamp=' line; 'Signed Time=' is not a secure timestamp)"
 fi
 
-echo "release-verify: PASS (full Developer ID verification)"
+if [ "$REQUIRE_NOTARIZATION" -eq 1 ]; then
+  xcrun stapler validate "$APP" \
+    || fail "stapled notarization ticket validation failed"
+  ok "stapled notarization ticket valid"
+
+  spctl --assess --type execute --verbose=4 "$APP" \
+    || fail "Gatekeeper execution assessment failed"
+  ok "Gatekeeper execution assessment passed"
+
+  echo "release-verify: PASS (full Developer ID + notarization verification)"
+else
+  echo "release-verify: PASS (full Developer ID verification)"
+fi
