@@ -1,10 +1,13 @@
 # Exact-source remote archive v2 — operations and safety boundary
 
-**Implementation status (2026-07-14):** archive v2 remains default-off for a
+**Implementation status (2026-07-14):** archive v2 remains default OFF for a
 fresh install, but the current operator deployment has explicitly enabled local
 capture and both private replicas. HQ and M1 are draining an existing backlog;
 configuration in this document is still an example and never enables another
 installation by itself.
+**Production deployment is not part of this branch.** The existing enabled
+deployment does not authorize installing this throughput change or restarting
+the local App/Service.
 
 Archive v2 preserves the exact source bytes behind supported sessions. It is a
 different feature from the older remote-offload protocol:
