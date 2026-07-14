@@ -29,8 +29,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   and Dependency Review `29318747679` also passed before #164 merged as
   `e76b463c`.
 - Post-merge `main` Tests run `29321120090` passed Node, macOS gates, Swift
-  unit, remote-server package, full UI, and the aggregate `CI Gate` on
-  `e76b463c`.
+  unit, remote-server package, full UI, and `CI Gate`; CodeQL run
+  `29321120012` passed TypeScript, Swift product, Swift remote-server, and
+  `CodeQL Gate` on `e76b463c`.
+- Closeout PR #165 then exercised the precise durable-doc route: Tests run
+  `29322068421` and CodeQL run `29322068445` skipped all heavy lanes while
+  their fail-closed gates passed; Dependency Review `29322068681` passed.
 - Tightened release tags to stable SemVer numeric components without leading
   zeroes and made release verification explicitly check notarization and
   stapling when those paths are used. No Actions signing/notarization secrets

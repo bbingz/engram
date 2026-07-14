@@ -8,7 +8,8 @@
 - [性能] 旧 Perf run `29317039094` 在编译后卡于 Xcode test-manager IPC；改为 `build-for-testing` 后直接 `xcrun xctest`。最终 PR head `845d6d69` 的 run `29318748080` 在 macmini-m1 / Xcode 26.6 上 2m52s 完成，20/20 fixtures，平均 0.049s、RSD 1.315%，build/test exit code 均为 0。
 - [供应链] 启用 GitHub Dependency Graph，并新增 pinned Dependency Review：moderate 及以上漏洞覆盖 runtime/development/unknown scopes，snapshot warning 60 秒重试后仍不完整则 fail closed；当前 SPDX 2.3 SBOM 为 363 packages。
 - [保护] `main` strict required checks 已读回为 `CI Gate`、`CodeQL Gate`、`Dependency Review`；PR #164 的 Tests `29318747842`、CodeQL `29318747789`、Dependency Review `29318747679` 与 Perf `29318748080` 均通过后，合并为 `e76b463c`。
-- [主干验证] 合并后的 `main` Tests run `29321120090` 成功，包含 Node、macOS gates、Swift unit、remote-server package、full UI 与 `CI Gate`。
+- [主干验证] 合并后的 `main` Tests run `29321120090` 成功，包含 Node、macOS gates、Swift unit、remote-server package、full UI 与 `CI Gate`；CodeQL run `29321120012` 的 TypeScript、Swift product、Swift remote-server 与 `CodeQL Gate` 全绿。
+- [轻量路由] closeout PR #165 的 Tests `29322068421` / CodeQL `29322068445` 对耐久文档变更跳过全部 Node、macOS、Swift、UI 与语言分析重任务，同时两个 fail-closed gate 通过；Dependency Review `29322068681` 通过。
 - [发布边界] release tag 现在拒绝 SemVer 数字段前导零，release verifier 会核对 notarization/stapling；仓库没有 Actions secrets，故本轮只验证 ad-hoc 签名路径，未伪装执行真实 Developer ID notarization。
 - [清理] 刷新 `origin`（含 prune）后，删除 3 个干净且 HEAD 已被 `origin/main`（`3b0b5b1d`）包含的本地 worktree 及对应分支：`.worktrees/archive-drain-fairness` / `codex/archive-drain-fairness`、`.worktrees/archive-v2-backlog-drain` / `codex/archive-v2-backlog-drain`、`.worktrees/claude-profile-registry` / `codex/claude-profile-registry`。
 - [归档与清理] 进一步用 `git cherry -v origin/main <branch>` 确认 `claude-profile-empty-capture` 的 3 个、`claude-profile-reclamation` 的 2 个独有 SHA 均已有等价补丁在 `main`；删除两项 worktree/分支。已合入的 `archive-review-gpt56` 的 5 个未跟踪 handoff 文档迁入 `docs/archive/reviews/2026-07-11-archive-review-gpt56/`，仅 `round2-clusters.md` 的 1 个行尾空格为通过格式检查而规范化，再删除 worktree/分支。
