@@ -331,6 +331,7 @@ public actor ArchiveReplicationCoordinator {
         shouldStartUnit: @escaping @Sendable () -> Bool = { true }
     ) async throws -> CycleAccumulator {
         var cycle = CycleAccumulator()
+        var pendingTransientProbe: (replicaID: String, deadline: Date, baseRevision: UInt64)?
         let transientInfrastructure = Set([
             "transport_timeout",
             "transport_network",
@@ -348,6 +349,12 @@ public actor ArchiveReplicationCoordinator {
                 break
             }
             guard shouldStartUnit() else {
+                if let pendingTransientProbe {
+                    cycle.retryPausedUntil[pendingTransientProbe.replicaID] =
+                        pendingTransientProbe.deadline
+                    cycle.pauseBaseRevisionByReplica[pendingTransientProbe.replicaID] =
+                        pendingTransientProbe.baseRevision
+                }
                 _ = try catalog.releaseUnstartedReplicaClaims(
                     Array(claims[index...]),
                     updatedAt: timestamp(clock())
@@ -375,6 +382,7 @@ public actor ArchiveReplicationCoordinator {
             case .verified:
                 cycle.verified += 1
                 cycle.verifiedByReplica[claim.replicaID, default: 0] += 1
+                pendingTransientProbe = nil
             case .lostClaim:
                 cycle.lostClaims += 1
             case .cancelled:
@@ -410,9 +418,27 @@ public actor ArchiveReplicationCoordinator {
                         cycle.retryScheduled += 1
                         if stopOnInfrastructureFailure,
                            transientInfrastructure.contains(symbol) {
-                            cycle.retryPausedUntil[claim.replicaID] = circuitBreakerAt
-                            cycle.pauseBaseRevisionByReplica[claim.replicaID] =
-                                pauseRevisionByReplica[claim.replicaID, default: 0]
+                            let baseRevision = pauseRevisionByReplica[
+                                claim.replicaID,
+                                default: 0
+                            ]
+                            // One successful claim is enough to prove this was an
+                            // isolated request failure. A second transient failure
+                            // (or no remaining claim to probe) opens the existing
+                            // 60-second replica breaker, bounding outage traffic to
+                            // at most two failed claims per pass.
+                            let isLastClaim = index == claims.index(before: claims.endIndex)
+                            if pendingTransientProbe != nil || isLastClaim {
+                                cycle.retryPausedUntil[claim.replicaID] = circuitBreakerAt
+                                cycle.pauseBaseRevisionByReplica[claim.replicaID] = baseRevision
+                                pendingTransientProbe = nil
+                            } else {
+                                pendingTransientProbe = (
+                                    replicaID: claim.replicaID,
+                                    deadline: circuitBreakerAt,
+                                    baseRevision: baseRevision
+                                )
+                            }
                         }
                     }
                 case .quarantine:
@@ -435,8 +461,9 @@ public actor ArchiveReplicationCoordinator {
                         pauseRevisionByReplica[claim.replicaID, default: 0]
                 }
                 if stopOnInfrastructureFailure,
-                   transientInfrastructure.contains(symbol)
-                    || attentionInfrastructure.contains(symbol) {
+                   attentionInfrastructure.contains(symbol)
+                    || (transientInfrastructure.contains(symbol)
+                        && pendingTransientProbe == nil) {
                     _ = try catalog.releaseUnstartedReplicaClaims(
                         Array(claims.dropFirst(index + 1)),
                         updatedAt: timestamp(clock())
@@ -444,6 +471,12 @@ public actor ArchiveReplicationCoordinator {
                     return cycle
                 }
             }
+        }
+        if let pendingTransientProbe {
+            cycle.retryPausedUntil[pendingTransientProbe.replicaID] =
+                pendingTransientProbe.deadline
+            cycle.pauseBaseRevisionByReplica[pendingTransientProbe.replicaID] =
+                pendingTransientProbe.baseRevision
         }
         return cycle
     }

@@ -182,6 +182,7 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         let networkFixtures = try [
             addBinding(to: networkStore, seed: "network-1", eligibility: .eligible),
             addBinding(to: networkStore, seed: "network-2", eligibility: .eligible),
+            addBinding(to: networkStore, seed: "network-3", eligibility: .eligible),
         ]
         let failingHQ = FakeArchiveReplicaBackend(replicaID: "hq")
         failingHQ.setFailure(operation: "headObject", error: .transport(.network))
@@ -194,9 +195,9 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
 
         let networkResult = await networkCoordinator.runBacklogPass(perReplicaLimit: 2)
 
-        XCTAssertEqual(networkResult.retryScheduled, 1)
+        XCTAssertEqual(networkResult.retryScheduled, 2)
         XCTAssertEqual(networkResult.verified, 2)
-        XCTAssertEqual(failingHQ.events(), ["headObject"])
+        XCTAssertEqual(failingHQ.events(), ["headObject", "headObject"])
         XCTAssertEqual(healthyM1.events().filter { $0 == "getReceipt" }.count, 2)
         XCTAssertTrue(networkResult.pausedReplicaIDs.isEmpty)
         let networkHQStates = try networkFixtures.compactMap {
@@ -205,7 +206,7 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
                 replicaID: "hq"
             )?.state
         }
-        XCTAssertEqual(networkHQStates.filter { $0 == .retryWait }.count, 1)
+        XCTAssertEqual(networkHQStates.filter { $0 == .retryWait }.count, 2)
         XCTAssertEqual(networkHQStates.filter { $0 == .pending }.count, 1)
 
         let authStore = try makeStore(name: "backlog-auth-short-circuit")
@@ -237,6 +238,35 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         XCTAssertEqual(authHQStates.filter { $0 == .pending }.count, 1)
     }
 
+    func testBacklogPassContinuesAfterOneTransientFailureWhenProbeSucceeds() async throws {
+        let store = try makeStore(name: "backlog-transient-probe-success")
+        let fixtures = try [
+            addBinding(to: store, seed: "probe-success-1", eligibility: .eligible),
+            addBinding(to: store, seed: "probe-success-2", eligibility: .eligible),
+            addBinding(to: store, seed: "probe-success-3", eligibility: .eligible),
+        ]
+        let hq = FakeArchiveReplicaBackend(replicaID: "hq")
+        hq.setFailureOnce(operation: "headObject", error: .transport(.network))
+        let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
+        let coordinator = try makeCoordinator(store: store, hq: hq, m1: m1)
+
+        let result = await coordinator.runBacklogPass(perReplicaLimit: 3)
+
+        XCTAssertEqual(result.retryScheduled, 1)
+        XCTAssertEqual(result.verifiedByReplica["hq"], 2)
+        XCTAssertEqual(result.verifiedByReplica["m1"], 3)
+        XCTAssertTrue(result.retryPausedReplicaIDs.isEmpty)
+        XCTAssertEqual(hq.events().filter { $0 == "headObject" }.count, 3)
+        let hqStates = try fixtures.compactMap {
+            try store.catalog.replicaWork(
+                manifestSHA256: $0.binding.manifestSHA256,
+                replicaID: "hq"
+            )?.state
+        }
+        XCTAssertEqual(hqStates.filter { $0 == .retryWait }.count, 1)
+        XCTAssertEqual(hqStates.filter { $0 == .verified }.count, 2)
+    }
+
     func testBacklogPassBoundsLongTransientPauseAndResumesPendingWorkAtExpiry() async throws {
         let store = try makeStore(name: "backlog-long-transient-deadline")
         let deferred = try addBinding(
@@ -249,6 +279,11 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
             fixture: deferred,
             replicaID: "hq",
             catalog: store.catalog
+        )
+        let probe = try addBinding(
+            to: store,
+            seed: "probe-after-long-deadline",
+            eligibility: .eligible
         )
         let ordinary = try addBinding(
             to: store,
@@ -300,7 +335,7 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
             try date("2026-07-11T00:01:00.000Z")
         )
         XCTAssertEqual(hq.events(), hqEventsBeforeDeadline)
-        XCTAssertEqual(beforeDeadline.verifiedByReplica["m1"], 1)
+        XCTAssertEqual(beforeDeadline.verifiedByReplica["m1"], 2)
         XCTAssertEqual(
             try store.catalog.replicaWork(
                 manifestSHA256: independent.binding.manifestSHA256,
@@ -308,13 +343,14 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
             )?.state,
             .verified
         )
-        XCTAssertEqual(
+        let ordinaryStatesBeforeDeadline = try [probe, ordinary].compactMap {
             try store.catalog.replicaWork(
-                manifestSHA256: ordinary.binding.manifestSHA256,
+                manifestSHA256: $0.binding.manifestSHA256,
                 replicaID: "hq"
-            )?.state,
-            .pending
-        )
+            )?.state
+        }
+        XCTAssertEqual(ordinaryStatesBeforeDeadline.filter { $0 == .retryWait }.count, 1)
+        XCTAssertEqual(ordinaryStatesBeforeDeadline.filter { $0 == .pending }.count, 1)
 
         hq.clearFailure()
         clock.set(try date("2026-07-11T00:01:00.000Z"))
@@ -322,20 +358,13 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
 
         XCTAssertTrue(atDeadline.retryPausedReplicaIDs.isEmpty)
         XCTAssertEqual(atDeadline.verifiedByReplica["hq"], 2)
-        XCTAssertEqual(
+        let postExpiryStates = try [probe, ordinary, independent].compactMap {
             try store.catalog.replicaWork(
-                manifestSHA256: ordinary.binding.manifestSHA256,
+                manifestSHA256: $0.binding.manifestSHA256,
                 replicaID: "hq"
-            )?.state,
-            .verified
-        )
-        XCTAssertEqual(
-            try store.catalog.replicaWork(
-                manifestSHA256: independent.binding.manifestSHA256,
-                replicaID: "hq"
-            )?.state,
-            .verified
-        )
+            )?.state
+        }
+        XCTAssertEqual(postExpiryStates.filter { $0 == .verified }.count, 2)
         let deferredAfterExpiry = try XCTUnwrap(try store.catalog.replicaWork(
             manifestSHA256: deferred.binding.manifestSHA256,
             replicaID: "hq"
@@ -1373,6 +1402,7 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         let fixtures = try [
             addBinding(to: store, seed: "manual-retry-1", eligibility: .eligible),
             addBinding(to: store, seed: "manual-retry-2", eligibility: .eligible),
+            addBinding(to: store, seed: "manual-retry-3", eligibility: .eligible),
         ]
         let hq = FakeArchiveReplicaBackend(replicaID: "hq")
         let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
@@ -1408,7 +1438,7 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
                 replicaID: "hq"
             )?.state
         }
-        XCTAssertEqual(hqStates.filter { $0 == .retryWait }.count, 1)
+        XCTAssertEqual(hqStates.filter { $0 == .retryWait }.count, 2)
         XCTAssertEqual(hqStates.filter { $0 == .verified }.count, 1)
     }
 
@@ -1416,6 +1446,7 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
         let store = try makeStore(name: "manual-resume")
         _ = try addBinding(to: store, seed: "manual-resume-1", eligibility: .eligible)
         _ = try addBinding(to: store, seed: "manual-resume-2", eligibility: .eligible)
+        _ = try addBinding(to: store, seed: "manual-resume-3", eligibility: .eligible)
         let hq = FakeArchiveReplicaBackend(replicaID: "hq")
         let m1 = FakeArchiveReplicaBackend(replicaID: "m1")
         hq.setFailure(operation: "headObject", error: .transport(.network))
@@ -1443,7 +1474,7 @@ final class ArchiveReplicationCoordinatorTests: XCTestCase {
 
         XCTAssertTrue(afterAttentionResume.retryPausedReplicaIDs.isEmpty)
         XCTAssertTrue(afterAttentionResume.pausedReplicaIDs.isEmpty)
-        XCTAssertEqual(afterAttentionResume.verifiedByReplica["m1"], 1)
+        XCTAssertEqual(afterAttentionResume.verifiedByReplica["m1"], 2)
     }
 
     func testCoordinatorSourceHasNoLegacyOffloadOrDestructiveSurface() throws {
@@ -1851,6 +1882,7 @@ private final class FakeArchiveReplicaBackend: ArchiveReplicaBackend, @unchecked
     private var receipts: [String: Data] = [:]
     private var failureOperation: String?
     private var failure: ArchiveReplicaBackendError?
+    private var remainingFailureCount: Int?
     private var receiptMutation: FakeReceiptMutation = .none
     private var createReceiptResponse: Data?
     private var headObjectHook: (@Sendable () throws -> Void)?
@@ -1866,6 +1898,15 @@ private final class FakeArchiveReplicaBackend: ArchiveReplicaBackend, @unchecked
         lock.lock()
         failureOperation = operation
         failure = error
+        remainingFailureCount = nil
+        lock.unlock()
+    }
+
+    func setFailureOnce(operation: String, error: ArchiveReplicaBackendError) {
+        lock.lock()
+        failureOperation = operation
+        failure = error
+        remainingFailureCount = 1
         lock.unlock()
     }
 
@@ -1873,6 +1914,7 @@ private final class FakeArchiveReplicaBackend: ArchiveReplicaBackend, @unchecked
         lock.lock()
         failureOperation = nil
         failure = nil
+        remainingFailureCount = nil
         deferredFailureOperation = nil
         deferredFailure = nil
         lock.unlock()
@@ -2017,6 +2059,14 @@ private final class FakeArchiveReplicaBackend: ArchiveReplicaBackend, @unchecked
         lock.lock()
         recordedEvents.append(operation)
         let injected = failureOperation == operation ? failure : nil
+        if injected != nil, let count = remainingFailureCount {
+            remainingFailureCount = count - 1
+            if count == 1 {
+                failureOperation = nil
+                failure = nil
+                remainingFailureCount = nil
+            }
+        }
         lock.unlock()
         if let injected { throw injected }
     }
