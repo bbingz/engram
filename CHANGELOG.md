@@ -7,6 +7,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Verified: installed Engram 1.0.4 build 1188 is current for product runtime (2026-07-14)
+
+- Rechecked the live `/Applications/Engram.app` rather than relying on an old
+  deployment note: Engram and EngramService are running from that bundle as
+  `1.0.4 (1188)`, and both processes started after its Developer ID signing
+  timestamp.
+- `macos/scripts/release-verify.sh /Applications/Engram.app` passed bundle
+  hygiene, structure, deep/strict code-signing, Hardened Runtime, Developer ID
+  authority, and secure-timestamp verification. The installed Engram binary
+  matches `macos/build/EngramExport/Engram.app` at SHA-256
+  `b46c78aaa3a7da7df08c261d88f3f1fd848aece15e1b46fad9e716d00f1c9769`.
+- Build `1188` maps to `3b0b5b1d` because its Git revision count is 1188; the
+  commit predates the bundle signature by about five minutes. At verification
+  time, `HEAD == origin/main == 7bd536c6`; it was seven CI/release-tooling/test/fixture/doc
+  commits ahead with no product-runtime implementation change, so the running
+  app is functionally current but is not a byte-for-byte build of current HEAD.
+- The latest published GitHub release remains `v1.0.3`; the installed `1.0.4`
+  is newer. This is a time-specific local verification, not a new deployment
+  or a claim that `7bd536c6` was rebuilt and installed.
+
 ### Changed: path-routed, fail-closed CI orchestration (2026-07-14)
 
 - Split the CI hardening into reviewed PRs #161-#164: route CodeQL by affected
