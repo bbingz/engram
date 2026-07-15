@@ -102,6 +102,8 @@ struct ArchiveV2DrainSnapshot: Equatable, Sendable {
 }
 
 actor ArchiveV2BacklogDrainer {
+    private static let productivePassCooldown: TimeInterval = 30
+
     typealias Conditions = @Sendable () -> ArchiveV2DrainConditions
     typealias Clock = @Sendable () -> Date
     typealias Sleeper = @Sendable (Date) async throws -> Void
@@ -241,7 +243,7 @@ actor ArchiveV2BacklogDrainer {
                 }
                 if summary.productive {
                     state = .idle
-                    try await waitUntil(now().addingTimeInterval(2))
+                    try await waitUntil(now().addingTimeInterval(Self.productivePassCooldown))
                     if !stopped { pendingSignal = true }
                 } else if let retryAt = summary.nextRetryAt {
                     state = .waitingRetry

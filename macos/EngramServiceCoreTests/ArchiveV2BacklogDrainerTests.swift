@@ -55,7 +55,7 @@ final class ArchiveV2BacklogDrainerTests: XCTestCase {
 
         XCTAssertEqual(passCount, 2)
         XCTAssertEqual(maximumConcurrency, 1)
-        XCTAssertEqual(deadlines, [Date(timeIntervalSince1970: 102)])
+        XCTAssertEqual(deadlines, [Date(timeIntervalSince1970: 130)])
         XCTAssertEqual(snapshot.state, .idle)
         XCTAssertNil(snapshot.nextWakeAt)
     }
