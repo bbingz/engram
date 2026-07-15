@@ -50,39 +50,78 @@ providers (`claude-code`, `codex`, `gemini-cli`, `antigravity`, `opencode`),
 writes `usage_snapshots`, and emits service usage events. The UI still degrades
 correctly because `PopoverUsageSection` remains gated on real usage data.
 
-## Open roadmap
+## Current roadmap
 
-The exact-source dual-replica archive v2 is the only active delivery item as of
-2026-07-12. Twelve unrelated owner decisions remain in the Decision pending
-table below (parked by the 2026-07-09 plan-completion audit); they are not
-scheduled implementation work.
+One implementation-ready delivery is selected as of 2026-07-15: establish a
+public macOS release baseline before starting another product feature. The
+exact-source dual-replica archive v2 has completed its finite eligible-backlog
+and two-site recovery closeout. Twelve other owner decisions remain in the
+Decision pending table below (parked by the 2026-07-09 plan-completion audit);
+they are not scheduled implementation work.
 
-### Exact-source dual-replica archive v2
+### Selected next direction — public macOS release baseline
 
-- **Status:** implementation and repository verification branch; **not shipped
-  or deployed**. No production Mac mini, Tailscale ACL, Keychain, launchd,
-  service, or source data has been changed by this delivery branch.
+- **Why now:** the current source and installed product are Engram `1.0.4`,
+  while the latest public GitHub release is still `v1.0.3`. The repository has
+  no configured Actions secrets for Developer ID signing/notarization and no
+  active Homebrew or Sparkle distribution surface. A verifiable public build is
+  therefore the smallest prerequisite for credible distribution or feature
+  expansion.
+- **Target:** prepare the next SemVer release above `1.0.4` (currently expected
+  to be `v1.0.5`) from a green `main`. The final tag remains contingent on the
+  actual release diff and explicit publication authorization.
+- **Implementation scope:** align `package.json` and `macos/project.yml`,
+  regenerate the Xcode project, produce a universal Developer ID build,
+  notarize and staple it, run the full release verifier, and stage a ZIP plus
+  checksums. Exercise a clean-machine App launch, service socket, bundled MCP
+  initialize/tool-list, and archive-status smoke before publication.
+- **Acceptance gate:** all required CI gates pass on the exact release commit;
+  version guards agree; signing, notarization, stapling, bundle hygiene, hashes,
+  and clean-machine runtime smoke are recorded; and the published tag, bundle
+  version, and release assets agree after publication.
+- **Authorization and failure boundary:** local preparation and verification do
+  not authorize writing signing secrets, pushing a tag, publishing a GitHub
+  release, or changing external package channels. If Developer ID signing or
+  notarization is unavailable or fails, do not tag or publish; keep `v1.0.3` as
+  the public baseline and treat any ad-hoc build as verification-only.
+- **Out of scope:** Sparkle, Homebrew, a Claude Code plugin, and unrelated new
+  product features. Reconsider those only after the public baseline is proven.
+
+### Exact-source dual-replica archive v2 — operational closeout complete
+
+- **Status:** shipped and operator-enabled. The current client runs Engram
+  `1.0.4 (1205)` with local capture, both private replicas, and opt-in automatic
+  local reclamation enabled; fresh installs remain default OFF.
 - **Topology:** `macmini-hq` is the primary cold-read target and `macmini-m1`
   is an independently operated fallback in a different physical location with
   separate power and network exit. Direct client replication is Tailscale-only;
   the servers do not replicate to one another.
-- **Release boundary:** default OFF, exact raw-byte capture only for
+- **Release boundary:** exact raw-byte capture only for
   replay-proven Claude Code and Codex single-file locators, separate credentials
-  and stores, and zero deletion/eviction/GC. Parsed messages and existing v1
-  offload artifacts remain derived data.
+  and stores. Local source/CAS reclamation is an explicit opt-in gated by dual
+  receipts plus current recovery drills. The v2 remote API still has no deletion
+  or GC path. Parsed messages and existing v1 offload artifacts remain derived
+  data.
 - **Operational truth:** locator discovery is cancellable but O(N); the batch
-  limit applies only after discovery. Production deployment and live two-site
-  restore evidence require a later explicitly approved operation.
+  limit applies only after discovery. At 2026-07-15 12:14:20 +0800, all 11,119
+  remotely eligible bindings had verified HQ and M1 receipts, with zero
+  single-replica, queued, retrying, or quarantined rows. Recovery drills then
+  verified the same current 199,159-byte manifest on HQ at 12:23:33 and M1 at
+  12:24:16; reclamation reported `recoveryLeaseCurrent=true` and a zero-item
+  preview. New discoveries can still create future work, so the runtime's broad
+  `drainState` may remain `draining`; that is not an inherited eligible-backlog
+  residual.
 - **Runbook:** [`docs/remote-archive-v2.md`](remote-archive-v2.md). Conditional
   non-release follow-ups remain in [`docs/followups.md`](followups.md).
 
 ## Decision pending (2026-07-09 plan-completion audit)
 
 **Engineering zero ≠ roadmap zero (2026-07-11).** Wave 8 + Round 4 docs closed
-the Wave 7 defect ledger (43 terminal confirmed) and removed open engineering
-TODO/follow-ups. The **12 rows below remain owner decisions** and are
+the Wave 7 defect ledger (43 terminal confirmed) and removed its open
+engineering TODO/follow-ups. One new delivery has since been selected above;
+the **12 rows below remain owner decisions** and are
 intentionally **not** implemented, scheduled, or mislabeled as engineering
-defects. They do not block engineering-zero backlog truth.
+defects. They do not block the selected release-baseline work.
 
 Large product-decision items the audit confirmed **not done** and deliberately
 **not** implemented in wave 6. Each needs an explicit product decision before
@@ -98,7 +137,7 @@ scheduling.
 | P2 auto insight extraction | `docs/engram-lifecycle-upgrade-plan.md` §3.5; p1 design | not_done | L | Opt-in LLM mining of finished sessions into `insights` |
 | F2 sqlite-vec native target | `docs/p1-semantic-memory-design-2026-06.md` F2 | not_done / superseded by brute-force | XL (native dep + notarization) | Revisit only if brute-force KNN becomes a measured bottleneck |
 | F3/f corpus mining (`mined_rules`) | p1 design §f; removed feature-cut item 3 | not_done (surface deleted 2026-07-06) | L | Whether to reintroduce rule mining after feature-cut |
-| Competitive-relaunch P0 (Claude Code plugin; Homebrew/Sparkle distribution) | `docs/competitive-relaunch-2026-06.md` | not_done | XL | Distribution / plugin strategy for relaunch |
+| Competitive-relaunch activation after the public baseline (Claude Code plugin; Homebrew/Sparkle channel expansion) | `docs/competitive-relaunch-2026-06.md` | not_done | XL | After `v1.0.5` baseline proof, decide whether plugin integration, Homebrew packaging, or Sparkle updates should be scheduled |
 | `ai_audit_log` desensitization design | lifecycle §3.5 P0; no Swift writer today | not_done | M (design) then L | Design body redaction **before** any Swift audit-log writer lands (wave-6 task 9 descope) |
 | Provider-branch valuable-missing features (Grok/Pi adapters, session taxonomy filter, runtime capability gates) | `docs/reviews/provider-audit-branch-reconciliation-2026-07.md` | not_done | L each | Branch `codex-provider-audit-remediation` deleted local+origin 2026-07-09 after three-model adjudication; recovery path is archive tag `archive/codex-provider-audit-remediation` (`285453d7`) + the reconciliation doc |
 | Sources-sync-3 nav consolidation | `docs/reviews/alignment-design-2026-06-14.md` ~:836,:896 | not_done (explicitly deferred) | M | Whether Sources/Settings nav consolidation is still wanted |

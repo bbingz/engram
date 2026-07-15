@@ -358,25 +358,25 @@ describe('remote server package implementation contract', () => {
         ].join('\n'),
       ),
     },
-  ])('rejects trusted template drift: $name', ({
-    wrapperSuffix,
-    launchAgent,
-  }) => {
-    const revision = 'a'.repeat(40);
-    const valid = wrapperTemplate.replace(
-      '__ENGRAM_REMOTE_SOURCE_REVISION__',
-      revision,
-    );
+  ])(
+    'rejects trusted template drift: $name',
+    ({ wrapperSuffix, launchAgent }) => {
+      const revision = 'a'.repeat(40);
+      const valid = wrapperTemplate.replace(
+        '__ENGRAM_REMOTE_SOURCE_REVISION__',
+        revision,
+      );
 
-    const result = runTemplateVerification(
-      `${valid}${wrapperSuffix ?? ''}`,
-      revision,
-      launchAgent,
-    );
+      const result = runTemplateVerification(
+        `${valid}${wrapperSuffix ?? ''}`,
+        revision,
+        launchAgent,
+      );
 
-    expect(result.status).not.toBe(0);
-    expect(result.output).toContain('trusted source template');
-  });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain('trusted source template');
+    },
+  );
 
   it('requires the fixed Release arm64 build products and package layout', () => {
     expect(packageScript).toMatch(
@@ -533,12 +533,21 @@ describe('remote server package CI and operations documentation', () => {
     );
   });
 
-  it('pins the v2 Tailscale Serve command and client origins', () => {
+  it('documents the deployed direct tailnet bind and the gated Serve alternative', () => {
+    expect(archiveRunbook).toMatch(
+      /current deployment binds each\s+server directly to its literal Tailscale IPv4 address/,
+    );
+    expect(archiveRunbook).toContain('"serverURL": "http://100.64.0.1:8787"');
+    expect(archiveRunbook).toContain('"requireTLS": false');
+    expect(archiveRunbook).toContain(
+      'there is no current Tailscale Serve configuration',
+    );
     expect(archiveRunbook).toContain(
       'tailscale serve --bg --https=443 --yes http://127.0.0.1:8787',
     );
-    expect(archiveRunbook).toContain('https://macmini-hq.tail1cb16.ts.net');
-    expect(archiveRunbook).toContain('https://macmini-m1.tail1cb16.ts.net');
+    expect(archiveRunbook).toContain(
+      'requires matching `.ts.net` client origins',
+    );
     expect(archiveRunbook).toMatch(/8443[\s\S]{0,80}legacy-only/i);
     expect(archiveRunbook).toMatch(/FileVault[\s\S]{0,100}manual unlock/i);
   });

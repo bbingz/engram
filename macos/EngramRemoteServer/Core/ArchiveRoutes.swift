@@ -53,10 +53,14 @@ enum ArchiveRoutes {
 
         router.head("/v2/archive/objects/:digest") { request, context in
             await observed(request, endpoint: "object", telemetry: telemetry) {
-            guard authorized(request, token: token) else { return unauthorized() }
+            guard authorized(request, token: token) else {
+                return headOnly(unauthorized())
+            }
             guard let digest = context.parameters.get("digest"),
                   ArchiveV2Hash.isValidSHA256(digest) else {
-                return errorResponse(status: .badRequest, code: "malformed_request")
+                return headOnly(
+                    errorResponse(status: .badRequest, code: "malformed_request")
+                )
             }
             do {
                 let raw = try store.getObject(digest: digest)
@@ -66,7 +70,7 @@ enum ArchiveRoutes {
                     contentLength: raw.count
                 )
             } catch {
-                return storeErrorResponse(error)
+                return headOnly(storeErrorResponse(error))
             }
             }
         }
@@ -127,10 +131,14 @@ enum ArchiveRoutes {
 
         router.head("/v2/archive/manifests/:digest") { request, context in
             await observed(request, endpoint: "manifest", telemetry: telemetry) {
-            guard authorized(request, token: token) else { return unauthorized() }
+            guard authorized(request, token: token) else {
+                return headOnly(unauthorized())
+            }
             guard let digest = context.parameters.get("digest"),
                   ArchiveV2Hash.isValidSHA256(digest) else {
-                return errorResponse(status: .badRequest, code: "malformed_request")
+                return headOnly(
+                    errorResponse(status: .badRequest, code: "malformed_request")
+                )
             }
             do {
                 let bytes = try store.getManifest(digest: digest)
@@ -140,7 +148,7 @@ enum ArchiveRoutes {
                     contentLength: bytes.count
                 )
             } catch {
-                return storeErrorResponse(error)
+                return headOnly(storeErrorResponse(error))
             }
             }
         }
@@ -480,6 +488,10 @@ enum ArchiveRoutes {
         if let contentType { headers[.contentType] = contentType }
         if let contentLength { headers[.contentLength] = "\(contentLength)" }
         return Response(status: status, headers: headers)
+    }
+
+    private static func headOnly(_ response: Response) -> Response {
+        Response(status: response.status, headers: response.headers)
     }
 
     private static func dataResponse(

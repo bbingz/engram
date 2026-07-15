@@ -5,19 +5,47 @@ verification and low-priority follow-ups belong in `docs/followups.md`.
 
 ## Open
 
-No open TODO items as of 2026-07-11 (Wave 8 Round 4 durable closeout).
+### Public macOS release baseline (selected 2026-07-15)
 
-The exact-source dual-replica archive v2 is tracked as an active delivery in
-`docs/roadmap.md`, not prematurely marked complete here. Production deployment
-is a later explicitly approved operation, not an engineering TODO. Deferred
-non-release engineering boundaries (bounded discovery and additional canonical
-source exporters) are recorded conditionally in `docs/followups.md`.
+- **Goal:** close the drift between current source/installed Engram `1.0.4` and
+  the latest public GitHub release `v1.0.3` before starting another product
+  feature. The expected next version is `v1.0.5`, subject to the final release
+  diff.
+- **Known files and systems:** `package.json`, `macos/project.yml`, generated
+  `macos/Engram.xcodeproj`, `macos/scripts/build-release.sh`,
+  `macos/scripts/release-verify.sh`, the GitHub release workflow, Developer ID
+  signing/notarization, and a clean macOS verification host.
+- **Implementation order:** merge the current archive/maintenance closeout to a
+  green `main`; align and guard version metadata; regenerate the Xcode project;
+  build a universal Developer ID artifact; notarize and staple it; stage the ZIP
+  and checksums; then run clean-machine App, service-socket, bundled-MCP, and
+  archive-status smoke checks.
+- **Done when / verifier:** required CI passes on the exact release commit;
+  version metadata agrees; the full release verifier passes the signed,
+  notarized, stapled bundle; artifact hashes are recorded; clean-machine runtime
+  smoke passes; and, only after explicit publication approval, the GitHub tag,
+  bundle version, and published assets agree.
+- **Failure handling:** a missing certificate, unavailable notarization, failed
+  verifier, or failed smoke blocks tagging and publication. Preserve public
+  `v1.0.3`; an ad-hoc build is local verification only, never a distributable.
+- **Authorization boundary:** this TODO does not authorize adding secrets,
+  pushing a release tag, publishing a GitHub release, or creating/updating
+  Homebrew or Sparkle channels.
+
+The exact-source dual-replica archive v2 has shipped and is operator-enabled on
+the current deployment. Its finite eligible replica drain and two-site recovery
+closeout completed on 2026-07-15 and is recorded in `docs/roadmap.md`, not as an
+engineering TODO. Deferred
+engineering boundaries (bounded discovery and additional canonical source
+exporters) and the still-forbidden remote deletion/GC surface are recorded
+conditionally in `docs/followups.md`.
 
 Historical note: as of 2026-06-21 all 2026-06-15 UX-flow-alignment (PR #74)
 follow-ups were already resolved — see "Closed in cleanup". Wave 8 closed the
 remaining Wave 7 residual engineering defects on main through `c983a759`; this
-file still has zero open engineering tasks. Product-direction work stays in
-`docs/roadmap.md` Decision pending (12 rows), not here.
+file had zero open engineering tasks until the release baseline above was
+selected. The other product-direction work stays in `docs/roadmap.md` Decision
+pending (12 rows), not here.
 
 ## Closed in cleanup
 

@@ -1,15 +1,17 @@
 # Exact-source remote archive v2 — operations and safety boundary
 
-**Implementation status (2026-07-14):** archive v2 remains default OFF for a
-fresh install, but the current operator deployment has explicitly enabled local
-capture and both private replicas. HQ and M1 are draining an existing backlog;
-configuration in this document is still an example and never enables another
-installation by itself.
-**Production deployment is not part of this branch.** A later explicit operator
-authorization installed the isolated-failure throughput change from PR #167
-locally in Engram `1.0.4 (1202)` from `main@9d9ae163`; App and Service were
-restarted at 2026-07-14 23:02 +0800. No remote-server wire or deployment change
-was required.
+**Implementation status (2026-07-15):** archive v2 remains default OFF for a
+fresh install, while the current deployment is explicitly operator-enabled for
+local capture, both private replicas, and opt-in local reclamation. The client
+runs Engram `1.0.4 (1205)`. Both live servers run source revision
+`38326d62b9c11fcfd561966c6a9d61bbece4277b`; its bodyless HEAD-error fix is
+deployed and verified over reused authenticated connections. At 2026-07-15
+12:14:20 +0800 all 11,119 remotely eligible bindings were dual-verified with
+zero single-replica, queued, retrying, or quarantined rows. Current recovery
+drills passed on HQ at 12:23:33 and M1 at 12:24:16, and reclamation then reported
+`recoveryLeaseCurrent=true` with a zero-item preview. Configuration in this
+document is an example and never enables another installation by itself. No
+remote-server deletion or GC surface exists.
 
 Archive v2 preserves the exact source bytes behind supported sessions. It is a
 different feature from the older remote-offload protocol:
@@ -18,7 +20,7 @@ different feature from the older remote-offload protocol:
 |---|---|---|
 | Purpose | Move regenerable FTS and summary artifacts | Preserve replayable raw source bytes as the fact source |
 | Raw transcript upload | Never | Yes, but only after explicit v2 enablement and source proof |
-| Local reclamation | May purge regenerable index artifacts and rehydrate them | **zero-delete**: no source unlink, local eviction, remote deletion, or GC |
+| Local reclamation | May purge regenerable index artifacts and rehydrate them | Initial release was zero-delete; current runtime supports opt-in local source reclamation and CAS eviction after dual receipts plus current recovery drills; remote deletion and GC remain forbidden |
 | Remote API | Mutable bundle lifecycle, including legacy DELETE | Immutable object/manifest/receipt API; every v2 DELETE returns `405` |
 | Credential namespace | `com.engram.remote-offload` | `com.engram.remote-archive-v2`, accounts `replica:hq` and `replica:m1` |
 
@@ -47,11 +49,16 @@ dual-replica only after Engram independently verifies one immutable receipt from
 each server for the same bound manifest. The servers never replicate to one
 another and neither server is allowed to mint the other server's identity.
 
-Both endpoints are private tailnet services. Do not use Tailscale Funnel, a
-public reverse proxy, a LAN-only address, or a third-party object store. Prefer
-an HTTPS MagicDNS name ending in `.ts.net` and `requireTLS: true`. Literal
-Tailscale addresses are accepted by the implementation, but tailnet membership
-still does not replace the separate bearer token.
+Both endpoints are private tailnet services. The current deployment binds each
+server directly to its literal Tailscale IPv4 address on port `8787`; the client
+therefore uses `http://<tailscale-ip>:8787` with `requireTLS: false`. This is not
+cleartext on the physical network: Tailscale supplies authenticated WireGuard
+transport, while the archive API still requires its separate bearer token. The
+client accepts this HTTP form only for literal Tailscale IPv4 addresses and
+rejects DNS, LAN, public, wildcard, and non-Tailscale HTTP origins. Do not use
+Tailscale Funnel, a public reverse proxy, a LAN-only address, or a third-party
+object store. A separately approved deployment may instead use an HTTPS
+MagicDNS name ending in `.ts.net` with `requireTLS: true`.
 
 ## Security boundary
 
@@ -109,8 +116,9 @@ archive directory is created, no archive Keychain item is read, and no archive
 network client is constructed.
 
 ```jsonc
-// ~/.engram/settings.json — example only; do not enable before both servers
-// and recovery evidence are ready.
+// ~/.engram/settings.json — example only. These are placeholder Tailscale IPs;
+// do not copy them, and do not enable before both servers and recovery evidence
+// are ready.
 {
   "exactArchiveEnabled": true,
   "remoteArchiveV2": {
@@ -119,13 +127,13 @@ network client is constructed.
     "replicas": [
       {
         "id": "hq",
-        "serverURL": "https://macmini-hq.tail1cb16.ts.net",
-        "requireTLS": true
+        "serverURL": "http://100.64.0.1:8787",
+        "requireTLS": false
       },
       {
         "id": "m1",
-        "serverURL": "https://macmini-m1.tail1cb16.ts.net",
-        "requireTLS": true
+        "serverURL": "http://100.64.0.2:8787",
+        "requireTLS": false
       }
     ],
     "excludedProjectRoots": ["/absolute/path/to/excluded/project"]
@@ -162,28 +170,33 @@ the v2 token/key/root are separate and must not reuse them.
 | `ENGRAM_REMOTE_ARCHIVE_AT_REST_KEY` | hq-only base64 32-byte key | different m1-only base64 32-byte key |
 
 `ENGRAM_REMOTE_HOST` must be a literal loopback or Tailscale address when v2 is
-enabled. A loopback bind may sit behind a tailnet-only TLS reverse proxy. Never
-bind the archive listener to `0.0.0.0`, `::`, a LAN/public address, or a public
-Funnel. The v2 archive root and legacy v1 store root must be disjoint.
+enabled. The current deployment sets it to each host's exact Tailscale IPv4 and
+serves port `8787` directly; there is no current Tailscale Serve configuration.
+Never bind the archive listener to `0.0.0.0`, `::`, a LAN/public address, or a
+public Funnel. The v2 archive root and legacy v1 store root must be disjoint.
 
-For the approved v2 topology, run the same loopback-to-tailnet mapping on each
-server after its local authenticated API checks pass:
+An alternative, separately approved deployment may bind to loopback and expose
+the API through tailnet-only Tailscale Serve HTTPS after its local authenticated
+API checks pass:
 
 ```zsh
 tailscale serve --bg --https=443 --yes http://127.0.0.1:8787
 ```
 
-The client origins are exactly `https://macmini-hq.tail1cb16.ts.net` and
-`https://macmini-m1.tail1cb16.ts.net`. Do not add `:8443`, enable Funnel, or
-reuse a LAN/public listener. The existing M1 nginx `:8443` listener is
-legacy-only for `/v1/bundles` and is outside archive v2; leave it unchanged.
+That alternative requires matching `.ts.net` client origins with
+`requireTLS: true`; it is not the current topology and the command above must
+not be run as reconciliation. Do not add `:8443`, enable Funnel, or reuse a
+LAN/public listener. The existing M1 nginx `:8443` listener is legacy-only for
+`/v1/bundles` and is outside archive v2; leave it unchanged.
 
-### Two-site secret and launch procedure (template only)
+### Two-site secret and launch procedure (deployed shape; template only)
 
-**This procedure has not been run.** Actual paths, Keychain writes, and
-launchctl operations require separate deployment authorization. Replace every
-placeholder only during that approved deployment; do not paste real credentials
-into this repository, a ticket, or a command line.
+The current operator deployment follows this shape, but the template below is
+not an exact replay log and must not be rerun without separate deployment
+authorization. Replace every placeholder only during an approved deployment;
+do not paste real credentials into this repository, a ticket, or a command line.
+Actual paths, Keychain writes, and launchctl operations require separate
+deployment authorization for any new or replacement deployment.
 
 Generate secrets independently on each server. Run the following template once
 locally on `macmini-hq` with `replica_id=hq`, and independently on
@@ -241,7 +254,8 @@ exec '/absolute/deployed/path/EngramRemoteServer'
 
 The per-user LaunchAgent plist contains no secrets and no
 `EnvironmentVariables` dictionary. Its only `ProgramArguments` entry is the
-owner-only wrapper; this illustrative shape is not installed by this branch:
+owner-only wrapper; this remains an illustrative shape rather than a record of
+the installed absolute path:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -307,8 +321,17 @@ done
 
 ## Status and retry
 
-The native service exposes strict Unix-socket IPC commands; there is currently
-no separately shipped operator CLI or public HTTP status endpoint for them.
+The native service exposes strict Unix-socket IPC commands through the bundled
+operator CLI. Read current status without changing state:
+
+```zsh
+/Applications/Engram.app/Contents/Helpers/EngramCLI archive status --json
+/Applications/Engram.app/Contents/Helpers/EngramCLI archive reclaim status --json
+```
+
+`archive retry`, `archive recovery-drill`, and reclamation enable/disable/run are
+state-changing operator commands; use them only inside an approved operation.
+There is no public HTTP status endpoint.
 
 - `archiveV2Status` takes no payload. Inspect `enabled`,
   `localCaptureEnabled`, `remoteReplicationEnabled`, `configurationError`,
@@ -341,27 +364,54 @@ Operational alerts should treat any configuration error, growing quarantine,
 stale receipt age, or persistent single-replica count as degraded. One remote
 being offline must not turn normal local indexing or reads into a failure.
 
+### 2026-07-15 operational closeout evidence
+
+- Both servers activate release `38326d62` and report the full source revision
+  `38326d62b9c11fcfd561966c6a9d61bbece4277b`. A same-connection authenticated
+  HEAD-miss then invalid-PUT probe returned a bodyless `404` followed by a
+  correctly framed `422` on each site. The previous `3b0b5b1d` release remains
+  the rollback anchor.
+- Before the one approved catalog repair, the archive catalog was backed up to
+  `~/.engram-archive-ops-backups/archive-before-retry-reset-38326d62.sqlite`.
+  Its SHA-256 is
+  `0a85b9d06824cf20b89f0a1e883f61f384aef456b1555a105601ebb818334ba8`,
+  `PRAGMA integrity_check` returned `ok`, and the transaction reset exactly the
+  seven pre-authorized stale transport retry rows before the normal drainer
+  processed them.
+- The terminal eligible snapshot is 11,119 dual-replica verified, zero
+  single-replica, zero queued, zero retrying, and zero quarantined. The broader
+  status may still say `draining` while discovery classifies unknown or new
+  sources; use the eligible receipt/queue invariants for this closeout.
+- HQ and M1 recovery drills both reconstructed manifest
+  `01013743b72041ca9027d8d8baacf5007ce4feac10e85dff0f3c76f27113cec3`
+  (199,159 bytes). The repository also fixes future candidate selection so a
+  superseded session binding cannot poison a drill; the installed build 1205
+  predates that client-side fix, so this closeout advanced its bounded cursor
+  through the known superseded candidates before the successful current
+  binding.
+
 ## Backup and recovery prerequisites
 
-This zero-delete release does not automate backups and does not let a receipt
-authorize source deletion. Before a future retention/eviction release can even
-be designed, the operator must establish all of the following independently on
-both sites:
+Automatic local reclamation remains opt-in and fail-closed. A receipt alone does
+not authorize source deletion: reclamation additionally requires current
+per-replica recovery leases, unchanged source generation, and the reviewed
+write-ahead quarantine transition. Before enabling it, the operator must
+establish all of the following independently on both sites:
 
 1. Back up each complete v2 archive root without using a mirroring command that
    propagates deletions into the backup.
 2. Preserve the current server-held key boundary. A copy of encrypted bytes
    without its original running server/key is not a recoverable replica and
-   must not be counted as one. Any future independent key-recovery mechanism is
-   a separate security decision that must be approved and restore-tested before
-   source deletion is considered.
+   must not be counted as one. Any independent key-recovery mechanism remains a
+   separate security decision and is required before remote erasure/GC can be
+   considered.
 3. Preserve and verify each server ID/key pairing; never make hq and m1 share a
    key or token.
 4. Restore into a clean temporary root and reconstruct sampled sessions from
    immutable manifests and chunks. A health check or catalog-only restore is
    insufficient.
-5. Record restore freshness and byte-level verification. Until a current drill
-   passes, the backup must not count toward a future deletion gate.
+5. Record restore freshness and byte-level verification. Until both current
+   drills pass, local reclamation stays paused.
 
 The automated test matrix includes clean-machine reconstruction and fallback
 from unavailable hq to m1, but that test is not proof of a production backup,
@@ -374,13 +424,16 @@ Rollback is non-destructive:
 1. Set `remoteArchiveV2.enabled` to `false` to stop remote replication while
    retaining local exact capture, or set `exactArchiveEnabled` to `false` to
    return to the dormant path.
-2. Restarting/deploying the app or server is a separate production operation;
-   this branch performs neither.
-3. Do not delete `~/.engram/archive-v2`, either server archive root, receipts,
+2. Disable automatic reclamation before a rollback with
+   `EngramCLI archive reclaim disable`; disabling stops new work but does not
+   recreate source files or CAS objects already reclaimed.
+3. Restarting/deploying the app or server remains a separate production
+   operation and requires explicit authorization.
+4. Do not delete `~/.engram/archive-v2`, either server archive root, receipts,
    or Keychain recovery material as part of rollback. Disabling v2 is enough.
-4. Existing live sources remain untouched, so local indexing and ordinary
-   session reads continue. Archived fallback is available only while its local
-   or remote material and credentials remain readable.
+5. Sources not yet reclaimed remain local. Completed reclamation is not undone;
+   archived fallback remains available only while its local or remote material,
+   credentials, and recovery path remain readable.
 
 The first release deliberately provides no archive erasure UI/API. Manual
 destruction is an operator action outside Engram and must not be mixed into a

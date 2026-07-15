@@ -273,27 +273,27 @@ describe('archive v2 release safety gate', () => {
       content: ['unlinkat', '  (directoryFD, sourceName, 0)'].join('\n'),
       primitive: 'unlinkat',
     },
-  ])('rejects $name without echoing source content', ({
-    content,
-    primitive,
-  }) => {
-    const root = makeSafeFixture();
-    write(
-      root,
-      'macos/EngramService/Core/ArchiveSourceCleanup.swift',
-      `${content}\n`,
-    );
+  ])(
+    'rejects $name without echoing source content',
+    ({ content, primitive }) => {
+      const root = makeSafeFixture();
+      write(
+        root,
+        'macos/EngramService/Core/ArchiveSourceCleanup.swift',
+        `${content}\n`,
+      );
 
-    const result = runGate(root);
-    const output = `${result.stdout}${result.stderr}`;
+      const result = runGate(root);
+      const output = `${result.stdout}${result.stderr}`;
 
-    expect(result.status).not.toBe(0);
-    expect(output).toContain(`ArchiveSourceCleanup.swift:`);
-    expect(output).toContain(primitive);
-    expect(output).not.toContain('sourceURL');
-    expect(output).not.toContain('unknownReceiver');
-    expect(output).not.toContain('directoryFD');
-  });
+      expect(result.status).not.toBe(0);
+      expect(output).toContain(`ArchiveSourceCleanup.swift:`);
+      expect(output).toContain(primitive);
+      expect(output).not.toContain('sourceURL');
+      expect(output).not.toContain('unknownReceiver');
+      expect(output).not.toContain('directoryFD');
+    },
+  );
 
   it('rejects delete capability on ArchiveReplicaBackend', () => {
     const root = makeSafeFixture();
@@ -439,7 +439,9 @@ describe('archive v2 documentation contract', () => {
       'macmini-m1',
       'Tailscale-only',
       'default OFF',
-      'zero-delete',
+      'operator-enabled',
+      'local source reclamation',
+      'remote deletion and GC remain forbidden',
       'online compromise',
       'Claude Code',
       'Codex',
@@ -448,17 +450,21 @@ describe('archive v2 documentation contract', () => {
       'FSEvents',
       'archiveV2Status',
       'archiveV2Retry',
-      'Production deployment is not part of this branch',
+      'EngramCLI archive status --json',
     ]) {
       expect(runbook).toContain(requiredText);
     }
+    expect(runbook).not.toContain(
+      'Production deployment is not part of this branch',
+    );
   });
 
   it('keeps the README backlog summary and v1/v2 routing current', () => {
     const readme = readFileSync(resolve(repoRoot, 'README.md'), 'utf8');
-    expect(readme).toContain('one active, not-deployed delivery');
-    expect(readme).toContain('3 conditional archive-v2 follow-ups');
+    expect(readme).toContain('operator-enabled');
+    expect(readme).toContain('3 conditional archive-v2 boundaries');
     expect(readme).toContain('docs/remote-archive-v2.md');
+    expect(readme).not.toContain('one active, not-deployed delivery');
   });
 
   it('documents the real opt-in embedding network boundary', () => {
@@ -535,7 +541,7 @@ describe('archive v2 documentation contract', () => {
     expect(readmeStorage).not.toContain('兼容保留的 embedding 表');
   });
 
-  it('documents independent per-site secret generation without deploying it', () => {
+  it('documents independent per-site secrets and preserves deployment authorization', () => {
     const runbook = readFileSync(
       resolve(repoRoot, 'docs/remote-archive-v2.md'),
       'utf8',

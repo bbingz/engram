@@ -7,6 +7,44 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: maintenance refresh and next release direction (2026-07-15)
+
+- Refreshed the supported Node dependency set to `openai@6.47.0`,
+  `sharp@0.35.3`, `lint-staged@17.0.8`, `@biomejs/biome@2.5.4`, and
+  `@types/node@26.1.1`. The repository's Node `>=24 <27` contract satisfies the
+  updated packages' engine requirements, and `npm audit` reports zero known
+  vulnerabilities.
+- Refreshed immutable GitHub Action pins to `actions/setup-node@v7.0.0`,
+  `actions/github-script@v9.0.0`, and
+  `github/codeql-action@v4.37.0`, with the workflow pin contract updated to the
+  same revisions.
+- Selected a public macOS release baseline as the next implementation-ready
+  product delivery. The planned candidate is `v1.0.5`, after exact-commit CI,
+  Developer ID signing, notarization/stapling, release verification, artifact
+  hashing, and clean-machine runtime smoke. This selection does not publish a
+  release or authorize signing-secret, tag, Homebrew, or Sparkle writes.
+
+### Fixed: exact-source archive two-site operational closeout (2026-07-15)
+
+- Fixed remote archive HEAD error responses so they preserve status and headers
+  without writing a body. This prevents an unread HEAD body from corrupting the
+  next response on a reused HTTP connection. The `38326d62` arm64 package was
+  verified before and after transfer, activated on both `macmini-hq` and
+  `macmini-m1`, and passed authenticated same-connection framing probes.
+- Backed up and integrity-checked the live archive catalog, then used one guarded
+  transaction to reset exactly seven pre-authorized stale transport retry rows.
+  The normal drainer reached 11,119 remotely eligible bindings with verified
+  receipts on both replicas and zero single-replica, queued, retrying, or
+  quarantined rows.
+- Refreshed both production recovery leases against the same current 199,159-byte
+  manifest. Reclamation then reported `recoveryLeaseCurrent=true` and a zero-item
+  preview. Added a regression and catalog query guard so future drills consider
+  only the latest binding for each session.
+- Verification: `EngramRemoteServerCore` 86/86; `EngramCoreTests` 895 passed,
+  one skipped; `EngramServiceCore` 546 passed, one skipped; archive database
+  integrity `ok`; and both remote services healthy on source revision
+  `38326d62b9c11fcfd561966c6a9d61bbece4277b`.
+
 ### Fixed: bounded service startup memory and maintenance (2026-07-15)
 
 - Removed startup work that did not contribute to the current indexing result:
@@ -30,10 +68,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - `/Applications/Engram.app` is installed as `1.0.4 (1205)` and passed the full
   Developer ID release verifier. Build 1202 remains available locally at
   `macos/build/rollback/Engram-1.0.4-1202.app`.
-- Archive draining remains live: recent passes captured 7–32 files per pass,
-  M1 had one queued item, and HQ had nine transient network retries under a
-  short infrastructure backoff. This verifies continued progress, not a claim
-  that all remote backlog is cleared.
+- At build 1205 installation time, archive draining was still live: recent
+  passes captured 7–32 files per pass, M1 had one queued item, and HQ had nine
+  transient network retries under a short infrastructure backoff. The later
+  2026-07-15 closeout above supersedes that point-in-time status.
 
 ### Fixed: archive backlog survives isolated replica transport failures (2026-07-14)
 
