@@ -12,6 +12,105 @@ private func argumentValue(after flag: String, in arguments: [String]) -> String
     return arguments[arguments.index(after: index)]
 }
 
+final class EmbeddingMaintenanceBackoff: @unchecked Sendable {
+    static let shared = EmbeddingMaintenanceBackoff()
+
+    private struct ProviderState {
+        var consecutiveFailures: Int
+        var retryAfter: Date
+    }
+
+    private let baseDelay: TimeInterval
+    private let maximumDelay: TimeInterval
+    private let now: @Sendable () -> Date
+    private let lock = NSLock()
+    private var providers: [String: ProviderState] = [:]
+
+    init(
+        baseDelay: TimeInterval = 3_600,
+        maximumDelay: TimeInterval = 86_400,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.baseDelay = max(baseDelay, 1)
+        self.maximumDelay = max(maximumDelay, self.baseDelay)
+        self.now = now
+    }
+
+    func shouldAttempt(providerKey: String) -> Bool {
+        lock.withLock {
+            guard let state = providers[providerKey] else { return true }
+            return now() >= state.retryAfter
+        }
+    }
+
+    @discardableResult
+    func recordFailure(providerKey: String) -> TimeInterval {
+        lock.withLock {
+            let failureCount = (providers[providerKey]?.consecutiveFailures ?? 0) + 1
+            let exponent = min(max(failureCount - 1, 0), 20)
+            let delay = min(maximumDelay, baseDelay * pow(2, Double(exponent)))
+            providers[providerKey] = ProviderState(
+                consecutiveFailures: failureCount,
+                retryAfter: now().addingTimeInterval(delay)
+            )
+            return delay
+        }
+    }
+
+    func recordSuccess(providerKey: String) {
+        lock.withLock {
+            _ = providers.removeValue(forKey: providerKey)
+        }
+    }
+
+    func remainingDelay(providerKey: String) -> TimeInterval {
+        lock.withLock {
+            guard let state = providers[providerKey] else { return 0 }
+            return max(0, state.retryAfter.timeIntervalSince(now()))
+        }
+    }
+}
+
+final class RepoDiscoveryMaintenanceThrottle: @unchecked Sendable {
+    static let shared = RepoDiscoveryMaintenanceThrottle()
+
+    private let batchLimit: Int
+    private let cooldown: TimeInterval
+    private let now: @Sendable () -> Date
+    private let lock = NSLock()
+    private var retryAfterByCwd: [String: Date] = [:]
+
+    init(
+        batchLimit: Int = 32,
+        cooldown: TimeInterval = 21_600,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.batchLimit = max(batchLimit, 1)
+        self.cooldown = max(cooldown, 1)
+        self.now = now
+    }
+
+    func selectCandidates(_ candidates: [GitRepoCandidate]) -> [GitRepoCandidate] {
+        lock.withLock {
+            let instant = now()
+            let selected = candidates.lazy.filter { candidate in
+                guard let retryAfter = self.retryAfterByCwd[candidate.cwd] else { return true }
+                return instant >= retryAfter
+            }.prefix(batchLimit)
+            let result = Array(selected)
+            let retryAfter = instant.addingTimeInterval(cooldown)
+            for candidate in result {
+                retryAfterByCwd[candidate.cwd] = retryAfter
+            }
+            if retryAfterByCwd.count > candidates.count * 2 {
+                let activeCwds = Set(candidates.map(\.cwd))
+                retryAfterByCwd = retryAfterByCwd.filter { activeCwds.contains($0.key) }
+            }
+            return result
+        }
+    }
+}
+
 public enum EngramServiceRunner {
     public static func run(
         arguments: [String] = Array(CommandLine.arguments.dropFirst()),
@@ -393,6 +492,20 @@ public enum EngramServiceRunner {
         )
     }
 
+    static func runPeriodicMaintenanceWithMemoryRelief(
+        relieveMemoryPressure: @Sendable () -> Int = {
+            Int(malloc_zone_pressure_relief(nil, 0))
+        },
+        operation: () async -> Void
+    ) async {
+        await operation()
+        let releasedBytes = relieveMemoryPressure()
+        ServiceLogger.info(
+            "periodic memory pressure relief complete: releasedBytes=\(releasedBytes)",
+            category: .runner
+        )
+    }
+
     static func runArchiveV2IndexCycle(
         coordinator: ArchiveV2ServiceCoordinator?,
         captureAdapters: [any SessionAdapter],
@@ -584,16 +697,18 @@ public enum EngramServiceRunner {
                 interval: sleepSeconds,
                 tolerance: tolerance
             ) {
-                await Self.runOnePeriodicIndexCycle(
-                    gate: gate,
-                    statusMonitor: statusMonitor,
-                    telemetry: telemetry,
-                    environment: environment,
-                    archiveV2Coordinator: archiveV2Coordinator,
-                    tokenLimitsProvider: tokenLimitsProvider,
-                    remoteSync: remoteSync,
-                    scheduleBox: scheduleBox
-                )
+                await Self.runPeriodicMaintenanceWithMemoryRelief {
+                    await Self.runOnePeriodicIndexCycle(
+                        gate: gate,
+                        statusMonitor: statusMonitor,
+                        telemetry: telemetry,
+                        environment: environment,
+                        archiveV2Coordinator: archiveV2Coordinator,
+                        tokenLimitsProvider: tokenLimitsProvider,
+                        remoteSync: remoteSync,
+                        scheduleBox: scheduleBox
+                    )
+                }
             }
             if opportunity == .cancelled { break }
             // .deferred / .run both continue the outer loop with updated schedule.
@@ -733,16 +848,20 @@ public enum EngramServiceRunner {
                         try RepoDiscovery.sessionCwdCounts(db)
                     }
                 }.value
-                let repoEntries = RepoDiscovery.probeRepositories(repoCandidates)
-                repoCount = try await gate.performWriteCommand(name: "repoDiscoveryUpsert") { writer in
-                    try writer.write { db in
-                        try RepoDiscovery.upsert(
-                            db,
-                            entries: repoEntries,
-                            probedAt: ISO8601DateFormatter().string(from: Date())
-                        )
-                    }
-                }.value
+                let dueRepoCandidates = RepoDiscoveryMaintenanceThrottle.shared
+                    .selectCandidates(repoCandidates)
+                if !dueRepoCandidates.isEmpty {
+                    let repoEntries = RepoDiscovery.probeRepositories(dueRepoCandidates)
+                    repoCount = try await gate.performWriteCommand(name: "repoDiscoveryUpsert") { writer in
+                        try writer.write { db in
+                            try RepoDiscovery.upsert(
+                                db,
+                                entries: repoEntries,
+                                probedAt: ISO8601DateFormatter().string(from: Date())
+                            )
+                        }
+                    }.value
+                }
             }
 
             ServiceLogger.notice(
@@ -1215,10 +1334,19 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         providerFactory: @escaping @Sendable (EmbeddingConfig) -> any EmbeddingProvider = {
             EngramServiceRunner.defaultGuardedEmbeddingProvider(config: $0)
         },
-        limit: Int = 32,
+        backoff: EmbeddingMaintenanceBackoff = .shared,
+        limit: Int = 4,
         phaseName: String = "sessionEmbeddingBackfill"
     ) async throws -> Int {
         guard let config = EmbeddingSettings.load(environment: environment) else { return 0 }
+        let providerKey = EmbeddingCircuitBreaker.providerKey(for: config)
+        guard backoff.shouldAttempt(providerKey: providerKey) else {
+            ServiceLogger.info(
+                "\(phaseName) skipped: embedding maintenance cooldown remainingSeconds=\(Int(backoff.remainingDelay(providerKey: providerKey).rounded()))",
+                category: .ai
+            )
+            return 0
+        }
         let pending = try await gate.performWriteCommand(name: "\(phaseName)Read") { writer in
             try SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: limit)
         }.value
@@ -1229,13 +1357,24 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         do {
             embedded = try await SessionEmbeddingBackfill.embedPendingSessions(pending, provider: provider)
         } catch EmbeddingError.circuitOpen {
+            _ = backoff.recordFailure(providerKey: providerKey)
             // Soft skip: leave jobs pending/failed_retryable; never burn retry budget.
             ServiceLogger.info(
                 "\(phaseName) skipped: embedding circuit open provider=\(EmbeddingCircuitBreaker.providerKey(for: config))",
                 category: .ai
             )
             return 0
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            let delay = backoff.recordFailure(providerKey: providerKey)
+            ServiceLogger.info(
+                "\(phaseName) backing off provider after failure delaySeconds=\(Int(delay.rounded()))",
+                category: .ai
+            )
+            throw error
         }
+        backoff.recordSuccess(providerKey: providerKey)
         let result = try await gate.performWriteCommand(name: "\(phaseName)Write") { writer in
             try SessionEmbeddingBackfill.writeEmbeddings(
                 writer: writer,
@@ -1277,10 +1416,19 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         providerFactory: @escaping @Sendable (EmbeddingConfig) -> any EmbeddingProvider = {
             EngramServiceRunner.defaultGuardedEmbeddingProvider(config: $0)
         },
-        limit: Int = 64,
+        backoff: EmbeddingMaintenanceBackoff = .shared,
+        limit: Int = 16,
         phaseName: String = "insightEmbeddingBackfill"
     ) async throws -> Int {
         guard let config = EmbeddingSettings.load(environment: environment) else { return 0 }
+        let providerKey = EmbeddingCircuitBreaker.providerKey(for: config)
+        guard backoff.shouldAttempt(providerKey: providerKey) else {
+            ServiceLogger.info(
+                "\(phaseName) skipped: embedding maintenance cooldown remainingSeconds=\(Int(backoff.remainingDelay(providerKey: providerKey).rounded()))",
+                category: .ai
+            )
+            return 0
+        }
         let pending = try await gate.performWriteCommand(name: "\(phaseName)Read") { writer in
             try InsightEmbeddingBackfill.pendingInsights(writer: writer, limit: limit)
         }.value
@@ -1290,14 +1438,27 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         let vectors: [[Float]]
         do {
             vectors = try await provider.embed(pending.map(\.content))
+            guard vectors.count == pending.count else {
+                throw EmbeddingError.malformedResponse
+            }
         } catch EmbeddingError.circuitOpen {
+            _ = backoff.recordFailure(providerKey: providerKey)
             ServiceLogger.info(
                 "\(phaseName) skipped: embedding circuit open provider=\(EmbeddingCircuitBreaker.providerKey(for: config))",
                 category: .ai
             )
             return 0
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            let delay = backoff.recordFailure(providerKey: providerKey)
+            ServiceLogger.info(
+                "\(phaseName) backing off provider after failure delaySeconds=\(Int(delay.rounded()))",
+                category: .ai
+            )
+            throw error
         }
-        guard vectors.count == pending.count else { return 0 }
+        backoff.recordSuccess(providerKey: providerKey)
         let embedded = zip(pending, vectors).map { item, vector in
             InsightEmbeddingBackfill.EmbeddedInsight(id: item.id, vector: vector)
         }

@@ -96,6 +96,7 @@ public actor ArchiveReplicationCoordinator {
     private let clock: @Sendable () -> Date
     private let jitter: ArchiveRetryJitter
     private var isRunning = false
+    private var lastReconciledEligiblePolicyRevision: Int64?
     private var attentionPausedReplicaIDs = Set<String>()
     private var retryPausedUntil: [String: Date] = [:]
     private var pauseRevisionByReplica: [String: UInt64] = [
@@ -153,7 +154,7 @@ public actor ArchiveReplicationCoordinator {
                 cycle.cancelled = true
                 return cycle.result
             }
-            cycle.reconciled = try catalog.reconcileEligibleReplicaRows(
+            cycle.reconciled = try reconcileEligibleReplicaRowsIfNeeded(
                 updatedAt: cycleNow
             )
             guard !Task.isCancelled else {
@@ -198,7 +199,7 @@ public actor ArchiveReplicationCoordinator {
                 now: cycleNow,
                 olderThanSeconds: 600
             )
-            cycle.reconciled = try catalog.reconcileEligibleReplicaRows(
+            cycle.reconciled = try reconcileEligibleReplicaRowsIfNeeded(
                 updatedAt: cycleNow
             )
             let retryQuota = perReplicaLimit / 2
@@ -246,6 +247,14 @@ public actor ArchiveReplicationCoordinator {
         }
         replacePauseSnapshot(in: &cycle, at: clock())
         return cycle.result
+    }
+
+    private func reconcileEligibleReplicaRowsIfNeeded(updatedAt: String) throws -> Int {
+        let revision = try catalog.eligiblePolicyRevision()
+        guard revision != lastReconciledEligiblePolicyRevision else { return 0 }
+        let reconciled = try catalog.reconcileEligibleReplicaRows(updatedAt: updatedAt)
+        lastReconciledEligiblePolicyRevision = revision
+        return reconciled
     }
 
     private func currentPauseResult(cycleError: String) -> ArchiveReplicationCycleResult {

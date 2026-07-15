@@ -11,6 +11,21 @@ private struct FakeEmbeddingProvider: EmbeddingProvider {
     }
 }
 
+private actor BatchRecordingEmbeddingProvider: EmbeddingProvider {
+    let model = "batch-model"
+    let dimension = 3
+    private var recordedBatchSizes: [Int] = []
+
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        recordedBatchSizes.append(texts.count)
+        return texts.map { _ in [1, 0, 0] }
+    }
+
+    func batchSizes() -> [Int] {
+        recordedBatchSizes
+    }
+}
+
 final class InsightEmbeddingBackfillTests: XCTestCase {
     private var tempDir: URL!
 
@@ -53,5 +68,30 @@ final class InsightEmbeddingBackfillTests: XCTestCase {
         // Nothing pending on the second run.
         let second = try await InsightEmbeddingBackfill.run(writer: writer, provider: provider)
         XCTAssertEqual(second, .init(embedded: 0))
+    }
+
+    func testSessionEmbeddingCapsEachProviderRequestBatch() async throws {
+        let provider = BatchRecordingEmbeddingProvider()
+        let content = (0..<20)
+            .map { index in "line-\(index)-" + String(repeating: "x", count: 650) }
+            .joined(separator: "\n")
+        let pending = [
+            SessionEmbeddingBackfill.PendingSession(
+                jobId: "job",
+                sessionId: "session",
+                content: content
+            ),
+        ]
+
+        let embedded = try await SessionEmbeddingBackfill.embedPendingSessions(
+            pending,
+            provider: provider,
+            maxTextsPerRequest: 4
+        )
+
+        XCTAssertEqual(embedded.count, 1)
+        XCTAssertEqual(embedded[0].chunks.count, 20)
+        let batchSizes = await provider.batchSizes()
+        XCTAssertEqual(batchSizes, [4, 4, 4, 4, 4])
     }
 }

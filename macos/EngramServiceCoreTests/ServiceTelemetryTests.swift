@@ -239,6 +239,40 @@ final class ServiceTelemetryTests: XCTestCase {
         XCTAssertEqual(relief.callCount, 1)
     }
 
+    func testPeriodicMaintenanceRelievesMallocPressureOnCompletion() async {
+        let relief = MemoryPressureReliefRecorder(releasedBytes: 1024)
+        let operationFinished = LockedFlag()
+
+        await EngramServiceRunner.runPeriodicMaintenanceWithMemoryRelief(
+            relieveMemoryPressure: { relief.relieve() }
+        ) {
+            operationFinished.set(true)
+        }
+
+        XCTAssertTrue(operationFinished.value())
+        XCTAssertEqual(relief.callCount, 1)
+    }
+
+    func testRepoDiscoveryThrottleRotatesBoundedBatchesAndHonorsCooldown() {
+        let clock = MaintenanceTestClock(Date(timeIntervalSince1970: 10_000))
+        let throttle = RepoDiscoveryMaintenanceThrottle(
+            batchLimit: 2,
+            cooldown: 3_600,
+            now: { clock.value() }
+        )
+        let candidates = (0..<5).map {
+            GitRepoCandidate(cwd: "/repo/\($0)", sessionCount: 5 - $0)
+        }
+
+        XCTAssertEqual(throttle.selectCandidates(candidates).map(\.cwd), ["/repo/0", "/repo/1"])
+        XCTAssertEqual(throttle.selectCandidates(candidates).map(\.cwd), ["/repo/2", "/repo/3"])
+        XCTAssertEqual(throttle.selectCandidates(candidates).map(\.cwd), ["/repo/4"])
+        XCTAssertTrue(throttle.selectCandidates(candidates).isEmpty)
+
+        clock.advance(by: 3_600)
+        XCTAssertEqual(throttle.selectCandidates(candidates).map(\.cwd), ["/repo/0", "/repo/1"])
+    }
+
     /// L01: stdout event encoding must go through JSONEncoder so quotes/newlines
     /// in error text cannot break the JSON line.
     func testStdoutEventEncodingEscapesQuotesAndControlCharacters() throws {
@@ -435,5 +469,35 @@ private final class MemoryPressureReliefRecorder: @unchecked Sendable {
     func relieve() -> Int {
         lock.withLock { calls += 1 }
         return releasedBytes
+    }
+}
+
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+
+    func set(_ value: Bool) {
+        lock.withLock { flag = value }
+    }
+
+    func value() -> Bool {
+        lock.withLock { flag }
+    }
+}
+
+private final class MaintenanceTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var date: Date
+
+    init(_ date: Date) {
+        self.date = date
+    }
+
+    func value() -> Date {
+        lock.withLock { date }
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.withLock { date = date.addingTimeInterval(interval) }
     }
 }

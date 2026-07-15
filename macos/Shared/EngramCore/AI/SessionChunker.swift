@@ -58,16 +58,23 @@ public enum SessionChunker {
     }
 
     private static func slidingWindow(_ text: String, windowSize: Int, overlap: Int) -> [String] {
-        let chars = Array(text)
-        guard windowSize > overlap, !chars.isEmpty else { return [text] }
+        guard windowSize > overlap, !text.isEmpty else { return [text] }
         let step = windowSize - overlap
         var results: [String] = []
-        var i = 0
-        while i < chars.count {
-            let end = min(i + windowSize, chars.count)
-            results.append(String(chars[i..<end]))
-            if end >= chars.count { break }
-            i += step
+        var start = text.startIndex
+        while start < text.endIndex {
+            let end = text.index(
+                start,
+                offsetBy: windowSize,
+                limitedBy: text.endIndex
+            ) ?? text.endIndex
+            results.append(String(text[start..<end]))
+            if end == text.endIndex { break }
+            start = text.index(
+                start,
+                offsetBy: step,
+                limitedBy: text.endIndex
+            ) ?? text.endIndex
         }
         return results
     }

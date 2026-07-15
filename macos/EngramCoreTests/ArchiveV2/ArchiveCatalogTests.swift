@@ -2173,6 +2173,33 @@ final class ArchiveCatalogTests: XCTestCase {
         )
     }
 
+    func testEligiblePolicyRevisionOnlyChangesForNewEligibleSnapshots() throws {
+        let catalog = try migratedCatalog()
+        let fixture = try addBinding(
+            to: catalog,
+            captureSeed: "eligible-policy-revision",
+            sessionID: "eligible-policy-revision"
+        )
+
+        XCTAssertEqual(try catalog.eligiblePolicyRevision(), 0)
+        XCTAssertTrue(
+            try catalog.setRemotePolicySnapshot(
+                manifestSHA256: fixture.manifestSHA256,
+                projectRootSnapshot: "/tmp/eligible-policy-revision",
+                eligibility: .eligible
+            )
+        )
+        XCTAssertEqual(try catalog.eligiblePolicyRevision(), 1)
+        XCTAssertFalse(
+            try catalog.setRemotePolicySnapshot(
+                manifestSHA256: fixture.manifestSHA256,
+                projectRootSnapshot: "/tmp/eligible-policy-revision",
+                eligibility: .eligible
+            )
+        )
+        XCTAssertEqual(try catalog.eligiblePolicyRevision(), 1)
+    }
+
     func testUnknownBindingsPagesInStableOrderWithoutDuplicatesAndRejectsInvalidCursor() throws {
         let catalog = try migratedCatalog()
         let bindings = try [

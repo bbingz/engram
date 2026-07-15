@@ -464,6 +464,7 @@ public final class ArchiveCatalog: @unchecked Sendable {
     private static let captureStatus = "captured"
     private static let ignoredCaptureStatus = "ignored"
     private static let maximumArchiveCursorPayloadBytes = 16_384
+    private static let eligiblePolicyRevisionKey = "eligible_policy_revision_v1"
 
     private let pool: DatabasePool
     private let root: URL
@@ -529,6 +530,18 @@ public final class ArchiveCatalog: @unchecked Sendable {
                 throw ArchiveCatalogError.missingMetadata("machine_id")
             }
             return value
+        }
+    }
+
+    /// Monotonic signal used by replication to avoid re-running the full
+    /// eligible-row receipt reconciliation when remote policy did not change.
+    public func eligiblePolicyRevision() throws -> Int64 {
+        try pool.read { db in
+            try Int64.fetchOne(
+                db,
+                sql: "SELECT CAST(value AS INTEGER) FROM archive_metadata WHERE key = ?",
+                arguments: [Self.eligiblePolicyRevisionKey]
+            ) ?? 0
         }
     }
 
@@ -1822,6 +1835,16 @@ public final class ArchiveCatalog: @unchecked Sendable {
             guard db.changesCount == 1 else {
                 throw ArchiveCatalogError.remotePolicyConflict(
                     manifestSHA256: manifestSHA256
+                )
+            }
+            if eligibility == .eligible {
+                try db.execute(
+                    sql: """
+                    INSERT INTO archive_metadata(key, value) VALUES (?, '1')
+                    ON CONFLICT(key) DO UPDATE SET
+                      value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+                    """,
+                    arguments: [Self.eligiblePolicyRevisionKey]
                 )
             }
             return true

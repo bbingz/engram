@@ -3529,6 +3529,11 @@ final class EngramServiceIPCTests: XCTestCase {
             guardIndices.contains { $0 < probe.lowerBound },
             "RepoDiscovery.probeRepositories must be gated behind `if scan.indexed > 0`, not run unconditionally"
         )
+        XCTAssertTrue(
+            source.contains("RepoDiscoveryMaintenanceThrottle.shared")
+                && source.contains("selectCandidates(repoCandidates)"),
+            "repo probing must pass through the bounded maintenance throttle"
+        )
     }
 
     func testLiveSessionsStreamsEnumeratorInsteadOfMaterializingFullTree() throws {
