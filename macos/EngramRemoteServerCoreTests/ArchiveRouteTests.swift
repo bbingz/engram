@@ -104,6 +104,36 @@ final class ArchiveRouteTests: XCTestCase {
         }
     }
 
+    func testArchiveHeadErrorsNeverWriteResponseBodies() async throws {
+        let digest = String(repeating: "0", count: 64)
+        let app = Application(router: try makeRemoteApp().buildRouter())
+
+        try await app.test(.router) { client in
+            let cases: [(uri: String, headers: HTTPFields, status: Int)] = [
+                ("/v2/archive/objects/\(digest)", HTTPFields(), 401),
+                ("/v2/archive/objects/not-a-digest", Self.headers(), 400),
+                ("/v2/archive/objects/\(digest)", Self.headers(), 404),
+                ("/v2/archive/manifests/\(digest)", HTTPFields(), 401),
+                ("/v2/archive/manifests/not-a-digest", Self.headers(), 400),
+                ("/v2/archive/manifests/\(digest)", Self.headers(), 404),
+            ]
+
+            for entry in cases {
+                let response = try await client.execute(
+                    uri: entry.uri,
+                    method: .head,
+                    headers: entry.headers
+                )
+                XCTAssertEqual(response.status.code, entry.status, entry.uri)
+                XCTAssertEqual(
+                    response.body.readableBytes,
+                    0,
+                    "HEAD emitted a response body for \(entry.uri)"
+                )
+            }
+        }
+    }
+
     func testStatusRequiresArchiveTokenAndContainsOnlyPriorCanonicalTelemetry() async throws {
         let now = try Self.instant("2026-07-12T10:00:00.000Z")
         let raw = Data("observed archive bytes".utf8)

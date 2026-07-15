@@ -83,6 +83,51 @@ final class EngramRemoteServerTests: XCTestCase {
 
     // MARK: - Live server ↔ EngramRemoteBackend round-trip
 
+    func testArchiveHeadMissDoesNotCorruptNextPutOnReusedConnection() async throws {
+        let archiveToken = "archive-keepalive-token"
+        let config = EngramRemoteServerConfig(
+            host: "127.0.0.1",
+            port: 0,
+            storeRoot: tempDir.appendingPathComponent("legacy"),
+            bearerToken: "legacy-keepalive-token",
+            atRestKey: SymmetricKey(size: .bits256),
+            archiveV2: EngramRemoteArchiveConfig(
+                serverID: "hq",
+                root: tempDir.appendingPathComponent("archive"),
+                bearerToken: archiveToken,
+                atRestKey: SymmetricKey(size: .bits256)
+            )
+        )
+        let app = try EngramRemoteServerApp(config: config)
+        let waiter = PortWaiter()
+        let serverTask = Task { try? await app.run(onBound: { waiter.set($0) }) }
+        defer { serverTask.cancel() }
+        let port = await waiter.wait()
+
+        let raw = Data("archive keepalive regression".utf8)
+        let digest = ArchiveV2Hash.sha256(raw)
+        let url = try XCTUnwrap(
+            URL(string: "http://127.0.0.1:\(port)/v2/archive/objects/\(digest)")
+        )
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+
+        var head = URLRequest(url: url)
+        head.httpMethod = "HEAD"
+        head.setValue("Bearer \(archiveToken)", forHTTPHeaderField: "Authorization")
+        let (headData, headResponse) = try await session.data(for: head)
+        XCTAssertEqual((headResponse as? HTTPURLResponse)?.statusCode, 404)
+        XCTAssertTrue(headData.isEmpty)
+
+        var put = URLRequest(url: url)
+        put.httpMethod = "PUT"
+        put.httpBody = raw
+        put.setValue("Bearer \(archiveToken)", forHTTPHeaderField: "Authorization")
+        put.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        let (_, putResponse) = try await session.data(for: put)
+        XCTAssertEqual((putResponse as? HTTPURLResponse)?.statusCode, 201)
+    }
+
     func testRemoteBackendRoundTripAgainstLiveServer() async throws {
         let config = EngramRemoteServerConfig(
             host: "127.0.0.1",
