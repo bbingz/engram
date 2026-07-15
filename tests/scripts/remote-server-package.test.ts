@@ -358,25 +358,25 @@ describe('remote server package implementation contract', () => {
         ].join('\n'),
       ),
     },
-  ])('rejects trusted template drift: $name', ({
-    wrapperSuffix,
-    launchAgent,
-  }) => {
-    const revision = 'a'.repeat(40);
-    const valid = wrapperTemplate.replace(
-      '__ENGRAM_REMOTE_SOURCE_REVISION__',
-      revision,
-    );
+  ])(
+    'rejects trusted template drift: $name',
+    ({ wrapperSuffix, launchAgent }) => {
+      const revision = 'a'.repeat(40);
+      const valid = wrapperTemplate.replace(
+        '__ENGRAM_REMOTE_SOURCE_REVISION__',
+        revision,
+      );
 
-    const result = runTemplateVerification(
-      `${valid}${wrapperSuffix ?? ''}`,
-      revision,
-      launchAgent,
-    );
+      const result = runTemplateVerification(
+        `${valid}${wrapperSuffix ?? ''}`,
+        revision,
+        launchAgent,
+      );
 
-    expect(result.status).not.toBe(0);
-    expect(result.output).toContain('trusted source template');
-  });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain('trusted source template');
+    },
+  );
 
   it('requires the fixed Release arm64 build products and package layout', () => {
     expect(packageScript).toMatch(
