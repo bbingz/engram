@@ -33,7 +33,7 @@
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.1",
     "better-sqlite3": "^12.11.1",
-    "openai": "^6.25.0",
+    "openai": "^6.47.0",
     "sqlite-vec": "0.1.9",
     "yaml": "^2.8.3"
   },
@@ -41,13 +41,13 @@
     "@huggingface/transformers": "^4.2.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.10",
+    "@biomejs/biome": "^2.5.4",
     "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^25.9.1",
+    "@types/node": "^26.1.1",
     "@vitest/coverage-v8": "^4.1.8",
     "husky": "^9.1.7",
     "knip": "^6.25.0",
-    "lint-staged": "^16.4.0",
+    "lint-staged": "^17.0.8",
     "pixelmatch": "^6.0.0",
     "sharp": "^0.35.3",
     "ssim.js": "^3.5.0",
