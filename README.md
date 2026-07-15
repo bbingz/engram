@@ -9,9 +9,11 @@ macOS app + bundled Swift MCP helper. The active MCP surface has 27 tools. The
 App UI is intentionally keyword-only; service and MCP expose availability-gated
 semantic/hybrid search when compatible embeddings exist. Session ingestion
 defaults to 14 active sources plus 3 archived default-off sources.
-`docs/TODO.md` has no open engineering items, `docs/followups.md` has no open
-implementation-ready engineering follow-ups, and `docs/roadmap.md` keeps 12
-product decisions visible rather than reporting them as implemented. Exact-source
+`docs/TODO.md` now carries one selected implementation-ready delivery: establish
+a public macOS release baseline above the current public `v1.0.3` before new
+feature work. `docs/followups.md` has no open implementation-ready engineering
+follow-ups, and `docs/roadmap.md` keeps 12 other product decisions visible rather
+than reporting them as implemented. Exact-source
 dual-replica archive v2 remains default-off for fresh installs but is
 operator-enabled on the current deployment; its finite eligible backlog and
 two-site recovery closeout completed on 2026-07-15; 3 conditional archive-v2 boundaries

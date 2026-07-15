@@ -7,6 +7,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: maintenance refresh and next release direction (2026-07-15)
+
+- Refreshed the supported Node dependency set to `openai@6.47.0`,
+  `sharp@0.35.3`, `lint-staged@17.0.8`, `@biomejs/biome@2.5.4`, and
+  `@types/node@26.1.1`. The repository's Node `>=24 <27` contract satisfies the
+  updated packages' engine requirements, and `npm audit` reports zero known
+  vulnerabilities.
+- Refreshed immutable GitHub Action pins to `actions/setup-node@v7.0.0`,
+  `actions/github-script@v9.0.0`, and
+  `github/codeql-action@v4.37.0`, with the workflow pin contract updated to the
+  same revisions.
+- Selected a public macOS release baseline as the next implementation-ready
+  product delivery. The planned candidate is `v1.0.5`, after exact-commit CI,
+  Developer ID signing, notarization/stapling, release verification, artifact
+  hashing, and clean-machine runtime smoke. This selection does not publish a
+  release or authorize signing-secret, tag, Homebrew, or Sparkle writes.
+
 ### Fixed: exact-source archive two-site operational closeout (2026-07-15)
 
 - Fixed remote archive HEAD error responses so they preserve status and headers

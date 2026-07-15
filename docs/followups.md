@@ -30,7 +30,7 @@ dual receipts, current per-replica recovery leases, generation revalidation,
 and write-ahead quarantine, so they are no longer an open follow-up. They do not
 authorize remote deletion or GC.
 
-## Engineering-zero status (2026-07-11, Wave 8 Round 4)
+## Historical engineering-zero status (2026-07-11, Wave 8 Round 4)
 
 **Open implementation-ready engineering follow-ups: 0.**
 
@@ -40,6 +40,11 @@ and ignore-rule classification. Product-decision items already live in
 `docs/roadmap.md` Decision pending (exactly 12 rows). Conditional UX that is not
 currently exposed (FTS full-rebuild progress) is recorded as closed/deferred
 below, not as open engineering work.
+
+This remains the follow-up count, not the total delivery count: on 2026-07-15
+the owner selected one implementation-ready public macOS release baseline in
+`docs/TODO.md`. It is a scheduled delivery rather than a follow-up and does not
+reopen any Wave 7 defect.
 
 Evidence ledger:
 `docs/reviews/2026-07-10-wave7-engineering-zero-closeout.md`.
