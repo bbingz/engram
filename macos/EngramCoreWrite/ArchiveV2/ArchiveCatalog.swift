@@ -1106,6 +1106,17 @@ public final class ArchiveCatalog: @unchecked Sendable {
                   AND r.state = 'verified'
                   AND r.receipt_bytes IS NOT NULL
                   AND c.raw_byte_count <= ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM archive_session_bindings AS newer
+                      WHERE newer.session_id = b.session_id
+                        AND (
+                            newer.bound_at > b.bound_at
+                            OR (
+                                newer.bound_at = b.bound_at
+                                AND newer.manifest_sha256 > b.manifest_sha256
+                            )
+                        )
+                  )
                 """
             let row: Row?
             if let cursor {
