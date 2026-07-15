@@ -62,13 +62,13 @@ const actionPins = {
   'actions/cache': '55cc8345863c7cc4c66a329aec7e433d2d1c52a9',
   'actions/checkout': '9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0',
   'actions/download-artifact': '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c',
-  'actions/github-script': '373c709c69115d41ff229c7e5df9f8788daa9553',
-  'actions/setup-node': '48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e',
+  'actions/github-script': '3a2844b7e9c422d3c10d287c895573f7108da1b3',
+  'actions/setup-node': '820762786026740c76f36085b0efc47a31fe5020',
   'actions/upload-artifact': '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
   'actions/dependency-review-action':
     'a1d282b36b6f3519aa1f3fc636f609c47dddb294',
-  'github/codeql-action/analyze': '1ad29ea4a422cce9a242a9fae469541dcd08addc',
-  'github/codeql-action/init': '1ad29ea4a422cce9a242a9fae469541dcd08addc',
+  'github/codeql-action/analyze': '99df26d4f13ea111d4ec1a7dddef6063f76b97e9',
+  'github/codeql-action/init': '99df26d4f13ea111d4ec1a7dddef6063f76b97e9',
 } as const;
 const packageJSON = JSON.parse(
   readFileSync(resolve(repoRoot, 'package.json'), 'utf8'),
