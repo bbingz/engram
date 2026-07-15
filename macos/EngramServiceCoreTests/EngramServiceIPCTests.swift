@@ -1470,6 +1470,42 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(status, .degraded(message: "Last successful index scan is stale (901s old)"))
     }
 
+    func testStatusMonitorUsesPublishedScheduleBeforeDeclaringScanStale() async {
+        let monitor = ServiceStatusMonitor(
+            staleAfter: 600,
+            now: { Date(timeIntervalSince1970: 1_200) }
+        )
+        await monitor.recordSchedule(nextScanIntervalSeconds: 900)
+        await monitor.recordScanSuccess(at: Date(timeIntervalSince1970: 100))
+
+        let status = await monitor.status(
+            indexStatus: EngramDatabaseIndexStatus(total: 42, todayParents: 7)
+        )
+
+        XCTAssertEqual(
+            status,
+            .running(total: 42, todayParents: 7, nextScanIntervalSeconds: 900)
+        )
+    }
+
+    func testStatusMonitorStillDegradesAfterTwoPublishedIntervals() async {
+        let monitor = ServiceStatusMonitor(
+            staleAfter: 600,
+            now: { Date(timeIntervalSince1970: 1_901) }
+        )
+        await monitor.recordSchedule(nextScanIntervalSeconds: 900)
+        await monitor.recordScanSuccess(at: Date(timeIntervalSince1970: 100))
+
+        let status = await monitor.status(
+            indexStatus: EngramDatabaseIndexStatus(total: 42, todayParents: 7)
+        )
+
+        XCTAssertEqual(
+            status,
+            .degraded(message: "Last successful index scan is stale (1801s old)")
+        )
+    }
+
     func testRunnerCancellationReleasesWriterGateAndRemovesSocket() async throws {
         let paths = try makeServiceIPCPaths()
 

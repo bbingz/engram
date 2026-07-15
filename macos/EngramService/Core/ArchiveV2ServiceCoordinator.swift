@@ -334,6 +334,7 @@ actor ArchiveV2ServiceCoordinator {
     ]
     private var nextScheduledCycleAt: String?
     private var drainer: ArchiveV2BacklogDrainer?
+    private var periodicMaintenanceActive = false
     private var pipelineBusy = false
     private var indexPipelineWaiters: [CheckedContinuation<Void, Never>] = []
     private var backlogPipelineWaiters: [CheckedContinuation<Void, Never>] = []
@@ -573,6 +574,27 @@ actor ArchiveV2ServiceCoordinator {
         await drainer?.signal()
     }
 
+    func withBacklogDrainPaused<T: Sendable>(
+        _ operation: @Sendable () async throws -> T
+    ) async rethrows -> T {
+        // Wait for any pass already inside the archive pipeline before starting
+        // the higher-level periodic maintenance cycle.
+        await acquirePipeline(indexPriority: true)
+        periodicMaintenanceActive = true
+        releasePipeline()
+
+        do {
+            let result = try await operation()
+            periodicMaintenanceActive = false
+            await drainer?.signal()
+            return result
+        } catch {
+            periodicMaintenanceActive = false
+            await drainer?.signal()
+            throw error
+        }
+    }
+
     func runBacklogPass(
         adapters: [any SessionAdapter]
     ) async throws -> ArchiveV2DrainPassSummary {
@@ -589,9 +611,15 @@ actor ArchiveV2ServiceCoordinator {
             )
         }
         await acquirePipeline(indexPriority: false)
+        defer { releasePipeline() }
+        guard !periodicMaintenanceActive else {
+            return ArchiveV2DrainPassSummary(
+                startedAt: now(),
+                finishedAt: now()
+            )
+        }
         let passPriority = nextBacklogPassPriority
         nextBacklogPassPriority = passPriority.opposite
-        defer { releasePipeline() }
 
         // Resolve profile-backed adapters only after this pass owns the archive
         // pipeline. A configuration request that arrived while waiting is then

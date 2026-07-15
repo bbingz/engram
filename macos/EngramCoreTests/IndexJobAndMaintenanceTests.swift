@@ -100,6 +100,20 @@ private final class HalfFailUpsertSink: IndexingWriteSink {
     }
 }
 
+private final class AllNoopUpsertSink: IndexingWriteSink {
+    func upsertBatch(
+        _ snapshots: [AuthoritativeSessionSnapshot],
+        reason: IndexingWriteReason
+    ) throws -> SessionBatchUpsertResult {
+        SessionBatchUpsertResult(
+            reason: reason,
+            results: snapshots.map {
+                SessionBatchItemResult(sessionId: $0.id, action: .noop, enqueuedJobs: [])
+            }
+        )
+    }
+}
+
 private final class FileStateFailingSink: IndexingWriteSink {
     var fileStateAttempts = 0
 
@@ -510,6 +524,15 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         let count = try await half.indexAll()
         // 4 snapshots, even indices succeed (0, 2) => 2 written.
         XCTAssertEqual(count, 2, "must count only actually-written rows, not attempts")
+    }
+
+    func testIndexAllExcludesNoopRowsFromIndexedCount() async throws {
+        let adapter = StubInfoAdapter(count: 4)
+        let indexer = SwiftIndexer(sink: AllNoopUpsertSink(), adapters: [adapter])
+
+        let count = try await indexer.indexAll()
+
+        XCTAssertEqual(count, 0, "unchanged snapshots must not keep the adaptive schedule busy")
     }
 
     func testSwiftIndexerAggregatesStreamedTokenUsageIntoSnapshot() async throws {

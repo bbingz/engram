@@ -82,6 +82,39 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         )
     }
 
+    func testPeriodicMaintenancePauseDefersBacklogPassUntilCycleEnds() async throws {
+        let harness = try makeHarness(remoteReady: false)
+        let events = EventLog()
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            await events.append("backlogCapture")
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                processed: 1
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: operations
+        )
+
+        let deferred = try await coordinator.withBacklogDrainPaused {
+            try await coordinator.runBacklogPass(adapters: [])
+        }
+        let eventsWhilePaused = await events.values()
+        XCTAssertEqual(deferred.capturedFiles, 0)
+        XCTAssertFalse(eventsWhilePaused.contains("backlogCapture"))
+
+        let resumed = try await coordinator.runBacklogPass(adapters: [])
+        let eventsAfterResume = await events.values()
+        XCTAssertEqual(resumed.capturedFiles, 1)
+        XCTAssertTrue(eventsAfterResume.contains("backlogCapture"))
+    }
+
     func testBacklogPassAlternatesRemoteAndLocalAdmissionOrder() async throws {
         let harness = try makeHarness(remoteReady: true)
         let events = EventLog()

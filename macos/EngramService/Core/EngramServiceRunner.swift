@@ -698,16 +698,23 @@ public enum EngramServiceRunner {
                 tolerance: tolerance
             ) {
                 await Self.runPeriodicMaintenanceWithMemoryRelief {
-                    await Self.runOnePeriodicIndexCycle(
-                        gate: gate,
-                        statusMonitor: statusMonitor,
-                        telemetry: telemetry,
-                        environment: environment,
-                        archiveV2Coordinator: archiveV2Coordinator,
-                        tokenLimitsProvider: tokenLimitsProvider,
-                        remoteSync: remoteSync,
-                        scheduleBox: scheduleBox
-                    )
+                    let periodicCycle: @Sendable () async -> Void = {
+                        await Self.runOnePeriodicIndexCycle(
+                            gate: gate,
+                            statusMonitor: statusMonitor,
+                            telemetry: telemetry,
+                            environment: environment,
+                            archiveV2Coordinator: archiveV2Coordinator,
+                            tokenLimitsProvider: tokenLimitsProvider,
+                            remoteSync: remoteSync,
+                            scheduleBox: scheduleBox
+                        )
+                    }
+                    if let archiveV2Coordinator {
+                        await archiveV2Coordinator.withBacklogDrainPaused(periodicCycle)
+                    } else {
+                        await periodicCycle()
+                    }
                 }
             }
             if opportunity == .cancelled { break }

@@ -496,6 +496,10 @@ final class ArchiveV2RunnerIntegrationTests: XCTestCase {
         let loopBlock = String(source[loopStart.lowerBound ..< loopEnd.lowerBound])
         XCTAssertTrue(loopBlock.contains("await archiveV2Coordinator?.recordNextScheduledCycle("))
         XCTAssertTrue(loopBlock.contains("Date().addingTimeInterval(sleepSeconds)"))
+        XCTAssertTrue(
+            loopBlock.contains("withBacklogDrainPaused"),
+            "the whole periodic maintenance cycle must exclude archive backlog passes"
+        )
 
         let waitHelperStart = try XCTUnwrap(source.range(of: "static func runAfterInitialScan("))
         let waitHelperEnd = try XCTUnwrap(
