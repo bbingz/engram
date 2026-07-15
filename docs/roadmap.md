@@ -50,29 +50,38 @@ providers (`claude-code`, `codex`, `gemini-cli`, `antigravity`, `opencode`),
 writes `usage_snapshots`, and emits service usage events. The UI still degrades
 correctly because `PopoverUsageSection` remains gated on real usage data.
 
-## Open roadmap
+## Current roadmap
 
-The exact-source dual-replica archive v2 is the only active delivery item as of
-2026-07-12. Twelve unrelated owner decisions remain in the Decision pending
-table below (parked by the 2026-07-09 plan-completion audit); they are not
-scheduled implementation work.
+There are no open implementation-ready engineering deliveries as of 2026-07-15.
+Exact-source dual-replica archive v2 has completed its finite eligible-backlog
+and two-site recovery closeout. Twelve unrelated owner decisions remain in the
+Decision pending table below (parked by the 2026-07-09 plan-completion audit);
+they are not scheduled implementation work.
 
-### Exact-source dual-replica archive v2
+### Exact-source dual-replica archive v2 — operational closeout complete
 
-- **Status:** implementation and repository verification branch; **not shipped
-  or deployed**. No production Mac mini, Tailscale ACL, Keychain, launchd,
-  service, or source data has been changed by this delivery branch.
+- **Status:** shipped and operator-enabled. The current client runs Engram
+  `1.0.4 (1205)` with local capture, both private replicas, and opt-in automatic
+  local reclamation enabled; fresh installs remain default OFF.
 - **Topology:** `macmini-hq` is the primary cold-read target and `macmini-m1`
   is an independently operated fallback in a different physical location with
   separate power and network exit. Direct client replication is Tailscale-only;
   the servers do not replicate to one another.
-- **Release boundary:** default OFF, exact raw-byte capture only for
+- **Release boundary:** exact raw-byte capture only for
   replay-proven Claude Code and Codex single-file locators, separate credentials
-  and stores, and zero deletion/eviction/GC. Parsed messages and existing v1
-  offload artifacts remain derived data.
+  and stores. Local source/CAS reclamation is an explicit opt-in gated by dual
+  receipts plus current recovery drills. The v2 remote API still has no deletion
+  or GC path. Parsed messages and existing v1 offload artifacts remain derived
+  data.
 - **Operational truth:** locator discovery is cancellable but O(N); the batch
-  limit applies only after discovery. Production deployment and live two-site
-  restore evidence require a later explicitly approved operation.
+  limit applies only after discovery. At 2026-07-15 12:14:20 +0800, all 11,119
+  remotely eligible bindings had verified HQ and M1 receipts, with zero
+  single-replica, queued, retrying, or quarantined rows. Recovery drills then
+  verified the same current 199,159-byte manifest on HQ at 12:23:33 and M1 at
+  12:24:16; reclamation reported `recoveryLeaseCurrent=true` and a zero-item
+  preview. New discoveries can still create future work, so the runtime's broad
+  `drainState` may remain `draining`; that is not an inherited eligible-backlog
+  residual.
 - **Runbook:** [`docs/remote-archive-v2.md`](remote-archive-v2.md). Conditional
   non-release follow-ups remain in [`docs/followups.md`](followups.md).
 

@@ -86,7 +86,9 @@ launchd changes are production operations outside this build procedure.
 
 The M1 nginx `:8443` listener described below remains a legacy `/v1/bundles`
 route only. Exact-source archive v2 does not use or alter that listener; its
-approved topology is Tailscale Serve HTTPS 443 as documented in
+current topology is direct HTTP on each server's literal Tailscale IPv4 address
+at port `8787`; Tailscale Serve HTTPS is only a separately approved alternative,
+as documented in
 [`remote-archive-v2.md`](remote-archive-v2.md).
 
 ### Secrets, wrapper, launchd (on the host)

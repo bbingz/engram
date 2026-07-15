@@ -3,10 +3,10 @@
 Follow-ups are verification gaps, low-priority refactors, or items that need
 real data, UI exercise, or product confirmation before becoming TODOs.
 
-## Open conditional follow-ups — exact-source archive v2 (2026-07-12)
+## Open conditional follow-ups — exact-source archive v2 (2026-07-15)
 
-These items are deliberately outside the zero-delete first release and are not
-implementation-ready blockers for its repository verification:
+These boundaries are deliberately outside the current operator deployment and
+are not implementation-ready blockers for its operational closeout:
 
 - **Restart-stable bounded locator discovery.** Current Claude Code and Codex
   discovery is cooperative-cancellable but O(N) and materializes/sorts the
@@ -19,11 +19,16 @@ implementation-ready blockers for its repository verification:
   until each adapter declares a complete canonical source set and passes a
   delete-original/replay-equivalence fixture. Regular-file shape alone is not
   sufficient.
-- **Any source deletion, archive eviction, remote erasure, or GC.** This needs a
-  separate design and explicit authorization after two-site production restore
-  evidence, independent key recovery, generation revalidation immediately
-  before unlink, and a fresh deletion safety review. No part of archive v2's
-  first release or its receipts authorizes that work.
+- **Remote archive erasure or server-side GC.** The current v2 remote API is
+  immutable and every DELETE remains `405`. Any future erasure/GC needs a
+  separate design, explicit authorization, independent backup/key recovery,
+  fresh two-site restore evidence, and a deletion safety review.
+
+Reconciled from the first-release boundary: opt-in local source reclamation and
+local CAS eviction are now implemented and operator-enabled. They are gated by
+dual receipts, current per-replica recovery leases, generation revalidation,
+and write-ahead quarantine, so they are no longer an open follow-up. They do not
+authorize remote deletion or GC.
 
 ## Engineering-zero status (2026-07-11, Wave 8 Round 4)
 

@@ -5,13 +5,15 @@ verification and low-priority follow-ups belong in `docs/followups.md`.
 
 ## Open
 
-No open TODO items as of 2026-07-11 (Wave 8 Round 4 durable closeout).
+No open TODO items as of 2026-07-15 (post-deployment backlog reconciliation).
 
-The exact-source dual-replica archive v2 is tracked as an active delivery in
-`docs/roadmap.md`, not prematurely marked complete here. Production deployment
-is a later explicitly approved operation, not an engineering TODO. Deferred
-non-release engineering boundaries (bounded discovery and additional canonical
-source exporters) are recorded conditionally in `docs/followups.md`.
+The exact-source dual-replica archive v2 has shipped and is operator-enabled on
+the current deployment. Its finite eligible replica drain and two-site recovery
+closeout completed on 2026-07-15 and is recorded in `docs/roadmap.md`, not as an
+engineering TODO. Deferred
+engineering boundaries (bounded discovery and additional canonical source
+exporters) and the still-forbidden remote deletion/GC surface are recorded
+conditionally in `docs/followups.md`.
 
 Historical note: as of 2026-06-21 all 2026-06-15 UX-flow-alignment (PR #74)
 follow-ups were already resolved — see "Closed in cleanup". Wave 8 closed the
