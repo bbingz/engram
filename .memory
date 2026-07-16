@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-15): 100 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-16): 101 dated entries; regenerate after adding sections -->
+- [2026-07-16 - TypeScript 7 retained-tooling upgrade merged without app deployment (Codex)](#2026-07-16---typescript-7-retained-tooling-upgrade-merged-without-app-deployment-codex)
 - [2026-07-15 - Bounded service startup memory deployed as build 1205 (Codex)](#2026-07-15---bounded-service-startup-memory-deployed-as-build-1205-codex)
 - [2026-07-14 - Archive v2 isolated-failure throughput remediation (Codex)](#2026-07-14---archive-v2-isolated-failure-throughput-remediation-codex)
 - [2026-07-14 - Installed Engram 1.0.4 build 1188 verified current for product runtime (Codex)](#2026-07-14---installed-engram-104-build-1188-verified-current-for-product-runtime-codex)
@@ -104,6 +105,71 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-16 - TypeScript 7 retained-tooling upgrade merged without app deployment (Codex)
+
+### Scope and decision
+
+- Engram's shipped App, Service, and MCP remain native Swift. TypeScript under
+  `src/` is retained for development/reference tooling, fixture generation,
+  historical entrypoints, and regression tests; the upgrade did not authorize
+  or recreate a Node product startup path.
+- Fable reviewed the executable SPEC at
+  `docs/superpowers/specs/2026-07-16-typescript-7-upgrade-design.md`. Its valid
+  baseline-SHA scope-verifier concern was fixed, and the CLI verifier was
+  corrected to emit under an ignored repository-local temporary directory so
+  ESM dependency resolution is real on macOS.
+
+### Commits and remote proof
+
+- The SPEC was committed as `219485ac`; the implementation was committed as
+  `813139fa`, changing only `package.json` and `package-lock.json` from
+  TypeScript `6.0.3` to `7.0.2`. PR #181 merged both commits as
+  `68f124ea874918fe2fb4c68ced1017681363299c`.
+- PR gates passed in Tests run `29493842404` attempt 2, CodeQL run
+  `29493842570`, and Dependency Review run `29493842582`. The first Tests
+  attempt hit one pre-existing Swift receipt-concurrency failure in a job that
+  does not execute Node or TypeScript; the unchanged focused test passed 20/20
+  locally, the failed job passed on rerun, and the failure did not recur on
+  `main`.
+- Post-merge `main@68f124ea` passed Tests run `29495170792`, including Node,
+  macOS fixture, Swift unit, Remote Server, full UI, and `CI Gate`, plus CodeQL
+  run `29495170922` and `CodeQL Gate`.
+
+### Verification and runtime boundary
+
+- Under Node `24.18.0` / npm `11.16.0`, a native clean `npm ci`, exact compiler
+  and lockfile checks, build, test/script typecheck, lint, knip, audit, coverage
+  (123 files / 1,461 tests), fixture generation/freshness/parity checks, and
+  compiled `project --help` smoke passed.
+- The TS 6 and TS 7 emit inventories both contained 452 files. All 113
+  JavaScript files were byte-identical. The 21 changed declaration files only
+  switched 50 quote delimiters, and all 452 source maps decoded successfully;
+  84,535 shared generated anchors retained the same source coordinates.
+- No local app build, install, restart, or deployment was performed because the
+  compiler is dev-only and release verification excludes Node artifacts. The
+  existing `/Applications/Engram.app` `1.0.4 (1221)` Developer ID build was
+  intentionally retained. Fresh read-only verification passed bundle hygiene,
+  deep/strict signing, Hardened Runtime, secure timestamp, App/Service process
+  paths, the `srw-------` service socket, MCP initialize/tools-list (27 tools),
+  and archive status (both replicas fully verified, with zero queued, retrying,
+  quarantined, single-replica, or server-error rows).
+
+### Rollback and resume
+
+- If rollback is required, reverse only the TypeScript-related dependency
+  changes introduced by `813139fa` in `package.json` and `package-lock.json`
+  together, preserving later unrelated dependency changes. Do not revert merge
+  `68f124ea`: it also introduced the historical SPEC.
+- Retain the SPEC and update its lifecycle status to record the rollback. In
+  the same rollback change, reconcile `.memory`, `MEMO.md`, and `CHANGELOG.md`
+  so none continues to describe TypeScript 7 as active. Then perform a clean
+  Node 24 install and rerun the TypeScript 6 baseline gates. No database,
+  fixture, app bundle, or deployed runtime rollback is required.
+- There is no pending TS 7 deployment step. Future TypeScript changes should
+  continue to prove clean Node 24 installation without omitting optional native
+  platform packages, compiler/lock exactness, emit classification, fixtures,
+  and the Swift-only product bundle boundary.
 
 ## 2026-07-15 - Bounded service startup memory deployed as build 1205 (Codex)
 
