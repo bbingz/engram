@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 enum ArchiveV2DrainState: String, Equatable, Sendable {
@@ -101,14 +102,18 @@ struct ArchiveV2DrainSnapshot: Equatable, Sendable {
 }
 
 actor ArchiveV2BacklogDrainer {
+    private static let productivePassCooldown: TimeInterval = 30
+
     typealias Conditions = @Sendable () -> ArchiveV2DrainConditions
     typealias Clock = @Sendable () -> Date
     typealias Sleeper = @Sendable (Date) async throws -> Void
+    typealias MemoryPressureRelief = @Sendable () -> Int
     typealias Pass = @Sendable () async throws -> ArchiveV2DrainPassSummary
 
     private let conditions: Conditions
     private let now: Clock
     private let sleepUntil: Sleeper
+    private let relieveMemoryPressure: MemoryPressureRelief
     private let runPass: Pass
     private let notificationCenter: NotificationCenter
 
@@ -131,12 +136,16 @@ actor ArchiveV2BacklogDrainer {
             try await Task.sleep(for: .seconds(delay))
         },
         notificationCenter: NotificationCenter = .default,
+        relieveMemoryPressure: @escaping MemoryPressureRelief = {
+            Int(malloc_zone_pressure_relief(nil, 0))
+        },
         runPass: @escaping Pass
     ) {
         self.conditions = conditions
         self.now = now
         self.sleepUntil = sleepUntil
         self.notificationCenter = notificationCenter
+        self.relieveMemoryPressure = relieveMemoryPressure
         self.runPass = runPass
     }
 
@@ -214,7 +223,7 @@ actor ArchiveV2BacklogDrainer {
             activeStages = []
             nextWakeAt = nil
             do {
-                let summary = try await runPass()
+                let summary = try await runPassWithMemoryRelief()
                 guard !stopped, !Task.isCancelled else { break }
                 lastPass = summary
                 ServiceLogger.info(
@@ -234,7 +243,7 @@ actor ArchiveV2BacklogDrainer {
                 }
                 if summary.productive {
                     state = .idle
-                    try await waitUntil(now().addingTimeInterval(2))
+                    try await waitUntil(now().addingTimeInterval(Self.productivePassCooldown))
                     if !stopped { pendingSignal = true }
                 } else if let retryAt = summary.nextRetryAt {
                     state = .waitingRetry
@@ -250,6 +259,17 @@ actor ArchiveV2BacklogDrainer {
                 activeStages = []
             }
         }
+    }
+
+    private func runPassWithMemoryRelief() async throws -> ArchiveV2DrainPassSummary {
+        defer {
+            let releasedBytes = relieveMemoryPressure()
+            ServiceLogger.info(
+                "archive backlog memory pressure relief complete: releasedBytes=\(releasedBytes)",
+                category: .runner
+            )
+        }
+        return try await runPass()
     }
 
     private func waitForWork() async {

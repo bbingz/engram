@@ -3,6 +3,24 @@ import Foundation
 import XCTest
 
 final class ArchiveV2BacklogDrainerTests: XCTestCase {
+    func testEveryPassRelievesAllocatorPressureAfterPassReturns() async throws {
+        let passes = DrainPassRecorder(results: [ArchiveV2DrainPassSummary()])
+        let relief = DrainReliefRecorder()
+        let drainer = ArchiveV2BacklogDrainer(
+            conditions: { ArchiveV2DrainConditions(lowPower: false, thermalPressure: false) },
+            relieveMemoryPressure: { relief.record() },
+            runPass: { try await passes.run() }
+        )
+
+        await drainer.start()
+        await drainer.signal()
+        try await passes.waitForPassCount(1)
+        try await waitForState(.idle, drainer: drainer)
+        await drainer.stop()
+
+        XCTAssertEqual(relief.count(), 1)
+    }
+
     func testProductivePassCoolsDownThenRunsAgainWithoutOverlap() async throws {
         let recorder = DrainPassRecorder(results: [
             ArchiveV2DrainPassSummary(
@@ -37,7 +55,7 @@ final class ArchiveV2BacklogDrainerTests: XCTestCase {
 
         XCTAssertEqual(passCount, 2)
         XCTAssertEqual(maximumConcurrency, 1)
-        XCTAssertEqual(deadlines, [Date(timeIntervalSince1970: 102)])
+        XCTAssertEqual(deadlines, [Date(timeIntervalSince1970: 130)])
         XCTAssertEqual(snapshot.state, .idle)
         XCTAssertNil(snapshot.nextWakeAt)
     }
@@ -286,6 +304,24 @@ final class ArchiveV2BacklogDrainerTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(5))
         }
         XCTFail("timed out waiting for \(state)")
+    }
+}
+
+private final class DrainReliefRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+
+    func record() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        calls += 1
+        return 4096
+    }
+
+    func count() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
     }
 }
 

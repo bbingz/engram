@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-16): 101 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-16): 102 dated entries; regenerate after adding sections -->
+- [2026-07-16 - Periodic service maintenance memory and redundant work bounded (Codex)](#2026-07-16---periodic-service-maintenance-memory-and-redundant-work-bounded-codex)
 - [2026-07-16 - TypeScript 7 retained-tooling upgrade merged without app deployment (Codex)](#2026-07-16---typescript-7-retained-tooling-upgrade-merged-without-app-deployment-codex)
 - [2026-07-15 - Bounded service startup memory deployed as build 1205 (Codex)](#2026-07-15---bounded-service-startup-memory-deployed-as-build-1205-codex)
 - [2026-07-14 - Archive v2 isolated-failure throughput remediation (Codex)](#2026-07-14---archive-v2-isolated-failure-throughput-remediation-codex)
@@ -106,6 +107,50 @@
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
 
+## 2026-07-16 - Periodic service maintenance memory and redundant work bounded (Codex)
+
+### Scope and behavior
+
+- Four Swift follow-up commits were integrated with the accepted TypeScript 7
+  mainline: `0b754c2f` bounds embedding and recurring maintenance work,
+  `98b9275d` releases allocator pressure after every archive backlog pass,
+  `1ae0887c` gives productive archive passes a 30-second cooldown, and
+  `6ea7a98f` avoids redundant periodic indexing work. The integration merge
+  before this durable closeout was `790388a0`.
+- Session embedding maintenance now processes at most four sessions per pass and
+  sends no more than 16 texts per provider request; insight embedding uses a
+  16-item pass limit. Repeated provider failures back off from one hour to at
+  most one day, while success clears the provider-specific cooldown.
+- Repository discovery rotates through at most 32 candidates with a six-hour
+  per-CWD cooldown. Archive maintenance reconciles eligible receipt rows only
+  when the monotonic policy revision changes, retries exhausted historical
+  unknown-policy scans after one day, relieves allocator pressure after each
+  backlog pass, and prevents backlog work from overlapping the higher-level
+  periodic maintenance cycle.
+- Periodic indexing now reports only actual durable merges as indexed work.
+  OpenCode recent scans filter by `time_updated` in SQLite, and stale-service
+  status respects twice the published adaptive scan interval.
+
+### Verification and boundary
+
+- On the combined mainline, Node 24 clean install, TypeScript 7.0.2 compiler and
+  lock assertions, build, test typecheck, lint, knip, 1,461-test coverage,
+  fixture generation, fixture schema, and adapter-parity checks passed.
+  XcodeGen regeneration left `Engram.xcodeproj` unchanged.
+- `EngramCoreTests` executed 900 tests with 899 passed, one skipped, and zero
+  failures. `EngramServiceCore` executed 556 tests with 555 passed, one skipped,
+  and zero failures. `git diff --check` passed.
+- This source closeout does not build, install, restart, or deploy Engram. Exact
+  installed-app source attribution remains unverified because the existing app
+  bundle was not rebuilt and does not embed a Git SHA.
+
+### Rollback
+
+- To remove only the Swift maintenance behavior, revert `6ea7a98f`,
+  `1ae0887c`, `98b9275d`, and `0b754c2f` in that reverse order. Retain
+  `d666c6e3`, the historical TypeScript 7 SPEC, and the accepted TypeScript 7
+  dependency upgrade unless their independent rollback gate is triggered.
+
 ## 2026-07-16 - TypeScript 7 retained-tooling upgrade merged without app deployment (Codex)
 
 ### Scope and decision
@@ -157,13 +202,19 @@
 
 ### Rollback and resume
 
-- Roll back the merge commit as one unit, or restore `package.json` and
-  `package-lock.json` together to TypeScript `6.0.3`; never roll back only one
-  dependency surface. No database, fixture, app bundle, or deployed runtime
-  rollback is required.
+- If rollback is required, reverse only the TypeScript-related dependency
+  changes introduced by `813139fa` in `package.json` and `package-lock.json`
+  together, preserving later unrelated dependency changes. Do not revert merge
+  `68f124ea`: it also introduced the historical SPEC.
+- Retain the SPEC and update its lifecycle status to record the rollback. In
+  the same rollback change, reconcile `.memory`, `MEMO.md`, and `CHANGELOG.md`
+  so none continues to describe TypeScript 7 as active. Then perform a clean
+  Node 24 install and rerun the TypeScript 6 baseline gates. No database,
+  fixture, app bundle, or deployed runtime rollback is required.
 - There is no pending TS 7 deployment step. Future TypeScript changes should
-  continue to prove clean Node 24 installation, compiler/lock exactness, emit
-  classification, fixtures, and the Swift-only product bundle boundary.
+  continue to prove clean Node 24 installation without omitting optional native
+  platform packages, compiler/lock exactness, emit classification, fixtures,
+  and the Swift-only product bundle boundary.
 
 ## 2026-07-15 - Bounded service startup memory deployed as build 1205 (Codex)
 

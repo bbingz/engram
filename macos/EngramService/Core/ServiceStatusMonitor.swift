@@ -39,7 +39,11 @@ actor ServiceStatusMonitor {
 
         if let lastSuccessAt {
             let age = now().timeIntervalSince(lastSuccessAt)
-            if age > staleAfter {
+            let effectiveStaleAfter = max(
+                staleAfter,
+                TimeInterval(nextScanIntervalSeconds ?? 0) * 2
+            )
+            if age > effectiveStaleAfter {
                 return .degraded(message: "Last successful index scan is stale (\(Int(age))s old)")
             }
             return .running(

@@ -1445,6 +1445,22 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - OpenCode
 
+    func testOpenCodeRecentListingFiltersBySessionUpdateTime() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("opencode.db").path
+        try Self.buildOpenCodeFixture(dbPath: dbPath)
+
+        let adapter = RecentlyModifiedSessionAdapter(
+            base: OpenCodeAdapter(dbPath: dbPath),
+            modifiedSince: Date(timeIntervalSince1970: 1_695_000_000)
+        )
+
+        let locators = try await adapter.listSessionLocators()
+
+        XCTAssertEqual(locators, ["\(dbPath)::ses_1"])
+    }
+
     func testOpenCodeCountsOnlyMessagesWithTextParts() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1623,7 +1639,7 @@ final class AdapterMessageCountTests: XCTestCase {
         try exec("CREATE TABLE part (id TEXT, message_id TEXT, time_created INTEGER, data TEXT)")
 
         try exec("INSERT INTO session VALUES ('ses_1', '/Users/test/proj', 'Title', 1700000000000, 1700000010000, NULL)")
-        try exec("INSERT INTO session VALUES ('ses_2', '/Users/test/proj', 'Second', 1700000000000, 1700000010000, NULL)")
+        try exec("INSERT INTO session VALUES ('ses_2', '/Users/test/proj', 'Second', 1690000000000, 1690000010000, NULL)")
         try exec("INSERT INTO message VALUES ('m1', 'ses_1', 1700000001000, '{\"role\":\"user\"}')")
         try exec("INSERT INTO message VALUES ('m2', 'ses_1', 1700000002000, '{\"role\":\"assistant\",\"tokens\":{\"input\":123,\"output\":45,\"reasoning\":5,\"cache\":{\"read\":67,\"write\":8}}}')")
         try exec("INSERT INTO message VALUES ('m3', 'ses_1', 1700000003000, '{\"role\":\"assistant\"}')")

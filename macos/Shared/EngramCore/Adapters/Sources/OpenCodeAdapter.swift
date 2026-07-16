@@ -84,7 +84,7 @@ actor Phase4SQLiteAccessibilityCache {
     }
 }
 
-final class OpenCodeAdapter: SessionAdapter, Sendable {
+final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
     let source: SourceName = .opencode
     private let dbPath: String
     private let limits: ParserLimits
@@ -105,15 +105,32 @@ final class OpenCodeAdapter: SessionAdapter, Sendable {
     }
 
     func listSessionLocators() async throws -> [String] {
+        try listSessionLocators(modifiedSinceMilliseconds: nil)
+    }
+
+    func listSessionLocators(
+        modifiedSince: Date,
+        fileManager _: FileManager
+    ) async throws -> [String] {
+        let cutoffMilliseconds = Int64(
+            (modifiedSince.timeIntervalSince1970 * 1_000).rounded(.down)
+        )
+        return try listSessionLocators(modifiedSinceMilliseconds: cutoffMilliseconds)
+    }
+
+    private func listSessionLocators(modifiedSinceMilliseconds: Int64?) throws -> [String] {
         guard JSONLAdapterSupport.fileExists(dbPath) else { return [] }
         let database = try Phase4SQLiteDatabase(path: dbPath)
+        let modificationClause = modifiedSinceMilliseconds.map { _ in " AND time_updated >= ?" } ?? ""
+        let bindings = modifiedSinceMilliseconds.map { [String($0)] } ?? []
         return try database.query(
             """
-            SELECT id, directory, title, time_created, time_updated
+            SELECT id
             FROM session
-            WHERE time_archived IS NULL
+            WHERE time_archived IS NULL\(modificationClause)
             ORDER BY time_updated DESC
-            """
+            """,
+            bindings: bindings
         )
         .compactMap { row in row["id"] ?? nil }
         .map { "\(dbPath)::\($0)" }

@@ -4,6 +4,8 @@
 
 ### 2026-07-16
 
+- [性能] `0b754c2f` 至 `6ea7a98f` 收口周期性 Service 维护：embedding 按小批处理并对失败 provider 指数退避，repo 探测轮转限流，Archive policy/reconcile 避免无变化重扫，productive backlog pass 间隔 30 秒并在每轮后释放 allocator pressure，周期索引只把真实 merge 计为新增工作。
+- [收口] 合并态通过 Node 24 clean install、TS 7.0.2 compiler/lock、build、test typecheck、lint、knip、1,461 项 coverage、fixture/parity、XcodeGen 无差异，以及 `EngramCoreTests` 899 passed/1 skipped、`EngramServiceCore` 555 passed/1 skipped；`d666c6e3` 同时修正 TS 7 rollback 生命周期。本轮只 push 源码，不构建或部署 App。
 - [工具链] Fable 审阅并通过 TS 7 SPEC 后，PR #181 将保留的 TypeScript 开发工具链从 `6.0.3` 升级到 `7.0.2`，合并提交为 `68f124ea`；Swift App、Service 与 MCP 产品运行时没有引入 Node 启动路径。
 - [验证] Node 24 原生 clean install、build、测试/脚本 typecheck、lint、knip、audit、1,461 项 coverage、fixture/parity 与编译后 CLI smoke 全部通过；TS 6/7 emit 都是 452 个文件，JavaScript 全部逐字节一致，声明仅引号变化，source map 全量可解码且共同坐标没有重映射。
 - [CI] PR Tests `29493842404` attempt 2、CodeQL `29493842570`、Dependency Review `29493842582` 全绿；首次 Remote Server 并发测试偶发失败经本地 20/20、失败项重跑及主干复跑确认未复现。`main@68f124ea` 的 Tests `29495170792`（含 full UI）与 CodeQL `29495170922` 均成功。

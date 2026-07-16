@@ -82,6 +82,39 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         )
     }
 
+    func testPeriodicMaintenancePauseDefersBacklogPassUntilCycleEnds() async throws {
+        let harness = try makeHarness(remoteReady: false)
+        let events = EventLog()
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            await events.append("backlogCapture")
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                processed: 1
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: operations
+        )
+
+        let deferred = try await coordinator.withBacklogDrainPaused {
+            try await coordinator.runBacklogPass(adapters: [])
+        }
+        let eventsWhilePaused = await events.values()
+        XCTAssertEqual(deferred.capturedFiles, 0)
+        XCTAssertFalse(eventsWhilePaused.contains("backlogCapture"))
+
+        let resumed = try await coordinator.runBacklogPass(adapters: [])
+        let eventsAfterResume = await events.values()
+        XCTAssertEqual(resumed.capturedFiles, 1)
+        XCTAssertTrue(eventsAfterResume.contains("backlogCapture"))
+    }
+
     func testBacklogPassAlternatesRemoteAndLocalAdmissionOrder() async throws {
         let harness = try makeHarness(remoteReady: true)
         let events = EventLog()
@@ -2451,9 +2484,12 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertFalse(recorded.contains("policy-must-not-run"))
     }
 
-    func testHistoricalPolicySweepRevisitsOldUnknownDespiteContinuouslyGrowingTail() throws {
+    func testHistoricalPolicySweepWaitsOneDayBeforeRevisitingOldUnknown() throws {
         let archiveRoot = temporaryRoot("policy-sweep")
         let machineID = "22222222-2222-4222-8222-222222222222"
+        let clock = CoordinatorClock(
+            try coordinatorDate("2026-07-13T00:00:00.000Z")
+        )
         let catalog = try ArchiveCatalog(root: archiveRoot, machineID: machineID)
         try catalog.migrate()
         let old = try [
@@ -2473,7 +2509,8 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
 
         let first = try ArchiveV2ServiceCoordinator.loadHistoricalUnknownPage(
             catalog: catalog,
-            limit: 1
+            limit: 1,
+            now: { clock.value() }
         )
         XCTAssertEqual(first.targets.map(\.manifestSHA256), [old[0].manifestSHA256])
         try ArchiveV2ServiceCoordinator.storePolicyCursor(
@@ -2491,7 +2528,8 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         try reopened.migrate()
         let second = try ArchiveV2ServiceCoordinator.loadHistoricalUnknownPage(
             catalog: reopened,
-            limit: 10
+            limit: 10,
+            now: { clock.value() }
         )
         XCTAssertEqual(second.targets.map(\.manifestSHA256), [old[1].manifestSHA256])
         XCTAssertFalse(second.targets.contains { $0.manifestSHA256 == tail.manifestSHA256 })
@@ -2502,19 +2540,70 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
 
         let frozenSweepEnd = try ArchiveV2ServiceCoordinator.loadHistoricalUnknownPage(
             catalog: reopened,
-            limit: 10
+            limit: 10,
+            now: { clock.value() }
         )
         XCTAssertTrue(frozenSweepEnd.targets.isEmpty)
 
+        let immediateRetry = try ArchiveV2ServiceCoordinator.loadHistoricalUnknownPage(
+            catalog: reopened,
+            limit: 1,
+            now: { clock.value() }
+        )
+        XCTAssertTrue(
+            immediateRetry.targets.isEmpty,
+            "a completed unknown sweep must not restart on the next maintenance signal"
+        )
+
+        clock.set(try coordinatorDate("2026-07-14T00:00:00.000Z"))
         let nextSweep = try ArchiveV2ServiceCoordinator.loadHistoricalUnknownPage(
             catalog: reopened,
-            limit: 1
+            limit: 1,
+            now: { clock.value() }
         )
         XCTAssertEqual(
             nextSweep.targets.map(\.manifestSHA256),
             [old[0].manifestSHA256],
-            "a leaveUnknown row must be revisited even while newer unknown rows keep arriving"
+            "leaveUnknown rows remain retryable after the durable cooldown"
         )
+    }
+
+    func testHistoricalPolicyCursorV2UpgradesWithoutLosingProgress() throws {
+        let archiveRoot = temporaryRoot("policy-cursor-v2")
+        let machineID = "22222222-2222-4222-8222-222222222222"
+        let catalog = try ArchiveCatalog(root: archiveRoot, machineID: machineID)
+        try catalog.migrate()
+        let binding = try addUnknownBinding(
+            to: catalog,
+            machineID: machineID,
+            seed: "policy-v2-upgrade",
+            boundAt: "2026-07-12T00:00:00.000Z"
+        )
+        let legacyPayload = Data(
+            #"{"schemaVersion":2}"#.utf8
+        )
+        XCTAssertTrue(
+            try catalog.storeArchiveCursorCheckpoint(
+                legacyPayload,
+                for: .policyCycle
+            )
+        )
+        let now = try coordinatorDate("2026-07-13T00:00:00.000Z")
+
+        let page = try ArchiveV2ServiceCoordinator.loadHistoricalUnknownPage(
+            catalog: catalog,
+            limit: 1,
+            now: { now }
+        )
+
+        XCTAssertEqual(page.targets.map(\.manifestSHA256), [binding.manifestSHA256])
+        let upgraded = try XCTUnwrap(
+            try catalog.archiveCursorCheckpoint(for: .policyCycle)?.payload
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: upgraded) as? [String: Any]
+        )
+        XCTAssertEqual(object["schemaVersion"] as? Int, 3)
     }
 
     func testTrustedRemotePolicyIsEligibleExcludedOrFailClosedFromCwd() async throws {

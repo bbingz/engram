@@ -226,46 +226,54 @@ public enum SessionEmbeddingBackfill {
 
     public static func embedPendingSessions(
         _ pending: [PendingSession],
-        provider: any EmbeddingProvider
+        provider: any EmbeddingProvider,
+        maxTextsPerRequest: Int = 16
     ) async throws -> [EmbeddedSession] {
         guard !pending.isEmpty else { return [] }
-        var requests: [ChunkRequest] = []
+        let requestLimit = max(1, maxTextsPerRequest)
+        var embeddedSessions: [EmbeddedSession] = []
+        embeddedSessions.reserveCapacity(pending.count)
+
         for session in pending {
             let messages = session.content
                 .split(separator: "\n", omittingEmptySubsequences: true)
                 .map { (role: "assistant", content: String($0)) }
-            for chunk in SessionChunker.chunk(messages: messages) {
-                requests.append(
-                    ChunkRequest(
-                        jobId: session.jobId,
-                        sessionId: session.sessionId,
-                        index: chunk.index,
-                        text: chunk.text
+            let requests = SessionChunker.chunk(messages: messages).map { chunk in
+                ChunkRequest(
+                    jobId: session.jobId,
+                    sessionId: session.sessionId,
+                    index: chunk.index,
+                    text: chunk.text
+                )
+            }
+            var embeddedChunks: [EmbeddedChunk] = []
+            embeddedChunks.reserveCapacity(requests.count)
+            var batchStart = 0
+            while batchStart < requests.count {
+                let batchEnd = min(batchStart + requestLimit, requests.count)
+                let batch = requests[batchStart..<batchEnd]
+                let vectors = try await provider.embed(batch.map(\.text))
+                guard vectors.count == batch.count else {
+                    throw EmbeddingError.malformedResponse
+                }
+                embeddedChunks.append(contentsOf: zip(batch, vectors).map { request, vector in
+                    EmbeddedChunk(
+                        index: request.index,
+                        text: request.text,
+                        vector: vector
                     )
+                })
+                batchStart = batchEnd
+            }
+            embeddedSessions.append(
+                EmbeddedSession(
+                    jobId: session.jobId,
+                    sessionId: session.sessionId,
+                    chunks: embeddedChunks
                 )
-            }
-        }
-
-        var chunksByJob: [String: [EmbeddedChunk]] = [:]
-        if !requests.isEmpty {
-            let vectors = try await provider.embed(requests.map(\.text))
-            guard vectors.count == requests.count else {
-                throw EmbeddingError.malformedResponse
-            }
-            for (request, vector) in zip(requests, vectors) {
-                chunksByJob[request.jobId, default: []].append(
-                    EmbeddedChunk(index: request.index, text: request.text, vector: vector)
-                )
-            }
-        }
-
-        return pending.map { session in
-            EmbeddedSession(
-                jobId: session.jobId,
-                sessionId: session.sessionId,
-                chunks: chunksByJob[session.jobId] ?? []
             )
         }
+        return embeddedSessions
     }
 
     public static func writeEmbeddings(

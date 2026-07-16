@@ -40,9 +40,9 @@ public final class SwiftIndexer {
         try sink.upsertBatch(snapshots, reason: reason)
     }
 
-    /// Returns the number of snapshots that were actually written (merge/noop),
-    /// NOT the number attempted. Per-snapshot failures are subtracted so callers
-    /// see a truthful "indexed" count.
+    /// Returns the number of snapshots that changed durable session state.
+    /// No-op, skipped, and failed snapshots are excluded so callers see a
+    /// truthful "indexed" count.
     @discardableResult
     public func indexAll(sources: Set<SourceName>? = nil) async throws -> Int {
         var batch: [ScannedSnapshot] = []
@@ -66,7 +66,7 @@ public final class SwiftIndexer {
         return indexed
     }
 
-    /// Writes one batch and returns the count of rows that did NOT fail.
+    /// Writes one batch and returns the count of rows that were merged.
     /// Logs each per-snapshot failure so a silent fake-success cannot happen.
     private func writeBatchCountingSuccesses(_ batch: [ScannedSnapshot]) throws -> Int {
         let snapshots = batch.map(\.snapshot)
@@ -74,20 +74,22 @@ public final class SwiftIndexer {
             scanned.fileState.map { (scanned.snapshot.id, $0) }
         })
         let result = try sink.upsertBatch(snapshots, reason: .initialScan)
-        var failures = 0
+        var merged = 0
         for item in result.results {
             if item.action == .failure {
-                failures += 1
                 Self.log.error(
                     "session upsert failed: session=\(item.sessionId, privacy: .private) error=\(item.error ?? "unknown", privacy: .private)"
                 )
                 continue
             }
+            if item.action == .merge {
+                merged += 1
+            }
             if let state = statesBySessionId[item.sessionId] {
                 try upsertFileIndexStateIsolated(state, source: state.source, locator: state.locator)
             }
         }
-        return batch.count - failures
+        return merged
     }
 
     public func collectSnapshots(sources: Set<SourceName>? = nil) async throws -> [AuthoritativeSessionSnapshot] {

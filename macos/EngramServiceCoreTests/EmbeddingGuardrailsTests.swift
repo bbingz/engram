@@ -8,6 +8,90 @@ import EngramCoreWrite
 /// Service-level embedding guardrail tests: open breaker leaves jobs retryable
 /// and telemetry surfaces breaker counters (wave-6 task 9).
 final class EmbeddingGuardrailsTests: XCTestCase {
+    func testMaintenanceBackoffCoversNonTransportFailuresAndGrowsExponentially() throws {
+        let clock = GuardrailTestClock()
+        let backoff = EmbeddingMaintenanceBackoff(
+            baseDelay: 3_600,
+            maximumDelay: 86_400,
+            now: { clock.now }
+        )
+        let key = "https://api.example.com/v1|probe"
+
+        XCTAssertTrue(backoff.shouldAttempt(providerKey: key))
+        XCTAssertEqual(backoff.recordFailure(providerKey: key), 3_600)
+        XCTAssertFalse(backoff.shouldAttempt(providerKey: key))
+
+        clock.advance(by: 3_600)
+        XCTAssertTrue(backoff.shouldAttempt(providerKey: key))
+        XCTAssertEqual(backoff.recordFailure(providerKey: key), 7_200)
+        XCTAssertFalse(backoff.shouldAttempt(providerKey: key))
+
+        clock.advance(by: 7_200)
+        XCTAssertTrue(backoff.shouldAttempt(providerKey: key))
+        backoff.recordSuccess(providerKey: key)
+        XCTAssertTrue(backoff.shouldAttempt(providerKey: key))
+    }
+
+    func testMaintenanceBackoffSkipsRepeatedHTTP400ProviderWork() async throws {
+        let paths = try makeGuardrailServicePaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 20_000_000
+        )
+        _ = try await gate.performWriteCommand(name: "seedBackoffJob") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions (id, source, start_time, file_path, tier)
+                    VALUES ('sess-backoff', 'codex', '2026-06-26T10:00:00Z', '/tmp/backoff.jsonl', 'normal')
+                    """)
+                try db.execute(sql: """
+                    INSERT INTO sessions_fts(session_id, content)
+                    VALUES ('sess-backoff', 'backoff chunk text')
+                    """)
+                try db.execute(sql: """
+                    INSERT INTO session_index_jobs
+                      (id, session_id, job_kind, target_sync_version, status, retry_count)
+                    VALUES ('job-backoff', 'sess-backoff', 'embedding', 1, 'pending', 0)
+                    """)
+            }
+        }
+        let clock = GuardrailTestClock()
+        let backoff = EmbeddingMaintenanceBackoff(
+            baseDelay: 3_600,
+            maximumDelay: 86_400,
+            now: { clock.now }
+        )
+        let failing = AlwaysFailEmbeddingProvider(status: 400)
+
+        do {
+            _ = try await EngramServiceRunner.backfillSessionEmbeddingsOnce(
+                gate: gate,
+                environment: Self.testEnvironment,
+                providerFactory: { _ in failing },
+                backoff: backoff,
+                limit: 4,
+                phaseName: "http400Backoff"
+            )
+            XCTFail("expected HTTP 400")
+        } catch EmbeddingError.http(400) {
+            // Expected: the first failure arms maintenance backoff.
+        }
+
+        let skipped = try await EngramServiceRunner.backfillSessionEmbeddingsOnce(
+            gate: gate,
+            environment: Self.testEnvironment,
+            providerFactory: { _ in failing },
+            backoff: backoff,
+            limit: 4,
+            phaseName: "http400Backoff"
+        )
+        XCTAssertEqual(skipped, 0)
+        let calls = await failing.callCount()
+        XCTAssertEqual(calls, 1)
+    }
+
     func testOpenBreakerLeavesSessionJobsPendingAndRetryable() async throws {
         let paths = try makeGuardrailServicePaths()
         let gate = try ServiceWriterGate(
@@ -142,6 +226,13 @@ final class EmbeddingGuardrailsTests: XCTestCase {
         dimension: 3
     )
 
+    private static let testEnvironment = [
+        "ENGRAM_EMBEDDING_API_KEY": "test",
+        "ENGRAM_EMBEDDING_MODEL": "probe",
+        "ENGRAM_EMBEDDING_DIM": "3",
+        "ENGRAM_EMBEDDING_BASE_URL": "https://api.example.com/v1",
+    ]
+
     private func makeGuardrailServicePaths() throws -> (runtime: URL, socket: URL, database: URL) {
         let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("engram-guardrail-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -168,17 +259,27 @@ private final class GuardrailTestClock: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return _now
     }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        _now = _now.addingTimeInterval(interval)
+    }
 }
 
 private actor AlwaysFailEmbeddingProvider: EmbeddingProvider {
     let model = "probe"
     let dimension = 3
+    private let status: Int
     private var calls = 0
+
+    init(status: Int = 503) {
+        self.status = status
+    }
 
     func callCount() -> Int { calls }
 
     func embed(_ texts: [String]) async throws -> [[Float]] {
         calls += 1
-        throw EmbeddingError.http(503)
+        throw EmbeddingError.http(status)
     }
 }

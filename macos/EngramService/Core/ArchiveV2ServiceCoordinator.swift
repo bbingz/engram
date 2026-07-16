@@ -334,6 +334,7 @@ actor ArchiveV2ServiceCoordinator {
     ]
     private var nextScheduledCycleAt: String?
     private var drainer: ArchiveV2BacklogDrainer?
+    private var periodicMaintenanceActive = false
     private var pipelineBusy = false
     private var indexPipelineWaiters: [CheckedContinuation<Void, Never>] = []
     private var backlogPipelineWaiters: [CheckedContinuation<Void, Never>] = []
@@ -573,6 +574,27 @@ actor ArchiveV2ServiceCoordinator {
         await drainer?.signal()
     }
 
+    func withBacklogDrainPaused<T: Sendable>(
+        _ operation: @Sendable () async throws -> T
+    ) async rethrows -> T {
+        // Wait for any pass already inside the archive pipeline before starting
+        // the higher-level periodic maintenance cycle.
+        await acquirePipeline(indexPriority: true)
+        periodicMaintenanceActive = true
+        releasePipeline()
+
+        do {
+            let result = try await operation()
+            periodicMaintenanceActive = false
+            await drainer?.signal()
+            return result
+        } catch {
+            periodicMaintenanceActive = false
+            await drainer?.signal()
+            throw error
+        }
+    }
+
     func runBacklogPass(
         adapters: [any SessionAdapter]
     ) async throws -> ArchiveV2DrainPassSummary {
@@ -589,9 +611,15 @@ actor ArchiveV2ServiceCoordinator {
             )
         }
         await acquirePipeline(indexPriority: false)
+        defer { releasePipeline() }
+        guard !periodicMaintenanceActive else {
+            return ArchiveV2DrainPassSummary(
+                startedAt: now(),
+                finishedAt: now()
+            )
+        }
         let passPriority = nextBacklogPassPriority
         nextBacklogPassPriority = passPriority.opposite
-        defer { releasePipeline() }
 
         // Resolve profile-backed adapters only after this pass owns the archive
         // pipeline. A configuration request that arrived while waiting is then
@@ -1987,21 +2015,43 @@ actor ArchiveV2ServiceCoordinator {
         let schemaVersion: Int
         var boundary: PersistedPolicyCursor?
         var after: PersistedPolicyCursor?
+        var retryAfter: String?
     }
+
+    private struct LegacyPolicyCursorPayload: Codable, Equatable {
+        let schemaVersion: Int
+        var boundary: PersistedPolicyCursor?
+        var after: PersistedPolicyCursor?
+    }
+
+    static let historicalPolicyRetryInterval: TimeInterval = 86_400
 
     static func loadHistoricalUnknownPage(
         catalog: ArchiveCatalog,
-        limit: Int
+        limit: Int,
+        now: () -> Date = { Date() }
     ) throws -> ArchiveV2ServiceUnknownPage {
         guard limit > 0 else {
             throw ArchiveCatalogError.invalidLimit(limit)
         }
         var progress = try loadPolicyProgress(catalog: catalog)
+        let instant = now()
+        if let retryAfter = progress.retryAfter,
+           let retryDate = policyTimestampDate(retryAfter),
+           instant < retryDate {
+            return ArchiveV2ServiceUnknownPage(targets: [])
+        }
         if progress.boundary == nil {
             progress.boundary = try catalog.unknownBindingBoundary().map(
                 PersistedPolicyCursor.init
             )
             progress.after = nil
+            progress.retryAfter = nil
+            if progress.boundary == nil {
+                progress.retryAfter = timestamp(
+                    instant.addingTimeInterval(historicalPolicyRetryInterval)
+                )
+            }
             try storePolicyProgress(catalog: catalog, progress: progress)
         }
         guard let boundary = progress.boundary?.value else {
@@ -2013,15 +2063,19 @@ actor ArchiveV2ServiceCoordinator {
             through: boundary
         )
         guard !bindings.isEmpty else {
-            // End this frozen sweep without immediately starting another one in
-            // the same call. The next bounded cycle snapshots a fresh tail and
-            // revisits every still-unknown row from the beginning.
+            // A historical row that remains unknown usually lacks a trusted
+            // index match. Reopening the sweep on every maintenance signal just
+            // replays the same SQLite reads, so persist a daily retry boundary.
+            // Newly bound rows still take the direct policy path immediately.
             try storePolicyProgress(
                 catalog: catalog,
                 progress: PolicyCursorPayload(
-                    schemaVersion: 2,
+                    schemaVersion: 3,
                     boundary: nil,
-                    after: nil
+                    after: nil,
+                    retryAfter: timestamp(
+                        instant.addingTimeInterval(historicalPolicyRetryInterval)
+                    )
                 )
             )
             return ArchiveV2ServiceUnknownPage(targets: [])
@@ -2075,20 +2129,53 @@ actor ArchiveV2ServiceCoordinator {
     ) throws -> PolicyCursorPayload {
         guard let checkpoint = try catalog.archiveCursorCheckpoint(for: .policyCycle) else {
             return PolicyCursorPayload(
-                schemaVersion: 2,
+                schemaVersion: 3,
                 boundary: nil,
-                after: nil
+                after: nil,
+                retryAfter: nil
             )
         }
-        let payload = try ArchiveCanonicalJSON.decode(
-            PolicyCursorPayload.self,
-            from: checkpoint.payload
-        )
-        guard payload.schemaVersion == 2,
+        let schema = try JSONSerialization.jsonObject(with: checkpoint.payload)
+        guard let schemaVersion = (schema as? [String: Any])?["schemaVersion"] as? Int else {
+            throw ArchiveCatalogError.invalidArchiveCursorCheckpoint(
+                ArchiveCursorKey.policyCycle.rawValue
+            )
+        }
+        let payload: PolicyCursorPayload
+        if schemaVersion == 2 {
+            let legacy = try ArchiveCanonicalJSON.decode(
+                LegacyPolicyCursorPayload.self,
+                from: checkpoint.payload
+            )
+            guard try ArchiveCanonicalJSON.encode(legacy) == checkpoint.payload else {
+                throw ArchiveCatalogError.invalidArchiveCursorCheckpoint(
+                    ArchiveCursorKey.policyCycle.rawValue
+                )
+            }
+            payload = PolicyCursorPayload(
+                schemaVersion: 3,
+                boundary: legacy.boundary,
+                after: legacy.after,
+                retryAfter: nil
+            )
+        } else {
+            payload = try ArchiveCanonicalJSON.decode(
+                PolicyCursorPayload.self,
+                from: checkpoint.payload
+            )
+        }
+        let isCanonicalPayload: Bool
+        if schemaVersion == 2 {
+            isCanonicalPayload = true
+        } else {
+            isCanonicalPayload = try ArchiveCanonicalJSON.encode(payload) == checkpoint.payload
+        }
+        guard payload.schemaVersion == 3,
               payload.boundary != nil || payload.after == nil,
               validPolicyCursor(payload.boundary),
               validPolicyCursor(payload.after),
-              try ArchiveCanonicalJSON.encode(payload) == checkpoint.payload else {
+              validPolicyTimestamp(payload.retryAfter),
+              isCanonicalPayload else {
             throw ArchiveCatalogError.invalidArchiveCursorCheckpoint(
                 ArchiveCursorKey.policyCycle.rawValue
             )
@@ -2154,6 +2241,21 @@ actor ArchiveV2ServiceCoordinator {
         return ArchiveV2Hash.isValidSHA256(cursor.manifestSHA256)
             && formatter.date(from: cursor.boundAt).map(formatter.string(from:))
                 == cursor.boundAt
+    }
+
+    private static func policyTimestampDate(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        guard formatter.date(from: value).map(formatter.string(from:)) == value else {
+            return nil
+        }
+        return formatter.date(from: value)
+    }
+
+    private static func validPolicyTimestamp(_ value: String?) -> Bool {
+        guard let value else { return true }
+        return policyTimestampDate(value) != nil
     }
 
     private static func captureTarget(_ capture: ArchiveCapture) -> ArchiveV2ServiceCaptureTarget? {
