@@ -7,6 +7,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: bounded periodic service maintenance and TS 7 rollback guidance (2026-07-16)
+
+- Bounded embedding maintenance to four pending sessions or 16 pending insights
+  per pass, capped session provider requests at 16 texts, and added
+  provider-specific exponential failure backoff from one hour to at most one
+  day. Repository discovery now rotates through at most 32 candidates with a
+  six-hour per-CWD cooldown.
+- Avoided unchanged archive work by reconciling eligible receipt rows only when
+  the policy revision changes and retrying exhausted historical unknown-policy
+  sweeps after one day. Productive backlog passes now wait 30 seconds, release
+  allocator pressure after every pass, and do not overlap periodic indexing.
+- Periodic indexing counts only actual durable merges, OpenCode recent scans
+  filter by SQLite `time_updated`, and service staleness respects the published
+  adaptive scan interval.
+- Corrected the TypeScript 7 SPEC and `.memory` rollback lifecycle: a rollback
+  reverses only the TypeScript dependency nodes introduced by `813139fa`,
+  preserves later dependency changes, and retains the historical SPEC instead
+  of reverting merge `68f124ea`.
+- Verification passed with Node 24 clean install and tooling/fixture gates,
+  1,461-test coverage, XcodeGen regeneration with no project diff,
+  `EngramCoreTests` at 899 passed and one skipped, `EngramServiceCore` at 555
+  passed and one skipped, and `git diff --check`. No app build, installation,
+  restart, or deployment was performed by this closeout.
+
 ### Changed: TypeScript 7 retained-tooling upgrade (2026-07-16)
 
 - Upgraded the retained TypeScript development toolchain from `6.0.3` to
