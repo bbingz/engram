@@ -1,7 +1,7 @@
 # Design Doc: TypeScript 7 Upgrade
 
-- **Status**: Complete for implementation approval; this document does not
-  authorize the dependency change
+- **Status**: Implemented by `813139fa` and merged via PR #181 as `68f124ea`
+  on 2026-07-16; implementation was authorized separately from this design
 - **Owner**: Engram maintainers
 - **Date**: 2026-07-16
 - **Baseline**: `17cc1b70351b1933187ea9c5b6f2b6c4d3e5fc55`
@@ -434,13 +434,20 @@ already pass TS 7. It is rejected as scope expansion.
 
 ### Atomic rollback
 
-Rollback restores `package.json` and `package-lock.json` together to the last
-accepted TypeScript 6.0.3 state, then performs a clean `npm ci` and reruns the
-original build, typecheck, test, and fixture gates. Reusing a TS 7 `node_modules`
-tree is not a rollback verifier.
+A rollback of this upgrade must reverse only the TypeScript-related
+`package.json` and `package-lock.json` changes introduced by `813139fa`,
+preserving unrelated dependency changes that landed later. Both dependency
+surfaces must move together to the last accepted TypeScript 6.0.3 state. Do not
+revert merge `68f124ea`: it also introduced this historical specification.
 
-No app, service, database, fixture, or production data rollback is needed. A
-dual-compiler compatibility mode is not equivalent to rollback.
+After a clean `npm ci`, rerun the original build, typecheck, test, and fixture
+gates. Reusing a TS 7 `node_modules` tree is not a rollback verifier.
+
+Retain this specification as the historical record and, in the same rollback
+change, reconcile `.memory`, `MEMO.md`, and `CHANGELOG.md` so no durable surface
+continues to describe TypeScript 7 as active. No app, service, database, fixture,
+or production data rollback is needed. A dual-compiler compatibility mode is
+not equivalent to rollback.
 
 Rollback is required when any of the following remains unresolved within this
 narrow dependency change:
@@ -827,8 +834,9 @@ measurement.
 | TS 7.0.2 is early in its release lifecycle | Medium | Medium | Pin exact resolution in lockfile, use required CI and atomic rollback, and do not silently retarget a later 7.x release. |
 | Heavy CI has an unrelated Swift/UI flake | Medium | Low | Classify from logs and bounded reruns; never mislabel an unresolved gate as TS 7 success. |
 
-There are no blocking design questions at the 2026-07-16 baseline. A future
-implementation must re-check official npm metadata and supported runner behavior.
+There were no blocking design questions at the 2026-07-16 baseline. Any future
+TypeScript retarget or compatibility amendment must re-check official npm
+metadata and supported runner behavior.
 If the desired target version, required platforms, or toolchain API consumers
 change, revise this specification before implementation rather than broadening
 the patch opportunistically.

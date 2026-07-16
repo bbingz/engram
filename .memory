@@ -157,13 +157,19 @@
 
 ### Rollback and resume
 
-- Roll back the merge commit as one unit, or restore `package.json` and
-  `package-lock.json` together to TypeScript `6.0.3`; never roll back only one
-  dependency surface. No database, fixture, app bundle, or deployed runtime
-  rollback is required.
+- If rollback is required, reverse only the TypeScript-related dependency
+  changes introduced by `813139fa` in `package.json` and `package-lock.json`
+  together, preserving later unrelated dependency changes. Do not revert merge
+  `68f124ea`: it also introduced the historical SPEC.
+- Retain the SPEC and update its lifecycle status to record the rollback. In
+  the same rollback change, reconcile `.memory`, `MEMO.md`, and `CHANGELOG.md`
+  so none continues to describe TypeScript 7 as active. Then perform a clean
+  Node 24 install and rerun the TypeScript 6 baseline gates. No database,
+  fixture, app bundle, or deployed runtime rollback is required.
 - There is no pending TS 7 deployment step. Future TypeScript changes should
-  continue to prove clean Node 24 installation, compiler/lock exactness, emit
-  classification, fixtures, and the Swift-only product bundle boundary.
+  continue to prove clean Node 24 installation without omitting optional native
+  platform packages, compiler/lock exactness, emit classification, fixtures,
+  and the Swift-only product bundle boundary.
 
 ## 2026-07-15 - Bounded service startup memory deployed as build 1205 (Codex)
 
