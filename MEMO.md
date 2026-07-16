@@ -2,6 +2,13 @@
 
 ## Changelog Memo
 
+### 2026-07-16
+
+- [工具链] Fable 审阅并通过 TS 7 SPEC 后，PR #181 将保留的 TypeScript 开发工具链从 `6.0.3` 升级到 `7.0.2`，合并提交为 `68f124ea`；Swift App、Service 与 MCP 产品运行时没有引入 Node 启动路径。
+- [验证] Node 24 原生 clean install、build、测试/脚本 typecheck、lint、knip、audit、1,461 项 coverage、fixture/parity 与编译后 CLI smoke 全部通过；TS 6/7 emit 都是 452 个文件，JavaScript 全部逐字节一致，声明仅引号变化，source map 全量可解码且共同坐标没有重映射。
+- [CI] PR Tests `29493842404` attempt 2、CodeQL `29493842570`、Dependency Review `29493842582` 全绿；首次 Remote Server 并发测试偶发失败经本地 20/20、失败项重跑及主干复跑确认未复现。`main@68f124ea` 的 Tests `29495170792`（含 full UI）与 CodeQL `29495170922` 均成功。
+- [部署边界] 本变更按设计不部署；TypeScript 仍是 devDependency 且 release verifier 禁止 Node 产物进入 app。保留当前 `/Applications/Engram.app` `1.0.4 (1221)`，fresh 只读验证确认 Developer ID/bundle hygiene、App/Service、`srw-------` socket、MCP 27 个工具及 archive status 正常。
+
 ### 2026-07-15
 
 - [内存修复] build 1205 收口 Service 启动峰值：跳过无消费者的 tail snapshot 查询；archive v2 仅在 catalog schema 升级时重放 manifest 绑定；grouped-dir 对账改为逐文件 autoreleasepool、先筛 `"cwd"` 再解析，并以版本标记只运行一次；FTS 维护改为每轮最多 500 页的可续跑 merge，启动不再执行全量 `VACUUM` / `optimize`。

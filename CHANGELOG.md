@@ -7,6 +7,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed: TypeScript 7 retained-tooling upgrade (2026-07-16)
+
+- Upgraded the retained TypeScript development toolchain from `6.0.3` to
+  `7.0.2` under the repository's Node 24 contract. The product runtime remains
+  native Swift; the TypeScript compiler is still a development dependency used
+  by reference tooling, fixtures, and regression tests.
+- A clean native `npm ci`, build, test/script typecheck, lint, dead-code check,
+  audit, 1,461-test coverage run, fixture/parity gates, and compiled CLI smoke
+  all passed. The TS 6 and TS 7 emits had the same 452-file inventory and
+  byte-identical JavaScript; declaration changes were quote-only, and every
+  source map decoded without remapping a shared generated coordinate.
+- PR #181 merged as `68f124ea` after Tests run `29493842404` (attempt 2),
+  CodeQL run `29493842570`, and Dependency Review run `29493842582` passed.
+  Post-merge `main` Tests run `29495170792`, including full UI and Swift suites,
+  and CodeQL run `29495170922` also passed.
+- No app deployment was performed by design: TypeScript artifacts do not enter
+  the shipped bundle. The existing Developer ID Engram `1.0.4 (1221)` install
+  was retained and passed fresh bundle, process, socket, MCP, and archive-status
+  read-only checks.
+
 ### Changed: maintenance refresh and next release direction (2026-07-15)
 
 - Refreshed the supported Node dependency set to `openai@6.47.0`,
