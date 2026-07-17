@@ -38,7 +38,8 @@ struct ArchiveStoreTestHooks: Sendable {
     let beforeFileFsync: (@Sendable (ArchiveEnvelopeKind) throws -> Void)?
     let beforeDirectoryFsync: (@Sendable (ArchiveEnvelopeKind) throws -> Void)?
     let beforeDirectoryParentFsync: (@Sendable (URL) throws -> Void)?
-    let beforeFinalLink: (@Sendable (ArchiveEnvelopeKind, URL) throws -> Void)?
+    let beforeFinalPublish: (@Sendable (ArchiveEnvelopeKind, URL) throws -> Void)?
+    let afterFinalPublish: (@Sendable (ArchiveEnvelopeKind, URL) -> Void)?
     let afterExistingEnvelopeVerified: (@Sendable (URL) throws -> Void)?
 
     init(
@@ -47,7 +48,8 @@ struct ArchiveStoreTestHooks: Sendable {
         beforeFileFsync: (@Sendable (ArchiveEnvelopeKind) throws -> Void)? = nil,
         beforeDirectoryFsync: (@Sendable (ArchiveEnvelopeKind) throws -> Void)? = nil,
         beforeDirectoryParentFsync: (@Sendable (URL) throws -> Void)? = nil,
-        beforeFinalLink: (@Sendable (ArchiveEnvelopeKind, URL) throws -> Void)? = nil,
+        beforeFinalPublish: (@Sendable (ArchiveEnvelopeKind, URL) throws -> Void)? = nil,
+        afterFinalPublish: (@Sendable (ArchiveEnvelopeKind, URL) -> Void)? = nil,
         afterExistingEnvelopeVerified: (@Sendable (URL) throws -> Void)? = nil
     ) {
         self.maximumWriteBytesPerCall = maximumWriteBytesPerCall
@@ -55,7 +57,8 @@ struct ArchiveStoreTestHooks: Sendable {
         self.beforeFileFsync = beforeFileFsync
         self.beforeDirectoryFsync = beforeDirectoryFsync
         self.beforeDirectoryParentFsync = beforeDirectoryParentFsync
-        self.beforeFinalLink = beforeFinalLink
+        self.beforeFinalPublish = beforeFinalPublish
+        self.afterFinalPublish = afterFinalPublish
         self.afterExistingEnvelopeVerified = afterExistingEnvelopeVerified
     }
 }
@@ -598,23 +601,27 @@ public struct ArchiveStore: Sendable {
             throw ArchiveStoreError.io
         }
         descriptor = -1
-        try hooks.beforeFinalLink?(kind, finalURL)
+        try hooks.beforeFinalPublish?(kind, finalURL)
         try assertParentIdentity(
             parentIdentity,
             digest: expectedDigest,
             kind: kind
         )
 
-        if Darwin.link(temporaryURL.path, finalURL.path) == 0 {
+        if Darwin.renameatx_np(
+            AT_FDCWD,
+            temporaryURL.path,
+            AT_FDCWD,
+            finalURL.path,
+            UInt32(RENAME_EXCL)
+        ) == 0 {
+            temporaryExists = false
             try assertParentIdentity(
                 parentIdentity,
                 digest: expectedDigest,
                 kind: kind
             )
-            guard Darwin.unlink(temporaryURL.path) == 0 else {
-                throw ArchiveStoreError.io
-            }
-            temporaryExists = false
+            hooks.afterFinalPublish?(kind, finalURL)
             try hooks.beforeDirectoryFsync?(kind)
             try Self.fsyncDirectory(parent)
             try assertParentIdentity(
@@ -625,7 +632,7 @@ public struct ArchiveStore: Sendable {
             return .published
         }
 
-        let linkError = errno
+        let renameError = errno
         try assertParentIdentity(
             parentIdentity,
             digest: expectedDigest,
@@ -636,7 +643,7 @@ public struct ArchiveStore: Sendable {
         }
         temporaryExists = false
         try Self.fsyncDirectory(parent)
-        guard linkError == EEXIST else { throw ArchiveStoreError.io }
+        guard renameError == EEXIST else { throw ArchiveStoreError.io }
 
         let existing = try readEnvelope(
             at: finalURL,

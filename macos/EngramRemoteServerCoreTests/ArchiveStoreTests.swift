@@ -300,7 +300,7 @@ final class ArchiveStoreTests: XCTestCase {
             key: key,
             serverID: "hq",
             testHooks: ArchiveStoreTestHooks(
-                beforeFinalLink: { kind, _ in
+                beforeFinalPublish: { kind, _ in
                     if kind == .object { throw Injected() }
                 }
             )
@@ -512,33 +512,42 @@ final class ArchiveStoreTests: XCTestCase {
         let setup = try ArchiveStore(root: root, key: key, serverID: "hq")
         _ = try setup.putObject(digest: objectDigest, raw: raw)
         _ = try setup.putManifest(digest: manifestDigest, canonicalBytes: manifestBytes)
-        let stores = [
-            try ArchiveStore(
-                root: root,
-                key: key,
-                serverID: "hq",
-                now: { "2026-07-11T10:00:00.000Z" }
-            ),
-            try ArchiveStore(
-                root: root,
-                key: key,
-                serverID: "hq",
-                now: { "2026-07-11T11:00:00.000Z" }
-            ),
-        ]
+        let finalPublished = DispatchSemaphore(value: 0)
+        let releasePublisher = DispatchSemaphore(value: 0)
+        let publisher = try ArchiveStore(
+            root: root,
+            key: key,
+            serverID: "hq",
+            testHooks: ArchiveStoreTestHooks(
+                afterFinalPublish: { kind, _ in
+                    guard kind == .receipt else { return }
+                    finalPublished.signal()
+                    _ = releasePublisher.wait(timeout: .now() + 10)
+                }
+            )
+        )
+        let contender = try ArchiveStore(
+            root: root,
+            key: key,
+            serverID: "hq",
+            now: { "2026-07-11T11:00:00.000Z" }
+        )
         let recorder = ArchiveReceiptCreationRecorder()
         let group = DispatchGroup()
-        for store in stores {
-            group.enter()
-            DispatchQueue.global(qos: .userInitiated).async {
-                defer { group.leave() }
-                recorder.append(Result {
-                    try store.createReceiptWithResult(manifestDigest: manifestDigest)
-                })
-            }
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { group.leave() }
+            recorder.append(Result {
+                try publisher.createReceiptWithResult(manifestDigest: manifestDigest)
+            })
         }
+        XCTAssertEqual(finalPublished.wait(timeout: .now() + 10), .success)
+        let contenderResult = Result {
+            try contender.createReceiptWithResult(manifestDigest: manifestDigest)
+        }
+        releasePublisher.signal()
         XCTAssertEqual(group.wait(timeout: .now() + 10), .success)
-        let creations = try recorder.values.map { try $0.get() }
+        let creations = try recorder.values.map { try $0.get() } + [try contenderResult.get()]
 
         XCTAssertEqual(creations.count, 2)
         XCTAssertEqual(creations.filter { $0.result == .published }.count, 1)
@@ -691,7 +700,7 @@ final class ArchiveStoreTests: XCTestCase {
             key: key,
             serverID: "hq",
             testHooks: ArchiveStoreTestHooks(
-                beforeFinalLink: { kind, _ in
+                beforeFinalPublish: { kind, _ in
                     if kind == .receipt { throw Injected() }
                 }
             )
