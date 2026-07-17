@@ -1057,6 +1057,33 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(kpi.projects, 0)
     }
 
+    /// M5: dashboard aggregates must exclude skip-tier (subagent noise).
+    @MainActor
+    func testDashboardAggregatesExcludeSkipTier_repro() throws {
+        try insertTestSession(at: dbPath, id: "normal-1", source: "codex", tier: "normal", messageCount: 10)
+        try insertTestSession(at: dbPath, id: "skip-1", source: "codex", tier: "skip", messageCount: 99)
+        try insertTestSession(at: dbPath, id: "skip-2", source: "claude-code", tier: "skip", messageCount: 50)
+
+        let kpi = try db.kpiStats()
+        XCTAssertEqual(kpi.sessions, 1, "M5: kpiStats must not count skip-tier")
+        XCTAssertEqual(kpi.messages, 10)
+        XCTAssertEqual(kpi.sources, 1)
+
+        let bySource = try db.sourceDistribution()
+        XCTAssertEqual(bySource.map(\.source), ["codex"])
+        XCTAssertEqual(bySource.first?.count, 1)
+
+        let hours = try db.hourlyActivity()
+        XCTAssertEqual(hours.reduce(0, +), 1, "M5: hourlyActivity total must exclude skip")
+
+        let daily = try db.dailyActivity(days: 3650)
+        XCTAssertEqual(daily.map(\.count).reduce(0, +), 1, "M5: dailyActivity excludes skip")
+
+        let dailySrc = try db.dailySourceActivity(days: 3650)
+        let srcTotal = dailySrc.flatMap(\.segments).map(\.count).reduce(0, +)
+        XCTAssertEqual(srcTotal, 1, "M5: dailySourceActivity excludes skip")
+    }
+
     @MainActor
     func testListSessionsWithMultipleSourceFilters() throws {
         try insertTestSession(at: dbPath, id: "s1", source: "claude-code")

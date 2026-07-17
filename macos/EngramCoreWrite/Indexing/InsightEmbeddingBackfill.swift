@@ -37,6 +37,11 @@ public enum InsightEmbeddingBackfill {
         provider: EmbeddingProvider,
         limit: Int = 64
     ) async throws -> Result {
+        try reconcileModelChangeIfNeeded(
+            writer: writer,
+            model: provider.model,
+            dimension: provider.dimension
+        )
         let pending = try pendingInsights(writer: writer, limit: limit)
         guard !pending.isEmpty else { return Result(embedded: 0) }
 
@@ -83,8 +88,11 @@ public enum InsightEmbeddingBackfill {
         dimension: Int
     ) throws -> Result {
         guard !embeddings.isEmpty else { return Result(embedded: 0) }
+        try validateUniformNativeDimension(embeddings.map(\.vector), configured: dimension)
+        try reconcileModelChangeIfNeeded(writer: writer, model: model, dimension: dimension)
         try writer.write { db in
             for item in embeddings {
+                let nativeDim = item.vector.count
                 try db.execute(
                     sql: """
                         INSERT INTO insight_embeddings (insight_id, embedding, model, dim)
@@ -94,7 +102,7 @@ public enum InsightEmbeddingBackfill {
                           model = excluded.model,
                           dim = excluded.dim
                     """,
-                    arguments: [item.id, VectorMath.encode(item.vector), model, dimension]
+                    arguments: [item.id, VectorMath.encode(item.vector), model, nativeDim]
                 )
             }
             try db.execute(
@@ -111,6 +119,83 @@ public enum InsightEmbeddingBackfill {
         }
         return Result(embedded: embeddings.count)
     }
+
+    /// M17: when configured (model, dimension) differs from `embedding_meta`,
+    /// purge stored vectors and re-enqueue session embedding jobs so the corpus
+    /// is not silently unqueryable after a provider change.
+    @discardableResult
+    public static func reconcileModelChangeIfNeeded(
+        writer: EngramDatabaseWriter,
+        model: String,
+        dimension: Int
+    ) throws -> Bool {
+        try writer.write { db in
+            try Self.reconcileModelChangeIfNeeded(db, model: model, dimension: dimension)
+        }
+    }
+
+    static func reconcileModelChangeIfNeeded(
+        _ db: Database,
+        model: String,
+        dimension: Int
+    ) throws -> Bool {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: "SELECT model, dimension FROM embedding_meta WHERE id = 1"
+        ) else {
+            return false
+        }
+        let storedModel = row["model"] as String?
+        let storedDim = row["dimension"] as Int?
+        guard let storedModel, let storedDim else { return false }
+        guard storedModel != model || storedDim != dimension else { return false }
+
+        try db.execute(sql: "DELETE FROM semantic_chunks")
+        try db.execute(sql: "DELETE FROM insight_embeddings")
+        try db.execute(
+            sql: """
+            UPDATE session_index_jobs
+            SET status = ?,
+                retry_count = 0,
+                last_error = NULL,
+                updated_at = datetime('now')
+            WHERE job_kind = ?
+              AND status IN (?, ?, ?, ?)
+            """,
+            arguments: [
+                IndexJobStatus.pending.rawValue,
+                IndexJobKind.embedding.rawValue,
+                IndexJobStatus.completed.rawValue,
+                IndexJobStatus.failedPermanent.rawValue,
+                IndexJobStatus.failedRetryable.rawValue,
+                IndexJobStatus.notApplicable.rawValue,
+            ]
+        )
+        try db.execute(
+            sql: """
+            INSERT INTO embedding_meta (id, provider, model, dimension, updated_at)
+            VALUES (1, 'openai-compatible', ?, ?, datetime('now'))
+            ON CONFLICT(id) DO UPDATE SET
+              model = excluded.model,
+              dimension = excluded.dimension,
+              updated_at = excluded.updated_at
+            """,
+            arguments: [model, dimension]
+        )
+        return true
+    }
+
+    public static func validateUniformNativeDimension(
+        _ vectors: [[Float]],
+        configured: Int
+    ) throws {
+        for vector in vectors {
+            let actual = vector.count
+            guard actual == configured else {
+                throw EmbeddingError.dimensionMismatch(expected: configured, actual: actual)
+            }
+        }
+    }
 }
 
 /// Backfills chunk-level embeddings for sessions with pending `embedding` index
@@ -121,10 +206,12 @@ public enum SessionEmbeddingBackfill {
     public struct Result: Equatable {
         public let completed: Int
         public let notApplicable: Int
+        public let failed: Int
 
-        public init(completed: Int, notApplicable: Int) {
+        public init(completed: Int, notApplicable: Int, failed: Int = 0) {
             self.completed = completed
             self.notApplicable = notApplicable
+            self.failed = failed
         }
     }
 
@@ -161,6 +248,30 @@ public enum SessionEmbeddingBackfill {
             self.jobId = jobId
             self.sessionId = sessionId
             self.chunks = chunks
+        }
+    }
+
+    public struct SessionFailure: Equatable, Sendable {
+        public let jobId: String
+        public let sessionId: String
+        public let error: String
+
+        public init(jobId: String, sessionId: String, error: String) {
+            self.jobId = jobId
+            self.sessionId = sessionId
+            self.error = error
+        }
+    }
+
+    /// M3: successes and per-session failures isolated so one bad session does
+    /// not abort the rest of the batch or stall the whole corpus forever.
+    public struct EmbedBatchOutcome: Equatable, Sendable {
+        public let embedded: [EmbeddedSession]
+        public let failures: [SessionFailure]
+
+        public init(embedded: [EmbeddedSession], failures: [SessionFailure]) {
+            self.embedded = embedded
+            self.failures = failures
         }
     }
 
@@ -229,62 +340,118 @@ public enum SessionEmbeddingBackfill {
         provider: any EmbeddingProvider,
         maxTextsPerRequest: Int = 16
     ) async throws -> [EmbeddedSession] {
-        guard !pending.isEmpty else { return [] }
+        let outcome = try await embedPendingSessionsIsolated(
+            pending,
+            provider: provider,
+            maxTextsPerRequest: maxTextsPerRequest
+        )
+        if !outcome.failures.isEmpty, outcome.embedded.isEmpty {
+            // Preserve legacy throw semantics for total-batch failure when callers
+            // only consume the success array; isolated path is preferred.
+            throw EmbeddingError.malformedResponse
+        }
+        return outcome.embedded
+    }
+
+    /// M3: per-session isolation — one deterministically-failing session does
+    /// not abort remaining work. Circuit-open still propagates so callers soft-skip.
+    public static func embedPendingSessionsIsolated(
+        _ pending: [PendingSession],
+        provider: any EmbeddingProvider,
+        maxTextsPerRequest: Int = 16
+    ) async throws -> EmbedBatchOutcome {
+        guard !pending.isEmpty else {
+            return EmbedBatchOutcome(embedded: [], failures: [])
+        }
         let requestLimit = max(1, maxTextsPerRequest)
         var embeddedSessions: [EmbeddedSession] = []
         embeddedSessions.reserveCapacity(pending.count)
+        var failures: [SessionFailure] = []
 
         for session in pending {
-            let messages = session.content
-                .split(separator: "\n", omittingEmptySubsequences: true)
-                .map { (role: "assistant", content: String($0)) }
-            let requests = SessionChunker.chunk(messages: messages).map { chunk in
-                ChunkRequest(
-                    jobId: session.jobId,
-                    sessionId: session.sessionId,
-                    index: chunk.index,
-                    text: chunk.text
-                )
-            }
-            var embeddedChunks: [EmbeddedChunk] = []
-            embeddedChunks.reserveCapacity(requests.count)
-            var batchStart = 0
-            while batchStart < requests.count {
-                let batchEnd = min(batchStart + requestLimit, requests.count)
-                let batch = requests[batchStart..<batchEnd]
-                let vectors = try await provider.embed(batch.map(\.text))
-                guard vectors.count == batch.count else {
-                    throw EmbeddingError.malformedResponse
-                }
-                embeddedChunks.append(contentsOf: zip(batch, vectors).map { request, vector in
-                    EmbeddedChunk(
-                        index: request.index,
-                        text: request.text,
-                        vector: vector
+            do {
+                let messages = session.content
+                    .split(separator: "\n", omittingEmptySubsequences: true)
+                    .map { (role: "assistant", content: String($0)) }
+                let requests = SessionChunker.chunk(messages: messages).map { chunk in
+                    ChunkRequest(
+                        jobId: session.jobId,
+                        sessionId: session.sessionId,
+                        index: chunk.index,
+                        text: chunk.text
                     )
-                })
-                batchStart = batchEnd
-            }
-            embeddedSessions.append(
-                EmbeddedSession(
-                    jobId: session.jobId,
-                    sessionId: session.sessionId,
-                    chunks: embeddedChunks
+                }
+                var embeddedChunks: [EmbeddedChunk] = []
+                embeddedChunks.reserveCapacity(requests.count)
+                var batchStart = 0
+                while batchStart < requests.count {
+                    let batchEnd = min(batchStart + requestLimit, requests.count)
+                    let batch = requests[batchStart..<batchEnd]
+                    let vectors = try await provider.embed(batch.map(\.text))
+                    guard vectors.count == batch.count else {
+                        throw EmbeddingError.malformedResponse
+                    }
+                    try InsightEmbeddingBackfill.validateUniformNativeDimension(
+                        vectors,
+                        configured: provider.dimension
+                    )
+                    embeddedChunks.append(contentsOf: zip(batch, vectors).map { request, vector in
+                        EmbeddedChunk(
+                            index: request.index,
+                            text: request.text,
+                            vector: vector
+                        )
+                    })
+                    batchStart = batchEnd
+                }
+                embeddedSessions.append(
+                    EmbeddedSession(
+                        jobId: session.jobId,
+                        sessionId: session.sessionId,
+                        chunks: embeddedChunks
+                    )
                 )
-            )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch EmbeddingError.circuitOpen {
+                throw EmbeddingError.circuitOpen
+            } catch {
+                failures.append(
+                    SessionFailure(
+                        jobId: session.jobId,
+                        sessionId: session.sessionId,
+                        error: "\(error)"
+                    )
+                )
+            }
         }
-        return embeddedSessions
+        return EmbedBatchOutcome(embedded: embeddedSessions, failures: failures)
     }
 
     public static func writeEmbeddings(
         writer: EngramDatabaseWriter,
         sessions: [EmbeddedSession],
         model: String,
-        dimension: Int
+        dimension: Int,
+        failures: [SessionFailure] = []
     ) throws -> Result {
-        guard !sessions.isEmpty else { return Result(completed: 0, notApplicable: 0) }
+        if sessions.isEmpty, failures.isEmpty {
+            return Result(completed: 0, notApplicable: 0, failed: 0)
+        }
+        for session in sessions {
+            try InsightEmbeddingBackfill.validateUniformNativeDimension(
+                session.chunks.map(\.vector),
+                configured: dimension
+            )
+        }
+        try InsightEmbeddingBackfill.reconcileModelChangeIfNeeded(
+            writer: writer,
+            model: model,
+            dimension: dimension
+        )
         var completed = 0
         var notApplicable = 0
+        var failed = 0
         try writer.write { db in
             for session in sessions {
                 try db.execute(
@@ -297,6 +464,7 @@ public enum SessionEmbeddingBackfill {
                     continue
                 }
                 for chunk in session.chunks {
+                    let nativeDim = chunk.vector.count
                     try db.execute(
                         sql: """
                         INSERT INTO semantic_chunks (id, session_id, chunk_index, text, embedding, model, dim)
@@ -314,12 +482,16 @@ public enum SessionEmbeddingBackfill {
                             chunk.text,
                             VectorMath.encode(chunk.vector),
                             model,
-                            dimension,
+                            nativeDim,
                         ]
                     )
                 }
                 try IndexJobRunner.markCompleted(db, id: session.jobId)
                 completed += 1
+            }
+            for failure in failures {
+                try IndexJobRunner.markRetryable(db, id: failure.jobId, error: failure.error)
+                failed += 1
             }
             if completed > 0 {
                 try db.execute(
@@ -335,6 +507,6 @@ public enum SessionEmbeddingBackfill {
                 )
             }
         }
-        return Result(completed: completed, notApplicable: notApplicable)
+        return Result(completed: completed, notApplicable: notApplicable, failed: failed)
     }
 }

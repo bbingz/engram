@@ -173,6 +173,62 @@ final class ServiceTelemetryTests: XCTestCase {
         XCTAssertEqual(failed.errorName, "ScanPhaseFailed")
     }
 
+    /// M2: when the core index phase succeeded but a later required phase failed,
+    /// status must still record scan success (clear degraded) while telemetry
+    /// must not count a full success sample.
+    func testRunInitialScanPartialSuccessRecordsStatusWhenCoreIndexOk_repro() async throws {
+        let paths = try makeServicePaths()
+        FileManager.default.createFile(atPath: paths.database.path, contents: nil)
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime
+        )
+        _ = try await gate.performWriteCommand(name: "migrate") { writer in
+            try writer.migrate()
+            try writer.verifySchemaPresent()
+        }
+
+        let collector = ServiceTelemetryCollector()
+        let monitor = ServiceStatusMonitor()
+        let emptyHome = paths.runtime.deletingLastPathComponent()
+            .appendingPathComponent("empty-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: emptyHome, withIntermediateDirectories: true)
+        let disabledAll = [
+            "codex", "claude-code", "copilot", "gemini-cli", "opencode", "iflow",
+            "qwen", "qoder", "kimi", "minimax", "lobsterai", "commandcode",
+            "cline", "cursor", "vscode", "antigravity", "windsurf",
+        ].joined(separator: ",")
+
+        await EngramServiceRunner.runInitialScan(
+            gate: gate,
+            statusMonitor: monitor,
+            telemetry: collector,
+            environment: [
+                "HOME": emptyHome.path,
+                "ENGRAM_DISABLED_SOURCES": disabledAll,
+            ],
+            tokenLimitsProvider: { [:] },
+            testHooks: .init(
+                failPhaseNamed: "initialScanBackfills",
+                maxFtsDrainIterations: 0
+            )
+        )
+
+        let snapshot = await collector.snapshot()
+        XCTAssertEqual(
+            snapshot.scanCount,
+            0,
+            "M2: partial success must not record a full success telemetry sample"
+        )
+        let indexStatus = try await gate.indexStatus()
+        let status = await monitor.status(indexStatus: indexStatus)
+        guard case .running = status else {
+            return XCTFail(
+                "M2: core index succeeded with later phase failure must clear degraded via recordScanSuccess, got \(status)"
+            )
+        }
+    }
+
     /// Initial scanning has several early-return paths. Memory pressure relief
     /// must still run after all scan-owned allocations unwind, including when a
     /// required phase fails.

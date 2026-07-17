@@ -1115,10 +1115,12 @@ final class DatabaseManager: @unchecked Sendable {
 
     func dailySourceActivity(days: Int = 30) throws -> [(date: String, segments: [(source: String, count: Int)])] {
         try readInBackground { db in
+            // M5: exclude skip-tier so activity aggregates match browsable sessions.
             let rows = try Row.fetchAll(db, sql: """
                 SELECT date(start_time, 'localtime') as day, source, COUNT(*) as count
                 FROM sessions
                 WHERE hidden_at IS NULL
+                  AND (tier IS NULL OR tier != 'skip')
                   AND date(start_time, 'localtime') >= date('now', 'localtime', '-\(days) days')
                 GROUP BY day, source
                 ORDER BY day
@@ -1148,11 +1150,13 @@ final class DatabaseManager: @unchecked Sendable {
 
     func hourlyActivity() throws -> [Int] {
         try readInBackground { db in
+            // M5: exclude skip-tier noise from heatmap hour buckets.
             let rows = try Row.fetchAll(db, sql: """
                 SELECT CAST(strftime('%H', start_time, 'localtime') AS INTEGER) as hour,
                        COUNT(*) as count
                 FROM sessions
                 WHERE hidden_at IS NULL
+                  AND (tier IS NULL OR tier != 'skip')
                 GROUP BY hour ORDER BY hour
             """)
             var hours = Array(repeating: 0, count: 24)
@@ -1167,9 +1171,12 @@ final class DatabaseManager: @unchecked Sendable {
 
     func sourceDistribution() throws -> [(source: String, count: Int)] {
         try readInBackground { db in
+            // M5: exclude skip-tier so Home source chart matches browsable set.
             let rows = try Row.fetchAll(db, sql: """
                 SELECT source, COUNT(*) as count
-                FROM sessions WHERE hidden_at IS NULL
+                FROM sessions
+                WHERE hidden_at IS NULL
+                  AND (tier IS NULL OR tier != 'skip')
                 GROUP BY source ORDER BY count DESC
             """)
             return rows.map { (source: $0["source"] as String, count: $0["count"] as Int) }
