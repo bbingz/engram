@@ -18,6 +18,12 @@ enum MCPOutputSchemas {
     private static let memoryItem =
         #"{"type":"object","additionalProperties":false,"required":["id","content","wing","room","importance","distance","type"],"properties":{"id":{"type":"string"},"content":{"type":"string"},"wing":{"type":["string","null"]},"room":{"type":["string","null"]},"importance":{"type":"integer"},"distance":{"type":"number"},"type":{"type":"string"}}}"#
 
+    private static let projectMigrationItem =
+        #"{"type":"object","additionalProperties":false,"required":["id","oldPath","newPath","oldBasename","newBasename","state","filesPatched","occurrences","sessionsUpdated","aliasCreated","ccDirRenamed","startedAt","finishedAt","dryRun","rolledBackOf","auditNote","archived","actor","detail","error"],"properties":{"id":{"type":"string"},"oldPath":{"type":"string"},"newPath":{"type":"string"},"oldBasename":{"type":"string"},"newBasename":{"type":"string"},"state":{"type":"string"},"filesPatched":{"type":"integer"},"occurrences":{"type":"integer"},"sessionsUpdated":{"type":"integer"},"aliasCreated":{"type":"boolean"},"ccDirRenamed":{"type":"boolean"},"startedAt":{"type":"string"},"finishedAt":{"type":["string","null"]},"dryRun":{"type":"boolean"},"rolledBackOf":{"type":["string","null"]},"auditNote":{"type":["string","null"]},"archived":{"type":"boolean"},"actor":{"type":"string"},"detail":{"type":["object","null"],"additionalProperties":true},"error":{"type":["string","null"]}}}"#
+
+    private static let projectRecoveryDiagnosticItem =
+        #"{"type":"object","additionalProperties":false,"required":["migrationId","state","oldPath","newPath","startedAt","finishedAt","error","fs","recommendation"],"properties":{"migrationId":{"type":"string"},"state":{"type":"string"},"oldPath":{"type":"string"},"newPath":{"type":"string"},"startedAt":{"type":"string"},"finishedAt":{"type":["string","null"]},"error":{"type":["string","null"]},"recommendation":{"type":"string"},"fs":{"type":"object","additionalProperties":false,"required":["oldPathExists","newPathExists","oldPathState","newPathState","tempArtifacts","probeError"],"properties":{"oldPathExists":{"type":"boolean"},"newPathExists":{"type":"boolean"},"oldPathState":{"type":"string"},"newPathState":{"type":"string"},"tempArtifacts":{"type":"array","items":{"type":"string"}},"probeError":{"type":["string","null"]}}}}}"#
+
     static let listSessions = j(
         #"{"type":"object","additionalProperties":false,"required":["sessions","total"],"properties":{"sessions":{"type":"array","items":\#(listSessionItem)},"total":{"type":"integer"}}}"#
     )
@@ -43,7 +49,7 @@ enum MCPOutputSchemas {
     )
 
     static let projectListMigrations = j(
-        #"{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","oldPath","newPath","oldBasename","newBasename","state","filesPatched","occurrences","sessionsUpdated","aliasCreated","ccDirRenamed","startedAt","finishedAt","dryRun","rolledBackOf","auditNote","archived","actor","detail","error"],"properties":{"id":{"type":"string"},"oldPath":{"type":"string"},"newPath":{"type":"string"},"oldBasename":{"type":"string"},"newBasename":{"type":"string"},"state":{"type":"string"},"filesPatched":{"type":"integer"},"occurrences":{"type":"integer"},"sessionsUpdated":{"type":"integer"},"aliasCreated":{"type":"boolean"},"ccDirRenamed":{"type":"boolean"},"startedAt":{"type":"string"},"finishedAt":{"type":["string","null"]},"dryRun":{"type":"boolean"},"rolledBackOf":{"type":["string","null"]},"auditNote":{"type":["string","null"]},"archived":{"type":"boolean"},"actor":{"type":"string"},"detail":{"type":["object","null"],"additionalProperties":true},"error":{"type":["string","null"]}}}}"#
+        #"{"type":"object","additionalProperties":false,"required":["migrations"],"properties":{"migrations":{"type":"array","items":\#(projectMigrationItem)}}}"#
     )
 
     static let liveSessions = j(
@@ -75,7 +81,7 @@ enum MCPOutputSchemas {
     )
 
     static let projectRecover = j(
-        #"{"type":"array","items":{"type":"object","additionalProperties":false,"required":["migrationId","state","oldPath","newPath","startedAt","finishedAt","error","fs","recommendation"],"properties":{"migrationId":{"type":"string"},"state":{"type":"string"},"oldPath":{"type":"string"},"newPath":{"type":"string"},"startedAt":{"type":"string"},"finishedAt":{"type":["string","null"]},"error":{"type":["string","null"]},"recommendation":{"type":"string"},"fs":{"type":"object","additionalProperties":false,"required":["oldPathExists","newPathExists","oldPathState","newPathState","tempArtifacts","probeError"],"properties":{"oldPathExists":{"type":"boolean"},"newPathExists":{"type":"boolean"},"oldPathState":{"type":"string"},"newPathState":{"type":"string"},"tempArtifacts":{"type":"array","items":{"type":"string"}},"probeError":{"type":["string","null"]}}}}}}"#
+        #"{"type":"object","additionalProperties":false,"required":["diagnostics"],"properties":{"diagnostics":{"type":"array","items":\#(projectRecoveryDiagnosticItem)}}}"#
     )
 
     static func schema(for toolName: String) -> JSONValue? {

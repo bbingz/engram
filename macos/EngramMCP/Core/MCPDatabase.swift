@@ -459,7 +459,9 @@ final class MCPDatabase {
         let rows = try queue.read { db in
             try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
         }
-        return .array(rows.map(migrationObject(from:)))
+        return .object([
+            ("migrations", .array(rows.map(migrationObject(from:)))),
+        ])
     }
 
     func getMemory(query: String, type: String? = nil) async throws -> OrderedJSONValue {
@@ -897,7 +899,9 @@ final class MCPDatabase {
             ])
         }
 
-        return .array(diagnoses)
+        return .object([
+            ("diagnostics", .array(diagnoses)),
+        ])
     }
 
     enum SearchError: Error, LocalizedError {
