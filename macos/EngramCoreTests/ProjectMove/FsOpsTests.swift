@@ -269,6 +269,21 @@ final class FsOpsTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: src.path))
     }
 
+    func testCaseOnlyRenameIsNonConflictOnAPFS_repro() throws {
+        let src = tmpRoot.appendingPathComponent("MyProject")
+        try FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)
+        try "note".write(to: src.appendingPathComponent("readme.txt"), atomically: true, encoding: .utf8)
+        let dst = tmpRoot.appendingPathComponent("myproject")
+        let caseInsensitive = FileManager.default.fileExists(atPath: dst.path)
+            && SafeMoveDir.isCaseOnlySamePath(src: src.path, dst: dst.path)
+        guard caseInsensitive else {
+            throw XCTSkip("volume is case-sensitive; case-only rename non-conflict not applicable")
+        }
+        let result = try SafeMoveDir.run(src: src.path, dst: dst.path)
+        XCTAssertEqual(result.strategy, .rename)
+        XCTAssertEqual(try String(contentsOf: dst.appendingPathComponent("readme.txt"), encoding: .utf8), "note")
+    }
+
     func testRefusesToMoveSymlinkSource() throws {
         let real = tmpRoot.appendingPathComponent("real")
         let link = tmpRoot.appendingPathComponent("link")

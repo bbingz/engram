@@ -52,3 +52,6 @@ Latent throughput issue on listMachines/listReceipts. No data-loss path. Accepte
 
 ## Remaining Lows L1–L5, L9–L18, L20, L22, L24–L34, L36
 Closeout accepts as residual low backlog. Highs and defect-class mediums closed in PRs #188–#194. Prefer follow-up themed PRs rather than blocking multi-PR audit stack.
+
+## M21 — AI settings per-keystroke I/O
+Debounce (~400ms) landed in batch F. Full off-main flock/Keychain I/O remains residual: settings writes still run on MainActor after debounce.

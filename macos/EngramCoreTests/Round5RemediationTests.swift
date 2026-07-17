@@ -545,8 +545,7 @@ final class Round5RemediationTests: XCTestCase {
         XCTAssertEqual(info.cwd, "")
     }
 
-    // Part B — Codex counts a tool invocation once (function_call only), not both
-    // the function_call and its paired function_call_output.
+    // Part B / M6 — counts function_call + function_call_output for stream parity.
     func testCodexCountsToolUseOncePerFunctionCall() async throws {
         let root = try makeTempDir("codex")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -566,9 +565,16 @@ final class Round5RemediationTests: XCTestCase {
             XCTFail("Codex fixture should parse")
             return
         }
-        // 1 user + 0 assistant + 1 tool (function_call only).
-        XCTAssertEqual(info.toolMessageCount, 1)
-        XCTAssertEqual(info.messageCount, 2)
+        var streamed: [NormalizedMessage] = []
+        for try await message in try await adapter.streamMessages(
+            locator: file.path,
+            options: StreamMessagesOptions()
+        ) {
+            streamed.append(message)
+        }
+        XCTAssertEqual(info.toolMessageCount, 2)
+        XCTAssertEqual(info.messageCount, 3)
+        XCTAssertEqual(info.messageCount, streamed.count)
     }
 
     func testCodexDiscoveryDoesNotTraverseSymlinkedDirectories() async throws {

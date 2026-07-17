@@ -672,6 +672,7 @@
 		F4A70842CFB27FFB699F4CB8 /* ArchivedDefaultOffSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1336F5F7D0C748D8AA578FE /* ArchivedDefaultOffSources.swift */; };
 		F4D6E94AB825538A869C1362 /* EngramServiceStatusStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE7C13C1E701E692FE1174D5 /* EngramServiceStatusStore.swift */; };
 		F5AB459B060450EEC46F99FE /* ObservabilityRetentionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC0C3B223DC3637D7A299413 /* ObservabilityRetentionTests.swift */; };
+		F5C54884E9BEEA56897F4AFE /* AISettingsSectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 410A65F9A8A138195F30F522 /* AISettingsSectionTests.swift */; };
 		F5EA0D9C097F4AEBEE358DF8 /* ReplayStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AB4FC9431C85E265FDC13A3 /* ReplayStateTests.swift */; };
 		F61A80E0A9B21151720C4AF6 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7065C04EF4458D7ADD617509 /* AppEnvironment.swift */; };
 		F62ABEEC5BBD48470B91FED9 /* ReplayState.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB69CF1AB5CD6EB0D048AE10 /* ReplayState.swift */; };
@@ -1040,6 +1041,7 @@
 		3F222749BE5F32AF0421DEFC /* ArchiveEnvelopeCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveEnvelopeCodecTests.swift; sourceTree = "<group>"; };
 		3FEE6F09ED3C905D21309A2F /* ArchiveSettingsSectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveSettingsSectionTests.swift; sourceTree = "<group>"; };
 		40DCA3CBBC1674529412F9C0 /* JsonlPatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JsonlPatchTests.swift; sourceTree = "<group>"; };
+		410A65F9A8A138195F30F522 /* AISettingsSectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISettingsSectionTests.swift; sourceTree = "<group>"; };
 		41CF6AC3E11BFBC62F1C2278 /* EngramServiceCommandHandler+ArchiveV2.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "EngramServiceCommandHandler+ArchiveV2.swift"; sourceTree = "<group>"; };
 		41D7F49B7C0C0A2950AFA232 /* MCPStdioServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStdioServer.swift; sourceTree = "<group>"; };
 		42221DF48DF9F36A0556900B /* SystemMessageClassifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemMessageClassifier.swift; sourceTree = "<group>"; };
@@ -2192,6 +2194,7 @@
 			children = (
 				64F4C75BEAFCC55495138AA2 /* AdapterParityTests.swift */,
 				BBF37F8BD0ECD7BE3964FE85 /* AgentsViewTests.swift */,
+				410A65F9A8A138195F30F522 /* AISettingsSectionTests.swift */,
 				8AF97989227CEE7D2D9CC5AC /* AppSearchServiceCutoverScanTests.swift */,
 				3FEE6F09ED3C905D21309A2F /* ArchiveSettingsSectionTests.swift */,
 				89DD37E963EA56C1D6914C24 /* BrowseReloadCoalescerTests.swift */,
@@ -3597,6 +3600,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F5C54884E9BEEA56897F4AFE /* AISettingsSectionTests.swift in Sources */,
 				6A27BFF24A943E62286639D8 /* AdapterParityTests.swift in Sources */,
 				15FC456CCF988A1D06A52AFD /* AgentsViewTests.swift in Sources */,
 				2777C6EC4A7086F4703CE205 /* AppSearchServiceCutoverScanTests.swift in Sources */,

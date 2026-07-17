@@ -27,6 +27,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   re-enqueues embedding jobs via `embedding_meta` reconciliation.
 - M4: archive reclamation cursor advances only past examined/processed candidates
   (not the entire 1_000-row page).
+### Fixed: audit mediums batch F (UI, adapters, FsOps, day bucketing)
+
+- M6: Codex `parseSessionInfo` counts `function_call_output` so `messageCount` matches stream.
+- M7: `CodexAdapter` conforms to `TailIndexingSessionAdapter` with scanTail.
+- M8: suggested-parent `.none` skip only with positive `agent_role` evidence.
+- M10: TimelinePageView generation/cancellation guard on detached loads.
+- M13: FsOps case-only rename via realpath equality non-conflict.
+- M21: AI settings ~400ms debounce (partial; MainActor I/O residual).
+- M22: Archive reclamation refresh generation + disable until first load.
+- M25: ImplementationDigestExtractor `action_date` uses local calendar day.
 
 ### Fixed: audit mediums (MCP parity, KPI skip, Gemini sidecar, Test Connection)
 

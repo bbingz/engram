@@ -308,8 +308,16 @@ struct ArchiveSettingsSection: View {
     @State private var busy = false
     @State private var syncBusy = false
     @State private var syncRefreshGeneration = 0
+    @State private var reclamationRefreshGeneration = 0
     @State private var message: String?
     @State private var messageIsError = false
+
+    static func shouldApplyReclamationRefresh(
+        resultGeneration: Int,
+        currentGeneration: Int
+    ) -> Bool {
+        resultGeneration == currentGeneration
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -320,7 +328,7 @@ struct ArchiveSettingsSection: View {
             GroupBox("Automatic Local Reclamation") {
                 VStack(alignment: .leading, spacing: 12) {
                     Toggle("Automatically reclaim old local transcripts", isOn: $enabled)
-                        .disabled(busy)
+                        .disabled(busy || status == nil)
                         .accessibilityIdentifier("archiveReclamation_enabled")
 
                     Picker("Keep full local transcripts", selection: $hotWindowDays) {
@@ -334,7 +342,7 @@ struct ArchiveSettingsSection: View {
                             .tag(days)
                         }
                     }
-                    .disabled(busy)
+                    .disabled(busy || status == nil)
                     .accessibilityIdentifier("archiveReclamation_hotWindow")
 
                     Text("Search metadata and summaries remain local. Older source files and local archive objects are reclaimed only after both remote copies and both current recovery drills are verified.")
@@ -343,10 +351,10 @@ struct ArchiveSettingsSection: View {
 
                     HStack {
                         Button("Save") { Task { await save() } }
-                            .disabled(busy)
+                            .disabled(busy || status == nil)
                             .accessibilityIdentifier("archiveReclamation_save")
                         Button("Preview") { Task { await loadPreview() } }
-                            .disabled(busy)
+                            .disabled(busy || status == nil)
                             .accessibilityIdentifier("archiveReclamation_preview")
                         Button("Run Now") { Task { await runNow() } }
                             .disabled(busy || status?.enabled != true)
@@ -734,12 +742,22 @@ struct ArchiveSettingsSection: View {
     @MainActor
     private func refresh(reportError: Bool = true) async {
         await refreshArchiveStatus()
+        reclamationRefreshGeneration += 1
+        let requestGeneration = reclamationRefreshGeneration
         do {
             let value = try await serviceClient.archiveReclamationStatus()
+            guard Self.shouldApplyReclamationRefresh(
+                resultGeneration: requestGeneration,
+                currentGeneration: reclamationRefreshGeneration
+            ) else { return }
             status = value
             enabled = value.enabled
             hotWindowDays = value.hotWindowDays
         } catch {
+            guard Self.shouldApplyReclamationRefresh(
+                resultGeneration: requestGeneration,
+                currentGeneration: reclamationRefreshGeneration
+            ) else { return }
             if reportError {
                 message = String(localized: "Error: archive status unavailable.")
                 messageIsError = true

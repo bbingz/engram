@@ -29,12 +29,12 @@ describe('CodexAdapter', () => {
     expect(info?.summary).toBe('帮我修复登录 bug，用户无法登录');
   });
 
-  it('counts one tool message per function_call (not call + output)', async () => {
+  it('counts function_call and function_call_output for stream parity (M6)', async () => {
     const info = await adapter.parseSessionInfo(FIXTURE);
     // The fixture has one function_call and its matching function_call_output.
     // That is a single tool use, so it counts as 1 — matching every other
     // adapter. Counting the output too would double the count (R5-29).
-    expect(info?.toolMessageCount).toBe(1);
+    expect(info?.toolMessageCount).toBe(2);
     expect(info?.messageCount).toBe(
       (info?.userMessageCount ?? 0) +
         (info?.assistantMessageCount ?? 0) +
@@ -453,13 +453,9 @@ describe('CodexAdapter', () => {
       expect(shellCall?.toolCalls?.[0]?.input).toBe('"{\\"cmd\\":\\"ls\\"}"');
     });
 
-    it('counts function_call records only, not their outputs', async () => {
+    it('counts function_call and function_call_output for stream parity (M6)', async () => {
       const info = await adapter.parseSessionInfo(fcPath);
-      // Fixture: 2 function_call + 1 orphan function_call_output. We count one
-      // tool message per function_call (R5-29); the orphan output is not a new
-      // tool use, so it is not counted. streamMessages still surfaces all 3 as
-      // tool-role messages for display.
-      expect(info?.toolMessageCount).toBe(2);
+      expect(info?.toolMessageCount).toBe(3);
     });
 
     it('offset/limit treat tool messages the same as user/assistant', async () => {
@@ -544,9 +540,8 @@ describe('CodexAdapter', () => {
 
     it('counts and emits each repeated call/output independently (no dedup)', async () => {
       const info = await adapter.parseSessionInfo(dupPath);
-      // 2 function_call + 2 function_call_output. Count = 2 (one per call,
-      // outputs not counted — R5-29). The stream still emits all 4 for display.
-      expect(info?.toolMessageCount).toBe(2);
+      // 2 function_call + 2 function_call_output → 4 (M6).
+      expect(info?.toolMessageCount).toBe(4);
 
       const messages = [];
       for await (const m of adapter.streamMessages(dupPath)) messages.push(m);

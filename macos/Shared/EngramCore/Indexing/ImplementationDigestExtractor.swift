@@ -317,13 +317,49 @@ public enum ImplementationDigestExtractor {
         }
     }
 
+    /// Local calendar day for the action (matches Activity heatmap / costs).
+    /// ISO timestamps are parsed then reformatted in `TimeZone.current` so
+    /// UTC+8 morning work is not labeled as yesterday (M25).
     private static func dateKey(from timestamp: String?) -> String? {
-        guard let timestamp, timestamp.count >= 10 else { return nil }
+        guard let timestamp, !timestamp.isEmpty else { return nil }
+        if let date = parseTimestamp(timestamp) {
+            return localDayFormatter.string(from: date)
+        }
+        guard timestamp.count >= 10 else { return nil }
         let key = String(timestamp.prefix(10))
         guard key.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else {
             return nil
         }
         return key
+    }
+
+    private static let localDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar.current
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private static let isoFractionalFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static func parseTimestamp(_ timestamp: String) -> Date? {
+        if let date = isoFractionalFormatter.date(from: timestamp) { return date }
+        if let date = isoFormatter.date(from: timestamp) { return date }
+        let trimmed = timestamp.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let date = isoFractionalFormatter.date(from: trimmed) { return date }
+        return isoFormatter.date(from: trimmed)
     }
 
     private static func workKey(for title: String) -> String {
