@@ -165,13 +165,31 @@ describe('macOS release-verify bundle hygiene', () => {
   }
 
   describe('hygiene-only mode', () => {
-    it('passes without plist, structure, or codesign checks', () => {
-      const app = buildBareApp();
+    // M11: --hygiene-only still runs structural helper checks so per-PR CI
+    // catches a dropped EngramMCP/CLI/Service bundling script.
+    it('passes hygiene + structure without version or codesign checks', () => {
+      const app = buildStubApp();
       const { code, out } = runVerify(app, ['--hygiene-only']);
       expect(code).toBe(0);
       expect(out).toContain('bundle hygiene clean');
-      expect(out).toContain('release-verify: PASS (hygiene only)');
-      expect(out).not.toContain('structure present');
+      expect(out).toContain('structure present');
+      expect(out).toContain('release-verify: PASS (hygiene + structure only)');
+      expect(out).not.toContain('version short=');
+    });
+
+    it('fails when a helper is missing under hygiene-only (M11)', () => {
+      const app = buildStubApp();
+      rmSync(join(app, 'Contents', 'Helpers', 'EngramMCP'));
+      const { code, out } = runVerify(app, ['--hygiene-only']);
+      expect(code).not.toBe(0);
+      expect(out).toContain('missing Contents/Helpers/EngramMCP');
+    });
+
+    it('fails for a bare app missing the executable tree', () => {
+      const app = buildBareApp();
+      const { code, out } = runVerify(app, ['--hygiene-only']);
+      expect(code).not.toBe(0);
+      expect(out).toContain('missing main executable Contents/MacOS/Engram');
     });
 
     it('still fails when a forbidden artifact is present', () => {

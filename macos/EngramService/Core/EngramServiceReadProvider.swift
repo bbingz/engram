@@ -2129,26 +2129,36 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         return String(collapsed.prefix(500))
     }
 
-    nonisolated private static func defaultCommandLocator(_ name: String) -> String? {
-        let environment = ProcessInfo.processInfo.environment
+    /// Well-known absolute install locations preferred over PATH (SEC-L5).
+    /// A poisoned early PATH entry must not shadow Homebrew/system CLIs used for resume.
+    static let preferredCLIDirectories: [String] = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/sbin",
+    ]
+
+    /// Locate a resume CLI binary. Prefers fixed absolute install paths, then PATH.
+    nonisolated static func defaultCommandLocator(
+        _ name: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> String? {
         var seen = Set<String>()
-        let searchPaths = ((environment["PATH"] ?? "")
+        let pathDirs = (environment["PATH"] ?? "")
             .split(separator: ":")
             .map(String.init)
-            + [
-                "/opt/homebrew/bin",
-                "/usr/local/bin",
-                "/usr/bin",
-                "/bin",
-                "/opt/homebrew/sbin",
-                "/usr/local/sbin",
-            ])
+        // SEC-L5: check curated absolute directories first so PATH poisoning cannot
+        // win over a known system/Homebrew install of claude/codex/gemini.
+        let searchPaths = (preferredCLIDirectories + pathDirs)
             .filter { !$0.isEmpty && seen.insert($0).inserted }
         for directory in searchPaths {
             let path = URL(fileURLWithPath: directory, isDirectory: true)
                 .appendingPathComponent(name)
                 .path
-            guard FileManager.default.isExecutableFile(atPath: path) else { continue }
+            guard isExecutable(path) else { continue }
             return path
         }
         return nil

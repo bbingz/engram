@@ -8,6 +8,9 @@
 #   - Version: CFBundleVersion / CFBundleShortVersionString are non-default-or-empty
 #   - codesign --verify --deep --strict (works for ad-hoc and Developer ID)
 #
+# --hygiene-only runs hygiene + structural helper checks, then exits before
+# version/codesign (per-PR CI gate; M11).
+#
 # Distribution-only (skipped under --adhoc): requires a notarizable Developer ID build:
 #   - Hardened Runtime flag present  (codesign -dvvv | flags=...runtime)
 #   - Developer ID Application authority
@@ -58,7 +61,7 @@ fi
 echo "======================================"
 echo " release-verify: $APP"
 if [ "$HYGIENE_ONLY" -eq 1 ]; then
-  echo " mode: hygiene only"
+  echo " mode: hygiene + structure only"
 elif [ "$ADHOC" -eq 1 ]; then
   echo " mode: ad-hoc"
 else
@@ -89,17 +92,19 @@ fi
 [ "$hygiene_failed" -eq 0 ] || fail "bundle hygiene check failed (Node/dist artifacts present)"
 ok "bundle hygiene clean (no node/node_modules/dist/daemon.js/index.js/web.js)"
 
-if [ "$HYGIENE_ONLY" -eq 1 ]; then
-  echo "release-verify: PASS (hygiene only)"
-  exit 0
-fi
-
 # --- 2. Structural sanity ---
+# M11: structural helper checks run even under --hygiene-only so per-PR CI
+# catches a dropped helper-bundling postbuild before release/tag time.
 [ -f "$APP/Contents/MacOS/Engram" ] || fail "missing main executable Contents/MacOS/Engram"
 [ -f "$APP/Contents/Helpers/EngramMCP" ] || fail "missing Contents/Helpers/EngramMCP"
 [ -f "$APP/Contents/Helpers/EngramCLI" ] || fail "missing Contents/Helpers/EngramCLI"
 [ -f "$APP/Contents/Helpers/EngramService" ] || fail "missing Contents/Helpers/EngramService"
 ok "structure present (Engram + EngramCLI + EngramMCP + EngramService)"
+
+if [ "$HYGIENE_ONLY" -eq 1 ]; then
+  echo "release-verify: PASS (hygiene + structure only)"
+  exit 0
+fi
 
 # --- 3. Version is non-default / non-empty ---
 PLIST="$APP/Contents/Info.plist"

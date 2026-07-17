@@ -197,12 +197,14 @@ final class DatabaseManager: @unchecked Sendable {
             parts.append("AND COALESCE(end_time, start_time) >= ?")
             args.append(since)
         }
-        if let subAgent {
-            if subAgent {
-                parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
-            } else {
-                parts.append("AND (tier IS NULL OR tier != 'skip')")
-            }
+        // L7: skip-tier is noise and must stay hidden on default browse paths.
+        // `subAgent == true` intentionally keeps skip rows (subagents are skip);
+        // `nil` and `false` both exclude them so ActivityView.openMostRecent and
+        // any other default-nil caller cannot surface subagent noise.
+        if subAgent == true {
+            parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
+        } else {
+            parts.append("AND (tier IS NULL OR tier != 'skip')")
         }
     }
 
@@ -216,7 +218,7 @@ final class DatabaseManager: @unchecked Sendable {
         projects: Set<String> = [],  // empty = all
         since: String? = nil,
         includeHidden: Bool = false,
-        subAgent: Bool? = nil,       // nil=all, true=only sub-agents, false=hide sub-agents
+        subAgent: Bool? = nil,       // nil/false=hide skip tier; true=only sub-agents (incl. skip)
         topLevelOnly: Bool = false,
         humanDriven: Bool = false,
         favoritesOnly: Bool = false,
@@ -380,9 +382,10 @@ final class DatabaseManager: @unchecked Sendable {
                 parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL AND project IS NULL"]
                 args  = []
             }
-            if let subAgent {
-                if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
-                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
+            if subAgent == true {
+                parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
+            } else {
+                parts.append("AND (tier IS NULL OR tier != 'skip')")
             }
             parts.append("ORDER BY start_time DESC LIMIT ?")
             args.append(limit)
@@ -415,9 +418,10 @@ final class DatabaseManager: @unchecked Sendable {
                 parts.append("AND project IN (\(ph))")
                 projects.forEach { args.append($0) }
             }
-            if let subAgent {
-                if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
-                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
+            if subAgent == true {
+                parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
+            } else {
+                parts.append("AND (tier IS NULL OR tier != 'skip')")
             }
             return try Int.fetchOne(db, sql: parts.joined(separator: " "),
                                     arguments: StatementArguments(args)) ?? 0
@@ -962,40 +966,6 @@ final class DatabaseManager: @unchecked Sendable {
         }
     }
 
-    // MARK: - Timeline (chronological list)
-
-    /// Pure chronological list of sessions for Timeline view
-    func listSessionsChronologically(
-        sources: Set<String> = [],
-        projects: Set<String> = [],
-        subAgent: Bool? = nil,
-        limit: Int = 50,
-        offset: Int = 0
-    ) throws -> [Session] {
-        try readInBackground { db in
-            var parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL"]
-            var args: [DatabaseValueConvertible] = []
-            if !sources.isEmpty {
-                let ph = sources.map { _ in "?" }.joined(separator: ", ")
-                parts.append("AND source IN (\(ph))")
-                sources.forEach { args.append($0) }
-            }
-            if !projects.isEmpty {
-                let ph = projects.map { _ in "?" }.joined(separator: ", ")
-                parts.append("AND project IN (\(ph))")
-                projects.forEach { args.append($0) }
-            }
-            if let subAgent {
-                if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
-                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
-            }
-            parts.append("ORDER BY start_time DESC LIMIT ? OFFSET ?")
-            args.append(limit); args.append(offset)
-            return try Session.fetchAll(db, sql: parts.joined(separator: " "),
-                                        arguments: StatementArguments(args))
-        }
-    }
-
     // MARK: - Grouped Sessions view
 
     /// Get all group keys with counts for grouped view (by project or source)
@@ -1041,9 +1011,11 @@ final class DatabaseManager: @unchecked Sendable {
                 parts.append("AND project IN (\(ph))")
                 projects.forEach { args.append($0) }
             }
-            if let subAgent {
-                if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
-                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
+            // Match listSessions: default/false hide skip-tier noise; true keeps subagents.
+            if subAgent == true {
+                parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
+            } else {
+                parts.append("AND (tier IS NULL OR tier != 'skip')")
             }
             parts.append("GROUP BY group_key ORDER BY sort_value \(orderDir)")
 
@@ -1054,53 +1026,6 @@ final class DatabaseManager: @unchecked Sendable {
                 count: $0["count"] as Int,
                 lastUpdated: $0["sort_value"] as String
             ) }
-        }
-    }
-
-    /// Get sessions within a specific group
-    func listSessionsInGroup(
-        by mode: GroupingMode,
-        key: String,
-        sources: Set<String> = [],
-        projects: Set<String> = [],
-        subAgent: Bool? = nil,
-        sort: SessionSort = .createdDesc,
-        limit: Int = 100
-    ) throws -> [Session] {
-        try readInBackground { db in
-            let groupColumn = mode == .project ? "project" : "source"
-            var parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL"]
-            var args: [DatabaseValueConvertible] = []
-
-            // Group filter
-            if key == "(unknown)" {
-                parts.append("AND \(groupColumn) IS NULL")
-            } else {
-                parts.append("AND \(groupColumn) = ?")
-                args.append(key)
-            }
-
-            // Additional filters
-            if !sources.isEmpty {
-                let ph = sources.map { _ in "?" }.joined(separator: ", ")
-                parts.append("AND source IN (\(ph))")
-                sources.forEach { args.append($0) }
-            }
-            if !projects.isEmpty {
-                let ph = projects.map { _ in "?" }.joined(separator: ", ")
-                parts.append("AND project IN (\(ph))")
-                projects.forEach { args.append($0) }
-            }
-            if let subAgent {
-                if subAgent { parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')") }
-                else        { parts.append("AND (tier IS NULL OR tier != 'skip')") }
-            }
-
-            parts.append("ORDER BY \(sort.rawValue) LIMIT ?")
-            args.append(limit)
-
-            return try Session.fetchAll(db, sql: parts.joined(separator: " "),
-                                        arguments: StatementArguments(args))
         }
     }
 
@@ -1352,22 +1277,26 @@ final class DatabaseManager: @unchecked Sendable {
     }
 
     /// Returns session counts for the last 7 days (index 0 = 6 days ago, index 6 = today)
-    /// for sessions whose cwd starts with repoPath.
+    /// for sessions whose cwd equals repoPath or is a subdirectory of it.
     func sparklineData(for repoPath: String) throws -> [Int] {
         try readInBackground { db in
             // Bucket by LOCAL calendar day so it agrees with the Swift side, which
             // compares against the local start-of-day. Without 'localtime' the SQL
             // bucketed by UTC day and the day string was reparsed in local time,
             // causing an off-by-one bucket for sessions near midnight.
+            //
+            // L6: anchor at a path boundary (cwd = path OR cwd LIKE path/%) so a
+            // repo at `/Users/a/app` does not over-count sibling `/Users/a/app-v2`.
+            let escaped = CJKText.escapeLikePattern(repoPath)
             let rows = try Row.fetchAll(db, sql: """
                 SELECT date(start_time, 'localtime') as day, COUNT(*) as n
                 FROM sessions
                 WHERE hidden_at IS NULL
                   AND (tier IS NULL OR tier != 'skip')
-                  AND cwd LIKE ? ESCAPE '\\'
+                  AND (cwd = ? OR cwd LIKE ? ESCAPE '\\')
                   AND date(start_time, 'localtime') >= date('now', 'localtime', '-6 days')
                 GROUP BY day
-            """, arguments: ["\(CJKText.escapeLikePattern(repoPath))%"])
+            """, arguments: [repoPath, "\(escaped)/%"])
             var counts = [Int](repeating: 0, count: 7)
             let today = Calendar.current.startOfDay(for: Date())
             let fmt = DateFormatter()

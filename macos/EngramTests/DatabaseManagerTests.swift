@@ -965,6 +965,20 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(sessions.count, 4)
     }
 
+    /// L7: default `subAgent: nil` must hide skip-tier rows (ActivityView.openMostRecent).
+    @MainActor
+    func testListSessionsDefaultNilHidesSkipTier_repro() throws {
+        try insertTestSession(at: dbPath, id: "s-skip", tier: "skip", agentRole: "sub")
+        try insertTestSession(at: dbPath, id: "s-normal", tier: "normal")
+        try insertTestSession(at: dbPath, id: "s-null", tier: nil)
+
+        let sessions = try db.listSessions(sort: .createdDesc, limit: 10)
+        let ids = Set(sessions.map(\.id))
+        XCTAssertFalse(ids.contains("s-skip"), "L7: default listSessions must not leak skip-tier rows")
+        XCTAssertTrue(ids.contains("s-normal"))
+        XCTAssertTrue(ids.contains("s-null"))
+    }
+
     @MainActor
     func testCountSessionsExcludesSkipTier() throws {
         try insertTestSession(at: dbPath, id: "s1", tier: "normal")
@@ -973,6 +987,10 @@ final class DatabaseManagerTests: XCTestCase {
 
         let count = try db.countSessions(subAgent: false)
         XCTAssertEqual(count, 2) // normal + lite, skip excluded
+
+        // L7: default nil matches false for skip exclusion.
+        let defaultCount = try db.countSessions()
+        XCTAssertEqual(defaultCount, 2)
     }
 
     // MARK: - Observability
@@ -1219,9 +1237,30 @@ final class DatabaseManagerTests: XCTestCase {
         let today = utc.string(from: Date())
         try insertSessionWithCwd(at: dbPath, id: "in-repo", cwd: "/Users/test/repo/sub", startTime: today)
         try insertSessionWithCwd(at: dbPath, id: "other-repo", cwd: "/Users/test/elsewhere", startTime: today)
+        // Exact repo root cwd must also count.
+        try insertSessionWithCwd(at: dbPath, id: "at-root", cwd: "/Users/test/repo", startTime: today)
 
         let counts = try db.sparklineData(for: "/Users/test/repo")
-        XCTAssertEqual(counts.reduce(0, +), 1)
+        XCTAssertEqual(counts.reduce(0, +), 2)
+    }
+
+    /// L6: unanchored `cwd LIKE path%` over-counts sibling repos (`app` vs `app-v2`).
+    @MainActor
+    func testSparklineDataDoesNotMatchSiblingPathPrefix_repro() throws {
+        let utc = ISO8601DateFormatter()
+        utc.timeZone = TimeZone(identifier: "UTC")
+        let today = utc.string(from: Date())
+        try insertSessionWithCwd(at: dbPath, id: "app", cwd: "/Users/test/app", startTime: today)
+        try insertSessionWithCwd(at: dbPath, id: "app-child", cwd: "/Users/test/app/src", startTime: today)
+        try insertSessionWithCwd(at: dbPath, id: "app-v2", cwd: "/Users/test/app-v2", startTime: today)
+        try insertSessionWithCwd(at: dbPath, id: "app-v2-child", cwd: "/Users/test/app-v2/src", startTime: today)
+
+        let counts = try db.sparklineData(for: "/Users/test/app")
+        XCTAssertEqual(
+            counts.reduce(0, +),
+            2,
+            "L6: sibling repo app-v2 must not inflate sparkline for app; got \(counts)"
+        )
     }
 
     @MainActor
