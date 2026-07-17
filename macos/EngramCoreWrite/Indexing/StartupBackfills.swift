@@ -1468,6 +1468,7 @@ public enum StartupBackfills {
 
             let id: String = candidate["id"]
             let source: String = candidate["source"]
+            _ = source
             let agentRole: String? = candidate["agent_role"]
             let childCwd: String = candidate["cwd"]
             let childStartTime: String = candidate["start_time"]

@@ -178,7 +178,7 @@ enum EngramCLIArchiveTokenInput {
         guard isatty(STDIN_FILENO) == 0 else { throw EngramCLIArchiveError.ttyInputForbidden }
         var bytes = [UInt8]()
         bytes.reserveCapacity(maximumInputBytes)
-        defer { bytes.withUnsafeMutableBytes { $0.initializeMemory(as: UInt8.self, repeating: 0) } }
+        defer { _ = bytes.withUnsafeMutableBytes { $0.initializeMemory(as: UInt8.self, repeating: 0) } }
         while bytes.count <= maximumInputBytes {
             var byte: UInt8 = 0
             let count = Darwin.read(STDIN_FILENO, &byte, 1)

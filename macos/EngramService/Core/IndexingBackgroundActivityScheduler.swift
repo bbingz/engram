@@ -95,18 +95,19 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
 
     /// Cancel schedule wait + active work, await work exit, finish OS activity.
     private func cancelAndAwaitWork(completeOSActivity: Bool) async {
-        lock.lock()
-        cancelledWhileWaiting = true
-        scheduler?.invalidate()
-        scheduler = nil
-        let wait = scheduleWait
-        scheduleWait = nil
-        let work = activeWork
-        let completion = activityCompletion
-        if phase == .awaitingSchedule {
-            phase = .idle
+        let (wait, work, completion) = lock.withLock {
+            cancelledWhileWaiting = true
+            scheduler?.invalidate()
+            scheduler = nil
+            let wait = scheduleWait
+            scheduleWait = nil
+            let work = activeWork
+            let completion = activityCompletion
+            if phase == .awaitingSchedule {
+                phase = .idle
+            }
+            return (wait, work, completion)
         }
-        lock.unlock()
 
         wait?.resume(returning: .cancelled)
         work?.cancel()
@@ -115,12 +116,12 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
             await work.value
         }
 
-        lock.lock()
-        activeWork = nil
-        if phase == .runningWork {
-            phase = .idle
+        lock.withLock {
+            activeWork = nil
+            if phase == .runningWork {
+                phase = .idle
+            }
         }
-        lock.unlock()
 
         if completeOSActivity {
             finishActivityOnce(completion)
@@ -235,13 +236,13 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
             await work()
         }
 
-        lock.lock()
-        activeWork = workTask
-        activityCompletion = completeActivity
-        activityFinished = false
-        phase = .runningWork
-        let alreadyCancelled = cancelledWhileWaiting || Task.isCancelled
-        lock.unlock()
+        let alreadyCancelled = lock.withLock {
+            activeWork = workTask
+            activityCompletion = completeActivity
+            activityFinished = false
+            phase = .runningWork
+            return cancelledWhileWaiting || Task.isCancelled
+        }
 
         if alreadyCancelled {
             workTask.cancel()
@@ -253,15 +254,15 @@ public final class NSIndexingBackgroundActivityScheduler: IndexingBackgroundActi
             workTask.cancel()
         }
 
-        lock.lock()
-        activeWork = nil
-        let wasCancelled = cancelledWhileWaiting || Task.isCancelled
-        if !wasCancelled {
-            cancelledWhileWaiting = false
+        let (wasCancelled, completion) = lock.withLock {
+            activeWork = nil
+            let wasCancelled = cancelledWhileWaiting || Task.isCancelled
+            if !wasCancelled {
+                cancelledWhileWaiting = false
+            }
+            phase = .idle
+            return (wasCancelled, activityCompletion)
         }
-        phase = .idle
-        let completion = activityCompletion
-        lock.unlock()
 
         finishActivityOnce(completion ?? completeActivity)
         return wasCancelled ? .cancelled : .run
@@ -317,15 +318,15 @@ public final class SleepIndexingBackgroundActivityScheduler: IndexingBackgroundA
         } catch {
             return .cancelled
         }
-        lock.lock()
-        let preCancel = cancelRequested || Task.isCancelled
-        lock.unlock()
+        let preCancel = lock.withLock {
+            cancelRequested || Task.isCancelled
+        }
         if preCancel { return .cancelled }
 
         let workTask = Task { await work() }
-        lock.lock()
-        activeWork = workTask
-        lock.unlock()
+        lock.withLock {
+            activeWork = workTask
+        }
 
         await withTaskCancellationHandler {
             await workTask.value
@@ -333,20 +334,22 @@ public final class SleepIndexingBackgroundActivityScheduler: IndexingBackgroundA
             workTask.cancel()
         }
 
-        lock.lock()
-        activeWork = nil
-        let cancelled = Task.isCancelled || cancelRequested
-        cancelRequested = false
-        lock.unlock()
+        let cancelled = lock.withLock {
+            activeWork = nil
+            let cancelled = Task.isCancelled || cancelRequested
+            cancelRequested = false
+            return cancelled
+        }
         return cancelled ? .cancelled : .run
     }
 
     public func invalidate() async {
-        lock.lock()
-        cancelRequested = true
-        let work = activeWork
-        activeWork = nil
-        lock.unlock()
+        let work = lock.withLock {
+            cancelRequested = true
+            let work = activeWork
+            activeWork = nil
+            return work
+        }
         work?.cancel()
         if let work {
             await work.value
@@ -388,9 +391,9 @@ public final class RecordingIndexingBackgroundActivityScheduler: IndexingBackgro
         }
         if Task.isCancelled { return .cancelled }
 
-        lock.lock()
-        workInvocations += 1
-        lock.unlock()
+        lock.withLock {
+            workInvocations += 1
+        }
 
         let delay = workDelayNanoseconds
         let workTask = Task {
@@ -404,9 +407,9 @@ public final class RecordingIndexingBackgroundActivityScheduler: IndexingBackgro
             guard !Task.isCancelled else { return }
             await work()
         }
-        lock.lock()
-        activeWork = workTask
-        lock.unlock()
+        lock.withLock {
+            activeWork = workTask
+        }
 
         await withTaskCancellationHandler {
             await workTask.value
@@ -414,32 +417,34 @@ public final class RecordingIndexingBackgroundActivityScheduler: IndexingBackgro
             workTask.cancel()
         }
 
-        lock.lock()
-        activeWork = nil
-        let cancelled = Task.isCancelled || cancelRequested
-        cancelRequested = false
-        if cancelled {
-            lastCancelWaitedForWork = true
-        } else {
-            finishedAfterWorkCount += 1
-            lastRunFinishedAfterWork = true
+        let cancelled = lock.withLock {
+            activeWork = nil
+            let cancelled = Task.isCancelled || cancelRequested
+            cancelRequested = false
+            if cancelled {
+                lastCancelWaitedForWork = true
+            } else {
+                finishedAfterWorkCount += 1
+                lastRunFinishedAfterWork = true
+            }
+            return cancelled
         }
-        lock.unlock()
         return cancelled ? .cancelled : .run
     }
 
     public func invalidate() async {
-        lock.lock()
-        cancelRequested = true
-        let work = activeWork
-        activeWork = nil
-        lock.unlock()
+        let work = lock.withLock {
+            cancelRequested = true
+            let work = activeWork
+            activeWork = nil
+            return work
+        }
         work?.cancel()
         if let work {
             await work.value
-            lock.lock()
-            lastInvalidateWaitedForWork = true
-            lock.unlock()
+            lock.withLock {
+                lastInvalidateWaitedForWork = true
+            }
         }
     }
 }

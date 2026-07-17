@@ -1,6 +1,5 @@
 // macos/Engram/Views/Settings/SettingsIO.swift
 import Foundation
-import Security
 
 let engramSettingsPath = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".engram/settings.json")
@@ -65,39 +64,35 @@ private func writeEngramSettingsDataSecurelyUnlocked(
 
 // MARK: - Keychain Helper
 
-/// App UI facade over shared `KeychainSecretStore`. Keeps debug/unsigned-build
+/// App UI facade over shared `KeychainSecretStore`. Keeps the development-build
 /// skip policy local so Xcode runs never prompt for Keychain authorization.
 enum KeychainHelper {
-    /// Debug/ad-hoc builds skip Keychain to avoid authorization dialogs.
-    /// Detection: if the binary runs from DerivedData (Xcode build) or is not
-    /// properly code-signed, Keychain access will prompt — so we skip it.
-    private static let isUnsignedBuild: Bool = {
-        // Check if running from Xcode DerivedData (always true for debug builds)
+    /// Debug and Xcode-produced builds skip Keychain to avoid authorization dialogs.
+    /// Installed Release builds use Keychain without synchronously revalidating
+    /// their own code signature on the main thread.
+    private static let shouldBypassKeychain: Bool = {
+        #if DEBUG
+        return true
+        #else
         let path = Bundle.main.bundlePath
-        if path.contains("DerivedData") { return true }
-
-        // Check if app has a valid code signature with keychain-access-groups entitlement
-        var code: SecStaticCode?
-        guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &code) == errSecSuccess,
-              let staticCode = code else { return true }
-        let flags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures)
-        return SecStaticCodeCheckValidity(staticCode, flags, nil) != errSecSuccess
+        return path.contains("DerivedData")
+        #endif
     }()
 
     static func get(_ key: String) -> String? {
-        if isUnsignedBuild { return nil }  // Skip Keychain in Debug — use plaintext JSON fallback
+        if shouldBypassKeychain { return nil }  // Use plaintext JSON fallback in development builds
         return KeychainSecretStore.get(key)
     }
 
     /// Save a value to the Keychain. Returns true on success.
     @discardableResult
     static func set(_ key: String, value: String) -> Bool {
-        if isUnsignedBuild { return false }  // Skip Keychain in Debug
+        if shouldBypassKeychain { return false }
         return KeychainSecretStore.set(key, value: value)
     }
 
     static func delete(_ key: String) {
-        if isUnsignedBuild { return }  // Skip Keychain in Debug
+        if shouldBypassKeychain { return }
         KeychainSecretStore.delete(key)
     }
 }

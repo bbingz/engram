@@ -230,8 +230,8 @@ public final class SwiftIndexer {
                                 failure: failure,
                                 previous: knownParseState
                             )
-                            Self.log.error(
-                                "session tail parse failed: source=\(adapter.source.rawValue, privacy: .private) reason=\(failure.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
+                            Self.log.notice(
+                                "session tail skipped: source=\(adapter.source.rawValue, privacy: .private) reason=\(failure.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
                             )
                             continue
                         }
@@ -278,9 +278,15 @@ public final class SwiftIndexer {
                             failure: reason,
                             previous: fileIndexStates?[locator]
                         )
-                        Self.log.error(
-                            "session parse failed: source=\(adapter.source.rawValue, privacy: .private) reason=\(reason.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
-                        )
+                        if FileIndexState.isTerminalFailure(reason) {
+                            Self.log.notice(
+                                "session skipped: source=\(adapter.source.rawValue, privacy: .private) reason=\(reason.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
+                            )
+                        } else {
+                            Self.log.error(
+                                "session parse failed: source=\(adapter.source.rawValue, privacy: .private) reason=\(reason.rawValue, privacy: .private) locator=\(locator, privacy: .private)"
+                            )
+                        }
                         continue
                     case .success(let scan):
                         var info = scan.info
@@ -566,7 +572,7 @@ public final class SwiftIndexer {
         }
 
         func contentFingerprintHex() -> String {
-            var hasher = contentDigest
+            let hasher = contentDigest
             return hasher.finalize().map { String(format: "%02x", $0) }.joined()
         }
 
