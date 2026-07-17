@@ -1060,9 +1060,9 @@ final class DatabaseManagerTests: XCTestCase {
     /// M5: dashboard aggregates must exclude skip-tier (subagent noise).
     @MainActor
     func testDashboardAggregatesExcludeSkipTier_repro() throws {
-        try insertTestSession(at: dbPath, id: "normal-1", source: "codex", tier: "normal", messageCount: 10)
-        try insertTestSession(at: dbPath, id: "skip-1", source: "codex", tier: "skip", messageCount: 99)
-        try insertTestSession(at: dbPath, id: "skip-2", source: "claude-code", tier: "skip", messageCount: 50)
+        try insertTestSession(at: dbPath, id: "normal-1", source: "codex", messageCount: 10, tier: "normal")
+        try insertTestSession(at: dbPath, id: "skip-1", source: "codex", messageCount: 99, tier: "skip")
+        try insertTestSession(at: dbPath, id: "skip-2", source: "claude-code", messageCount: 50, tier: "skip")
 
         let kpi = try db.kpiStats()
         XCTAssertEqual(kpi.sessions, 1, "M5: kpiStats must not count skip-tier")

@@ -7,6 +7,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: M5 complete aggregates + batch D repros + merge E/F
+
+- M5: `hourlyActivity`, `sourceDistribution`, `dailySourceActivity` exclude skip-tier
+  (with `testDashboardAggregatesExcludeSkipTier_repro`).
+- Batch D mediums (M9/M18/M19/M20/M24) covered by `AuditMediumMCPReproTests`.
+- Merged batch E (service/embed) and F (UI/adapters) into closeout branch.
+- M21 marked accepted residual (debounce only).
+
 ### Fixed: archive HEAD existence-only (M14) + audit closeout disposition
 
 - M14: `ArchiveStore.hasObject`/`hasManifest` lstat-only probes; HEAD routes no longer decrypt full payloads.

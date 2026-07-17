@@ -398,4 +398,21 @@ final class DeprecatedSettingsScrubTests: XCTestCase {
             "SEC-M3: fail-closed path must write @keychain marker, not raw secret"
         )
     }
+
+    /// M20: Test Connection must guard URL(string:) instead of force-unwrap.
+    func testAISettingsTestConnectionGuardsInvalidURL_repro() throws {
+        let ai = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
+        XCTAssertFalse(
+            ai.contains("URLRequest(url: URL(string: testURL)!)"),
+            "M20: must not force-unwrap free-text testURL"
+        )
+        XCTAssertTrue(
+            ai.contains("guard let parsed = URL(string: testURL)"),
+            "M20: must guard-let parse URL"
+        )
+        XCTAssertTrue(
+            ai.contains(".failed(\"Invalid URL\")") || ai.contains("Invalid URL"),
+            "M20: invalid URL must surface failed status"
+        )
+    }
 }
