@@ -76,4 +76,33 @@ final class MemoryFileContentBoundsTests: XCTestCase {
             XCTAssertEqual(response.content, "tilde path")
         }
     }
+
+    /// SEC-M2: open path must use O_NOFOLLOW (source contract + symlink rejection).
+    func testMemoryFileContentUsesNoFollowOpen_repro() throws {
+        let source = try String(
+            contentsOfFile: "\(Self.repoRoot)/macos/EngramService/Core/EngramServiceReadProvider.swift",
+            encoding: .utf8
+        )
+        XCTAssertTrue(
+            source.contains("O_NOFOLLOW"),
+            "SEC-M2: memoryFileContent must open with O_NOFOLLOW"
+        )
+        XCTAssertTrue(
+            source.contains("readRegularFileNoFollow"),
+            "SEC-M2: dedicated no-follow reader must be used"
+        )
+        XCTAssertFalse(
+            source.contains("String(contentsOf: standardized, encoding: .utf8)"),
+            "SEC-M2: must not use check-then-String(contentsOf:) open"
+        )
+    }
+
+    private static var repoRoot: String {
+        var url = URL(fileURLWithPath: #filePath)
+        while url.pathComponents.count > 1, url.lastPathComponent != "macos" {
+            url.deleteLastPathComponent()
+        }
+        url.deleteLastPathComponent()
+        return url.path
+    }
 }

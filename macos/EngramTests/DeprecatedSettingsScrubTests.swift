@@ -386,4 +386,16 @@ final class DeprecatedSettingsScrubTests: XCTestCase {
         XCTAssertEqual(rows.first { $0.id == "codex" }?.isDefaultSource, true)
         XCTAssertEqual(rows.first { $0.id == "commandcode" }?.isDefaultSource, false)
     }
+
+    /// SEC-M3: Release must not fall back to plaintext settings for API keys.
+    func testAISettingsFailClosedOnKeychainWithoutPlaintextFallback_repro() throws {
+        let settingsIO = try source("macos/Engram/Views/Settings/SettingsIO.swift")
+        let ai = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
+        XCTAssertTrue(settingsIO.contains("allowsPlaintextSettingsFallback"))
+        XCTAssertTrue(ai.contains("KeychainHelper.allowsPlaintextSettingsFallback"))
+        XCTAssertTrue(
+            ai.contains("mutateEngramSettings { $0[\"aiApiKey\"] = \"@keychain\" }"),
+            "SEC-M3: fail-closed path must write @keychain marker, not raw secret"
+        )
+    }
 }

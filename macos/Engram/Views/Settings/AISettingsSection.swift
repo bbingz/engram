@@ -321,14 +321,19 @@ struct AISettingsSection: View {
 
     private func saveAISettings() {
         guard !isLoadingSettings else { return }
-        // Try Keychain first; fall back to plaintext JSON for ad-hoc builds
+        // SEC-M3: Keychain first. DEBUG/DerivedData may fall back to plaintext
+        // via KeychainHelper.shouldBypassKeychain; Release never writes secrets
+        // into settings.json when Keychain save fails.
         if !aiApiKey.isEmpty {
             let saved = KeychainHelper.set("aiApiKey", value: aiApiKey)
             if saved {
                 mutateEngramSettings { $0["aiApiKey"] = "@keychain" }
-            } else {
-                // Keychain unavailable (ad-hoc build) — store in JSON
+            } else if KeychainHelper.allowsPlaintextSettingsFallback {
                 mutateEngramSettings { $0["aiApiKey"] = aiApiKey }
+            } else {
+                // Fail closed: keep previous settings marker if any; do not persist
+                // the secret in plaintext JSON.
+                mutateEngramSettings { $0["aiApiKey"] = "@keychain" }
             }
         } else {
             KeychainHelper.delete("aiApiKey")
@@ -375,8 +380,10 @@ struct AISettingsSection: View {
             let saved = KeychainHelper.set("titleApiKey", value: titleApiKey)
             if saved {
                 mutateEngramSettings { $0["titleApiKey"] = "@keychain" }
-            } else {
+            } else if KeychainHelper.allowsPlaintextSettingsFallback {
                 mutateEngramSettings { $0["titleApiKey"] = titleApiKey }
+            } else {
+                mutateEngramSettings { $0["titleApiKey"] = "@keychain" }
             }
         case .deleteExisting:
             deleteTitleAPIKey()

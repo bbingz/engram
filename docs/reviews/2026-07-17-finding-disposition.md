@@ -65,12 +65,12 @@
 | L34 | full-low | pending-fix | E |  |
 | L35 | full-low | accepted-residual | E | EngramCoreSchemaTool unused target — accept residual or remove later |
 | L36 | full-low | pending-fix | E |  |
-| SEC-H1 | security | pending-fix | B |  |
+| SEC-H1 | security | fixed | B |  |
 | SEC-H2 | security | fixed | A |  |
 | SEC-M1 | security | fixed | A |  |
-| SEC-M2 | security | pending-fix | B |  |
-| SEC-M3 | security | pending-fix | B |  |
-| SEC-M4 | security | pending-fix | B |  |
+| SEC-M2 | security | fixed | B |  |
+| SEC-M3 | security | fixed | B |  |
+| SEC-M4 | security | accepted-residual | B |  |
 | SEC-M5 | security | accepted-residual | E | Product same-user MCP data plane; document only |
 | SEC-L1 | security | pending-fix | E |  |
 | SEC-L2 | security | pending-fix | E |  |

@@ -79,6 +79,9 @@ enum KeychainHelper {
         #endif
     }()
 
+    /// SEC-M3: only DEBUG/DerivedData may persist API keys as plaintext in settings.json.
+    static var allowsPlaintextSettingsFallback: Bool { shouldBypassKeychain }
+
     static func get(_ key: String) -> String? {
         if shouldBypassKeychain { return nil }  // Use plaintext JSON fallback in development builds
         return KeychainSecretStore.get(key)

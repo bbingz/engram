@@ -319,17 +319,27 @@ final class EngramRemoteServerTests: XCTestCase {
         XCTAssertNoThrow(try EngramRemoteBackend(baseURL: URL(string: "http://127.0.0.1:8787")!, token: "t"))
 
         // Permissive (requireTLS: false): plain HTTP allowed to private / Tailscale /
-        // .ts.net / .local / bare LAN hosts — the transport is already trusted.
+        // .ts.net / .local — never bare single-label (DNS may resolve public).
         for ok in ["http://100.125.101.60:8787",              // Tailscale CGNAT 100.64/10
                    "http://192.168.1.50:8787",                // RFC1918
                    "http://10.0.10.100:8787",                 // RFC1918
                    "http://172.16.5.5:8787",                  // RFC1918
                    "http://macmini-hq.tail1cb16.ts.net:8443", // Tailscale MagicDNS
-                   "http://macmini.local:8787",               // mDNS
-                   "http://macmini-hq:8787"] {                // bare single-label LAN name
+                   "http://macmini.local:8787"] {             // mDNS
             XCTAssertNoThrow(
                 try EngramRemoteBackend(baseURL: URL(string: ok)!, token: "t", requireTLS: false),
                 "expected \(ok) to be allowed in permissive mode")
+        }
+
+        // SEC-H1: bare single-label hostnames are NOT private — DNS can resolve
+        // them to a public A record and ship the bearer token cleartext.
+        XCTAssertThrowsError(
+            try EngramRemoteBackend(baseURL: URL(string: "http://macmini-hq:8787")!, token: "t", requireTLS: false),
+            "SEC-H1: bare single-label HTTP must be refused even when requireTLS=false"
+        ) { error in
+            guard case EngramRemoteBackendError.insecureURL = error else {
+                return XCTFail("expected insecureURL for bare label, got \(error)")
+            }
         }
 
         // ...but plaintext to a PUBLIC host is still refused, even permissive — a
@@ -347,6 +357,17 @@ final class EngramRemoteServerTests: XCTestCase {
         // HTTPS is always accepted, in either mode and for any host.
         XCTAssertNoThrow(try EngramRemoteBackend(baseURL: URL(string: "https://example.com")!, token: "t", requireTLS: false))
         XCTAssertNoThrow(try EngramRemoteBackend(baseURL: URL(string: "https://100.125.101.60:8443")!, token: "t"))
+    }
+
+    /// SEC-H1: product settings default for remoteOffloadRequireTLS is true (fail-closed).
+    func testRemoteOffloadRequireTLSDefaultsTrue_repro() {
+        // Mirror RemoteSyncConfig.read default: missing key → true.
+        let settings: [String: Any] = [:]
+        let requireTLS = (settings["remoteOffloadRequireTLS"] as? Bool) ?? true
+        XCTAssertTrue(requireTLS, "SEC-H1: product default must prefer TLS")
+        // Explicit false remains allowed for Tailscale cleartext ops.
+        let explicit = (["remoteOffloadRequireTLS": false] as [String: Any])["remoteOffloadRequireTLS"] as? Bool
+        XCTAssertEqual(explicit, false)
     }
 
     private func regularFileBytes(under root: URL) throws -> [String: Data] {

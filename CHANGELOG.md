@@ -7,6 +7,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: security transport + secrets defaults (SEC-H1/M2/M3)
+
+- SEC-H1: refuse bare single-label hosts for plain HTTP offload; product default
+  `remoteOffloadRequireTLS` is now `true` (explicit false still allows Tailscale/RFC1918 HTTP).
+- SEC-M2: `memoryFileContent` opens with `O_NOFOLLOW|O_CLOEXEC` + fstat (no check-then-String(contentsOf:)).
+- SEC-M3: Release Keychain failure no longer writes API keys into settings.json plaintext
+  (`allowsPlaintextSettingsFallback` only for DEBUG/DerivedData).
+- SEC-M4: documented as accepted residual when `requireTLS=false` is explicit for Tailscale
+  archive replicas (ops choice; origin policy already Tailscale-only for HTTP).
+
 ### Fixed: security P0 from 2026-07-17 audit (SEC-M1, SEC-H2, SEC-L3)
 
 - SEC-M1: removed world-readable `/tmp/engram-terminal.log` writes from

@@ -46,14 +46,19 @@ public struct EngramRemoteBackend: RemoteStorageBackend {
 
     /// Hosts on a trusted private network where plaintext HTTP is acceptable when
     /// `requireTLS` is off: RFC1918 / CGNAT(Tailscale `100.64/10`) / link-local
-    /// IPv4 literals, the `.ts.net` (MagicDNS) and `.local` (mDNS) suffixes, and
-    /// bare single-label LAN hostnames. Public DNS names and public IPs still
-    /// require TLS.
+    /// IPv4 literals, plus `.ts.net` (MagicDNS) and `.local` (mDNS) suffixes.
+    ///
+    /// SEC-H1: bare single-label names are **not** treated as private — DNS may
+    /// resolve them to a public address and cleartext would leak the bearer token.
     static func isPrivateHost(_ host: String) -> Bool {
         let h = host.lowercased()
         guard !h.isEmpty else { return false }
         if h.hasSuffix(".ts.net") || h.hasSuffix(".local") { return true }
-        if !h.contains(".") && !h.contains(":") { return true }  // bare single-label LAN name
+        // IPv6 Tailscale ULA prefix fd7a:115c:a1e0::/48 (literal forms only).
+        if h.contains(":"),
+           h.hasPrefix("fd7a:115c:a1e0") || h.hasPrefix("[fd7a:115c:a1e0") {
+            return true
+        }
         let octets = h.split(separator: ".").compactMap { UInt8($0) }  // IPv4 literal → 4 in-range octets
         guard octets.count == 4 else { return false }
         switch (octets[0], octets[1]) {
