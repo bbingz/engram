@@ -158,6 +158,12 @@ final class MCPDatabase {
         if !includeAll, (try? sessionsHaveHumanDrivenColumns()) == true {
             conditions.append("(\(HumanDrivenFilter.sqlPredicate))")
         }
+        // M18: match app top-level + non-skip defaults when include_all is false.
+        if !includeAll {
+            conditions.append("parent_session_id IS NULL")
+            conditions.append("suggested_parent_id IS NULL")
+            conditions.append("(tier IS NULL OR tier != 'skip')")
+        }
         var values: [DatabaseValueConvertible?] = []
         if let source {
             conditions.append("source = ?")
@@ -225,7 +231,8 @@ final class MCPDatabase {
         case "project":
             groupExpr = "s.project"
         case "day":
-            groupExpr = "date(s.start_time)"
+            // M24: local day — parity with service costs / heatmaps.
+            groupExpr = "date(s.start_time, 'localtime')"
         default:
             groupExpr = "c.model"
         }
@@ -240,7 +247,7 @@ final class MCPDatabase {
                COUNT(*) AS sessionCount
         FROM session_costs c
         JOIN sessions s ON c.session_id = s.id
-        WHERE 1 = 1
+        WHERE s.hidden_at IS NULL
         """
         var arguments: [String: DatabaseValueConvertible?] = [:]
         if let since {
@@ -1551,13 +1558,14 @@ final class MCPDatabase {
 
     func totalCostSince(_ since: String) throws -> Double {
         try queue.read { db in
+            // M19: exclude hidden (trashed) sessions — parity with service costs().
             let row = try Row.fetchOne(
                 db,
                 sql: """
                 SELECT SUM(c.cost_usd) AS cost
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
-                WHERE s.start_time >= ?
+                WHERE s.hidden_at IS NULL AND s.start_time >= ?
                 """,
                 arguments: [since]
             )
@@ -1584,7 +1592,7 @@ final class MCPDatabase {
                        COUNT(*) AS sessions
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
-                WHERE s.start_time >= ?
+                WHERE s.hidden_at IS NULL AND s.start_time >= ?
                 GROUP BY \(groupExpr)
                 HAVING SUM(c.cost_usd) > 0
                 ORDER BY cost DESC
@@ -1735,7 +1743,8 @@ final class MCPDatabase {
                 SELECT SUM(c.cost_usd) AS cost
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
-                WHERE s.start_time >= ? AND s.start_time < ?
+                WHERE s.hidden_at IS NULL
+                  AND s.start_time >= ? AND s.start_time < ?
                 """,
                 arguments: [start, end]
             )

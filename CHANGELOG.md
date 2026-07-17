@@ -7,6 +7,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: audit mediums (MCP parity, KPI skip, Gemini sidecar, Test Connection)
+
+- M5: KPI/dailyActivity exclude skip-tier sessions.
+- M9: clamp `list_sessions`/`file_activity` limits (no negative LIMIT).
+- M18: `list_sessions` top-level + non-skip filters when `include_all=false`.
+- M19: cost queries exclude `hidden_at` sessions.
+- M20: AI settings Test Connection no longer force-unwraps URL.
+- M23: Gemini sidecar empty/self parentSessionId rejected.
+- M24: `get_costs` day buckets use localtime.
+- M12: streaming JsonlPatch boundary regression test (carry already present).
+
 ### Fixed: audit Highs H1 Projects counts + H2 MCP CJK search
 
 - H1: `listSessionsByProject` uses SQL GROUP BY counts over the full filtered set

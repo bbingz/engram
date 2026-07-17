@@ -155,7 +155,10 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
                     summaryMessageCount: nil,
                     tier: nil,
                     qualityScore: nil,
-                    parentSessionId: JSONLAdapterSupport.string(sidecar?["parentSessionId"]),
+                    parentSessionId: Self.validatedSidecarParentSessionId(
+                        sessionId: sessionId,
+                        raw: JSONLAdapterSupport.string(sidecar?["parentSessionId"])
+                    ),
                     suggestedParentId: nil
                 )
             )
@@ -229,6 +232,15 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
             .deletingLastPathComponent()
             .appendingPathComponent("\(sessionId).engram.json")
         return try? Phase4AdapterSupport.readJSONObject(locator: sidecarURL.path, limits: limits)
+    }
+
+    /// M23: never promote empty/self sidecar parent ids to confirmed links
+    /// (would hide the session forever on top-level surfaces).
+    static func validatedSidecarParentSessionId(sessionId: String, raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != sessionId else { return nil }
+        return trimmed
     }
 
     private static func readSession(locator: String, limits: ParserLimits) throws -> Phase4AdapterSupport.JSONObject {

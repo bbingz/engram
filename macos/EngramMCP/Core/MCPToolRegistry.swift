@@ -877,13 +877,16 @@ enum MCPToolRegistry {
         switch name {
         case "list_sessions":
             let database = try MCPDatabase(path: config.dbPath)
+            // M9: clamp limit to [1, 100] — SQLite treats negative LIMIT as unbounded.
+            let listLimit = min(max(arguments["limit"]?.intValue ?? 20, 1), 100)
+            let listOffset = max(arguments["offset"]?.intValue ?? 0, 0)
             let structured = try database.listSessions(
                 source: arguments["source"]?.stringValue,
                 project: arguments["project"]?.stringValue,
                 since: arguments["since"]?.stringValue,
                 until: arguments["until"]?.stringValue,
-                limit: min(arguments["limit"]?.intValue ?? 20, 100),
-                offset: arguments["offset"]?.intValue ?? 0,
+                limit: listLimit,
+                offset: listOffset,
                 includeAll: arguments["include_all"]?.boolValue ?? false
             )
             return .toolSuccess(structured)
@@ -914,10 +917,12 @@ enum MCPToolRegistry {
             return .toolSuccess(structured)
         case "file_activity":
             let database = try MCPDatabase(path: config.dbPath)
+            // M9: clamp limit like search/list_sessions.
+            let activityLimit = min(max(arguments["limit"]?.intValue ?? 50, 1), 200)
             let structured = try database.getFileActivity(
                 project: arguments["project"]?.stringValue,
                 since: arguments["since"]?.stringValue,
-                limit: arguments["limit"]?.intValue ?? 50
+                limit: activityLimit
             )
             return .toolSuccess(structured)
         case "project_timeline":

@@ -246,7 +246,14 @@ struct AISettingsSection: View {
                                 : appendAPIPath("/v1/chat/completions", to: url)
                             Task {
                                 do {
-                                    var req = URLRequest(url: URL(string: testURL)!)
+                                    // M20: free-text Base URL must not force-unwrap.
+                                    guard let parsed = URL(string: testURL),
+                                          parsed.scheme != nil,
+                                          parsed.host != nil else {
+                                        titleTestStatus = .failed("Invalid URL")
+                                        return
+                                    }
+                                    var req = URLRequest(url: parsed)
                                     if titleProvider != "ollama" {
                                         req.httpMethod = "POST"
                                         req.setValue("application/json", forHTTPHeaderField: "Content-Type")

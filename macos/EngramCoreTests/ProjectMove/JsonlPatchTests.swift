@@ -310,6 +310,32 @@ final class JsonlPatchTests: XCTestCase {
         )
     }
 
+    /// M12: path token straddling the 1 MiB streaming chunk cut must still patch.
+    func testStreamingPatchCatchesNeedleAtChunkBoundary_repro() throws {
+        let path = tmpRoot.appendingPathComponent("boundary.jsonl").path
+        let oldPath = "/Users/test/old-project-path"
+        let newPath = "/Users/test/new-project-path"
+        let chunk = 1024 * 1024
+        // Place the needle so it straddles the first 1 MiB boundary.
+        let prefixLen = chunk - (oldPath.utf8.count / 2)
+        var data = Data(repeating: UInt8(ascii: "x"), count: prefixLen)
+        data.append(Data("\"cwd\":\"\(oldPath)\"".utf8))
+        data.append(Data(repeating: UInt8(ascii: "y"), count: 64 * 1024))
+        // Force streaming path (> maxInMemoryBytes).
+        let pad = Int(JsonlPatch.maxInMemoryBytes) + 1024 - data.count
+        if pad > 0 {
+            data.append(Data(repeating: UInt8(ascii: "z"), count: pad))
+        }
+        try data.write(to: URL(fileURLWithPath: path))
+
+        let count = try JsonlPatch.patchFile(at: path, oldPath: oldPath, newPath: newPath)
+        XCTAssertGreaterThanOrEqual(count, 1, "M12: boundary-straddling path must be patched")
+        let text = try String(contentsOfFile: path, encoding: .utf8)
+        XCTAssertTrue(text.contains(newPath), "M12: new path must appear in output")
+        XCTAssertFalse(text.contains(oldPath), "M12: old path must not remain")
+    }
+
+
     func testPatchFileRejectsSymlinkSource() throws {
         let target = tmpRoot.appendingPathComponent("target.jsonl")
         try "\"cwd\":\"/old\"".write(to: target, atomically: true, encoding: .utf8)

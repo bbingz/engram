@@ -1152,13 +1152,16 @@ final class DatabaseManager: @unchecked Sendable {
 
     func kpiStats() throws -> KPIStats {
         try readInBackground { db in
+            // M5: exclude skip-tier noise so Home KPI matches browsable sessions.
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT
                     COUNT(*) as sessions,
                     COUNT(DISTINCT source) as sources,
                     SUM(message_count) as messages,
                     COUNT(DISTINCT project) as projects
-                FROM sessions WHERE hidden_at IS NULL
+                FROM sessions
+                WHERE hidden_at IS NULL
+                  AND (tier IS NULL OR tier != 'skip')
             """) else {
                 return KPIStats(sessions: 0, sources: 0, messages: 0, projects: 0)
             }
@@ -1177,6 +1180,7 @@ final class DatabaseManager: @unchecked Sendable {
                 SELECT date(start_time, 'localtime') as day, COUNT(*) as count
                 FROM sessions
                 WHERE hidden_at IS NULL
+                  AND (tier IS NULL OR tier != 'skip')
                   AND date(start_time, 'localtime') >= date('now', 'localtime', '-\(days) days')
                 GROUP BY day ORDER BY day
             """)
