@@ -1629,19 +1629,27 @@ public enum StartupBackfills {
             case .ambiguous(let candidates):
                 try setAmbiguousSuggestion(db, sessionId: id, candidates: candidates)
             case .none:
-                try db.execute(
-                    sql: """
-                    UPDATE sessions
-                    SET agent_role = COALESCE(agent_role, 'dispatched'),
-                        tier = 'skip',
-                        link_checked_at = datetime('now'),
-                        suggestion_status = NULL,
-                        suggestion_candidates = NULL
-                    WHERE id = ?
-                    """,
-                    arguments: [id]
-                )
-                try deleteRecoverableIndexArtifactsForSkippedSession(db, sessionId: id)
+                // M8: skip-tier only with positive Layer-1 evidence (agent_role
+                // already dispatched/subagent, e.g. Codex originator).
+                let hasPositiveDispatchEvidence =
+                    agentRole == "dispatched" || agentRole == "subagent"
+                if hasPositiveDispatchEvidence {
+                    try db.execute(
+                        sql: """
+                        UPDATE sessions
+                        SET agent_role = COALESCE(agent_role, 'dispatched'),
+                            tier = 'skip',
+                            link_checked_at = datetime('now'),
+                            suggestion_status = NULL,
+                            suggestion_candidates = NULL
+                        WHERE id = ?
+                        """,
+                        arguments: [id]
+                    )
+                    try deleteRecoverableIndexArtifactsForSkippedSession(db, sessionId: id)
+                } else {
+                    try markChecked(db, sessionId: id)
+                }
             }
         }
 

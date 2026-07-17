@@ -151,6 +151,21 @@ public struct FsOpsHooks {
 }
 
 public enum SafeMoveDir {
+    /// True when `src` and `dst` resolve to the same inode (case-only rename
+    /// on a case-insensitive volume). Missing paths are not same-path.
+    public static func isCaseOnlySamePath(src: String, dst: String) -> Bool {
+        guard let srcReal = realpathSafe(src), let dstReal = realpathSafe(dst) else {
+            return false
+        }
+        return srcReal == dstReal
+    }
+
+    private static func realpathSafe(_ path: String) -> String? {
+        var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard realpath(path, &buf) != nil else { return nil }
+        return String(cString: buf)
+    }
+
     /// Move `src` to `dst`. Same-volume → atomic rename; cross-volume →
     /// recursive copy to a sibling temp + atomic rename + delete source.
     public static func run(
@@ -165,7 +180,11 @@ public enum SafeMoveDir {
             throw FsOpsError.symlinkSource(path: src)
         }
         if hooks.fileExists(dst) {
-            throw FsOpsError.destinationExists(path: dst)
+            // M13: case-only rename on case-insensitive APFS — same inode is
+            // not a third-party collision.
+            if !isCaseOnlySamePath(src: src, dst: dst) {
+                throw FsOpsError.destinationExists(path: dst)
+            }
         }
 
         // 2. Fast path: same-volume rename.

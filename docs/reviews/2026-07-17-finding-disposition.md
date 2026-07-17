@@ -9,14 +9,14 @@
 | M3 | full-medium | pending-fix | D | |
 | M4 | full-medium | pending-fix | D | |
 | M5 | full-medium | fixed | D | |
-| M6 | full-medium | pending-fix | D | |
-| M7 | full-medium | pending-fix | D | |
-| M8 | full-medium | pending-fix | D | |
+| M6 | full-medium | fixed | F | Codex counts function_call_output; golden parity updated |
+| M7 | full-medium | fixed | F | CodexAdapter TailIndexingSessionAdapter + scanTail |
+| M8 | full-medium | fixed | F | .none skip only with agent_role dispatched/subagent |
 | M9 | full-medium | fixed | D | |
-| M10 | full-medium | pending-fix | D | |
+| M10 | full-medium | fixed | F | TimelinePageView loadGeneration + shouldApplyLoad |
 | M11 | full-medium | pending-fix | D | |
 | M12 | full-medium | fixed | D | |
-| M13 | full-medium | pending-fix | D | |
+| M13 | full-medium | fixed | F | FsOps realpath equality = case-only non-conflict |
 | M14 | full-medium | pending-fix | D | |
 | M15 | full-medium | pending-fix | D | |
 | M16 | full-medium | pending-fix | D | |
@@ -24,11 +24,11 @@
 | M18 | full-medium | fixed | D | |
 | M19 | full-medium | fixed | D | |
 | M20 | full-medium | fixed | D | |
-| M21 | full-medium | pending-fix | D | |
-| M22 | full-medium | pending-fix | D | |
+| M21 | full-medium | fixed | F | debounce partial; MainActor I/O residual documented |
+| M22 | full-medium | fixed | F | reclamation refresh generation + disable until load |
 | M23 | full-medium | fixed | D | |
 | M24 | full-medium | fixed | D | |
-| M25 | full-medium | pending-fix | D | |
+| M25 | full-medium | fixed | F | ImplementationDigestExtractor local calendar day |
 | L1 | full-low | pending-fix | E |  |
 | L2 | full-low | pending-fix | E |  |
 | L3 | full-low | pending-fix | E |  |

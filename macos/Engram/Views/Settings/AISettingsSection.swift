@@ -40,6 +40,9 @@ struct AISettingsSection: View {
     @State private var titleTestStatus: TitleConnectionStatus = .idle
     @State private var titleRegenerateStatus: TitleRegenerationStatus = .idle
     @State private var isLoadingSettings = false
+    @State private var saveAISettingsTask: Task<Void, Never>? = nil
+    @State private var saveTitleSettingsTask: Task<Void, Never>? = nil
+    static let settingsSaveDebounceNanoseconds: UInt64 = 400_000_000
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -52,7 +55,7 @@ struct AISettingsSection: View {
                         Text("OpenAI Compatible").tag("openai")
                     }
                     .pickerStyle(.segmented)
-                    .onChange(of: aiProtocol) { saveAISettings() }
+                    .onChange(of: aiProtocol) { scheduleSaveAISettings() }
 
                     HStack {
                         Text("Base URL")
@@ -60,7 +63,7 @@ struct AISettingsSection: View {
                         TextField("Default", text: $aiBaseURL)
                             .frame(width: 260)
                             .multilineTextAlignment(.trailing)
-                            .onChange(of: aiBaseURL) { saveAISettings() }
+                            .onChange(of: aiBaseURL) { scheduleSaveAISettings() }
                     }
                     Text(defaultBaseURL(for: aiProtocol))
                         .font(.caption2)
@@ -72,7 +75,7 @@ struct AISettingsSection: View {
                         SecureField("Required", text: $aiApiKey)
                             .frame(width: 260)
                             .multilineTextAlignment(.trailing)
-                            .onChange(of: aiApiKey) { saveAISettings() }
+                            .onChange(of: aiApiKey) { scheduleSaveAISettings() }
                     }
 
                     HStack {
@@ -81,7 +84,7 @@ struct AISettingsSection: View {
                         TextField("gpt-4o-mini", text: $aiModel)
                             .frame(width: 260)
                             .multilineTextAlignment(.trailing)
-                            .onChange(of: aiModel) { saveAISettings() }
+                            .onChange(of: aiModel) { scheduleSaveAISettings() }
                     }
 
                     Text("API keys are stored in macOS Keychain")
@@ -101,10 +104,10 @@ struct AISettingsSection: View {
                         Text("English").tag("English")
                         Text("日本語").tag("日本語")
                     }
-                    .onChange(of: summaryLanguage) { saveAISettings() }
+                    .onChange(of: summaryLanguage) { scheduleSaveAISettings() }
 
                     Stepper("Max Sentences: \(summaryMaxSentences)", value: $summaryMaxSentences, in: 1...10)
-                        .onChange(of: summaryMaxSentences) { saveAISettings() }
+                        .onChange(of: summaryMaxSentences) { scheduleSaveAISettings() }
 
                     HStack {
                         Text("Style")
@@ -112,14 +115,14 @@ struct AISettingsSection: View {
                         TextField("Optional, e.g. 技术向", text: $summaryStyle)
                             .frame(width: 260)
                             .multilineTextAlignment(.trailing)
-                            .onChange(of: summaryStyle) { saveAISettings() }
+                            .onChange(of: summaryStyle) { scheduleSaveAISettings() }
                     }
 
                     DisclosureGroup("Custom Prompt", isExpanded: $showCustomPrompt) {
                         TextEditor(text: $summaryPrompt)
                             .font(.system(.body, design: .monospaced))
                             .frame(height: 80)
-                            .onChange(of: summaryPrompt) { saveAISettings() }
+                            .onChange(of: summaryPrompt) { scheduleSaveAISettings() }
                         Text("Variables: {{language}}, {{maxSentences}}, {{style}}")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
@@ -137,7 +140,7 @@ struct AISettingsSection: View {
                         Text("Detailed").tag("detailed")
                     }
                     .pickerStyle(.segmented)
-                    .onChange(of: summaryPreset) { saveAISettings() }
+                    .onChange(of: summaryPreset) { scheduleSaveAISettings() }
 
                     DisclosureGroup("Custom", isExpanded: $showCustomGeneration) {
                         HStack {
@@ -146,14 +149,14 @@ struct AISettingsSection: View {
                             TextField("200", value: $summaryMaxTokens, format: .number)
                                 .frame(width: 80)
                                 .multilineTextAlignment(.trailing)
-                                .onChange(of: summaryMaxTokens) { saveAISettings() }
+                                .onChange(of: summaryMaxTokens) { scheduleSaveAISettings() }
                         }
                         HStack {
                             Text("Temperature")
                             Spacer()
                             Slider(value: $summaryTemperature, in: 0...1, step: 0.1)
                                 .frame(width: 160)
-                                .onChange(of: summaryTemperature) { saveAISettings() }
+                                .onChange(of: summaryTemperature) { scheduleSaveAISettings() }
                             Text(String(format: "%.1f", summaryTemperature))
                                 .font(.caption)
                                 .frame(width: 30)
@@ -167,7 +170,7 @@ struct AISettingsSection: View {
                             TextField("20", value: $summarySampleFirst, format: .number)
                                 .frame(width: 60)
                                 .multilineTextAlignment(.trailing)
-                                .onChange(of: summarySampleFirst) { saveAISettings() }
+                                .onChange(of: summarySampleFirst) { scheduleSaveAISettings() }
                             Text("messages")
                                 .foregroundStyle(.secondary)
                         }
@@ -177,7 +180,7 @@ struct AISettingsSection: View {
                             TextField("30", value: $summarySampleLast, format: .number)
                                 .frame(width: 60)
                                 .multilineTextAlignment(.trailing)
-                                .onChange(of: summarySampleLast) { saveAISettings() }
+                                .onChange(of: summarySampleLast) { scheduleSaveAISettings() }
                             Text("messages")
                                 .foregroundStyle(.secondary)
                         }
@@ -187,7 +190,7 @@ struct AISettingsSection: View {
                             TextField("500", value: $summaryTruncateChars, format: .number)
                                 .frame(width: 60)
                                 .multilineTextAlignment(.trailing)
-                                .onChange(of: summaryTruncateChars) { saveAISettings() }
+                                .onChange(of: summaryTruncateChars) { scheduleSaveAISettings() }
                             Text("chars/msg")
                                 .foregroundStyle(.secondary)
                         }
@@ -206,7 +209,7 @@ struct AISettingsSection: View {
                         Text("Custom").tag("custom")
                     }
                     .pickerStyle(.segmented)
-                    .onChange(of: titleProvider) { saveTitleSettings() }
+                    .onChange(of: titleProvider) { scheduleSaveTitleSettings() }
 
                     HStack {
                         Text("URL")
@@ -214,7 +217,7 @@ struct AISettingsSection: View {
                         TextField(titleProvider == "ollama" ? "http://localhost:11434" : "Base URL", text: $titleBaseURL)
                             .frame(width: 260)
                             .multilineTextAlignment(.trailing)
-                            .onChange(of: titleBaseURL) { saveTitleSettings() }
+                            .onChange(of: titleBaseURL) { scheduleSaveTitleSettings() }
                     }
 
                     HStack {
@@ -223,7 +226,7 @@ struct AISettingsSection: View {
                         TextField("qwen2.5:3b", text: $titleModel)
                             .frame(width: 260)
                             .multilineTextAlignment(.trailing)
-                            .onChange(of: titleModel) { saveTitleSettings() }
+                            .onChange(of: titleModel) { scheduleSaveTitleSettings() }
                     }
 
                     if titleProvider != "ollama" {
@@ -233,7 +236,7 @@ struct AISettingsSection: View {
                             SecureField("Required", text: $titleApiKey)
                                 .frame(width: 260)
                                 .multilineTextAlignment(.trailing)
-                                .onChange(of: titleApiKey) { saveTitleSettings() }
+                                .onChange(of: titleApiKey) { scheduleSaveTitleSettings() }
                         }
                     }
 
@@ -324,6 +327,25 @@ struct AISettingsSection: View {
             ),
             keychainReader: KeychainHelper.get
         )
+    }
+
+    /// Debounce settings.json writes while typing (M21 partial; MainActor residual).
+    private func scheduleSaveAISettings() {
+        saveAISettingsTask?.cancel()
+        saveAISettingsTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.settingsSaveDebounceNanoseconds)
+            guard !Task.isCancelled else { return }
+            saveAISettings()
+        }
+    }
+
+    private func scheduleSaveTitleSettings() {
+        saveTitleSettingsTask?.cancel()
+        saveTitleSettingsTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.settingsSaveDebounceNanoseconds)
+            guard !Task.isCancelled else { return }
+            saveTitleSettings()
+        }
     }
 
     private func saveAISettings() {

@@ -833,6 +833,32 @@ final class StartupBackfillTests: XCTestCase {
             XCTAssertNotNil(
                 try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'late-agent'")
             )
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'late-agent'"))
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = 'late-agent'"))
+        }
+    }
+
+    func testGeminiCliDispatchPatternWithoutParentDoesNotSkipTier_repro() throws {
+        try writer.write { db in
+            let leaked = "gemini-human-analyze-drift"
+            try insertSession(
+                db, id: "gemini-human", source: "gemini-cli",
+                startTime: "2026-04-23T10:10:00.000Z",
+                cwd: "/Users/bing/-Code-/engram", project: "engram",
+                summary: "Analyze the adapter implementation for drift"
+            )
+            try createRecoverableArtifactTables(db)
+            try insertRecoverableArtifacts(db, sessionId: "gemini-human", content: leaked)
+            let result = try StartupBackfills.backfillSuggestedParents(db)
+            XCTAssertEqual(result.checked, 1)
+            XCTAssertEqual(result.suggested, 0)
+            let row = try XCTUnwrap(Row.fetchOne(db, sql: """
+                SELECT agent_role, tier, link_checked_at FROM sessions WHERE id = 'gemini-human'
+            """))
+            XCTAssertNil(row["agent_role"] as String?)
+            XCTAssertNil(row["tier"] as String?)
+            XCTAssertNotNil(row["link_checked_at"] as String?)
+            try assertRecoverableArtifactContent(db, content: leaked, expectedCount: 4)
         }
     }
 

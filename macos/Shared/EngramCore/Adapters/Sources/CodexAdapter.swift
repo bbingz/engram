@@ -459,7 +459,7 @@ enum JSONLAdapterSupport {
     }
 }
 
-final class CodexAdapter: SessionAdapter, ExactArchiveSourceAdapter, Sendable {
+final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchiveSourceAdapter, Sendable {
     let source: SourceName = .codex
     private let sessionRoots: [URL]
     private let archiveReplayUsesNamedRoots: Bool
@@ -575,9 +575,10 @@ final class CodexAdapter: SessionAdapter, ExactArchiveSourceAdapter, Sendable {
                     }
                 } else if payloadType == "message", JSONLAdapterSupport.string(payload["role"]) == "assistant" {
                     assistantCount += 1
-                } else if payloadType == "function_call" {
-                    // Count a tool invocation once. The paired `function_call_output`
-                    // is the result of the same call, not a separate tool message.
+                } else if payloadType == "function_call" || payloadType == "function_call_output" {
+                    // streamMessages emits both the call and its output as tool
+                    // messages; counts must match so session cards agree with the
+                    // transcript (M6).
                     toolCount += 1
                 }
             }
@@ -653,6 +654,101 @@ final class CodexAdapter: SessionAdapter, ExactArchiveSourceAdapter, Sendable {
             totalKnownComplete: result.truncatedAt == nil,
             truncatedAt: result.truncatedAt
         )
+    }
+
+    /// Single-pass info + messages for the indexer (M7 tail-resume prep).
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        switch try await parseSessionInfo(locator: locator) {
+        case .failure(let failure):
+            return .failure(failure)
+        case .success(let info):
+            let result = try Self.messages(
+                locator: locator,
+                options: StreamMessagesOptions(),
+                limits: limits
+            )
+            let checkpoint = try JSONLAdapterSupport.checkpoint(locator: locator, limits: limits)
+            let checkpointBoundaryHash = checkpoint.parsedOffset == info.sizeBytes
+                ? checkpoint.boundaryHash
+                : nil
+            return .success(
+                IndexingScan(
+                    info: info,
+                    messages: result.messages,
+                    checkpointParsedOffset: checkpoint.parsedOffset,
+                    checkpointBoundaryHash: checkpointBoundaryHash
+                )
+            )
+        }
+    }
+
+    func scanTailForIndexing(
+        locator: String,
+        from parsedOffset: Int64,
+        expectedBoundaryHash: String
+    ) async throws -> IndexingTailScanResult {
+        do {
+            let result = try JSONLAdapterSupport.readTailObjects(
+                locator: locator,
+                from: parsedOffset,
+                expectedBoundaryHash: expectedBoundaryHash,
+                limits: limits
+            )
+            guard !result.boundaryHash.isEmpty else { return .fallback }
+            if let failure = result.failure { return .failure(failure) }
+
+            var messages: [NormalizedMessage] = []
+            var userCount = 0
+            var assistantCount = 0
+            var toolCount = 0
+            var systemCount = 0
+            var endTime: String?
+            var detectedModel: String?
+
+            for object in result.objects {
+                if let timestamp = JSONLAdapterSupport.string(object["timestamp"]) {
+                    endTime = timestamp
+                }
+                if JSONLAdapterSupport.string(object["type"]) == "response_item",
+                   let payload = JSONLAdapterSupport.object(object["payload"]),
+                   detectedModel == nil,
+                   let model = JSONLAdapterSupport.string(payload["model"]) {
+                    detectedModel = model
+                }
+                guard let message = Self.message(from: object) else { continue }
+                messages.append(message)
+                switch message.role {
+                case .user: userCount += 1
+                case .assistant: assistantCount += 1
+                case .tool: toolCount += 1
+                case .system: systemCount += 1
+                }
+            }
+
+            return .success(
+                IndexingTailScan(
+                    infoDelta: IndexingTailInfoDelta(
+                        id: nil,
+                        source: .codex,
+                        endTime: endTime,
+                        model: detectedModel,
+                        messageCount: userCount + assistantCount + toolCount,
+                        userMessageCount: userCount,
+                        assistantMessageCount: assistantCount,
+                        toolMessageCount: toolCount,
+                        systemMessageCount: systemCount,
+                        firstVisibleRole: messages.first?.role
+                    ),
+                    messages: messages,
+                    parsedOffset: result.parsedOffset,
+                    boundaryHash: result.boundaryHash
+                )
+            )
+        } catch let failure as ParserFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.malformedJSON)
+        }
     }
 
     func isAccessible(locator: String) async -> Bool {

@@ -45,6 +45,8 @@ final class ArchiveSettingsSectionTests: XCTestCase {
         XCTAssertFalse(source.contains(".task(id:"))
         XCTAssertTrue(source.contains("syncRefreshGeneration"))
         XCTAssertTrue(source.contains("guard requestGeneration == syncRefreshGeneration"))
+        XCTAssertTrue(source.contains("reclamationRefreshGeneration"))
+        XCTAssertTrue(source.contains("shouldApplyReclamationRefresh"))
         XCTAssertTrue(source.contains("localizedTimestamp: localizedTimestamp"))
         XCTAssertEqual(source.components(separatedBy: ".task { await refresh() }").count - 1, 1)
         XCTAssertEqual(
@@ -52,6 +54,14 @@ final class ArchiveSettingsSectionTests: XCTestCase {
             3,
             "Save, Run Now, and recovery drill refreshes must preserve their action result message"
         )
+    }
+
+    func testReclamationRefreshGenerationGuard_repro() {
+        XCTAssertTrue(ArchiveSettingsSection.shouldApplyReclamationRefresh(resultGeneration: 2, currentGeneration: 2))
+        XCTAssertFalse(ArchiveSettingsSection.shouldApplyReclamationRefresh(resultGeneration: 1, currentGeneration: 2))
+        let sourceURL = macOSRoot.appendingPathComponent("Engram/Views/Settings/ArchiveSettingsSection.swift")
+        let source = try? String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source?.contains(".disabled(busy || status == nil)") == true)
     }
 
     func testArchiveSettingsLocalizesBacklogDrainStatesAndStages() throws {
