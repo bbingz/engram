@@ -23,7 +23,7 @@ clients can type-check the JSON without guessing.
 | `tool_analytics` | object | `tools[]`, `totalCalls`, `groupCount` | per-row `sessionCount` / `toolCount` / `label` depend on `group_by` |
 | `file_activity` | object | `files[]`, `totalFiles` | — |
 | `project_timeline` | object | `project`, `timeline[]`, `total` | — |
-| `project_list_migrations` | **array** | migration log rows | nullable `finishedAt` / `rolledBackOf` / `auditNote` / `error`; `detail` object or null |
+| `project_list_migrations` | object | `migrations[]` | nullable `finishedAt` / `rolledBackOf` / `auditNote` / `error`; `detail` object or null |
 | `live_sessions` | object | `sessions[]`, `count`, `note` | MCP mode always returns empty sessions + unavailable note |
 | `get_memory` | object | `memories[]` (each item includes returned `type`) | top-level `type` when a type filter is requested; `warning`, `message`, or `retrieval` depending on path |
 | `search` | object | `results[]`, `query`, `searchModes[]` | `warning`, `insightResults[]` |
@@ -31,7 +31,7 @@ clients can type-check the JSON without guessing.
 | `project_review` | object | `own[]`, `other[]` | `truncated.{own,other}` when caps apply |
 | `get_session` | object | `session`, `messages[]`, `totalPages`, `currentPage`, `redacted` | `totalKnownComplete`, `truncated`, `truncatedAt` |
 | `handoff` | object | `brief`, `sessionCount` | — |
-| `project_recover` | **array** | recover diagnosis rows with nested `fs` | nullable `finishedAt` / `error` / `fs.probeError` |
+| `project_recover` | object | `diagnostics[]` with nested `fs` | nullable `finishedAt` / `error` / `fs.probeError` |
 
 Tools that do **not** declare `outputSchema`:
 
@@ -470,7 +470,7 @@ List recent project-move migrations with state, paths, counts, and timestamps.
 | since | string | no | ISO timestamp; only rows started after this time |
 | limit | number | no | Max rows to return |
 
-**Notes:** **Output:** `structuredContent` is a top-level **array** of migration log rows; declared via `outputSchema`.
+**Notes:** **Output:** `structuredContent` is `{ migrations }`, where `migrations` is an array of migration log rows; declared via `outputSchema`.
 
 ---
 
@@ -485,7 +485,7 @@ Diagnose stuck or failed migrations.
 | since | string | no | ISO timestamp filter |
 | include_committed | boolean | no | Also inspect committed migrations |
 
-**Notes:** Advisory only; does not modify files or DB state. **Output:** `structuredContent` is a top-level **array** of diagnosis objects (`migrationId`, `fs`, `recommendation`, …); declared via `outputSchema`.
+**Notes:** Advisory only; does not modify files or DB state. **Output:** `structuredContent` is `{ diagnostics }`, where `diagnostics` is an array of diagnosis objects (`migrationId`, `fs`, `recommendation`, …); declared via `outputSchema`.
 
 ---
 

@@ -378,6 +378,34 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertTrue(noSchema.contains("save_insight"), "mutating tools omit outputSchema")
     }
 
+    /// MCP 2025-11-25 requires every advertised outputSchema to use an object root.
+    /// Keep this as a catalog-wide interoperability gate so one invalid tool cannot
+    /// make strict clients reject the entire tools/list response.
+    func testToolsListOutputSchemaRootsAreObjectsForClientCompatibility() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+            """
+        )
+        guard case .array(let tools)? = capture.ordered["result"]?["tools"] else {
+            return XCTFail("Expected tools/list result.tools array")
+        }
+
+        let nonObjectRoots = tools.compactMap { tool -> String? in
+            guard let schema = tool["outputSchema"] else { return nil }
+            guard schema["type"]?.stringValue != "object" else { return nil }
+            let name = tool["name"]?.stringValue ?? "<unnamed>"
+            let type = schema["type"]?.stringValue ?? "<missing>"
+            return "\(name)=\(type)"
+        }
+
+        XCTAssertEqual(
+            nonObjectRoots,
+            [],
+            "MCP clients require outputSchema.type=object for every advertised tool"
+        )
+    }
+
     /// Execute each covered read tool against the fixture DB and validate
     /// structuredContent against the declared tools/list outputSchema.
     func testStructuredContentMatchesDeclaredOutputSchema() throws {
@@ -458,6 +486,10 @@ final class EngramMCPExecutableTests: XCTestCase {
             let structured = try XCTUnwrap(
                 capture.ordered["result"]?["structuredContent"],
                 "\(call.name) must emit structuredContent"
+            )
+            XCTAssertNotNil(
+                structured.objectValue,
+                "\(call.name) structuredContent must use an MCP-compatible object root"
             )
             let errors = MiniJSONSchema.validate(structured, against: schema)
             XCTAssertTrue(errors.isEmpty, "\(call.name) schema errors:\n\(errors.joined(separator: "\n"))")
@@ -1569,7 +1601,9 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
 
         XCTAssertNil(capture.response.error)
-        let first = try XCTUnwrap(capture.ordered["result"]?["structuredContent"]?.arrayValue?.first)
+        let first = try XCTUnwrap(
+            capture.ordered["result"]?["structuredContent"]?["migrations"]?.arrayValue?.first
+        )
         XCTAssertEqual(first["detail"]?["emoji"]?.stringValue, "😀")
     }
 
