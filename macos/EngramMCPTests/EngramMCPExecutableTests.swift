@@ -1283,6 +1283,60 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(results.compactMap { $0["session"]?["id"]?.stringValue }, ["mcp-hidden-visible"])
     }
 
+    /// H2: MCP keyword search must return CJK hits via LIKE (not empty FTS).
+    func testKeywordSearchReturnsCJKQueriesViaLikeFallback_repro() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-cjk-search-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedCJKSearchFixture(at: dbPath)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"中文检索","mode":"keyword","limit":10}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]
+        )
+
+        let results = try XCTUnwrap(capture.ordered["result"]?["structuredContent"]?["results"]?.arrayValue)
+        XCTAssertEqual(
+            results.compactMap { $0["session"]?["id"]?.stringValue },
+            ["mcp-cjk-hit"],
+            "H2: CJK query must hit via LIKE fallback"
+        )
+        let snippet = results.first?["snippet"]?.stringValue ?? ""
+        XCTAssertTrue(snippet.contains("中文检索") || snippet.contains("<mark>"), "snippet should surface CJK match")
+    }
+
+    /// H2: two-char Latin abbreviations also use LIKE (parity with app).
+    func testKeywordSearchReturnsShortLatinViaLikeFallback_repro() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-short-search-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedShortLatinSearchFixture(at: dbPath)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"AI","mode":"keyword","limit":10}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]
+        )
+
+        let results = try XCTUnwrap(capture.ordered["result"]?["structuredContent"]?["results"]?.arrayValue)
+        XCTAssertEqual(
+            results.compactMap { $0["session"]?["id"]?.stringValue },
+            ["mcp-short-hit"],
+            "H2: 2-char Latin must not be empty-rejected; use LIKE"
+        )
+    }
+
     func testInitializeMatchesGolden() throws {
         let capture = try rpc(
             """
@@ -4656,6 +4710,52 @@ final class EngramMCPExecutableTests: XCTestCase {
                 VALUES
                   ('mcp-hidden-visible', 'hiddenneedle visible'),
                   ('mcp-hidden-hidden', 'hiddenneedle hidden')
+                """
+            )
+        }
+    }
+
+    private func seedCJKSearchFixture(at dbPath: String) throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, file_path, message_count, tier, hidden_at, summary
+                )
+                VALUES
+                  ('mcp-cjk-hit', 'codex', '2026-01-10T10:00:00.000Z',
+                   '/Users/test/work/cjk', 'cjk', '/tmp/mcp-cjk.jsonl', 1, 'normal',
+                   NULL, 'cjk search fixture')
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES ('mcp-cjk-hit', '讨论 中文检索 与工程实践')
+                """
+            )
+        }
+    }
+
+    private func seedShortLatinSearchFixture(at dbPath: String) throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, file_path, message_count, tier, hidden_at, summary
+                )
+                VALUES
+                  ('mcp-short-hit', 'codex', '2026-01-10T10:00:00.000Z',
+                   '/Users/test/work/short', 'short', '/tmp/mcp-short.jsonl', 1, 'normal',
+                   NULL, 'short latin search fixture')
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES ('mcp-short-hit', 'build AI tools carefully')
                 """
             )
         }

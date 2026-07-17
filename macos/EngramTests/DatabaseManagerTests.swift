@@ -1117,6 +1117,34 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(engram.sessions.map(\.id), ["parent"])
     }
 
+    /// H1: Projects page must not drop older projects when the global session
+    /// window exceeds the old limit*10 fetch.
+    @MainActor
+    func testListSessionsByProjectDoesNotDropProjectsOutsideLimitWindow_repro() throws {
+        // Insert 25 distinct projects with one session each, newest first.
+        for index in 0..<25 {
+            let ts = String(format: "2026-01-%02dT12:00:00Z", index + 1)
+            try insertTestSession(
+                at: dbPath,
+                id: "proj-\(index)",
+                project: "project-\(index)",
+                startTime: ts
+            )
+        }
+        // Old bug: LIMIT 100*10 was fine for small DBs; use limit=1 so the
+        // broken path would only fetch 10 rows and drop 15 projects.
+        let groups = try db.listSessionsByProject(limit: 1)
+        XCTAssertEqual(
+            groups.count,
+            25,
+            "H1: all projects must appear even when per-project preview limit is 1"
+        )
+        for group in groups {
+            XCTAssertEqual(group.sessionCount, 1, "project \(group.project) count wrong")
+            XCTAssertEqual(group.sessions.count, 1, "preview capped at limit")
+        }
+    }
+
     // MARK: - sparklineData date bucketing
 
     // sparklineData buckets by local calendar day on both the SQL and Swift

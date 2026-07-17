@@ -7,6 +7,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: audit Highs H1 Projects counts + H2 MCP CJK search
+
+- H1: `listSessionsByProject` uses SQL GROUP BY counts over the full filtered set
+  and only limits per-project previews (no more limit*10 window drop).
+- H2: MCP keyword search uses the same CJK/short-query LIKE fallback as the app
+  (`CJKText` + `keywordSearchLike`); short/CJK queries are no longer empty-rejected.
+
 ### Fixed: security transport + secrets defaults (SEC-H1/M2/M3)
 
 - SEC-H1: refuse bare single-label hosts for plain HTTP offload; product default

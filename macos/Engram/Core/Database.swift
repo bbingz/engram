@@ -1383,26 +1383,48 @@ final class DatabaseManager: @unchecked Sendable {
 
     func listSessionsByProject(limit: Int = 100) throws -> [ProjectGroup] {
         try readInBackground { db in
-            let sessions = try Session.fetchAll(db, sql: """
-                SELECT * FROM sessions
+            // H1: count and list projects via SQL GROUP BY over the full filtered
+            // set — never truncate to limit*10 rows before grouping (that drops
+            // whole projects and undercounts sessionCount for heavy users).
+            let countRows = try Row.fetchAll(db, sql: """
+                SELECT project,
+                       COUNT(*) AS n,
+                       MAX(start_time) AS last_active
+                FROM sessions
                 WHERE hidden_at IS NULL AND project IS NOT NULL
                   AND parent_session_id IS NULL
                   AND suggested_parent_id IS NULL
                   AND (tier IS NULL OR tier != 'skip')
-                ORDER BY start_time DESC
-                LIMIT ?
-            """, arguments: [limit * 10])
-            let grouped = Dictionary(grouping: sessions) { $0.project ?? "(unknown)" }
-            return grouped.map { project, sessions in
-                ProjectGroup(
-                    id: project,
-                    project: project,
-                    sessionCount: sessions.count,
-                    lastActive: sessions.first?.startTime ?? "",
-                    sessions: Array(sessions.prefix(limit))
+                GROUP BY project
+                ORDER BY last_active DESC
+            """)
+
+            var groups: [ProjectGroup] = []
+            groups.reserveCapacity(countRows.count)
+            for row in countRows {
+                let project = row["project"] as String
+                let sessionCount = row["n"] as Int
+                let lastActive = (row["last_active"] as String?) ?? ""
+                let previews = try Session.fetchAll(db, sql: """
+                    SELECT * FROM sessions
+                    WHERE hidden_at IS NULL AND project = ?
+                      AND parent_session_id IS NULL
+                      AND suggested_parent_id IS NULL
+                      AND (tier IS NULL OR tier != 'skip')
+                    ORDER BY start_time DESC
+                    LIMIT ?
+                """, arguments: [project, limit])
+                groups.append(
+                    ProjectGroup(
+                        id: project,
+                        project: project,
+                        sessionCount: sessionCount,
+                        lastActive: lastActive,
+                        sessions: previews
+                    )
                 )
             }
-            .sorted { $0.lastActive > $1.lastActive }
+            return groups
         }
     }
 

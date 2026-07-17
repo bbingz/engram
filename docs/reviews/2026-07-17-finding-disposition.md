@@ -2,8 +2,8 @@
 
 | ID | Area | Status | Batch/PR | Notes |
 |----|------|--------|----------|-------|
-| H1 | full-high | pending-fix | C | |
-| H2 | full-high | pending-fix | C | |
+| H1 | full-high | fixed | C | |
+| H2 | full-high | fixed | C | |
 | M1 | full-medium | pending-fix | D | |
 | M2 | full-medium | pending-fix | D | |
 | M3 | full-medium | pending-fix | D | |

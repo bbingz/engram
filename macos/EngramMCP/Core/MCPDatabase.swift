@@ -1001,16 +1001,14 @@ final class MCPDatabase {
             )
         }
 
-        guard normalizedQuery.count >= 3 else {
-            var entries: [(String, OrderedJSONValue)] = [
+        // H2: CJK and short Latin queries use LIKE (same as app/service), so
+        // do not reject them at the 3-char FTS gate.
+        if normalizedQuery.isEmpty {
+            return .object([
                 ("results", .array([])),
                 ("query", .string(query)),
                 ("searchModes", .array([])),
-            ]
-            if normalizedQuery.count < 3 {
-                entries.append(("warning", .string("Search query needs at least 3 characters for keyword search")))
-            }
-            return .object(entries)
+            ])
         }
 
         return try keywordSearchResponse(
@@ -2113,6 +2111,16 @@ final class MCPDatabase {
         limit: Int
     ) throws -> [(row: Row, snippet: String)] {
         let expandedProjects = try project.map { try resolveProjectAliases([$0]) } ?? []
+        // H2: mirror app/service — CJK/Hangul and short Latin use LIKE, not FTS MATCH.
+        if CJKText.containsCJK(query) || query.count < 3 {
+            return try keywordSearchLike(
+                query: query,
+                source: source,
+                expandedProjects: expandedProjects,
+                since: since,
+                limit: limit
+            )
+        }
         return try readRetryingTransientMissingFTS { db in
             var conditions = [
                 "sessions_fts MATCH ?",
@@ -2120,7 +2128,7 @@ final class MCPDatabase {
                 "s.orphan_status IS NULL",
                 SessionSemanticSearchPolicy.searchableTierSQL,
             ]
-            var values: [DatabaseValueConvertible?] = [query]
+            var values: [DatabaseValueConvertible?] = [CJKText.ftsMatchQuery(query)]
 
             if let source {
                 conditions.append("s.source = ?")
@@ -2163,6 +2171,65 @@ final class MCPDatabase {
                 values[0] = "\"\(query.replacingOccurrences(of: "\"", with: "\"\""))\""
                 let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
                 return rows.map { ($0, stringValue($0["snippet"]) ?? "") }
+            }
+        }
+    }
+
+    /// H2: CJK/short-query LIKE fallback (parity with app Database.search).
+    private func keywordSearchLike(
+        query: String,
+        source: String?,
+        expandedProjects: [String],
+        since: String?,
+        limit: Int
+    ) throws -> [(row: Row, snippet: String)] {
+        try readRetryingTransientMissingFTS { db in
+            var conditions = [
+                "f.content LIKE ? ESCAPE '\\'",
+                "s.hidden_at IS NULL",
+                "s.orphan_status IS NULL",
+                SessionSemanticSearchPolicy.searchableTierSQL,
+            ]
+            let pattern = "%\(CJKText.escapeLikePattern(query))%"
+            var values: [DatabaseValueConvertible?] = [pattern]
+
+            if let source {
+                conditions.append("s.source = ?")
+                values.append(source)
+            }
+            if !expandedProjects.isEmpty {
+                if expandedProjects.count == 1, let only = expandedProjects.first {
+                    conditions.append("s.project LIKE ? ESCAPE '\\'")
+                    values.append("%\(escapeLike(only))%")
+                } else {
+                    let clauses = expandedProjects.map { _ in "s.project LIKE ? ESCAPE '\\'" }.joined(separator: " OR ")
+                    conditions.append("(\(clauses))")
+                    values.append(contentsOf: expandedProjects.map { "%\(escapeLike($0))%" })
+                }
+            }
+            if let since {
+                conditions.append("s.start_time >= ?")
+                values.append(since)
+            }
+            values.append(limit)
+
+            let sql = """
+            SELECT
+              s.*,
+              ls.local_readable_path,
+              f.content AS fts_content
+            FROM sessions_fts f
+            JOIN sessions s ON s.id = f.session_id
+            LEFT JOIN session_local_state ls ON ls.session_id = s.id
+            WHERE \(conditions.joined(separator: " AND "))
+            ORDER BY s.start_time DESC
+            LIMIT ?
+            """
+            let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
+            return rows.map { row in
+                let content = stringValue(row["fts_content"]) ?? ""
+                let snippet = CJKText.cjkHighlightedSnippet(content: content, query: query) ?? content
+                return (row, snippet)
             }
         }
     }
