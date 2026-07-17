@@ -7,6 +7,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: audit mediums (service runtime + embedding lifecycle + reclamation)
+
+- M1: `ServiceWriterGate` counts pending+active long writes and passes
+  `timeout=nil` while >0 so followers behind a still-queued project migration
+  do not false-`writerBusy`.
+- M2: initial scan records `recordScanSuccess` (clears degraded) when the core
+  index phase succeeded even if later required phases failed; full success
+  telemetry still requires zero failed phases.
+- M3: session embedding backfill isolates per-session failures, advances
+  `retry_count`, and terminalizes to `failed_permanent` (no infinite re-select).
+- M16: embedding writes store native vector length and refuse configured-vs-native
+  dimension mismatches.
+- M17: model/dimension change purges `semantic_chunks`/`insight_embeddings` and
+  re-enqueues embedding jobs via `embedding_meta` reconciliation.
+- M4: archive reclamation cursor advances only past examined/processed candidates
+  (not the entire 1_000-row page).
+
 ### Fixed: audit mediums (MCP parity, KPI skip, Gemini sidecar, Test Connection)
 
 - M5: KPI/dailyActivity exclude skip-tier sessions.

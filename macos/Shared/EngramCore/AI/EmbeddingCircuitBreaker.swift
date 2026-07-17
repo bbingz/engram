@@ -123,7 +123,7 @@ public final class EmbeddingCircuitBreaker: @unchecked Sendable {
             switch embedding {
             case .http(let status):
                 return status >= 500 || status == 429
-            case .notConfigured, .malformedResponse, .circuitOpen:
+            case .notConfigured, .malformedResponse, .dimensionMismatch, .circuitOpen:
                 return false
             }
         }

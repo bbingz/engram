@@ -65,18 +65,31 @@ final class EmbeddingGuardrailsTests: XCTestCase {
         )
         let failing = AlwaysFailEmbeddingProvider(status: 400)
 
-        do {
-            _ = try await EngramServiceRunner.backfillSessionEmbeddingsOnce(
-                gate: gate,
-                environment: Self.testEnvironment,
-                providerFactory: { _ in failing },
-                backoff: backoff,
-                limit: 4,
-                phaseName: "http400Backoff"
-            )
-            XCTFail("expected HTTP 400")
-        } catch EmbeddingError.http(400) {
-            // Expected: the first failure arms maintenance backoff.
+        // M3: provider HTTP errors are isolated per session — the batch records
+        // failed_retryable + arms maintenance backoff without aborting the gate
+        // write path with a thrown EmbeddingError.http.
+        let first = try await EngramServiceRunner.backfillSessionEmbeddingsOnce(
+            gate: gate,
+            environment: Self.testEnvironment,
+            providerFactory: { _ in failing },
+            backoff: backoff,
+            limit: 4,
+            phaseName: "http400Backoff"
+        )
+        XCTAssertEqual(first, 0)
+        _ = try await gate.performReadCommand(name: "assertRetry") { writer in
+            try writer.read { db in
+                let status = try String.fetchOne(
+                    db,
+                    sql: "SELECT status FROM session_index_jobs WHERE id = 'job-backoff'"
+                )
+                let retries = try Int.fetchOne(
+                    db,
+                    sql: "SELECT retry_count FROM session_index_jobs WHERE id = 'job-backoff'"
+                )
+                XCTAssertEqual(status, "failed_retryable")
+                XCTAssertEqual(retries, 1)
+            }
         }
 
         let skipped = try await EngramServiceRunner.backfillSessionEmbeddingsOnce(
@@ -89,7 +102,7 @@ final class EmbeddingGuardrailsTests: XCTestCase {
         )
         XCTAssertEqual(skipped, 0)
         let calls = await failing.callCount()
-        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(calls, 1, "maintenance backoff must skip repeated provider work")
     }
 
     func testOpenBreakerLeavesSessionJobsPendingAndRetryable() async throws {

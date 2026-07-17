@@ -26,6 +26,11 @@ public actor ServiceWriterGate {
     private var databaseGeneration = 0
     private var indexStatusCache: CachedIndexStatus?
     private var longRunningWriteInProgress = false
+    /// Pending (queued, not yet holding) + active long-running writes. Followers
+    /// pass `timeout=nil` while this is > 0 so a write enqueued behind a still-
+    /// queued project migration does not arm a 60s timeout that fires while the
+    /// migration is legitimately waiting, then holding, for minutes (audit M1).
+    private var pendingOrActiveLongWrites = 0
     private var writeInProgress = false
     private let indexStatusCacheTTL: TimeInterval
     private let now: @Sendable () -> Date
@@ -92,9 +97,22 @@ public actor ServiceWriterGate {
         name: String,
         operation: @Sendable (EngramDatabaseWriter) async throws -> Value
     ) async throws -> ServiceWriterGateResult<Value> {
-        let timeout = longRunningWriteInProgress ? nil : queueTimeoutNanoseconds
-        try await writeSemaphore.wait(timeoutNanoseconds: timeout)
-        longRunningWriteInProgress = Self.isLongRunningWriteCommand(name)
+        let isLongRunning = Self.isLongRunningWriteCommand(name)
+        // Count pending long writes *before* wait so followers enqueued behind a
+        // still-queued migration also get timeout=nil (M1).
+        if isLongRunning {
+            pendingOrActiveLongWrites += 1
+        }
+        let timeout = pendingOrActiveLongWrites > 0 ? nil : queueTimeoutNanoseconds
+        do {
+            try await writeSemaphore.wait(timeoutNanoseconds: timeout)
+        } catch {
+            if isLongRunning {
+                pendingOrActiveLongWrites = max(0, pendingOrActiveLongWrites - 1)
+            }
+            throw error
+        }
+        longRunningWriteInProgress = isLongRunning
         writeInProgress = true
         indexStatusCache = nil
         do {
@@ -104,11 +122,17 @@ public actor ServiceWriterGate {
             indexStatusCache = nil
             longRunningWriteInProgress = false
             writeInProgress = false
+            if isLongRunning {
+                pendingOrActiveLongWrites = max(0, pendingOrActiveLongWrites - 1)
+            }
             await writeSemaphore.signal()
             return ServiceWriterGateResult(value: value, databaseGeneration: databaseGeneration)
         } catch {
             longRunningWriteInProgress = false
             writeInProgress = false
+            if isLongRunning {
+                pendingOrActiveLongWrites = max(0, pendingOrActiveLongWrites - 1)
+            }
             indexStatusCache = nil
             await writeSemaphore.signal()
             throw error
@@ -121,7 +145,7 @@ public actor ServiceWriterGate {
         operation: @Sendable (EngramDatabaseWriter) async throws -> Value
     ) async throws -> ServiceWriterGateResult<Value> {
         _ = name
-        let timeout = longRunningWriteInProgress ? nil : queueTimeoutNanoseconds
+        let timeout = pendingOrActiveLongWrites > 0 ? nil : queueTimeoutNanoseconds
         try await writeSemaphore.wait(timeoutNanoseconds: timeout)
         writeInProgress = true
         do {

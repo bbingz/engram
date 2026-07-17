@@ -1005,6 +1005,10 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             Self.emit(StartupBackfillEventEnvelope(event: event))
         }
         var failedPhaseCount = 0
+        /// True when the primary index phase completed without failure. Used for
+        /// partial success status (M2) so a later non-fatal phase error does not
+        /// pin the degraded banner until the first periodic cycle.
+        var coreIndexSucceeded = false
 
         let usageParserBackfillCheck = await runInitialScanPhase(
             name: "usageParserBackfillCheck",
@@ -1037,7 +1041,11 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                 testHooks: testHooks
             )
             if indexedPhase.cancelled { return }
-            if indexedPhase.failed { failedPhaseCount += 1 }
+            if indexedPhase.failed {
+                failedPhaseCount += 1
+            } else {
+                coreIndexSucceeded = true
+            }
             if let archiveCycle = indexedPhase.value {
                 startupIndexed = archiveCycle.indexResult.indexed
                 parserAdapters = SessionAdapterFactory.indexingAdapters(
@@ -1106,7 +1114,11 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                 }.value
             }
             if indexedPhase.cancelled { return }
-            if indexedPhase.failed { failedPhaseCount += 1 }
+            if indexedPhase.failed {
+                failedPhaseCount += 1
+            } else {
+                coreIndexSucceeded = true
+            }
             startupIndexed = indexedPhase.value ?? 0
         }
 
@@ -1213,8 +1225,11 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             if markPhase.failed { failedPhaseCount += 1 }
         }
 
-        // M02: only record a success scan sample when every required phase
-        // succeeded. Failed phases already recorded distinct failure telemetry.
+        // M02 telemetry: only record a success scan sample when every required
+        // phase succeeded. Failed phases already recorded distinct failure
+        // telemetry. M2 status: when the core index phase succeeded, still
+        // clear the degraded banner via recordScanSuccess so a single non-fatal
+        // later phase does not pin degraded for ≥15 min.
         if failedPhaseCount == 0 {
             // Best-effort total via a gated indexStatus read; a failure here
             // must not affect scan success accounting.
@@ -1227,6 +1242,12 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                 total: initialTotal
             )
             ServiceLogger.notice("initial startup scan complete", category: .runner)
+            await statusMonitor.recordScanSuccess()
+        } else if coreIndexSucceeded {
+            ServiceLogger.warn(
+                "initial startup scan complete with \(failedPhaseCount) failed phase(s); core index succeeded (partial success)",
+                category: .runner
+            )
             await statusMonitor.recordScanSuccess()
         } else {
             ServiceLogger.warn(
@@ -1356,15 +1377,25 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             )
             return 0
         }
+        let provider = providerFactory(config)
+        // M17: purge/re-enqueue when configured model/dimension diverges from meta.
         let pending = try await gate.performWriteCommand(name: "\(phaseName)Read") { writer in
-            try SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: limit)
+            try InsightEmbeddingBackfill.reconcileModelChangeIfNeeded(
+                writer: writer,
+                model: provider.model,
+                dimension: provider.dimension
+            )
+            return try SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: limit)
         }.value
         guard !pending.isEmpty else { return 0 }
 
-        let provider = providerFactory(config)
-        let embedded: [SessionEmbeddingBackfill.EmbeddedSession]
+        let outcome: SessionEmbeddingBackfill.EmbedBatchOutcome
         do {
-            embedded = try await SessionEmbeddingBackfill.embedPendingSessions(pending, provider: provider)
+            // M3: isolate per-session failures so one bad job does not abort the batch.
+            outcome = try await SessionEmbeddingBackfill.embedPendingSessionsIsolated(
+                pending,
+                provider: provider
+            )
         } catch EmbeddingError.circuitOpen {
             _ = backoff.recordFailure(providerKey: providerKey)
             // Soft skip: leave jobs pending/failed_retryable; never burn retry budget.
@@ -1383,13 +1414,35 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             )
             throw error
         }
-        backoff.recordSuccess(providerKey: providerKey)
+        if outcome.embedded.isEmpty, !outcome.failures.isEmpty {
+            // All sessions failed — still advance retry counts / terminal state,
+            // but treat as a provider-ish failure for maintenance backoff.
+            _ = try await gate.performWriteCommand(name: "\(phaseName)Write") { writer in
+                try SessionEmbeddingBackfill.writeEmbeddings(
+                    writer: writer,
+                    sessions: [],
+                    model: provider.model,
+                    dimension: provider.dimension,
+                    failures: outcome.failures
+                )
+            }.value
+            let delay = backoff.recordFailure(providerKey: providerKey)
+            ServiceLogger.info(
+                "\(phaseName) all sessions failed; backoff delaySeconds=\(Int(delay.rounded()))",
+                category: .ai
+            )
+            return 0
+        }
+        if !outcome.embedded.isEmpty {
+            backoff.recordSuccess(providerKey: providerKey)
+        }
         let result = try await gate.performWriteCommand(name: "\(phaseName)Write") { writer in
             try SessionEmbeddingBackfill.writeEmbeddings(
                 writer: writer,
-                sessions: embedded,
+                sessions: outcome.embedded,
                 model: provider.model,
-                dimension: provider.dimension
+                dimension: provider.dimension,
+                failures: outcome.failures
             )
         }.value
         return result.completed
@@ -1438,18 +1491,28 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             )
             return 0
         }
+        let provider = providerFactory(config)
+        // M17: purge/re-enqueue when configured model/dimension diverges from meta.
         let pending = try await gate.performWriteCommand(name: "\(phaseName)Read") { writer in
-            try InsightEmbeddingBackfill.pendingInsights(writer: writer, limit: limit)
+            try InsightEmbeddingBackfill.reconcileModelChangeIfNeeded(
+                writer: writer,
+                model: provider.model,
+                dimension: provider.dimension
+            )
+            return try InsightEmbeddingBackfill.pendingInsights(writer: writer, limit: limit)
         }.value
         guard !pending.isEmpty else { return 0 }
 
-        let provider = providerFactory(config)
         let vectors: [[Float]]
         do {
             vectors = try await provider.embed(pending.map(\.content))
             guard vectors.count == pending.count else {
                 throw EmbeddingError.malformedResponse
             }
+            try InsightEmbeddingBackfill.validateUniformNativeDimension(
+                vectors,
+                configured: provider.dimension
+            )
         } catch EmbeddingError.circuitOpen {
             _ = backoff.recordFailure(providerKey: providerKey)
             ServiceLogger.info(

@@ -499,6 +499,65 @@ final class ServiceWriterGateTests: XCTestCase {
         XCTAssertTrue(ranAfterRelease)
     }
 
+    /// M1: a follower enqueued behind a *queued* (not yet holding) long write must
+    /// not arm the 60s timeout — otherwise it false-writerBusy while the migration
+    /// is still legitimately waiting, then holding, for minutes.
+    func testFollowerBehindQueuedLongWriteDoesNotTimeout_repro() async throws {
+        let paths = try makeGatePaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 30_000_000 // 30ms
+        )
+        let probe = CancellationProbe()
+
+        // Short holder occupies the gate.
+        let holder = Task {
+            try await gate.performWriteCommand(name: "holder") { _ in
+                await probe.markFirstStarted()
+                await probe.waitUntilRelease()
+                return "holder"
+            }
+        }
+        await probe.waitUntilFirstStarted()
+
+        // Long write queues (not yet holding) — pending long-write depth must
+        // disarm follower timeouts at enqueue time.
+        let migration = Task {
+            try await gate.performWriteCommand(name: "projectMove") { _ in
+                // Hold past the short queue timeout so a wrongly-armed follower
+                // would surface writerBusy.
+                try await Task.sleep(nanoseconds: 80_000_000)
+                return "move"
+            }
+        }
+        while await gate.queuedWriteWaiterCountForTesting() < 1 {
+            await Task.yield()
+        }
+
+        let follower = Task {
+            try await gate.performWriteCommand(name: "saveInsight") { _ in "ok" }
+        }
+        while await gate.queuedWriteWaiterCountForTesting() < 2 {
+            await Task.yield()
+        }
+
+        // Exceed the short timeout while both waiters remain queued.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await probe.releaseFirst()
+
+        let holderResult = try await holder.value
+        let migrationResult = try await migration.value
+        let followerResult = try await follower.value
+        XCTAssertEqual(holderResult.value, "holder")
+        XCTAssertEqual(migrationResult.value, "move")
+        XCTAssertEqual(
+            followerResult.value,
+            "ok",
+            "M1: follower behind queued long write must wait unbounded, not false writerBusy"
+        )
+    }
+
     // MARK: - permit-leak race (audit round 2: grdb_txn-1)
 
     /// When signal() hands a permit to a waiter whose owning task has just been

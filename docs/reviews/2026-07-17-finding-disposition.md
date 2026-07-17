@@ -4,10 +4,10 @@
 |----|------|--------|----------|-------|
 | H1 | full-high | fixed | C | |
 | H2 | full-high | fixed | C | |
-| M1 | full-medium | pending-fix | D | |
-| M2 | full-medium | pending-fix | D | |
-| M3 | full-medium | pending-fix | D | |
-| M4 | full-medium | pending-fix | D | |
+| M1 | full-medium | fixed | E | writer-gate pending+active long writes → timeout=nil |
+| M2 | full-medium | fixed | E | partial success recordScanSuccess when core index OK |
+| M3 | full-medium | fixed | E | per-session embed isolation + failed_permanent |
+| M4 | full-medium | fixed | E | reclamation cursor advances only past processed |
 | M5 | full-medium | fixed | D | |
 | M6 | full-medium | pending-fix | D | |
 | M7 | full-medium | pending-fix | D | |
@@ -19,8 +19,8 @@
 | M13 | full-medium | pending-fix | D | |
 | M14 | full-medium | pending-fix | D | |
 | M15 | full-medium | pending-fix | D | |
-| M16 | full-medium | pending-fix | D | |
-| M17 | full-medium | pending-fix | D | |
+| M16 | full-medium | fixed | E | store native vector dim; refuse mismatch |
+| M17 | full-medium | fixed | E | model/dimension change purge + re-enqueue |
 | M18 | full-medium | fixed | D | |
 | M19 | full-medium | fixed | D | |
 | M20 | full-medium | fixed | D | |

@@ -207,6 +207,76 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         }
     }
 
+    /// M4: after reclaiming the per-cycle cap, cursor advances only past examined
+    /// candidates — remaining eligible sessions stay available for the next cycle
+    /// without waiting for a full catalog wrap.
+    func testReclamationCursorAdvancesOnlyPastProcessedCandidates_repro() async throws {
+        try writeSettings(customProjectsRoots: [])
+        let projectsRoot = try makeProjectsRoot(
+            parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
+        )
+        // Cap is 10 reclaims/cycle; create 15 eligible so the first cycle must
+        // leave 5 unprocessed.
+        var fixtures: [BindingFixture] = []
+        for index in 0..<15 {
+            let seed = String(format: "m4-%02d", index)
+            fixtures.append(
+                try addEligibleBinding(
+                    seed: seed,
+                    source: "claude-code",
+                    projectsRoot: projectsRoot
+                )
+            )
+        }
+        try await replicate(fixtures)
+        try recordCurrentRecoveryLeases(manifestSHA256: fixtures[0].binding.manifestSHA256)
+
+        let coordinator = try makeCoordinator()
+        let first = await coordinator.runNow(now: now)
+        XCTAssertTrue(first.accepted)
+        XCTAssertEqual(first.sourceFilesReclaimed, 10)
+
+        let ordered = fixtures.sorted {
+            if $0.binding.boundAt != $1.binding.boundAt {
+                return $0.binding.boundAt < $1.binding.boundAt
+            }
+            return $0.binding.manifestSHA256 < $1.binding.manifestSHA256
+        }
+        let expectedCursor = ordered[9].binding // 10th examined+reclaimed
+        let checkpoint = try XCTUnwrap(
+            try catalog.archiveCursorCheckpoint(for: .reclamationCycle),
+            "M4: cursor checkpoint must be stored after a reclaim cycle"
+        )
+        struct CursorPayload: Codable {
+            let boundAt: String
+            let manifestSHA256: String
+        }
+        let payload = try JSONDecoder().decode(CursorPayload.self, from: checkpoint.payload)
+        XCTAssertEqual(
+            payload.boundAt,
+            expectedCursor.boundAt,
+            "M4: cursor boundAt must match last processed candidate"
+        )
+        XCTAssertEqual(
+            payload.manifestSHA256,
+            expectedCursor.manifestSHA256,
+            "M4: cursor must not jump past unprocessed eligible candidates (was page.last)"
+        )
+        XCTAssertNotEqual(
+            payload.manifestSHA256,
+            ordered[14].binding.manifestSHA256,
+            "M4: must not advance past the full page last item"
+        )
+
+        let second = await coordinator.runNow(now: now)
+        XCTAssertTrue(second.accepted)
+        XCTAssertEqual(
+            second.sourceFilesReclaimed,
+            5,
+            "M4: remaining eligible sessions must reclaim on the next cycle without full wrap"
+        )
+    }
+
     func testClaudeProfileGateDoesNotChangeCASEvictionEligibility() async throws {
         let customRoot = try makeProjectsRoot(
             parent: root.appendingPathComponent("custom-profile", isDirectory: true)
