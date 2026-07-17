@@ -7,6 +7,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: Claude Code MCP output-schema compatibility (2026-07-17)
+
+- Changed `project_list_migrations` and `project_recover` from array-root
+  `outputSchema` declarations to object-root envelopes (`migrations[]` and
+  `diagnostics[]`). Added a catalog-wide compatibility guard so every declared
+  MCP output schema remains an object, as required by Claude Code 2.1.212.
+- PR #186 merged as `0ed133b6` after Tests run `29554281142`, CodeQL run
+  `29554281127`, and Dependency Review run `29554281126` passed. The full local
+  `EngramMCPTests` suite also passed 150/150, including schema, structured
+  content, text-mirror, and golden-contract coverage.
+- Built and locally installed Developer ID-signed Engram `1.0.4 (1236)` after
+  preserving and verifying the prior `1.0.4 (1233)` installation for rollback.
+  Bundle hygiene, strict deep signing, Hardened Runtime, secure timestamp, app
+  and service startup, the service socket, installed MCP schemas, and both
+  affected tool calls passed post-deploy checks.
+- Claude Code 2.1.212 reported the installed `engram` server connected and
+  successfully discovered and invoked `project_list_migrations`, returning
+  `MCP_OK 1`. No public release, notarization, tag, or remote deployment was
+  performed by this local compatibility deployment.
+
 ### Fixed: bounded periodic service maintenance and TS 7 rollback guidance (2026-07-16)
 
 - Bounded embedding maintenance to four pending sessions or 16 pending insights
