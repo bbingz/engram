@@ -7,6 +7,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: archive HEAD existence-only (M14) + audit closeout disposition
+
+- M14: `ArchiveStore.hasObject`/`hasManifest` lstat-only probes; HEAD routes no longer decrypt full payloads.
+- Consolidated finding disposition (all Highs + defect Mediums fixed or residual); remaining Lows accepted residual with writeup.
+
 ### Fixed: audit mediums (MCP parity, KPI skip, Gemini sidecar, Test Connection)
 
 - M5: KPI/dailyActivity exclude skip-tier sessions.

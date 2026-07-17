@@ -46,3 +46,9 @@ than "easy TDD" or better tracked as separate work:
 - Security audit: `docs/reviews/2026-07-17-engram-security-audit.md`
 - Security adjudication: `docs/reviews/2026-07-17-engram-security-audit-adjudication.md`
 - Disposition table: `docs/reviews/2026-07-17-finding-disposition.md`
+
+## M15 — Archive discovery listings O(N) rescan
+Latent throughput issue on listMachines/listReceipts. No data-loss path. Accepted residual until discovery is product-hot; HEAD (M14) fixed existence-only.
+
+## Remaining Lows L1–L5, L9–L18, L20, L22, L24–L34, L36
+Closeout accepts as residual low backlog. Highs and defect-class mediums closed in PRs #188–#194. Prefer follow-up themed PRs rather than blocking multi-PR audit stack.

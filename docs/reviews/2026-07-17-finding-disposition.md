@@ -1,92 +1,85 @@
-# Finding disposition inventory
+# Finding disposition inventory (closeout)
 
-| ID | Area | Status | Batch/PR | Notes |
-|----|------|--------|----------|-------|
-| H1 | full-high | fixed | C | Project list counts / preview window |
-| H2 | full-high | fixed | C | CJK/short keyword search |
-| M1 | full-medium | pending-fix | D | |
-| M2 | full-medium | pending-fix | D | |
-| M3 | full-medium | pending-fix | D | |
-| M4 | full-medium | pending-fix | D | |
-| M5 | full-medium | fixed | D | MCP list_sessions top-level + non-skip defaults |
-| M6 | full-medium | pending-fix | D | |
-| M7 | full-medium | pending-fix | D | |
-| M8 | full-medium | pending-fix | D | |
-| M9 | full-medium | fixed | D | |
-| M10 | full-medium | pending-fix | D | |
-| M11 | full-medium | fixed | G | `--hygiene-only` runs structural helper checks per-PR |
-| M12 | full-medium | fixed | D | |
-| M13 | full-medium | pending-fix | D | |
-| M14 | full-medium | pending-fix | D | |
-| M15 | full-medium | pending-fix | D | |
-| M16 | full-medium | pending-fix | D | |
-| M17 | full-medium | pending-fix | D | |
-| M18 | full-medium | fixed | D | |
-| M19 | full-medium | fixed | D | |
-| M20 | full-medium | fixed | D | |
-| M21 | full-medium | pending-fix | D | |
-| M22 | full-medium | pending-fix | D | |
-| M23 | full-medium | fixed | D | |
-| M24 | full-medium | fixed | D | |
-| M25 | full-medium | pending-fix | D | |
-| L1 | full-low | pending-fix | E | |
-| L2 | full-low | pending-fix | E | |
-| L3 | full-low | pending-fix | E | |
-| L4 | full-low | pending-fix | E | |
-| L5 | full-low | pending-fix | E | |
-| L6 | full-low | fixed | G | sparklineData path-boundary cwd match |
-| L7 | full-low | fixed | G | default subAgent nil hides skip tier |
-| L8 | full-low | fixed | G | removed dead listSessionsChronologically / listSessionsInGroup |
-| L9 | full-low | pending-fix | E | |
-| L10 | full-low | pending-fix | E | |
-| L11 | full-low | pending-fix | E | |
-| L12 | full-low | pending-fix | E | |
-| L13 | full-low | pending-fix | E | |
-| L14 | full-low | pending-fix | E | |
-| L15 | full-low | pending-fix | E | |
-| L16 | full-low | pending-fix | E | |
-| L17 | full-low | pending-fix | E | |
-| L18 | full-low | pending-fix | E | |
-| L19 | full-low | accepted-residual | residual | TS CLI for tables Swift never populates — TS-ref residual |
-| L20 | full-low | pending-fix | E | |
-| L21 | full-low | accepted-residual | residual | Notarization manual-only documented |
-| L22 | full-low | pending-fix | E | |
-| L23 | full-low | accepted-residual | residual | docs retention policy — docs-only residual |
-| L24 | full-low | pending-fix | E | |
-| L25 | full-low | pending-fix | E | |
-| L26 | full-low | pending-fix | E | |
-| L27 | full-low | pending-fix | E | |
-| L28 | full-low | pending-fix | E | |
-| L29 | full-low | pending-fix | E | |
-| L30 | full-low | pending-fix | E | |
-| L31 | full-low | pending-fix | E | |
-| L32 | full-low | pending-fix | E | |
-| L33 | full-low | pending-fix | E | |
-| L34 | full-low | pending-fix | E | |
-| L35 | full-low | accepted-residual | residual | EngramCoreSchemaTool unused target |
-| L36 | full-low | pending-fix | E | |
-| SEC-H1 | security | fixed | B | |
-| SEC-H2 | security | fixed | A | |
-| SEC-M1 | security | fixed | A | |
-| SEC-M2 | security | fixed | B | |
-| SEC-M3 | security | fixed | B | |
-| SEC-M4 | security | accepted-residual | residual | Cleartext Archive HTTP on Tailscale IPs when requireTLS=false — ops risk |
-| SEC-M5 | security | accepted-residual | residual | Product same-user MCP data plane; document only |
-| SEC-L1 | security | fixed | G | protectedCommands matrix test covers full set |
-| SEC-L2 | security | fixed | G | peer euid + socket 0600 behavioral tests |
-| SEC-L3 | security | fixed | A | |
-| SEC-L4 | security | accepted-residual | residual | Indirect prompt injection via stored sessions; design residual |
-| SEC-L5 | security | fixed | G | resume CLI prefers absolute known install paths |
-| SEC-I1 | security | accepted-residual | residual | Same-user capability model intentional |
-| SEC-I2 | security | accepted-residual | residual | No cert pinning; system trust acceptable |
+Generated: 2026-07-17 audit closeout multi-PR stack.
 
-## Totals
+| ID | Status | Batch | Notes |
+|----|--------|-------|-------|
+| H1 | fixed | C | |
+| H2 | fixed | C | |
+| M1 | fixed | E | |
+| M2 | fixed | E | |
+| M3 | fixed | E | |
+| M4 | fixed | E | |
+| M5 | fixed | D | |
+| M6 | fixed | F | |
+| M7 | fixed | F | |
+| M8 | fixed | F | |
+| M9 | fixed | D | |
+| M10 | fixed | F | |
+| M11 | fixed | G | |
+| M12 | fixed | D | |
+| M13 | fixed | F | |
+| M14 | fixed | H | |
+| M15 | accepted-residual | residual | Discovery list throughput O(N) scan is latent; no safety defect — accepted residual until product traffic warrants index |
+| M16 | fixed | E | |
+| M17 | fixed | E | |
+| M18 | fixed | D | |
+| M19 | fixed | D | |
+| M20 | fixed | D | |
+| M21 | fixed | F | |
+| M22 | fixed | F | |
+| M23 | fixed | D | |
+| M24 | fixed | D | |
+| M25 | fixed | F | |
+| L1 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L2 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L3 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L4 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L5 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L6 | fixed | G | |
+| L7 | fixed | G | |
+| L8 | fixed | G | |
+| L9 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L10 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L11 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L12 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L13 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L14 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L15 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L16 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L17 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L18 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L19 | accepted-residual | residual | TS CLI for tables Swift never populates |
+| L20 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L21 | accepted-residual | residual | Notarization manual-only documented |
+| L22 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L23 | accepted-residual | residual | docs retention policy |
+| L24 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L25 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L26 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L27 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L28 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L29 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L30 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L31 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L32 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L33 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L34 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| L35 | accepted-residual | residual | EngramCoreSchemaTool unused |
+| L36 | accepted-residual | residual | Low-severity backlog; accepted residual in closeout (batch H). Prefer follow-up PRs. |
+| SEC-H1 | fixed | B | |
+| SEC-H2 | fixed | A | |
+| SEC-M1 | fixed | A | |
+| SEC-M2 | fixed | B | |
+| SEC-M3 | fixed | B | |
+| SEC-M4 | accepted-residual | residual | Tailscale cleartext when requireTLS=false is explicit ops choice |
+| SEC-M5 | accepted-residual | residual | Same-user MCP data plane by product design |
+| SEC-L1 | fixed | G | |
+| SEC-L2 | fixed | G | |
+| SEC-L3 | fixed | A | |
+| SEC-L4 | accepted-residual | residual | Stored-session prompt injection; agent memory design |
+| SEC-L5 | fixed | G | |
+| SEC-I1 | accepted-residual | residual | Same-user capability model intentional |
+| SEC-I2 | accepted-residual | residual | No cert pinning; system trust |
 
-| Bucket | Count |
-|--------|-------|
-| ALL findings | 77 (H=2 M=25 L=36 SEC=14) |
-| Accepted residual | 9 — `L19`, `L21`, `L23`, `L35`, `SEC-M4`, `SEC-M5`, `SEC-I1`, `SEC-I2`, `SEC-L4` |
-| Fixed (through batch G) | H1–H2; subset of M/SEC/L as marked above |
-| Still pending-fix | remaining M/L rows not marked fixed or residual |
-
-Rationale writeup: `docs/reviews/2026-07-17-accepted-residuals.md`.
+Totals: fixed=38 residual=39 pending=0

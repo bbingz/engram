@@ -227,6 +227,7 @@
 		5142C1AAF13492F8D35289A7 /* EngramCoreWrite.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */; };
 		5278C83EEE99F3ECE4BE4D2E /* GitRepo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C674D43DC28376647200E90 /* GitRepo.swift */; };
 		53140FFA6AED2E5B37AEB34E /* SessionActionHandlers.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF11D2F88201D720C66E5D58 /* SessionActionHandlers.swift */; };
+		533000AA99326C19542719C1 /* ArchiveHeadExistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8CF94ACF0303DFF81991243 /* ArchiveHeadExistenceTests.swift */; };
 		53768E7900719C77D51A952D /* AgentsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB7F43C61056AA05963DC190 /* AgentsScreen.swift */; };
 		540E1AAA771B32A7630D2263 /* ArchiveRecoveryIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 817275FD9BB02B0616C9F564 /* ArchiveRecoveryIntegrationTests.swift */; };
 		541652919DCE094553ED4A75 /* WaitUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1206FB9CDE9D765DCA88BD01 /* WaitUtils.swift */; };
@@ -1395,6 +1396,7 @@
 		E82D19B2FEFE12422A15C4F9 /* ImportRepo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportRepo.swift; sourceTree = "<group>"; };
 		E84E8C543D2B35FC67D38675 /* AboutSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutSettingsSection.swift; sourceTree = "<group>"; };
 		E8A3841D86B13AA2C3546896 /* SettingsIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsIO.swift; sourceTree = "<group>"; };
+		E8CF94ACF0303DFF81991243 /* ArchiveHeadExistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveHeadExistenceTests.swift; sourceTree = "<group>"; };
 		E91BD2CEB27BB9165CE31FBA /* MessageParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageParserTests.swift; sourceTree = "<group>"; };
 		E948CB379DA78A92DF7E633F /* TranscriptExportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptExportService.swift; sourceTree = "<group>"; };
 		E961234A74A84E35D33B0404 /* ImmutableArchiveCASTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImmutableArchiveCASTests.swift; sourceTree = "<group>"; };
@@ -1614,6 +1616,7 @@
 			children = (
 				3E6B5B1F0F6E6415853FAF84 /* ArchiveConfigTests.swift */,
 				3F222749BE5F32AF0421DEFC /* ArchiveEnvelopeCodecTests.swift */,
+				E8CF94ACF0303DFF81991243 /* ArchiveHeadExistenceTests.swift */,
 				8BBCE4D57D6A2F4533220574 /* ArchivePageModelTests.swift */,
 				817275FD9BB02B0616C9F564 /* ArchiveRecoveryIntegrationTests.swift */,
 				2CFBB1E1C1644C85A445C6F6 /* ArchiveRemoteTelemetryStoreTests.swift */,
@@ -3580,6 +3583,7 @@
 			files = (
 				9CCC1F0B2A97A44FF3B5DB2C /* ArchiveConfigTests.swift in Sources */,
 				FB9B2A2E038C0DF97414C6E0 /* ArchiveEnvelopeCodecTests.swift in Sources */,
+				533000AA99326C19542719C1 /* ArchiveHeadExistenceTests.swift in Sources */,
 				B3B2E03E723D44E973B6DD40 /* ArchivePageModelTests.swift in Sources */,
 				540E1AAA771B32A7630D2263 /* ArchiveRecoveryIntegrationTests.swift in Sources */,
 				2A931181AA6BB2B628CA4EE0 /* ArchiveRemoteTelemetryStoreTests.swift in Sources */,
