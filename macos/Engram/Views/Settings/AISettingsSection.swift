@@ -249,10 +249,8 @@ struct AISettingsSection: View {
                                 : appendAPIPath("/v1/chat/completions", to: url)
                             Task {
                                 do {
-                                    // M20: free-text Base URL must not force-unwrap.
-                                    guard let parsed = URL(string: testURL),
-                                          parsed.scheme != nil,
-                                          parsed.host != nil else {
+                                    // M20: free-text Base URL via pure helper (unit-tested).
+                                    guard let parsed = AISettingsURLValidation.parseConnectionURL(testURL) else {
                                         titleTestStatus = .failed("Invalid URL")
                                         return
                                     }
@@ -501,6 +499,22 @@ struct AISettingsSection: View {
             )
         }
         return trimmed
+    }
+}
+
+/// M20: pure URL parse for free-text Test Connection fields.
+enum AISettingsURLValidation {
+    /// Accept only absolute URLs with non-empty scheme and host (rejects
+    /// leading-space garbage and `URL(string:)` force-unwrap crash fodder).
+    static func parseConnectionURL(_ raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let url = URL(string: trimmed),
+              let scheme = url.scheme, !scheme.isEmpty,
+              let host = url.host, !host.isEmpty else {
+            return nil
+        }
+        return url
     }
 }
 
