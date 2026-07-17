@@ -130,6 +130,8 @@ public enum EngramServiceRunner {
         let runtimeDirectory: URL
         if socketPath == defaultSocketPath {
             runtimeDirectory = try UnixSocketEngramServiceTransport.secureRuntimeDirectory()
+            // SEC-L3: repair cache/exports/probes (and peers) that may still be 0755.
+            EngramUserDataDirectory.secureExistingProductSubdirectories()
         } else {
             let socketURL = URL(fileURLWithPath: socketPath)
             runtimeDirectory = socketURL.deletingLastPathComponent()

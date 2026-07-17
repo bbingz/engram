@@ -7,6 +7,55 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: security P0 from 2026-07-17 audit (SEC-M1, SEC-H2, SEC-L3)
+
+- SEC-M1: removed world-readable `/tmp/engram-terminal.log` writes from
+  `TerminalLauncher` resume path (cwd/session args disclosure).
+- SEC-H2: `EngramServiceLauncher` shreds/deletes `ai-secrets.json` via
+  `removeRuntimeAISecrets` on stop/scrub; bridge no longer left beside the socket.
+- SEC-L3: added `EngramUserDataDirectory` to create/repair `~/.engram/{cache,exports,probes,…}`
+  at 0700; wired into service startup and export path.
+- Tests: `*_repro` coverage in EngramTests + EngramCoreTests.
+
+### Audited: security closeout for the 2026-07-17 full audit
+
+- Completed the security slice deferred from the full-codebase audit. Three
+  parallel domain reviews (IPC trust boundary, credentials/TLS/path
+  confinement, injection + log privacy + MCP relay) plus orchestrator
+  adversarial verification against source and live `~/.engram` state.
+  Report: `docs/reviews/2026-07-17-engram-security-audit.md`.
+- Outcome: 14 findings (0 critical / 2 high / 5 medium / 5 low / 2 info).
+  High: remote-offload HTTP lexical “private host” policy with product default
+  `remoteOffloadRequireTLS=false` (`EngramRemoteBackend` / `RemoteSyncCoordinator`);
+  plaintext `ai-secrets.json` Keychain bridge without stop cleanup
+  (`EngramServiceLauncher`). Medium: world-readable `/tmp/engram-terminal.log`,
+  `memoryFileContent` check-then-read without `O_NOFOLLOW`, DEBUG/Keychain-fail
+  plaintext settings, optional Archive cleartext on Tailscale, MCP same-user
+  data-plane residual.
+- Cross-user IPC isolation is strong (0700 runtime, 0600 socket, peer euid,
+  capability token on all mutators). Same-user/MCP is a trusted peer by design.
+  Historical Terminal/RepoDetail command-injection claims are closed in current
+  code. Full-audit coverage section updated to point at the security report.
+- Same-day adjudication re-checked every High/Medium claim against source and
+  live perms: **APPROVED** as closeout (`2026-07-17-engram-security-audit-adjudication.md`).
+  No fabricated findings; H1 framed as bare-label DNS (High) vs default TLS-off
+  ops posture (Medium); H2 High only under same-user malware scope.
+
+### Audited: full-codebase multi-agent review (2026-07-17)
+
+- Ran a two-round Opus multi-agent audit (19 subsystem reviewers, per-finding
+  adversarial verification, completeness-critic-driven round 2). Result:
+  63 confirmed findings (2 high, 25 medium, 36 low), 8 reviewer claims refuted,
+  0 unverified. Full report: `docs/reviews/2026-07-17-engram-full-audit.md`.
+- High: Projects page truncation via `listSessionsByProject` limit*10 window
+  (`Database.swift:1384`); MCP keyword search missing the CJK/short-query LIKE
+  fallback (`MCPDatabase.swift:2116`). Dominant theme: the three read surfaces
+  (app / MCP / service) have drifted on visibility, cost, and day-bucket
+  invariants. The >128 MB streaming JSONL patch boundary defect
+  (`JsonlPatch.swift:321`) was empirically reproduced during verification.
+- Security auditing was initially excluded by owner decision; closed out in the
+  follow-on report above.
+
 ### Fixed: Claude Code MCP output-schema compatibility (2026-07-17)
 
 - Changed `project_list_migrations` and `project_recover` from array-root

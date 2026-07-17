@@ -40,6 +40,9 @@ final class EngramServiceLauncher {
     typealias EventSink = @MainActor @Sendable (EngramServiceEvent) -> Void
 
     private var process: Process?
+    /// Socket path of the currently launched helper — used to scrub
+    /// `ai-secrets.json` on stop (SEC-H2).
+    private var processSocketPath: String?
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
     private var healthTask: Task<Void, Never>?
@@ -133,6 +136,31 @@ final class EngramServiceLauncher {
         }
     }
 
+    /// SEC-H2: remove the plaintext Keychain bridge file. Prefer overwrite-then-
+    /// unlink so residual secret bytes are not left on a reusable temp name.
+    nonisolated static func removeRuntimeAISecrets(atPath path: String) {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: path) else { return }
+        if let attrs = try? fileManager.attributesOfItem(atPath: path),
+           let size = attrs[.size] as? NSNumber,
+           size.intValue > 0 {
+            let zeros = Data(repeating: 0, count: min(size.intValue, 64 * 1024))
+            if let handle = FileHandle(forWritingAtPath: path) {
+                defer { try? handle.close() }
+                try? handle.seek(toOffset: 0)
+                try? handle.write(contentsOf: zeros)
+                try? handle.truncate(atOffset: UInt64(zeros.count))
+                try? handle.synchronize()
+            }
+        }
+        try? fileManager.removeItem(atPath: path)
+    }
+
+    /// SEC-H2: scrub secrets next to the service socket (production bridge path).
+    nonisolated func scrubRuntimeAISecrets(forSocketPath socketPath: String) {
+        Self.removeRuntimeAISecrets(atPath: Self.runtimeAISecretsPath(forSocketPath: socketPath))
+    }
+
     var isRunning: Bool {
         process?.isRunning == true
     }
@@ -156,6 +184,7 @@ final class EngramServiceLauncher {
         drain(pipe: stderrPipe, level: "stderr")
         try proc.run()
         process = proc
+        processSocketPath = configuration.socketPath
         self.stdoutPipe = stdoutPipe
         self.stderrPipe = stderrPipe
     }
@@ -279,6 +308,12 @@ final class EngramServiceLauncher {
     func stopIfOwned() {
         healthTask?.cancel()
         healthTask = nil
+        // SEC-H2: drop the plaintext AI secrets bridge as soon as we intend to
+        // stop the helper. Token file cleanup is owned by the service process;
+        // the bridge file is owned by the app launcher.
+        if let socketPath = processSocketPath {
+            scrubRuntimeAISecrets(forSocketPath: socketPath)
+        }
         // Send SIGTERM synchronously, but never block the main run loop waiting
         // for exit. On quit we don't need the lock-release ordering a restart
         // needs, so the bounded wait runs as a fire-and-forget task whose
@@ -288,6 +323,9 @@ final class EngramServiceLauncher {
     }
 
     private func stopProcessOnly() async {
+        if let socketPath = processSocketPath {
+            scrubRuntimeAISecrets(forSocketPath: socketPath)
+        }
         guard let terminating = terminateProcess() else { return }
         // Bounded wait so the old helper has actually released the
         // single-writer lock + socket before a restart spawns a new one;
@@ -308,6 +346,7 @@ final class EngramServiceLauncher {
         stderrPipe = nil
         let terminating = process
         process = nil
+        processSocketPath = nil
         guard let terminating, terminating.isRunning else { return nil }
         terminating.terminate()
         return terminating
