@@ -306,8 +306,10 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         forceClaudeCodeSource: Bool
     ) -> AdapterParseResult<NormalizedSessionInfo> {
         let aggregate = aggregateSessionInfo(from: objects)
+        guard aggregate.messageCount > 0 else {
+            return objects.isEmpty ? .failure(.malformedJSON) : .failure(.noVisibleMessages)
+        }
         guard let id = aggregate.id(locator: locator) else { return .failure(.malformedJSON) }
-        guard aggregate.messageCount > 0 else { return .failure(.noVisibleMessages) }
 
         return .success(
             NormalizedSessionInfo(
@@ -373,18 +375,18 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     private static func aggregateSessionInfo(from objects: [JSONLAdapterSupport.JSONObject]) -> SessionInfoAggregate {
         var aggregate = SessionInfoAggregate()
         for object in objects {
-            guard let type = JSONLAdapterSupport.string(object["type"]),
-                  type == "user" || type == "assistant"
-            else {
-                continue
-            }
-
             if aggregate.sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
                 aggregate.sessionId = value
             }
             if aggregate.agentId.isEmpty, let value = JSONLAdapterSupport.string(object["agentId"]) {
                 aggregate.agentId = value
             }
+            guard let type = JSONLAdapterSupport.string(object["type"]),
+                  type == "user" || type == "assistant"
+            else {
+                continue
+            }
+
             if aggregate.cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) {
                 aggregate.cwd = value
             }

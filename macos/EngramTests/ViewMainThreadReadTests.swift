@@ -408,6 +408,26 @@ final class ViewMainThreadReadTests: XCTestCase {
         )
     }
 
+    // Runtime debt repro: an installed Release launch emitted Security.framework
+    // performance diagnostics because bundle trust validation ran on MainActor.
+    func testKeychainStartupPolicyAvoidsSynchronousTrustEvaluation_repro() throws {
+        let s = try source("macos/Engram/Views/Settings/SettingsIO.swift")
+
+        XCTAssertFalse(
+            s.contains("SecStaticCodeCheckValidity"),
+            "Keychain startup policy must not synchronously validate bundle trust"
+        )
+        XCTAssertFalse(
+            s.contains("kSecCSCheckAllArchitectures"),
+            "Keychain startup policy must not validate every executable slice at launch"
+        )
+        XCTAssertTrue(s.contains("#if DEBUG"), "Debug Keychain bypass must be deterministic at build time")
+        XCTAssertTrue(
+            s.contains("path.contains(\"DerivedData\")"),
+            "Xcode-run builds must retain the DerivedData Keychain bypass"
+        )
+    }
+
     func testDatabaseManagerIsNotGlobalMainActorIsolated() throws {
         let s = try source("macos/Engram/Core/Database.swift")
         XCTAssertFalse(

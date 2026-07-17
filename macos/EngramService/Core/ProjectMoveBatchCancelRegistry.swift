@@ -405,10 +405,9 @@ final class ProjectMoveBatchCancelRegistry: @unchecked Sendable {
         return try await withTaskCancellationHandler {
             // Barrier inside cancellation handler so Task.cancel() is observed
             // as pendingCancel before register (deterministic cancel-before-register).
-            let before: (@Sendable () async -> Void)?
-            lock.lock()
-            before = testBeforeWaiterRegister
-            lock.unlock()
+            let before: (@Sendable () async -> Void)? = lock.withLock {
+                testBeforeWaiterRegister
+            }
             if let before {
                 await before()
             }

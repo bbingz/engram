@@ -1684,7 +1684,9 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         writerGate: ServiceWriterGate,
         titleConfig: ServiceAISettings.ChatConfig? = ServiceAISettings.read().titleConfig,
         generateTitle: @escaping @Sendable (String, String, ServiceAISettings.ChatConfig) async throws -> String
-            = ServiceAIClient.workItemTitle(intent:outcome:config:)
+            = { intent, outcome, config in
+                try await ServiceAIClient.workItemTitle(intent: intent, outcome: outcome, config: config)
+            }
     ) async throws -> ServiceWriterGateResult<EngramServiceGenerateProjectWorkTitlesResponse> {
         let project = request.project
         let items = try readProjectWorkItems(project: project, databasePath: writerGate.databasePath)

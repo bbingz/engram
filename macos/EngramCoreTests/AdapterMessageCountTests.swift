@@ -53,6 +53,31 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - VsCode
 
+    // Runtime-debt repro: VS Code persists valid empty draft sessions that are
+    // not malformed transcripts and must not enter the retry loop.
+    func testVsCodeEmptyDraftIsTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatDir = root.appendingPathComponent("ws-empty/chatSessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatDir, withIntermediateDirectories: true)
+
+        let session: [String: Any] = [
+            "kind": 0,
+            "v": [
+                "sessionId": "vs-empty-draft",
+                "creationDate": 1_700_000_000_000,
+                "requests": [],
+            ],
+        ]
+        let file = chatDir.appendingPathComponent("empty.jsonl")
+        try (try jsonLine(session) + "\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = VsCodeAdapter(workspaceStorageDir: root.path)
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+
+        XCTAssertEqual(failure, .noVisibleMessages)
+    }
+
     func testVsCodeCountsOnlyNonEmptyTurns() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -559,6 +584,38 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - Qwen
 
+    // Runtime-debt repro: Qwen slash-command telemetry carries a session ID but
+    // no visible conversation and must terminate cleanly instead of retrying.
+    func testQwenSlashCommandOnlyIsTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("project-empty/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "type": "system",
+                "subtype": "slash_command",
+                "sessionId": "qwen-slash-only",
+                "timestamp": "2026-07-17T00:00:00.000Z",
+            ],
+            [
+                "type": "system",
+                "subtype": "slash_command",
+                "sessionId": "qwen-slash-only",
+                "timestamp": "2026-07-17T00:00:01.000Z",
+            ],
+        ]
+        let file = chatsDir.appendingPathComponent("slash-only.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QwenAdapter(projectsRoot: root.path)
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+
+        XCTAssertEqual(failure, .noVisibleMessages)
+    }
+
     func testQwenAttachesAssistantUsageMetadata() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -984,6 +1041,53 @@ final class AdapterMessageCountTests: XCTestCase {
     }
 
     // MARK: - Claude Code
+
+    // Runtime-debt repro: Claude metadata-only JSONL is valid session state and
+    // must use the existing terminal no-visible contract rather than malformed.
+    func testClaudeCodeMetadataOnlyIsTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("-Users-test-metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            ["type": "system", "sessionId": "cc-metadata-only", "timestamp": "2026-07-17T00:00:00Z"],
+            ["type": "mode", "sessionId": "cc-metadata-only", "mode": "default"],
+            ["type": "permission-mode", "sessionId": "cc-metadata-only", "mode": "acceptEdits"],
+            ["type": "last-prompt", "sessionId": "cc-metadata-only", "prompt": ""],
+        ]
+        let file = projectDir.appendingPathComponent("metadata-only.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: root.path)
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+
+        XCTAssertEqual(failure, .noVisibleMessages)
+    }
+
+    // Claude can leave standalone file-history snapshots that are valid JSONL
+    // but have neither a session ID nor any visible messages. They are not a
+    // damaged transcript and should use the terminal no-visible contract.
+    func testClaudeCodeFileHistorySnapshotsWithoutSessionIdAreTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("-Users-test-file-history", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            ["type": "file-history-snapshot", "snapshot": ["trackedFileBackups": [:]]],
+            ["type": "file-history-snapshot", "snapshot": ["trackedFileBackups": [:]]],
+        ]
+        let file = projectDir.appendingPathComponent("file-history-only.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: root.path)
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+
+        XCTAssertEqual(failure, .noVisibleMessages)
+    }
 
     func testClaudeCodeToolResultCountMatchesStream() async throws {
         let root = tempDir()

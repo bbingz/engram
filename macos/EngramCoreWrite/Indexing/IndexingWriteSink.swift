@@ -225,12 +225,24 @@ public struct FileIndexState: Equatable, Sendable {
         return min(retryBaseSeconds << shift, retryMaxSeconds)
     }
 
-    private static func isTerminalFailure(_ failure: ParserFailure) -> Bool {
+    static func isTerminalFailure(_ failure: ParserFailure) -> Bool {
         switch failure {
-        case .fileTooLarge, .lineTooLarge, .messageLimitExceeded, .unsupportedVirtualLocator,
+        case .fileTooLarge,
+             .messageLimitExceeded,
+             .lineTooLarge,
+             .unsupportedVirtualLocator,
              .noVisibleMessages:
             return true
-        default:
+        case .fileMissing,
+             .invalidUtf8,
+             .truncatedJSON,
+             .truncatedJSONL,
+             .malformedJSON,
+             .malformedToolCall,
+             .deeplyNestedRecord,
+             .fileModifiedDuringParse,
+             .sqliteUnreadable,
+             .grpcUnavailable:
             return false
         }
     }

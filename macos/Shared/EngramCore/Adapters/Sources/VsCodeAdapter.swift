@@ -42,14 +42,18 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
         do {
             guard let session = try Self.readSession(locator: locator, limits: limits),
                   let requests = JSONLAdapterSupport.array(session["requests"]),
-                  !requests.isEmpty,
                   let creationDate = Phase4AdapterSupport.double(session["creationDate"])
             else {
                 return .failure(.malformedJSON)
             }
+            guard !requests.isEmpty else { return .failure(.noVisibleMessages) }
             let requestObjects = requests.compactMap { JSONLAdapterSupport.object($0) }
+            guard requestObjects.count == requests.count else { return .failure(.malformedJSON) }
             let userTexts = requestObjects.map(Self.extractUserText).filter { !$0.isEmpty }
             let assistantTexts = requestObjects.map(Self.extractAssistantText).filter { !$0.isEmpty }
+            guard !userTexts.isEmpty || !assistantTexts.isEmpty else {
+                return .failure(.noVisibleMessages)
+            }
             let lastTimestamp = Phase4AdapterSupport.double(requestObjects.last?["timestamp"])
             let sessionId = JSONLAdapterSupport.string(session["sessionId"]) ??
                 URL(fileURLWithPath: locator).deletingPathExtension().lastPathComponent

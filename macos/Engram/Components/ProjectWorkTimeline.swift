@@ -102,7 +102,7 @@ struct ProjectWorkTimeline: View {
         guard items.contains(where: { $0.semanticTitle == nil }),
               !requestedTitleGen.contains(project) else { return }
         requestedTitleGen.insert(project)
-        try? await serviceClient.generateProjectWorkTitles(
+        _ = try? await serviceClient.generateProjectWorkTitles(
             EngramServiceGenerateProjectWorkTitlesRequest(project: project)
         )
         await load(showSpinner: false)

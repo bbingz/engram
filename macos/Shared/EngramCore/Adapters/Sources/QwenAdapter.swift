@@ -51,15 +51,15 @@ final class QwenAdapter: SessionAdapter, Sendable {
             var firstUserText = ""
 
             for object in objects {
+                if sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
+                    sessionId = value
+                }
                 guard let type = JSONLAdapterSupport.string(object["type"]),
                       type == "user" || type == "assistant"
                 else {
                     continue
                 }
 
-                if sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
-                    sessionId = value
-                }
                 if cwd.isEmpty, let value = JSONLAdapterSupport.string(object["cwd"]) {
                     cwd = value
                 }
@@ -88,6 +88,7 @@ final class QwenAdapter: SessionAdapter, Sendable {
             }
 
             guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
+            guard userCount + assistantCount > 0 else { return .failure(.noVisibleMessages) }
 
             return .success(
                 NormalizedSessionInfo(
