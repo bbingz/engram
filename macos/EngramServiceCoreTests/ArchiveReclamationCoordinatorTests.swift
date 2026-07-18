@@ -207,6 +207,78 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         }
     }
 
+    /// R5: when the source-byte budget binds, cursor must not advance past the
+    /// eligible row that was skipped (same fairness as M4 count-cap stop).
+    func testReclamationCursorDoesNotSkipBudgetBoundEligibles_repro() async throws {
+        try writeSettings(customProjectsRoots: [])
+        let projectsRoot = try makeProjectsRoot(
+            parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
+        )
+        // Force a tiny byte budget so only the first ~25-byte source fits.
+        ArchiveReclamationCoordinator.testMaximumSourceBytesPerCycle = 40
+        defer { ArchiveReclamationCoordinator.testMaximumSourceBytesPerCycle = nil }
+
+        var fixtures: [BindingFixture] = []
+        for index in 0..<3 {
+            let seed = String(format: "r5-%02d", index)
+            fixtures.append(
+                try addEligibleBinding(
+                    seed: seed,
+                    source: "claude-code",
+                    projectsRoot: projectsRoot
+                )
+            )
+        }
+        try await replicate(fixtures)
+        try recordCurrentRecoveryLeases(manifestSHA256: fixtures[0].binding.manifestSHA256)
+
+        let coordinator = try makeCoordinator()
+        let first = await coordinator.runNow(now: now)
+        XCTAssertTrue(first.accepted)
+        XCTAssertEqual(
+            first.sourceFilesReclaimed,
+            1,
+            "R5: only the first eligible should fit the tiny byte budget"
+        )
+
+        let ordered = fixtures.sorted {
+            if $0.binding.boundAt != $1.binding.boundAt {
+                return $0.binding.boundAt < $1.binding.boundAt
+            }
+            return $0.binding.manifestSHA256 < $1.binding.manifestSHA256
+        }
+        let checkpoint = try XCTUnwrap(
+            try catalog.archiveCursorCheckpoint(for: .reclamationCycle),
+            "R5: cursor checkpoint must exist after partial budget cycle"
+        )
+        struct CursorPayload: Codable {
+            let boundAt: String
+            let manifestSHA256: String
+        }
+        let payload = try JSONDecoder().decode(CursorPayload.self, from: checkpoint.payload)
+        XCTAssertEqual(
+            payload.manifestSHA256,
+            ordered[0].binding.manifestSHA256,
+            "R5: cursor stays on last reclaimed eligible, not past budget-skipped ones"
+        )
+        XCTAssertNotEqual(
+            payload.manifestSHA256,
+            ordered[1].binding.manifestSHA256,
+            "R5: must not advance past the budget-skipped eligible"
+        )
+
+        // Full budget restored for next cycle (via defer already reset at end —
+        // re-set high budget explicitly for second run).
+        ArchiveReclamationCoordinator.testMaximumSourceBytesPerCycle = nil
+        let second = await coordinator.runNow(now: now)
+        XCTAssertTrue(second.accepted)
+        XCTAssertGreaterThanOrEqual(
+            second.sourceFilesReclaimed,
+            2,
+            "R5: budget-skipped eligibles must reclaim on the next cycle"
+        )
+    }
+
     /// M4: after reclaiming the per-cycle cap, cursor advances only past examined
     /// candidates — remaining eligible sessions stay available for the next cycle
     /// without waiting for a full catalog wrap.
