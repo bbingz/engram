@@ -7,6 +7,132 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: R1–R3 post-review (shared visibility, JsonlPatch stream, M5 residual)
+
+- **R1**: `SessionVisibilityFilter` shared list/KPI non-skip predicates; MCP drops
+  incomplete private `containsCJK` in favor of `CJKText` (Hangul-aware).
+- **R2**: streaming `JsonlPatch` no longer treats mid-stream segment EOS as a path
+  terminator; full needles at the cut stay in carry until a following byte (or
+  final EOF) is available. Negative + positive streaming repros.
+- **R3**: finish M5 — `countSessionsSince`, `sourceStats`, `countsByProject`, and
+  MCP `stats` session counts exclude skip-tier (Activity today/week matches KPI).
+
+### Fixed: M5 complete aggregates + batch D repros + merge E/F
+
+- M5: `hourlyActivity`, `sourceDistribution`, `dailySourceActivity` exclude skip-tier
+  (with `testDashboardAggregatesExcludeSkipTier_repro`).
+- Batch D mediums (M9/M18/M19/M20/M24) covered by `AuditMediumMCPReproTests`.
+- Merged batch E (service/embed) and F (UI/adapters) into closeout branch.
+- M21 marked accepted residual (debounce only).
+
+### Fixed: archive HEAD existence-only (M14) + audit closeout disposition
+
+- M14: `ArchiveStore.hasObject`/`hasManifest` lstat-only probes; HEAD routes no longer decrypt full payloads.
+- Consolidated finding disposition (all Highs + defect Mediums fixed or residual); remaining Lows accepted residual with writeup.
+### Fixed: audit mediums (service runtime + embedding lifecycle + reclamation)
+
+- M1: `ServiceWriterGate` counts pending+active long writes and passes
+  `timeout=nil` while >0 so followers behind a still-queued project migration
+  do not false-`writerBusy`.
+- M2: initial scan records `recordScanSuccess` (clears degraded) when the core
+  index phase succeeded even if later required phases failed; full success
+  telemetry still requires zero failed phases.
+- M3: session embedding backfill isolates per-session failures, advances
+  `retry_count`, and terminalizes to `failed_permanent` (no infinite re-select).
+- M16: embedding writes store native vector length and refuse configured-vs-native
+  dimension mismatches.
+- M17: model/dimension change purges `semantic_chunks`/`insight_embeddings` and
+  re-enqueues embedding jobs via `embedding_meta` reconciliation.
+- M4: archive reclamation cursor advances only past examined/processed candidates
+  (not the entire 1_000-row page).
+### Fixed: audit mediums batch F (UI, adapters, FsOps, day bucketing)
+
+- M6: Codex `parseSessionInfo` counts `function_call_output` so `messageCount` matches stream.
+- M7: `CodexAdapter` conforms to `TailIndexingSessionAdapter` with scanTail.
+- M8: suggested-parent `.none` skip only with positive `agent_role` evidence.
+- M10: TimelinePageView generation/cancellation guard on detached loads.
+- M13: FsOps case-only rename via realpath equality non-conflict.
+- M21: AI settings ~400ms debounce (partial; MainActor I/O residual).
+- M22: Archive reclamation refresh generation + disable until first load.
+- M25: ImplementationDigestExtractor `action_date` uses local calendar day.
+
+### Fixed: audit mediums (MCP parity, KPI skip, Gemini sidecar, Test Connection)
+
+- M5: KPI/dailyActivity exclude skip-tier sessions.
+- M9: clamp `list_sessions`/`file_activity` limits (no negative LIMIT).
+- M18: `list_sessions` top-level + non-skip filters when `include_all=false`.
+- M19: cost queries exclude `hidden_at` sessions.
+- M20: AI settings Test Connection no longer force-unwraps URL.
+- M23: Gemini sidecar empty/self parentSessionId rejected.
+- M24: `get_costs` day buckets use localtime.
+- M12: streaming JsonlPatch boundary regression test (carry already present).
+
+### Fixed: audit Highs H1 Projects counts + H2 MCP CJK search
+
+- H1: `listSessionsByProject` uses SQL GROUP BY counts over the full filtered set
+  and only limits per-project previews (no more limit*10 window drop).
+- H2: MCP keyword search uses the same CJK/short-query LIKE fallback as the app
+  (`CJKText` + `keywordSearchLike`); short/CJK queries are no longer empty-rejected.
+
+### Fixed: security transport + secrets defaults (SEC-H1/M2/M3)
+
+- SEC-H1: refuse bare single-label hosts for plain HTTP offload; product default
+  `remoteOffloadRequireTLS` is now `true` (explicit false still allows Tailscale/RFC1918 HTTP).
+- SEC-M2: `memoryFileContent` opens with `O_NOFOLLOW|O_CLOEXEC` + fstat (no check-then-String(contentsOf:)).
+- SEC-M3: Release Keychain failure no longer writes API keys into settings.json plaintext
+  (`allowsPlaintextSettingsFallback` only for DEBUG/DerivedData).
+- SEC-M4: documented as accepted residual when `requireTLS=false` is explicit for Tailscale
+  archive replicas (ops choice; origin policy already Tailscale-only for HTTP).
+
+### Fixed: security P0 from 2026-07-17 audit (SEC-M1, SEC-H2, SEC-L3)
+
+- SEC-M1: removed world-readable `/tmp/engram-terminal.log` writes from
+  `TerminalLauncher` resume path (cwd/session args disclosure).
+- SEC-H2: `EngramServiceLauncher` shreds/deletes `ai-secrets.json` via
+  `removeRuntimeAISecrets` on stop/scrub; bridge no longer left beside the socket.
+- SEC-L3: added `EngramUserDataDirectory` to create/repair `~/.engram/{cache,exports,probes,…}`
+  at 0700; wired into service startup and export path.
+- Tests: `*_repro` coverage in EngramTests + EngramCoreTests.
+
+### Audited: security closeout for the 2026-07-17 full audit
+
+- Completed the security slice deferred from the full-codebase audit. Three
+  parallel domain reviews (IPC trust boundary, credentials/TLS/path
+  confinement, injection + log privacy + MCP relay) plus orchestrator
+  adversarial verification against source and live `~/.engram` state.
+  Report: `docs/reviews/2026-07-17-engram-security-audit.md`.
+- Outcome: 14 findings (0 critical / 2 high / 5 medium / 5 low / 2 info).
+  High: remote-offload HTTP lexical “private host” policy with product default
+  `remoteOffloadRequireTLS=false` (`EngramRemoteBackend` / `RemoteSyncCoordinator`);
+  plaintext `ai-secrets.json` Keychain bridge without stop cleanup
+  (`EngramServiceLauncher`). Medium: world-readable `/tmp/engram-terminal.log`,
+  `memoryFileContent` check-then-read without `O_NOFOLLOW`, DEBUG/Keychain-fail
+  plaintext settings, optional Archive cleartext on Tailscale, MCP same-user
+  data-plane residual.
+- Cross-user IPC isolation is strong (0700 runtime, 0600 socket, peer euid,
+  capability token on all mutators). Same-user/MCP is a trusted peer by design.
+  Historical Terminal/RepoDetail command-injection claims are closed in current
+  code. Full-audit coverage section updated to point at the security report.
+- Same-day adjudication re-checked every High/Medium claim against source and
+  live perms: **APPROVED** as closeout (`2026-07-17-engram-security-audit-adjudication.md`).
+  No fabricated findings; H1 framed as bare-label DNS (High) vs default TLS-off
+  ops posture (Medium); H2 High only under same-user malware scope.
+
+### Audited: full-codebase multi-agent review (2026-07-17)
+
+- Ran a two-round Opus multi-agent audit (19 subsystem reviewers, per-finding
+  adversarial verification, completeness-critic-driven round 2). Result:
+  63 confirmed findings (2 high, 25 medium, 36 low), 8 reviewer claims refuted,
+  0 unverified. Full report: `docs/reviews/2026-07-17-engram-full-audit.md`.
+- High: Projects page truncation via `listSessionsByProject` limit*10 window
+  (`Database.swift:1384`); MCP keyword search missing the CJK/short-query LIKE
+  fallback (`MCPDatabase.swift:2116`). Dominant theme: the three read surfaces
+  (app / MCP / service) have drifted on visibility, cost, and day-bucket
+  invariants. The >128 MB streaming JSONL patch boundary defect
+  (`JsonlPatch.swift:321`) was empirically reproduced during verification.
+- Security auditing was initially excluded by owner decision; closed out in the
+  follow-on report above.
+
 ### Fixed: Claude Code MCP output-schema compatibility (2026-07-17)
 
 - Changed `project_list_migrations` and `project_recover` from array-root

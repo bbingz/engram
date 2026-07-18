@@ -116,10 +116,11 @@ export class CodexAdapter implements SessionAdapter {
             } else if (role === 'assistant') {
               assistantCount++;
             }
-          } else if (payload.type === 'function_call') {
-            // Count one tool use per call. The matching function_call_output is
-            // the result of the same call, so counting it too would double the
-            // tool count relative to every other adapter (which counts 1).
+          } else if (
+            payload.type === 'function_call' ||
+            payload.type === 'function_call_output'
+          ) {
+            // streamMessages emits both; counts must match (M6).
             toolCount++;
           }
         }

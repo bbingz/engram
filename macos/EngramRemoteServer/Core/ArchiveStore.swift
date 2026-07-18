@@ -197,6 +197,18 @@ public struct ArchiveStore: Sendable {
         )
     }
 
+    /// M14: existence-only probe for HEAD — lstat regular file, no decrypt.
+    public func hasObject(digest: String) throws -> Bool {
+        try Self.validateDigest(digest)
+        return try Self.regularFilePresent(at: url(for: digest, kind: .object, createShard: false))
+    }
+
+    /// M14: existence-only probe for HEAD manifests — no chunk re-validation.
+    public func hasManifest(digest: String) throws -> Bool {
+        try Self.validateDigest(digest)
+        return try Self.regularFilePresent(at: url(for: digest, kind: .manifest, createShard: false))
+    }
+
     public func putManifest(
         digest: String,
         canonicalBytes: Data
@@ -1122,6 +1134,22 @@ public struct ArchiveStore: Sendable {
               sameFileIdentity(descriptorInfo, finalPathInfo) else {
             throw ArchiveStoreError.conflict
         }
+    }
+
+    /// M14: lstat-only presence (regular file, owner euid). No open/decrypt.
+    private static func regularFilePresent(at url: URL) throws -> Bool {
+        var info = stat()
+        guard Darwin.lstat(url.path, &info) == 0 else {
+            if errno == ENOENT { return false }
+            throw ArchiveStoreError.io
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
+            throw ArchiveStoreError.conflict
+        }
+        guard info.st_uid == geteuid() else {
+            throw ArchiveStoreError.conflict
+        }
+        return true
     }
 
     private static func fsyncDirectory(_ url: URL) throws {

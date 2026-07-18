@@ -83,10 +83,12 @@ public struct RemoteSyncConfig: Sendable {
             ?? settings["remoteOffloadServerURL"] as? String)
             .flatMap { URL(string: $0) }
         let requireTLS: Bool = {
+            // SEC-H1: fail closed — require TLS unless explicitly disabled for a
+            // trusted private/Tailscale path. Env still wins for headless ops.
             if let env = environment["ENGRAM_REMOTE_OFFLOAD_REQUIRE_TLS"] {
                 return ["1", "true", "yes"].contains(env.lowercased())
             }
-            return (settings["remoteOffloadRequireTLS"] as? Bool) ?? false
+            return (settings["remoteOffloadRequireTLS"] as? Bool) ?? true
         }()
         return RemoteSyncConfig(
             enabled: enabled,

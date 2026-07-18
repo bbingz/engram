@@ -39,6 +39,43 @@ final class ServiceWriterGateTests: XCTestCase {
         XCTAssertFalse(ServiceWriterGate.isLongRunningWriteCommand("saveInsight"))
     }
 
+    /// M1 hang fix: a long-running command blocked by a short holder must still
+    /// arm the queue timeout (WriterBusy), not hang on timeout=nil forever.
+    func testLongRunningCommandBlockedByShortHolderStillTimesOut_repro() async throws {
+        let paths = try makeGatePaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 80_000_000
+        )
+        let hold = CancellationProbe()
+        let holderEntered = expectation(description: "short holder entered")
+        let holdTask = Task {
+            _ = try await gate.performWriteCommand(name: "saveInsight") { _ in
+                holderEntered.fulfill()
+                await hold.waitUntilRelease()
+                return "held"
+            }
+        }
+        await fulfillment(of: [holderEntered], timeout: 5)
+
+        do {
+            _ = try await gate.performWriteCommand(name: "projectMove") { _ in
+                "should-not-run"
+            }
+            XCTFail("projectMove must WriterBusy when blocked by short holder")
+        } catch let error as EngramServiceError {
+            guard case .writerBusy = error else {
+                return XCTFail("expected writerBusy, got \(error)")
+            }
+        } catch {
+            return XCTFail("expected EngramServiceError.writerBusy, got \(error)")
+        }
+
+        await hold.releaseFirst()
+        _ = try await holdTask.value
+    }
+
     func testFirstGateAcquiresLockAndConstructsOneWriter() async throws {
         let paths = try makeGatePaths()
         let factory = CountingWriterFactory()
@@ -497,6 +534,53 @@ final class ServiceWriterGateTests: XCTestCase {
         XCTAssertEqual(queuedResult.value, "queued")
         let ranAfterRelease = await probe.queuedOperationRan
         XCTAssertTrue(ranAfterRelease)
+    }
+
+    /// M1: a follower enqueued behind a *queued* (not yet holding) long write must
+    /// not arm the 60s timeout — otherwise it false-writerBusy while the migration
+    /// is still legitimately waiting, then holding, for minutes.
+    func testFollowerBehindQueuedLongWriteDoesNotTimeout_repro() async throws {
+        let paths = try makeGatePaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 30_000_000 // 30ms
+        )
+        let probe = CancellationProbe()
+
+        // Long-running holder occupies the gate (projectMove in progress).
+        // Short followers must not arm the 30ms queue timeout behind it (M1).
+        let holder = Task {
+            try await gate.performWriteCommand(name: "projectMove") { _ in
+                await probe.markFirstStarted()
+                // Hold past the short queue timeout so a wrongly-armed follower
+                // would surface writerBusy.
+                try await Task.sleep(nanoseconds: 80_000_000)
+                await probe.waitUntilRelease()
+                return "move"
+            }
+        }
+        await probe.waitUntilFirstStarted()
+
+        let follower = Task {
+            try await gate.performWriteCommand(name: "saveInsight") { _ in "ok" }
+        }
+        while await gate.queuedWriteWaiterCountForTesting() < 1 {
+            await Task.yield()
+        }
+
+        // Exceed the short timeout while follower remains queued behind long hold.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await probe.releaseFirst()
+
+        let holderResult = try await holder.value
+        let followerResult = try await follower.value
+        XCTAssertEqual(holderResult.value, "move")
+        XCTAssertEqual(
+            followerResult.value,
+            "ok",
+            "M1: follower behind active long write must wait unbounded, not false writerBusy"
+        )
     }
 
     // MARK: - permit-leak race (audit round 2: grdb_txn-1)

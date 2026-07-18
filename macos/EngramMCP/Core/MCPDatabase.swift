@@ -79,7 +79,12 @@ final class MCPDatabase {
             groupExpr = "source"
         }
 
-        var conditions = ["hidden_at IS NULL", "orphan_status IS NULL"]
+        // R3/M5: sessionCount / totals exclude skip-tier (match app KPI aggregates).
+        // orphan_status remains MCP-specific (app surfaces do not filter it).
+        var conditions = [
+            SessionVisibilityFilter.listVisibleSQL,
+            "orphan_status IS NULL",
+        ]
         var arguments: [String: DatabaseValueConvertible?] = [:]
         if let since {
             conditions.append("start_time >= :since")
@@ -158,6 +163,12 @@ final class MCPDatabase {
         if !includeAll, (try? sessionsHaveHumanDrivenColumns()) == true {
             conditions.append("(\(HumanDrivenFilter.sqlPredicate))")
         }
+        // M18: match app top-level + non-skip defaults when include_all is false.
+        if !includeAll {
+            conditions.append("parent_session_id IS NULL")
+            conditions.append("suggested_parent_id IS NULL")
+            conditions.append(SessionVisibilityFilter.nonSkipTierSQL)
+        }
         var values: [DatabaseValueConvertible?] = []
         if let source {
             conditions.append("source = ?")
@@ -225,7 +236,8 @@ final class MCPDatabase {
         case "project":
             groupExpr = "s.project"
         case "day":
-            groupExpr = "date(s.start_time)"
+            // M24: local day — parity with service costs / heatmaps.
+            groupExpr = "date(s.start_time, 'localtime')"
         default:
             groupExpr = "c.model"
         }
@@ -240,7 +252,7 @@ final class MCPDatabase {
                COUNT(*) AS sessionCount
         FROM session_costs c
         JOIN sessions s ON c.session_id = s.id
-        WHERE 1 = 1
+        WHERE s.hidden_at IS NULL
         """
         var arguments: [String: DatabaseValueConvertible?] = [:]
         if let since {
@@ -1001,16 +1013,14 @@ final class MCPDatabase {
             )
         }
 
-        guard normalizedQuery.count >= 3 else {
-            var entries: [(String, OrderedJSONValue)] = [
+        // H2: CJK and short Latin queries use LIKE (same as app/service), so
+        // do not reject them at the 3-char FTS gate.
+        if normalizedQuery.isEmpty {
+            return .object([
                 ("results", .array([])),
                 ("query", .string(query)),
                 ("searchModes", .array([])),
-            ]
-            if normalizedQuery.count < 3 {
-                entries.append(("warning", .string("Search query needs at least 3 characters for keyword search")))
-            }
-            return .object(entries)
+            ])
         }
 
         return try keywordSearchResponse(
@@ -1553,13 +1563,14 @@ final class MCPDatabase {
 
     func totalCostSince(_ since: String) throws -> Double {
         try queue.read { db in
+            // M19: exclude hidden (trashed) sessions — parity with service costs().
             let row = try Row.fetchOne(
                 db,
                 sql: """
                 SELECT SUM(c.cost_usd) AS cost
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
-                WHERE s.start_time >= ?
+                WHERE s.hidden_at IS NULL AND s.start_time >= ?
                 """,
                 arguments: [since]
             )
@@ -1586,7 +1597,7 @@ final class MCPDatabase {
                        COUNT(*) AS sessions
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
-                WHERE s.start_time >= ?
+                WHERE s.hidden_at IS NULL AND s.start_time >= ?
                 GROUP BY \(groupExpr)
                 HAVING SUM(c.cost_usd) > 0
                 ORDER BY cost DESC
@@ -1737,7 +1748,8 @@ final class MCPDatabase {
                 SELECT SUM(c.cost_usd) AS cost
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
-                WHERE s.start_time >= ? AND s.start_time < ?
+                WHERE s.hidden_at IS NULL
+                  AND s.start_time >= ? AND s.start_time < ?
                 """,
                 arguments: [start, end]
             )
@@ -1932,9 +1944,10 @@ final class MCPDatabase {
     }
 
     private func searchInsightsFTS(query: String, limit: Int) throws -> [Row] {
-        if containsCJK(query) {
+        // R1: use shared CJKText (includes Hangul); do not keep a private subset detector.
+        if CJKText.containsCJK(query) {
             // Escape LIKE wildcards so literal "%"/"_" match verbatim.
-            let pattern = "%\(escapeLike(query))%"
+            let pattern = "%\(CJKText.escapeLikePattern(query))%"
             return try queue.read { db in
                 try Row.fetchAll(
                     db,
@@ -2113,6 +2126,16 @@ final class MCPDatabase {
         limit: Int
     ) throws -> [(row: Row, snippet: String)] {
         let expandedProjects = try project.map { try resolveProjectAliases([$0]) } ?? []
+        // H2: mirror app/service — CJK/Hangul and short Latin use LIKE, not FTS MATCH.
+        if CJKText.containsCJK(query) || query.count < 3 {
+            return try keywordSearchLike(
+                query: query,
+                source: source,
+                expandedProjects: expandedProjects,
+                since: since,
+                limit: limit
+            )
+        }
         return try readRetryingTransientMissingFTS { db in
             var conditions = [
                 "sessions_fts MATCH ?",
@@ -2120,7 +2143,7 @@ final class MCPDatabase {
                 "s.orphan_status IS NULL",
                 SessionSemanticSearchPolicy.searchableTierSQL,
             ]
-            var values: [DatabaseValueConvertible?] = [query]
+            var values: [DatabaseValueConvertible?] = [CJKText.ftsMatchQuery(query)]
 
             if let source {
                 conditions.append("s.source = ?")
@@ -2163,6 +2186,65 @@ final class MCPDatabase {
                 values[0] = "\"\(query.replacingOccurrences(of: "\"", with: "\"\""))\""
                 let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
                 return rows.map { ($0, stringValue($0["snippet"]) ?? "") }
+            }
+        }
+    }
+
+    /// H2: CJK/short-query LIKE fallback (parity with app Database.search).
+    private func keywordSearchLike(
+        query: String,
+        source: String?,
+        expandedProjects: [String],
+        since: String?,
+        limit: Int
+    ) throws -> [(row: Row, snippet: String)] {
+        try readRetryingTransientMissingFTS { db in
+            var conditions = [
+                "f.content LIKE ? ESCAPE '\\'",
+                "s.hidden_at IS NULL",
+                "s.orphan_status IS NULL",
+                SessionSemanticSearchPolicy.searchableTierSQL,
+            ]
+            let pattern = "%\(CJKText.escapeLikePattern(query))%"
+            var values: [DatabaseValueConvertible?] = [pattern]
+
+            if let source {
+                conditions.append("s.source = ?")
+                values.append(source)
+            }
+            if !expandedProjects.isEmpty {
+                if expandedProjects.count == 1, let only = expandedProjects.first {
+                    conditions.append("s.project LIKE ? ESCAPE '\\'")
+                    values.append("%\(escapeLike(only))%")
+                } else {
+                    let clauses = expandedProjects.map { _ in "s.project LIKE ? ESCAPE '\\'" }.joined(separator: " OR ")
+                    conditions.append("(\(clauses))")
+                    values.append(contentsOf: expandedProjects.map { "%\(escapeLike($0))%" })
+                }
+            }
+            if let since {
+                conditions.append("s.start_time >= ?")
+                values.append(since)
+            }
+            values.append(limit)
+
+            let sql = """
+            SELECT
+              s.*,
+              ls.local_readable_path,
+              f.content AS fts_content
+            FROM sessions_fts f
+            JOIN sessions s ON s.id = f.session_id
+            LEFT JOIN session_local_state ls ON ls.session_id = s.id
+            WHERE \(conditions.joined(separator: " AND "))
+            ORDER BY s.start_time DESC
+            LIMIT ?
+            """
+            let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
+            return rows.map { row in
+                let content = stringValue(row["fts_content"]) ?? ""
+                let snippet = CJKText.cjkHighlightedSnippet(content: content, query: query) ?? content
+                return (row, snippet)
             }
         }
     }
@@ -2340,10 +2422,6 @@ private func makeSessionRecord(from row: Row) -> MCPSessionRecord {
         parentSessionId: stringValue(row["parent_session_id"]),
         suggestedParentId: stringValue(row["suggested_parent_id"])
     )
-}
-
-private func containsCJK(_ text: String) -> Bool {
-    text.range(of: #"[\u{2E80}-\u{9FFF}\u{F900}-\u{FAFF}\u{FE30}-\u{FE4F}]"#, options: .regularExpression) != nil
 }
 
 private func escapeLike(_ value: String) -> String {

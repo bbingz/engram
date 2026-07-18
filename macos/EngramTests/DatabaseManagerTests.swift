@@ -965,6 +965,20 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(sessions.count, 4)
     }
 
+    /// L7: default `subAgent: nil` must hide skip-tier rows (ActivityView.openMostRecent).
+    @MainActor
+    func testListSessionsDefaultNilHidesSkipTier_repro() throws {
+        try insertTestSession(at: dbPath, id: "s-skip", tier: "skip", agentRole: "sub")
+        try insertTestSession(at: dbPath, id: "s-normal", tier: "normal")
+        try insertTestSession(at: dbPath, id: "s-null", tier: nil)
+
+        let sessions = try db.listSessions(sort: .createdDesc, limit: 10)
+        let ids = Set(sessions.map(\.id))
+        XCTAssertFalse(ids.contains("s-skip"), "L7: default listSessions must not leak skip-tier rows")
+        XCTAssertTrue(ids.contains("s-normal"))
+        XCTAssertTrue(ids.contains("s-null"))
+    }
+
     @MainActor
     func testCountSessionsExcludesSkipTier() throws {
         try insertTestSession(at: dbPath, id: "s1", tier: "normal")
@@ -973,6 +987,10 @@ final class DatabaseManagerTests: XCTestCase {
 
         let count = try db.countSessions(subAgent: false)
         XCTAssertEqual(count, 2) // normal + lite, skip excluded
+
+        // L7: default nil matches false for skip exclusion.
+        let defaultCount = try db.countSessions()
+        XCTAssertEqual(defaultCount, 2)
     }
 
     // MARK: - Observability
@@ -1037,6 +1055,76 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(kpi.sources, 0)
         XCTAssertEqual(kpi.messages, 0)
         XCTAssertEqual(kpi.projects, 0)
+    }
+
+    /// M5: dashboard aggregates must exclude skip-tier (subagent noise).
+    @MainActor
+    func testDashboardAggregatesExcludeSkipTier_repro() throws {
+        try insertTestSession(at: dbPath, id: "normal-1", source: "codex", messageCount: 10, tier: "normal")
+        try insertTestSession(at: dbPath, id: "skip-1", source: "codex", messageCount: 99, tier: "skip")
+        try insertTestSession(at: dbPath, id: "skip-2", source: "claude-code", messageCount: 50, tier: "skip")
+
+        let kpi = try db.kpiStats()
+        XCTAssertEqual(kpi.sessions, 1, "M5: kpiStats must not count skip-tier")
+        XCTAssertEqual(kpi.messages, 10)
+        XCTAssertEqual(kpi.sources, 1)
+
+        let bySource = try db.sourceDistribution()
+        XCTAssertEqual(bySource.map(\.source), ["codex"])
+        XCTAssertEqual(bySource.first?.count, 1)
+
+        let hours = try db.hourlyActivity()
+        XCTAssertEqual(hours.reduce(0, +), 1, "M5: hourlyActivity total must exclude skip")
+
+        let daily = try db.dailyActivity(days: 3650)
+        XCTAssertEqual(daily.map(\.count).reduce(0, +), 1, "M5: dailyActivity excludes skip")
+
+        let dailySrc = try db.dailySourceActivity(days: 3650)
+        let srcTotal = dailySrc.flatMap(\.segments).map(\.count).reduce(0, +)
+        XCTAssertEqual(srcTotal, 1, "M5: dailySourceActivity excludes skip")
+    }
+
+    /// R3: Activity today/week counters and sourceStats must exclude skip (same as KPI).
+    @MainActor
+    func testCountSessionsSinceAndSourceStatsExcludeSkipTier_repro() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "normal-r3",
+            source: "codex",
+            startTime: "2026-07-18T12:00:00Z",
+            messageCount: 5,
+            tier: "normal"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "skip-r3",
+            source: "codex",
+            startTime: "2026-07-18T13:00:00Z",
+            messageCount: 99,
+            tier: "skip"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "skip-other",
+            source: "claude-code",
+            startTime: "2026-07-18T14:00:00Z",
+            messageCount: 40,
+            tier: "skip"
+        )
+
+        let since = try db.countSessionsSince("2026-07-01T00:00:00Z")
+        XCTAssertEqual(since, 1, "R3: countSessionsSince must not count skip-tier")
+
+        let stats = try db.sourceStats()
+        XCTAssertEqual(stats.map(\.source), ["codex"])
+        XCTAssertEqual(stats.first?.count, 1, "R3: sourceStats excludes skip")
+
+        let byProject = try db.countsByProject()
+        // insertTestSession may leave project nil — only assert no skip inflation on known project path
+        let kpi = try db.kpiStats()
+        XCTAssertEqual(kpi.sessions, 1)
+        XCTAssertEqual(since, kpi.sessions, "R3: Activity counter must agree with KPI on same window seed")
+        _ = byProject
     }
 
     @MainActor
@@ -1117,6 +1205,34 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(engram.sessions.map(\.id), ["parent"])
     }
 
+    /// H1: Projects page must not drop older projects when the global session
+    /// window exceeds the old limit*10 fetch.
+    @MainActor
+    func testListSessionsByProjectDoesNotDropProjectsOutsideLimitWindow_repro() throws {
+        // Insert 25 distinct projects with one session each, newest first.
+        for index in 0..<25 {
+            let ts = String(format: "2026-01-%02dT12:00:00Z", index + 1)
+            try insertTestSession(
+                at: dbPath,
+                id: "proj-\(index)",
+                project: "project-\(index)",
+                startTime: ts
+            )
+        }
+        // Old bug: LIMIT 100*10 was fine for small DBs; use limit=1 so the
+        // broken path would only fetch 10 rows and drop 15 projects.
+        let groups = try db.listSessionsByProject(limit: 1)
+        XCTAssertEqual(
+            groups.count,
+            25,
+            "H1: all projects must appear even when per-project preview limit is 1"
+        )
+        for group in groups {
+            XCTAssertEqual(group.sessionCount, 1, "project \(group.project) count wrong")
+            XCTAssertEqual(group.sessions.count, 1, "preview capped at limit")
+        }
+    }
+
     // MARK: - sparklineData date bucketing
 
     // sparklineData buckets by local calendar day on both the SQL and Swift
@@ -1191,9 +1307,30 @@ final class DatabaseManagerTests: XCTestCase {
         let today = utc.string(from: Date())
         try insertSessionWithCwd(at: dbPath, id: "in-repo", cwd: "/Users/test/repo/sub", startTime: today)
         try insertSessionWithCwd(at: dbPath, id: "other-repo", cwd: "/Users/test/elsewhere", startTime: today)
+        // Exact repo root cwd must also count.
+        try insertSessionWithCwd(at: dbPath, id: "at-root", cwd: "/Users/test/repo", startTime: today)
 
         let counts = try db.sparklineData(for: "/Users/test/repo")
-        XCTAssertEqual(counts.reduce(0, +), 1)
+        XCTAssertEqual(counts.reduce(0, +), 2)
+    }
+
+    /// L6: unanchored `cwd LIKE path%` over-counts sibling repos (`app` vs `app-v2`).
+    @MainActor
+    func testSparklineDataDoesNotMatchSiblingPathPrefix_repro() throws {
+        let utc = ISO8601DateFormatter()
+        utc.timeZone = TimeZone(identifier: "UTC")
+        let today = utc.string(from: Date())
+        try insertSessionWithCwd(at: dbPath, id: "app", cwd: "/Users/test/app", startTime: today)
+        try insertSessionWithCwd(at: dbPath, id: "app-child", cwd: "/Users/test/app/src", startTime: today)
+        try insertSessionWithCwd(at: dbPath, id: "app-v2", cwd: "/Users/test/app-v2", startTime: today)
+        try insertSessionWithCwd(at: dbPath, id: "app-v2-child", cwd: "/Users/test/app-v2/src", startTime: today)
+
+        let counts = try db.sparklineData(for: "/Users/test/app")
+        XCTAssertEqual(
+            counts.reduce(0, +),
+            2,
+            "L6: sibling repo app-v2 must not inflate sparkline for app; got \(counts)"
+        )
     }
 
     @MainActor

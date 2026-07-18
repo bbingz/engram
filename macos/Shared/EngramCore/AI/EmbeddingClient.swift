@@ -26,6 +26,10 @@ public enum EmbeddingError: Error, Equatable {
     case notConfigured
     case http(Int)
     case malformedResponse
+    /// Provider returned a vector whose length does not match the configured
+    /// dimension. Refuse to store so availability probes and cosine KNN stay
+    /// consistent (audit M16).
+    case dimensionMismatch(expected: Int, actual: Int)
     /// Breaker is open (or half-open without the probe slot). Callers must
     /// treat this as a soft skip — leave jobs pending/retryable, do not burn
     /// permanent-failure budgets (see embedding-guardrails design).

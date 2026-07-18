@@ -48,7 +48,7 @@
       "rows": [
         {
           "created_at": "<volatile>",
-          "id": "codex-session-001:1:a962b9e2cefb5051ac7fa99e2960f59dc2bbee38d712c4e3bbc2c9ac37eb6861:embedding",
+          "id": "codex-session-001:1:4ed29fb8f35c76caec36a23d641aa158885b9fcf13bb31fe4691ca7986578b64:embedding",
           "job_kind": "embedding",
           "last_error": null,
           "retry_count": 0,
@@ -59,7 +59,7 @@
         },
         {
           "created_at": "<volatile>",
-          "id": "codex-session-001:1:a962b9e2cefb5051ac7fa99e2960f59dc2bbee38d712c4e3bbc2c9ac37eb6861:fts",
+          "id": "codex-session-001:1:4ed29fb8f35c76caec36a23d641aa158885b9fcf13bb31fe4691ca7986578b64:fts",
           "job_kind": "fts",
           "last_error": null,
           "retry_count": 0,
@@ -101,7 +101,7 @@
           "link_checked_at": "<volatile>",
           "link_source": null,
           "access_count": 0,
-          "message_count": 4,
+          "message_count": 5,
           "model": null,
           "origin": "fixture-node",
           "orphan_reason": null,
@@ -109,9 +109,9 @@
           "orphan_status": null,
           "parent_session_id": null,
           "project": "my-project",
-          "quality_score": 68,
+          "quality_score": 67,
           "size_bytes": 1199,
-          "snapshot_hash": "a962b9e2cefb5051ac7fa99e2960f59dc2bbee38d712c4e3bbc2c9ac37eb6861",
+          "snapshot_hash": "4ed29fb8f35c76caec36a23d641aa158885b9fcf13bb31fe4691ca7986578b64",
           "source": "codex",
           "source_locator": "<repo>/tests/fixtures/indexer-parity/fixture-root/codex/2026/01/15/rollout-sample.jsonl",
           "start_time": "2026-01-15T10:00:00.000Z",
@@ -126,7 +126,7 @@
           "sync_version": 1,
           "system_message_count": 0,
           "tier": "normal",
-          "tool_message_count": 1,
+          "tool_message_count": 2,
           "user_message_count": 2
         }
       ],

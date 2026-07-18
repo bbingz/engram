@@ -714,14 +714,28 @@ final class ArchiveRouteTests: XCTestCase {
             router: try makeRemoteApp(archiveKey: SymmetricKey(size: .bits256)).buildRouter()
         )
         try await wrongKey.test(.router) { client in
-            for method in [HTTPRequest.Method.get, .head] {
-                let response = try await client.execute(
-                    uri: "/v2/archive/objects/\(digest)",
-                    method: method,
-                    headers: Self.headers()
-                )
-                XCTAssertEqual(response.status.code, 409)
-            }
+            // M14: HEAD is existence-only (no decrypt). Wrong at-rest key still
+            // reports the object present so clients do not re-upload blindly.
+            let headResponse = try await client.execute(
+                uri: "/v2/archive/objects/\(digest)",
+                method: .head,
+                headers: Self.headers()
+            )
+            XCTAssertEqual(
+                headResponse.status.code,
+                200,
+                "M14: HEAD must not decrypt; presence with wrong key is still 200"
+            )
+
+            // GET still decrypts and must fail closed on wrong key.
+            let getResponse = try await client.execute(
+                uri: "/v2/archive/objects/\(digest)",
+                method: .get,
+                headers: Self.headers()
+            )
+            XCTAssertEqual(getResponse.status.code, 409)
+            self.assertSafeError(getResponse, forbidden: [Self.archiveToken, tempDir.path, "wrong-key-protected"])
+
             let response = try await client.execute(
                 uri: "/v2/archive/objects/\(digest)",
                 method: .put,

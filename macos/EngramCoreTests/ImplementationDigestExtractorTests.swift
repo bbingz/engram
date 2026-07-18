@@ -28,7 +28,40 @@ final class ImplementationDigestExtractorTests: XCTestCase {
         XCTAssertTrue(beats[0].assistantOutcome.contains("已实现第一版项目变更时间线"))
         XCTAssertEqual(beats[0].status, .completed)
         XCTAssertEqual(beats[0].kind, .implementation)
-        XCTAssertEqual(beats[0].actionDate, "2026-06-23")
+        XCTAssertEqual(beats[0].actionDate, localDayKey(fromISO: "2026-06-23T11:00:00Z"))
+    }
+
+    func testActionDateUsesLocalCalendarDay_repro() {
+        let messages = [
+            NormalizedMessage(role: .user, content: "Ship local-day bucketing", timestamp: "2026-06-23T22:00:00Z"),
+            NormalizedMessage(role: .assistant, content: """
+            **结果**
+            Fixed action_date to local day.
+            **验证结果**
+            checks run: digest tests
+            """, timestamp: "2026-06-23T22:30:00Z"),
+        ]
+        let beats = ImplementationDigestExtractor.extract(messages: messages, sessionId: "s-local-day", sessionTitle: nil)
+        XCTAssertEqual(beats.count, 1)
+        XCTAssertEqual(beats[0].actionDate, localDayKey(fromISO: "2026-06-23T22:30:00Z"))
+        if let tz = TimeZone(identifier: "Asia/Shanghai"),
+           TimeZone.current.secondsFromGMT() == tz.secondsFromGMT(for: Date()) {
+            XCTAssertEqual(beats[0].actionDate, "2026-06-24")
+        }
+    }
+
+    private func localDayKey(fromISO timestamp: String) -> String {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        let date = fractional.date(from: timestamp) ?? plain.date(from: timestamp)!
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar.current
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
 
     func testCompletionReportWinsOverLaterProgressUpdate() {

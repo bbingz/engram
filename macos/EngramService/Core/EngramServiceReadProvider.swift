@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import GRDB
 import EngramCoreRead
@@ -167,8 +168,8 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
     static let memoryFileContentCap = 200 * 1024
 
     func memoryFileContent(_ request: EngramServiceMemoryFileContentRequest) async throws -> EngramServiceMemoryFileContentResponse {
-        // Wave 7D H09: resolve canonical path under ~/.claude/projects/*/memory/,
-        // reject symlinks and non-regular files before reading. Cap body ~200 KiB.
+        // Wave 7D H09 + SEC-M2: confine under ~/.claude/projects/*/memory/*.md,
+        // open with O_NOFOLLOW so a TOCTOU symlink swap cannot exfiltrate.
         let resolved = resolveDisplayPath(request.path)
         let projectsRoot = homeDirectory
             .appendingPathComponent(".claude/projects", isDirectory: true)
@@ -200,24 +201,47 @@ struct FileSystemEngramServiceReadProvider: EngramServiceReadProvider {
               !parts.dropLast().contains("..") else {
             return EngramServiceMemoryFileContentResponse(path: request.path, content: "", truncated: false)
         }
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: standardizedPath, isDirectory: &isDirectory),
-              !isDirectory.boolValue,
-              let values = try? standardized.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
-              values.isSymbolicLink != true,
-              values.isRegularFile == true,
-              let content = try? String(contentsOf: standardized, encoding: .utf8) else {
+        guard let content = Self.readRegularFileNoFollow(
+            atPath: standardizedPath,
+            maxBytes: Self.memoryFileContentCap
+        ) else {
             return EngramServiceMemoryFileContentResponse(path: request.path, content: "", truncated: false)
         }
-        if content.utf8.count > Self.memoryFileContentCap {
-            let capped = String(content.prefix(Self.memoryFileContentCap))
+        if content.truncated {
             return EngramServiceMemoryFileContentResponse(
                 path: request.path,
-                content: capped + "\n\n… (truncated)",
+                content: content.text + "\n\n… (truncated)",
                 truncated: true
             )
         }
-        return EngramServiceMemoryFileContentResponse(path: request.path, content: content, truncated: false)
+        return EngramServiceMemoryFileContentResponse(path: request.path, content: content.text, truncated: false)
+    }
+
+    /// SEC-M2: open with O_NOFOLLOW|O_CLOEXEC, fstat regular file, then read.
+    private static func readRegularFileNoFollow(
+        atPath path: String,
+        maxBytes: Int
+    ) -> (text: String, truncated: Bool)? {
+        let fd = path.withCString { cPath in
+            open(cPath, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0 else { return nil }
+        guard (info.st_mode & S_IFMT) == S_IFREG else { return nil }
+        let size = Int(info.st_size)
+        guard size >= 0 else { return nil }
+        let toRead = min(size, maxBytes + 1)
+        var buffer = Data(count: toRead)
+        let readCount = buffer.withUnsafeMutableBytes { raw -> Int in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return -1 }
+            return Int(read(fd, base, toRead))
+        }
+        guard readCount >= 0 else { return nil }
+        buffer.count = readCount
+        guard let text = String(data: buffer.prefix(maxBytes), encoding: .utf8) else { return nil }
+        return (text, readCount > maxBytes)
     }
 
     private func resolveDisplayPath(_ path: String) -> String {
@@ -2105,26 +2129,36 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         return String(collapsed.prefix(500))
     }
 
-    nonisolated private static func defaultCommandLocator(_ name: String) -> String? {
-        let environment = ProcessInfo.processInfo.environment
+    /// Well-known absolute install locations preferred over PATH (SEC-L5).
+    /// A poisoned early PATH entry must not shadow Homebrew/system CLIs used for resume.
+    static let preferredCLIDirectories: [String] = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/sbin",
+    ]
+
+    /// Locate a resume CLI binary. Prefers fixed absolute install paths, then PATH.
+    nonisolated static func defaultCommandLocator(
+        _ name: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> String? {
         var seen = Set<String>()
-        let searchPaths = ((environment["PATH"] ?? "")
+        let pathDirs = (environment["PATH"] ?? "")
             .split(separator: ":")
             .map(String.init)
-            + [
-                "/opt/homebrew/bin",
-                "/usr/local/bin",
-                "/usr/bin",
-                "/bin",
-                "/opt/homebrew/sbin",
-                "/usr/local/sbin",
-            ])
+        // SEC-L5: check curated absolute directories first so PATH poisoning cannot
+        // win over a known system/Homebrew install of claude/codex/gemini.
+        let searchPaths = (preferredCLIDirectories + pathDirs)
             .filter { !$0.isEmpty && seen.insert($0).inserted }
         for directory in searchPaths {
             let path = URL(fileURLWithPath: directory, isDirectory: true)
                 .appendingPathComponent(name)
                 .path
-            guard FileManager.default.isExecutableFile(atPath: path) else { continue }
+            guard isExecutable(path) else { continue }
             return path
         }
         return nil

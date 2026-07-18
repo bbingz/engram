@@ -849,7 +849,72 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.cwd, "")
     }
 
+
     // MARK: - Codex
+
+    func testCodexMessageCountIncludesFunctionCallOutput_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-fco.jsonl")
+        let lines: [[String: Any]] = [
+            ["timestamp": "2026-06-01T10:00:00.000Z", "type": "session_meta",
+             "payload": ["id": "codex-fco-1", "timestamp": "2026-06-01T10:00:00.000Z", "cwd": "/tmp/x", "originator": "codex"]],
+            ["timestamp": "2026-06-01T10:00:01.000Z", "type": "response_item",
+             "payload": ["type": "message", "role": "user", "content": [["type": "input_text", "text": "Read a.ts"]]]],
+            ["timestamp": "2026-06-01T10:00:02.000Z", "type": "response_item",
+             "payload": ["type": "message", "role": "assistant", "content": [["type": "output_text", "text": "Reading."]]]],
+            ["timestamp": "2026-06-01T10:00:03.000Z", "type": "response_item",
+             "payload": ["type": "function_call", "name": "read_file", "arguments": "{\"path\":\"a.ts\"}"]],
+            ["timestamp": "2026-06-01T10:00:04.000Z", "type": "response_item",
+             "payload": ["type": "function_call_output", "output": "contents of a.ts"]],
+        ]
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+        let adapter = CodexAdapter(sessionsRoot: root.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        let streamed = try await drain(adapter, locator: file.path)
+        XCTAssertEqual(streamed.filter { $0.role == .tool }.count, 2)
+        XCTAssertEqual(info.toolMessageCount, 2)
+        XCTAssertEqual(info.messageCount, 4)
+        XCTAssertEqual(info.messageCount, streamed.count)
+    }
+
+    func testCodexTailIndexingConformance_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-tail.jsonl")
+        let initial: [[String: Any]] = [
+            ["timestamp": "2026-06-01T10:00:00.000Z", "type": "session_meta",
+             "payload": ["id": "codex-tail-1", "timestamp": "2026-06-01T10:00:00.000Z", "cwd": "/tmp/t"]],
+            ["timestamp": "2026-06-01T10:00:01.000Z", "type": "response_item",
+             "payload": ["type": "message", "role": "user", "content": [["type": "input_text", "text": "hello"]]]],
+            ["timestamp": "2026-06-01T10:00:02.000Z", "type": "response_item",
+             "payload": ["type": "message", "role": "assistant", "content": [["type": "output_text", "text": "hi"]]]],
+        ]
+        try initial.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+        let adapter = CodexAdapter(sessionsRoot: root.path)
+        XCTAssertTrue(adapter is any TailIndexingSessionAdapter)
+        let scan = try sessionInfo(await adapter.scanForIndexing(locator: file.path))
+        XCTAssertEqual(scan.messages.count, 2)
+        let offset = try XCTUnwrap(scan.checkpointParsedOffset)
+        let boundary = try XCTUnwrap(scan.checkpointBoundaryHash)
+        let tailLine: [String: Any] = [
+            "timestamp": "2026-06-01T10:00:03.000Z", "type": "response_item",
+            "payload": ["type": "message", "role": "user", "content": [["type": "input_text", "text": "follow-up"]]],
+        ]
+        let handle = try FileHandle(forWritingTo: file)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((try jsonLine(tailLine) + "\n").utf8))
+        switch try await adapter.scanTailForIndexing(locator: file.path, from: offset, expectedBoundaryHash: boundary) {
+        case .success(let tail):
+            XCTAssertEqual(tail.messages.count, 1)
+            XCTAssertEqual(tail.messages.first?.content, "follow-up")
+        case .fallback: XCTFail("expected success")
+        case .failure(let f): XCTFail("\(f)")
+        }
+    }
 
     func testCodexAttachesTokenCountEventUsageToPreviousAssistantMessage() async throws {
         let root = tempDir()

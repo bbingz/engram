@@ -78,4 +78,10 @@ final class BrowseReloadCoalescerTests: XCTestCase {
             )
         )
     }
+
+    func testTimelineStaleDetachedLoadDoesNotOverwriteNewerFilterLoad_repro() {
+        XCTAssertTrue(TimelinePageView.shouldApplyLoad(resultGeneration: 2, currentGeneration: 2))
+        XCTAssertFalse(TimelinePageView.shouldApplyLoad(resultGeneration: 1, currentGeneration: 2))
+        XCTAssertFalse(TimelinePageView.shouldApplyLoad(resultGeneration: 2, currentGeneration: 2, isCancelled: true))
+    }
 }

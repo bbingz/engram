@@ -63,11 +63,14 @@ enum ArchiveRoutes {
                 )
             }
             do {
-                let raw = try store.getObject(digest: digest)
+                // M14: HEAD must not decrypt full content (dedup probe only).
+                guard try store.hasObject(digest: digest) else {
+                    return headOnly(Response(status: .notFound))
+                }
                 return emptyResponse(
                     status: .ok,
                     contentType: "application/octet-stream",
-                    contentLength: raw.count
+                    contentLength: nil
                 )
             } catch {
                 return headOnly(storeErrorResponse(error))
@@ -141,11 +144,14 @@ enum ArchiveRoutes {
                 )
             }
             do {
-                let bytes = try store.getManifest(digest: digest)
+                // M14: HEAD must not re-read every referenced chunk.
+                guard try store.hasManifest(digest: digest) else {
+                    return headOnly(Response(status: .notFound))
+                }
                 return emptyResponse(
                     status: .ok,
                     contentType: "application/json; charset=utf-8",
-                    contentLength: bytes.count
+                    contentLength: nil
                 )
             } catch {
                 return headOnly(storeErrorResponse(error))

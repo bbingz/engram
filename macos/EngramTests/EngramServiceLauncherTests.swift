@@ -113,6 +113,63 @@ final class EngramServiceLauncherTests: XCTestCase {
         XCTAssertEqual(attrs[.posixPermissions] as? Int, 0o600)
     }
 
+    /// SEC-H2: ai-secrets.json must be removed on service stop so a leftover
+    /// plaintext Keychain bridge is not left in ~/.engram/run/.
+    func testRemoveRuntimeAISecretsDeletesBridgeFile_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-secrets-cleanup-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let secretsPath = root.appendingPathComponent("ai-secrets.json").path
+
+        XCTAssertTrue(
+            EngramServiceLauncher.writeRuntimeAISecrets(
+                toPath: secretsPath,
+                keychainReader: { account in
+                    account == "aiApiKey" ? "cleanup-secret" : nil
+                }
+            )
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: secretsPath))
+
+        EngramServiceLauncher.removeRuntimeAISecrets(atPath: secretsPath)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: secretsPath),
+            "SEC-H2: removeRuntimeAISecrets must delete the plaintext bridge file"
+        )
+    }
+
+    /// SEC-H2: stopIfOwned / stopProcessOnly must clean the runtime secrets path
+    /// derived from the socket (same path writeRuntimeAISecrets uses).
+    @MainActor
+    func testStopIfOwnedRemovesRuntimeAISecretsBesideSocket_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-stop-secrets-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let socketPath = root.appendingPathComponent("engram-service.sock").path
+        let secretsPath = EngramServiceLauncher.runtimeAISecretsPath(forSocketPath: socketPath)
+        XCTAssertTrue(
+            EngramServiceLauncher.writeRuntimeAISecrets(
+                toPath: secretsPath,
+                keychainReader: { $0 == "embeddingApiKey" ? "embed-secret" : nil }
+            )
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: secretsPath))
+
+        let launcher = EngramServiceLauncher(
+            healthIntervalNanoseconds: 50_000_000,
+            maximumRestartAttempts: 0,
+            startupGraceNanoseconds: 0
+        )
+        // No process started — stop path must still scrub secrets for the socket.
+        launcher.scrubRuntimeAISecrets(forSocketPath: socketPath)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: secretsPath),
+            "SEC-H2: stop/scrub must remove ai-secrets.json next to the service socket"
+        )
+    }
+
     func testServiceOutputLineBufferWaitsForCompleteJSONLines() throws {
         let buffer = ServiceOutputLineBuffer()
 

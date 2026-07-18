@@ -295,11 +295,25 @@ describe('CI workflow hardening', () => {
     );
   });
 
-  it('runs bundle hygiene against the Debug app built in Swift CI', () => {
+  it('runs bundle hygiene + structural helper checks against the Debug app built in Swift CI (M11)', () => {
     expect(testWorkflow).toContain('Build/Products/Debug/Engram.app');
     expect(testWorkflow).toContain(
       'bash scripts/release-verify.sh "$ENGRAM_APP" --hygiene-only',
     );
+    // release-verify --hygiene-only must still assert Helpers (script contract).
+    const releaseVerify = readFileSync(
+      resolve(repoRoot, 'macos/scripts/release-verify.sh'),
+      'utf8',
+    );
+    const hygieneExit = releaseVerify.indexOf(
+      'PASS (hygiene + structure only)',
+    );
+    const structureCheck = releaseVerify.indexOf(
+      'missing Contents/Helpers/EngramService',
+    );
+    expect(hygieneExit).toBeGreaterThan(-1);
+    expect(structureCheck).toBeGreaterThan(-1);
+    expect(structureCheck).toBeLessThan(hygieneExit);
   });
 
   it('keys SPM cache on the real Package.resolved and scopes restore keys by runner lane', () => {

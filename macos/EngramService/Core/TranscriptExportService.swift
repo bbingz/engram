@@ -150,7 +150,11 @@ enum TranscriptExportService {
             throw EngramServiceError.invalidRequest(message: "output_home must be within HOME")
         }
         try rejectSymlinkAncestors(from: outputDir, through: homeURL)
-        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        // SEC-L3: create exports at 0700 (not umask-dependent 0755).
+        _ = try EngramUserDataDirectory.ensureSecureSubdirectory(
+            "exports",
+            homeDirectory: homeURL
+        )
         try rejectSymlinkAncestors(from: outputDir, through: homeURL)
         return outputDir
     }

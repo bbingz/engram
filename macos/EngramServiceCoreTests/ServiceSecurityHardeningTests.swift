@@ -214,30 +214,15 @@ final class ServiceSecurityHardeningTests: XCTestCase {
         try server.start()
         defer { server.stop() }
 
-        let commands = [
-            "generateSummary",
-            "saveInsight",
-            "deleteInsight",
-            "manageProjectAlias",
-            "confirmSuggestion",
-            "dismissSuggestion",
-            "addSessionRelation",
-            "removeSessionRelation",
-            "regenerateAllTitles",
-            "projectMove",
-            "projectArchive",
-            "projectUndo",
-            "projectMoveBatch",
-            "setFavorite",
-            "setSessionHidden",
-            "setSourceEnabled",
-            "renameSession",
-            "hideEmptySessions",
-            "linkSessions",
-            "exportSession",
-            "refreshUsage",
-            "test.write_intent",
-        ]
+        // SEC-L1: generate the matrix from protectedCommands itself so remote/
+        // archive/parent-link mutators cannot drift out of the socket gate test.
+        let commands = ServiceCapabilityToken.protectedCommands.sorted()
+        XCTAssertFalse(commands.isEmpty)
+        XCTAssertGreaterThanOrEqual(
+            commands.count,
+            30,
+            "protectedCommands matrix should cover full mutator set, got \(commands.count)"
+        )
 
         for command in commands {
             let transport = UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
@@ -253,6 +238,89 @@ final class ServiceSecurityHardeningTests: XCTestCase {
             }
             XCTAssertEqual(error.name, "Unauthorized", command)
         }
+    }
+
+    // MARK: - SEC-L2: peer euid + socket 0600
+
+    func testPeerIsAuthorizedRequiresMatchingEuid() throws {
+        let fds = UnsafeMutablePointer<Int32>.allocate(capacity: 2)
+        defer { fds.deallocate() }
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0)
+        defer { close(fds[0]); close(fds[1]) }
+
+        let selfEuid = geteuid()
+        XCTAssertTrue(
+            UnixSocketServiceServer.peerIsAuthorized(fds[0], serviceEuid: selfEuid),
+            "same-euid peer over socketpair must authorize"
+        )
+        // Any other euid must fail closed. Use 0 (root) when we are not root,
+        // otherwise pick a non-self synthetic id.
+        let otherEuid: uid_t = selfEuid == 0 ? 501 : 0
+        XCTAssertFalse(
+            UnixSocketServiceServer.peerIsAuthorized(fds[0], serviceEuid: otherEuid),
+            "mismatched service euid must reject the peer"
+        )
+        // Closed/invalid fd must not authorize.
+        XCTAssertFalse(UnixSocketServiceServer.peerIsAuthorized(-1, serviceEuid: selfEuid))
+    }
+
+    func testBoundSocketIsOwnerOnly0600() throws {
+        let paths = try makePaths()
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            .success(requestId: request.requestId, result: Data("{}".utf8))
+        }
+        try server.start()
+        defer { server.stop() }
+
+        var info = stat()
+        XCTAssertEqual(stat(paths.socket.path, &info), 0, "bound socket must exist")
+        let mode = info.st_mode & 0o777
+        XCTAssertEqual(
+            mode,
+            0o600,
+            String(format: "SEC-L2: service socket must be 0600, got %o", mode)
+        )
+    }
+
+    // MARK: - SEC-L5: resume CLI locator prefers absolute known paths
+
+    func testDefaultCommandLocatorPrefersKnownAbsolutePathsOverPATH() {
+        let pathPoison = "/tmp/engram-poisoned-\(UUID().uuidString.prefix(8))"
+        let knownHomebrew = "/opt/homebrew/bin/claude"
+        let knownLocal = "/usr/local/bin/claude"
+        let poisoned = "\(pathPoison)/claude"
+        let env = ["PATH": "\(pathPoison):/usr/bin"]
+
+        // Only the known Homebrew path is "executable" — poisoned PATH entry is ignored
+        // for selection order even though it appears first in PATH.
+        let resolved = SQLiteEngramServiceReadProvider.defaultCommandLocator(
+            "claude",
+            environment: env,
+            isExecutable: { path in
+                path == knownHomebrew || path == knownLocal || path == poisoned
+            }
+        )
+        XCTAssertEqual(
+            resolved,
+            knownHomebrew,
+            "SEC-L5: preferred absolute install path must win over an earlier PATH entry"
+        )
+
+        // When no preferred absolute path is executable, fall back to PATH order.
+        let pathOnly = SQLiteEngramServiceReadProvider.defaultCommandLocator(
+            "claude",
+            environment: env,
+            isExecutable: { $0 == poisoned }
+        )
+        XCTAssertEqual(pathOnly, poisoned)
+
+        XCTAssertNil(
+            SQLiteEngramServiceReadProvider.defaultCommandLocator(
+                "claude",
+                environment: env,
+                isExecutable: { _ in false }
+            )
+        )
     }
 
     func testSessionRelationMutationsAreTokenProtectedButReadIsNot() {

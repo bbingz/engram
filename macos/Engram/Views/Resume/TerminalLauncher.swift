@@ -225,8 +225,6 @@ struct TerminalLauncher {
         case .ghostty:
             let ghosttyBin = "/Applications/Ghostty.app/Contents/MacOS/ghostty"
             if FileManager.default.isExecutableFile(atPath: ghosttyBin) {
-                let logMsg = "[TerminalLauncher] Launching Ghostty: \(ghosttyBin) -e \(shellCmd)\n"
-                try? logMsg.write(toFile: "/tmp/engram-terminal.log", atomically: true, encoding: .utf8)
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: ghosttyBin)
                 process.arguments = ghosttyArguments(for: shellCmd)
@@ -243,14 +241,10 @@ struct TerminalLauncher {
                 try launchInWarp(shellCommand: shellCmd, cwd: cwd)
                 return .success(())
             } catch {
-                let errMsg = "[TerminalLauncher] Warp launch error: \(error)\n"
-                try? errMsg.write(toFile: "/tmp/engram-terminal.log", atomically: true, encoding: .utf8)
                 return .failure(.warpLaunchFailed(error.localizedDescription))
             }
         }
-        // Log the script for debugging
-        let logMsg = "[TerminalLauncher] Executing script:\n\(script)\n"
-        try? logMsg.write(toFile: "/tmp/engram-terminal.log", atomically: true, encoding: .utf8)
+        // SEC-M1: do not write resume command lines to /tmp (world-readable leak).
 
         guard let appleScript = NSAppleScript(source: script) else {
             return .failure(.appleScriptUnavailable)
@@ -258,10 +252,6 @@ struct TerminalLauncher {
         var error: NSDictionary?
         appleScript.executeAndReturnError(&error)
         if let error {
-            let errMsg = "[TerminalLauncher] AppleScript error: \(error)\n"
-            if let data = errMsg.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/engram-terminal.log") {
-                fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
-            }
             return .failure(.appleScriptError(error.description))
         }
         return .success(())

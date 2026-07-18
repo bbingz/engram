@@ -210,16 +210,21 @@ final class Round5RemediationTests: XCTestCase {
         let end = try XCTUnwrap(source.range(of: "public func checkpointWal()", options: [], range: start.lowerBound..<source.endIndex))
         let performWrite = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(source.contains("private var longRunningWriteInProgress = false"))
+        // M1: count pending+active long writes so followers behind a still-queued
+        // migration also pass timeout=nil (not only while a long write is active).
+        XCTAssertTrue(source.contains("private var pendingOrActiveLongWrites = 0"))
         // Wave 7C: classification is package-visible for unit tests.
         XCTAssertTrue(source.contains("static func isLongRunningWriteCommand"))
         XCTAssertTrue(source.contains(#""projectMove""#))
         XCTAssertTrue(source.contains(#""projectArchive""#))
         XCTAssertTrue(source.contains(#""projectUndo""#))
         XCTAssertTrue(source.contains(#""projectMoveBatch""#))
-        XCTAssertTrue(performWrite.contains("let timeout = longRunningWriteInProgress ? nil : queueTimeoutNanoseconds"))
-        XCTAssertTrue(performWrite.contains("longRunningWriteInProgress = Self.isLongRunningWriteCommand(name)"))
-        XCTAssertTrue(performWrite.contains("longRunningWriteInProgress = false"))
+        XCTAssertTrue(performWrite.contains("pendingOrActiveLongWrites += 1"))
+        // M1: short followers disarm timeout when any long write is pending/active;
+        // long ops only disarm when *other* long writes exist (not self alone).
+        XCTAssertTrue(performWrite.contains("otherLongWrites"))
+        XCTAssertTrue(performWrite.contains("longRunningWriteInProgress"))
+        XCTAssertTrue(performWrite.contains("pendingOrActiveLongWrites = max(0, pendingOrActiveLongWrites - 1)"))
     }
 
     func testProjectMoveCanonicalizesExistingSourceToOnDiskCaseOnly() throws {
@@ -545,8 +550,7 @@ final class Round5RemediationTests: XCTestCase {
         XCTAssertEqual(info.cwd, "")
     }
 
-    // Part B — Codex counts a tool invocation once (function_call only), not both
-    // the function_call and its paired function_call_output.
+    // Part B / M6 — counts function_call + function_call_output for stream parity.
     func testCodexCountsToolUseOncePerFunctionCall() async throws {
         let root = try makeTempDir("codex")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -566,9 +570,16 @@ final class Round5RemediationTests: XCTestCase {
             XCTFail("Codex fixture should parse")
             return
         }
-        // 1 user + 0 assistant + 1 tool (function_call only).
-        XCTAssertEqual(info.toolMessageCount, 1)
-        XCTAssertEqual(info.messageCount, 2)
+        var streamed: [NormalizedMessage] = []
+        for try await message in try await adapter.streamMessages(
+            locator: file.path,
+            options: StreamMessagesOptions()
+        ) {
+            streamed.append(message)
+        }
+        XCTAssertEqual(info.toolMessageCount, 2)
+        XCTAssertEqual(info.messageCount, 3)
+        XCTAssertEqual(info.messageCount, streamed.count)
     }
 
     func testCodexDiscoveryDoesNotTraverseSymlinkedDirectories() async throws {

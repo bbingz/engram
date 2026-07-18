@@ -156,10 +156,23 @@ final class EngramCLIResumeCommandTests: XCTestCase {
         XCTAssertTrue(launcher.contains("enum LaunchError: LocalizedError"))
         XCTAssertTrue(launcher.contains("static func launch(command: String, args: [String], cwd: String, terminal: TerminalType) -> Result<Void, LaunchError>"))
         XCTAssertFalse(launcher.contains("try? process.run()"))
-        XCTAssertFalse(launcher.contains("try launchInWarp(shellCommand: shellCmd, cwd: cwd)\n            } catch {\n                let errMsg"))
         XCTAssertTrue(launcher.contains("return .failure(.appleScriptError("))
         XCTAssertTrue(launcher.contains("return .failure(.processRunFailed("))
         XCTAssertTrue(launcher.contains("return .failure(.warpLaunchFailed("))
+    }
+
+    /// SEC-M1: resume must not dump shell/AppleScript command lines to a
+    /// world-readable `/tmp` path (cross-user session/cwd disclosure).
+    func testTerminalLauncherDoesNotWriteWorldReadableTmpDebugLog_repro() throws {
+        let launcher = try source("macos/Engram/Views/Resume/TerminalLauncher.swift")
+        XCTAssertFalse(
+            launcher.contains("/tmp/engram-terminal.log"),
+            "SEC-M1: TerminalLauncher must not write resume commands to /tmp/engram-terminal.log"
+        )
+        XCTAssertFalse(
+            launcher.contains("write(toFile: \"/tmp/"),
+            "SEC-M1: TerminalLauncher must not write debug logs under /tmp"
+        )
     }
 
     func testResumeDialogKeepsDialogOpenWhenTerminalLaunchFails() throws {

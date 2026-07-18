@@ -167,13 +167,19 @@ actor ArchiveReclamationCoordinator {
                 released += result.releasedBytes
             }
 
+            // M4: walk candidates in order; stop once the per-cycle reclaim cap is
+            // reached, and advance the cursor only past candidates actually examined
+            // (not past the entire 1_000-row page of unprocessed eligible sessions).
+            var lastProcessedBinding: ArchiveBinding?
             for (candidate, decision, _) in try evaluateCandidates(
                 now: now,
-                advanceCursor: true,
                 claudeProfiles: claudeProfiles
             ) {
-                guard sourceCount < Self.maximumCandidatesPerCycle,
-                      case .eligible = decision,
+                if sourceCount >= Self.maximumCandidatesPerCycle {
+                    break
+                }
+                lastProcessedBinding = candidate.binding
+                guard case .eligible = decision,
                       candidate.capture.rawByteCount <= sourceBudget else { continue }
                 let intent = try catalog.upsertReclamationIntent(
                     manifestSHA256: candidate.binding.manifestSHA256,
@@ -186,6 +192,9 @@ actor ArchiveReclamationCoordinator {
                 sourceCount += 1
                 sourceBudget -= result.releasedBytes
                 released += result.releasedBytes
+            }
+            if let last = lastProcessedBinding {
+                try storeReclamationCursor(binding: last, now: now)
             }
 
             var casBudget = ArchiveCASEvictor.maximumBytesPerCycle
@@ -212,7 +221,6 @@ actor ArchiveReclamationCoordinator {
 
     private func evaluateCandidates(
         now: Date,
-        advanceCursor: Bool = false,
         claudeProfiles: [ClaudeCodeProfile]? = nil
     ) throws -> [(ArchiveReclamationCatalogCandidate, ArchiveReclamationDecision, ProductState)] {
         let settings = loadSettings()
@@ -228,17 +236,6 @@ actor ArchiveReclamationCoordinator {
         var page = try catalog.reclamationCandidates(limit: 1_000, after: storedCursor)
         if page.isEmpty, storedCursor != nil {
             page = try catalog.reclamationCandidates(limit: 1_000)
-        }
-        if advanceCursor, let last = page.last?.binding {
-            let payload = CandidateCursorPayload(
-                boundAt: last.boundAt,
-                manifestSHA256: last.manifestSHA256
-            )
-            _ = try catalog.storeArchiveCursorCheckpoint(
-                JSONEncoder().encode(payload),
-                for: .reclamationCycle,
-                updatedAt: Self.timestamp(now)
-            )
         }
         let resolvedClaudeProfiles = claudeProfiles ?? resolvedClaudeProfilesForReclamation()
         return try page.compactMap { candidate in
@@ -268,6 +265,18 @@ actor ArchiveReclamationCoordinator {
             }
             return (candidate, decision, state)
         }
+    }
+
+    private func storeReclamationCursor(binding: ArchiveBinding, now: Date) throws {
+        let payload = CandidateCursorPayload(
+            boundAt: binding.boundAt,
+            manifestSHA256: binding.manifestSHA256
+        )
+        _ = try catalog.storeArchiveCursorCheckpoint(
+            JSONEncoder().encode(payload),
+            for: .reclamationCycle,
+            updatedAt: Self.timestamp(now)
+        )
     }
 
     func sourceReclamationAllowed(locator: String, source: String) -> Bool {

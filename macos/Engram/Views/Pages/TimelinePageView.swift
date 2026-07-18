@@ -101,6 +101,9 @@ struct TimelinePageView: View {
     @State private var isLoading = true
     // Debounce/coalesce index-tick reloads vs. immediate filter-change reloads (#3).
     @State private var lastFilterKey: [AnyHashable]? = nil
+    /// Bumped on every full load so a slower prior detached read cannot overwrite
+    /// a newer filter/range load (M10; mirrors SessionsPageView).
+    @State private var loadGeneration = 0
     // Session-action sheet targets + transient status banner.
     @State private var resumeTarget: Session? = nil
     @State private var replayTarget: Session? = nil
@@ -108,6 +111,15 @@ struct TimelinePageView: View {
     @State private var renameText = ""
     @State private var actionStatus: String? = nil
     @State private var exportState: SessionExportState = .idle
+
+    /// Pure gate for concurrent timeline loads (filter/range change mid-flight).
+    static func shouldApplyLoad(
+        resultGeneration: Int,
+        currentGeneration: Int,
+        isCancelled: Bool = false
+    ) -> Bool {
+        !isCancelled && resultGeneration == currentGeneration
+    }
 
     private var handlers: SessionActionHandlers {
         SessionActionHandlers(
@@ -347,8 +359,17 @@ struct TimelinePageView: View {
     }
 
     private func loadData() async {
+        loadGeneration += 1
+        let requestGeneration = loadGeneration
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            if Self.shouldApplyLoad(
+                resultGeneration: requestGeneration,
+                currentGeneration: loadGeneration
+            ) {
+                isLoading = false
+            }
+        }
         do {
             let database = db
             let sort = sortMode.databaseSort
@@ -364,12 +385,22 @@ struct TimelinePageView: View {
                 let work = try database.implementationTimeline(days: days, project: selectedProjectFilter, humanDriven: humanDriven)
                 return (tl, confirmed, suggested, work)
             }.value
+            guard Self.shouldApplyLoad(
+                resultGeneration: requestGeneration,
+                currentGeneration: loadGeneration,
+                isCancelled: Task.isCancelled
+            ) else { return }
             timeline = data.0
             confirmedCounts = data.1
             suggestedCounts = data.2
             workTimeline = data.3
             loadError = nil
         } catch {
+            guard Self.shouldApplyLoad(
+                resultGeneration: requestGeneration,
+                currentGeneration: loadGeneration,
+                isCancelled: Task.isCancelled
+            ) else { return }
             EngramLogger.error("TimelinePage load failed", module: .ui, error: error)
             loadError = error.localizedDescription
         }
