@@ -210,16 +210,18 @@ final class Round5RemediationTests: XCTestCase {
         let end = try XCTUnwrap(source.range(of: "public func checkpointWal()", options: [], range: start.lowerBound..<source.endIndex))
         let performWrite = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(source.contains("private var longRunningWriteInProgress = false"))
+        // M1: count pending+active long writes so followers behind a still-queued
+        // migration also pass timeout=nil (not only while a long write is active).
+        XCTAssertTrue(source.contains("private var pendingOrActiveLongWrites = 0"))
         // Wave 7C: classification is package-visible for unit tests.
         XCTAssertTrue(source.contains("static func isLongRunningWriteCommand"))
         XCTAssertTrue(source.contains(#""projectMove""#))
         XCTAssertTrue(source.contains(#""projectArchive""#))
         XCTAssertTrue(source.contains(#""projectUndo""#))
         XCTAssertTrue(source.contains(#""projectMoveBatch""#))
-        XCTAssertTrue(performWrite.contains("let timeout = longRunningWriteInProgress ? nil : queueTimeoutNanoseconds"))
-        XCTAssertTrue(performWrite.contains("longRunningWriteInProgress = Self.isLongRunningWriteCommand(name)"))
-        XCTAssertTrue(performWrite.contains("longRunningWriteInProgress = false"))
+        XCTAssertTrue(performWrite.contains("pendingOrActiveLongWrites += 1"))
+        XCTAssertTrue(performWrite.contains("let timeout = pendingOrActiveLongWrites > 0 ? nil : queueTimeoutNanoseconds"))
+        XCTAssertTrue(performWrite.contains("pendingOrActiveLongWrites = max(0, pendingOrActiveLongWrites - 1)"))
     }
 
     func testProjectMoveCanonicalizesExistingSourceToOnDiskCaseOnly() throws {
