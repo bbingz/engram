@@ -173,7 +173,15 @@
       "effort": "S",
       "source": "embeddings-search",
       "confirmed": true,
-      "real_votes": 3
+      "real_votes": 3,
+      "status": "fixed_in_post_audit_followup",
+      "fix_evidence": [
+        "Direct snapshot downgrades and startup per-session, batch, and reconciliation paths delete skip-tier semantic_chunks while preserving non-subagent controls; nullable-tier subagents are first classified as skip",
+        "semantic_chunks is a cheap startup reconciliation signal even after the one-time FTS sweep marker has completed",
+        "SessionVectorSearchAvailability requires a compatible chunk owned by a searchable-tier session via the shared semantic tier predicate",
+        "Five selected _repro tests initially captured 6 behavioral failures; the Codex-requested nullable-tier expansion captured 2 more failures before all passed",
+        "EngramCoreTests reported 930 passed and 1 skipped out of 931 total; EngramServiceCore reported 571 passed and 1 skipped out of 572 total; EngramMCPTests passed 157 of 157; the Debug Engram build succeeded"
+      ]
     },
     {
       "id": "EMB-STARVE",
@@ -380,14 +388,15 @@
     "M19",
     "M24",
     "SVC-001-post-audit-followup",
-    "CONC-001-post-audit-followup"
+    "CONC-001-post-audit-followup",
+    "EMB-001-post-audit-followup"
   ],
   "still_open_followups": ["R1", "R6", "R7", "R8", "R9"],
   "roadmap": {
     "now": [
       "Obtain fresh Codex PASS for PR 197 pre-submit taxonomy follow-up; do not commit or push before PASS",
       "R4 dual-tx single write",
-      "EMB-001 semantic_chunks skip purge",
+      "EMB-001 semantic_chunks skip purge and searchable-tier availability (post-audit follow-up fixed)",
       "CONC-001 long-running startup names aligned (post-audit follow-up fixed)",
       "EMB-STARVE idle embed drain",
       "READ-002 since COALESCE on MCP",

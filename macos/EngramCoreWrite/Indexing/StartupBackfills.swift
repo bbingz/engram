@@ -923,6 +923,11 @@ public enum StartupBackfills {
                 sql: "DELETE FROM session_embeddings WHERE session_id IN (\(skipSubquery))"
             )
         }
+        let deletedSemanticChunks = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "semantic_chunks",
+            whereSQL: "session_id IN (\(skipSubquery))"
+        )
         try db.execute(
             sql: """
             DELETE FROM session_index_jobs
@@ -933,7 +938,7 @@ public enum StartupBackfills {
         if shouldFullScanFts {
             try markSkipTierArtifactFullScanComplete(db)
         }
-        return deletedMessages + deletedFts + deletedFtsMap + deletedEmbeddings
+        return deletedMessages + deletedFts + deletedFtsMap + deletedEmbeddings + deletedSemanticChunks
     }
 
     public static func reconcileInsights(_ db: Database) throws -> StartupInsightReconcileResult {
@@ -1050,7 +1055,7 @@ public enum StartupBackfills {
         let changed = try db.executeAndCountChanges(
             sql: """
             UPDATE sessions SET tier = 'skip'
-            WHERE agent_role = 'subagent' AND tier != 'skip'
+            WHERE agent_role = 'subagent' AND COALESCE(tier, 'normal') != 'skip'
             """
         )
         try deleteRecoverableIndexArtifactsForSkippedSessions(db, whereClause: "agent_role = 'subagent'")
@@ -1080,6 +1085,12 @@ public enum StartupBackfills {
                 arguments: [sessionId]
             )
         }
+        _ = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "semantic_chunks",
+            whereSQL: "session_id = ?",
+            arguments: [sessionId]
+        )
         try db.execute(
             sql: """
             DELETE FROM session_index_jobs
@@ -1118,6 +1129,11 @@ public enum StartupBackfills {
                 """
             )
         }
+        _ = try deleteRowsFromSessionArtifactTableIfPresent(
+            db,
+            table: "semantic_chunks",
+            whereSQL: "session_id IN (SELECT id FROM sessions WHERE \(whereClause))"
+        )
         try db.execute(
             sql: """
             DELETE FROM session_index_jobs
@@ -1173,7 +1189,7 @@ public enum StartupBackfills {
         ) ?? false
         if hasJobSignal { return true }
 
-        for table in ["messages", "fts_map", "session_embeddings"] {
+        for table in ["messages", "fts_map", "session_embeddings", "semantic_chunks"] {
             if try hasRowsInSessionArtifactTableIfPresent(
                 db,
                 table: table,

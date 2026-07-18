@@ -4,9 +4,9 @@ import GRDB
 /// Availability gate for session-level semantic / hybrid search.
 ///
 /// Vectors are **usable** only when `embedding_meta` records a single
-/// model+dimension and at least one `semantic_chunks` row matches that
-/// model/dim with a non-null embedding BLOB. Callers must not advertise or
-/// serve semantic/hybrid modes when `isUsable` is false.
+/// model+dimension and at least one searchable session owns a matching
+/// `semantic_chunks` row with a non-null embedding BLOB. Callers must not
+/// advertise or serve semantic/hybrid modes when `isUsable` is false.
 ///
 /// Design: `docs/mcp-semantic-search-design-2026-07.md`.
 public enum SessionVectorSearchAvailability {
@@ -155,7 +155,8 @@ public enum SessionVectorSearchAvailability {
 
     public static func probe(db: Database) throws -> Snapshot {
         guard try tableExists("embedding_meta", db: db),
-              try tableExists("semantic_chunks", db: db) else {
+              try tableExists("semantic_chunks", db: db),
+              try tableExists("sessions", db: db) else {
             return .unavailable
         }
 
@@ -182,10 +183,12 @@ public enum SessionVectorSearchAvailability {
             db,
             sql: """
             SELECT 1
-            FROM semantic_chunks
-            WHERE embedding IS NOT NULL
-              AND model = ?
-              AND dim = ?
+            FROM semantic_chunks sc
+            JOIN sessions s ON s.id = sc.session_id
+            WHERE sc.embedding IS NOT NULL
+              AND sc.model = ?
+              AND sc.dim = ?
+              AND \(SessionSemanticSearchPolicy.searchableTierSQL)
             LIMIT 1
             """,
             arguments: [model, dimension]

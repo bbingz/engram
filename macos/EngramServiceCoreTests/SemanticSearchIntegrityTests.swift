@@ -13,6 +13,10 @@ final class SemanticSearchIntegrityTests: XCTestCase {
     func testSemanticSearchRejectsSameDimensionDifferentModelWithoutEmbedding() async throws {
         let paths = try makePaths()
         try seedBaseSessions(at: paths.database.path)
+        try seedExtraSessions(
+            at: paths.database.path,
+            idsAndTimes: [("exact-old", "2020-01-01T00:00:00Z")]
+        )
         try seedSemanticCorpus(
             at: paths.database.path,
             model: "model-a",
