@@ -9,8 +9,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed: R4–R5–R10 + R11 disposition ledger (post-#196)
 
-- **R4**: insight embedding per-item isolation + `insight_embedding_failures`
-  terminalization (`failed_permanent` stops reselect).
+- **R4**: insight embedding per-item isolation terminalizes only explicit
+  input-local provider rejection; HTTP/transport, malformed response, and
+  dimension/config failures propagate without consuming the permanent budget.
+- Fresh Codex pre-submit review returned `PASS` for the taxonomy follow-up at
+  commit `38cb676f`; no blocking correctness, test, runner, breaker, or audit-doc
+  consistency issue remained.
 - **R5**: reclamation cursor does not advance past eligible rows skipped by
   source-byte budget (mirrors M4 count-cap fairness).
 - **R10**: M14 `hasObject`/`hasManifest` behavioral PUT→probe tests (replaces
