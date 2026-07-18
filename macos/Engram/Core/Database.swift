@@ -346,9 +346,11 @@ final class DatabaseManager: @unchecked Sendable {
 
     func sourceStats() throws -> [SourceStat] {
         try readInBackground { db in
+            // R3/M5: exclude skip-tier so Search source filters match browsable set.
             let rows = try Row.fetchAll(db, sql: """
                 SELECT source, COUNT(*) as count, MAX(indexed_at) as latest_indexed
-                FROM sessions WHERE hidden_at IS NULL
+                FROM sessions
+                WHERE \(SessionVisibilityFilter.listVisibleSQL)
                 GROUP BY source
             """)
             return rows.map { row in
@@ -363,9 +365,12 @@ final class DatabaseManager: @unchecked Sendable {
 
     func countsByProject() throws -> [String: Int] {
         try readInBackground { db in
+            // R3/M5: project counts exclude skip-tier noise.
             let rows = try Row.fetchAll(db, sql: """
                 SELECT project, COUNT(*) as n FROM sessions
-                WHERE project IS NOT NULL AND hidden_at IS NULL GROUP BY project
+                WHERE project IS NOT NULL
+                  AND \(SessionVisibilityFilter.listVisibleSQL)
+                GROUP BY project
             """)
             return Dictionary(uniqueKeysWithValues: rows.map { ($0["project"] as String, $0["n"] as Int) })
         }
@@ -1065,9 +1070,11 @@ final class DatabaseManager: @unchecked Sendable {
 
     func countSessionsSince(_ since: String) throws -> Int {
         try readInBackground { db in
+            // R3/M5: Activity today/week counters must exclude skip-tier (match KPI).
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT COUNT(*) as n FROM sessions
-                WHERE hidden_at IS NULL AND start_time >= ?
+                WHERE \(SessionVisibilityFilter.listVisibleSQL)
+                  AND start_time >= ?
             """, arguments: [since]) else {
                 return 0
             }
@@ -1085,8 +1092,7 @@ final class DatabaseManager: @unchecked Sendable {
                     SUM(message_count) as messages,
                     COUNT(DISTINCT project) as projects
                 FROM sessions
-                WHERE hidden_at IS NULL
-                  AND (tier IS NULL OR tier != 'skip')
+                WHERE \(SessionVisibilityFilter.listVisibleSQL)
             """) else {
                 return KPIStats(sessions: 0, sources: 0, messages: 0, projects: 0)
             }
@@ -1104,8 +1110,7 @@ final class DatabaseManager: @unchecked Sendable {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT date(start_time, 'localtime') as day, COUNT(*) as count
                 FROM sessions
-                WHERE hidden_at IS NULL
-                  AND (tier IS NULL OR tier != 'skip')
+                WHERE \(SessionVisibilityFilter.listVisibleSQL)
                   AND date(start_time, 'localtime') >= date('now', 'localtime', '-\(days) days')
                 GROUP BY day ORDER BY day
             """)
@@ -1119,8 +1124,7 @@ final class DatabaseManager: @unchecked Sendable {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT date(start_time, 'localtime') as day, source, COUNT(*) as count
                 FROM sessions
-                WHERE hidden_at IS NULL
-                  AND (tier IS NULL OR tier != 'skip')
+                WHERE \(SessionVisibilityFilter.listVisibleSQL)
                   AND date(start_time, 'localtime') >= date('now', 'localtime', '-\(days) days')
                 GROUP BY day, source
                 ORDER BY day
@@ -1155,8 +1159,7 @@ final class DatabaseManager: @unchecked Sendable {
                 SELECT CAST(strftime('%H', start_time, 'localtime') AS INTEGER) as hour,
                        COUNT(*) as count
                 FROM sessions
-                WHERE hidden_at IS NULL
-                  AND (tier IS NULL OR tier != 'skip')
+                WHERE \(SessionVisibilityFilter.listVisibleSQL)
                 GROUP BY hour ORDER BY hour
             """)
             var hours = Array(repeating: 0, count: 24)
@@ -1175,8 +1178,7 @@ final class DatabaseManager: @unchecked Sendable {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT source, COUNT(*) as count
                 FROM sessions
-                WHERE hidden_at IS NULL
-                  AND (tier IS NULL OR tier != 'skip')
+                WHERE \(SessionVisibilityFilter.listVisibleSQL)
                 GROUP BY source ORDER BY count DESC
             """)
             return rows.map { (source: $0["source"] as String, count: $0["count"] as Int) }
@@ -1211,10 +1213,9 @@ final class DatabaseManager: @unchecked Sendable {
         return try readInBackground { db in
             try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
-                WHERE hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.listVisibleSQL)
                   AND parent_session_id IS NULL
                   AND suggested_parent_id IS NULL
-                  AND (tier IS NULL OR tier != 'skip')
                   \(humanClause)
                 ORDER BY start_time DESC LIMIT ?
             """, arguments: [limit])
@@ -1233,11 +1234,10 @@ final class DatabaseManager: @unchecked Sendable {
             let timestampSQL = sort.timelineTimestampSQL
             let sessions = try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
-                WHERE hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.listVisibleSQL)
                   AND parent_session_id IS NULL
                   AND suggested_parent_id IS NULL
                   AND \(timestampSQL) >= DATE('now', '-\(days) days')
-                  AND (tier IS NULL OR tier != 'skip')
                   \(humanClause)
                 ORDER BY \(sort.rawValue)
                 LIMIT ?

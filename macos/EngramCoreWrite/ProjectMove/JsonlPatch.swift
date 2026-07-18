@@ -60,7 +60,16 @@ public enum JsonlPatch {
     /// Path-terminator lookahead. Excludes `.` `,` `;` `-` `_` and
     /// alphanumerics so paths like `/p/file.bak`, `/p-v2`, `/p_dir`
     /// don't false-positive.
+    ///
+    /// Includes `$` (end-of-input) for whole-buffer / final-stream patches.
+    /// Mid-stream segments must use `pathTerminatorLookaheadMidStream` so a
+    /// chunk cut after a path prefix cannot false-match when the next byte is
+    /// a non-terminator (`-`, `_`, `.`, alphanumerics).
     public static let pathTerminatorLookahead = #"(?=["'/\\<>\])}`\s]|$)"#
+
+    /// Same terminator set as `pathTerminatorLookahead` but **without** `$`.
+    /// Used only for mid-stream segment rewrites where EOS is artificial.
+    public static let pathTerminatorLookaheadMidStream = #"(?=["'/\\<>\])}`\s])"#
 
     /// Hard cap: refuse to patch JSONL above this size in memory. The
     /// orchestrator either streams or fails fast — current callers all
@@ -72,10 +81,15 @@ public enum JsonlPatch {
     /// Round-4 NFD fallback: if the UTF-8 source was decomposed (HFS+
     /// volume) but the user typed the rename target in NFC, retry the
     /// match against `oldPath.decomposedStringWithCanonicalMapping`.
+    ///
+    /// - Parameter treatEndAsTerminator: When `true` (default), `$` matches
+    ///   end-of-buffer as a path terminator. Mid-stream callers must pass
+    ///   `false` so a segment cut is not treated as a real path boundary.
     public static func patchBuffer(
         _ data: Data,
         oldPath: String,
-        newPath: String
+        newPath: String,
+        treatEndAsTerminator: Bool = true
     ) throws -> PatchResult {
         if oldPath.isEmpty || oldPath == newPath {
             return PatchResult(data: data, count: 0)
@@ -90,7 +104,8 @@ public enum JsonlPatch {
                 in: working,
                 needle: variant,
                 replacement: newPath,
-                count: &totalCount
+                count: &totalCount,
+                treatEndAsTerminator: treatEndAsTerminator
             )
         }
         if totalCount == 0 {
@@ -129,9 +144,15 @@ public enum JsonlPatch {
     public static func patchBufferWithDotQuote(
         _ data: Data,
         oldPath: String,
-        newPath: String
+        newPath: String,
+        treatEndAsTerminator: Bool = true
     ) throws -> PatchResult {
-        let first = try patchBuffer(data, oldPath: oldPath, newPath: newPath)
+        let first = try patchBuffer(
+            data,
+            oldPath: oldPath,
+            newPath: newPath,
+            treatEndAsTerminator: treatEndAsTerminator
+        )
         let second = autoFixDotQuote(first.data, oldPath: oldPath, newPath: newPath)
         return PatchResult(data: second.data, count: first.count + second.count)
     }
@@ -285,6 +306,10 @@ public enum JsonlPatch {
             oldPath.decomposedStringWithCanonicalMapping.lengthOfBytes(using: .utf8)
         ) + 8
 
+        let needleUTF8Variants: [Data] = ProjectPathVariants.variants(oldPath)
+            .filter { $0 != newPath }
+            .map { Data($0.utf8) }
+
         do {
             while true {
                 let chunk = try input.read(upToCount: 1024 * 1024) ?? Data()
@@ -299,6 +324,16 @@ public enum JsonlPatch {
                     continue
                 }
                 var processCount = combined.count - carryLimit
+                // R2: never process a full needle at the segment end mid-stream.
+                // Without a following byte in the process window we cannot decide
+                // terminator vs non-terminator; keep the needle in `carry` until
+                // the next chunk (or final tail) provides that byte. Prevents
+                // `$`-at-EOS false matches on paths like `/proj` + `-v2`.
+                processCount = trimProcessCountAvoidingTerminalNeedle(
+                    combined: combined,
+                    processCount: processCount,
+                    needles: needleUTF8Variants
+                )
                 var segment = combined.prefix(processCount)
                 var decoded = String(data: segment, encoding: .utf8)
                 var attempts = 0
@@ -311,20 +346,24 @@ public enum JsonlPatch {
                 guard let decoded else {
                     throw InvalidUtf8Error(detail: "input bytes are not a valid UTF-8 sequence")
                 }
+                // Mid-stream: do not treat segment EOS as a path terminator.
                 let patched = try patchBufferWithDotQuote(
                     Data(decoded.utf8),
                     oldPath: oldPath,
-                    newPath: newPath
+                    newPath: newPath,
+                    treatEndAsTerminator: false
                 )
                 total += patched.count
                 try output.write(contentsOf: patched.data)
                 carry = combined.suffix(combined.count - processCount)
             }
 
+            // Final carry: real EOF — `$` terminator is valid.
             let tail = try patchBufferWithDotQuote(
                 carry,
                 oldPath: oldPath,
-                newPath: newPath
+                newPath: newPath,
+                treatEndAsTerminator: true
             )
             total += tail.count
             try output.write(contentsOf: tail.data)
@@ -396,14 +435,43 @@ public enum JsonlPatch {
         }
     }
 
+    /// Shrink `processCount` so the mid-stream process window never ends on a
+    /// complete path needle. Those bytes stay in the carry until a following
+    /// terminator (or final EOF) is available.
+    private static func trimProcessCountAvoidingTerminalNeedle(
+        combined: Data,
+        processCount: Int,
+        needles: [Data]
+    ) -> Int {
+        var pc = processCount
+        while pc > 0 {
+            let seg = combined.prefix(pc)
+            var trimmed = false
+            for needle in needles {
+                guard !needle.isEmpty, seg.count >= needle.count else { continue }
+                if seg.suffix(needle.count) == needle[...] {
+                    pc -= needle.count
+                    trimmed = true
+                    break
+                }
+            }
+            if !trimmed { break }
+        }
+        return max(pc, 0)
+    }
+
     private static func replaceWithTerminator(
         in text: String,
         needle: String,
         replacement: String,
-        count: inout Int
+        count: inout Int,
+        treatEndAsTerminator: Bool = true
     ) -> String {
         let escaped = NSRegularExpression.escapedPattern(for: needle)
-        let pattern = escaped + pathTerminatorLookahead
+        let lookahead = treatEndAsTerminator
+            ? pathTerminatorLookahead
+            : pathTerminatorLookaheadMidStream
+        let pattern = escaped + lookahead
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
             return text
         }

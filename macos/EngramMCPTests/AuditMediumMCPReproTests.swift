@@ -76,6 +76,31 @@ final class AuditMediumMCPReproTests: XCTestCase {
         return try XCTUnwrap(result["structuredContent"] as? [String: Any], "raw=\(firstLine)")
     }
 
+    // MARK: - R3 / M5 stats
+
+    func testStatsExcludesSkipTierFromSessionCounts_repro() throws {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-r3-stats")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try wipeSessionsAndCosts(at: dbPath)
+        try seedStatsSkipFixture(at: dbPath)
+
+        let structured = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"stats","arguments":{"group_by":"source"}}}
+            """,
+            dbPath: dbPath
+        )
+        XCTAssertEqual(
+            structured["totalSessions"] as? Int,
+            1,
+            "R3: MCP stats totalSessions must exclude skip-tier (got \(structured))"
+        )
+        let groups = try XCTUnwrap(structured["groups"] as? [[String: Any]])
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups.first?["key"] as? String, "codex")
+        XCTAssertEqual(groups.first?["sessionCount"] as? Int, 1)
+    }
+
     // MARK: - M18
 
     func testListSessionsExcludesChildrenAndSkipByDefault_repro() throws {
@@ -202,6 +227,25 @@ final class AuditMediumMCPReproTests: XCTestCase {
                   ('mcp-m18-skip', 'codex', '2026-02-01T12:00:00.000Z',
                    '/Users/test/p', 'p', '/tmp/s.jsonl', 4, 4, 4, 4, 'skip',
                    NULL, NULL, NULL, 'skip')
+                """)
+        }
+    }
+
+    private func seedStatsSkipFixture(at dbPath: String) throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, file_path, message_count,
+                  user_message_count, assistant_message_count, tool_message_count,
+                  tier, hidden_at, orphan_status
+                ) VALUES
+                  ('mcp-r3-normal', 'codex', '2026-02-01T10:00:00.000Z',
+                   '/Users/test/p', 'p', '/tmp/n.jsonl', 10, 4, 4, 2, 'normal', NULL, NULL),
+                  ('mcp-r3-skip', 'codex', '2026-02-01T11:00:00.000Z',
+                   '/Users/test/p', 'p', '/tmp/s.jsonl', 99, 40, 40, 19, 'skip', NULL, NULL),
+                  ('mcp-r3-skip-other', 'claude-code', '2026-02-01T12:00:00.000Z',
+                   '/Users/test/p', 'p', '/tmp/s2.jsonl', 50, 20, 20, 10, 'skip', NULL, NULL)
                 """)
         }
     }

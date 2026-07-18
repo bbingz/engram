@@ -79,7 +79,12 @@ final class MCPDatabase {
             groupExpr = "source"
         }
 
-        var conditions = ["hidden_at IS NULL", "orphan_status IS NULL"]
+        // R3/M5: sessionCount / totals exclude skip-tier (match app KPI aggregates).
+        // orphan_status remains MCP-specific (app surfaces do not filter it).
+        var conditions = [
+            SessionVisibilityFilter.listVisibleSQL,
+            "orphan_status IS NULL",
+        ]
         var arguments: [String: DatabaseValueConvertible?] = [:]
         if let since {
             conditions.append("start_time >= :since")
@@ -162,7 +167,7 @@ final class MCPDatabase {
         if !includeAll {
             conditions.append("parent_session_id IS NULL")
             conditions.append("suggested_parent_id IS NULL")
-            conditions.append("(tier IS NULL OR tier != 'skip')")
+            conditions.append(SessionVisibilityFilter.nonSkipTierSQL)
         }
         var values: [DatabaseValueConvertible?] = []
         if let source {
@@ -1939,9 +1944,10 @@ final class MCPDatabase {
     }
 
     private func searchInsightsFTS(query: String, limit: Int) throws -> [Row] {
-        if containsCJK(query) {
+        // R1: use shared CJKText (includes Hangul); do not keep a private subset detector.
+        if CJKText.containsCJK(query) {
             // Escape LIKE wildcards so literal "%"/"_" match verbatim.
-            let pattern = "%\(escapeLike(query))%"
+            let pattern = "%\(CJKText.escapeLikePattern(query))%"
             return try queue.read { db in
                 try Row.fetchAll(
                     db,
@@ -2416,10 +2422,6 @@ private func makeSessionRecord(from row: Row) -> MCPSessionRecord {
         parentSessionId: stringValue(row["parent_session_id"]),
         suggestedParentId: stringValue(row["suggested_parent_id"])
     )
-}
-
-private func containsCJK(_ text: String) -> Bool {
-    text.range(of: #"[\u{2E80}-\u{9FFF}\u{F900}-\u{FAFF}\u{FE30}-\u{FE4F}]"#, options: .regularExpression) != nil
 }
 
 private func escapeLike(_ value: String) -> String {

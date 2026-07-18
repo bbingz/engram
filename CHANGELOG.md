@@ -7,6 +7,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: R1–R3 post-review (shared visibility, JsonlPatch stream, M5 residual)
+
+- **R1**: `SessionVisibilityFilter` shared list/KPI non-skip predicates; MCP drops
+  incomplete private `containsCJK` in favor of `CJKText` (Hangul-aware).
+- **R2**: streaming `JsonlPatch` no longer treats mid-stream segment EOS as a path
+  terminator; full needles at the cut stay in carry until a following byte (or
+  final EOF) is available. Negative + positive streaming repros.
+- **R3**: finish M5 — `countSessionsSince`, `sourceStats`, `countsByProject`, and
+  MCP `stats` session counts exclude skip-tier (Activity today/week matches KPI).
+
 ### Fixed: M5 complete aggregates + batch D repros + merge E/F
 
 - M5: `hourlyActivity`, `sourceDistribution`, `dailySourceActivity` exclude skip-tier

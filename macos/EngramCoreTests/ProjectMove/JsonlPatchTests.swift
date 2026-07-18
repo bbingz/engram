@@ -335,6 +335,81 @@ final class JsonlPatchTests: XCTestCase {
         XCTAssertFalse(text.contains(oldPath), "M12: old path must not remain")
     }
 
+    /// R2: needle + non-terminator (`-`) across a streaming segment cut must NOT rewrite.
+    /// Mid-stream `$` EOS previously treated `/proj` as terminated when the next
+    /// byte (in carry) was `-`, corrupting `/proj-v2` → `/new-v2`.
+    func testStreamingPatchDoesNotFalseMatchNeedleBeforeDashAcrossCut_repro() throws {
+        let path = tmpRoot.appendingPathComponent("false-match.jsonl").path
+        let oldPath = "/Users/test/proj"
+        let newPath = "/Users/test/moved"
+        let protected = "\"cwd\":\"\(oldPath)-v2\""
+        let chunk = 1024 * 1024
+        // End the first 1 MiB process window exactly after `oldPath`, so the
+        // following `-v2` lives in the carry / next read and mid-stream `$`
+        // would historically false-match.
+        let prefixLen = chunk - oldPath.utf8.count
+        var data = Data(repeating: UInt8(ascii: "x"), count: prefixLen)
+        data.append(Data(protected.utf8))
+        data.append(Data(repeating: UInt8(ascii: "y"), count: 64 * 1024))
+        let pad = Int(JsonlPatch.maxInMemoryBytes) + 1024 - data.count
+        if pad > 0 {
+            data.append(Data(repeating: UInt8(ascii: "z"), count: pad))
+        }
+        try data.write(to: URL(fileURLWithPath: path))
+
+        let count = try JsonlPatch.patchFile(at: path, oldPath: oldPath, newPath: newPath)
+        XCTAssertEqual(count, 0, "R2: path followed by '-' must not be rewritten")
+        let text = try String(contentsOfFile: path, encoding: .utf8)
+        XCTAssertTrue(text.contains(protected), "R2: protected longer path must remain intact")
+        XCTAssertFalse(text.contains(newPath), "R2: must not introduce rewritten path")
+    }
+
+    /// R2 positive control: same layout, but real terminator after the needle
+    /// across the cut must still rewrite once the following `"` is visible.
+    func testStreamingPatchRewritesWhenTerminatorFollowsAcrossCut_repro() throws {
+        let path = tmpRoot.appendingPathComponent("true-match.jsonl").path
+        let oldPath = "/Users/test/proj"
+        let newPath = "/Users/test/moved"
+        let chunk = 1024 * 1024
+        let prefixLen = chunk - oldPath.utf8.count
+        var data = Data(repeating: UInt8(ascii: "x"), count: prefixLen)
+        data.append(Data("\"cwd\":\"\(oldPath)\"".utf8))
+        data.append(Data(repeating: UInt8(ascii: "y"), count: 64 * 1024))
+        let pad = Int(JsonlPatch.maxInMemoryBytes) + 1024 - data.count
+        if pad > 0 {
+            data.append(Data(repeating: UInt8(ascii: "z"), count: pad))
+        }
+        try data.write(to: URL(fileURLWithPath: path))
+
+        let count = try JsonlPatch.patchFile(at: path, oldPath: oldPath, newPath: newPath)
+        XCTAssertGreaterThanOrEqual(count, 1, "R2: terminator after cut must still patch")
+        let text = try String(contentsOfFile: path, encoding: .utf8)
+        XCTAssertTrue(text.contains(newPath), "R2: rewritten path must appear")
+        XCTAssertFalse(text.contains("\"cwd\":\"\(oldPath)\""), "R2: old path token must not remain")
+    }
+
+    /// Unit: mid-stream buffer must not treat EOS as terminator.
+    func testPatchBufferMidStreamDoesNotTreatEndAsTerminator_repro() throws {
+        let input = Data("/a/b".utf8)
+        let mid = try JsonlPatch.patchBuffer(
+            input,
+            oldPath: "/a/b",
+            newPath: "/a/c",
+            treatEndAsTerminator: false
+        )
+        XCTAssertEqual(mid.count, 0, "mid-stream must not match at artificial EOS")
+        XCTAssertEqual(mid.data, input)
+
+        let final = try JsonlPatch.patchBuffer(
+            input,
+            oldPath: "/a/b",
+            newPath: "/a/c",
+            treatEndAsTerminator: true
+        )
+        XCTAssertEqual(final.count, 1)
+        XCTAssertEqual(String(data: final.data, encoding: .utf8), "/a/c")
+    }
+
 
     func testPatchFileRejectsSymlinkSource() throws {
         let target = tmpRoot.appendingPathComponent("target.jsonl")

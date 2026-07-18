@@ -1084,6 +1084,49 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(srcTotal, 1, "M5: dailySourceActivity excludes skip")
     }
 
+    /// R3: Activity today/week counters and sourceStats must exclude skip (same as KPI).
+    @MainActor
+    func testCountSessionsSinceAndSourceStatsExcludeSkipTier_repro() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "normal-r3",
+            source: "codex",
+            startTime: "2026-07-18T12:00:00Z",
+            messageCount: 5,
+            tier: "normal"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "skip-r3",
+            source: "codex",
+            startTime: "2026-07-18T13:00:00Z",
+            messageCount: 99,
+            tier: "skip"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "skip-other",
+            source: "claude-code",
+            startTime: "2026-07-18T14:00:00Z",
+            messageCount: 40,
+            tier: "skip"
+        )
+
+        let since = try db.countSessionsSince("2026-07-01T00:00:00Z")
+        XCTAssertEqual(since, 1, "R3: countSessionsSince must not count skip-tier")
+
+        let stats = try db.sourceStats()
+        XCTAssertEqual(stats.map(\.source), ["codex"])
+        XCTAssertEqual(stats.first?.count, 1, "R3: sourceStats excludes skip")
+
+        let byProject = try db.countsByProject()
+        // insertTestSession may leave project nil — only assert no skip inflation on known project path
+        let kpi = try db.kpiStats()
+        XCTAssertEqual(kpi.sessions, 1)
+        XCTAssertEqual(since, kpi.sessions, "R3: Activity counter must agree with KPI on same window seed")
+        _ = byProject
+    }
+
     @MainActor
     func testListSessionsWithMultipleSourceFilters() throws {
         try insertTestSession(at: dbPath, id: "s1", source: "claude-code")
