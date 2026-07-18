@@ -135,7 +135,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.heavy == 'true'
     runs-on: macos-15
-    timeout-minutes: 25
+    # Full Engram + CoreTests (incl. multi-100MB JsonlPatch streaming) needs >25m on
+    # some runners; 2026-07-18 cancelled at the 25m ceiling mid-suite.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
@@ -182,11 +184,13 @@ jobs:
             local scheme="$1"
             shift
             local log="xcodebuild-${scheme}.log"
+            # Prefer explicit coverage flag; default OFF on CI for wall-clock (PRs
+            # still get full unit assertions). Set ENGRAM_CODE_COVERAGE=YES to re-enable.
             xcodebuild test \
               -project Engram.xcodeproj \
               -scheme "$scheme" \
               -destination 'platform=macOS' \
-              -enableCodeCoverage "${ENGRAM_CODE_COVERAGE:-YES}" \
+              -enableCodeCoverage "${ENGRAM_CODE_COVERAGE:-NO}" \
               CODE_SIGNING_ALLOWED=NO \
               "$@" \
               2>&1 | tee "$log"
