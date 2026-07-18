@@ -6,6 +6,18 @@ import XCTest
 @testable import EngramCoreWrite
 
 final class JsonlPatchTests: XCTestCase {
+    /// Multi-100MB streaming repros are valuable but dominate CI wall-clock and
+    /// have cancelled the 25m (even 45m) swift-unit job on some runners. Opt in
+    /// with `ENGRAM_RUN_LARGE_IO=1`. Unit-level mid-stream terminator tests still
+    /// cover R2 without the large-file path.
+    private func skipUnlessLargeIOEnabled() throws {
+        let env = ProcessInfo.processInfo.environment
+        if env["ENGRAM_RUN_LARGE_IO"] == "1" { return }
+        if env["GITHUB_ACTIONS"] == "true" || env["CI"] == "true" {
+            throw XCTSkip("large streaming JsonlPatch repros skipped on CI; set ENGRAM_RUN_LARGE_IO=1")
+        }
+    }
+
     // MARK: - patchBuffer: idempotent / symmetric
 
     func testRunningSamePatchTwiceIsNoOpOnSecondRun() throws {
@@ -292,6 +304,7 @@ final class JsonlPatchTests: XCTestCase {
     }
 
     func testPatchFileStreamsFilesLargerThanOldInMemoryCap() throws {
+        try skipUnlessLargeIOEnabled()
         let path = tmpRoot.appendingPathComponent("large.jsonl").path
         try "{\"cwd\":\"/old\"}\n".write(toFile: path, atomically: true, encoding: .utf8)
         let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
@@ -312,6 +325,7 @@ final class JsonlPatchTests: XCTestCase {
 
     /// M12: path token straddling the 1 MiB streaming chunk cut must still patch.
     func testStreamingPatchCatchesNeedleAtChunkBoundary_repro() throws {
+        try skipUnlessLargeIOEnabled()
         let path = tmpRoot.appendingPathComponent("boundary.jsonl").path
         let oldPath = "/Users/test/old-project-path"
         let newPath = "/Users/test/new-project-path"
@@ -339,6 +353,7 @@ final class JsonlPatchTests: XCTestCase {
     /// Mid-stream `$` EOS previously treated `/proj` as terminated when the next
     /// byte (in carry) was `-`, corrupting `/proj-v2` → `/new-v2`.
     func testStreamingPatchDoesNotFalseMatchNeedleBeforeDashAcrossCut_repro() throws {
+        try skipUnlessLargeIOEnabled()
         let path = tmpRoot.appendingPathComponent("false-match.jsonl").path
         let oldPath = "/Users/test/proj"
         let newPath = "/Users/test/moved"
@@ -367,6 +382,7 @@ final class JsonlPatchTests: XCTestCase {
     /// R2 positive control: same layout, but real terminator after the needle
     /// across the cut must still rewrite once the following `"` is visible.
     func testStreamingPatchRewritesWhenTerminatorFollowsAcrossCut_repro() throws {
+        try skipUnlessLargeIOEnabled()
         let path = tmpRoot.appendingPathComponent("true-match.jsonl").path
         let oldPath = "/Users/test/proj"
         let newPath = "/Users/test/moved"
