@@ -98,16 +98,28 @@ public actor ServiceWriterGate {
         operation: @Sendable (EngramDatabaseWriter) async throws -> Value
     ) async throws -> ServiceWriterGateResult<Value> {
         let isLongRunning = Self.isLongRunningWriteCommand(name)
-        // Count pending long writes *before* wait so followers enqueued behind a
-        // still-queued migration also get timeout=nil (M1). Exclude *this*
-        // reservation when deciding: a long-op waiting on a short holder must
-        // still arm the queue timeout (WriterBusy), otherwise tests and clients
-        // hang forever on timeout=nil while only they are "pending".
+        // Count pending long writes *before* wait so short followers enqueued
+        // behind a still-queued migration get timeout=nil (M1).
         if isLongRunning {
             pendingOrActiveLongWrites += 1
         }
+        // Timeout policy:
+        // - Short write: nil if any long write is pending/active (don't false
+        //   WriterBusy behind projectMove / index).
+        // - Long write: nil only when *another* long write is pending/active or
+        //   currently holding. A sole long-op waiting on a short holder must
+        //   still arm the queue timeout or it hangs forever (CI hang 2026-07-18).
         let otherLongWrites = pendingOrActiveLongWrites - (isLongRunning ? 1 : 0)
-        let timeout = otherLongWrites > 0 ? nil : queueTimeoutNanoseconds
+        let timeout: UInt64?
+        if isLongRunning {
+            timeout = (otherLongWrites > 0 || longRunningWriteInProgress)
+                ? nil
+                : queueTimeoutNanoseconds
+        } else {
+            timeout = (pendingOrActiveLongWrites > 0 || longRunningWriteInProgress)
+                ? nil
+                : queueTimeoutNanoseconds
+        }
         do {
             try await writeSemaphore.wait(timeoutNanoseconds: timeout)
         } catch {

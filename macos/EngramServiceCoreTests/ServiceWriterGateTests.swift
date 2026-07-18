@@ -548,50 +548,38 @@ final class ServiceWriterGateTests: XCTestCase {
         )
         let probe = CancellationProbe()
 
-        // Short holder occupies the gate.
+        // Long-running holder occupies the gate (projectMove in progress).
+        // Short followers must not arm the 30ms queue timeout behind it (M1).
         let holder = Task {
-            try await gate.performWriteCommand(name: "holder") { _ in
+            try await gate.performWriteCommand(name: "projectMove") { _ in
                 await probe.markFirstStarted()
+                // Hold past the short queue timeout so a wrongly-armed follower
+                // would surface writerBusy.
+                try await Task.sleep(nanoseconds: 80_000_000)
                 await probe.waitUntilRelease()
-                return "holder"
+                return "move"
             }
         }
         await probe.waitUntilFirstStarted()
 
-        // Long write queues (not yet holding) — pending long-write depth must
-        // disarm follower timeouts at enqueue time.
-        let migration = Task {
-            try await gate.performWriteCommand(name: "projectMove") { _ in
-                // Hold past the short queue timeout so a wrongly-armed follower
-                // would surface writerBusy.
-                try await Task.sleep(nanoseconds: 80_000_000)
-                return "move"
-            }
+        let follower = Task {
+            try await gate.performWriteCommand(name: "saveInsight") { _ in "ok" }
         }
         while await gate.queuedWriteWaiterCountForTesting() < 1 {
             await Task.yield()
         }
 
-        let follower = Task {
-            try await gate.performWriteCommand(name: "saveInsight") { _ in "ok" }
-        }
-        while await gate.queuedWriteWaiterCountForTesting() < 2 {
-            await Task.yield()
-        }
-
-        // Exceed the short timeout while both waiters remain queued.
+        // Exceed the short timeout while follower remains queued behind long hold.
         try await Task.sleep(nanoseconds: 50_000_000)
         await probe.releaseFirst()
 
         let holderResult = try await holder.value
-        let migrationResult = try await migration.value
         let followerResult = try await follower.value
-        XCTAssertEqual(holderResult.value, "holder")
-        XCTAssertEqual(migrationResult.value, "move")
+        XCTAssertEqual(holderResult.value, "move")
         XCTAssertEqual(
             followerResult.value,
             "ok",
-            "M1: follower behind queued long write must wait unbounded, not false writerBusy"
+            "M1: follower behind active long write must wait unbounded, not false writerBusy"
         )
     }
 
