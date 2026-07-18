@@ -279,6 +279,134 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         )
     }
 
+    // SVC-001 follow-up to PR #197: a full page whose product sessions vanished
+    // must not pin the cursor and starve later eligible bindings forever.
+    func testReclamationCursorAdvancesPastProductMissingPage_repro() async throws {
+        try writeSettings(customProjectsRoots: [])
+        let projectsRoot = try makeProjectsRoot(
+            parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
+        )
+        var missingFixtures: [BindingFixture] = []
+        for index in 0..<1_000 {
+            missingFixtures.append(
+                try addEligibleBinding(
+                    seed: String(format: "svc-001-missing-%04d", index),
+                    source: "claude-code",
+                    projectsRoot: projectsRoot,
+                    boundAt: "2026-05-01T00:01:00.000Z",
+                    addProductSession: false
+                )
+            )
+        }
+        let eligible = try addEligibleBinding(
+            seed: "svc-001-eligible",
+            source: "claude-code",
+            projectsRoot: projectsRoot,
+            boundAt: "2026-05-02T00:01:00.000Z"
+        )
+        try await replicate(missingFixtures + [eligible])
+        try recordCurrentRecoveryLeases(manifestSHA256: eligible.binding.manifestSHA256)
+
+        let coordinator = try makeCoordinator()
+        let preview = await coordinator.preview(now: now)
+        XCTAssertEqual(preview.eligibleCount, 0)
+        XCTAssertEqual(preview.blockedCounts["missing_product_session"], 1_000)
+
+        let first = await coordinator.runNow(now: now)
+        XCTAssertTrue(first.accepted)
+        XCTAssertEqual(first.sourceFilesReclaimed, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: eligible.sourceURL.path))
+        XCTAssertNil(try catalog.reclamationIntent(
+            manifestSHA256: missingFixtures[0].binding.manifestSHA256
+        ))
+
+        let orderedMissing = missingFixtures.sorted {
+            $0.binding.manifestSHA256 < $1.binding.manifestSHA256
+        }
+        let checkpoint = try XCTUnwrap(
+            try catalog.archiveCursorCheckpoint(for: .reclamationCycle)
+        )
+        struct CursorPayload: Codable {
+            let boundAt: String
+            let manifestSHA256: String
+        }
+        let payload = try JSONDecoder().decode(CursorPayload.self, from: checkpoint.payload)
+        XCTAssertEqual(payload.boundAt, "2026-05-01T00:01:00.000Z")
+        XCTAssertEqual(payload.manifestSHA256, orderedMissing.last?.binding.manifestSHA256)
+
+        let second = await coordinator.runNow(now: now)
+        XCTAssertTrue(second.accepted)
+        XCTAssertEqual(second.sourceFilesReclaimed, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: eligible.sourceURL.path))
+        XCTAssertEqual(
+            try catalog.reclamationIntent(manifestSHA256: eligible.binding.manifestSHA256)?.phase,
+            .sourceDeleted
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: missingFixtures[0].sourceURL.path))
+    }
+
+    // SVC-001 Codex follow-up: product-state blockers must remain diagnostic
+    // without bypassing the policy's global/source precedence.
+    func testReclamationPreviewDistinguishesProductStateAndSourceBlockers_repro() async throws {
+        try writeSettings(customProjectsRoots: [])
+        let projectsRoot = try makeProjectsRoot(
+            parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
+        )
+        let missing = try addEligibleBinding(
+            seed: "svc-001-preview-missing",
+            source: "claude-code",
+            projectsRoot: projectsRoot,
+            addProductSession: false
+        )
+        let invalid = try addEligibleBinding(
+            seed: "svc-001-preview-invalid",
+            source: "claude-code",
+            projectsRoot: projectsRoot
+        )
+        let unsupported = try addEligibleBinding(
+            seed: "svc-001-preview-unsupported",
+            source: "unsupported",
+            projectsRoot: projectsRoot,
+            addProductSession: false
+        )
+        try await productDatabase.write { db in
+            try db.execute(
+                sql: "UPDATE sessions SET start_time = ?, end_time = NULL WHERE id = ?",
+                arguments: ["not-a-date", invalid.binding.sessionID]
+            )
+        }
+        try await replicate([missing, invalid, unsupported])
+
+        let coordinator = try makeCoordinator()
+        let preview = await coordinator.preview(now: now)
+
+        XCTAssertEqual(preview.blockedCounts["missing_product_session"], 1)
+        XCTAssertEqual(preview.blockedCounts["invalid_product_activity"], 1)
+        XCTAssertEqual(preview.blockedCounts["unsupported_source"], 1)
+    }
+
+    // SVC-001 Codex follow-up: disabled remains the first policy blocker even
+    // when the product session no longer exists.
+    func testReclamationPreviewReportsDisabledBeforeMissingProductSession_repro() async throws {
+        try writeSettings(reclamationEnabled: false, customProjectsRoots: [])
+        let projectsRoot = try makeProjectsRoot(
+            parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
+        )
+        let missing = try addEligibleBinding(
+            seed: "svc-001-preview-disabled",
+            source: "claude-code",
+            projectsRoot: projectsRoot,
+            addProductSession: false
+        )
+        try await replicate([missing])
+
+        let coordinator = try makeCoordinator()
+        let preview = await coordinator.preview(now: now)
+
+        XCTAssertEqual(preview.blockedCounts["disabled"], 1)
+        XCTAssertNil(preview.blockedCounts["missing_product_session"])
+    }
+
     /// M4: after reclaiming the per-cycle cap, cursor advances only past examined
     /// candidates — remaining eligible sessions stay available for the next cycle
     /// without waiting for a full catalog wrap.
@@ -598,6 +726,7 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
 
     private func writeSettings(
         autoDiscover: Bool = true,
+        reclamationEnabled: Bool = true,
         customProjectsRoots: [String]
     ) throws {
         try FileManager.default.createDirectory(
@@ -606,7 +735,7 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         )
         let data = try JSONSerialization.data(
             withJSONObject: [
-                "archiveReclamation": ["enabled": true, "hotWindowDays": 30],
+                "archiveReclamation": ["enabled": reclamationEnabled, "hotWindowDays": 30],
                 "claudeCodeProfiles": [
                     "autoDiscover": autoDiscover,
                     "customProjectsRoots": customProjectsRoots,
@@ -631,7 +760,9 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
     private func addEligibleBinding(
         seed: String,
         source: String,
-        projectsRoot: URL
+        projectsRoot: URL,
+        boundAt: String = "2026-05-01T00:01:00.000Z",
+        addProductSession: Bool = true
     ) throws -> BindingFixture {
         let sourceURL = projectsRoot
             .appendingPathComponent("project-\(seed)", isDirectory: true)
@@ -704,18 +835,20 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         let binding = try catalog.bind(
             canonicalManifestBytes: boundBytes,
             sourceSnapshotFingerprint: ArchiveV2Hash.sha256(Data("snapshot-\(seed)".utf8)),
-            boundAt: "2026-05-01T00:01:00.000Z"
+            boundAt: boundAt
         )
         _ = try catalog.setRemotePolicySnapshot(
             manifestSHA256: binding.manifestSHA256,
             projectRootSnapshot: projectsRoot.path,
             eligibility: .eligible
         )
-        try productDatabase.write { db in
-            try db.execute(
-                sql: "INSERT INTO sessions(id, start_time, end_time) VALUES (?, ?, ?)",
-                arguments: [sessionID, "2026-05-01T00:00:00.000Z", "2026-05-01T00:10:00.000Z"]
-            )
+        if addProductSession {
+            try productDatabase.write { db in
+                try db.execute(
+                    sql: "INSERT INTO sessions(id, start_time, end_time) VALUES (?, ?, ?)",
+                    arguments: [sessionID, "2026-05-01T00:00:00.000Z", "2026-05-01T00:10:00.000Z"]
+                )
+            }
         }
         return BindingFixture(
             sourceURL: sourceURL,
