@@ -102,7 +102,8 @@ final class InsightEmbeddingBackfillTests: XCTestCase {
         XCTAssertEqual(second, .init(embedded: 0, failed: 0))
     }
 
-    /// R4: poison insight fails in isolation; permanent terminal stops re-select.
+    /// Unit helper: isolated embed + recordFailures (product path coverage lives
+    /// in EngramServiceCoreTests.testRunnerInsightEmbeddingIsolatesPoisonAndTerminates_repro).
     func testInsightEmbeddingIsolatesPoisonAndTerminates_repro() async throws {
         let path = tempDir.appendingPathComponent("r4-insight.sqlite").path
         let writer = try EngramDatabaseWriter(path: path)
@@ -116,18 +117,25 @@ final class InsightEmbeddingBackfillTests: XCTestCase {
         }
 
         let provider = SelectiveFailEmbeddingProvider()
-        let first = try await InsightEmbeddingBackfill.run(writer: writer, provider: provider)
-        XCTAssertEqual(first.embedded, 1, "R4: good insight must still embed")
-        XCTAssertEqual(first.failed, 1, "R4: poison isolated as failure")
+        let pending = try InsightEmbeddingBackfill.pendingInsights(writer: writer, limit: 10)
+        let outcome = try await InsightEmbeddingBackfill.embedPendingIsolated(
+            pending,
+            provider: provider
+        )
+        XCTAssertEqual(outcome.successes.count, 1, "R4: good insight must still embed")
+        XCTAssertEqual(outcome.failures.count, 1, "R4: poison isolated as failure")
+        _ = try InsightEmbeddingBackfill.writeEmbeddings(
+            writer: writer,
+            embeddings: outcome.successes,
+            model: provider.model,
+            dimension: provider.dimension
+        )
+        try InsightEmbeddingBackfill.recordFailures(writer: writer, failures: outcome.failures)
 
         try writer.read { db in
             XCTAssertEqual(
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insight_embeddings WHERE insight_id = 'good'"),
                 1
-            )
-            XCTAssertEqual(
-                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insight_embeddings WHERE insight_id = 'poison'"),
-                0
             )
             XCTAssertEqual(
                 try String.fetchOne(
@@ -138,9 +146,15 @@ final class InsightEmbeddingBackfillTests: XCTestCase {
             )
         }
 
-        // Exhaust retries → failed_permanent; poison leaves the pending set.
         for _ in 0..<InsightEmbeddingBackfill.maxInsightEmbedRetryCount {
-            _ = try await InsightEmbeddingBackfill.run(writer: writer, provider: provider)
+            let again = try InsightEmbeddingBackfill.pendingInsights(writer: writer, limit: 10)
+            let poisonOnly = again.filter { $0.id == "poison" }
+            guard !poisonOnly.isEmpty else { break }
+            let out = try await InsightEmbeddingBackfill.embedPendingIsolated(
+                poisonOnly,
+                provider: provider
+            )
+            try InsightEmbeddingBackfill.recordFailures(writer: writer, failures: out.failures)
         }
         try writer.read { db in
             XCTAssertEqual(
@@ -157,7 +171,6 @@ final class InsightEmbeddingBackfillTests: XCTestCase {
             stillPending.contains(where: { $0.id == "poison" }),
             "R4: permanent failure must not reselect poison forever"
         )
-        XCTAssertFalse(stillPending.contains(where: { $0.id == "good" }))
     }
 
     func testSessionEmbeddingCapsEachProviderRequestBatch() async throws {

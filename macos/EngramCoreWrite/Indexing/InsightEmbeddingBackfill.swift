@@ -50,21 +50,14 @@ public enum InsightEmbeddingBackfill {
         }
     }
 
-    /// R4: per-insight isolation — one poison item does not abort the batch and
-    /// permanent failures stop reselecting the same content forever.
-    public static func run(
-        writer: EngramDatabaseWriter,
-        provider: EmbeddingProvider,
-        limit: Int = 64
-    ) async throws -> Result {
-        try reconcileModelChangeIfNeeded(
-            writer: writer,
-            model: provider.model,
-            dimension: provider.dimension
-        )
-        let pending = try pendingInsights(writer: writer, limit: limit)
-        guard !pending.isEmpty else { return Result(embedded: 0, failed: 0) }
-
+    /// R4: embed each pending insight independently. One poison item does not
+    /// abort the rest. Circuit-open / cancellation still propagate so callers
+    /// can soft-skip the maintenance phase.
+    public static func embedPendingIsolated(
+        _ pending: [PendingInsight],
+        provider: EmbeddingProvider
+    ) async throws -> (successes: [EmbeddedInsight], failures: [InsightFailure]) {
+        guard !pending.isEmpty else { return ([], []) }
         var successes: [EmbeddedInsight] = []
         var failures: [InsightFailure] = []
         successes.reserveCapacity(pending.count)
@@ -85,19 +78,37 @@ public enum InsightEmbeddingBackfill {
                 failures.append(InsightFailure(id: item.id, error: "\(error)"))
             }
         }
+        return (successes, failures)
+    }
 
-        if !successes.isEmpty {
+    /// Convenience: pending → isolated embed → write successes + record failures.
+    /// Prefer the service runner path for product (gate-separated network I/O).
+    public static func run(
+        writer: EngramDatabaseWriter,
+        provider: EmbeddingProvider,
+        limit: Int = 64
+    ) async throws -> Result {
+        try reconcileModelChangeIfNeeded(
+            writer: writer,
+            model: provider.model,
+            dimension: provider.dimension
+        )
+        let pending = try pendingInsights(writer: writer, limit: limit)
+        guard !pending.isEmpty else { return Result(embedded: 0, failed: 0) }
+
+        let outcome = try await embedPendingIsolated(pending, provider: provider)
+        if !outcome.successes.isEmpty {
             _ = try writeEmbeddings(
                 writer: writer,
-                embeddings: successes,
+                embeddings: outcome.successes,
                 model: provider.model,
                 dimension: provider.dimension
             )
         }
-        if !failures.isEmpty {
-            try recordFailures(writer: writer, failures: failures)
+        if !outcome.failures.isEmpty {
+            try recordFailures(writer: writer, failures: outcome.failures)
         }
-        return Result(embedded: successes.count, failed: failures.count)
+        return Result(embedded: outcome.successes.count, failed: outcome.failures.count)
     }
 
     public static func pendingInsights(

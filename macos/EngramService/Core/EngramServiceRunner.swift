@@ -1503,15 +1503,17 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         }.value
         guard !pending.isEmpty else { return 0 }
 
-        let vectors: [[Float]]
+        // R4: per-insight isolation outside the write gate (same contract as
+        // session embed). Poison content fails one item; remaining continue;
+        // permanent failures stop reselect via insight_embedding_failures.
+        let outcome: (
+            successes: [InsightEmbeddingBackfill.EmbeddedInsight],
+            failures: [InsightEmbeddingBackfill.InsightFailure]
+        )
         do {
-            vectors = try await provider.embed(pending.map(\.content))
-            guard vectors.count == pending.count else {
-                throw EmbeddingError.malformedResponse
-            }
-            try InsightEmbeddingBackfill.validateUniformNativeDimension(
-                vectors,
-                configured: provider.dimension
+            outcome = try await InsightEmbeddingBackfill.embedPendingIsolated(
+                pending,
+                provider: provider
             )
         } catch EmbeddingError.circuitOpen {
             _ = backoff.recordFailure(providerKey: providerKey)
@@ -1523,6 +1525,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
+            // Unexpected total-phase failure (not per-item isolation path).
             let delay = backoff.recordFailure(providerKey: providerKey)
             ServiceLogger.info(
                 "\(phaseName) backing off provider after failure delaySeconds=\(Int(delay.rounded()))",
@@ -1530,20 +1533,37 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             )
             throw error
         }
-        backoff.recordSuccess(providerKey: providerKey)
-        let embedded = zip(pending, vectors).map { item, vector in
-            InsightEmbeddingBackfill.EmbeddedInsight(id: item.id, vector: vector)
+
+        if outcome.successes.isEmpty, outcome.failures.isEmpty {
+            return 0
+        }
+        if !outcome.successes.isEmpty {
+            backoff.recordSuccess(providerKey: providerKey)
+        } else if !outcome.failures.isEmpty {
+            // All items failed in isolation — still advance provider backoff so
+            // a broken provider does not spin every cycle.
+            _ = backoff.recordFailure(providerKey: providerKey)
         }
 
         let result = try await gate.performWriteCommand(name: "\(phaseName)Write") { writer in
-            try InsightEmbeddingBackfill.writeEmbeddings(
-                writer: writer,
-                embeddings: embedded,
-                model: provider.model,
-                dimension: provider.dimension
-            )
+            var embedded = 0
+            if !outcome.successes.isEmpty {
+                embedded = try InsightEmbeddingBackfill.writeEmbeddings(
+                    writer: writer,
+                    embeddings: outcome.successes,
+                    model: provider.model,
+                    dimension: provider.dimension
+                ).embedded
+            }
+            if !outcome.failures.isEmpty {
+                try InsightEmbeddingBackfill.recordFailures(
+                    writer: writer,
+                    failures: outcome.failures
+                )
+            }
+            return embedded
         }.value
-        return result.embedded
+        return result
     }
 
     private static func runInsightEmbeddingBackfillBestEffort(
