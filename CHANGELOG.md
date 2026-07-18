@@ -7,6 +7,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: READ-001/READ-002 MCP search parity
+
+- Multi-term MCP keyword search now requires every token at session scope, so
+  terms split across separate `sessions_fts` rows still match the owning
+  session while partial-term sessions remain excluded.
+- MCP keyword, CJK/short-query LIKE, and semantic candidate filters now use
+  `COALESCE(end_time, start_time)` for `since`, matching app and service
+  activity-window semantics.
+- Three executable `_repro` tests captured the row-scope and activity-window
+  failures before the fix; the complete 160-test EngramMCP suite and Debug
+  Engram build pass afterward.
+
 ### Fixed: EMB-STARVE idle embedding drain
 
 - Periodic scans with `scan.indexed == 0` now check the existing session and

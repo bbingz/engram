@@ -1369,7 +1369,7 @@ final class MCPDatabase {
                 }
             }
             if let since {
-                conditions.append("s.start_time >= ?")
+                conditions.append("COALESCE(s.end_time, s.start_time) >= ?")
                 values.append(since)
             }
             values.append(batchSize)
@@ -2137,14 +2137,33 @@ final class MCPDatabase {
             )
         }
         return try readRetryingTransientMissingFTS { db in
+            let termMatches = CJKText.ftsMatchTerms(query)
+            let snippetMatch = termMatches.first ?? CJKText.ftsMatchQuery(query)
+            var ctes: [String] = []
+            var joins: [String] = []
+            var values: [DatabaseValueConvertible?] = []
+            for (index, termMatch) in termMatches.enumerated() {
+                let alias = "m\(index)"
+                ctes.append("""
+                    \(alias) AS (
+                        SELECT session_id, MIN(rank) AS rank
+                        FROM sessions_fts
+                        WHERE sessions_fts MATCH ?
+                        GROUP BY session_id
+                    )
+                """)
+                values.append(termMatch)
+                if index > 0 {
+                    joins.append("JOIN \(alias) ON \(alias).session_id = m0.session_id")
+                }
+            }
+            values.append(snippetMatch)
+
             var conditions = [
-                "sessions_fts MATCH ?",
                 "s.hidden_at IS NULL",
                 "s.orphan_status IS NULL",
                 SessionSemanticSearchPolicy.searchableTierSQL,
             ]
-            var values: [DatabaseValueConvertible?] = [CJKText.ftsMatchQuery(query)]
-
             if let source {
                 conditions.append("s.source = ?")
                 values.append(source)
@@ -2160,33 +2179,35 @@ final class MCPDatabase {
                 }
             }
             if let since {
-                conditions.append("s.start_time >= ?")
+                conditions.append("COALESCE(s.end_time, s.start_time) >= ?")
                 values.append(since)
             }
             values.append(limit)
 
             let sql = """
+            WITH \(ctes.joined(separator: ", "))
             SELECT
               s.*,
               ls.local_readable_path,
-              snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32) AS snippet,
-              f.rank
-            FROM sessions_fts f
-            JOIN sessions s ON s.id = f.session_id
+              (
+                  SELECT snippet(sessions_fts, 1, '<mark>', '</mark>', '…', 32)
+                  FROM sessions_fts
+                  WHERE sessions_fts MATCH ? AND session_id = s.id
+                  ORDER BY rank
+                  LIMIT 1
+              ) AS snippet,
+              m0.rank
+            FROM m0
+            \(joins.joined(separator: " "))
+            JOIN sessions s ON s.id = m0.session_id
             LEFT JOIN session_local_state ls ON ls.session_id = s.id
             WHERE \(conditions.joined(separator: " AND "))
-            ORDER BY f.rank
+            ORDER BY m0.rank, s.start_time DESC
             LIMIT ?
             """
 
-            do {
-                let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
-                return rows.map { ($0, stringValue($0["snippet"]) ?? "") }
-            } catch {
-                values[0] = "\"\(query.replacingOccurrences(of: "\"", with: "\"\""))\""
-                let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
-                return rows.map { ($0, stringValue($0["snippet"]) ?? "") }
-            }
+            let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(values))
+            return rows.map { ($0, stringValue($0["snippet"]) ?? "") }
         }
     }
 
@@ -2223,7 +2244,7 @@ final class MCPDatabase {
                 }
             }
             if let since {
-                conditions.append("s.start_time >= ?")
+                conditions.append("COALESCE(s.end_time, s.start_time) >= ?")
                 values.append(since)
             }
             values.append(limit)

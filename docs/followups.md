@@ -13,7 +13,8 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 
 | ID | Status | Home / next step |
 |----|--------|------------------|
-| **R1** / ARCH-001 / READ-001/002/003 | open (partially mitigated) | Triple Read SQL stacks remain; unify shared list/search/cost predicates in CoreRead and add cross-surface parity fixtures |
+| **R1** / ARCH-001 / READ-003 | open (partially mitigated) | Triple Read SQL stacks remain; unify shared list/search/cost predicates in CoreRead, align project filtering, and add cross-surface parity fixtures |
+| **READ-001/002** | closed (post-audit follow-up) | MCP multi-term session-scoped AND and keyword/LIKE/semantic `since` COALESCE are covered by executable `_repro` tests; this does not close ARCH-001 |
 | **R6** | open | Project-move holds writer gate for entire FS+patch lifetime — availability redesign |
 | **R7** | open | Offload HTTP client weaker than Archive V2 (`URLSession.shared`, no redirect/size/post-DNS private checks); stale “default OFF” comment |
 | **R8** | open | Codex content tail indexing dead in product (`mergeTailSnapshot` always nil) |
