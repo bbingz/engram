@@ -99,11 +99,15 @@ public actor ServiceWriterGate {
     ) async throws -> ServiceWriterGateResult<Value> {
         let isLongRunning = Self.isLongRunningWriteCommand(name)
         // Count pending long writes *before* wait so followers enqueued behind a
-        // still-queued migration also get timeout=nil (M1).
+        // still-queued migration also get timeout=nil (M1). Exclude *this*
+        // reservation when deciding: a long-op waiting on a short holder must
+        // still arm the queue timeout (WriterBusy), otherwise tests and clients
+        // hang forever on timeout=nil while only they are "pending".
         if isLongRunning {
             pendingOrActiveLongWrites += 1
         }
-        let timeout = pendingOrActiveLongWrites > 0 ? nil : queueTimeoutNanoseconds
+        let otherLongWrites = pendingOrActiveLongWrites - (isLongRunning ? 1 : 0)
+        let timeout = otherLongWrites > 0 ? nil : queueTimeoutNanoseconds
         do {
             try await writeSemaphore.wait(timeoutNanoseconds: timeout)
         } catch {

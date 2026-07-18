@@ -39,6 +39,43 @@ final class ServiceWriterGateTests: XCTestCase {
         XCTAssertFalse(ServiceWriterGate.isLongRunningWriteCommand("saveInsight"))
     }
 
+    /// M1 hang fix: a long-running command blocked by a short holder must still
+    /// arm the queue timeout (WriterBusy), not hang on timeout=nil forever.
+    func testLongRunningCommandBlockedByShortHolderStillTimesOut_repro() async throws {
+        let paths = try makeGatePaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 80_000_000
+        )
+        let hold = CancellationProbe()
+        let holderEntered = expectation(description: "short holder entered")
+        let holdTask = Task {
+            _ = try await gate.performWriteCommand(name: "saveInsight") { _ in
+                holderEntered.fulfill()
+                await hold.waitUntilRelease()
+                return "held"
+            }
+        }
+        await fulfillment(of: [holderEntered], timeout: 5)
+
+        do {
+            _ = try await gate.performWriteCommand(name: "projectMove") { _ in
+                "should-not-run"
+            }
+            XCTFail("projectMove must WriterBusy when blocked by short holder")
+        } catch let error as EngramServiceError {
+            guard case .writerBusy = error else {
+                return XCTFail("expected writerBusy, got \(error)")
+            }
+        } catch {
+            return XCTFail("expected EngramServiceError.writerBusy, got \(error)")
+        }
+
+        await hold.releaseFirst()
+        _ = try await holdTask.value
+    }
+
     func testFirstGateAcquiresLockAndConstructsOneWriter() async throws {
         let paths = try makeGatePaths()
         let factory = CountingWriterFactory()
