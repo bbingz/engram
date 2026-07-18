@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-07-18",
-  "branch": "fix/audit-2026-07-18-r4plus",
-  "head": "2940e6c9",
-  "working_tree": "pre-submit PR #197 taxonomy follow-up",
+  "generated_at": "2026-07-19",
+  "branch": "docs/audit-2026-07-19-blind-closeout",
+  "head": "62247c9e",
+  "working_tree": "documentation-only blind-audit closeout based on PR #203 tip",
   "project": "engram",
   "methodology": {
     "agents": [
@@ -23,7 +23,18 @@
       "docs/reviews/2026-07-17-engram-full-audit.md",
       "docs/reviews/2026-07-18-full-project-review.md",
       "docs/reviews/2026-07-17-finding-disposition.md"
-    ]
+    ],
+    "blind_closeout": {
+      "workflow": "engram-blind-audit-closeout + bounded ADAPTER-CC-001 verification + independent reconcile/critic/revise",
+      "discovery_scopes": {
+        "completed": 15,
+        "expected": 15
+      },
+      "canonical_candidates": 23,
+      "confirmation_rule": "at least two credible confirmed votes",
+      "source_count": 17,
+      "test_status": "proposed _repro tests only; none created or executed during adjudication"
+    }
   },
   "pr_reviews_summary": [
     {
@@ -38,7 +49,15 @@
       "title": "perf: bound service maintenance memory and redundant work",
       "status": "merged",
       "verdict": "ACCEPTABLE_WITH_RESIDUAL_RISKS",
-      "open_high_on_head": ["EMB-STARVE"]
+      "historical_open_high_on_pr_head": [
+        "EMB-STARVE"
+      ],
+      "later_closed": [
+        {
+          "id": "EMB-STARVE",
+          "commit": "2a919e79"
+        }
+      ]
     },
     {
       "pr_number": 184,
@@ -66,17 +85,38 @@
       "title": "fix(audit): consolidated 2026-07-17 audit closeout + R1–R3 follow-ups",
       "status": "merged",
       "verdict": "ACCEPTABLE_WITH_RESIDUALS",
-      "closed": ["H1", "H2", "SEC-H1", "SEC-H2", "M1", "M12/R2", "primary M18/M19/M24"],
-      "left_for_197": ["M3-insight/R4", "M4-budget/R5", "M14/R10", "R11"]
+      "closed": [
+        "H1",
+        "H2",
+        "SEC-H1",
+        "SEC-H2",
+        "M1",
+        "M12/R2",
+        "primary M18/M19/M24"
+      ],
+      "left_for_197": [
+        "M3-insight/R4",
+        "M4-budget/R5",
+        "M14/R10",
+        "R11"
+      ]
     },
     {
       "pr_number": 197,
       "title": "fix(audit): R4 insight embed terminalization, R5 reclaim budget cursor, R10/R11",
       "status": "open",
-      "verdict": "PRE_SUBMIT_REVIEW_PENDING",
+      "verdict": "FRESH_CODEX_PASS",
       "prior_grok_verdict": "APPROVE_WITH_NITS",
-      "closes": ["R4", "R5", "R10", "R11"],
-      "nits": ["R4-dual-tx", "R5-recovery-residual"],
+      "closes": [
+        "R4",
+        "R5",
+        "R10",
+        "R11"
+      ],
+      "nits": [
+        "R4-dual-tx",
+        "R5-recovery-residual"
+      ],
       "pre_submit_fixes": [
         "Only explicit input-local provider rejection consumes the insight permanent-failure budget",
         "HTTP/transport, malformed response, dimension/config, and cancellation failures propagate and remain recoverable",
@@ -88,7 +128,7 @@
         "dimension_mismatch": "Three 2D-vs-configured-3D failures wrote no insight_embedding_failures row; healthy restart embedded and retrieved the same insight",
         "input_rejection": "Explicit param=input HTTP 400 reached retry_count=3 and failed_permanent; healthy restart did not resend full content"
       },
-      "submit_gate": "Fresh Codex PASS required before commit or push"
+      "submit_gate": "Satisfied before commit and push; PR remains open and unmerged"
     },
     {
       "pr_range": "188-195",
@@ -98,9 +138,17 @@
   ],
   "severity_counts": {
     "critical": 0,
-    "high": 8,
-    "medium": 7,
-    "low_selective": 14
+    "high": 10,
+    "medium": 25,
+    "low": 2,
+    "low_selective": 14,
+    "blind_closeout": {
+      "critical": 0,
+      "high": 2,
+      "medium": 19,
+      "low": 1
+    },
+    "unique_findings": 37
   },
   "findings": [
     {
@@ -114,7 +162,8 @@
       "effort": "L",
       "source": "architecture",
       "confirmed": true,
-      "real_votes": 3
+      "real_votes": 3,
+      "status": "open"
     },
     {
       "id": "READ-001",
@@ -209,7 +258,7 @@
       "source": "pr-183-F1",
       "confirmed": true,
       "real_votes": 1,
-      "verify_note": "Verified keep on current HEAD by PR review adversarial verify",
+      "verify_note": "Historical PR #183 residual, later closed by post-audit TDD in commit 2a919e79",
       "status": "fixed_in_post_audit_followup",
       "fix_evidence": [
         "Periodic scans with merge-only indexed=0 query the existing session and insight pending selectors before deciding whether to run embedding backfills",
@@ -249,7 +298,8 @@
       "effort": "M",
       "source": "swiftui-ux",
       "confirmed": true,
-      "real_votes": 3
+      "real_votes": 3,
+      "status": "open"
     },
     {
       "id": "SEC-001",
@@ -262,7 +312,8 @@
       "effort": "M",
       "source": "security",
       "confirmed": true,
-      "real_votes": 3
+      "real_votes": 3,
+      "status": "open"
     },
     {
       "id": "READ-003",
@@ -296,7 +347,21 @@
       "effort": "S",
       "source": "mcp-contract",
       "confirmed": true,
-      "real_votes": 3
+      "real_votes": 3,
+      "status": "open_tdd_pending",
+      "blind_closeout": {
+        "protocol_verdict": "协议判定明确为 CONFIRMED VIOLATION：MCP 2025-11-25 要求 CallToolResult.structuredContent 的根值是 JSON object；manage_project_alias action=list 当前返回 array root，因此不合规。该工具未声明 outputSchema 只说明不存在“声明 schema 与实际输出不一致”的附加问题，不能解除 object-root 要求。MCP-001 是既有开放 inventory 项，本轮不创建新 ID 或重复项。",
+        "scenario": "调用 manage_project_alias action=list 时，Swift handler 把别名数组直接作为 structuredContent 根值；严格遵循 MCP 2025-11-25 的客户端可拒绝该结果。工具未声明 outputSchema 不构成豁免，因为 structuredContent 本身仍要求 JSON object 根。",
+        "evidence": [
+          "MCP 2025-11-25 Tools 规范：structured content is returned as a JSON object in structuredContent — https://modelcontextprotocol.io/specification/2025-11-25/server/tools",
+          "MCP 2025-11-25 schema：structuredContent 为 string-keyed object/map，而非任意 JSON — https://modelcontextprotocol.io/specification/2025-11-25/schema"
+        ],
+        "repro": "提议但未执行 testManageProjectAliasListStructuredContentUsesObjectRoot_repro：structuredContent.objectValue 必须存在，且 aliases 字段为数组。",
+        "fix": "在 list 分支将结果包装为 {\"aliases\":[...]}，并更新协议回归测试和 golden；无需以 outputSchema 作为修复前提。",
+        "batch": "D1-mcp-result-contract",
+        "votes": "2 confirmed / 0 refuted；两张 confirmed 票均评为 medium。该 ID 已存在于开放 inventory，本轮只是再次确认协议结论，不新增第二个 MCP finding。",
+        "validation": "proposed repro not executed"
+      }
     },
     {
       "id": "MCP-002",
@@ -309,7 +374,8 @@
       "effort": "M",
       "source": "mcp-contract",
       "confirmed": true,
-      "real_votes": 3
+      "real_votes": 3,
+      "status": "open"
     },
     {
       "id": "UI-002",
@@ -322,7 +388,8 @@
       "effort": "M",
       "source": "swiftui-ux",
       "confirmed": true,
-      "real_votes": 3
+      "real_votes": 3,
+      "status": "open"
     },
     {
       "id": "R4-dual-tx",
@@ -334,7 +401,8 @@
       "fix": "Single transaction for successes + failures",
       "effort": "S",
       "source": "pr-197",
-      "confirmed": true
+      "confirmed": true,
+      "status": "open"
     },
     {
       "id": "F5-CI",
@@ -346,7 +414,8 @@
       "fix": "Align PR/push policy or pin/replace transitive deps",
       "effort": "S",
       "source": "pr-196",
-      "confirmed": true
+      "confirmed": true,
+      "status": "open"
     },
     {
       "id": "R5-recovery-residual",
@@ -358,7 +427,398 @@
       "effort": "S",
       "source": "pr-197",
       "confirmed": true,
-      "label": "pre-existing"
+      "label": "pre-existing",
+      "status": "open"
+    },
+    {
+      "id": "ADAPTER-CC-001",
+      "title": "Claude Code 按内容块重复累计同一次响应的 token usage",
+      "severity": "medium",
+      "scenario": "同一 assistant response 被拆成多条共享非空 message.id、且重复携带相同 response-level usage 的 JSONL 记录时，内容块应全部保留，但 usage 目前会按记录数重复累加，放大 session_costs、预算进度和提醒。结论仅覆盖“同一 response id 的重复 usage”输入，不主张对无 ID 记录去重。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift:243：逐 JSONL object 生成消息，没有响应级聚合。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift:652-680：每条 assistant 记录均可附加 usage，未按 message.id 去重。"
+      ],
+      "repro": "提议但未执行 testClaudeCodeRepeatedAssistantMessageIdCountsUsageOnce_repro：两条 assistant 记录共享 message.id 且各带 100/20 usage，汇总应为 100/20，而不是 200/40。",
+      "fix": "在 Claude Code 消息规范化阶段按非空 message.id 去重 usage；保留全部内容块，仅允许同一响应 ID 的一条规范化消息携带最终非零 usage；无 ID 时保持现状。",
+      "batch": "A4-adapter-ingestion-guardrails",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 medium，因此从候选 high 修正为 medium。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "SRC-QWEN-001",
+      "title": "Qwen 工具调用和工具结果被静默丢弃",
+      "severity": "high",
+      "scenario": "Qwen assistant parts 中的 functionCall 以及后续 tool_result/functionResponse 未被规范化为工具调用或工具消息，导致 transcript、搜索、工具统计和 tier 输入缺失真实执行过程；普通 user/assistant 文本仍可保留。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/QwenAdapter.swift:176-188：顶层仅接受 user/assistant，并构造 toolCalls=nil。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/QwenAdapter.swift:245-259：仅提取 parts[].text，未处理 functionCall/functionResponse。"
+      ],
+      "repro": "提议但未执行 testQwenPreservesFunctionCallsAndToolResults_repro：user、含 functionCall 的 assistant、含 functionResponse 的 tool_result 应流出 user/assistant/tool，toolMessageCount 应为 1。",
+      "fix": "显式支持 tool_result；从 assistant parts.functionCall 构造 NormalizedToolCall，从 functionResponse 构造 .tool 消息，并同步更新 toolMessageCount。",
+      "batch": "A3-qwen-product-integration",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 high。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "SRC-QWEN-002",
+      "title": "项目迁移遗漏 Qwen 分组目录和转录改写",
+      "severity": "high",
+      "scenario": "使用 Qwen 且执行项目迁移时，数据库项目信息会改写，但 ~/.qwen/projects/<encoded-cwd>/chats 不在迁移来源清单中，因此旧目录和转录 cwd 留存并造成历史分裂。普通未变化重扫会因相同快照走 no-op；回写旧 cwd 的后果限于转录后续追加、大小变化或内容变化而触发重索引时。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/QwenAdapter.swift:8-35：Qwen 使用 ~/.qwen/projects/<project>/chats/*.jsonl。",
+        "/Users/bing/-Code-/engram/macos/EngramCoreWrite/ProjectMove/Sources.swift:35-48：SourceId 清单没有 qwen。"
+      ],
+      "repro": "提议但未执行 testProjectMoveRenamesAndPatchesQwenHistory_repro：覆盖标点、非 ASCII 字符及编码后长度 201–255 的 cwd；迁移后旧编码目录应消失，新目录必须使用完整 Qwen 目录名且不带 Claude 截断/hash 后缀，chats 保留、转录只含新 cwd、perSource 包含 qwen。",
+      "fix": "在 SourceId 增加 qwen，在 SessionSources.roots() 增加 ~/.qwen/projects，并实现精确 Qwen encoder：按 JavaScript-compatible UTF-16 code-unit 语义将非 ASCII [A-Za-z0-9] 单元替换为 -，不得套用 Claude 超过 200 单元时的截断/hash 后缀；随后完成目录重命名和转录改写。",
+      "batch": "A3-qwen-product-integration",
+      "votes": "3 confirmed / 0 refuted；confirmed 严重度票为 2×high、1×medium，采用多数 high；通过限定“内容变化后重索引回写”的触发条件吸收 medium 票的范围收窄。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "ADAPTER-CODEX-001",
+      "title": "Codex 丢弃 custom_tool_call 及其输出",
+      "severity": "medium",
+      "scenario": "当前 rollout 中可出现的 custom_tool_call/custom_tool_call_output 未被计数或流出，工具密集型会话会缺失 transcript 和工具统计，并可能影响 tier；旧的 function_call/function_call_output 已有处理，不在本项范围。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift:563-583：工具计数只覆盖 function_call/function_call_output。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift:869-911：消息 switch 未处理 custom_tool_call/custom_tool_call_output。"
+      ],
+      "repro": "提议但未执行 testCodexCustomToolCallAndOutputAreStreamedAndCounted_repro：输入 user、custom_tool_call、custom_tool_call_output 时，应流出 user/tool/tool，toolMessageCount=2、messageCount=3。",
+      "fix": "在信息计数和消息 switch 中加入 custom_tool_call/custom_tool_call_output，并安全规范化调用参数与输出内容。",
+      "batch": "A1-codex-parser-and-indexing-integrity",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 medium。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "ADAPTER-CODEX-002",
+      "title": "Codex 连续重复 token_count 快照被当作新增用量累加",
+      "severity": "medium",
+      "scenario": "在没有新 response_item 间隔时，连续、字段完全相同且非零的 token_count telemetry 快照会被逐次 merge 到同一 pending 消息，使同一批 token 重复计费。本项不把数值不同的连续 last_token_usage 一概视为重复。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift:821-830：每个 token_count 都调用 mergeUsage。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift:915-941：只提取 last_token_usage，未利用 total_token_usage 或事件边界判重。"
+      ],
+      "repro": "提议但未执行 testCodexDuplicateTokenCountSnapshotIsNotDoubleCounted_repro：无中间 response_item 的两个完全相同 last/total token_count 应只计一次。",
+      "fix": "解析并跟踪 total_token_usage；累计值未变化时忽略重复事件。对缺少 total 的旧格式，仅抑制无中间响应且完全相同的连续快照。",
+      "batch": "A1-codex-parser-and-indexing-integrity",
+      "votes": "2 confirmed / 1 refuted；两张 confirmed 票均评为 medium，故以满足门槛的多数确认并采用 medium；另一个审阅者的裁决为 OVERTURNED/refuted，不计作支持该 finding 严重度的第三票。结论已收窄为“无新响应间隔的完全相同快照”，避免把合法的逐调用 last_token_usage 求和误判为重复。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "ADAPTER-GEMINI-001",
+      "title": "Gemini sidecar-only 变更不会使已索引转录失效",
+      "severity": "medium",
+      "scenario": "转录稳定后才创建、修改或删除 .engram.json sidecar 时，recent/full 增量判定只依据转录 locator，可能永久保留旧的 parent_session_id、agent_role 和 tier；若转录本身随后变化，则新建或修改的 sidecar 可在重新解析时生效。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/GeminiCliAdapter.swift:97-103：发现阶段排除 .engram.json。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/GeminiCliAdapter.swift:131-162：解析时又将 sidecar 用作 originator、agentRole、parentSessionId 输入。"
+      ],
+      "repro": "提议但未执行 testGeminiSidecarOnlyChangeTriggersReindex_repro：不改 transcript，仅创建有效 sidecar；再次索引后应写入 parent、link_source=path、agent_role=dispatched、tier=skip；还应覆盖修改和删除。",
+      "fix": "把预期 sidecar 的创建、内容变化和删除纳入 recent 过滤及 FileIndexDecision 使用的复合变更签名。",
+      "batch": "B1-composite-input-discovery-and-invalidation",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 medium。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "ADAPTER-OPENCODE-001",
+      "title": "已归档 OpenCode 会话仍被判定可访问而无法老化删除",
+      "severity": "medium",
+      "scenario": "已索引 OpenCode 会话随后设置 time_archived 时，发现和解析会排除它，但 isAccessible 仍只按 id 返回 true，使旧 Engram 行无法进入 suspect/confirmed orphan 生命周期并继续可见、可搜索；从未索引的归档会话不受影响。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/OpenCodeAdapter.swift:127-154：发现和解析均排除 time_archived 非空会话。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/OpenCodeAdapter.swift:256-266：可访问性查询未加 time_archived IS NULL。"
+      ],
+      "repro": "提议但未执行 testOpenCodeArchivedSessionIsInaccessible_repro：更新 time_archived 后 isAccessible 应从 true 变为 false。",
+      "fix": "将可访问性 SQL 改为 SELECT 1 FROM session WHERE id=? AND time_archived IS NULL LIMIT 1。",
+      "batch": "B2-opencode-archive-and-byte-accounting",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 medium。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "KIMI-001",
+      "title": "Kimi agentic turn 丢失工具消息并发生 turn 时间戳/usage 漂移",
+      "severity": "medium",
+      "scenario": "同一逻辑 turn 中出现 assistant(tool_calls)、tool、assistant(final) 时，tool 被跳过，第二个 assistant 又推进 turnIndex，导致工具过程缺失，后续时间戳和 usage 绑定到错误 turn 或变为 nil。旧 H08 中 StatusUpdate 覆盖而非累加的子问题已修复，本项只保留仍可达的 agentic-turn residual。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/docs/reviews/2026-06-10-multi-expert-audit.md:211-228：既有 H08 记录多 assistant 导致的 turn-index drift。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/KimiAdapter.swift:155-180：跳过 tool，并在第二个 assistant 时推进 turnIndex。"
+      ],
+      "repro": "提议但未执行 testKimiPreservesAgenticTurnToolsAndTimestamps_repro：一个 turn 含 tool_calls/tool/final assistant，下一 turn 再有 user/assistant；应保留工具，且同 turn 的两个 assistant 不消耗下一 turn 元数据。",
+      "fix": "按 user/TurnBegin 边界组织逻辑 turn；保留 role=tool、生成 NormalizedToolCall，并仅把 turn 累计 usage 附到该 turn 最后一个 assistant。",
+      "batch": "A2-kimi-composite-session-correctness",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 medium。当前 inventory 使用仓库级稳定 ID KIMI-001；2026-06-10 文档中的 H08 仅作为 document-scoped legacy reference。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed",
+      "legacy_refs": [
+        {
+          "document": "docs/reviews/2026-06-10-multi-expert-audit.md",
+          "id": "H08"
+        }
+      ]
+    },
+    {
+      "id": "KIMI-002",
+      "title": "Kimi 仅用 last_session_id 解析 cwd，历史会话失去项目归属",
+      "severity": "medium",
+      "scenario": "同一工作目录的历史 Kimi 会话不再等于 kimi.json 的 last_session_id 时，适配器返回空 cwd，导致项目分组和筛选失效。候选中“同 cwd 父会话判断”后果不成立，因为当前建议父会话评分不包含 Kimi，故已从结论删除。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/KimiAdapter.swift:29-43：locator 已包含 workspace 目录身份并枚举历史 session。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/KimiAdapter.swift:196-209：resolveCwd 仅在 sessionId 等于 work_dirs[*].last_session_id 时返回 path。"
+      ],
+      "repro": "提议但未执行 testKimiResolvesHistoricalSessionCwdFromWorkspaceHash_repro：MD5(/repo)/old-session 应解析 cwd=/repo，即使 last_session_id 指向 new-session；同时覆盖 kaos_ 前缀。",
+      "fix": "从 locator 提取 workspace hash，按 Kimi 规则匹配 work_dirs path 的 MD5 或 kaos_MD5，并缓存映射。",
+      "batch": "A2-kimi-composite-session-correctness",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 medium；移除未被证据支持的父会话评分后果。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "KIMI-003",
+      "title": "Kimi 只用主 context.jsonl 做变更指纹，wire/shard-only 更新会陈旧",
+      "severity": "medium",
+      "scenario": "仅追加 wire.jsonl 或 context shard 时，recent mtime 和 file_index_state 只看主 context.jsonl，后续扫描可能跳过，使 endTime、时间戳、usage 以及 shard 贡献的 sizeBytes 不刷新。wire.jsonl 当前本就不计入 totalSize，因此不把 wire-only sizeBytes 变化单列为后果。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/KimiAdapter.swift:37-40：只返回主 context.jsonl locator。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/KimiAdapter.swift:48-64、125-145：实际解析依赖 context shards 和 wire.jsonl。"
+      ],
+      "repro": "提议但未执行 testKimiWireOnlyChangeInvalidatesIndexedSession_repro：保持主 context 字节和 mtime 不变，仅追加 wire StatusUpdate/TurnEnd 或 context shard；再次周期索引应更新相应 end_time、usage、时间戳及 shard 大小。",
+      "fix": "让 Kimi 提供包含主 context、所有 shard 和 wire 的复合 mtime/stat；在复合签名接入前，至少禁止 Kimi 走仅主 locator 的 unchanged 快路，并明确 wire 是否应计入 sizeBytes。",
+      "batch": "A2-kimi-composite-session-correctness",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 medium；按反证收窄 wire-only 的 sizeBytes 表述。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "SRC-COMMANDCODE-001",
+      "title": "CommandCode 无时间戳输入可带空 startTime 成功入库",
+      "severity": "medium",
+      "scenario": "适配器可接受 sessionId、user/assistant 内容均有效但顶层及 metadata timestamp 均缺失的 JSONL，并以空 startTime 成功写入，造成排序和时间聚合异常。现有 v2 实测记录通常有 timestamp，因此这是被解析器接受的边界/遗留输入，不宣称常见于当前 v2 数据。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CommandCodeAdapter.swift:68-70：start/end 只来自消息时间戳。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CommandCodeAdapter.swift:93-120：只校验 sessionId，允许空 startTime 成功返回。"
+      ],
+      "repro": "提议但未执行 testCommandCodeMissingTimestampFallsBackToFileMtime_repro：固定文件 modificationDate，解析后 startTime 应等于该 mtime，endTime 为 nil。",
+      "fix": "构造 NormalizedSessionInfo 前，仅在 startTime 为空时使用文件 modificationDate 生成统一 ISO-8601 字符串。",
+      "batch": "A4-adapter-ingestion-guardrails",
+      "votes": "2 confirmed / 1 refuted；两张 confirmed 票均评为 medium，故以满足门槛的多数确认并采用 medium；另一个审阅者的裁决为 OVERTURNED/refuted，不计作支持该 finding 严重度的第三票。按反对票将范围限定为解析器实际接受的边界/遗留输入，而非声称当前 v2 普遍缺时间戳。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "COPILOT-AUX-001",
+      "title": "Copilot 辅助文件变更不会触发近期重新索引",
+      "severity": "medium",
+      "scenario": "仅更新 workspace.yaml 或 checkpoint 引用正文时，recent/full unchanged 判定只检查 events.jsonl 或 index.md locator，导致身份、cwd、时间或正文保持陈旧；checkpoint sizeBytes 也遗漏实际读取的正文文件。主 locator 同时变化时不受此缺陷影响。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CopilotAdapter.swift:52-57、184-202：从 workspace.yaml 读取身份、cwd 和时间。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CopilotAdapter.swift:343-376：从 index.md 引用的独立 Markdown 文件读取正文。"
+      ],
+      "repro": "提议但未执行 testCopilotRecentScanTracksAuxiliaryFiles_repro：locator 保持旧 mtime，仅 workspace.yaml 或引用正文新于 cutoff 时仍应列出并重索引会话，并把被消费正文计入 sizeBytes。",
+      "fix": "让 Copilot 实现复合 modification/stat 判定，综合 events/index、workspace.yaml 和经安全解析得到的 checkpoint 正文。",
+      "batch": "B1-composite-input-discovery-and-invalidation",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 medium。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "COPILOT-DISCOVERY-001",
+      "title": "空 events 文件会遮蔽有效 checkpoint 会话",
+      "severity": "medium",
+      "scenario": "会话目录同时存在仅含 session.start、没有可索引对话的 events.jsonl 和有效 checkpoint index/正文时，发现逻辑只因 events 文件存在便优先选择它，解析随后以零消息失败，且不会回退 checkpoint。该文件系统状态可确定触发，但真实发生率尚未量化。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CopilotAdapter.swift:23-38：只要 events.jsonl 存在就 append 并 continue。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CopilotAdapter.swift:58-93：events 必须含 user/assistant，否则解析失败。"
+      ],
+      "repro": "提议但未执行 testCopilotFallsBackToCheckpointWhenEventsHaveNoConversation_repro：events 只有 session.start、checkpoint 有有效条目时，应发现并解析 index.md。",
+      "fix": "发现阶段仅在 events 含至少一个可索引 user.message/assistant.message 时优先选择它；否则回退有效 checkpoint index。",
+      "batch": "B1-composite-input-discovery-and-invalidation",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 medium。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "VSCODE-INCR-001",
+      "title": "VS Code mutation log 超过对象上限后被静默截断并记为成功",
+      "severity": "medium",
+      "scenario": "有效 mutation 对象超过 maxMessages 后，后续 mutation 被丢弃，但 VsCodeAdapter 未请求 failure 报告，索引器会把不完整的状态重放前缀固化为成功快照。普通逐行消息的 truncate-and-succeed 策略是有意行为；本项仅针对依赖完整操作序列的 VS Code mutation log。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/VsCodeAdapter.swift:161-163：调用 readObjects 时未启用 reportFailures。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift:109-127：超过 maxMessages 后丢弃对象，只有 reportFailures=true 才返回 messageLimitExceeded。"
+      ],
+      "repro": "提议但未执行 testVsCodeMutationLogOverObjectLimitIsRejected_repro：maxMessages=2，snapshot 后两条 push 时，parseSessionInfo 应返回 messageLimitExceeded，而不是成功重放前缀。",
+      "fix": "VsCodeAdapter.readSession 调用 readObjects(..., reportFailures: true)，复用现有 failure 传播路径。",
+      "batch": "A4-adapter-ingestion-guardrails",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 medium；明确不改变普通 JSONL 展示读取的既有截断策略。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "CURSOR-CONTENT-001",
+      "title": "Cursor 空 text 遮蔽非空 rawText，整条消息被丢弃",
+      "severity": "medium",
+      "scenario": "bubble 同时含 text=\"\" 或纯空白和非空 rawText 时，nil-coalescing 会选中空 text，随后 guard 丢弃消息，使计数、transcript 和搜索缺失。该输入被解析器接受，但本机样本中实际频率未得到证实。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift:244-248：使用 text ?? rawText 后再过滤空白。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift:61-64、148-163：计数和消息流均复用 visibleBubble。"
+      ],
+      "repro": "提议但未执行 testCursorFallsBackToRawTextWhenTextIsEmpty_repro：text 为空、rawText 为 restored prompt 时，应计数 1 并流出 rawText。",
+      "fix": "按 text、rawText 顺序选择首个 trim 后非空值，而不是 nil-coalescing。",
+      "batch": "B3-cursor-recoverable-content-and-ownership",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 medium。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "CURSOR-CWD-001",
+      "title": "Cursor 可恢复 workspace 归属缺少安全的确定性映射",
+      "severity": "medium",
+      "scenario": "composer context 可能同时包含真实 workspace /repo 和无关附件 /tmp/example.txt。当前适配器固定写 cwd=\"\"、project=nil，会遗漏确定性 workspace 归属；但直接采用 fileSelections[0] 的父目录又会把附件目录误写成权威 project。现有证据尚未给出可安全实现的 composer-to-workspace 映射。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift:45-61：已读取完整 composerData。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift:86-87：无条件写 cwd=\"\"、project=nil。"
+      ],
+      "repro": "设计/证据待补 testCursorDoesNotInferProjectFromUnrelatedFileSelection_repro：fixture 同时包含 workspace /repo 与无关附件 /tmp/example.txt，必须证明只有确定性 workspace ownership metadata 可写 cwd=/repo，且绝不能把 /tmp 写成 project。",
+      "fix": "先确认并记录 Cursor 的确定性 workspace ownership 字段及格式；仅从该元数据填充 cwd，无法证明归属时保持 cwd/project 为空。不得从普通 fileSelections 的父目录推导权威 project。",
+      "batch": "B3-cursor-recoverable-content-and-ownership",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 medium。finding 保留为归属缺口，但原 best-effort file-selection 修复会造成确定性误归类，因此在安全 ownership contract 有证据前不进入实现。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "design_evidence_pending",
+      "validation": "safe ownership contract and proposed repro not executed"
+    },
+    {
+      "id": "SRC-001",
+      "title": "Archive V2 backlog drainer 在服务生命周期内缓存 disabled sources",
+      "severity": "medium",
+      "scenario": "服务启动后通过 setSourceEnabled 切换来源时，普通初始/周期索引会重读设置，但已创建的 Archive V2 backlog drainer 继续使用启动快照，可能在禁用后继续捕获该来源，或启用后仍不处理。影响仅限独立的 Archive V2 backlog 路径。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/EngramService/Core/EngramServiceRunner.swift:195-214：构造 drainer 前只读取一次 disabledSources，并由长期闭包捕获。",
+        "/Users/bing/-Code-/engram/macos/EngramService/Core/EngramServiceRunner.swift:756-769、1000-1008：普通周期和初始索引每轮重读设置。"
+      ],
+      "repro": "提议但未执行 testArchiveBacklogDrainerRereadsDisabledSourcesAfterToggle_repro：第一次 pass 启用 Codex，修改设置禁用后，第二次 pass 不应再收到 Codex adapter；反向启用也应生效。",
+      "fix": "将 readDisabledSources(environment:) 移入 drainer 的 adapterProvider 闭包，在每个 backlog pass 重新过滤 defaultAdapters。",
+      "batch": "C1a-archive-v2-source-toggle",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 medium。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "IDX-PARTIAL-001",
+      "title": "Codex 超限全量索引扫描把截断前缀当作完整成功",
+      "severity": "medium",
+      "scenario": "Codex 文件超过 maxMessages 且进入全量扫描分支时，读取层返回 truncatedAt，但 scanForIndexing 忽略完整性信号并生成成功快照。影响主要发生在首次索引、file_index_state 丢失或文件重写导致无法走 tail checkpoint 时；正常小幅追加通常走 tail 路径并能终止为 messageLimitExceeded。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift:810-859：达到上限时设置 truncatedAt 并返回截断结果。",
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift:659-681：scanForIndexing 未检查 truncatedAt。"
+      ],
+      "repro": "提议但未执行 testCodexTruncatedIndexScanDoesNotReplaceCompleteSnapshot_repro：预置完整旧快照，再强制全量扫描超限文件；旧快照不应被前缀覆盖，文件状态应为 terminal/messageLimitExceeded。",
+      "fix": "仅在 scanForIndexing 中检查 truncatedAt，非 nil 时返回 messageLimitExceeded；展示用 streamMessagesWithMetadata 继续保留截断成功语义。",
+      "batch": "A1-codex-parser-and-indexing-integrity",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 medium；按证据将覆盖范围限定为全量扫描分支。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "WRITER-LOCATOR-001",
+      "title": "同哈希文件移动后 writer 仍持久化旧 locator",
+      "severity": "medium",
+      "scenario": "内容和 snapshotHash 不变、仅 sourceLocator 改变时，writer 不会走严格 no-op，却在同版本同哈希 merge 分支遗漏新 locator，数据库继续指向旧路径，而新路径 file_index_state 已成功。已完成的 FTS 文本不会立即丢失；影响集中在后续 locator 重读、待处理/重建 FTS 或相关维护路径。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/docs/reviews/2026-07-17-engram-full-audit.md:283：既有 canonical L3。",
+        "/Users/bing/-Code-/engram/macos/EngramCoreWrite/Indexing/SessionSnapshotWriter.swift:91-100、123-129：locator 不同会离开 no-op，但同哈希 merge 未复制 incoming locator。"
+      ],
+      "repro": "提议但未执行 testContentIdenticalMoveRefreshesLocator_repro：两次写入只把 locator 从 old 改为 new，sessions.source_locator 和 file_path 应更新为 new。",
+      "fix": "在同 syncVersion/同 snapshotHash 分支设置 merged.sourceLocator=incoming.sourceLocator，使现有 upsert 更新 source_locator/file_path。",
+      "batch": "C1b-writer-locator-relocation",
+      "votes": "3 confirmed / 0 refuted；confirmed 严重度票为 2×medium、1×low，采用多数 medium；通过限定受影响的 locator-dependent 路径吸收 low 票的影响收窄。当前 inventory 使用仓库级稳定 ID WRITER-LOCATOR-001；2026-07-17 文档中的 L3 仅作为 document-scoped legacy reference。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed",
+      "legacy_refs": [
+        {
+          "document": "docs/reviews/2026-07-17-engram-full-audit.md",
+          "id": "L3"
+        }
+      ]
+    },
+    {
+      "id": "PARENT-BACKFILL-STARVE-001",
+      "title": "无效遗留子代理行可阻塞后续有效父链接回填",
+      "severity": "medium",
+      "scenario": "在已有数据库中，若前 500 个未链接 subagent 遗留候选均因路径不可解析或父会话不存在而失败，单批 LIMIT 500 会在每次启动重复处理同一批，位于其后的有效遗留子会话长期无法链接。当前 Claude Code/Qoder 新鲜正常索引会直接写 parentSessionId，因此本项不覆盖新会话常规路径，主要影响升级前、未变化或异常的遗留未链接行。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/EngramCoreWrite/Indexing/StartupBackfills.swift:1248-1257：候选查询使用无游标 LIMIT 500。",
+        "/Users/bing/-Code-/engram/macos/EngramCoreWrite/Indexing/StartupBackfills.swift:1262-1278：解析或校验失败仅 continue，不改变候选状态或推进稳定游标。"
+      ],
+      "repro": "提议但未执行 testBackfillParentLinksDoesNotStarveValidChildBehindInvalidBatch_repro：预置 500 个无效遗留候选及其后的有效 real-child；一次 backfill 应继续分页并链接 real-parent。",
+      "fix": "在单次 backfill 调用内按稳定键（如 rowid > cursor）ORDER BY rowid LIMIT 500 分页直到无行；失败行可以跳过，但游标必须推进。",
+      "batch": "C1c-startup-parent-backfill-pagination",
+      "votes": "2 confirmed / 1 refuted；两张 confirmed 票均评为 medium，故以满足门槛的多数确认并采用 medium；另一个审阅者的裁决为 OVERTURNED/refuted，不计作支持该 finding 严重度的第三票。此前被驳回的是“LIMIT 500 会阻塞新鲜正常子代理链接”的宽泛表述，因为新索引已直接持久化 parent；当前确认的是 SQL 回填中仍可达的遗留未链接行饥饿 residual。它不是对已驳回项的循环 duplicate，也不恢复已被否定的新会话范围。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
+    },
+    {
+      "id": "ADAPTER-OPENCODE-002",
+      "title": "OpenCode sizeBytes 统计 Unicode 字符而非 UTF-8 字节",
+      "severity": "low",
+      "scenario": "OpenCode TEXT payload 含 CJK 等多字节字符时，SQLite length(data) 返回字符数而非 UTF-8 字节数，使 UI 大小和 remote-offload 候选排序系统性低估。该项不同于已修复的“把整个共享 SQLite 文件大小分配给每个 session”。",
+      "evidence": [
+        "/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/OpenCodeAdapter.swift:312-331：对 TEXT data 使用 length(data)。",
+        "/Users/bing/-Code-/engram/tests/fixtures/adapter-parity/opencode/success.expected.json：多字节 fixture 的 golden 保留当前字符数口径。"
+      ],
+      "repro": "提议但未执行 testOpenCodeSessionPayloadSizeUsesUTF8Bytes_repro：CJK message/part 的 sizeBytes 应等于各 JSON Data(...utf8).count 总和。",
+      "fix": "两个大小查询改用 length(CAST(data AS BLOB))，并更新 parity golden。",
+      "batch": "B2-opencode-archive-and-byte-accounting",
+      "votes": "3 confirmed / 0 refuted；三张 confirmed 票均评为 low。",
+      "source": "2026-07-19-blind-audit-closeout",
+      "confirmed": true,
+      "status": "open_tdd_pending",
+      "validation": "proposed repro not executed"
     }
   ],
   "low_selective_ids": [
@@ -375,16 +835,13 @@
     "SEC-009",
     "UI-009",
     "UI-010",
-    "TEST-009",
-    "ARCH-006",
-    "ARCH-007",
-    "ARCH-008",
-    "ARCH-009"
+    "TEST-009"
   ],
   "refuted_ids": [
     "SEC-005",
     "SEC-008",
-    "READ-005"
+    "READ-005",
+    "AG-BYTES-001"
   ],
   "accepted_design_residuals": [
     "SEC-M4",
@@ -424,42 +881,215 @@
     "READ-002-post-audit-followup",
     "READ-003-post-audit-followup"
   ],
-  "still_open_followups": ["R1", "R6", "R7", "R8", "R9"],
+  "still_open_followups": [
+    "R1",
+    "R6",
+    "R7",
+    "R8",
+    "R9"
+  ],
   "roadmap": {
     "now": [
-      "Obtain fresh Codex PASS for PR 197 pre-submit taxonomy follow-up; do not commit or push before PASS",
-      "R4 dual-tx single write",
-      "EMB-001 semantic_chunks skip purge and searchable-tier availability (post-audit follow-up fixed)",
-      "CONC-001 long-running startup names aligned (post-audit follow-up fixed)",
-      "EMB-STARVE idle embed drain (post-audit follow-up fixed)",
-      "READ-002 MCP since COALESCE across keyword, LIKE, and semantic candidates (post-audit follow-up fixed)",
-      "READ-001 MCP multi-term session-scoped CTE (post-audit follow-up fixed)",
-      "READ-003 MCP exact project-or-alias filtering across list and search modes (post-audit follow-up fixed; ARCH-001 shared builder remains open)",
-      "MCP-001 object-root list aliases",
-      "F5-CI npm audit policy align"
+      "A1 Codex parser and indexing integrity: ADAPTER-CODEX-001, ADAPTER-CODEX-002, IDX-PARTIAL-001",
+      "A2 Kimi composite session correctness: KIMI-001, KIMI-002, KIMI-003",
+      "A3 Qwen product integration: SRC-QWEN-001, SRC-QWEN-002",
+      "A4 Adapter ingestion guardrails: ADAPTER-CC-001, SRC-COMMANDCODE-001, VSCODE-INCR-001",
+      "B1 Composite-input discovery and invalidation: ADAPTER-GEMINI-001, COPILOT-AUX-001, COPILOT-DISCOVERY-001",
+      "B2 OpenCode archive and byte accounting: ADAPTER-OPENCODE-001, ADAPTER-OPENCODE-002",
+      "B3 Cursor: CURSOR-CONTENT-001 is TDD-ready; CURSOR-CWD-001 is design/evidence pending and not implementation-ready",
+      "C1a Archive V2 source-toggle convergence: SRC-001",
+      "C1b Writer locator relocation: WRITER-LOCATOR-001",
+      "C1c Startup parent-backfill pagination: PARENT-BACKFILL-STARVE-001",
+      "D1 MCP result contract: MCP-001",
+      "Each implementation-ready finding requires _repro RED, minimum fix, focused/full GREEN, and fresh Codex PASS before commit/push/stacked PR"
     ],
     "next": [
-      "Shared CoreRead query module + parity suite (ARCH-001)",
+      "Shared CoreRead query module + parity suite (ARCH-001/R1)",
       "MCP-002 context/analytics visibility",
       "SEC-001 offload durability proof",
       "UI-002/R9 settings flush off-main",
       "UI-001 wire or remove Advanced Session Filter",
-      "R7 offload HTTP depth",
-      "Secondary skip aggregates F4 residual"
+      "R4-dual-tx single transaction",
+      "F5-CI npm audit policy alignment",
+      "R7 offload HTTP depth"
     ],
     "later": [
       "R6 project-move writer gate availability",
       "R8 Codex content tail implement or demote",
       "Notarization automation / public release assets",
-      "Insight batch embed; split embedding_meta",
-      "MCP allowlists / include_raw confirm UX",
-      "Remote server GC multi-tenant rate limits",
-      "Blind-spot deep dives: backup, capture stack, adapters, MCP stdio"
+      "Deeper runtime evidence for backup/restore, capture stack, export, MCP stdio/framing, undo/batch cancellation, and observability retention"
     ]
   },
   "deliverable_reports": [
     "docs/reviews/2026-07-18-two-day-pr-review.md",
     "docs/reviews/2026-07-18-multi-agent-full-code-audit.md",
     "docs/reviews/2026-07-18-multi-agent-full-code-audit-findings.json"
-  ]
+  ],
+  "baseline_generated_at": "2026-07-18",
+  "duplicate_aliases": {
+    "MCP-001-duplicate-submission": {
+      "duplicate_of": "MCP-001",
+      "reason": "两份正向提交指向同一 manage_project_alias list 分支、同一 array-root 输出及同一 {aliases:[...]} 修复；合并到既有开放 inventory 项 MCP-001，不新增计数。"
+    }
+  },
+  "open_blind_findings": [
+    "ADAPTER-CC-001",
+    "SRC-QWEN-001",
+    "SRC-QWEN-002",
+    "ADAPTER-CODEX-001",
+    "ADAPTER-CODEX-002",
+    "ADAPTER-GEMINI-001",
+    "ADAPTER-OPENCODE-001",
+    "KIMI-001",
+    "KIMI-002",
+    "KIMI-003",
+    "SRC-COMMANDCODE-001",
+    "COPILOT-AUX-001",
+    "COPILOT-DISCOVERY-001",
+    "VSCODE-INCR-001",
+    "CURSOR-CONTENT-001",
+    "CURSOR-CWD-001",
+    "SRC-001",
+    "IDX-PARTIAL-001",
+    "WRITER-LOCATOR-001",
+    "PARENT-BACKFILL-STARVE-001",
+    "MCP-001",
+    "ADAPTER-OPENCODE-002"
+  ],
+  "open_inventory_ids": [
+    "ARCH-001",
+    "UI-001",
+    "SEC-001",
+    "MCP-001",
+    "MCP-002",
+    "UI-002",
+    "R4-dual-tx",
+    "F5-CI",
+    "R5-recovery-residual",
+    "ADAPTER-CC-001",
+    "SRC-QWEN-001",
+    "SRC-QWEN-002",
+    "ADAPTER-CODEX-001",
+    "ADAPTER-CODEX-002",
+    "ADAPTER-GEMINI-001",
+    "ADAPTER-OPENCODE-001",
+    "KIMI-001",
+    "KIMI-002",
+    "KIMI-003",
+    "SRC-COMMANDCODE-001",
+    "COPILOT-AUX-001",
+    "COPILOT-DISCOVERY-001",
+    "VSCODE-INCR-001",
+    "CURSOR-CONTENT-001",
+    "CURSOR-CWD-001",
+    "SRC-001",
+    "IDX-PARTIAL-001",
+    "WRITER-LOCATOR-001",
+    "PARENT-BACKFILL-STARVE-001",
+    "ADAPTER-OPENCODE-002"
+  ],
+  "blind_audit_closeout": {
+    "date": "2026-07-19",
+    "discovery_scopes": {
+      "completed": 15,
+      "expected": 15
+    },
+    "swift_sources_named": 17,
+    "canonical_candidates": 23,
+    "confirmed": {
+      "total": 22,
+      "high": 2,
+      "medium": 19,
+      "low": 1
+    },
+    "refuted": [
+      {
+        "id": "AG-BYTES-001",
+        "reason": "1 confirmed / 2 refuted，计票无误，按用户规则必须驳回。多数证据表明 Antigravity Branch-A 缓存的 sizeBytes 既定语义是原始完整 .pb 会话的历史逻辑大小，而不是当前派生 JSONL locator 的物理大小；pbSizeBytes 即使在 PB 后续删除后仍保留该定义。/Users/bing/-Code-/engram/macos/Shared/EngramCore/Adapters/Sources/AntigravityAdapter.swift:146-158 明确优先该元数据，且 /Users/bing/-Code-/engram/docs/session-formats/antigravity.md:447-449 记录了此设计。故不能把“PB 不再存在”本身认定为字节统计缺陷。"
+      }
+    ],
+    "duplicates": [
+      {
+        "id": "MCP-001-duplicate-submission",
+        "duplicateOf": "MCP-001",
+        "reason": "两份正向提交指向同一 manage_project_alias list 分支、同一 array-root 输出及同一 {aliases:[...]} 修复；合并到既有开放 inventory 项 MCP-001，不新增计数。"
+      }
+    ],
+    "mcp001_verdict": "协议判定明确为 CONFIRMED VIOLATION：MCP 2025-11-25 要求 CallToolResult.structuredContent 的根值是 JSON object；manage_project_alias action=list 当前返回 array root，因此不合规。该工具未声明 outputSchema 只说明不存在“声明 schema 与实际输出不一致”的附加问题，不能解除 object-root 要求。MCP-001 是既有开放 inventory 项，本轮不创建新 ID 或重复项。",
+    "source_coverage": [
+      "claude-code：discovery 已命名；保留 ADAPTER-CC-001。",
+      "codex：discovery 已命名；保留 ADAPTER-CODEX-001、ADAPTER-CODEX-002、IDX-PARTIAL-001。",
+      "gemini-cli：discovery 已命名；保留 ADAPTER-GEMINI-001。",
+      "opencode：discovery 已命名；保留 ADAPTER-OPENCODE-001、ADAPTER-OPENCODE-002。",
+      "qwen：discovery 已命名；保留 SRC-QWEN-001、SRC-QWEN-002。",
+      "qoder：discovery 已命名；本轮没有达到保留标准的 finding，未凭空新增。",
+      "kimi：discovery 已命名；保留 KIMI-001、KIMI-002、KIMI-003。",
+      "minimax：discovery 已命名；本轮没有达到保留标准的 finding，未凭空新增。",
+      "commandcode：discovery 已命名；保留 SRC-COMMANDCODE-001。",
+      "iflow：discovery 已命名；本轮没有达到保留标准的 finding，未凭空新增。",
+      "copilot：discovery 已命名；保留 COPILOT-AUX-001、COPILOT-DISCOVERY-001。",
+      "cline：discovery 已命名；本轮没有达到保留标准的 finding，未凭空新增。",
+      "vscode：discovery 已命名；保留 VSCODE-INCR-001。",
+      "cursor：discovery 已命名；保留 CURSOR-CONTENT-001、CURSOR-CWD-001。",
+      "antigravity：discovery 已命名；AG-BYTES-001 以 1-2 多数驳回，因此无保留 finding。",
+      "windsurf：discovery 已命名；本轮没有达到保留标准的 finding，未凭空新增。",
+      "lobsterai：discovery 已命名；本轮没有达到保留标准的 finding，未凭空新增。",
+      "非 adapter 横切面也已覆盖：SwiftIndexer/SessionSnapshotWriter、Archive V2 source toggle、Qwen project move、parent-link backfill、MCP structuredContent。"
+    ],
+    "remaining_limitations": [
+      "本次严格只读取 /tmp/engram-blind-reconcile-compact.json，未重新检查源码、磁盘样本或规范网页；最终结论是对该紧凑证据和投票记录的盲审裁决。",
+      "所有 _repro 均只是建议的 TDD 起点，本次没有创建或执行任何测试，也没有声称其通过或失败。",
+      "若干已确认项的真实发生频率仍未量化：Cursor 空 text/非空 rawText、Copilot 空 events 遮蔽 checkpoint、CommandCode 无时间戳边界输入，以及父链接遗留饥饿行的实际数据库规模。",
+      "无保留 finding 的 adapter 只表示本轮 discovery 已命名且输入没有达到确认门槛，不表示这些来源已被证明无缺陷。",
+      "21 个 confirmed findings 已完成到可进入 TDD 的证据收口；CURSOR-CWD-001 仍需确定性 workspace ownership contract，不在 implementation-ready 范围。该范围也不代表整个仓库审计关闭；prior inventory 仍有既有开放项、accepted residuals 和 R1/R6/R7/R8/R9 follow-up。"
+    ],
+    "implementation_batches": [
+      "Stack A / PR A1 — Codex parser and indexing integrity：合并 ADAPTER-CODEX-001、ADAPTER-CODEX-002、IDX-PARTIAL-001；共享 Codex rollout fixtures、usage 边界和 full-vs-tail indexing tests。",
+      "Stack A / PR A2 — Kimi composite session correctness：合并 KIMI-001、KIMI-002、KIMI-003；共享 Kimi workspace/context shard/wire fixtures，覆盖 turn 组织、cwd 恢复和复合失效。",
+      "Stack A / PR A3 — Qwen product integration：合并 SRC-QWEN-001、SRC-QWEN-002；共享 Qwen transcript fixtures，并分别覆盖 adapter 工具结构与 ProjectMove 目录/正文迁移。",
+      "Stack A / PR A4 — Adapter ingestion guardrails：合并 ADAPTER-CC-001、SRC-COMMANDCODE-001、VSCODE-INCR-001；由 EngramCore adapter 测试所有权统一覆盖响应 usage 身份、时间回退和有状态 mutation 上限，不改普通 JSONL 截断语义。",
+      "Stack B / PR B1 — Composite-input discovery and invalidation：合并 ADAPTER-GEMINI-001、COPILOT-AUX-001、COPILOT-DISCOVERY-001；共享 locator/sidecar/aux-file 变更签名与重新发现测试。",
+      "Stack B / PR B2 — OpenCode archive and byte accounting：合并 ADAPTER-OPENCODE-001、ADAPTER-OPENCODE-002；共享临时 OpenCode SQLite fixture，覆盖归档可访问性与 UTF-8 BLOB 字节口径。",
+      "Stack B / PR B3 — Cursor recoverable content and ownership：CURSOR-CONTENT-001 可按 TDD 实施；CURSOR-CWD-001 在确定性 workspace ownership contract 有证据前保持 design/evidence pending，禁止从普通 fileSelections 父目录推导权威 project。",
+      "Stack C / PR C1a — Archive V2 source-toggle convergence：仅处理 SRC-001；由 EngramService 所有权覆盖每个 backlog pass 重读 disabled sources 及双向 toggle 回归。该 PR 包含实现与聚焦测试，不是 one-line PR。",
+      "Stack C / PR C1b — Writer locator relocation：仅处理 WRITER-LOCATOR-001；由 SessionSnapshotWriter 所有权覆盖同哈希 relocation merge、sessions.source_locator/file_path 更新及 locator-dependent 回归。",
+      "Stack C / PR C1c — Startup parent-backfill pagination：仅处理 PARENT-BACKFILL-STARVE-001；由 StartupBackfills 所有权覆盖稳定游标分页、失败行推进和第 501 个有效遗留候选。该批次不扩大到新鲜正常子代理路径。",
+      "Stack D / PR D1 — MCP result contract：仅处理既有 MCP-001，但 PR 必须同时包含对象包装、协议回归测试和 golden 更新，因此不是一行修复 PR；不顺带改无关 MCP 工具。"
+    ],
+    "ready_to_implement_all": false,
+    "ready_scope": "21 of 22 confirmed blind findings are adjudicated for TDD; CURSOR-CWD-001 remains design/evidence pending, and the repository-wide audit remains open.",
+    "validation": "No proposed blind-audit _repro test was created or executed during closeout.",
+    "legacy_references": [
+      {
+        "id": "KIMI-001",
+        "document": "docs/reviews/2026-06-10-multi-expert-audit.md",
+        "legacy_id": "H08"
+      },
+      {
+        "id": "WRITER-LOCATOR-001",
+        "document": "docs/reviews/2026-07-17-engram-full-audit.md",
+        "legacy_id": "L3"
+      }
+    ],
+    "ready_to_implement_count": 21,
+    "design_evidence_pending": [
+      "CURSOR-CWD-001"
+    ]
+  },
+  "positive_ids": [
+    "ARCH-006",
+    "ARCH-007",
+    "ARCH-008",
+    "ARCH-009"
+  ],
+  "legacy_references": {
+    "KIMI-001": {
+      "document": "docs/reviews/2026-06-10-multi-expert-audit.md",
+      "id": "H08"
+    },
+    "WRITER-LOCATOR-001": {
+      "document": "docs/reviews/2026-07-17-engram-full-audit.md",
+      "id": "L3"
+    }
+  }
 }
