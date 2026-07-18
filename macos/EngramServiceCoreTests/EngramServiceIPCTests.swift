@@ -853,14 +853,74 @@ final class EngramServiceIPCTests: XCTestCase {
                 || source.contains("indexRecent"),
             "scan work must live under the activity work closure"
         )
-        // Idle scans must not start embedding (plan Task 4 step 4).
+    }
+
+    // EMB-STARVE: an idle merge-only scan must still drain existing session
+    // or insight embedding work instead of waiting for a future merge/restart.
+    func testRunnerPeriodicEmbeddingBackfillChecksBacklogOnIdleScan_repro() throws {
+        let source = try serviceCoreSource("EngramService/Core/EngramServiceRunner.swift")
         let cycleStart = try XCTUnwrap(source.range(of: "runOnePeriodicIndexCycle"))
         let cycleBody = String(source[cycleStart.lowerBound...])
+
         XCTAssertTrue(
-            cycleBody.contains("if scan.indexed > 0")
-                && cycleBody.contains("periodicSessionEmbeddingBackfill"),
-            "embedding backfill must be gated on indexed > 0"
+            cycleBody.contains("shouldRunEmbeddingBackfill = try await hasPendingEmbeddingBackfill(gate: gate)")
+                && cycleBody.contains("if shouldRunEmbeddingBackfill {")
+                && cycleBody.contains("periodicSessionEmbeddingBackfill")
+                && cycleBody.contains("periodicInsightEmbeddingBackfill"),
+            "idle periodic scans must use an embedding-backlog signal independent of scan.indexed"
         )
+    }
+
+    func testPeriodicEmbeddingBacklogDetectsSessionAndInsightWork_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 20_000_000
+        )
+        _ = try await gate.performWriteCommand(name: "seedEmbeddingBacklog") { writer in
+            try writer.migrate()
+        }
+
+        let initiallyPending = try await EngramServiceRunner.hasPendingEmbeddingBackfill(gate: gate)
+        XCTAssertFalse(initiallyPending)
+
+        _ = try await gate.performWriteCommand(name: "seedSessionEmbeddingBacklog") { writer in
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions (id, source, start_time, file_path, tier)
+                    VALUES ('idle-session', 'codex', '2026-07-19T00:00:00Z', '/tmp/idle.jsonl', 'normal')
+                    """)
+                try db.execute(sql: """
+                    INSERT INTO sessions_fts(session_id, content)
+                    VALUES ('idle-session', 'idle session pending embedding work')
+                    """)
+                try db.execute(sql: """
+                    INSERT INTO session_index_jobs
+                      (id, session_id, job_kind, target_sync_version, status, retry_count)
+                    VALUES ('idle-job', 'idle-session', 'embedding', 1, 'failed_retryable', 1)
+                    """)
+            }
+        }
+        let hasSessionBacklog = try await EngramServiceRunner.hasPendingEmbeddingBackfill(gate: gate)
+        XCTAssertTrue(hasSessionBacklog)
+
+        _ = try await gate.performWriteCommand(name: "replaceWithInsightEmbeddingBacklog") { writer in
+            try writer.write { db in
+                try db.execute(sql: "DELETE FROM session_index_jobs WHERE id = 'idle-job'")
+                try db.execute(sql: """
+                    INSERT INTO insights (id, content, importance)
+                    VALUES ('idle-insight', 'idle insight pending embedding work', 5)
+                    """)
+                try db.execute(sql: """
+                    INSERT INTO insight_embedding_failures
+                      (insight_id, retry_count, status, last_error)
+                    VALUES ('idle-insight', 1, 'failed_retryable', 'transient')
+                    """)
+            }
+        }
+        let hasInsightBacklog = try await EngramServiceRunner.hasPendingEmbeddingBackfill(gate: gate)
+        XCTAssertTrue(hasInsightBacklog)
     }
 
     func testPeerDisconnectCancelsInFlightHandler_repro() async throws {

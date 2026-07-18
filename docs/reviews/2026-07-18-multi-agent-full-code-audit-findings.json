@@ -195,7 +195,14 @@
       "source": "pr-183-F1",
       "confirmed": true,
       "real_votes": 1,
-      "verify_note": "Verified keep on current HEAD by PR review adversarial verify"
+      "verify_note": "Verified keep on current HEAD by PR review adversarial verify",
+      "status": "fixed_in_post_audit_followup",
+      "fix_evidence": [
+        "Periodic scans with merge-only indexed=0 query the existing session and insight pending selectors before deciding whether to run embedding backfills",
+        "Pending and failed_retryable session jobs plus insight-only failed_retryable backlog trigger the existing best-effort drains; empty idle scans still avoid provider work",
+        "The initial scheduling _repro captured 1 failure before the fix; both selected _repro tests pass after the fix",
+        "EngramServiceCore reported 573 passed and 1 skipped out of 574 total; the Debug Engram build succeeded"
+      ]
     },
     {
       "id": "CONC-001",
@@ -389,7 +396,8 @@
     "M24",
     "SVC-001-post-audit-followup",
     "CONC-001-post-audit-followup",
-    "EMB-001-post-audit-followup"
+    "EMB-001-post-audit-followup",
+    "EMB-STARVE-post-audit-followup"
   ],
   "still_open_followups": ["R1", "R6", "R7", "R8", "R9"],
   "roadmap": {
@@ -398,7 +406,7 @@
       "R4 dual-tx single write",
       "EMB-001 semantic_chunks skip purge and searchable-tier availability (post-audit follow-up fixed)",
       "CONC-001 long-running startup names aligned (post-audit follow-up fixed)",
-      "EMB-STARVE idle embed drain",
+      "EMB-STARVE idle embed drain (post-audit follow-up fixed)",
       "READ-002 since COALESCE on MCP",
       "READ-001 multi-term CTE on MCP or shared builder step-1",
       "MCP-001 object-root list aliases",
