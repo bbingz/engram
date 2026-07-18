@@ -4893,7 +4893,8 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(counts.1, 1)
     }
 
-    /// R4 product path: `backfillInsightEmbeddingsOnce` (not the helper-only
+    // PR #197: shipped runner isolates explicit item-local rejection and terminalizes it.
+    /// `backfillInsightEmbeddingsOnce` (not the helper-only
     /// `InsightEmbeddingBackfill.run`) must isolate poison insights and
     /// terminalize them so they stop being reselected.
     func testRunnerInsightEmbeddingIsolatesPoisonAndTerminates_repro() async throws {
@@ -5007,6 +5008,68 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertFalse(terminal.1.contains("good"))
     }
 
+    // PR #197 follow-up: provider/config dimension mismatch remains retryable on the shipped runner.
+    func testRunnerInsightDimensionMismatchDoesNotTerminalize_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 20_000_000
+        )
+        _ = try await gate.performWriteCommand(name: "seedDimensionInsight") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(
+                    sql: "INSERT INTO insights (id, content, importance) VALUES ('dimension', 'dimension mismatch insight content', 5)"
+                )
+            }
+        }
+
+        let clock = InsightBackoffClock(start: Date(timeIntervalSince1970: 1_700_000_000))
+        let backoff = EmbeddingMaintenanceBackoff(
+            baseDelay: 1,
+            maximumDelay: 1,
+            now: { clock.now }
+        )
+        let env = [
+            "ENGRAM_EMBEDDING_API_KEY": "test",
+            "ENGRAM_EMBEDDING_MODEL": "probe",
+            "ENGRAM_EMBEDDING_DIM": "3",
+        ]
+
+        for _ in 0..<InsightEmbeddingBackfill.maxInsightEmbedRetryCount {
+            do {
+                _ = try await EngramServiceRunner.backfillInsightEmbeddingsOnce(
+                    gate: gate,
+                    environment: env,
+                    providerFactory: { _ in WrongDimensionInsightEmbeddingProvider() },
+                    backoff: backoff,
+                    limit: 10
+                )
+                XCTFail("expected dimension mismatch")
+            } catch let error as EmbeddingError {
+                XCTAssertEqual(error, .dimensionMismatch(expected: 3, actual: 2))
+            }
+            clock.advance(by: 2)
+        }
+
+        let failureCount = try await gate.performWriteCommand(name: "assertDimensionRetryable") { writer in
+            try writer.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insight_embedding_failures") ?? 0
+            }
+        }.value
+        XCTAssertEqual(failureCount, 0)
+
+        let recovered = try await EngramServiceRunner.backfillInsightEmbeddingsOnce(
+            gate: gate,
+            environment: env,
+            providerFactory: { _ in StaticEmbeddingProvider { _ in [1, 0, 0] } },
+            backoff: backoff,
+            limit: 10
+        )
+        XCTAssertEqual(recovered, 1)
+    }
+
     func testRunnerSessionEmbeddingBackfillEmbedsOutsideWriteGate() async throws {
         let paths = try makeServiceIPCPaths()
         let gate = try ServiceWriterGate(
@@ -5112,17 +5175,23 @@ private struct StaticEmbeddingProvider: EmbeddingProvider {
     }
 }
 
-/// R4: wrong native dimension for content containing "BAD".
+/// R4: explicit item-local rejection for content containing "BAD".
 private struct SelectiveFailInsightEmbeddingProvider: EmbeddingProvider {
     let model = "selective-model"
     let dimension = 3
     func embed(_ texts: [String]) async throws -> [[Float]] {
-        texts.map { text in
-            if text.contains("BAD") {
-                return [1, 0] // native 2 ≠ configured 3
-            }
-            return [1, 0, 0]
+        if texts.contains(where: { $0.contains("BAD") }) {
+            throw EmbeddingError.inputRejected("content rejected")
         }
+        return texts.map { _ in [1, 0, 0] }
+    }
+}
+
+private struct WrongDimensionInsightEmbeddingProvider: EmbeddingProvider {
+    let model = "probe"
+    let dimension = 3
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        texts.map { _ in [1, 0] }
     }
 }
 

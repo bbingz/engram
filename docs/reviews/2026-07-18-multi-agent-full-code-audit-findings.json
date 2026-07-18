@@ -1,7 +1,8 @@
 {
   "generated_at": "2026-07-18",
   "branch": "fix/audit-2026-07-18-r4plus",
-  "head": "b8babc5a",
+  "head": "2940e6c9",
+  "working_tree": "pre-submit PR #197 taxonomy follow-up",
   "project": "engram",
   "methodology": {
     "agents": [
@@ -72,9 +73,22 @@
       "pr_number": 197,
       "title": "fix(audit): R4 insight embed terminalization, R5 reclaim budget cursor, R10/R11",
       "status": "open",
-      "verdict": "APPROVE_WITH_NITS",
+      "verdict": "PRE_SUBMIT_REVIEW_PENDING",
+      "prior_grok_verdict": "APPROVE_WITH_NITS",
       "closes": ["R4", "R5", "R10", "R11"],
-      "nits": ["R4-dual-tx", "R11-r1-overclaim", "R5-recovery-residual"]
+      "nits": ["R4-dual-tx", "R5-recovery-residual"],
+      "pre_submit_fixes": [
+        "Only explicit input-local provider rejection consumes the insight permanent-failure budget",
+        "HTTP/transport, malformed response, dimension/config, and cancellation failures propagate and remain recoverable",
+        "R1 followups status corrected to open (partially mitigated)"
+      ],
+      "runtime_evidence": {
+        "surface": "real EngramService + EngramMCP with isolated temporary database and fake OpenAI-compatible endpoint",
+        "http_500": "Three failures wrote no insight_embedding_failures row; healthy restart embedded and retrieved the same insight",
+        "dimension_mismatch": "Three 2D-vs-configured-3D failures wrote no insight_embedding_failures row; healthy restart embedded and retrieved the same insight",
+        "input_rejection": "Explicit param=input HTTP 400 reached retry_count=3 and failed_permanent; healthy restart did not resend full content"
+      },
+      "submit_gate": "Fresh Codex PASS required before commit or push"
     },
     {
       "pr_range": "188-195",
@@ -264,7 +278,7 @@
       "title": "Insight embed success and failure records not atomic",
       "severity": "medium",
       "location": "EngramServiceRunner.swift:1550-1565; InsightEmbeddingBackfill.swift:99-110,138-212",
-      "impact": "Crash between writeEmbeddings and recordFailures leaves poison infinitely reselectable",
+      "impact": "Crash or error after writeEmbeddings commits but before recordFailures commits leaves that cycle's failed insights pending; the next eligible backfill may repeat provider calls and delays retry/terminal convergence until failure bookkeeping succeeds. Successfully embedded insights are excluded from reselection.",
       "root_cause": "Two sequential writer.write vs session single-tx design",
       "fix": "Single transaction for successes + failures",
       "effort": "S",
@@ -294,17 +308,6 @@
       "source": "pr-197",
       "confirmed": true,
       "label": "pre-existing"
-    },
-    {
-      "id": "R11-r1-overclaim",
-      "title": "followups overclaims R1 closed",
-      "severity": "low",
-      "location": "docs/followups.md Post-review residuals",
-      "impact": "Future audits may skip still-open read-surface drift",
-      "fix": "Keep R1 open or partially mitigated; claim R2–R5/R10 only",
-      "effort": "S",
-      "source": "pr-197",
-      "confirmed": true
     }
   ],
   "low_selective_ids": [
@@ -358,6 +361,7 @@
     "M12-R2",
     "M14-R10-behavioral",
     "R11-evidence-ledger",
+    "R11-r1-overclaim",
     "M18",
     "M19",
     "M24"
@@ -365,8 +369,7 @@
   "still_open_followups": ["R1", "R6", "R7", "R8", "R9"],
   "roadmap": {
     "now": [
-      "Merge PR 197 APPROVE_WITH_NITS",
-      "Fix followups R1 overclaim",
+      "Obtain fresh Codex PASS for PR 197 pre-submit taxonomy follow-up; do not commit or push before PASS",
       "R4 dual-tx single write",
       "SVC-001 product-missing reclaim cursor",
       "EMB-001 semantic_chunks skip purge",

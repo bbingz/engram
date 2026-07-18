@@ -50,9 +50,9 @@ public enum InsightEmbeddingBackfill {
         }
     }
 
-    /// R4: embed each pending insight independently. One poison item does not
-    /// abort the rest. Circuit-open / cancellation still propagate so callers
-    /// can soft-skip the maintenance phase.
+    /// R4: embed each pending insight independently. Only explicit input-local
+    /// rejection is isolated; provider, protocol, configuration, and cancellation
+    /// failures propagate so callers can retry the maintenance phase.
     public static func embedPendingIsolated(
         _ pending: [PendingInsight],
         provider: EmbeddingProvider
@@ -72,10 +72,15 @@ public enum InsightEmbeddingBackfill {
                 successes.append(EmbeddedInsight(id: item.id, vector: vector))
             } catch is CancellationError {
                 throw CancellationError()
-            } catch EmbeddingError.circuitOpen {
-                throw EmbeddingError.circuitOpen
+            } catch let error as EmbeddingError {
+                switch error {
+                case .inputRejected(let message):
+                    failures.append(InsightFailure(id: item.id, error: message))
+                case .notConfigured, .http, .malformedResponse, .dimensionMismatch, .circuitOpen:
+                    throw error
+                }
             } catch {
-                failures.append(InsightFailure(id: item.id, error: "\(error)"))
+                throw error
             }
         }
         return (successes, failures)

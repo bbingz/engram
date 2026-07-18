@@ -25,6 +25,9 @@ public struct EmbeddingConfig: Sendable, Equatable {
 public enum EmbeddingError: Error, Equatable {
     case notConfigured
     case http(Int)
+    /// Provider explicitly rejected this request's input. Callers may isolate
+    /// the affected item without treating provider/config failures as poison.
+    case inputRejected(String)
     case malformedResponse
     /// Provider returned a vector whose length does not match the configured
     /// dimension. Refuse to store so availability probes and cosine KNN stay
@@ -85,6 +88,10 @@ public struct OpenAICompatibleEmbeddingClient: EmbeddingProvider {
             throw EmbeddingError.malformedResponse
         }
         guard (200..<300).contains(http.statusCode) else {
+            if [400, 413, 422].contains(http.statusCode),
+               let message = Self.inputRejectionMessage(from: data) {
+                throw EmbeddingError.inputRejected(message)
+            }
             throw EmbeddingError.http(http.statusCode)
         }
 
@@ -112,5 +119,16 @@ public struct OpenAICompatibleEmbeddingClient: EmbeddingProvider {
             throw EmbeddingError.malformedResponse
         }
         return result
+    }
+
+    private static func inputRejectionMessage(from data: Data) -> String? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let error = root["error"] as? [String: Any],
+              error["param"] as? String == "input",
+              let message = error["message"] as? String,
+              !message.isEmpty else {
+            return nil
+        }
+        return message
     }
 }

@@ -182,4 +182,76 @@ final class SemanticMemoryUnitTests: XCTestCase {
             XCTAssertEqual(error as? EmbeddingError, .http(429))
         }
     }
+
+    // PR #197 follow-up: only explicit input-scoped HTTP failures are item-local poison.
+    func testEmbeddingClientClassifiesInputScopedHTTPError_repro() async {
+        MockURLProtocol.handler = { _ in
+            let response = HTTPURLResponse(
+                url: URL(string: "https://api.example.com/v1/embeddings")!,
+                statusCode: 400, httpVersion: nil, headerFields: nil
+            )!
+            let json = """
+            {"error":{"message":"input exceeds context length","param":"input","code":"context_length_exceeded"}}
+            """
+            return (response, Data(json.utf8))
+        }
+        let client = OpenAICompatibleEmbeddingClient(
+            config: EmbeddingConfig(baseURL: "https://api.example.com/v1", apiKey: "k"),
+            session: mockSession()
+        )
+        do {
+            _ = try await client.embed(["oversized content"])
+            XCTFail("expected input rejection")
+        } catch {
+            XCTAssertEqual(error as? EmbeddingError, .inputRejected("input exceeds context length"))
+        }
+    }
+
+    // PR #197 follow-up: a server failure stays provider-scoped even if its body names input.
+    func testEmbeddingClientKeepsInputTaggedHTTP500AtProviderScope_repro() async {
+        MockURLProtocol.handler = { _ in
+            let response = HTTPURLResponse(
+                url: URL(string: "https://api.example.com/v1/embeddings")!,
+                statusCode: 500, httpVersion: nil, headerFields: nil
+            )!
+            let json = """
+            {"error":{"message":"input processing failed","param":"input","code":"server_error"}}
+            """
+            return (response, Data(json.utf8))
+        }
+        let client = OpenAICompatibleEmbeddingClient(
+            config: EmbeddingConfig(baseURL: "https://api.example.com/v1", apiKey: "k"),
+            session: mockSession()
+        )
+        do {
+            _ = try await client.embed(["content"])
+            XCTFail("expected HTTP 500")
+        } catch {
+            XCTAssertEqual(error as? EmbeddingError, .http(500))
+        }
+    }
+
+    // PR #197 follow-up: model/config HTTP 400 remains provider-scoped and recoverable.
+    func testEmbeddingClientKeepsGlobalHTTP400AtProviderScope_repro() async {
+        MockURLProtocol.handler = { _ in
+            let response = HTTPURLResponse(
+                url: URL(string: "https://api.example.com/v1/embeddings")!,
+                statusCode: 400, httpVersion: nil, headerFields: nil
+            )!
+            let json = """
+            {"error":{"message":"unsupported dimensions","param":"dimensions","code":"invalid_request_error"}}
+            """
+            return (response, Data(json.utf8))
+        }
+        let client = OpenAICompatibleEmbeddingClient(
+            config: EmbeddingConfig(baseURL: "https://api.example.com/v1", apiKey: "k"),
+            session: mockSession()
+        )
+        do {
+            _ = try await client.embed(["content"])
+            XCTFail("expected HTTP 400")
+        } catch {
+            XCTAssertEqual(error as? EmbeddingError, .http(400))
+        }
+    }
 }
