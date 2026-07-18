@@ -118,14 +118,20 @@ enum MCPToolRegistry {
                 "properties": .object([
                     "query": .object([
                         "type": .string("string"),
-                        "description": .string("Search keywords (at least 3 characters for keyword search)"),
+                        "description": .string("Search keywords; queries shorter than 3 characters use LIKE fallback"),
                     ]),
                     "source": .object([
                         "type": .string("string"),
                         "enum": sourceSchemaEnum,
                     ]),
-                    "project": .object(["type": .string("string")]),
-                    "since": .object(["type": .string("string")]),
+                    "project": .object([
+                        "type": .string("string"),
+                        "description": .string("Filter by exact project name or alias"),
+                    ]),
+                    "since": .object([
+                        "type": .string("string"),
+                        "description": .string("Activity-time lower bound using end time when present, otherwise start time (ISO 8601)"),
+                    ]),
                     "limit": .object([
                         "type": .string("number"),
                         "description": .string("Default 10, max 50"),
@@ -161,7 +167,7 @@ enum MCPToolRegistry {
                     ]),
                     "project": .object([
                         "type": .string("string"),
-                        "description": .string("过滤特定项目（部分匹配）"),
+                        "description": .string("按精确项目名或别名过滤"),
                     ]),
                     "since": .object([
                         "type": .string("string"),
@@ -369,14 +375,20 @@ enum MCPToolRegistry {
                 "properties": .object([
                     "query": .object([
                         "type": .string("string"),
-                        "description": .string("Search keywords (at least 3 characters for keyword search)"),
+                        "description": .string("Search keywords; queries shorter than 3 characters use LIKE fallback"),
                     ]),
                     "source": .object([
                         "type": .string("string"),
                         "enum": sourceSchemaEnum,
                     ]),
-                    "project": .object(["type": .string("string")]),
-                    "since": .object(["type": .string("string")]),
+                    "project": .object([
+                        "type": .string("string"),
+                        "description": .string("Filter by exact project name or alias"),
+                    ]),
+                    "since": .object([
+                        "type": .string("string"),
+                        "description": .string("Activity-time lower bound using end time when present, otherwise start time (ISO 8601)"),
+                    ]),
                     "limit": .object([
                         "type": .string("number"),
                         "description": .string("Default 10, max 50"),

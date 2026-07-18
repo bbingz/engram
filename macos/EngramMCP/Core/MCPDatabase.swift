@@ -176,13 +176,10 @@ final class MCPDatabase {
         }
         if let project {
             let projects = try resolveProjectAliases([project])
-            if projects.count == 1, let only = projects.first {
-                conditions.append("project LIKE ? ESCAPE '\\'")
-                values.append("%\(escapeLike(only))%")
-            } else if !projects.isEmpty {
-                let clauses = projects.map { _ in "project LIKE ? ESCAPE '\\'" }.joined(separator: " OR ")
-                conditions.append("(\(clauses))")
-                values.append(contentsOf: projects.map { "%\(escapeLike($0))%" })
+            if !projects.isEmpty {
+                let placeholders = Array(repeating: "?", count: projects.count).joined(separator: ", ")
+                conditions.append("project IN (\(placeholders))")
+                values.append(contentsOf: projects)
             }
         }
         if let since {
@@ -1359,14 +1356,9 @@ final class MCPDatabase {
                 values.append(source)
             }
             if !expandedProjects.isEmpty {
-                if expandedProjects.count == 1, let only = expandedProjects.first {
-                    conditions.append("s.project LIKE ? ESCAPE '\\'")
-                    values.append("%\(escapeLike(only))%")
-                } else {
-                    let clauses = expandedProjects.map { _ in "s.project LIKE ? ESCAPE '\\'" }.joined(separator: " OR ")
-                    conditions.append("(\(clauses))")
-                    values.append(contentsOf: expandedProjects.map { "%\(escapeLike($0))%" })
-                }
+                let placeholders = Array(repeating: "?", count: expandedProjects.count).joined(separator: ", ")
+                conditions.append("s.project IN (\(placeholders))")
+                values.append(contentsOf: expandedProjects)
             }
             if let since {
                 conditions.append("COALESCE(s.end_time, s.start_time) >= ?")
@@ -2169,14 +2161,9 @@ final class MCPDatabase {
                 values.append(source)
             }
             if !expandedProjects.isEmpty {
-                if expandedProjects.count == 1, let only = expandedProjects.first {
-                    conditions.append("s.project LIKE ? ESCAPE '\\'")
-                    values.append("%\(escapeLike(only))%")
-                } else {
-                    let clauses = expandedProjects.map { _ in "s.project LIKE ? ESCAPE '\\'" }.joined(separator: " OR ")
-                    conditions.append("(\(clauses))")
-                    values.append(contentsOf: expandedProjects.map { "%\(escapeLike($0))%" })
-                }
+                let placeholders = Array(repeating: "?", count: expandedProjects.count).joined(separator: ", ")
+                conditions.append("s.project IN (\(placeholders))")
+                values.append(contentsOf: expandedProjects)
             }
             if let since {
                 conditions.append("COALESCE(s.end_time, s.start_time) >= ?")
@@ -2234,14 +2221,9 @@ final class MCPDatabase {
                 values.append(source)
             }
             if !expandedProjects.isEmpty {
-                if expandedProjects.count == 1, let only = expandedProjects.first {
-                    conditions.append("s.project LIKE ? ESCAPE '\\'")
-                    values.append("%\(escapeLike(only))%")
-                } else {
-                    let clauses = expandedProjects.map { _ in "s.project LIKE ? ESCAPE '\\'" }.joined(separator: " OR ")
-                    conditions.append("(\(clauses))")
-                    values.append(contentsOf: expandedProjects.map { "%\(escapeLike($0))%" })
-                }
+                let placeholders = Array(repeating: "?", count: expandedProjects.count).joined(separator: ", ")
+                conditions.append("s.project IN (\(placeholders))")
+                values.append(contentsOf: expandedProjects)
             }
             if let since {
                 conditions.append("COALESCE(s.end_time, s.start_time) >= ?")
