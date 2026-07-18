@@ -283,6 +283,9 @@ public actor ServiceWriterGate {
         // under healthy progress — do not false-timeout followers at 60s.
         case "initialScanIndex",
              "initialScanBackfills",
+             "initialInstructionBackfill",
+             "initialImplementationBeatBackfill",
+             "initialFtsDrain",
              "indexRecent",
              "indexAll",
              "periodicFtsDrain",

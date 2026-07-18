@@ -39,6 +39,55 @@ final class ServiceWriterGateTests: XCTestCase {
         XCTAssertFalse(ServiceWriterGate.isLongRunningWriteCommand("saveInsight"))
     }
 
+    // CONC-001: every startup phase that can hold the writer for healthy
+    // multi-second work must use the long-running queue policy.
+    func testStartupMaintenanceNamesAreLongRunning_repro() {
+        for name in [
+            "initialInstructionBackfill",
+            "initialImplementationBeatBackfill",
+            "initialFtsDrain",
+        ] {
+            XCTAssertTrue(
+                ServiceWriterGate.isLongRunningWriteCommand(name),
+                "\(name) must not false-timeout queued followers"
+            )
+        }
+    }
+
+    // CONC-001: exercise the actual queue behavior, not only name classification.
+    func testFollowerBehindInitialFtsDrainDoesNotTimeout_repro() async throws {
+        let paths = try makeGatePaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 20_000_000
+        )
+        let probe = CancellationProbe()
+
+        let drain = Task {
+            try await gate.performWriteCommand(name: "initialFtsDrain") { _ in
+                await probe.markFirstStarted()
+                await probe.waitUntilRelease()
+                return "drained"
+            }
+        }
+        await probe.waitUntilFirstStarted()
+
+        let follower = Task {
+            try await gate.performWriteCommand(name: "saveInsight") { _ in "saved" }
+        }
+        while await gate.queuedWriteWaiterCountForTesting() < 1 {
+            await Task.yield()
+        }
+        try await Task.sleep(nanoseconds: 80_000_000)
+        await probe.releaseFirst()
+
+        let drainResult = try await drain.value
+        let followerResult = try await follower.value
+        XCTAssertEqual(drainResult.value, "drained")
+        XCTAssertEqual(followerResult.value, "saved")
+    }
+
     /// M1 hang fix: a long-running command blocked by a short holder must still
     /// arm the queue timeout (WriterBusy), not hang on timeout=nil forever.
     func testLongRunningCommandBlockedByShortHolderStillTimesOut_repro() async throws {
