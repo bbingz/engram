@@ -220,7 +220,10 @@ final class Round5RemediationTests: XCTestCase {
         XCTAssertTrue(source.contains(#""projectUndo""#))
         XCTAssertTrue(source.contains(#""projectMoveBatch""#))
         XCTAssertTrue(performWrite.contains("pendingOrActiveLongWrites += 1"))
-        XCTAssertTrue(performWrite.contains("let timeout = pendingOrActiveLongWrites > 0 ? nil : queueTimeoutNanoseconds"))
+        // Timeout is nil only when *other* long writes are pending/active (not
+        // the caller's own reservation — that would hang behind short holders).
+        XCTAssertTrue(performWrite.contains("otherLongWrites"))
+        XCTAssertTrue(performWrite.contains("otherLongWrites > 0 ? nil : queueTimeoutNanoseconds"))
         XCTAssertTrue(performWrite.contains("pendingOrActiveLongWrites = max(0, pendingOrActiveLongWrites - 1)"))
     }
 
