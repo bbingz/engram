@@ -151,16 +151,16 @@ export class OpenCodeAdapter implements SessionAdapter {
 
       // Per-session size = message payload bytes + part payload bytes. The old
       // statSync(dbPath) measured the whole shared SQLite file and attributed
-      // the entire DB size to every session. Sum length() in SQL so this stays
-      // byte-for-byte identical to the Swift OpenCode adapter (parity).
+      // the entire DB size to every session. Use length(CAST(... AS BLOB)) so
+      // multi-byte TEXT is counted as UTF-8 bytes, matching Swift.
       const messageBytesRow = db
         .prepare<[string], { bytes: number }>(
-          'SELECT COALESCE(SUM(length(data)), 0) AS bytes FROM message WHERE session_id = ?',
+          'SELECT COALESCE(SUM(length(CAST(data AS BLOB))), 0) AS bytes FROM message WHERE session_id = ?',
         )
         .get(sessionId);
       const partBytesRow = db
         .prepare<[string], { bytes: number }>(
-          `SELECT COALESCE(SUM(length(p.data)), 0) AS bytes
+          `SELECT COALESCE(SUM(length(CAST(p.data AS BLOB))), 0) AS bytes
            FROM part p JOIN message m ON m.id = p.message_id
            WHERE m.session_id = ?`,
         )

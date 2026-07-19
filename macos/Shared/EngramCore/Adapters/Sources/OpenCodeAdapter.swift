@@ -257,10 +257,13 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
         guard let locatorParts = Self.splitVirtualLocator(locator) else {
             return false
         }
+        // Archive is soft-delete (`time_archived` set). Discovery/parse already
+        // exclude archived rows; accessibility must match so indexed rows can
+        // enter the orphan lifecycle instead of remaining indefinitely visible.
         return await accessibilityCache.contains(
             path: locatorParts.dbPath,
             sql:
-            "SELECT 1 FROM session WHERE id = ? LIMIT 1",
+            "SELECT 1 FROM session WHERE id = ? AND time_archived IS NULL LIMIT 1",
             bindings: [locatorParts.sessionId]
         )
     }
@@ -313,15 +316,17 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
         database: Phase4SQLiteDatabase,
         sessionId: String
     ) throws -> Int64 {
+        // SQLite length(TEXT) is characters; CAST AS BLOB yields UTF-8 bytes so CJK
+        // payloads are not under-counted for UI size and offload ranking.
         let messageBytes = try queryByteSum(
             database,
-            sql: "SELECT COALESCE(SUM(length(data)), 0) AS bytes FROM message WHERE session_id = ?",
+            sql: "SELECT COALESCE(SUM(length(CAST(data AS BLOB))), 0) AS bytes FROM message WHERE session_id = ?",
             sessionId: sessionId
         )
         let partBytes = try queryByteSum(
             database,
             sql: """
-            SELECT COALESCE(SUM(length(p.data)), 0) AS bytes
+            SELECT COALESCE(SUM(length(CAST(p.data AS BLOB))), 0) AS bytes
             FROM part p
             JOIN message m ON m.id = p.message_id
             WHERE m.session_id = ?
