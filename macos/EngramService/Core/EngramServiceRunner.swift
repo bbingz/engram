@@ -194,19 +194,16 @@ public enum EngramServiceRunner {
         )
         let archiveV2Drainer: ArchiveV2BacklogDrainer?
         if archiveV2Settings.exactArchiveEnabled {
-            let disabledSources = Self.readDisabledSources(environment: environment)
+            // Reread disabled sources inside every backlog pass. Capturing a
+            // startup snapshot would keep draining a source after the user
+            // disables it (and miss a source re-enabled while the service lives).
             let drainer = ArchiveV2BacklogDrainer { [weak archiveV2Coordinator] in
                 guard let archiveV2Coordinator else {
                     throw CancellationError()
                 }
                 return try await archiveV2Coordinator.runBacklogPass(
                     adapterProvider: {
-                        Self.exactArchiveAdapters(
-                            from: Self.adaptersExcludingDisabled(
-                                SessionAdapterFactory.defaultAdapters(),
-                                disabledSources: disabledSources
-                            )
-                        )
+                        Self.exactArchiveAdaptersForBacklogPass(environment: environment)
                     }
                 )
             }
@@ -914,11 +911,29 @@ private final class IndexingScheduleBox: @unchecked Sendable {
     }
 }
 
-    private static func adaptersExcludingDisabled(
+    static func adaptersExcludingDisabled(
         _ adapters: [any SessionAdapter],
         disabledSources: Set<String>
     ) -> [any SessionAdapter] {
         adapters.filter { !disabledSources.contains($0.source.rawValue) }
+    }
+
+    /// Exact-archive adapters for one Archive V2 backlog pass. Always rereads
+    /// the live disabled-source set so long-lived drainers honor mid-life toggles.
+    static func exactArchiveAdaptersForBacklogPass(
+        environment: [String: String],
+        settingsURL: URL? = nil,
+        adapters: [any SessionAdapter]? = nil
+    ) -> [any SessionAdapter] {
+        exactArchiveAdapters(
+            from: adaptersExcludingDisabled(
+                adapters ?? SessionAdapterFactory.defaultAdapters(),
+                disabledSources: readDisabledSources(
+                    environment: environment,
+                    settingsURL: settingsURL
+                )
+            )
+        )
     }
 
     /// Test hooks for outer initial-scan orchestration (M02). Production uses defaults.
