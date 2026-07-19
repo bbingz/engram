@@ -932,6 +932,89 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(streamed.map(\.content), ["final answer"])
     }
 
+    // Audit SRC-QWEN-001: functionCall/tool_result must surface as assistant toolCalls + tool messages.
+    func testQwenPreservesFunctionCallsAndToolResults_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("project-tools/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "type": "user",
+                "sessionId": "qwen-tools-1",
+                "cwd": "/tmp/qwen-tools",
+                "timestamp": "2026-07-19T10:00:00.000Z",
+                "message": [
+                    "role": "user",
+                    "parts": [["text": "List the directory"]],
+                ],
+            ],
+            [
+                "type": "assistant",
+                "sessionId": "qwen-tools-1",
+                "cwd": "/tmp/qwen-tools",
+                "timestamp": "2026-07-19T10:00:01.000Z",
+                "model": "qwen3.5-plus",
+                "message": [
+                    "role": "model",
+                    "parts": [
+                        ["text": "Checking the directory."],
+                        [
+                            "functionCall": [
+                                "id": "call_list_1",
+                                "name": "list_directory",
+                                "args": ["path": "/tmp/qwen-tools"],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            [
+                "type": "tool_result",
+                "sessionId": "qwen-tools-1",
+                "cwd": "/tmp/qwen-tools",
+                "timestamp": "2026-07-19T10:00:02.000Z",
+                "toolCallResult": [
+                    "callId": "call_list_1",
+                    "status": "success",
+                    "resultDisplay": "main.swift\nREADME.md",
+                ],
+                "message": [
+                    "role": "user",
+                    "parts": [[
+                        "functionResponse": [
+                            "id": "call_list_1",
+                            "name": "list_directory",
+                            "response": ["output": "main.swift\nREADME.md"],
+                        ],
+                    ]],
+                ],
+            ],
+        ]
+        let file = chatsDir.appendingPathComponent("qwen-tools.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QwenAdapter(projectsRoot: root.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
+        XCTAssertEqual(info.toolMessageCount, 1)
+        XCTAssertEqual(info.messageCount, 3)
+        XCTAssertEqual(streamed.map(\.role), [.user, .assistant, .tool])
+        XCTAssertEqual(streamed[0].content, "List the directory")
+        XCTAssertEqual(streamed[1].content, "Checking the directory.")
+        XCTAssertEqual(
+            streamed[1].toolCalls,
+            [NormalizedToolCall(name: "list_directory", input: "{\"path\":\"/tmp/qwen-tools\"}")]
+        )
+        XCTAssertEqual(streamed[2].content, "main.swift\nREADME.md")
+        XCTAssertEqual(streamed[2].timestamp, "2026-07-19T10:00:02.000Z")
+    }
+
     // MARK: - Cline
 
     func testClineListsLegacyClaudeMessagesWhenUiMessagesMissing() async throws {

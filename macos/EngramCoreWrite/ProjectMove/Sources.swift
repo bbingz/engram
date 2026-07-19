@@ -39,6 +39,7 @@ public enum SourceId: String, CaseIterable, Sendable, Equatable {
     case codexRolloutSummaries = "codex-rollout-summaries"
     case geminiCli = "gemini-cli"
     case iflow
+    case qwen
     case qoder
     case opencode
     case antigravity
@@ -422,7 +423,7 @@ public enum SessionSources {
 
     /// The session roots a project move must consider. Ordering matches
     /// Node parity: known-active first (claude-code → Codex stores →
-    /// gemini-cli → iflow → qoder), then flat-layout tail (opencode →
+    /// gemini-cli → iflow → qwen → qoder), then flat-layout tail (opencode →
     /// antigravity → antigravity-legacy → commandcode → copilot).
     public static func roots(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -458,6 +459,11 @@ public enum SessionSources {
                 id: .iflow,
                 path: (home as NSString).appendingPathComponent(".iflow/projects"),
                 encodeProjectDir: { cwd in encodeIflow(cwd) }
+            ),
+            SourceRoot(
+                id: .qwen,
+                path: (home as NSString).appendingPathComponent(".qwen/projects"),
+                encodeProjectDir: { cwd in encodeQwen(cwd) }
             ),
             SourceRoot(
                 id: .qoder,
@@ -507,6 +513,19 @@ public enum SessionSources {
                 return String(s)
             }
             .joined(separator: "-")
+    }
+
+    /// Encode a project cwd into Qwen Code's project-directory name.
+    /// Same non-alnum → `-` sanitize as Claude Code (UTF-16 units, no
+    /// collapsing), but Qwen never truncates at 200 or appends a hash.
+    public static func encodeQwen(_ absolutePath: String) -> String {
+        let units = absolutePath.utf16.map { u -> UInt16 in
+            let isAlnum = (u >= 48 && u <= 57) // 0-9
+                || (u >= 65 && u <= 90) // A-Z
+                || (u >= 97 && u <= 122) // a-z
+            return isAlnum ? u : 45 // '-'
+        }
+        return String(utf16CodeUnits: units, count: units.count)
     }
 
     public static func collectOtherIflowCwdsSharingEncodedDir(

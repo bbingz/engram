@@ -47,6 +47,7 @@ final class QwenAdapter: SessionAdapter, Sendable {
             var endTime = ""
             var userCount = 0
             var assistantCount = 0
+            var toolCount = 0
             var systemCount = 0
             var firstUserText = ""
 
@@ -55,7 +56,7 @@ final class QwenAdapter: SessionAdapter, Sendable {
                     sessionId = value
                 }
                 guard let type = JSONLAdapterSupport.string(object["type"]),
-                      type == "user" || type == "assistant"
+                      type == "user" || type == "assistant" || type == "tool_result"
                 else {
                     continue
                 }
@@ -75,6 +76,8 @@ final class QwenAdapter: SessionAdapter, Sendable {
 
                 if type == "assistant" {
                     assistantCount += 1
+                } else if type == "tool_result" {
+                    toolCount += 1
                 } else {
                     let message = JSONLAdapterSupport.object(object["message"])
                     let text = Self.extractContent(message)
@@ -88,7 +91,7 @@ final class QwenAdapter: SessionAdapter, Sendable {
             }
 
             guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
-            guard userCount + assistantCount > 0 else { return .failure(.noVisibleMessages) }
+            guard userCount + assistantCount + toolCount > 0 else { return .failure(.noVisibleMessages) }
 
             return .success(
                 NormalizedSessionInfo(
@@ -99,10 +102,10 @@ final class QwenAdapter: SessionAdapter, Sendable {
                     cwd: cwd,
                     project: nil,
                     model: model,
-                    messageCount: userCount + assistantCount,
+                    messageCount: userCount + assistantCount + toolCount,
                     userMessageCount: userCount,
                     assistantMessageCount: assistantCount,
-                    toolMessageCount: 0,
+                    toolMessageCount: toolCount,
                     systemMessageCount: systemCount,
                     summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
                     filePath: locator,
@@ -174,18 +177,101 @@ final class QwenAdapter: SessionAdapter, Sendable {
         telemetryUsage: TokenUsage? = nil
     ) -> NormalizedMessage? {
         guard let type = JSONLAdapterSupport.string(object["type"]),
-              type == "user" || type == "assistant"
+              type == "user" || type == "assistant" || type == "tool_result"
         else {
             return nil
         }
+
+        if type == "tool_result" {
+            let content = toolResultContent(from: object)
+            return NormalizedMessage(
+                role: .tool,
+                content: content,
+                timestamp: JSONLAdapterSupport.string(object["timestamp"]),
+                toolCalls: nil,
+                usage: nil
+            )
+        }
+
+        let message = JSONLAdapterSupport.object(object["message"])
         let metadataUsage = usage(from: JSONLAdapterSupport.object(object["usageMetadata"]))
+        let toolCalls = type == "assistant" ? nonEmptyToolCalls(from: message) : nil
         return NormalizedMessage(
             role: type == "assistant" ? .assistant : .user,
-            content: extractContent(JSONLAdapterSupport.object(object["message"])),
+            content: extractContent(message),
             timestamp: JSONLAdapterSupport.string(object["timestamp"]),
-            toolCalls: nil,
+            toolCalls: toolCalls,
             usage: type == "assistant" ? (metadataUsage ?? telemetryUsage) : nil
         )
+    }
+
+    private static func toolCalls(from message: JSONLAdapterSupport.JSONObject?) -> [NormalizedToolCall] {
+        guard let parts = JSONLAdapterSupport.array(message?["parts"]) else { return [] }
+        var calls: [NormalizedToolCall] = []
+        for part in parts {
+            guard let object = JSONLAdapterSupport.object(part),
+                  let functionCall = JSONLAdapterSupport.object(object["functionCall"]),
+                  let name = JSONLAdapterSupport.string(functionCall["name"]),
+                  !name.isEmpty
+            else {
+                continue
+            }
+            let input = functionCall["args"].flatMap { JSONLAdapterSupport.jsonString($0, limit: 500) }
+            calls.append(NormalizedToolCall(name: name, input: input, output: nil))
+        }
+        return calls
+    }
+
+    private static func nonEmptyToolCalls(
+        from message: JSONLAdapterSupport.JSONObject?
+    ) -> [NormalizedToolCall]? {
+        let calls = toolCalls(from: message)
+        return calls.isEmpty ? nil : calls
+    }
+
+    private static func toolResultContent(from object: JSONLAdapterSupport.JSONObject) -> String {
+        if let toolCallResult = JSONLAdapterSupport.object(object["toolCallResult"]) {
+            if let display = JSONLAdapterSupport.string(toolCallResult["resultDisplay"]),
+               !display.isEmpty
+            {
+                return display
+            }
+            if let error = JSONLAdapterSupport.string(toolCallResult["error"]), !error.isEmpty {
+                return error
+            }
+        }
+
+        guard let parts = JSONLAdapterSupport.array(
+            JSONLAdapterSupport.object(object["message"])?["parts"]
+        ) else {
+            return ""
+        }
+        var chunks: [String] = []
+        for part in parts {
+            guard let partObject = JSONLAdapterSupport.object(part),
+                  let functionResponse = JSONLAdapterSupport.object(partObject["functionResponse"])
+            else {
+                continue
+            }
+            if let response = functionResponse["response"] {
+                if let text = JSONLAdapterSupport.string(response), !text.isEmpty {
+                    chunks.append(text)
+                } else if let objectResponse = JSONLAdapterSupport.object(response) {
+                    if let output = JSONLAdapterSupport.string(objectResponse["output"]), !output.isEmpty {
+                        chunks.append(output)
+                    } else if let json = JSONLAdapterSupport.jsonString(objectResponse, limit: 2_000),
+                              !json.isEmpty
+                    {
+                        chunks.append(json)
+                    }
+                } else if let json = JSONLAdapterSupport.jsonString(response, limit: 2_000),
+                          !json.isEmpty
+                {
+                    chunks.append(json)
+                }
+            }
+        }
+        return chunks.joined(separator: "\n\n")
     }
 
     private static func telemetryUsage(from object: JSONLAdapterSupport.JSONObject) -> TokenUsage? {
