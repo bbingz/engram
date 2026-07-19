@@ -208,6 +208,56 @@ final class AdapterMessageCountTests: XCTestCase {
         }
     }
 
+    // Audit VSCODE-INCR-001: mutation logs depend on a complete op sequence;
+    // exceeding maxMessages must fail, not succeed on a truncated prefix.
+    func testVsCodeMutationLogOverObjectLimitIsRejected_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatDir = root.appendingPathComponent("ws-limit/chatSessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatDir, withIntermediateDirectories: true)
+
+        let initial: [String: Any] = [
+            "kind": 0,
+            "v": [
+                "sessionId": "vs-limit",
+                "creationDate": 1_700_000_000_000,
+                "requests": [],
+            ],
+        ]
+        let firstRequest: [String: Any] = [
+            "requestId": "r1",
+            "timestamp": 1_700_000_005_000,
+            "message": ["text": "first request"],
+            "response": [
+                ["value": ["kind": "markdownContent", "content": ["value": "first answer"]]],
+            ],
+        ]
+        let secondRequest: [String: Any] = [
+            "requestId": "r2",
+            "timestamp": 1_700_000_006_000,
+            "message": ["text": "second request"],
+            "response": [
+                ["value": ["kind": "markdownContent", "content": ["value": "second answer"]]],
+            ],
+        ]
+        let push1: [String: Any] = ["kind": 2, "k": ["requests"], "v": [firstRequest]]
+        let push2: [String: Any] = ["kind": 2, "k": ["requests"], "v": [secondRequest]]
+        let file = chatDir.appendingPathComponent("sess.jsonl")
+        try ([try jsonLine(initial), try jsonLine(push1), try jsonLine(push2)].joined(separator: "\n") + "\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = VsCodeAdapter(
+            workspaceStorageDir: root.path,
+            limits: ParserLimits(maxMessages: 2)
+        )
+        switch try await adapter.parseSessionInfo(locator: file.path) {
+        case .failure(let failure):
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        case .success(let info):
+            XCTFail("expected messageLimitExceeded for truncated mutation log, got success id=\(info.id) messages=\(info.messageCount)")
+        }
+    }
+
     // MARK: - Gemini CLI
 
     func testGeminiCountsOnlyNonEmptyTurns() async throws {
@@ -1585,6 +1635,99 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - Claude Code
 
+    // Audit ADAPTER-CC-001: shared non-empty message.id must not double-count
+    // response-level usage while still streaming every content block.
+    func testClaudeCodeRepeatedAssistantMessageIdCountsUsageOnce_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("-Users-test-usage-dedupe", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let sharedUsage: [String: Any] = [
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_input_tokens": 10,
+            "cache_creation_input_tokens": 5,
+        ]
+        let lines: [[String: Any]] = [
+            [
+                "type": "user",
+                "sessionId": "cc-usage-dedupe",
+                "cwd": "/Users/test/usage-dedupe",
+                "timestamp": "2026-07-19T12:00:00.000Z",
+                "message": ["role": "user", "content": "split this answer"],
+            ],
+            [
+                "type": "assistant",
+                "sessionId": "cc-usage-dedupe",
+                "timestamp": "2026-07-19T12:00:01.000Z",
+                "message": [
+                    "id": "msg_shared_1",
+                    "role": "assistant",
+                    "model": "claude-x",
+                    "content": [["type": "text", "text": "part one"]],
+                    "usage": sharedUsage,
+                ],
+            ],
+            [
+                "type": "assistant",
+                "sessionId": "cc-usage-dedupe",
+                "timestamp": "2026-07-19T12:00:02.000Z",
+                "message": [
+                    "id": "msg_shared_1",
+                    "role": "assistant",
+                    "model": "claude-x",
+                    "content": [["type": "text", "text": "part two"]],
+                    "usage": sharedUsage,
+                ],
+            ],
+            [
+                "type": "assistant",
+                "sessionId": "cc-usage-dedupe",
+                "timestamp": "2026-07-19T12:00:03.000Z",
+                "message": [
+                    "id": "msg_other_2",
+                    "role": "assistant",
+                    "model": "claude-x",
+                    "content": [["type": "text", "text": "next response"]],
+                    "usage": [
+                        "input_tokens": 40,
+                        "output_tokens": 8,
+                    ],
+                ],
+            ],
+        ]
+        let file = projectDir.appendingPathComponent("usage-dedupe.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: root.path)
+        let streamed = try await drain(adapter, locator: file.path)
+        let assistants = streamed.filter { $0.role == .assistant }
+        let totals = streamed.compactMap(\.usage).reduce(
+            TokenUsage(inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0)
+        ) { partial, usage in
+            TokenUsage(
+                inputTokens: partial.inputTokens + usage.inputTokens,
+                outputTokens: partial.outputTokens + usage.outputTokens,
+                cacheReadTokens: (partial.cacheReadTokens ?? 0) + (usage.cacheReadTokens ?? 0),
+                cacheCreationTokens: (partial.cacheCreationTokens ?? 0) + (usage.cacheCreationTokens ?? 0)
+            )
+        }
+
+        XCTAssertEqual(assistants.map(\.content), ["part one", "part two", "next response"])
+        XCTAssertEqual(
+            assistants[0].usage,
+            TokenUsage(inputTokens: 100, outputTokens: 20, cacheReadTokens: 10, cacheCreationTokens: 5)
+        )
+        XCTAssertNil(assistants[1].usage)
+        XCTAssertEqual(assistants[2].usage, TokenUsage(inputTokens: 40, outputTokens: 8))
+        XCTAssertEqual(
+            totals,
+            TokenUsage(inputTokens: 140, outputTokens: 28, cacheReadTokens: 10, cacheCreationTokens: 5)
+        )
+    }
+
     // Runtime-debt repro: Claude metadata-only JSONL is valid session state and
     // must use the existing terminal no-visible contract rather than malformed.
     func testClaudeCodeMetadataOnlyIsTerminalNoVisibleMessages_repro() async throws {
@@ -2389,6 +2532,58 @@ final class AdapterMessageCountTests: XCTestCase {
         try exec("INSERT INTO cursorDiskKV VALUES ('composerData:cmp_missing_created', '{\"composerId\":\"cmp_missing_created\",\"lastUpdatedAt\":1700000002000}')")
         try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_missing_created:u1', '{\"type\":1,\"text\":\"Track Cursor timestamps\",\"timingInfo\":{\"clientStartTime\":1700000001000}}')")
         try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_missing_created:a1', '{\"type\":2,\"text\":\"Cursor timestamps tracked.\",\"timingInfo\":{\"clientStartTime\":1700000002000}}')")
+    }
+
+    // MARK: - CommandCode
+
+    // Audit SRC-COMMANDCODE-001: missing timestamps must not index with empty startTime.
+    func testCommandCodeMissingTimestampFallsBackToFileMtime_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("-Users-test-commandcode", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "role": "user",
+                "sessionId": "ccode-no-ts",
+                "cwd": "/Users/test/commandcode",
+                "content": [["type": "text", "text": "hello without timestamps"]],
+            ],
+            [
+                "role": "assistant",
+                "sessionId": "ccode-no-ts",
+                "cwd": "/Users/test/commandcode",
+                "content": [["type": "text", "text": "reply without timestamps"]],
+            ],
+        ]
+        let file = projectDir.appendingPathComponent("no-ts.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let fixedMtime = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes(
+            [.modificationDate: fixedMtime],
+            ofItemAtPath: file.path
+        )
+        let expectedStart = Phase4AdapterSupport.isoFromSeconds(fixedMtime.timeIntervalSince1970)
+
+        let adapter = CommandCodeAdapter(projectsRoot: root.path)
+        let info: NormalizedSessionInfo
+        switch try await adapter.parseSessionInfo(locator: file.path) {
+        case .success(let value):
+            info = value
+        case .failure(let failure):
+            XCTFail("unexpected adapter failure: \(failure)")
+            return
+        }
+
+        XCTAssertEqual(info.id, "ccode-no-ts")
+        XCTAssertEqual(info.startTime, expectedStart)
+        XCTAssertNil(info.endTime)
+        XCTAssertFalse(info.startTime.isEmpty)
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 1)
     }
 
     // MARK: - Antigravity generic cwd inference

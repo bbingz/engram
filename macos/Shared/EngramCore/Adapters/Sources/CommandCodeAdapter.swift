@@ -91,12 +91,20 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
             }
 
             guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
+            // Boundary/legacy transcripts may omit every timestamp. Fall back to
+            // the file mtime so startTime is never an empty sort key.
+            if startTime.isEmpty {
+                let attrs = try? FileManager.default.attributesOfItem(atPath: locator)
+                let mtime = attrs?[.modificationDate] as? Date ?? Date(timeIntervalSince1970: 0)
+                startTime = Phase4AdapterSupport.isoFromSeconds(mtime.timeIntervalSince1970)
+                endTime = ""
+            }
             return .success(
                 NormalizedSessionInfo(
                     id: sessionId,
                     source: .commandcode,
                     startTime: startTime,
-                    endTime: endTime != startTime ? endTime : nil,
+                    endTime: endTime != startTime && !endTime.isEmpty ? endTime : nil,
                     cwd: cwd.isEmpty ? Self.decodeCwd(from: locator) : cwd,
                     project: nil,
                     model: model,

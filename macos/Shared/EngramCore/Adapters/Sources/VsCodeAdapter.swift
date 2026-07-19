@@ -158,7 +158,13 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
         locator: String,
         limits: ParserLimits
     ) throws -> Phase4AdapterSupport.JSONObject? {
-        let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
+        // Mutation logs are state machines: a truncated prefix is not a valid
+        // complete snapshot, so surface the object cap instead of succeeding.
+        let (objects, failure) = try JSONLAdapterSupport.readObjects(
+            locator: locator,
+            limits: limits,
+            reportFailures: true
+        )
         if let failure { throw failure }
         return try replayMutationLog(objects)
     }
