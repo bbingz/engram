@@ -479,6 +479,67 @@ final class OrchestratorTests: XCTestCase {
         XCTAssertFalse(patched.contains("working on \(src)/main.py"))
     }
 
+    // Audit SRC-QWEN-002: project move must rename Qwen project dirs and patch transcripts.
+    func testProjectMoveRenamesAndPatchesQwenHistory_repro() async throws {
+        // Force encoded names past Claude's 200-unit truncate/hash point so the
+        // Qwen encoder cannot silently reuse ClaudeCodeProjectDir.encode.
+        // Stay under APFS's 255-byte single-component limit.
+        let longLeaf = String(repeating: "q", count: 120)
+        let (src, _) = try makeProjectFixture(name: "\(longLeaf)-src")
+        let dst = tempRoot.appendingPathComponent("\(longLeaf)-dst").path
+
+        let encodedOld = SessionSources.encodeQwen(src)
+        let encodedNew = SessionSources.encodeQwen(dst)
+        let claudeOld = ClaudeCodeProjectDir.encode(src)
+        let claudeNew = ClaudeCodeProjectDir.encode(dst)
+        XCTAssertGreaterThan(encodedOld.utf16.count, 200)
+        XCTAssertGreaterThan(encodedNew.utf16.count, 200)
+        XCTAssertEqual(encodedOld.utf16.count, src.utf16.count)
+        XCTAssertEqual(encodedNew.utf16.count, dst.utf16.count)
+        XCTAssertNotEqual(encodedOld, claudeOld)
+        XCTAssertNotEqual(encodedNew, claudeNew)
+        XCTAssertLessThan(claudeOld.utf16.count, encodedOld.utf16.count)
+        XCTAssertLessThan(claudeNew.utf16.count, encodedNew.utf16.count)
+        XCTAssertTrue(claudeOld.hasPrefix(String(encodedOld.prefix(200))))
+        XCTAssertTrue(claudeNew.hasPrefix(String(encodedNew.prefix(200))))
+
+        let qwenOld = tempRoot
+            .appendingPathComponent(".qwen/projects/\(encodedOld)/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: qwenOld, withIntermediateDirectories: true)
+        let sessionFile = qwenOld.appendingPathComponent("qwen-session.jsonl")
+        try """
+        {"type":"user","sessionId":"qwen-move-1","cwd":"\(src)","timestamp":"2026-07-19T00:00:00.000Z","message":{"role":"user","parts":[{"text":"work in \(src)"}]}}
+        """.write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let result = try await ProjectMoveOrchestrator.run(
+            writer: writer,
+            options: makeOptions(src: src, dst: dst)
+        )
+
+        let qwenNewChats = tempRoot
+            .appendingPathComponent(".qwen/projects/\(encodedNew)/chats", isDirectory: true)
+        let qwenOldProject = tempRoot.appendingPathComponent(".qwen/projects/\(encodedOld)")
+
+        XCTAssertEqual(result.state, .committed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: qwenOldProject.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: qwenNewChats.path))
+        XCTAssertTrue(result.renamedDirs.contains {
+            $0.sourceId == .qwen && $0.oldDir.hasSuffix("/.qwen/projects/\(encodedOld)")
+        })
+        XCTAssertEqual(
+            result.perSource.first(where: { $0.id == "qwen" })?.filesPatched,
+            1
+        )
+
+        let patched = try String(
+            contentsOf: qwenNewChats.appendingPathComponent("qwen-session.jsonl"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(patched.contains(dst))
+        XCTAssertFalse(patched.contains("\"cwd\":\"\(src)\""))
+        XCTAssertFalse(patched.contains("work in \(src)"))
+    }
+
     func testGeminiOldNameComesFromProjectsJsonWhenItDiffersFromEncodedSrc() async throws {
         let (src, _) = try makeProjectFixture(name: "WebSite_Gemini")
         let dst = tempRoot.appendingPathComponent("mac_Book_Pro_Debug").path

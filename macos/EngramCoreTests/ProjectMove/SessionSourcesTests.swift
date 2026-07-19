@@ -30,7 +30,7 @@ final class SessionSourcesTests: XCTestCase {
         let ids = roots.map(\.id.rawValue)
         XCTAssertEqual(ids, [
             "claude-code", "codex", "codex-archived", "codex-rollout-summaries", "gemini-cli", "iflow",
-            "qoder", "opencode", "antigravity", "antigravity-legacy", "commandcode", "copilot",
+            "qwen", "qoder", "opencode", "antigravity", "antigravity-legacy", "commandcode", "copilot",
         ])
         XCTAssertEqual(
             roots.first(where: { $0.id.rawValue == "codex-archived" })?.path,
@@ -47,6 +47,10 @@ final class SessionSourcesTests: XCTestCase {
         XCTAssertEqual(
             roots.first(where: { $0.id == .iflow })?.path,
             "/home/test/.iflow/projects"
+        )
+        XCTAssertEqual(
+            roots.first(where: { $0.id == .qwen })?.path,
+            "/home/test/.qwen/projects"
         )
         XCTAssertEqual(
             roots.first(where: { $0.id == .qoder })?.path,
@@ -69,7 +73,7 @@ final class SessionSourcesTests: XCTestCase {
     func testEncodeProjectDirSetForGroupedSourcesOnly() {
         let roots = SessionSources.roots(homeDirectory: URL(fileURLWithPath: "/h"))
         let withEncoder = roots.filter { $0.encodeProjectDir != nil }.map(\.id)
-        XCTAssertEqual(withEncoder, [.claudeCode, .geminiCli, .iflow, .qoder])
+        XCTAssertEqual(withEncoder, [.claudeCode, .geminiCli, .iflow, .qwen, .qoder])
 
         let cc = roots.first { $0.id == .claudeCode }?.encodeProjectDir
         XCTAssertEqual(cc?("/Users/a/b/proj"), "-Users-a-b-proj")
@@ -96,8 +100,40 @@ final class SessionSourcesTests: XCTestCase {
         let iflow = roots.first { $0.id == .iflow }?.encodeProjectDir
         XCTAssertEqual(iflow?("/Users/a/b/proj"), "-Users-a-b-proj")
 
+        let qwen = roots.first { $0.id == .qwen }?.encodeProjectDir
+        XCTAssertEqual(qwen?("/Users/a/b/proj"), "-Users-a-b-proj")
+        XCTAssertEqual(qwen?("/Users/bing/-Code-/engram"), "-Users-bing--Code--engram")
+
         let qoder = roots.first { $0.id == .qoder }?.encodeProjectDir
         XCTAssertEqual(qoder?("/Users/a/b/proj"), "-Users-a-b-proj")
+    }
+
+    // Audit SRC-QWEN-002: Qwen sanitizeCwd never truncates or appends Claude's hash suffix.
+    func testEncodeQwenKeepsFullPathWithoutClaudeHashSuffix_repro() {
+        // Keep the full path well above Claude's 200 UTF-16 unit limit so the
+        // encoders diverge: Claude truncates + hash-suffixes, Qwen keeps all.
+        let longLeaf = String(repeating: "a", count: 220)
+        let cwd = "/Users/bing/-Code-/\(longLeaf)/nested-project"
+        let encoded = SessionSources.encodeQwen(cwd)
+        let claude = ClaudeCodeProjectDir.encode(cwd)
+
+        XCTAssertEqual(encoded.utf16.count, cwd.utf16.count)
+        XCTAssertGreaterThan(encoded.utf16.count, 200)
+        XCTAssertGreaterThan(claude.utf16.count, 200) // 200 prefix + "-" + hash
+        XCTAssertLessThan(claude.utf16.count, encoded.utf16.count)
+        XCTAssertTrue(claude.hasPrefix(String(encoded.prefix(200))))
+        XCTAssertNotEqual(encoded, claude)
+        XCTAssertFalse(encoded.hasPrefix(claude))
+        XCTAssertTrue(encoded.hasPrefix("-Users-bing--Code--"))
+        XCTAssertTrue(encoded.hasSuffix("nested-project"))
+        XCTAssertEqual(
+            SessionSources.encodeQwen("/Users/bing/-Code-/engram"),
+            "-Users-bing--Code--engram"
+        )
+        XCTAssertEqual(
+            SessionSources.encodeQwen("/Users/bing/-Code-/CCTV_Admin"),
+            "-Users-bing--Code--CCTV-Admin"
+        )
     }
 
     // MARK: - encodeIflow
