@@ -4893,6 +4893,183 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(counts.1, 1)
     }
 
+    // PR #197: shipped runner isolates explicit item-local rejection and terminalizes it.
+    /// `backfillInsightEmbeddingsOnce` (not the helper-only
+    /// `InsightEmbeddingBackfill.run`) must isolate poison insights and
+    /// terminalize them so they stop being reselected.
+    func testRunnerInsightEmbeddingIsolatesPoisonAndTerminates_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 20_000_000
+        )
+        _ = try await gate.performWriteCommand(name: "seedPoisonInsight") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO insights (id, content, importance) VALUES
+                      ('good', 'good insight content long enough for embed', 5),
+                      ('poison', 'BAD poison insight content long enough', 5)
+                    """)
+            }
+        }
+
+        let clock = InsightBackoffClock(start: Date(timeIntervalSince1970: 1_700_000_000))
+        let backoff = EmbeddingMaintenanceBackoff(
+            baseDelay: 1,
+            maximumDelay: 1,
+            now: { clock.now }
+        )
+        let env = [
+            "ENGRAM_EMBEDDING_API_KEY": "test",
+            "ENGRAM_EMBEDDING_MODEL": "selective-model",
+            "ENGRAM_EMBEDDING_DIM": "3",
+        ]
+        let providerFactory: @Sendable (EmbeddingConfig) -> any EmbeddingProvider = { _ in
+            SelectiveFailInsightEmbeddingProvider()
+        }
+
+        let first = try await EngramServiceRunner.backfillInsightEmbeddingsOnce(
+            gate: gate,
+            environment: env,
+            providerFactory: providerFactory,
+            backoff: backoff,
+            limit: 10
+        )
+        XCTAssertEqual(first, 1, "R4 product: good insight must still embed")
+
+        let afterFirst = try await gate.performWriteCommand(name: "assertFirstIsolation") { writer in
+            try writer.read { db -> (Int, Int, String?) in
+                let good = try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM insight_embeddings WHERE insight_id = 'good'"
+                ) ?? 0
+                let poisonEmb = try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM insight_embeddings WHERE insight_id = 'poison'"
+                ) ?? 0
+                let status = try String.fetchOne(
+                    db,
+                    sql: "SELECT status FROM insight_embedding_failures WHERE insight_id = 'poison'"
+                )
+                return (good, poisonEmb, status)
+            }
+        }.value
+        XCTAssertEqual(afterFirst.0, 1)
+        XCTAssertEqual(afterFirst.1, 0)
+        XCTAssertEqual(afterFirst.2, "failed_retryable")
+
+        // Exhaust retries on the shipped path; advance backoff between runs.
+        for _ in 0..<InsightEmbeddingBackfill.maxInsightEmbedRetryCount {
+            clock.advance(by: 2)
+            _ = try await EngramServiceRunner.backfillInsightEmbeddingsOnce(
+                gate: gate,
+                environment: env,
+                providerFactory: providerFactory,
+                backoff: backoff,
+                limit: 10
+            )
+        }
+
+        let terminal = try await gate.performWriteCommand(name: "assertPoisonTerminal") { writer in
+            try writer.read { db -> (String?, [String]) in
+                let status = try String.fetchOne(
+                    db,
+                    sql: "SELECT status FROM insight_embedding_failures WHERE insight_id = 'poison'"
+                )
+                // Inline pending SQL (same as pendingInsights) — cannot nest
+                // writer.read via pendingInsights while already in a gate write.
+                let pending = try String.fetchAll(
+                    db,
+                    sql: """
+                    SELECT i.id AS id
+                    FROM insights i
+                    LEFT JOIN insight_embeddings e ON e.insight_id = i.id
+                    LEFT JOIN insight_embedding_failures f ON f.insight_id = i.id
+                    WHERE e.insight_id IS NULL
+                      AND (f.insight_id IS NULL OR f.status != 'failed_permanent')
+                    ORDER BY i.created_at DESC
+                    LIMIT 10
+                    """
+                )
+                return (status, pending)
+            }
+        }.value
+        XCTAssertEqual(
+            terminal.0,
+            "failed_permanent",
+            "R4 product: permanent after retry budget on backfillInsightEmbeddingsOnce"
+        )
+        XCTAssertFalse(
+            terminal.1.contains("poison"),
+            "R4 product: permanent poison must not reselect forever"
+        )
+        XCTAssertFalse(terminal.1.contains("good"))
+    }
+
+    // PR #197 follow-up: provider/config dimension mismatch remains retryable on the shipped runner.
+    func testRunnerInsightDimensionMismatchDoesNotTerminalize_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 20_000_000
+        )
+        _ = try await gate.performWriteCommand(name: "seedDimensionInsight") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(
+                    sql: "INSERT INTO insights (id, content, importance) VALUES ('dimension', 'dimension mismatch insight content', 5)"
+                )
+            }
+        }
+
+        let clock = InsightBackoffClock(start: Date(timeIntervalSince1970: 1_700_000_000))
+        let backoff = EmbeddingMaintenanceBackoff(
+            baseDelay: 1,
+            maximumDelay: 1,
+            now: { clock.now }
+        )
+        let env = [
+            "ENGRAM_EMBEDDING_API_KEY": "test",
+            "ENGRAM_EMBEDDING_MODEL": "probe",
+            "ENGRAM_EMBEDDING_DIM": "3",
+        ]
+
+        for _ in 0..<InsightEmbeddingBackfill.maxInsightEmbedRetryCount {
+            do {
+                _ = try await EngramServiceRunner.backfillInsightEmbeddingsOnce(
+                    gate: gate,
+                    environment: env,
+                    providerFactory: { _ in WrongDimensionInsightEmbeddingProvider() },
+                    backoff: backoff,
+                    limit: 10
+                )
+                XCTFail("expected dimension mismatch")
+            } catch let error as EmbeddingError {
+                XCTAssertEqual(error, .dimensionMismatch(expected: 3, actual: 2))
+            }
+            clock.advance(by: 2)
+        }
+
+        let failureCount = try await gate.performWriteCommand(name: "assertDimensionRetryable") { writer in
+            try writer.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insight_embedding_failures") ?? 0
+            }
+        }.value
+        XCTAssertEqual(failureCount, 0)
+
+        let recovered = try await EngramServiceRunner.backfillInsightEmbeddingsOnce(
+            gate: gate,
+            environment: env,
+            providerFactory: { _ in StaticEmbeddingProvider { _ in [1, 0, 0] } },
+            backoff: backoff,
+            limit: 10
+        )
+        XCTAssertEqual(recovered, 1)
+    }
+
     func testRunnerSessionEmbeddingBackfillEmbedsOutsideWriteGate() async throws {
         let paths = try makeServiceIPCPaths()
         let gate = try ServiceWriterGate(
@@ -4995,6 +5172,40 @@ private struct StaticEmbeddingProvider: EmbeddingProvider {
 
     func embed(_ texts: [String]) async throws -> [[Float]] {
         texts.map { VectorMath.l2Normalize(vector($0)) }
+    }
+}
+
+/// R4: explicit item-local rejection for content containing "BAD".
+private struct SelectiveFailInsightEmbeddingProvider: EmbeddingProvider {
+    let model = "selective-model"
+    let dimension = 3
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        if texts.contains(where: { $0.contains("BAD") }) {
+            throw EmbeddingError.inputRejected("content rejected")
+        }
+        return texts.map { _ in [1, 0, 0] }
+    }
+}
+
+private struct WrongDimensionInsightEmbeddingProvider: EmbeddingProvider {
+    let model = "probe"
+    let dimension = 3
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        texts.map { _ in [1, 0] }
+    }
+}
+
+private final class InsightBackoffClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _now: Date
+    init(start: Date) { _now = start }
+    var now: Date {
+        lock.lock(); defer { lock.unlock() }
+        return _now
+    }
+    func advance(by seconds: TimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        _now = _now.addingTimeInterval(seconds)
     }
 }
 

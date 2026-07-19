@@ -1,0 +1,408 @@
+{
+  "generated_at": "2026-07-18",
+  "branch": "fix/audit-2026-07-18-r4plus",
+  "head": "2940e6c9",
+  "working_tree": "pre-submit PR #197 taxonomy follow-up",
+  "project": "engram",
+  "methodology": {
+    "agents": [
+      "architecture",
+      "service-write-path",
+      "security",
+      "db-read-parity",
+      "embeddings-search",
+      "archive-project-move",
+      "mcp-contract",
+      "swiftui-ux",
+      "concurrency-memory",
+      "tests-ci",
+      "pr-reviewers"
+    ],
+    "verification": "adversarial majority vote; critical/high/medium only confirmed",
+    "baseline_docs": [
+      "docs/reviews/2026-07-17-engram-full-audit.md",
+      "docs/reviews/2026-07-18-full-project-review.md",
+      "docs/reviews/2026-07-17-finding-disposition.md"
+    ]
+  },
+  "pr_reviews_summary": [
+    {
+      "pr_number": 181,
+      "title": "build: upgrade TypeScript to 7.0.2",
+      "status": "merged",
+      "verdict": "SOLID_MERGE_LOW_RESIDUAL",
+      "findings_count": 0
+    },
+    {
+      "pr_number": 183,
+      "title": "perf: bound service maintenance memory and redundant work",
+      "status": "merged",
+      "verdict": "ACCEPTABLE_WITH_RESIDUAL_RISKS",
+      "open_high_on_head": ["EMB-STARVE"]
+    },
+    {
+      "pr_number": 184,
+      "title": "fix(macos): resolve Swift runtime debt",
+      "status": "merged",
+      "verdict": "SOLID_MERGE_WITH_RESIDUALS",
+      "findings_count": 4
+    },
+    {
+      "pr_number": 185,
+      "title": "fix(remote): publish archive receipts atomically",
+      "status": "merged",
+      "verdict": "SOLID_MERGE",
+      "findings_count": 0
+    },
+    {
+      "pr_number": 186,
+      "title": "fix(mcp): use object roots for structured outputs",
+      "status": "merged",
+      "verdict": "SOLID_MERGE_LOW_RESIDUAL",
+      "residual_note": "manage_project_alias list array-root remains as MCP-001"
+    },
+    {
+      "pr_number": 196,
+      "title": "fix(audit): consolidated 2026-07-17 audit closeout + R1–R3 follow-ups",
+      "status": "merged",
+      "verdict": "ACCEPTABLE_WITH_RESIDUALS",
+      "closed": ["H1", "H2", "SEC-H1", "SEC-H2", "M1", "M12/R2", "primary M18/M19/M24"],
+      "left_for_197": ["M3-insight/R4", "M4-budget/R5", "M14/R10", "R11"]
+    },
+    {
+      "pr_number": 197,
+      "title": "fix(audit): R4 insight embed terminalization, R5 reclaim budget cursor, R10/R11",
+      "status": "open",
+      "verdict": "PRE_SUBMIT_REVIEW_PENDING",
+      "prior_grok_verdict": "APPROVE_WITH_NITS",
+      "closes": ["R4", "R5", "R10", "R11"],
+      "nits": ["R4-dual-tx", "R5-recovery-residual"],
+      "pre_submit_fixes": [
+        "Only explicit input-local provider rejection consumes the insight permanent-failure budget",
+        "HTTP/transport, malformed response, dimension/config, and cancellation failures propagate and remain recoverable",
+        "R1 followups status corrected to open (partially mitigated)"
+      ],
+      "runtime_evidence": {
+        "surface": "real EngramService + EngramMCP with isolated temporary database and fake OpenAI-compatible endpoint",
+        "http_500": "Three failures wrote no insight_embedding_failures row; healthy restart embedded and retrieved the same insight",
+        "dimension_mismatch": "Three 2D-vs-configured-3D failures wrote no insight_embedding_failures row; healthy restart embedded and retrieved the same insight",
+        "input_rejection": "Explicit param=input HTTP 400 reached retry_count=3 and failed_permanent; healthy restart did not resend full content"
+      },
+      "submit_gate": "Fresh Codex PASS required before commit or push"
+    },
+    {
+      "pr_range": "188-195",
+      "status": "folded_into_196",
+      "note": "Do not double-count defects against stack PRs"
+    }
+  ],
+  "severity_counts": {
+    "critical": 0,
+    "high": 8,
+    "medium": 7,
+    "low_selective": 14
+  },
+  "findings": [
+    {
+      "id": "ARCH-001",
+      "title": "Triple independent Read SQL stacks (R1 residual)",
+      "severity": "high",
+      "location": "macos/Engram/Core/Database.swift; macos/EngramMCP/Core/MCPDatabase.swift; macos/EngramService/Core/EngramServiceReadProvider.swift; macos/EngramCoreRead/Database/EngramDatabaseReader.swift",
+      "impact": "Same query can return different session sets/counts across App online, App offline, MCP, and service IPC",
+      "root_cause": "Three read owners without shared query layer; CoreRead is connection-only",
+      "fix": "Move list/search/cost predicates into EngramCoreRead; cross-surface id-set parity suite",
+      "effort": "L",
+      "source": "architecture",
+      "confirmed": true,
+      "real_votes": 3
+    },
+    {
+      "id": "READ-001",
+      "title": "MCP multi-term keyword FTS is row-level MATCH, not session-scoped AND",
+      "severity": "high",
+      "location": "macos/EngramMCP/Core/MCPDatabase.swift:2121-2190 vs Database.swift:480-552 vs EngramServiceReadProvider.swift:634-686",
+      "impact": "Agents using MCP search get lower multi-term recall than app/service on multi-row FTS sessions",
+      "root_cause": "R1 residual; H2 only ported CJK/short LIKE",
+      "fix": "Port CTE-per-term session-scoped AND or share one builder",
+      "effort": "M",
+      "source": "db-read-parity",
+      "confirmed": true,
+      "real_votes": 3
+    },
+    {
+      "id": "READ-002",
+      "title": "Search since predicate diverges (COALESCE end/start vs start_time only)",
+      "severity": "high",
+      "location": "Database.swift:464-466; EngramServiceReadProvider.swift:1886-1888; MCPDatabase.swift:1371-1373,2162-2164,2225-2227",
+      "impact": "Long-running sessions visible in app/service search missing from MCP keyword/semantic with same since",
+      "root_cause": "MCP search filters never aligned with appendSearchFilters",
+      "fix": "Share since predicate; MCP use COALESCE(end_time, start_time)",
+      "effort": "S",
+      "source": "db-read-parity",
+      "confirmed": true,
+      "real_votes": 3
+    },
+    {
+      "id": "SVC-001",
+      "title": "Reclamation drops product-missing bindings without advancing cursor",
+      "severity": "high",
+      "location": "macos/EngramService/Core/ArchiveReclamationCoordinator.swift:evaluateCandidates compactMap+productState ~255-281,352-367; executeCycle ~179-212",
+      "impact": "Full page of product-missing dual-receipt bindings can stall reclaim forever; later eligibles starve",
+      "root_cause": "Cursor fairness only tracks returned decisions; silent compactMap drops invisible",
+      "fix": "Treat product-missing as examined blocked; add full-page missing repro",
+      "effort": "S",
+      "source": "service-write-path",
+      "confirmed": true,
+      "real_votes": 3
+    },
+    {
+      "id": "EMB-001",
+      "title": "Skip-tier artifact purge never deletes semantic_chunks",
+      "severity": "high",
+      "location": "SessionSnapshotWriter.swift:745-761; StartupBackfills skip paths; SessionVectorSearchAvailability.swift:181-196",
+      "impact": "Orphan chunk BLOBs forever; tools/list may advertise semantic/hybrid on skip-only corpus",
+      "root_cause": "Cleanup written for legacy session_embeddings only",
+      "fix": "DELETE semantic_chunks on skip purge; probe requires searchable-tier session",
+      "effort": "S",
+      "source": "embeddings-search",
+      "confirmed": true,
+      "real_votes": 3
+    },
+    {
+      "id": "EMB-STARVE",
+      "title": "Periodic embedding starves when scan.indexed is merge-only zero",
+      "severity": "high",
+      "location": "EngramServiceRunner.swift:814-825; SwiftIndexer.swift:71-92; IndexJobRunner excludes embedding",
+      "impact": "Idle hosts with pending/retry embed jobs never drain until a session merge or restart",
+      "root_cause": "Idle-skip gate interacted with merge-only indexed metric from PR 183",
+      "fix": "Decouple embed eligibility from merge count; pending-job signal or idle N-cycle drain",
+      "effort": "M",
+      "source": "pr-183-F1",
+      "confirmed": true,
+      "real_votes": 1,
+      "verify_note": "Verified keep on current HEAD by PR review adversarial verify"
+    },
+    {
+      "id": "CONC-001",
+      "title": "Startup long maintenance write names miss isLongRunningWriteCommand",
+      "severity": "high",
+      "location": "ServiceWriterGate.swift:274-303; EngramServiceRunner initialFtsDrain/initialInstructionBackfill/initialImplementationBeatBackfill",
+      "impact": "Short writes behind healthy multi-second startup drain get false writerBusy (M1 residual)",
+      "root_cause": "Brittle name allowlist drifted from performWriteCommand call sites",
+      "fix": "Cover initial* names; source-contract + behavioral tests",
+      "effort": "S",
+      "source": "concurrency-memory",
+      "confirmed": true,
+      "real_votes": 3
+    },
+    {
+      "id": "UI-001",
+      "title": "Advanced Session Filter settings are dead controls",
+      "severity": "high",
+      "location": "SettingsView.swift:232-263,450-463; SessionsPageView AppStorage sessions.showAll",
+      "impact": "Users flip noiseFilter/hide* with no list effect; false control over core visibility",
+      "root_cause": "Settings keys orphaned after AppStorage + SessionVisibilityFilter cutover",
+      "fix": "Wire shared list predicate or remove/relabel controls",
+      "effort": "M",
+      "source": "swiftui-ux",
+      "confirmed": true,
+      "real_votes": 3
+    },
+    {
+      "id": "SEC-001",
+      "title": "Offload trusts remote HEAD then collapses local FTS without durability proof",
+      "severity": "medium",
+      "location": "OffloadRunner.swift:83-107; RemoteSyncCoordinator.swift:223-245; OffloadRepo.swift:184-215; EngramRemoteBackend.swift:92-98",
+      "impact": "False HEAD 200 can leave cold sessions on shadow-only FTS without proven remote blob (opt-in path)",
+      "root_cause": "HEAD used as authority for commitOffloaded; comment requires PUT success",
+      "fix": "Always PUT or GET+hash-verify before commitOffloaded",
+      "effort": "M",
+      "source": "security",
+      "confirmed": true,
+      "real_votes": 3
+    },
+    {
+      "id": "READ-003",
+      "title": "Project filter exact on app/service, substring LIKE on MCP",
+      "severity": "medium",
+      "location": "Database.swift:459-462; EngramServiceReadProvider.swift:1882-1884; MCPDatabase.swift:177-185,1361-1369,2152-2160",
+      "impact": "MCP project=app matches my-app/app-v2; MCP tools also disagree with each other",
+      "root_cause": "No shared project predicate; historical MCP partial match",
+      "fix": "Default exact match + aliases; substring behind explicit flag",
+      "effort": "M",
+      "source": "db-read-parity",
+      "confirmed": true,
+      "real_votes": 3
+    },
+    {
+      "id": "MCP-001",
+      "title": "manage_project_alias list emits array-root structuredContent",
+      "severity": "medium",
+      "location": "MCPDatabase.swift:1545-1557; MCPToolRegistry.swift:1141-1146; tests/fixtures/mcp-golden/manage_project_alias.list.json",
+      "impact": "MCP 2025-11-25 object structuredContent clients fail on list; inconsistent with add/remove",
+      "root_cause": "PR 186 only fixed tools with outputSchema",
+      "fix": "Wrap as {aliases:[...]}, declare schema, extend object-root tests",
+      "effort": "S",
+      "source": "mcp-contract",
+      "confirmed": true,
+      "real_votes": 3
+    },
+    {
+      "id": "MCP-002",
+      "title": "get_context / tool_analytics / file_activity omit full skip+hidden visibility",
+      "severity": "medium",
+      "location": "MCPDatabase.swift:2084-2117,289-347,349-388,1785-1799,1890-1909",
+      "impact": "Skip/subagent noise in agent bootstrap; analytics overcount vs list_sessions defaults",
+      "root_cause": "M18/M19 closed primary list/costs only",
+      "fix": "Apply SessionVisibilityFilter.listVisibleSQL; MCP fixtures",
+      "effort": "M",
+      "source": "mcp-contract",
+      "confirmed": true,
+      "real_votes": 3
+    },
+    {
+      "id": "UI-002",
+      "title": "AI/Advanced settings can drop last edits and block main thread",
+      "severity": "medium",
+      "location": "AISettingsSection.swift:330-336; SettingsView.swift:250-381; SettingsIO.swift:136-161",
+      "impact": "Debounced AI edits lost on leave; Advanced sync flock hitch (R9/M21)",
+      "root_cause": "MainActor file I/O; AI debounce without leave flush; Advanced undebounced",
+      "fix": "Debounce Advanced; flush onDisappear; off-main I/O",
+      "effort": "M",
+      "source": "swiftui-ux",
+      "confirmed": true,
+      "real_votes": 3
+    },
+    {
+      "id": "R4-dual-tx",
+      "title": "Insight embed success and failure records not atomic",
+      "severity": "medium",
+      "location": "EngramServiceRunner.swift:1550-1565; InsightEmbeddingBackfill.swift:99-110,138-212",
+      "impact": "Crash or error after writeEmbeddings commits but before recordFailures commits leaves that cycle's failed insights pending; the next eligible backfill may repeat provider calls and delays retry/terminal convergence until failure bookkeeping succeeds. Successfully embedded insights are excluded from reselection.",
+      "root_cause": "Two sequential writer.write vs session single-tx design",
+      "fix": "Single transaction for successes + failures",
+      "effort": "S",
+      "source": "pr-197",
+      "confirmed": true
+    },
+    {
+      "id": "F5-CI",
+      "title": "npm audit fatal on push, soft on PR",
+      "severity": "medium",
+      "location": ".github/workflows/test.yml:93-95",
+      "impact": "main can go red after green PR on same adm-zip findings",
+      "root_cause": "continue-on-error only for pull_request",
+      "fix": "Align PR/push policy or pin/replace transitive deps",
+      "effort": "S",
+      "source": "pr-196",
+      "confirmed": true
+    },
+    {
+      "id": "R5-recovery-residual",
+      "title": "Recovery intent loop skips over-budget rows without ordered stop",
+      "severity": "low",
+      "location": "ArchiveReclamationCoordinator.swift:168-174",
+      "impact": "Non-FIFO recovery under partial budgets; not R5 candidate regression",
+      "fix": "Optional ordered stop or recovery cursor",
+      "effort": "S",
+      "source": "pr-197",
+      "confirmed": true,
+      "label": "pre-existing"
+    }
+  ],
+  "low_selective_ids": [
+    "SVC-005",
+    "EMB-008",
+    "EMB-009",
+    "ARCHV-005",
+    "ARCHV-006",
+    "MCP-010",
+    "MCP-011",
+    "MCP-012",
+    "SEC-006",
+    "SEC-007",
+    "SEC-009",
+    "UI-009",
+    "UI-010",
+    "TEST-009",
+    "ARCH-006",
+    "ARCH-007",
+    "ARCH-008",
+    "ARCH-009"
+  ],
+  "refuted_ids": [
+    "SEC-005",
+    "SEC-008",
+    "READ-005"
+  ],
+  "accepted_design_residuals": [
+    "SEC-M4",
+    "SEC-M5",
+    "SEC-I1",
+    "SEC-I2",
+    "SEC-L4",
+    "M15",
+    "M21-partial-as-R9",
+    "ARCHV-001-soft-issue-policy",
+    "L19",
+    "L21",
+    "L35"
+  ],
+  "closed_this_cycle": [
+    "H1",
+    "H2",
+    "SEC-H1",
+    "SEC-H2",
+    "M1-core",
+    "M3-session",
+    "M3-insight-R4",
+    "M4-count",
+    "M4-budget-R5",
+    "M12-R2",
+    "M14-R10-behavioral",
+    "R11-evidence-ledger",
+    "R11-r1-overclaim",
+    "M18",
+    "M19",
+    "M24"
+  ],
+  "still_open_followups": ["R1", "R6", "R7", "R8", "R9"],
+  "roadmap": {
+    "now": [
+      "Obtain fresh Codex PASS for PR 197 pre-submit taxonomy follow-up; do not commit or push before PASS",
+      "R4 dual-tx single write",
+      "SVC-001 product-missing reclaim cursor",
+      "EMB-001 semantic_chunks skip purge",
+      "CONC-001 long-running name sync",
+      "EMB-STARVE idle embed drain",
+      "READ-002 since COALESCE on MCP",
+      "READ-001 multi-term CTE on MCP or shared builder step-1",
+      "MCP-001 object-root list aliases",
+      "F5-CI npm audit policy align"
+    ],
+    "next": [
+      "Shared CoreRead query module + parity suite (ARCH-001)",
+      "READ-003 project exact policy",
+      "MCP-002 context/analytics visibility",
+      "SEC-001 offload durability proof",
+      "UI-002/R9 settings flush off-main",
+      "UI-001 wire or remove Advanced Session Filter",
+      "R7 offload HTTP depth",
+      "Secondary skip aggregates F4 residual"
+    ],
+    "later": [
+      "R6 project-move writer gate availability",
+      "R8 Codex content tail implement or demote",
+      "Notarization automation / public release assets",
+      "Insight batch embed; split embedding_meta",
+      "MCP allowlists / include_raw confirm UX",
+      "Remote server GC multi-tenant rate limits",
+      "Blind-spot deep dives: backup, capture stack, adapters, MCP stdio"
+    ]
+  },
+  "deliverable_reports": [
+    "docs/reviews/2026-07-18-two-day-pr-review.md",
+    "docs/reviews/2026-07-18-multi-agent-full-code-audit.md",
+    "docs/reviews/2026-07-18-multi-agent-full-code-audit-findings.json"
+  ]
+}

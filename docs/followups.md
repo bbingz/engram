@@ -3,6 +3,27 @@
 Follow-ups are verification gaps, low-priority refactors, or items that need
 real data, UI exercise, or product confirmation before becoming TODOs.
 
+## Post-review residuals (2026-07-18 full-project review)
+
+Promoted from `docs/reviews/2026-07-18-full-project-review.md` so open work is
+not only a bare disposition status table. R2–R5 and R10 closed in #196 / R4+;
+R1 remains open. R4 terminalization is limited to explicit input-local provider
+rejection; HTTP/transport, malformed response, and dimension/config failures
+remain recoverable and do not consume the permanent budget. Remaining items:
+
+| ID | Status | Home / next step |
+|----|--------|------------------|
+| **R1** / ARCH-001 / READ-001/002/003 | open (partially mitigated) | Triple Read SQL stacks remain; unify shared list/search/cost predicates in CoreRead and add cross-surface parity fixtures |
+| **R6** | open | Project-move holds writer gate for entire FS+patch lifetime — availability redesign |
+| **R7** | open | Offload HTTP client weaker than Archive V2 (`URLSession.shared`, no redirect/size/post-DNS private checks); stale “default OFF” comment |
+| **R8** | open | Codex content tail indexing dead in product (`mergeTailSnapshot` always nil) |
+| **R9** / M21 residual | open | AI settings debounce can drop last edits; no flush on disappear; MainActor I/O after debounce |
+| **R11 ledger** | closed | Disposition evidence columns + this followups section |
+| **L-a…L-j** | residual | Low/Info rows in full-project review; not engineering-zero blockers |
+| **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
+
+Also see disposition inventory: `docs/reviews/2026-07-17-finding-disposition.md`.
+
 ## Open conditional follow-ups — exact-source archive v2 (2026-07-15)
 
 These boundaries are deliberately outside the current operator deployment and

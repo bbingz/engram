@@ -447,6 +447,15 @@ enum EngramMigrations {
               dim INTEGER NOT NULL,
               created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            -- R4: per-insight embed failure terminalization so poison content
+            -- cannot be reselected forever (mirrors session embedding M3).
+            CREATE TABLE IF NOT EXISTS insight_embedding_failures (
+              insight_id TEXT PRIMARY KEY REFERENCES insights(id) ON DELETE CASCADE,
+              retry_count INTEGER NOT NULL DEFAULT 0,
+              status TEXT NOT NULL CHECK (status IN ('failed_retryable', 'failed_permanent')),
+              last_error TEXT,
+              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
             CREATE TABLE IF NOT EXISTS semantic_chunks (
               id TEXT PRIMARY KEY,
               session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

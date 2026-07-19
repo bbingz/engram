@@ -6,7 +6,12 @@ import GRDB
 
 actor ArchiveReclamationCoordinator {
     static let maximumCandidatesPerCycle = 10
-    static let maximumSourceBytesPerCycle: Int64 = 256 * 1_024 * 1_024
+    static let defaultMaximumSourceBytesPerCycle: Int64 = 256 * 1_024 * 1_024
+    /// Test hook: when non-nil, replaces `defaultMaximumSourceBytesPerCycle`.
+    static var testMaximumSourceBytesPerCycle: Int64?
+    static var maximumSourceBytesPerCycle: Int64 {
+        testMaximumSourceBytesPerCycle ?? defaultMaximumSourceBytesPerCycle
+    }
 
     private struct ProductState: Sendable {
         let lastActivityNs: Int64
@@ -167,9 +172,10 @@ actor ArchiveReclamationCoordinator {
                 released += result.releasedBytes
             }
 
-            // M4: walk candidates in order; stop once the per-cycle reclaim cap is
-            // reached, and advance the cursor only past candidates actually examined
-            // (not past the entire 1_000-row page of unprocessed eligible sessions).
+            // M4/R5: walk candidates in order; stop once the per-cycle reclaim
+            // count or source-byte budget binds. Advance the cursor only past
+            // candidates we fully resolved (reclaimed or ineligible) — never
+            // past eligible rows skipped because the byte budget was exhausted.
             var lastProcessedBinding: ArchiveBinding?
             for (candidate, decision, _) in try evaluateCandidates(
                 now: now,
@@ -178,9 +184,16 @@ actor ArchiveReclamationCoordinator {
                 if sourceCount >= Self.maximumCandidatesPerCycle {
                     break
                 }
-                lastProcessedBinding = candidate.binding
-                guard case .eligible = decision,
-                      candidate.capture.rawByteCount <= sourceBudget else { continue }
+                guard case .eligible = decision else {
+                    // Ineligible: examined and resolved; safe to advance past.
+                    lastProcessedBinding = candidate.binding
+                    continue
+                }
+                guard candidate.capture.rawByteCount <= sourceBudget else {
+                    // R5: eligible but over remaining byte budget — stop without
+                    // advancing the cursor past this (or later) eligible row.
+                    break
+                }
                 let intent = try catalog.upsertReclamationIntent(
                     manifestSHA256: candidate.binding.manifestSHA256,
                     captureID: candidate.capture.captureID,
@@ -192,6 +205,7 @@ actor ArchiveReclamationCoordinator {
                 sourceCount += 1
                 sourceBudget -= result.releasedBytes
                 released += result.releasedBytes
+                lastProcessedBinding = candidate.binding
             }
             if let last = lastProcessedBinding {
                 try storeReclamationCursor(binding: last, now: now)

@@ -7,9 +7,17 @@ import GRDB
 /// callers pass a provider only when one is configured. Bounded by `limit` per
 /// run so a large backlog is drained across maintenance cycles.
 public enum InsightEmbeddingBackfill {
+    /// Same terminal budget as session FTS/embedding isolation — poison content
+    /// becomes `failed_permanent` and is excluded from pending selection.
+    public static let maxInsightEmbedRetryCount = 3
+
     public struct Result: Equatable {
         public let embedded: Int
-        public init(embedded: Int) { self.embedded = embedded }
+        public let failed: Int
+        public init(embedded: Int, failed: Int = 0) {
+            self.embedded = embedded
+            self.failed = failed
+        }
     }
 
     public struct PendingInsight: Equatable, Sendable {
@@ -32,6 +40,54 @@ public enum InsightEmbeddingBackfill {
         }
     }
 
+    public struct InsightFailure: Equatable, Sendable {
+        public let id: String
+        public let error: String
+
+        public init(id: String, error: String) {
+            self.id = id
+            self.error = error
+        }
+    }
+
+    /// R4: embed each pending insight independently. Only explicit input-local
+    /// rejection is isolated; provider, protocol, configuration, and cancellation
+    /// failures propagate so callers can retry the maintenance phase.
+    public static func embedPendingIsolated(
+        _ pending: [PendingInsight],
+        provider: EmbeddingProvider
+    ) async throws -> (successes: [EmbeddedInsight], failures: [InsightFailure]) {
+        guard !pending.isEmpty else { return ([], []) }
+        var successes: [EmbeddedInsight] = []
+        var failures: [InsightFailure] = []
+        successes.reserveCapacity(pending.count)
+
+        for item in pending {
+            do {
+                let vectors = try await provider.embed([item.content])
+                guard vectors.count == 1, let vector = vectors.first else {
+                    throw EmbeddingError.malformedResponse
+                }
+                try validateUniformNativeDimension([vector], configured: provider.dimension)
+                successes.append(EmbeddedInsight(id: item.id, vector: vector))
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as EmbeddingError {
+                switch error {
+                case .inputRejected(let message):
+                    failures.append(InsightFailure(id: item.id, error: message))
+                case .notConfigured, .http, .malformedResponse, .dimensionMismatch, .circuitOpen:
+                    throw error
+                }
+            } catch {
+                throw error
+            }
+        }
+        return (successes, failures)
+    }
+
+    /// Convenience: pending → isolated embed → write successes + record failures.
+    /// Prefer the service runner path for product (gate-separated network I/O).
     public static func run(
         writer: EngramDatabaseWriter,
         provider: EmbeddingProvider,
@@ -43,20 +99,21 @@ public enum InsightEmbeddingBackfill {
             dimension: provider.dimension
         )
         let pending = try pendingInsights(writer: writer, limit: limit)
-        guard !pending.isEmpty else { return Result(embedded: 0) }
+        guard !pending.isEmpty else { return Result(embedded: 0, failed: 0) }
 
-        let vectors = try await provider.embed(pending.map(\.content))
-        guard vectors.count == pending.count else { return Result(embedded: 0) }
-
-        let embedded = zip(pending, vectors).map { item, vector in
-            EmbeddedInsight(id: item.id, vector: vector)
+        let outcome = try await embedPendingIsolated(pending, provider: provider)
+        if !outcome.successes.isEmpty {
+            _ = try writeEmbeddings(
+                writer: writer,
+                embeddings: outcome.successes,
+                model: provider.model,
+                dimension: provider.dimension
+            )
         }
-        return try writeEmbeddings(
-            writer: writer,
-            embeddings: embedded,
-            model: provider.model,
-            dimension: provider.dimension
-        )
+        if !outcome.failures.isEmpty {
+            try recordFailures(writer: writer, failures: outcome.failures)
+        }
+        return Result(embedded: outcome.successes.count, failed: outcome.failures.count)
     }
 
     public static func pendingInsights(
@@ -68,7 +125,9 @@ public enum InsightEmbeddingBackfill {
                 SELECT i.id AS id, i.content AS content
                 FROM insights i
                 LEFT JOIN insight_embeddings e ON e.insight_id = i.id
+                LEFT JOIN insight_embedding_failures f ON f.insight_id = i.id
                 WHERE e.insight_id IS NULL
+                  AND (f.insight_id IS NULL OR f.status != 'failed_permanent')
                 ORDER BY i.created_at DESC
                 LIMIT ?
             """, arguments: [limit])
@@ -104,6 +163,11 @@ public enum InsightEmbeddingBackfill {
                     """,
                     arguments: [item.id, VectorMath.encode(item.vector), model, nativeDim]
                 )
+                // Successful embed clears any prior failure bookkeeping.
+                try db.execute(
+                    sql: "DELETE FROM insight_embedding_failures WHERE insight_id = ?",
+                    arguments: [item.id]
+                )
             }
             try db.execute(
                 sql: """
@@ -118,6 +182,38 @@ public enum InsightEmbeddingBackfill {
             )
         }
         return Result(embedded: embeddings.count)
+    }
+
+    public static func recordFailures(
+        writer: EngramDatabaseWriter,
+        failures: [InsightFailure]
+    ) throws {
+        guard !failures.isEmpty else { return }
+        try writer.write { db in
+            for failure in failures {
+                try db.execute(
+                    sql: """
+                    INSERT INTO insight_embedding_failures (
+                      insight_id, retry_count, status, last_error, updated_at
+                    ) VALUES (?, 1, ?, ?, datetime('now'))
+                    ON CONFLICT(insight_id) DO UPDATE SET
+                      retry_count = insight_embedding_failures.retry_count + 1,
+                      status = CASE
+                        WHEN insight_embedding_failures.retry_count + 1 >= ? THEN 'failed_permanent'
+                        ELSE 'failed_retryable'
+                      END,
+                      last_error = excluded.last_error,
+                      updated_at = excluded.updated_at
+                    """,
+                    arguments: [
+                        failure.id,
+                        "failed_retryable",
+                        failure.error,
+                        maxInsightEmbedRetryCount,
+                    ]
+                )
+            }
+        }
     }
 
     /// M17: when configured (model, dimension) differs from `embedding_meta`,
@@ -152,6 +248,9 @@ public enum InsightEmbeddingBackfill {
 
         try db.execute(sql: "DELETE FROM semantic_chunks")
         try db.execute(sql: "DELETE FROM insight_embeddings")
+        // Model/dim change invalidates prior poison permanent marks so content
+        // can be retried under the new embedding space.
+        try db.execute(sql: "DELETE FROM insight_embedding_failures")
         try db.execute(
             sql: """
             UPDATE session_index_jobs

@@ -11,6 +11,22 @@ private struct FakeEmbeddingProvider: EmbeddingProvider {
     }
 }
 
+private struct HTTP500EmbeddingProvider: EmbeddingProvider {
+    let model = "fake-model"
+    let dimension = 3
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        throw EmbeddingError.http(500)
+    }
+}
+
+private struct MalformedEmbeddingProvider: EmbeddingProvider {
+    let model = "fake-model"
+    let dimension = 3
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        throw EmbeddingError.malformedResponse
+    }
+}
+
 private actor BatchRecordingEmbeddingProvider: EmbeddingProvider {
     let model = "batch-model"
     let dimension = 3
@@ -26,18 +42,15 @@ private actor BatchRecordingEmbeddingProvider: EmbeddingProvider {
     }
 }
 
-/// Returns wrong-length vectors for sessions whose content contains "BAD".
+/// Explicitly rejects content containing "BAD" as an item-local hard failure.
 private struct SelectiveFailEmbeddingProvider: EmbeddingProvider {
     let model = "selective-model"
     let dimension = 3
     func embed(_ texts: [String]) async throws -> [[Float]] {
-        texts.map { text in
-            if text.contains("BAD") {
-                // Native length 2 ≠ configured 3 → M16 mismatch / M3 isolation.
-                return [1, 0]
-            }
-            return [1, 0, 0]
+        if texts.contains(where: { $0.contains("BAD") }) {
+            throw EmbeddingError.inputRejected("content rejected")
         }
+        return texts.map { _ in [1, 0, 0] }
     }
 }
 
@@ -84,7 +97,7 @@ final class InsightEmbeddingBackfillTests: XCTestCase {
 
         let provider = FakeEmbeddingProvider()
         let first = try await InsightEmbeddingBackfill.run(writer: writer, provider: provider)
-        XCTAssertEqual(first, .init(embedded: 2))
+        XCTAssertEqual(first, .init(embedded: 2, failed: 0))
 
         try writer.read { db in
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insight_embeddings"), 2)
@@ -99,7 +112,192 @@ final class InsightEmbeddingBackfillTests: XCTestCase {
 
         // Nothing pending on the second run.
         let second = try await InsightEmbeddingBackfill.run(writer: writer, provider: provider)
-        XCTAssertEqual(second, .init(embedded: 0))
+        XCTAssertEqual(second, .init(embedded: 0, failed: 0))
+    }
+
+    // PR #197: explicit item-local input rejection is isolated and terminalized.
+    /// Unit helper: isolated embed + recordFailures (product path coverage lives
+    /// in EngramServiceCoreTests.testRunnerInsightEmbeddingIsolatesPoisonAndTerminates_repro).
+    func testInsightEmbeddingIsolatesPoisonAndTerminates_repro() async throws {
+        let path = tempDir.appendingPathComponent("r4-insight.sqlite").path
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO insights (id, content, importance) VALUES
+                  ('good', 'good insight content long enough for embed', 5),
+                  ('poison', 'BAD poison insight content long enough', 5)
+            """)
+        }
+
+        let provider = SelectiveFailEmbeddingProvider()
+        let pending = try InsightEmbeddingBackfill.pendingInsights(writer: writer, limit: 10)
+        let outcome = try await InsightEmbeddingBackfill.embedPendingIsolated(
+            pending,
+            provider: provider
+        )
+        XCTAssertEqual(outcome.successes.count, 1, "R4: good insight must still embed")
+        XCTAssertEqual(outcome.failures.count, 1, "R4: poison isolated as failure")
+        _ = try InsightEmbeddingBackfill.writeEmbeddings(
+            writer: writer,
+            embeddings: outcome.successes,
+            model: provider.model,
+            dimension: provider.dimension
+        )
+        try InsightEmbeddingBackfill.recordFailures(writer: writer, failures: outcome.failures)
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insight_embeddings WHERE insight_id = 'good'"),
+                1
+            )
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT status FROM insight_embedding_failures WHERE insight_id = 'poison'"
+                ),
+                "failed_retryable"
+            )
+        }
+
+        for _ in 0..<InsightEmbeddingBackfill.maxInsightEmbedRetryCount {
+            let again = try InsightEmbeddingBackfill.pendingInsights(writer: writer, limit: 10)
+            let poisonOnly = again.filter { $0.id == "poison" }
+            guard !poisonOnly.isEmpty else { break }
+            let out = try await InsightEmbeddingBackfill.embedPendingIsolated(
+                poisonOnly,
+                provider: provider
+            )
+            try InsightEmbeddingBackfill.recordFailures(writer: writer, failures: out.failures)
+        }
+        try writer.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT status FROM insight_embedding_failures WHERE insight_id = 'poison'"
+                ),
+                "failed_permanent",
+                "R4: terminal after retry budget"
+            )
+        }
+        let stillPending = try InsightEmbeddingBackfill.pendingInsights(writer: writer, limit: 10)
+        XCTAssertFalse(
+            stillPending.contains(where: { $0.id == "poison" }),
+            "R4: permanent failure must not reselect poison forever"
+        )
+    }
+
+    // PR #197 follow-up: transient provider failures must not consume the poison budget.
+    func testTransientProviderFailureDoesNotTerminalizeInsight_repro() async throws {
+        let path = tempDir.appendingPathComponent("transient-insight.sqlite").path
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO insights (id, content, importance)
+                VALUES ('transient', 'transient provider failure content', 5)
+            """)
+        }
+
+        let failingProvider = HTTP500EmbeddingProvider()
+        for _ in 0..<InsightEmbeddingBackfill.maxInsightEmbedRetryCount {
+            do {
+                _ = try await InsightEmbeddingBackfill.run(
+                    writer: writer,
+                    provider: failingProvider
+                )
+                XCTFail("expected HTTP 500 to propagate")
+            } catch let error as EmbeddingError {
+                XCTAssertEqual(error, .http(500))
+            }
+        }
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insight_embedding_failures"),
+                0
+            )
+        }
+
+        let recovered = try await InsightEmbeddingBackfill.run(
+            writer: writer,
+            provider: FakeEmbeddingProvider()
+        )
+        XCTAssertEqual(recovered, .init(embedded: 1, failed: 0))
+    }
+
+    // PR #197 follow-up: malformed provider responses are phase-level failures, not item poison.
+    func testMalformedProviderResponseDoesNotTerminalizeInsight_repro() async throws {
+        let path = tempDir.appendingPathComponent("malformed-insight.sqlite").path
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO insights (id, content, importance)
+                VALUES ('malformed', 'malformed provider response content', 5)
+            """)
+        }
+
+        for _ in 0..<InsightEmbeddingBackfill.maxInsightEmbedRetryCount {
+            do {
+                _ = try await InsightEmbeddingBackfill.run(
+                    writer: writer,
+                    provider: MalformedEmbeddingProvider()
+                )
+                XCTFail("expected malformed response to propagate")
+            } catch let error as EmbeddingError {
+                XCTAssertEqual(error, .malformedResponse)
+            }
+        }
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insight_embedding_failures"),
+                0
+            )
+        }
+        let recovered = try await InsightEmbeddingBackfill.run(
+            writer: writer,
+            provider: FakeEmbeddingProvider()
+        )
+        XCTAssertEqual(recovered, .init(embedded: 1, failed: 0))
+    }
+
+    // PR #197 follow-up: provider/config dimension mismatch must remain recoverable.
+    func testDimensionMismatchDoesNotTerminalizeInsight_repro() async throws {
+        let path = tempDir.appendingPathComponent("dimension-insight.sqlite").path
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO insights (id, content, importance)
+                VALUES ('dimension', 'provider dimension mismatch content', 5)
+            """)
+        }
+
+        for _ in 0..<InsightEmbeddingBackfill.maxInsightEmbedRetryCount {
+            do {
+                _ = try await InsightEmbeddingBackfill.run(
+                    writer: writer,
+                    provider: WrongDimEmbeddingProvider()
+                )
+                XCTFail("expected dimension mismatch to propagate")
+            } catch let error as EmbeddingError {
+                XCTAssertEqual(error, .dimensionMismatch(expected: 3, actual: 2))
+            }
+        }
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insight_embedding_failures"),
+                0
+            )
+        }
+        let recovered = try await InsightEmbeddingBackfill.run(
+            writer: writer,
+            provider: FakeEmbeddingProvider()
+        )
+        XCTAssertEqual(recovered, .init(embedded: 1, failed: 0))
     }
 
     func testSessionEmbeddingCapsEachProviderRequestBatch() async throws {

@@ -47,6 +47,7 @@ final class EmbeddingCircuitBreakerTests: XCTestCase {
             try breaker.allowRequest(providerKey: key)
             // Simulate recording only when isTransportFailure is true.
             XCTAssertFalse(EmbeddingCircuitBreaker.isTransportFailure(EmbeddingError.notConfigured))
+            XCTAssertFalse(EmbeddingCircuitBreaker.isTransportFailure(EmbeddingError.inputRejected("bad input")))
             XCTAssertFalse(EmbeddingCircuitBreaker.isTransportFailure(EmbeddingError.malformedResponse))
             XCTAssertFalse(EmbeddingCircuitBreaker.isTransportFailure(EmbeddingError.http(401)))
             XCTAssertFalse(EmbeddingCircuitBreaker.isTransportFailure(EmbeddingError.circuitOpen))

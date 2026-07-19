@@ -51,7 +51,10 @@ than "easy TDD" or better tracked as separate work:
 Latent throughput issue on listMachines/listReceipts. No data-loss path. Accepted residual until discovery is product-hot; HEAD (M14) fixed existence-only.
 
 ## Remaining Lows L1–L5, L9–L18, L20, L22, L24–L34, L36
-Closeout accepts as residual low backlog. Highs and defect-class mediums closed in PRs #188–#194. Prefer follow-up themed PRs rather than blocking multi-PR audit stack.
+Closeout accepts as residual low backlog. Highs and defect-class mediums closed in consolidated PR #196 (supersedes #188–#195). Prefer follow-up themed PRs rather than blocking multi-PR audit stack. Active residual routing: `docs/followups.md` § “Post-review residuals”.
 
 ## M21 — AI settings per-keystroke I/O
-Debounce (~400ms) landed in batch F. Full off-main flock/Keychain I/O remains residual: settings writes still run on MainActor after debounce.
+Debounce (~400ms) landed in batch F. Full off-main flock/Keychain I/O remains residual: settings writes still run on MainActor after debounce. Tracked as review **R9** in `docs/followups.md`.
+
+## Status note (R11)
+This file is the **accepted residual writeup**, not a pending-fix queue. Items here are intentionally not product fixes in the audit closeout. Do not re-mark them as “pending-fix” without promoting them to `docs/TODO.md` / `docs/followups.md` with an owner.
