@@ -1,6 +1,7 @@
+import CryptoKit
 import Foundation
 
-final class KimiAdapter: SessionAdapter, Sendable {
+final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
     private typealias TurnMetadata = (startTime: String, endTime: String?, usage: TokenUsage?)
 
     let source: SourceName = .kimi
@@ -43,6 +44,16 @@ final class KimiAdapter: SessionAdapter, Sendable {
         return locators.sorted()
     }
 
+    func listSessionLocators(
+        modifiedSince: Date,
+        fileManager: FileManager
+    ) async throws -> [String] {
+        try await listSessionLocators().filter { locator in
+            Self.compositeModificationDate(locator: locator, fileManager: fileManager)
+                .map { $0 >= modifiedSince } ?? false
+        }
+    }
+
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
         do {
             let contextFiles = Self.contextFiles(for: locator)
@@ -58,6 +69,7 @@ final class KimiAdapter: SessionAdapter, Sendable {
             let messages = allObjects.filter(Self.isConversation)
             let userMessages = messages.filter { JSONLAdapterSupport.string($0["role"]) == "user" }
             let assistantMessages = messages.filter { JSONLAdapterSupport.string($0["role"]) == "assistant" }
+            let toolMessages = messages.filter { JSONLAdapterSupport.string($0["role"]) == "tool" }
             let timestamps = try Self.readTimestamps(wirePath: URL(fileURLWithPath: locator)
                 .deletingLastPathComponent()
                 .appendingPathComponent("wire.jsonl")
@@ -73,13 +85,13 @@ final class KimiAdapter: SessionAdapter, Sendable {
                     source: .kimi,
                     startTime: timestamps.startTime.isEmpty ? fallbackStart : timestamps.startTime,
                     endTime: timestamps.endTime != timestamps.startTime ? timestamps.endTime : nil,
-                    cwd: resolveCwd(sessionId: sessionId),
+                    cwd: resolveCwd(sessionId: sessionId, locator: locator),
                     project: nil,
                     model: nil,
-                    messageCount: userMessages.count + assistantMessages.count,
+                    messageCount: messages.count,
                     userMessageCount: userMessages.count,
                     assistantMessageCount: assistantMessages.count,
-                    toolMessageCount: 0,
+                    toolMessageCount: toolMessages.count,
                     systemMessageCount: 0,
                     summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
                     filePath: locator,
@@ -135,9 +147,9 @@ final class KimiAdapter: SessionAdapter, Sendable {
                 .path,
             limits: limits
         )
+        var records: [(object: Phase4AdapterSupport.JSONObject, role: String, turnIndex: Int)] = []
         var turnIndex = 0
-        var userBoundInTurn = false
-        var assistantBoundInTurn = false
+        var hasMessageInTurn = false
         var truncatedAt: Int?
         let shouldApplyMessageCap = options.limit == nil
 
@@ -153,33 +165,37 @@ final class KimiAdapter: SessionAdapter, Sendable {
             }
             for object in objects {
                 guard let role = JSONLAdapterSupport.string(object["role"]),
-                      role == "user" || role == "assistant"
+                      role == "user" || role == "assistant" || role == "tool"
                 else { continue }
 
-                let shouldAdvance = role == "user"
-                    ? (userBoundInTurn || assistantBoundInTurn)
-                    : assistantBoundInTurn
-                if shouldAdvance {
+                if role == "user", hasMessageInTurn {
                     turnIndex += 1
-                    userBoundInTurn = false
-                    assistantBoundInTurn = false
+                    hasMessageInTurn = false
                 }
-                let turn = turnIndex < turns.count ? turns[turnIndex] : nil
-                let wireTimestamp = role == "user" ? turn?.startTime : (turn?.endTime ?? turn?.startTime)
-                if role == "user" {
-                    userBoundInTurn = true
-                } else {
-                    assistantBoundInTurn = true
-                }
+                records.append((object: object, role: role, turnIndex: turnIndex))
+                hasMessageInTurn = true
+            }
+        }
 
-                let usage = role == "assistant" ? turn?.usage : nil
-                if let message = Self.message(
-                    from: object,
-                    timestamp: Self.lineTimestamp(from: object) ?? wireTimestamp,
-                    usage: usage
-                ) {
-                    messages.append(message)
-                }
+        var lastAssistantByTurn: [Int: Int] = [:]
+        for (index, record) in records.enumerated() where record.role == "assistant" {
+            lastAssistantByTurn[record.turnIndex] = index
+        }
+        for (index, record) in records.enumerated() {
+            let turn = record.turnIndex < turns.count ? turns[record.turnIndex] : nil
+            let wireTimestamp = record.role == "user"
+                ? turn?.startTime
+                : (turn?.endTime ?? turn?.startTime)
+            let usage = record.role == "assistant"
+                && lastAssistantByTurn[record.turnIndex] == index
+                ? turn?.usage
+                : nil
+            if let message = Self.message(
+                from: record.object,
+                timestamp: Self.lineTimestamp(from: record.object) ?? wireTimestamp,
+                usage: usage
+            ) {
+                messages.append(message)
             }
         }
         if shouldApplyMessageCap, messages.count > limits.maxMessages {
@@ -193,19 +209,41 @@ final class KimiAdapter: SessionAdapter, Sendable {
         )
     }
 
-    private func resolveCwd(sessionId: String) -> String {
+    private func resolveCwd(sessionId: String, locator: String) -> String {
         guard let data = try? Data(contentsOf: kimiJsonPath),
               let object = try? JSONSerialization.jsonObject(with: data) as? Phase4AdapterSupport.JSONObject,
               let workDirs = JSONLAdapterSupport.array(object["work_dirs"])
         else {
             return ""
         }
-        for workDir in workDirs.compactMap({ JSONLAdapterSupport.object($0) }) {
+        let workspaceName = URL(fileURLWithPath: locator)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .lastPathComponent
+        let objects = workDirs.compactMap { JSONLAdapterSupport.object($0) }
+        for workDir in objects {
+            guard let path = JSONLAdapterSupport.string(workDir["path"]),
+                  Self.workspaceDirectoryName(
+                    path: path,
+                    kaos: JSONLAdapterSupport.string(workDir["kaos"])
+                  ) == workspaceName
+            else { continue }
+            return path
+        }
+        for workDir in objects {
             if JSONLAdapterSupport.string(workDir["last_session_id"]) == sessionId {
                 return JSONLAdapterSupport.string(workDir["path"]) ?? ""
             }
         }
         return ""
+    }
+
+    private static func workspaceDirectoryName(path: String, kaos: String?) -> String {
+        let digest = Insecure.MD5.hash(data: Data(path.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        guard let kaos, !kaos.isEmpty, kaos != "local" else { return digest }
+        return "\(kaos)_\(digest)"
     }
 
     private static func contextFiles(for locator: String) -> [String] {
@@ -221,6 +259,20 @@ final class KimiAdapter: SessionAdapter, Sendable {
             .map(\.path)
         files.append(contentsOf: subFiles)
         return files
+    }
+
+    private static func compositeModificationDate(
+        locator: String,
+        fileManager: FileManager
+    ) -> Date? {
+        let wirePath = URL(fileURLWithPath: locator)
+            .deletingLastPathComponent()
+            .appendingPathComponent("wire.jsonl")
+            .path
+        return (contextFiles(for: locator) + [wirePath]).compactMap { path in
+            try? fileManager.attributesOfItem(atPath: path)[.modificationDate] as? Date
+        }
+        .max()
     }
 
     private static func contextShardIndex(_ filename: String) -> Int? {
@@ -278,7 +330,7 @@ final class KimiAdapter: SessionAdapter, Sendable {
 
     private static func isConversation(_ object: Phase4AdapterSupport.JSONObject) -> Bool {
         let role = JSONLAdapterSupport.string(object["role"])
-        return role == "user" || role == "assistant"
+        return role == "user" || role == "assistant" || role == "tool"
     }
 
     private static func message(
@@ -291,13 +343,38 @@ final class KimiAdapter: SessionAdapter, Sendable {
         else {
             return nil
         }
+        let normalizedRole: NormalizedMessageRole = switch role {
+        case "user": .user
+        case "tool": .tool
+        default: .assistant
+        }
+        let toolCalls = role == "assistant" ? toolCalls(from: object["tool_calls"]) : []
         return NormalizedMessage(
-            role: role == "user" ? .user : .assistant,
+            role: normalizedRole,
             content: extractContent(object["content"]),
             timestamp: timestamp,
-            toolCalls: nil,
+            toolCalls: toolCalls.isEmpty ? nil : toolCalls,
             usage: role == "assistant" ? usage : nil
         )
+    }
+
+    private static func toolCalls(from value: Any?) -> [NormalizedToolCall] {
+        guard let calls = JSONLAdapterSupport.array(value) else { return [] }
+        return calls.compactMap { value in
+            guard let call = JSONLAdapterSupport.object(value),
+                  let function = JSONLAdapterSupport.object(call["function"]),
+                  let name = JSONLAdapterSupport.string(function["name"])
+            else { return nil }
+            let input: String?
+            if let string = JSONLAdapterSupport.string(function["arguments"]) {
+                input = string
+            } else {
+                input = function["arguments"].flatMap {
+                    JSONLAdapterSupport.jsonString($0, limit: 2_000)
+                }
+            }
+            return NormalizedToolCall(name: name, input: input, output: nil)
+        }
     }
 
     private static func extractContent(_ content: Any?) -> String {
