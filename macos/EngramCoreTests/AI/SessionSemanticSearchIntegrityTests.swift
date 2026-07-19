@@ -127,7 +127,9 @@ final class SessionSemanticSearchIntegrityTests: XCTestCase {
 
     // MARK: - Availability probe still requires matching corpus
 
-    func testProbeIsUsableOnlyWithMetaAndCompatibleChunk() throws {
+    // EMB-001: a compatible chunk owned only by a skip-tier session must not
+    // advertise semantic or hybrid search as available.
+    func testProbeRequiresSearchableSessionWithCompatibleChunk_repro() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("engram-avail-\(UUID().uuidString).sqlite")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -139,6 +141,10 @@ final class SessionSemanticSearchIntegrityTests: XCTestCase {
                   id INTEGER PRIMARY KEY CHECK (id = 1),
                   provider TEXT, model TEXT, dimension INTEGER,
                   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE sessions (
+                  id TEXT PRIMARY KEY,
+                  tier TEXT
                 );
                 CREATE TABLE semantic_chunks (
                   id TEXT PRIMARY KEY,
@@ -152,6 +158,7 @@ final class SessionSemanticSearchIntegrityTests: XCTestCase {
                 );
                 INSERT INTO embedding_meta (id, provider, model, dimension)
                 VALUES (1, 'test', 'model-a', 3);
+                INSERT INTO sessions (id, tier) VALUES ('s0', 'skip');
                 """)
         }
         XCTAssertFalse(SessionVectorSearchAvailability.probe(databasePath: url.path).isUsable)
@@ -164,6 +171,11 @@ final class SessionSemanticSearchIntegrityTests: XCTestCase {
                 """,
                 arguments: [VectorMath.encode([1, 0, 0])]
             )
+        }
+        XCTAssertFalse(SessionVectorSearchAvailability.probe(databasePath: url.path).isUsable)
+
+        try queue.write { db in
+            try db.execute(sql: "UPDATE sessions SET tier = 'normal' WHERE id = 's0'")
         }
         let usable = SessionVectorSearchAvailability.probe(databasePath: url.path)
         XCTAssertTrue(usable.isUsable)

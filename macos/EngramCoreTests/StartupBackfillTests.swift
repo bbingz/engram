@@ -37,20 +37,53 @@ final class StartupBackfillTests: XCTestCase {
     func testDowngradeSubagentTiersPurgesFtsMapArtifacts_repro() throws {
         try writer.write { db in
             let leaked = "purge-leak-subagent-downgrade"
+            let nullableLeaked = "purge-leak-null-subagent-downgrade"
             let kept = "purge-keep-subagent-downgrade"
+            let nullableKept = "purge-keep-null-session-downgrade"
             try insertSession(db, id: "subagent-1", source: "codex", agentRole: "subagent", tier: "lite")
+            try insertSession(db, id: "subagent-null", source: "codex", agentRole: "subagent")
             try insertSession(db, id: "normal-1", source: "codex", tier: "normal")
+            try insertSession(db, id: "normal-null", source: "codex")
             try createRecoverableArtifactTables(db)
             try insertRecoverableArtifacts(db, sessionId: "subagent-1", content: leaked)
+            try insertRecoverableArtifacts(db, sessionId: "subagent-null", content: nullableLeaked)
             try insertRecoverableArtifacts(db, sessionId: "normal-1", content: kept)
+            try insertRecoverableArtifacts(db, sessionId: "normal-null", content: nullableKept)
+            try insertSemanticChunk(db, sessionId: "subagent-1", text: leaked)
+            try insertSemanticChunk(db, sessionId: "subagent-null", text: nullableLeaked)
+            try insertSemanticChunk(db, sessionId: "normal-1", text: kept)
+            try insertSemanticChunk(db, sessionId: "normal-null", text: nullableKept)
 
-            // PR #141 regression: batch skip cleanup must purge fts_map rows as
-            // well as cached messages, FTS, and embedding artifacts.
+            // PR #141 and EMB-001 regressions: batch skip cleanup must purge
+            // cached messages, FTS, and both legacy and current embedding artifacts.
             let changed = try StartupBackfills.downgradeSubagentTiers(db)
 
-            XCTAssertEqual(changed, 1)
+            XCTAssertEqual(changed, 2)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'subagent-null'"),
+                "skip"
+            )
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = 'normal-null'"))
             try assertRecoverableArtifactContent(db, content: leaked, expectedCount: 0)
+            try assertRecoverableArtifactContent(db, content: nullableLeaked, expectedCount: 0)
             try assertRecoverableArtifactContent(db, content: kept, expectedCount: 4)
+            try assertRecoverableArtifactContent(db, content: nullableKept, expectedCount: 4)
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = 'subagent-1'"),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = 'subagent-null'"),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = 'normal-1'"),
+                1
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = 'normal-null'"),
+                1
+            )
         }
     }
 
@@ -310,14 +343,24 @@ final class StartupBackfillTests: XCTestCase {
             try createRecoverableArtifactTables(db)
             try insertRecoverableArtifacts(db, sessionId: "codex-claude", content: leaked)
             try insertRecoverableArtifacts(db, sessionId: "codex-native", content: kept)
+            try insertSemanticChunk(db, sessionId: "codex-claude", text: leaked)
+            try insertSemanticChunk(db, sessionId: "codex-native", text: kept)
 
-            // PR #141 regression: per-session skip classification must purge
-            // legacy cached message rows as well as FTS and embedding artifacts.
+            // PR #141 and EMB-001 regressions: per-session skip classification
+            // must purge cached messages, FTS, and both embedding stores.
             let updated = try StartupBackfills.backfillCodexOriginator(db)
 
             XCTAssertEqual(updated, 1)
             try assertRecoverableArtifactContent(db, content: leaked, expectedCount: 0)
             try assertRecoverableArtifactContent(db, content: kept, expectedCount: 4)
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = 'codex-claude'"),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = 'codex-native'"),
+                1
+            )
         }
     }
 
@@ -1654,6 +1697,36 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    // EMB-001: semantic_chunks must be a cheap reconciliation signal even after
+    // the one-time FTS sweep has already completed.
+    func testReconcileSkipTierPurgesJoblessSemanticChunks_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "skip-semantic", source: "codex", tier: "skip")
+            try insertSession(db, id: "keep-semantic", source: "codex", tier: "normal")
+            try insertSemanticChunk(db, sessionId: "skip-semantic", text: "stale semantic")
+            try insertSemanticChunk(db, sessionId: "keep-semantic", text: "kept semantic")
+            try db.execute(
+                sql: "INSERT INTO metadata(key, value) VALUES (?, ?)",
+                arguments: [
+                    StartupBackfills.skipTierArtifactReconcileMetadataKey,
+                    StartupBackfills.skipTierArtifactReconcileVersion,
+                ]
+            )
+
+            let removed = try StartupBackfills.reconcileSkipTierIndexArtifacts(db)
+
+            XCTAssertEqual(removed, 1)
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = 'skip-semantic'"),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = 'keep-semantic'"),
+                1
+            )
+        }
+    }
+
     func testReconcileSkipTierPurgesJoblessFtsOnlyArtifacts_repro() throws {
         try writer.write { db in
             let leaked = "purge-leak-jobless-fts-only"
@@ -1887,6 +1960,16 @@ final class StartupBackfillTests: XCTestCase {
         try db.execute(
             sql: "INSERT INTO session_embeddings(session_id, content) VALUES (?, ?)",
             arguments: [sessionId, content]
+        )
+    }
+
+    private func insertSemanticChunk(_ db: Database, sessionId: String, text: String) throws {
+        try db.execute(
+            sql: """
+            INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
+            VALUES (?, ?, 0, ?, X'00', 'test-model', 1)
+            """,
+            arguments: ["\(sessionId):0", sessionId, text]
         )
     }
 

@@ -7,6 +7,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: EMB-001 skip-tier semantic artifacts
+
+- Direct tier downgrades and startup skip reconciliation now remove current
+  `semantic_chunks` alongside FTS, message, and legacy embedding artifacts;
+  nullable-tier subagents are first classified as `skip` instead of losing
+  searchable artifacts while remaining unclassified.
+- Jobless skip-only semantic rows remain a cheap startup reconciliation signal
+  after the one-time FTS sweep marker has completed.
+- Semantic/hybrid availability now requires a compatible chunk owned by a
+  searchable-tier session, preventing skip-only corpora from being advertised.
+
 ### Fixed: CONC-001 startup maintenance writer timeouts
 
 - `initialInstructionBackfill`, `initialImplementationBeatBackfill`, and

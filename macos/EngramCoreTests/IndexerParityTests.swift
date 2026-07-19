@@ -1454,6 +1454,12 @@ final class IndexerParityTests: XCTestCase {
             try db.execute(sql: "INSERT INTO session_embeddings(session_id) VALUES ('downgrade')")
             try db.execute(
                 sql: """
+                INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
+                VALUES ('downgrade:0', 'downgrade', 0, 'old searchable content', X'00', 'test-model', 1)
+                """
+            )
+            try db.execute(
+                sql: """
                 CREATE TABLE IF NOT EXISTS messages(
                   session_id TEXT NOT NULL,
                   msg_seq INTEGER NOT NULL,
@@ -1466,8 +1472,8 @@ final class IndexerParityTests: XCTestCase {
                 sql: "INSERT INTO messages(session_id, msg_seq, content) VALUES ('downgrade', 0, 'old searchable content')"
             )
 
-            // PR #141 regression: direct snapshot downgrades must purge legacy
-            // cached message rows alongside FTS and embedding artifacts.
+            // PR #141 and EMB-001 regressions: direct snapshot downgrades must
+            // purge cached messages, FTS, and both embedding stores.
             _ = try snapshotWriter.writeAuthoritativeSnapshot(
                 makeSnapshot(id: "downgrade", snapshotHash: "h2", tier: .skip)
             )
@@ -1478,6 +1484,10 @@ final class IndexerParityTests: XCTestCase {
             )
             XCTAssertEqual(
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session_embeddings WHERE session_id = 'downgrade'"),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM semantic_chunks WHERE session_id = 'downgrade'"),
                 0
             )
             XCTAssertEqual(

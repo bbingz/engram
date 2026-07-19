@@ -755,6 +755,11 @@ public final class SessionSnapshotWriter {
         if try tableExists("session_embeddings") {
             try db.execute(sql: "DELETE FROM session_embeddings WHERE session_id = ?", arguments: [sessionId])
         }
+        try deleteRowsFromSessionArtifactTableIfPresent(
+            table: "semantic_chunks",
+            whereSQL: "session_id = ?",
+            arguments: [sessionId]
+        )
         try db.execute(
             sql: "DELETE FROM session_index_jobs WHERE session_id = ? AND status IN ('pending', 'failed_retryable')",
             arguments: [sessionId]
