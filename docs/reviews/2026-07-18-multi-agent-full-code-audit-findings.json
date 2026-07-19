@@ -127,7 +127,14 @@
       "effort": "M",
       "source": "db-read-parity",
       "confirmed": true,
-      "real_votes": 3
+      "real_votes": 3,
+      "status": "fixed_in_post_audit_followup",
+      "fix_evidence": [
+        "MCP keyword search now builds one FTS CTE per token and inner-joins them by session_id, matching terms across separate rows while excluding partial-term sessions",
+        "testKeywordSearchMatchesTermsAcrossFTSRows_repro captured RED with zero results before the fix and passed afterward",
+        "All 11 selected keyword/semantic search regressions passed, followed by the complete EngramMCPTests suite at 160 of 160 and a successful Debug Engram build",
+        "ARCH-001 remains open because the three read surfaces still do not share one CoreRead query module"
+      ]
     },
     {
       "id": "READ-002",
@@ -140,7 +147,14 @@
       "effort": "S",
       "source": "db-read-parity",
       "confirmed": true,
-      "real_votes": 3
+      "real_votes": 3,
+      "status": "fixed_in_post_audit_followup",
+      "fix_evidence": [
+        "MCP semantic candidates, FTS keyword search, and CJK/short-query LIKE fallback now filter since with COALESCE(end_time, start_time)",
+        "Keyword and semantic since _repro tests each captured RED by losing a session that ended after the cutoff and passed afterward",
+        "All 11 selected keyword/semantic search regressions passed, followed by the complete EngramMCPTests suite at 160 of 160 and a successful Debug Engram build",
+        "ARCH-001 remains open because the shared since predicate has not yet moved into one CoreRead query module"
+      ]
     },
     {
       "id": "SVC-001",
@@ -397,7 +411,9 @@
     "SVC-001-post-audit-followup",
     "CONC-001-post-audit-followup",
     "EMB-001-post-audit-followup",
-    "EMB-STARVE-post-audit-followup"
+    "EMB-STARVE-post-audit-followup",
+    "READ-001-post-audit-followup",
+    "READ-002-post-audit-followup"
   ],
   "still_open_followups": ["R1", "R6", "R7", "R8", "R9"],
   "roadmap": {
@@ -407,8 +423,8 @@
       "EMB-001 semantic_chunks skip purge and searchable-tier availability (post-audit follow-up fixed)",
       "CONC-001 long-running startup names aligned (post-audit follow-up fixed)",
       "EMB-STARVE idle embed drain (post-audit follow-up fixed)",
-      "READ-002 since COALESCE on MCP",
-      "READ-001 multi-term CTE on MCP or shared builder step-1",
+      "READ-002 MCP since COALESCE across keyword, LIKE, and semantic candidates (post-audit follow-up fixed)",
+      "READ-001 MCP multi-term session-scoped CTE (post-audit follow-up fixed; ARCH-001 shared builder remains open)",
       "MCP-001 object-root list aliases",
       "F5-CI npm audit policy align"
     ],

@@ -1283,6 +1283,94 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(results.compactMap { $0["session"]?["id"]?.stringValue }, ["mcp-hidden-visible"])
     }
 
+    // READ-001: MCP keyword search must AND terms at session scope because one
+    // session owns multiple sessions_fts rows.
+    func testKeywordSearchMatchesTermsAcrossFTSRows_repro() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-multi-term-search-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedReadParitySearchFixture(at: dbPath)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"crossalpha crossbeta","mode":"keyword","limit":10}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]
+        )
+
+        let results = try XCTUnwrap(capture.ordered["result"]?["structuredContent"]?["results"]?.arrayValue)
+        XCTAssertEqual(
+            Set(results.compactMap { $0["session"]?["id"]?.stringValue }),
+            Set(["mcp-cross-row"]),
+            "every term may occur in a different FTS row owned by the same session"
+        )
+    }
+
+    // READ-002: `since` describes recent activity, so a session that started
+    // before the cutoff but ended after it must remain visible to keyword search.
+    func testKeywordSearchSinceUsesEndTimeFallback_repro() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-keyword-since-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedReadParitySearchFixture(at: dbPath)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"sinceparitytoken","mode":"keyword","since":"2026-01-10T00:00:00Z","limit":10}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]
+        )
+
+        let results = try XCTUnwrap(capture.ordered["result"]?["structuredContent"]?["results"]?.arrayValue)
+        XCTAssertEqual(
+            results.compactMap { $0["session"]?["id"]?.stringValue },
+            ["mcp-active-after-since"]
+        )
+    }
+
+    // READ-002: semantic candidate filtering must use the same activity-time
+    // predicate as keyword, app, and service search.
+    func testSemanticSearchSinceUsesEndTimeFallback_repro() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-semantic-since-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedReadParitySearchFixture(at: dbPath)
+
+        let server = try MockHTTPServer(jsonBody: #"{"data":[{"index":0,"embedding":[1,0,0]}]}"#)
+        server.start()
+        defer { server.stop() }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"recent activity","mode":"semantic","since":"2026-01-10T00:00:00Z","limit":10}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_EMBEDDING_BASE_URL": "http://127.0.0.1:\(server.port)/v1",
+                "ENGRAM_EMBEDDING_API_KEY": "test",
+                "ENGRAM_EMBEDDING_MODEL": "probe",
+                "ENGRAM_EMBEDDING_DIM": "3",
+            ]
+        )
+
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertNotEqual(structured["isError"]?.boolValue, true, "\(structured)")
+        XCTAssertEqual(
+            structured["results"]?.arrayValue?.compactMap { $0["session"]?["id"]?.stringValue },
+            ["mcp-active-after-since"]
+        )
+    }
+
     /// H2: MCP keyword search must return CJK hits via LIKE (not empty FTS).
     func testKeywordSearchReturnsCJKQueriesViaLikeFallback_repro() throws {
         let dbPath = try temporaryFixtureCopy(
@@ -2394,9 +2482,9 @@ final class EngramMCPExecutableTests: XCTestCase {
     /// already share the same keyword rank list.
     ///
     /// Scope (docs/mcp-semantic-search-design-2026-07.md §3): single-token,
-    /// unfiltered, non-orphan fixture. Does **not** claim multi-token /
-    /// project-since / orphan SQL identity — those remain intentional MCP vs
-    /// service keyword-engine deltas.
+    /// unfiltered, non-orphan fixture. Multi-token and since filtering now share
+    /// the service semantics; project alias expansion and orphan filtering remain
+    /// MCP-specific.
     func testSearchHybridParityMatchesServiceRankingConstants() async throws {
         let bothSession = "parity-both"
         let semanticOnlySession = "parity-sem"
@@ -4711,6 +4799,83 @@ final class EngramMCPExecutableTests: XCTestCase {
                   ('mcp-hidden-visible', 'hiddenneedle visible'),
                   ('mcp-hidden-hidden', 'hiddenneedle hidden')
                 """
+            )
+        }
+    }
+
+    private func seedReadParitySearchFixture(at dbPath: String) throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, end_time, cwd, project, file_path,
+                  message_count, tier, summary
+                )
+                VALUES
+                  ('mcp-cross-row', 'codex', '2026-01-12T00:00:00Z', '2026-01-12T01:00:00Z',
+                   '/Users/test/work/read-parity', 'read-parity', '/tmp/mcp-cross-row.jsonl',
+                   2, 'normal', 'cross-row search fixture'),
+                  ('mcp-single-term', 'codex', '2026-01-12T00:00:00Z', '2026-01-12T01:00:00Z',
+                   '/Users/test/work/read-parity', 'read-parity', '/tmp/mcp-single-term.jsonl',
+                   1, 'normal', 'single-term search fixture'),
+                  ('mcp-active-after-since', 'codex', '2026-01-01T00:00:00Z', '2026-01-15T00:00:00Z',
+                   '/Users/test/work/read-parity', 'read-parity', '/tmp/mcp-active-after-since.jsonl',
+                   1, 'normal', 'active-after-since search fixture'),
+                  ('mcp-inactive-before-since', 'codex', '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z',
+                   '/Users/test/work/read-parity', 'read-parity', '/tmp/mcp-inactive-before-since.jsonl',
+                   1, 'normal', 'inactive-before-since search fixture')
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES
+                  ('mcp-cross-row', 'crossalpha planning note'),
+                  ('mcp-cross-row', 'crossbeta verifier note'),
+                  ('mcp-single-term', 'crossalpha only'),
+                  ('mcp-active-after-since', 'sinceparitytoken recent activity'),
+                  ('mcp-inactive-before-since', 'sinceparitytoken stale activity')
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE IF NOT EXISTS semantic_chunks (
+                  id TEXT PRIMARY KEY,
+                  session_id TEXT NOT NULL,
+                  chunk_index INTEGER NOT NULL,
+                  text TEXT NOT NULL,
+                  embedding BLOB,
+                  model TEXT,
+                  dim INTEGER,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS embedding_meta (
+                  id INTEGER PRIMARY KEY CHECK (id = 1),
+                  provider TEXT,
+                  model TEXT,
+                  dimension INTEGER,
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                DELETE FROM semantic_chunks;
+                DELETE FROM embedding_meta;
+                INSERT INTO embedding_meta (id, provider, model, dimension)
+                VALUES (1, 'test', 'probe', 3);
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO semantic_chunks(id, session_id, chunk_index, text, embedding, model, dim)
+                VALUES
+                  ('mcp-active-after-since:c0', 'mcp-active-after-since', 0,
+                   'recent activity semantic chunk', ?, 'probe', 3),
+                  ('mcp-inactive-before-since:c0', 'mcp-inactive-before-since', 0,
+                   'stale activity semantic chunk', ?, 'probe', 3)
+                """,
+                arguments: [
+                    encodeVector([1, 0, 0]),
+                    encodeVector([0, 1, 0]),
+                ]
             )
         }
     }
