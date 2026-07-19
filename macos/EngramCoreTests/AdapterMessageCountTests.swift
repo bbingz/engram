@@ -2744,6 +2744,78 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - OpenCode
 
+    // Audit ADAPTER-OPENCODE-001: soft-archived sessions must be inaccessible so
+    // previously indexed Engram rows can enter the orphan lifecycle.
+    func testOpenCodeArchivedSessionIsInaccessible_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("opencode.db").path
+        try Self.buildOpenCodeFixture(dbPath: dbPath)
+
+        let before = OpenCodeAdapter(dbPath: dbPath)
+        let locator = "\(dbPath)::ses_1"
+        let beforeAccessible = await before.isAccessible(locator: locator)
+        XCTAssertTrue(beforeAccessible)
+        switch try await before.parseSessionInfo(locator: locator) {
+        case .success:
+            break
+        case .failure(let failure):
+            XCTFail("active session must parse before archive: \(failure)")
+        }
+
+        try Self.archiveOpenCodeSession(dbPath: dbPath, id: "ses_1", archivedAt: 1_700_000_020_000)
+
+        // Fresh adapter = next orphan-scan cycle (avoids process-local accessibility cache).
+        let after = OpenCodeAdapter(dbPath: dbPath)
+        let afterAccessible = await after.isAccessible(locator: locator)
+        XCTAssertFalse(
+            afterAccessible,
+            "archived OpenCode sessions must not remain accessible forever"
+        )
+        let locators = try await after.listSessionLocators()
+        XCTAssertFalse(locators.contains(locator))
+        switch try await after.parseSessionInfo(locator: locator) {
+        case .success(let info):
+            XCTFail("archived session must not parse successfully, got id=\(info.id)")
+        case .failure:
+            break
+        }
+        // Unarchived peer still works.
+        let peerAccessible = await after.isAccessible(locator: "\(dbPath)::ses_2")
+        XCTAssertTrue(peerAccessible)
+    }
+
+    // Audit ADAPTER-OPENCODE-002: sizeBytes must sum UTF-8 bytes, not TEXT char length.
+    func testOpenCodeSessionPayloadSizeUsesUTF8Bytes_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("opencode.db").path
+        try Self.buildOpenCodeCJKSizeFixture(dbPath: dbPath)
+
+        let messageJSON = #"{"role":"user"}"#
+        let partJSON = #"{"type":"text","text":"你好世界"}"#
+        let expected =
+            Data(messageJSON.utf8).count + Data(partJSON.utf8).count
+        // Character length under-counts CJK (4 chars vs 12 UTF-8 bytes in text alone).
+        XCTAssertLessThan(
+            messageJSON.count + partJSON.count,
+            expected,
+            "fixture must exercise multi-byte vs character-length divergence"
+        )
+
+        let adapter = OpenCodeAdapter(dbPath: dbPath)
+        switch try await adapter.parseSessionInfo(locator: "\(dbPath)::ses_cjk") {
+        case .success(let info):
+            XCTAssertEqual(
+                info.sizeBytes,
+                Int64(expected),
+                "sizeBytes must use length(CAST(data AS BLOB)) UTF-8 totals"
+            )
+        case .failure(let failure):
+            XCTFail("unexpected adapter failure: \(failure)")
+        }
+    }
+
     func testOpenCodeRecentListingFiltersBySessionUpdateTime() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -2968,6 +3040,57 @@ final class AdapterMessageCountTests: XCTestCase {
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw NSError(domain: "test", code: 3)
         }
+    }
+
+    private static func archiveOpenCodeSession(dbPath: String, id: String, archivedAt: Int64) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        defer { sqlite3_close(db) }
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            db,
+            "UPDATE session SET time_archived = ? WHERE id = ?",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 2)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, archivedAt)
+        sqlite3_bind_text(statement, 2, id, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw NSError(domain: "test", code: 3)
+        }
+    }
+
+    /// Single-session fixture whose TEXT payloads contain multi-byte CJK so
+    /// character-length and UTF-8 byte-length diverge.
+    private static func buildOpenCodeCJKSizeFixture(dbPath: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        defer { sqlite3_close(db) }
+
+        func exec(_ sql: String) throws {
+            var err: UnsafeMutablePointer<CChar>?
+            guard sqlite3_exec(db, sql, nil, nil, &err) == SQLITE_OK else {
+                let message = err.map { String(cString: $0) } ?? "unknown"
+                sqlite3_free(err)
+                throw NSError(domain: "test", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+        }
+
+        try exec("CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER)")
+        try exec("CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
+        try exec("CREATE TABLE part (id TEXT, message_id TEXT, time_created INTEGER, data TEXT)")
+        try exec("INSERT INTO session VALUES ('ses_cjk', '/Users/test/cjk', 'CJK', 1700000000000, 1700000010000, NULL)")
+        try exec("INSERT INTO message VALUES ('m_cjk', 'ses_cjk', 1700000001000, '{\"role\":\"user\"}')")
+        try exec("INSERT INTO part VALUES ('p_cjk', 'm_cjk', 1700000001000, '{\"type\":\"text\",\"text\":\"你好世界\"}')")
     }
 
     private static func buildEmptySQLiteFile(dbPath: String) throws {
