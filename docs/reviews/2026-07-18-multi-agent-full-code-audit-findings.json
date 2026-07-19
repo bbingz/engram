@@ -196,11 +196,18 @@
       "location": "ServiceWriterGate.swift:274-303; EngramServiceRunner initialFtsDrain/initialInstructionBackfill/initialImplementationBeatBackfill",
       "impact": "Short writes behind healthy multi-second startup drain get false writerBusy (M1 residual)",
       "root_cause": "Brittle name allowlist drifted from performWriteCommand call sites",
-      "fix": "Cover initial* names; source-contract + behavioral tests",
+      "fix": "Classify the three missed startup names; add exact-name classification and queue-behavior tests",
       "effort": "S",
       "source": "concurrency-memory",
       "confirmed": true,
-      "real_votes": 3
+      "real_votes": 3,
+      "status": "fixed_in_post_audit_followup",
+      "fix_evidence": [
+        "initialInstructionBackfill, initialImplementationBeatBackfill, and initialFtsDrain now use the long-running writer queue policy",
+        "Classification and follower-behind-initialFtsDrain behavioral _repro tests captured RED and then GREEN",
+        "All 20 ServiceWriterGateTests passed; EngramServiceCore reported 571 passed and 1 skipped out of 572 total",
+        "The Debug Engram app build succeeded"
+      ]
     },
     {
       "id": "UI-001",
@@ -372,7 +379,8 @@
     "M18",
     "M19",
     "M24",
-    "SVC-001-post-audit-followup"
+    "SVC-001-post-audit-followup",
+    "CONC-001-post-audit-followup"
   ],
   "still_open_followups": ["R1", "R6", "R7", "R8", "R9"],
   "roadmap": {
@@ -380,7 +388,7 @@
       "Obtain fresh Codex PASS for PR 197 pre-submit taxonomy follow-up; do not commit or push before PASS",
       "R4 dual-tx single write",
       "EMB-001 semantic_chunks skip purge",
-      "CONC-001 long-running name sync",
+      "CONC-001 long-running startup names aligned (post-audit follow-up fixed)",
       "EMB-STARVE idle embed drain",
       "READ-002 since COALESCE on MCP",
       "READ-001 multi-term CTE on MCP or shared builder step-1",

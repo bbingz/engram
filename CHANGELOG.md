@@ -7,6 +7,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: CONC-001 startup maintenance writer timeouts
+
+- `initialInstructionBackfill`, `initialImplementationBeatBackfill`, and
+  `initialFtsDrain` now use the long-running writer queue policy.
+- Classification and behavioral `_repro` tests verify that short writes wait
+  behind healthy startup maintenance instead of failing with false `writerBusy`.
+
 ### Fixed: SVC-001 archive reclamation cursor starvation
 
 - Product-missing catalog bindings surface as `missing_product_session`, while
