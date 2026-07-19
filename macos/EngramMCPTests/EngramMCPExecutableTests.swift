@@ -4440,6 +4440,46 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertTrue(message.contains("session-not-found"), message)
     }
 
+    /// MCP-001: list structuredContent must be an object root, not a bare array.
+    /// MCP 2025-11-25 clients reject array-root structuredContent.
+    func testManageProjectAliasListStructuredContentUsesObjectRoot_repro() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"manage_project_alias","arguments":{"action":"list"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+            ]
+        )
+
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertNil(result["isError"]?.boolValue)
+
+        let structured = try XCTUnwrap(result["structuredContent"])
+        XCTAssertNotNil(
+            structured.objectValue,
+            "manage_project_alias list structuredContent must use an MCP-compatible object root"
+        )
+        let aliases = try XCTUnwrap(structured["aliases"]?.arrayValue)
+        XCTAssertEqual(aliases.count, 3)
+        XCTAssertEqual(aliases[0]["alias"]?.stringValue, "apollo-old")
+        XCTAssertEqual(aliases[0]["canonical"]?.stringValue, "apollo")
+        XCTAssertEqual(aliases[1]["alias"]?.stringValue, "engram-legacy")
+        XCTAssertEqual(aliases[2]["alias"]?.stringValue, "engram-mcp")
+
+        guard case .array(let content)? = result["content"],
+              let text = content.first?["text"]?.stringValue,
+              let data = text.data(using: .utf8) else {
+            return XCTFail("Expected text content mirroring structuredContent")
+        }
+        let decodedText = try JSONDecoder().decode(TestJSONValue.self, from: data)
+        guard case .array(let textAliases)? = decodedText["aliases"] else {
+            return XCTFail("Expected text payload aliases array")
+        }
+        XCTAssertEqual(textAliases.count, 3)
+        XCTAssertEqual(textAliases.first?["alias"]?.stringValue, "apollo-old")
+    }
+
     func testManageProjectAliasRoutesReadAndWriteModes() throws {
         let fixtureDB = fixturePath("mcp-contract.sqlite")
 

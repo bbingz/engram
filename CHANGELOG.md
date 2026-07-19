@@ -7,6 +7,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: MCP-001 manage_project_alias list object root
+
+- `manage_project_alias` action=`list` now returns MCP 2025-11-25-compatible
+  object-root `structuredContent` as `{aliases:[...]}` instead of a bare array.
+- Golden fixture and hard-fail repro cover text + structuredContent parity.
+- Stacked PR #215 on C1c (#214); no auto-merge.
+
 ### Documented: 2026-07-19 blind-audit closeout
 
 - Completed 15/15 discovery scopes and explicitly named all 17 shipped Swift
