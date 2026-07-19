@@ -7,6 +7,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: READ-003 exact MCP project filtering
+
+- `list_sessions` plus keyword, short-query LIKE, and semantic search now
+  filter by exact project name or resolved alias instead of substring `LIKE`.
+- MCP tool schemas and the complete parameter reference now document the
+  exact-name-or-alias contract.
+- Two executable `_repro` tests captured all four affected read paths before
+  the fix; 16 adjacent regressions, the complete 161-test EngramMCP suite,
+  and the Debug Engram build pass afterward.
+
 ### Fixed: READ-001/READ-002 MCP search parity
 
 - Multi-term MCP keyword search now requires every token at session scope, so

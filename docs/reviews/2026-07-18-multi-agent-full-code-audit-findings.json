@@ -275,7 +275,15 @@
       "effort": "M",
       "source": "db-read-parity",
       "confirmed": true,
-      "real_votes": 3
+      "real_votes": 3,
+      "status": "fixed_in_post_audit_followup",
+      "fix_evidence": [
+        "MCP list_sessions, FTS keyword, short-query LIKE, and semantic candidate filtering now use exact IN predicates after project alias expansion",
+        "The search and list_sessions tool schemas plus the complete MCP parameter reference document exact project-name-or-alias matching instead of the historical partial-match contract",
+        "testListSessionsProjectFilterIsExact_repro and testSearchProjectFilterIsExactAcrossModes_repro captured 6 assertion failures before the fix and passed afterward",
+        "All 16 adjacent search regressions passed, followed by the complete EngramMCPTests suite at 161 of 161 and a successful Debug Engram build",
+        "ARCH-001 remains open because the three read surfaces still do not share one CoreRead query module"
+      ]
     },
     {
       "id": "MCP-001",
@@ -413,7 +421,8 @@
     "EMB-001-post-audit-followup",
     "EMB-STARVE-post-audit-followup",
     "READ-001-post-audit-followup",
-    "READ-002-post-audit-followup"
+    "READ-002-post-audit-followup",
+    "READ-003-post-audit-followup"
   ],
   "still_open_followups": ["R1", "R6", "R7", "R8", "R9"],
   "roadmap": {
@@ -424,13 +433,13 @@
       "CONC-001 long-running startup names aligned (post-audit follow-up fixed)",
       "EMB-STARVE idle embed drain (post-audit follow-up fixed)",
       "READ-002 MCP since COALESCE across keyword, LIKE, and semantic candidates (post-audit follow-up fixed)",
-      "READ-001 MCP multi-term session-scoped CTE (post-audit follow-up fixed; ARCH-001 shared builder remains open)",
+      "READ-001 MCP multi-term session-scoped CTE (post-audit follow-up fixed)",
+      "READ-003 MCP exact project-or-alias filtering across list and search modes (post-audit follow-up fixed; ARCH-001 shared builder remains open)",
       "MCP-001 object-root list aliases",
       "F5-CI npm audit policy align"
     ],
     "next": [
       "Shared CoreRead query module + parity suite (ARCH-001)",
-      "READ-003 project exact policy",
       "MCP-002 context/analytics visibility",
       "SEC-001 offload durability proof",
       "UI-002/R9 settings flush off-main",

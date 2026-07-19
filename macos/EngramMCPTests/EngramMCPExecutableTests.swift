@@ -1262,6 +1262,63 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(results.compactMap { $0["session"]?["id"]?.stringValue }, ["mcp-like-literal"])
     }
 
+    // READ-003: keyword, short-query LIKE, and semantic search must all use
+    // exact project-or-alias matching instead of substring LIKE.
+    func testSearchProjectFilterIsExactAcrossModes_repro() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-exact-project-search-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedExactProjectSearchFixture(at: dbPath)
+
+        func resultIDs(
+            arguments: String,
+            additionalEnvironment: [String: String] = [:]
+        ) throws -> [String] {
+            let capture = try rpc(
+                """
+                {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":\(arguments)}}
+                """,
+                environment: ["ENGRAM_MCP_DB_PATH": dbPath].merging(additionalEnvironment) { _, new in new }
+            )
+            let results = try XCTUnwrap(
+                capture.ordered["result"]?["structuredContent"]?["results"]?.arrayValue
+            )
+            return results.compactMap { $0["session"]?["id"]?.stringValue }
+        }
+
+        XCTAssertEqual(
+            try resultIDs(arguments: #"{"query":"projectparitytoken","mode":"keyword","project":"app","limit":10}"#),
+            ["mcp-project-exact"]
+        )
+        XCTAssertEqual(
+            try resultIDs(arguments: #"{"query":"projectparitytoken","mode":"keyword","project":"app-alias","limit":10}"#),
+            ["mcp-project-exact"],
+            "aliases must expand to exact project names"
+        )
+        XCTAssertEqual(
+            try resultIDs(arguments: #"{"query":"xy","mode":"keyword","project":"app","limit":10}"#),
+            ["mcp-project-exact"]
+        )
+
+        let server = try MockHTTPServer(jsonBody: #"{"data":[{"index":0,"embedding":[1,0,0]}]}"#)
+        server.start()
+        defer { server.stop() }
+        XCTAssertEqual(
+            try resultIDs(
+                arguments: #"{"query":"project meaning","mode":"semantic","project":"app","limit":10}"#,
+                additionalEnvironment: [
+                    "ENGRAM_EMBEDDING_BASE_URL": "http://127.0.0.1:\(server.port)/v1",
+                    "ENGRAM_EMBEDDING_API_KEY": "test",
+                    "ENGRAM_EMBEDDING_MODEL": "probe",
+                    "ENGRAM_EMBEDDING_DIM": "3",
+                ]
+            ),
+            ["mcp-project-exact"]
+        )
+    }
+
     func testKeywordSearchExcludesHiddenSessions() throws {
         let dbPath = try temporaryFixtureCopy(
             "mcp-contract.sqlite",
@@ -1571,7 +1628,9 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(structured["total"]?.intValue, 6)
     }
 
-    func testListSessionsProjectFilterIsPartialMatch() throws {
+    // READ-003: project filters are exact project-or-alias matches, not
+    // historical substring searches that can leak neighboring projects.
+    func testListSessionsProjectFilterIsExact_repro() throws {
         let capture = try rpc(
             """
             {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sessions","arguments":{"project":"gram","since":"2026-01-01T00:00:00.000Z","limit":10,"offset":0}}}
@@ -1583,8 +1642,8 @@ final class EngramMCPExecutableTests: XCTestCase {
 
         XCTAssertNil(capture.response.error)
         let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"]?.objectValue)
-        XCTAssertEqual(structured["sessions"]?.arrayValue?.count, 6)
-        XCTAssertEqual(structured["total"]?.intValue, 6)
+        XCTAssertEqual(structured["sessions"]?.arrayValue?.count, 0)
+        XCTAssertEqual(structured["total"]?.intValue, 0)
     }
 
     func testGetCostsMatchesGolden() throws {
@@ -4743,6 +4802,72 @@ final class EngramMCPExecutableTests: XCTestCase {
             try db.execute(
                 sql: "UPDATE session_costs SET cost_usd = ? WHERE session_id = ?",
                 arguments: [0.25, "mcp-fixture-02"]
+            )
+        }
+    }
+
+    private func seedExactProjectSearchFixture(at dbPath: String) throws {
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, end_time, cwd, project, file_path,
+                  message_count, tier, summary
+                )
+                VALUES
+                  ('mcp-project-exact', 'codex',
+                   '2026-01-10T10:00:00.000Z', '2026-01-10T10:30:00.000Z',
+                   '/Users/test/work/app', 'app', '/tmp/mcp-project-exact.jsonl',
+                   1, 'normal', 'exact project fixture'),
+                  ('mcp-project-substring', 'codex',
+                   '2026-01-10T10:01:00.000Z', '2026-01-10T10:31:00.000Z',
+                   '/Users/test/work/my-app', 'my-app', '/tmp/mcp-project-substring.jsonl',
+                   1, 'normal', 'substring project fixture');
+                INSERT INTO sessions_fts(session_id, content)
+                VALUES
+                  ('mcp-project-exact', 'projectparitytoken xy exact'),
+                  ('mcp-project-substring', 'projectparitytoken xy substring');
+                INSERT OR REPLACE INTO project_aliases(alias, canonical)
+                VALUES ('app-alias', 'app');
+                CREATE TABLE IF NOT EXISTS semantic_chunks (
+                  id TEXT PRIMARY KEY,
+                  session_id TEXT NOT NULL,
+                  chunk_index INTEGER NOT NULL,
+                  text TEXT NOT NULL,
+                  embedding BLOB,
+                  model TEXT,
+                  dim INTEGER,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS embedding_meta (
+                  id INTEGER PRIMARY KEY CHECK (id = 1),
+                  provider TEXT,
+                  model TEXT,
+                  dimension INTEGER,
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                DELETE FROM semantic_chunks;
+                DELETE FROM embedding_meta;
+                INSERT INTO embedding_meta (id, provider, model, dimension)
+                VALUES (1, 'test', 'probe', 3);
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO semantic_chunks(
+                  id, session_id, chunk_index, text, embedding, model, dim
+                )
+                VALUES
+                  ('mcp-project-exact:c0', 'mcp-project-exact', 0,
+                   'exact project semantic chunk', ?, 'probe', 3),
+                  ('mcp-project-substring:c0', 'mcp-project-substring', 0,
+                   'substring project semantic chunk', ?, 'probe', 3)
+                """,
+                arguments: [
+                    encodeVector([1, 0, 0]),
+                    encodeVector([0.9, 0.1, 0]),
+                ]
             )
         }
     }

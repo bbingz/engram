@@ -78,7 +78,7 @@ List historical AI coding assistant sessions. Supports filtering by tool source,
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | source | string | no | Filter by tool source. Enum: `codex`, `claude-code`, `copilot`, `gemini-cli`, `opencode`, `iflow`, `qwen`, `qoder`, `kimi`, `minimax`, `lobsterai`, `commandcode`, `cline`, `cursor`, `vscode`, `antigravity`, `windsurf` |
-| project | string | no | Filter by project name (partial match) |
+| project | string | no | Filter by exact project name or configured alias |
 | since | string | no | Start time (ISO 8601) |
 | until | string | no | End time (ISO 8601) |
 | limit | number | no | Max results to return. Default 20, max 100 |
@@ -114,14 +114,14 @@ Full-text keyword search across session content; optional semantic / hybrid when
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| query | string | **yes** | Search keywords (at least 3 characters for keyword search) |
+| query | string | **yes** | Search keywords; queries shorter than 3 characters use LIKE fallback |
 | source | string | no | Filter by tool source. Same enum as `list_sessions` |
-| project | string | no | Filter by project name |
-| since | string | no | Start time (ISO 8601) |
+| project | string | no | Filter by exact project name or configured alias |
+| since | string | no | Activity-time lower bound using end time when present, otherwise start time (ISO 8601) |
 | limit | number | no | Max results. Default 10, max 50 |
 | mode | string | no | Search mode. Enum from `tools/list`: always `keyword`; adds `semantic` and `hybrid` only when session vectors are usable. Default `keyword` |
 
-**Notes:** Keyword path uses SQLite FTS. UUID-shaped queries do direct session ID lookup. Keyword search requires 3+ characters. Semantic mode embeds the query (online provider via `EmbeddingSettings`) and runs brute-force cosine KNN over `semantic_chunks` filtered to `embedding_meta` model/dim (never mix models); tiers `skip` and `lite` are excluded like the app/service search path. Hybrid fuses keyword + semantic session id lists with RRF via shared constants in `SessionSemanticSearchPolicy` (`rrfK = 60`, same KNN shortlist / candidate-cap formulas as `EngramServiceReadProvider`). **Ranking parity scope (honest contract):** MCP and service share those fusion constants and both fuse as `[keywordIds, semanticIds]`; they are **not** guaranteed to return identical session order for every query. Known intentional deltas: MCP keyword uses a single FTS `MATCH` (OR-leaning) + `ORDER BY f.rank`, while service uses per-token CTE AND + `ORDER BY rank, start_time`; MCP applies `orphan_status IS NULL` and `project LIKE` / `start_time >= since`, while service uses exact project match and `COALESCE(end_time, start_time) >= since` and does not filter orphan on search. Side-by-side parity tests cover single-token, unfiltered, non-orphan fixtures where keyword id lists already match. When semantic/hybrid is not usable, those modes return `isError` + `searchModeUnavailable` instead of keyword results. Keyword mode also searches insights FTS and may return matching curated memories in `insightResults`. **Output:** `structuredContent` is `{ results, query, searchModes }` with optional `warning` / `insightResults`; declared via `outputSchema`.
+**Notes:** Keyword path uses SQLite FTS. UUID-shaped queries do direct session ID lookup. Queries shorter than 3 characters use a session LIKE fallback. Semantic mode embeds the query (online provider via `EmbeddingSettings`) and runs brute-force cosine KNN over `semantic_chunks` filtered to `embedding_meta` model/dim (never mix models); tiers `skip` and `lite` are excluded like the app/service search path. Hybrid fuses keyword + semantic session id lists with RRF via shared constants in `SessionSemanticSearchPolicy` (`rrfK = 60`, same KNN shortlist / candidate-cap formulas as `EngramServiceReadProvider`). MCP multi-term keyword search uses per-token CTEs joined at session scope, `since` uses `COALESCE(end_time, start_time)` across keyword/LIKE/semantic paths, and project filters resolve configured aliases before exact matching. **Ranking parity scope (honest contract):** MCP and service share the fusion constants and both fuse as `[keywordIds, semanticIds]`; they are **not** guaranteed to return identical session order for every query. One known search-surface delta remains: MCP applies `orphan_status IS NULL`, while service search does not filter orphan status. Side-by-side parity tests cover single-token, unfiltered, non-orphan fixtures where keyword id lists already match. When semantic/hybrid is not usable, those modes return `isError` + `searchModeUnavailable` instead of keyword results. Keyword mode also searches insights FTS and may return matching curated memories in `insightResults`. **Output:** `structuredContent` is `{ results, query, searchModes }` with optional `warning` / `insightResults`; declared via `outputSchema`.
 
 ---
 
