@@ -122,6 +122,9 @@ public final class SessionSnapshotWriter {
         }
         if incoming.syncVersion == current.syncVersion, incoming.snapshotHash == current.snapshotHash {
             var merged = current
+            // Content-identical relocation must refresh locator fields so
+            // subsequent FTS/maintenance rereads follow the new path.
+            merged.sourceLocator = incoming.sourceLocator
             merged.sizeBytes = incoming.sizeBytes
             merged.indexedAt = incoming.indexedAt
             merged.tokenUsage = incoming.tokenUsage

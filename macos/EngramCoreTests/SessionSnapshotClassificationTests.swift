@@ -40,12 +40,13 @@ final class SessionSnapshotClassificationTests: XCTestCase {
         tier: SessionTier? = .normal,
         agentRole: String? = nil,
         parentSessionId: String? = nil,
+        sourceLocator: String? = nil,
         implementationBeats: [SessionImplementationBeat] = []
     ) -> AuthoritativeSessionSnapshot {
         AuthoritativeSessionSnapshot(
             id: id, source: source, authoritativeNode: "node", syncVersion: 1,
             snapshotHash: "\(hash)-\(id)", indexedAt: "2026-05-23T10:00:00Z",
-            sourceLocator: "/tmp/\(id).jsonl", sizeBytes: sizeBytes, startTime: "2026-05-23T10:00:00.000Z",
+            sourceLocator: sourceLocator ?? "/tmp/\(id).jsonl", sizeBytes: sizeBytes, startTime: "2026-05-23T10:00:00.000Z",
             cwd: cwd, messageCount: messageCount, userMessageCount: userMessageCount,
             assistantMessageCount: assistantMessageCount, toolMessageCount: toolMessageCount, systemMessageCount: systemMessageCount,
             summaryMessageCount: summaryMessageCount,
@@ -358,6 +359,41 @@ final class SessionSnapshotClassificationTests: XCTestCase {
             _ = try w.writeAuthoritativeSnapshot(snapshot(id: "plain"))
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'plain'"))
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = 'plain'"))
+        }
+    }
+
+    // Audit WRITER-LOCATOR-001: same syncVersion/snapshotHash content with a
+    // relocated sourceLocator must refresh sessions.source_locator and file_path.
+    func testContentIdenticalMoveRefreshesLocator_repro() throws {
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            let oldLocator = "/tmp/old-location/session.jsonl"
+            let newLocator = "/tmp/new-location/session.jsonl"
+
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(id: "moved", hash: "same", sourceLocator: oldLocator)
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT source_locator FROM sessions WHERE id = 'moved'"),
+                oldLocator
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT file_path FROM sessions WHERE id = 'moved'"),
+                oldLocator
+            )
+
+            let result = try w.writeAuthoritativeSnapshot(
+                snapshot(id: "moved", hash: "same", sourceLocator: newLocator)
+            )
+            XCTAssertEqual(result.action, .merge, "locator-only move must leave the no-op path")
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT source_locator FROM sessions WHERE id = 'moved'"),
+                newLocator
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT file_path FROM sessions WHERE id = 'moved'"),
+                newLocator
+            )
         }
     }
 }
