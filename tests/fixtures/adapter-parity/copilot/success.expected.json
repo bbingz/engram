@@ -43,7 +43,7 @@
     "filePath": "<fixtureRoot>/copilot/input/session-1/events.jsonl",
     "id": "test-session-1",
     "messageCount": 2,
-    "sizeBytes": 348,
+    "sizeBytes": 456,
     "source": "copilot",
     "startTime": "2026-01-01T00:00:00Z",
     "summary": "Help me fix the bug",

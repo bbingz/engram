@@ -1340,6 +1340,341 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertGreaterThan(try XCTUnwrap(updated?["size_bytes"] as Int64?), initialSize)
     }
 
+    // Audit ADAPTER-GEMINI-001: sidecar-only create must reindex parent/role/tier.
+    func testGeminiSidecarOnlyChangeTriggersReindex_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gemini-sidecar-reindex-\(UUID().uuidString)", isDirectory: true)
+        let chatsDir = root.appendingPathComponent("tmp/proj/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // Transcript stem differs from sessionId so recent filtering must peek
+        // sessionId rather than assume stem.engram.json.
+        let session: [String: Any] = [
+            "sessionId": "gemini-session-reindex",
+            "startTime": "2026-01-01T00:00:00.000Z",
+            "lastUpdated": "2026-01-01T00:00:02.000Z",
+            "messages": [
+                ["type": "user", "timestamp": "2026-01-01T00:00:00.000Z", "content": "Question"],
+                ["type": "gemini", "timestamp": "2026-01-01T00:00:01.000Z", "content": "Answer"],
+            ],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: session)
+        let transcript = chatsDir.appendingPathComponent("session-sample.json")
+        try data.write(to: transcript)
+        let baseline = Date(timeIntervalSince1970: 1_000)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: transcript.path)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: chatsDir.path)
+
+        let adapter = GeminiCliAdapter(
+            tmpRoot: root.appendingPathComponent("tmp").path,
+            projectsFile: root.appendingPathComponent("projects.json").path
+        )
+        let first = try await writer.indexAllSessions(adapters: [adapter])
+        let initial = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT parent_session_id, link_source, agent_role, tier
+                FROM sessions WHERE id = 'gemini-session-reindex'
+                """
+            )
+        }
+        XCTAssertEqual(first.indexed, 1)
+        XCTAssertNil(initial?["parent_session_id"] as String?)
+        XCTAssertNil(initial?["agent_role"] as String?)
+
+        let sidecar = chatsDir.appendingPathComponent("gemini-session-reindex.engram.json")
+        try """
+        {"originator":"claude-code","parentSessionId":"cc-parent"}
+        """.write(to: sidecar, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 2_000)],
+            ofItemAtPath: sidecar.path
+        )
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: transcript.path)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: chatsDir.path)
+
+        let recentAdapter = RecentlyModifiedSessionAdapter(
+            base: adapter,
+            modifiedSince: Date(timeIntervalSince1970: 1_500)
+        )
+        let recentLocators = try await recentAdapter.listSessionLocators()
+        XCTAssertEqual(
+            recentLocators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [transcript.resolvingSymlinksInPath().path]
+        )
+
+        let second = try await writer.indexRecentSessions(adapters: [recentAdapter])
+        let updated = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT parent_session_id, link_source, agent_role, tier
+                FROM sessions WHERE id = 'gemini-session-reindex'
+                """
+            )
+        }
+        XCTAssertEqual(second.indexed, 1)
+        XCTAssertEqual(updated?["parent_session_id"] as String?, "cc-parent")
+        XCTAssertEqual(updated?["link_source"] as String?, "path")
+        XCTAssertEqual(updated?["agent_role"] as String?, "dispatched")
+        XCTAssertEqual(updated?["tier"] as String?, "skip")
+    }
+
+    // Audit COPILOT-AUX-001: workspace.yaml-only changes must reindex cwd.
+    func testCopilotWorkspaceOnlyChangeTriggersReindex_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("copilot-aux-reindex-\(UUID().uuidString)", isDirectory: true)
+        let sessionDir = root.appendingPathComponent("session-aux-reindex", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = sessionDir.appendingPathComponent("workspace.yaml")
+        try """
+        id: session-aux-reindex
+        cwd: /tmp/old-cwd
+        created_at: 2026-06-01T10:00:00.000Z
+        updated_at: 2026-06-01T10:05:00.000Z
+        """.write(to: workspace, atomically: true, encoding: .utf8)
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        try writeJSONL(
+            [
+                [
+                    "type": "user.message",
+                    "timestamp": "2026-06-01T10:01:00.000Z",
+                    "data": ["content": "hello"],
+                ],
+                [
+                    "type": "assistant.message",
+                    "timestamp": "2026-06-01T10:02:00.000Z",
+                    "data": ["content": "world"],
+                ],
+            ],
+            to: events
+        )
+        let baseline = Date(timeIntervalSince1970: 1_000)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: events.path)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: workspace.path)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: sessionDir.path)
+
+        let adapter = CopilotAdapter(sessionRoot: root.path)
+        let first = try await writer.indexAllSessions(adapters: [adapter])
+        let initial = try writer.read { db in
+            try Row.fetchOne(db, sql: "SELECT cwd, size_bytes FROM sessions WHERE id = 'session-aux-reindex'")
+        }
+        XCTAssertEqual(first.indexed, 1)
+        XCTAssertEqual(initial?["cwd"] as String?, "/tmp/old-cwd")
+        let initialSize = try XCTUnwrap(initial?["size_bytes"] as Int64?)
+
+        try """
+        id: session-aux-reindex
+        cwd: /tmp/new-cwd
+        created_at: 2026-06-01T10:00:00.000Z
+        updated_at: 2026-06-01T10:05:00.000Z
+        """.write(to: workspace, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 2_000)],
+            ofItemAtPath: workspace.path
+        )
+        // Freeze events + session directory so only workspace.yaml is recent.
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: events.path)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: sessionDir.path)
+
+        let recentAdapter = RecentlyModifiedSessionAdapter(
+            base: adapter,
+            modifiedSince: Date(timeIntervalSince1970: 1_500)
+        )
+        let recentLocators = try await recentAdapter.listSessionLocators()
+        XCTAssertEqual(
+            recentLocators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [events.resolvingSymlinksInPath().path]
+        )
+
+        let second = try await writer.indexRecentSessions(adapters: [recentAdapter])
+        let updated = try writer.read { db in
+            try Row.fetchOne(db, sql: "SELECT cwd, size_bytes FROM sessions WHERE id = 'session-aux-reindex'")
+        }
+        XCTAssertEqual(second.indexed, 1)
+        XCTAssertEqual(updated?["cwd"] as String?, "/tmp/new-cwd")
+        XCTAssertGreaterThan(try XCTUnwrap(updated?["size_bytes"] as Int64?), 0)
+        // size still composite; value may equal if workspace same length, so only assert reindex wrote cwd.
+        _ = initialSize
+    }
+
+    // Audit COPILOT-AUX-001: same-byte workspace time rewrites must still reindex
+    // (snapshotHash includes start/end for copilot so equal sizeBytes cannot no-op).
+    func testCopilotSameSizeWorkspaceTimeTriggersReindex_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("copilot-aux-same-size-time-\(UUID().uuidString)", isDirectory: true)
+        let sessionDir = root.appendingPathComponent("session-same-size-time", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = sessionDir.appendingPathComponent("workspace.yaml")
+        let initialYAML = """
+        id: session-same-size-time
+        cwd: /tmp/same-cwd
+        created_at: 2026-06-01T10:00:00.000Z
+        updated_at: 2026-06-01T10:05:00.000Z
+        """
+        try initialYAML.write(to: workspace, atomically: true, encoding: .utf8)
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        try writeJSONL(
+            [
+                [
+                    "type": "user.message",
+                    "timestamp": "2026-06-01T10:01:00.000Z",
+                    "data": ["content": "hello"],
+                ],
+                [
+                    "type": "assistant.message",
+                    "timestamp": "2026-06-01T10:02:00.000Z",
+                    "data": ["content": "world"],
+                ],
+            ],
+            to: events
+        )
+        let baseline = Date(timeIntervalSince1970: 1_000)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: events.path)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: workspace.path)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: sessionDir.path)
+
+        let adapter = CopilotAdapter(sessionRoot: root.path)
+        let first = try await writer.indexAllSessions(adapters: [adapter])
+        let initial = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT end_time, size_bytes, snapshot_hash FROM sessions WHERE id = 'session-same-size-time'"
+            )
+        }
+        XCTAssertEqual(first.indexed, 1)
+        XCTAssertEqual(initial?["end_time"] as String?, "2026-06-01T10:05:00.000Z")
+        let initialSize = try XCTUnwrap(initial?["size_bytes"] as Int64?)
+        let initialHash = try XCTUnwrap(initial?["snapshot_hash"] as String?)
+
+        // Same-length timestamp rewrite only — sizeBytes must stay equal.
+        let rewrittenYAML = """
+        id: session-same-size-time
+        cwd: /tmp/same-cwd
+        created_at: 2026-06-01T10:00:00.000Z
+        updated_at: 2026-06-01T10:06:00.000Z
+        """
+        XCTAssertEqual(
+            rewrittenYAML.utf8.count,
+            initialYAML.utf8.count,
+            "fixture must keep workspace size stable"
+        )
+        try rewrittenYAML.write(to: workspace, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 2_000)],
+            ofItemAtPath: workspace.path
+        )
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: events.path)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: sessionDir.path)
+
+        let recentAdapter = RecentlyModifiedSessionAdapter(
+            base: adapter,
+            modifiedSince: Date(timeIntervalSince1970: 1_500)
+        )
+        let recentLocators = try await recentAdapter.listSessionLocators()
+        XCTAssertEqual(
+            recentLocators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [events.resolvingSymlinksInPath().path]
+        )
+
+        let second = try await writer.indexRecentSessions(adapters: [recentAdapter])
+        let updated = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT end_time, size_bytes, snapshot_hash FROM sessions WHERE id = 'session-same-size-time'"
+            )
+        }
+        XCTAssertEqual(second.indexed, 1)
+        XCTAssertEqual(updated?["end_time"] as String?, "2026-06-01T10:06:00.000Z")
+        XCTAssertEqual(try XCTUnwrap(updated?["size_bytes"] as Int64?), initialSize)
+        XCTAssertNotEqual(try XCTUnwrap(updated?["snapshot_hash"] as String?), initialHash)
+    }
+
+    // Audit COPILOT-AUX-001: same-byte checkpoint body rewrites must reindex via
+    // system-role content fingerprint (sizeBytes can stay equal).
+    func testCopilotSameSizeCheckpointBodyTriggersReindex_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("copilot-aux-same-size-body-\(UUID().uuidString)", isDirectory: true)
+        let sessionDir = root.appendingPathComponent("session-same-size-body", isDirectory: true)
+        let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpointsDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = sessionDir.appendingPathComponent("workspace.yaml")
+        try """
+        id: session-same-size-body
+        cwd: /tmp/checkpoint-cwd
+        created_at: 2026-06-01T10:00:00.000Z
+        updated_at: 2026-06-01T10:05:00.000Z
+        """.write(to: workspace, atomically: true, encoding: .utf8)
+        let checkpointIndex = checkpointsDir.appendingPathComponent("index.md")
+        try """
+        # Checkpoint History
+
+        | # | Title | File |
+        |---|-------|------|
+        | 1 | Body rewrite | 001-body.md |
+        """.write(to: checkpointIndex, atomically: true, encoding: .utf8)
+        let body = checkpointsDir.appendingPathComponent("001-body.md")
+        let oldBody = "<overview>old body text</overview>\n"
+        let newBody = "<overview>new body text</overview>\n"
+        XCTAssertEqual(oldBody.utf8.count, newBody.utf8.count)
+        try oldBody.write(to: body, atomically: true, encoding: .utf8)
+
+        let baseline = Date(timeIntervalSince1970: 1_000)
+        for path in [workspace.path, checkpointIndex.path, body.path, sessionDir.path, checkpointsDir.path] {
+            try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: path)
+        }
+
+        let adapter = CopilotAdapter(sessionRoot: root.path)
+        let first = try await writer.indexAllSessions(adapters: [adapter])
+        let initial = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT size_bytes, snapshot_hash, summary FROM sessions WHERE id = 'session-same-size-body'"
+            )
+        }
+        XCTAssertEqual(first.indexed, 1)
+        let initialSize = try XCTUnwrap(initial?["size_bytes"] as Int64?)
+        let initialHash = try XCTUnwrap(initial?["snapshot_hash"] as String?)
+
+        try newBody.write(to: body, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 2_000)],
+            ofItemAtPath: body.path
+        )
+        for path in [workspace.path, checkpointIndex.path, sessionDir.path, checkpointsDir.path] {
+            try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: path)
+        }
+
+        let recentAdapter = RecentlyModifiedSessionAdapter(
+            base: adapter,
+            modifiedSince: Date(timeIntervalSince1970: 1_500)
+        )
+        let recentLocators = try await recentAdapter.listSessionLocators()
+        XCTAssertEqual(
+            recentLocators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [checkpointIndex.resolvingSymlinksInPath().path]
+        )
+
+        let second = try await writer.indexRecentSessions(adapters: [recentAdapter])
+        let updated = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT size_bytes, snapshot_hash FROM sessions WHERE id = 'session-same-size-body'"
+            )
+        }
+        XCTAssertEqual(second.indexed, 1)
+        XCTAssertEqual(try XCTUnwrap(updated?["size_bytes"] as Int64?), initialSize)
+        XCTAssertNotEqual(try XCTUnwrap(updated?["snapshot_hash"] as String?), initialHash)
+    }
+
     func testRecentModifiedAdapterUsesBackingFileForVirtualLocators() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("recent-active-virtual-\(UUID().uuidString)", isDirectory: true)
