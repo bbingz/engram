@@ -20,17 +20,17 @@ repository-wide audit.
 
 | Batch | Status | Confirmed IDs |
 |-------|--------|---------------|
-| **A1 — Codex parser and indexing integrity** | open; TDD pending | ADAPTER-CODEX-001, ADAPTER-CODEX-002, IDX-PARTIAL-001 |
-| **A2 — Kimi composite session correctness** | open; TDD pending | KIMI-001, KIMI-002, KIMI-003 |
-| **A3 — Qwen product integration** | open; TDD pending | SRC-QWEN-001, SRC-QWEN-002 |
-| **A4 — Adapter ingestion guardrails** | open; TDD pending | ADAPTER-CC-001, SRC-COMMANDCODE-001, VSCODE-INCR-001 |
-| **B1 — Composite-input discovery and invalidation** | open; TDD pending | ADAPTER-GEMINI-001, COPILOT-AUX-001, COPILOT-DISCOVERY-001 |
-| **B2 — OpenCode archive and byte accounting** | open; TDD pending | ADAPTER-OPENCODE-001, ADAPTER-OPENCODE-002 |
-| **B3 — Cursor content and ownership** | partial: content TDD-ready; cwd design pending | CURSOR-CONTENT-001, CURSOR-CWD-001 |
-| **C1a — Archive V2 source-toggle convergence** | open; TDD pending | SRC-001 |
-| **C1b — Writer locator relocation** | open; TDD pending | WRITER-LOCATOR-001 |
-| **C1c — Startup parent-backfill pagination** | open; TDD pending | PARENT-BACKFILL-STARVE-001 |
-| **D1 — MCP result contract** | open; TDD pending | MCP-001 |
+| **A1 — Codex parser and indexing integrity** | stacked PR #205 | ADAPTER-CODEX-001, ADAPTER-CODEX-002, IDX-PARTIAL-001 |
+| **A2 — Kimi composite session correctness** | stacked PR #206 | KIMI-001, KIMI-002, KIMI-003 |
+| **A3 — Qwen product integration** | stacked PR #207 | SRC-QWEN-001, SRC-QWEN-002 |
+| **A4 — Adapter ingestion guardrails** | stacked PR #208 | ADAPTER-CC-001, SRC-COMMANDCODE-001, VSCODE-INCR-001 |
+| **B1 — Composite-input discovery and invalidation** | stacked PR #209 | ADAPTER-GEMINI-001, COPILOT-AUX-001, COPILOT-DISCOVERY-001 |
+| **B2 — OpenCode archive and byte accounting** | stacked PR #210 | ADAPTER-OPENCODE-001, ADAPTER-OPENCODE-002 |
+| **B3 — Cursor content and ownership** | partial: content in stacked PR #211; cwd design pending | CURSOR-CONTENT-001, CURSOR-CWD-001 |
+| **C1a — Archive V2 source-toggle convergence** | stacked PR #212 | SRC-001 |
+| **C1b — Writer locator relocation** | stacked PR #213 | WRITER-LOCATOR-001 |
+| **C1c — Startup parent-backfill pagination** | stacked PR #214 | PARENT-BACKFILL-STARVE-001 |
+| **D1 — MCP result contract** | stacked PR #215 | MCP-001 |
 
 Legacy references: KIMI-001 corresponds to `H08` only within
 `2026-06-10-multi-expert-audit.md`, and WRITER-LOCATOR-001 corresponds to `L3`
