@@ -57,6 +57,8 @@ public enum ArchiveReclamationBlocker: String, Equatable, Sendable {
     case disabled
     case invalidHotWindow = "invalid_hot_window"
     case unsupportedSource = "unsupported_source"
+    case missingProductSession = "missing_product_session"
+    case invalidProductActivity = "invalid_product_activity"
     case insufficientAge = "insufficient_age"
     case live
     case favorite
@@ -81,17 +83,30 @@ public enum ArchiveReclamationPolicy {
     private static let recoveryLeaseDays: Int64 = 30
     private static let maximumSourceBytes: Int64 = 256 * 1_024 * 1_024
 
+    public static func preflight(
+        source: String,
+        context: ArchiveReclamationContext
+    ) -> ArchiveReclamationDecision? {
+        guard context.enabled else { return .blocked(.disabled) }
+        guard supportedHotWindowDays.contains(context.hotWindowDays),
+              durationNs(days: Int64(context.hotWindowDays)) != nil else {
+            return .blocked(.invalidHotWindow)
+        }
+        guard supportedSources.contains(source) else {
+            return .blocked(.unsupportedSource)
+        }
+        return nil
+    }
+
     public static func evaluate(
         candidate: ArchiveReclamationCandidate,
         context: ArchiveReclamationContext
     ) -> ArchiveReclamationDecision {
-        guard context.enabled else { return .blocked(.disabled) }
-        guard supportedHotWindowDays.contains(context.hotWindowDays),
-              let hotWindowNs = durationNs(days: Int64(context.hotWindowDays)) else {
-            return .blocked(.invalidHotWindow)
+        if let decision = preflight(source: candidate.source, context: context) {
+            return decision
         }
-        guard supportedSources.contains(candidate.source) else {
-            return .blocked(.unsupportedSource)
+        guard let hotWindowNs = durationNs(days: Int64(context.hotWindowDays)) else {
+            return .blocked(.invalidHotWindow)
         }
         guard elapsedNs(since: candidate.lastActivityNs, now: context.nowNs)
             .map({ $0 >= hotWindowNs }) == true else {

@@ -153,7 +153,14 @@
       "effort": "S",
       "source": "service-write-path",
       "confirmed": true,
-      "real_votes": 3
+      "real_votes": 3,
+      "status": "fixed_in_post_audit_followup",
+      "fix_evidence": [
+        "ArchiveReclamationCoordinator distinguishes missing_product_session from invalid_product_activity instead of compactMap-dropping either candidate",
+        "Policy preflight preserves disabled, invalid-hot-window, and unsupported-source blocker precedence before product-state diagnostics",
+        "Three ArchiveReclamationCoordinatorTests _repro cases captured RED and then GREEN",
+        "A full 1000-row missing page advances the cursor without intent/source deletion; the following eligible binding reclaims next cycle"
+      ]
     },
     {
       "id": "EMB-001",
@@ -364,14 +371,14 @@
     "R11-r1-overclaim",
     "M18",
     "M19",
-    "M24"
+    "M24",
+    "SVC-001-post-audit-followup"
   ],
   "still_open_followups": ["R1", "R6", "R7", "R8", "R9"],
   "roadmap": {
     "now": [
       "Obtain fresh Codex PASS for PR 197 pre-submit taxonomy follow-up; do not commit or push before PASS",
       "R4 dual-tx single write",
-      "SVC-001 product-missing reclaim cursor",
       "EMB-001 semantic_chunks skip purge",
       "CONC-001 long-running name sync",
       "EMB-STARVE idle embed drain",

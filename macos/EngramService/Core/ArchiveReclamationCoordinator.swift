@@ -19,6 +19,12 @@ actor ArchiveReclamationCoordinator {
         let isFavorite: Bool
     }
 
+    private enum ProductStateLookup: Sendable {
+        case available(ProductState)
+        case missingSession
+        case invalidActivity
+    }
+
     private struct CandidateCursorPayload: Codable {
         let boundAt: String
         let manifestSHA256: String
@@ -74,7 +80,7 @@ actor ArchiveReclamationCoordinator {
             var eligible = 0
             var bytes: Int64 = 0
             var blockers: [String: Int] = [:]
-            for (candidate, decision, _) in evaluations {
+            for (candidate, decision) in evaluations {
                 switch decision {
                 case .eligible:
                     eligible += 1
@@ -177,7 +183,7 @@ actor ArchiveReclamationCoordinator {
             // candidates we fully resolved (reclaimed or ineligible) — never
             // past eligible rows skipped because the byte budget was exhausted.
             var lastProcessedBinding: ArchiveBinding?
-            for (candidate, decision, _) in try evaluateCandidates(
+            for (candidate, decision) in try evaluateCandidates(
                 now: now,
                 claudeProfiles: claudeProfiles
             ) {
@@ -236,7 +242,7 @@ actor ArchiveReclamationCoordinator {
     private func evaluateCandidates(
         now: Date,
         claudeProfiles: [ClaudeCodeProfile]? = nil
-    ) throws -> [(ArchiveReclamationCatalogCandidate, ArchiveReclamationDecision, ProductState)] {
+    ) throws -> [(ArchiveReclamationCatalogCandidate, ArchiveReclamationDecision)] {
         let settings = loadSettings()
         let leases = recoveryLeases(now: now) ?? [:]
         let nowNs = Self.nanoseconds(now)
@@ -252,8 +258,22 @@ actor ArchiveReclamationCoordinator {
             page = try catalog.reclamationCandidates(limit: 1_000)
         }
         let resolvedClaudeProfiles = claudeProfiles ?? resolvedClaudeProfilesForReclamation()
-        return try page.compactMap { candidate in
-            guard let state = try productState(sessionID: candidate.binding.sessionID) else { return nil }
+        return try page.map { candidate in
+            if let decision = ArchiveReclamationPolicy.preflight(
+                source: candidate.capture.source,
+                context: context
+            ) {
+                return (candidate, decision)
+            }
+            let state: ProductState
+            switch try productState(sessionID: candidate.binding.sessionID) {
+            case .available(let value):
+                state = value
+            case .missingSession:
+                return (candidate, .blocked(.missingProductSession))
+            case .invalidActivity:
+                return (candidate, .blocked(.invalidProductActivity))
+            }
             let policyCandidate = ArchiveReclamationCandidate(
                 source: candidate.capture.source,
                 lastActivityNs: state.lastActivityNs,
@@ -275,9 +295,9 @@ actor ArchiveReclamationCoordinator {
                    source: candidate.capture.source,
                    claudeProfiles: resolvedClaudeProfiles
                ) {
-                return (candidate, .blocked(.unsupportedSource), state)
+                return (candidate, .blocked(.unsupportedSource))
             }
-            return (candidate, decision, state)
+            return (candidate, decision)
         }
     }
 
@@ -349,21 +369,21 @@ actor ArchiveReclamationCoordinator {
         )
     }
 
-    private func productState(sessionID: String) throws -> ProductState? {
+    private func productState(sessionID: String) throws -> ProductStateLookup {
         try productPool.read { db in
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT s.start_time, s.end_time,
                   EXISTS(SELECT 1 FROM favorites f WHERE f.session_id = s.id) AS favorite
                 FROM sessions s WHERE s.id = ?
-                """, arguments: [sessionID]) else { return nil }
+                """, arguments: [sessionID]) else { return .missingSession }
             let start: String = row["start_time"]
             let end: String? = row["end_time"]
-            guard let activity = Self.date(end ?? start) else { return nil }
-            return ProductState(
+            guard let activity = Self.date(end ?? start) else { return .invalidActivity }
+            return .available(ProductState(
                 lastActivityNs: Self.nanoseconds(activity),
                 isLive: end == nil,
                 isFavorite: (row["favorite"] as Int) != 0
-            )
+            ))
         }
     }
 

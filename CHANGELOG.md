@@ -7,6 +7,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: SVC-001 archive reclamation cursor starvation
+
+- Product-missing catalog bindings surface as `missing_product_session`, while
+  malformed activity timestamps surface as `invalid_product_activity`; global
+  disabled/invalid-window and unsupported-source policy blockers retain precedence.
+- A full 1,000-row missing page advances the reclamation cursor without creating
+  intents or deleting source files.
+- A full-page `_repro` verifies that the following eligible binding is reclaimed
+  on the next cycle instead of starving forever.
+
 ### Fixed: R4–R5–R10 + R11 disposition ledger (post-#196)
 
 - **R4**: insight embedding per-item isolation terminalizes only explicit
