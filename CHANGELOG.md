@@ -7,6 +7,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Documented: 2026-07-19 blind-audit closeout
+
+- Completed 15/15 discovery scopes and explicitly named all 17 shipped Swift
+  source adapters across adapter, indexing, source-toggle, project-move,
+  parent-link, and MCP result-contract review surfaces.
+- Adjudicated 23 canonical candidates: 22 confirmed (2 High, 19 Medium, 1
+  Low) and 1 refuted. Two current IDs retain document-scoped legacy references,
+  while one duplicate MCP submission maps to the existing MCP-001 inventory row.
+- Grouped the confirmed inventory into 11 ownership batches (A1–D1). Twenty-one
+  findings are ready to enter TDD; CURSOR-CWD-001 remains design/evidence pending
+  until a deterministic workspace-ownership contract is established. Proposed
+  `_repro` tests have not yet been created or executed, no source with zero
+  retained findings is claimed defect-free, and the repository-wide audit
+  remains open.
+
 ### Fixed: READ-003 exact MCP project filtering
 
 - `list_sessions` plus keyword, short-query LIKE, and semantic search now

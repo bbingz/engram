@@ -3,6 +3,48 @@
 Follow-ups are verification gaps, low-priority refactors, or items that need
 real data, UI exercise, or product confirmation before becoming TODOs.
 
+## Blind-audit implementation inventory (2026-07-19)
+
+The closeout workflow completed 15/15 discovery scopes, explicitly named all
+17 Swift sources, and adjudicated 23 canonical candidates: 22 confirmed and 1
+refuted. KIMI-001 and WRITER-LOCATOR-001 retain document-scoped legacy
+references; one duplicate MCP submission maps to the existing MCP-001 row.
+MCP-001 is a confirmed MCP 2025-11-25 object-root violation.
+
+All `_repro` names from this closeout are proposed TDD entry points only; none
+was created or executed during adjudication. A source with no retained finding
+was not proven defect-free. Twenty-one findings can enter TDD; CURSOR-CWD-001
+remains design/evidence pending until a deterministic workspace-ownership
+contract is established. This readiness scope does not close the
+repository-wide audit.
+
+| Batch | Status | Confirmed IDs |
+|-------|--------|---------------|
+| **A1 — Codex parser and indexing integrity** | open; TDD pending | ADAPTER-CODEX-001, ADAPTER-CODEX-002, IDX-PARTIAL-001 |
+| **A2 — Kimi composite session correctness** | open; TDD pending | KIMI-001, KIMI-002, KIMI-003 |
+| **A3 — Qwen product integration** | open; TDD pending | SRC-QWEN-001, SRC-QWEN-002 |
+| **A4 — Adapter ingestion guardrails** | open; TDD pending | ADAPTER-CC-001, SRC-COMMANDCODE-001, VSCODE-INCR-001 |
+| **B1 — Composite-input discovery and invalidation** | open; TDD pending | ADAPTER-GEMINI-001, COPILOT-AUX-001, COPILOT-DISCOVERY-001 |
+| **B2 — OpenCode archive and byte accounting** | open; TDD pending | ADAPTER-OPENCODE-001, ADAPTER-OPENCODE-002 |
+| **B3 — Cursor content and ownership** | partial: content TDD-ready; cwd design pending | CURSOR-CONTENT-001, CURSOR-CWD-001 |
+| **C1a — Archive V2 source-toggle convergence** | open; TDD pending | SRC-001 |
+| **C1b — Writer locator relocation** | open; TDD pending | WRITER-LOCATOR-001 |
+| **C1c — Startup parent-backfill pagination** | open; TDD pending | PARENT-BACKFILL-STARVE-001 |
+| **D1 — MCP result contract** | open; TDD pending | MCP-001 |
+
+Legacy references: KIMI-001 corresponds to `H08` only within
+`2026-06-10-multi-expert-audit.md`, and WRITER-LOCATOR-001 corresponds to `L3`
+only within `2026-07-17-engram-full-audit.md`. The duplicate MCP submission maps
+to `MCP-001`. `AG-BYTES-001` is refuted by a 1–2 vote because Antigravity's
+retained `pbSizeBytes` is the documented historical logical size of the complete
+`.pb` session.
+
+Each implementation-ready finding requires a failing `_repro`, recorded RED,
+minimum production fix, focused/full GREEN, and a fresh Codex `PASS` before
+commit/push/stacked PR. CURSOR-CWD-001 must first establish a deterministic
+workspace-ownership contract and must never infer authoritative project state
+from an unrelated file selection. No automatic merge is authorized.
+
 ## Post-review residuals (2026-07-18 full-project review)
 
 Promoted from `docs/reviews/2026-07-18-full-project-review.md` so open work is
