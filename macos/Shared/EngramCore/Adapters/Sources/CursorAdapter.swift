@@ -241,12 +241,24 @@ final class CursorAdapter: SessionAdapter, Sendable {
             return nil
         }
 
-        let content = JSONLAdapterSupport.string(bubble["text"]) ??
-            JSONLAdapterSupport.string(bubble["rawText"]) ?? ""
-        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
-        }
+        // Prefer the first non-empty-after-trim candidate. Empty/whitespace `text`
+        // must not shadow a restored `rawText` payload (nil-coalescing would).
+        let content = Self.firstNonEmptyContent(
+            JSONLAdapterSupport.string(bubble["text"]),
+            JSONLAdapterSupport.string(bubble["rawText"])
+        )
+        guard let content else { return nil }
         return (role, content)
+    }
+
+    private static func firstNonEmptyContent(_ candidates: String?...) -> String? {
+        for candidate in candidates {
+            guard let candidate else { continue }
+            if !candidate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return candidate
+            }
+        }
+        return nil
     }
 
     private static func firstVisibleBubbleTimestamp(_ bubbles: [Phase4AdapterSupport.JSONObject]) -> Double? {

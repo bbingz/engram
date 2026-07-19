@@ -2986,6 +2986,31 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.endTime, "2023-11-14T22:13:22.000Z")
     }
 
+    // Audit CURSOR-CONTENT-001: empty/whitespace text must not shadow non-empty rawText.
+    func testCursorFallsBackToRawTextWhenTextIsEmpty_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorEmptyTextRawTextFixture(dbPath: dbPath)
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let locator = "\(dbPath)?composer=cmp_rawtext"
+        switch try await adapter.parseSessionInfo(locator: locator) {
+        case .success(let info):
+            XCTAssertEqual(info.userMessageCount, 1)
+            XCTAssertEqual(info.assistantMessageCount, 1)
+            XCTAssertEqual(info.messageCount, 2)
+        case .failure(let failure):
+            XCTFail("unexpected adapter failure: \(failure)")
+        }
+        let streamed = try await drain(adapter, locator: locator)
+        XCTAssertEqual(streamed.map(\.role), [.user, .assistant])
+        XCTAssertEqual(
+            streamed.map(\.content),
+            ["restored user prompt", "restored assistant reply"]
+        )
+    }
+
     /// Minimal OpenCode schema with: 1 user msg (text part), 1 assistant msg
     /// (multiple text parts), and 1 assistant msg whose only part is a non-text
     /// tool part (must be excluded from counts and the stream).
@@ -3164,6 +3189,31 @@ final class AdapterMessageCountTests: XCTestCase {
         try exec("INSERT INTO cursorDiskKV VALUES ('composerData:cmp_missing_created', '{\"composerId\":\"cmp_missing_created\",\"lastUpdatedAt\":1700000002000}')")
         try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_missing_created:u1', '{\"type\":1,\"text\":\"Track Cursor timestamps\",\"timingInfo\":{\"clientStartTime\":1700000001000}}')")
         try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_missing_created:a1', '{\"type\":2,\"text\":\"Cursor timestamps tracked.\",\"timingInfo\":{\"clientStartTime\":1700000002000}}')")
+    }
+
+    /// Bubbles with empty / whitespace `text` and non-empty `rawText` (restored).
+    private static func buildCursorEmptyTextRawTextFixture(dbPath: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        defer { sqlite3_close(db) }
+
+        func exec(_ sql: String) throws {
+            var err: UnsafeMutablePointer<CChar>?
+            guard sqlite3_exec(db, sql, nil, nil, &err) == SQLITE_OK else {
+                let message = err.map { String(cString: $0) } ?? "unknown"
+                sqlite3_free(err)
+                throw NSError(domain: "test", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+        }
+
+        try exec("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")
+        try exec("INSERT INTO cursorDiskKV VALUES ('composerData:cmp_rawtext', '{\"composerId\":\"cmp_rawtext\",\"createdAt\":1700000000000,\"lastUpdatedAt\":1700000002000}')")
+        // Empty string text shadows rawText under nil-coalescing.
+        try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_rawtext:u1', '{\"type\":1,\"text\":\"\",\"rawText\":\"restored user prompt\",\"timingInfo\":{\"clientStartTime\":1700000001000}}')")
+        // Whitespace-only text must also fall through.
+        try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_rawtext:a1', '{\"type\":2,\"text\":\"   \",\"rawText\":\"restored assistant reply\",\"timingInfo\":{\"clientStartTime\":1700000002000}}')")
     }
 
     // MARK: - CommandCode
