@@ -1246,33 +1246,45 @@ public enum StartupBackfills {
     }
 
     public static func backfillParentLinks(_ db: Database) throws -> ParentLinkResult {
-        let rows = try Row.fetchAll(
-            db,
-            sql: """
-            SELECT id, file_path FROM sessions
-            WHERE agent_role = 'subagent'
-              AND parent_session_id IS NULL
-              AND (link_source IS NULL OR link_source != 'manual')
-            LIMIT 500
-            """
-        )
-
+        // Paginate with a stable rowid cursor so a full page of unparseable or
+        // invalid legacy candidates cannot starve later valid children in the
+        // same backfill call (PARENT-BACKFILL-STARVE-001).
         var linked = 0
         let regex = try NSRegularExpression(pattern: #"/([^/]+)/subagents/[^/]+\.jsonl$"#)
-        for row in rows {
-            let id: String = row["id"]
-            let filePath: String = row["file_path"]
-            guard let match = regex.firstMatch(in: filePath, range: NSRange(filePath.startIndex..., in: filePath)),
-                  let range = Range(match.range(at: 1), in: filePath)
-            else {
-                continue
+        var lastRowID: Int64 = 0
+        while true {
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT rowid, id, file_path FROM sessions
+                WHERE agent_role = 'subagent'
+                  AND parent_session_id IS NULL
+                  AND (link_source IS NULL OR link_source != 'manual')
+                  AND rowid > ?
+                ORDER BY rowid
+                LIMIT 500
+                """,
+                arguments: [lastRowID]
+            )
+            if rows.isEmpty {
+                break
             }
-            let parentId = String(filePath[range])
-            guard try validateParentLink(db, sessionId: id, parentId: parentId) else {
-                continue
+            for row in rows {
+                lastRowID = row["rowid"]
+                let id: String = row["id"]
+                let filePath: String = row["file_path"]
+                guard let match = regex.firstMatch(in: filePath, range: NSRange(filePath.startIndex..., in: filePath)),
+                      let range = Range(match.range(at: 1), in: filePath)
+                else {
+                    continue
+                }
+                let parentId = String(filePath[range])
+                guard try validateParentLink(db, sessionId: id, parentId: parentId) else {
+                    continue
+                }
+                try setParentSession(db, sessionId: id, parentId: parentId, linkSource: "path")
+                linked += 1
             }
-            try setParentSession(db, sessionId: id, parentId: parentId, linkSource: "path")
-            linked += 1
         }
 
         return ParentLinkResult(linked: linked)
