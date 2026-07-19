@@ -794,9 +794,15 @@ final class EngramServiceIPCTests: XCTestCase {
         )
         let composition = String(source[start.lowerBound ..< end.lowerBound])
 
-        XCTAssertTrue(composition.contains("SessionAdapterFactory.defaultAdapters()"))
         XCTAssertTrue(composition.contains("adapterProvider: {"))
-        XCTAssertTrue(composition.contains("Self.exactArchiveAdapters("))
+        XCTAssertTrue(
+            composition.contains("Self.exactArchiveAdaptersForBacklogPass(environment: environment)"),
+            "backlog adapterProvider must reread disabled sources each pass (SRC-001)"
+        )
+        XCTAssertFalse(
+            composition.contains("let disabledSources = Self.readDisabledSources"),
+            "must not capture a startup disabledSources snapshot outside the pass closure"
+        )
 
         let coordinator = try serviceCoreSource("EngramService/Core/ArchiveV2ServiceCoordinator.swift")
         let provider = try XCTUnwrap(coordinator.range(of: "let adapters = adapterProvider()"))

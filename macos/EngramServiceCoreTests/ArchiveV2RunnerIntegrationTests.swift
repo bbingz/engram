@@ -349,6 +349,52 @@ final class ArchiveV2RunnerIntegrationTests: XCTestCase {
         XCTAssertFalse(disabled.contains { $0.source == .codex })
     }
 
+    // Audit SRC-001: backlog adapterProvider must reread disabledSources each pass
+    // instead of capturing the startup snapshot for the service lifetime.
+    func testArchiveBacklogDrainerRereadsDisabledSourcesAfterToggle_repro() throws {
+        let harness = try makeHarness()
+        let settingsURL = harness.root.appendingPathComponent("settings.json")
+
+        try writeDisabledSources([], to: settingsURL)
+        let enabledPass = EngramServiceRunner.exactArchiveAdaptersForBacklogPass(
+            environment: [:],
+            settingsURL: settingsURL
+        )
+        XCTAssertTrue(
+            enabledPass.contains { $0.source == .codex },
+            "first backlog pass must include Codex while enabled"
+        )
+
+        try writeDisabledSources([SourceName.codex.rawValue], to: settingsURL)
+        let disabledPass = EngramServiceRunner.exactArchiveAdaptersForBacklogPass(
+            environment: [:],
+            settingsURL: settingsURL
+        )
+        XCTAssertFalse(
+            disabledPass.contains { $0.source == .codex },
+            "second backlog pass must drop Codex after mid-life disable"
+        )
+
+        try writeDisabledSources([], to: settingsURL)
+        let reenabledPass = EngramServiceRunner.exactArchiveAdaptersForBacklogPass(
+            environment: [:],
+            settingsURL: settingsURL
+        )
+        XCTAssertTrue(
+            reenabledPass.contains { $0.source == .codex },
+            "third backlog pass must restore Codex after re-enable"
+        )
+    }
+
+    private func writeDisabledSources(_ sources: [String], to settingsURL: URL) throws {
+        let object: [String: Any] = [
+            "disabledSources": sources,
+            ArchivedDefaultOffSources.settingsMigrationKey: true,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted])
+        try data.write(to: settingsURL, options: .atomic)
+    }
+
     func testPeriodicMissingLocatorRetriesAndClearsAfterLaterCaptureSuccess() async throws {
         let harness = try makeHarness()
         let missing = harness.root.appendingPathComponent("later-created.jsonl")
