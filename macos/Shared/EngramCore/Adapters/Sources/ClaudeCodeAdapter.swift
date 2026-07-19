@@ -240,7 +240,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 return .success(
                     IndexingScan(
                         info: info,
-                        messages: objects.compactMap(Self.message(from:)),
+                        messages: Self.messages(from: objects),
                         checkpointParsedOffset: checkpoint.parsedOffset,
                         checkpointBoundaryHash: checkpointBoundaryHash
                     )
@@ -270,7 +270,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             )
             guard !result.boundaryHash.isEmpty else { return .fallback }
             if let failure = result.failure { return .failure(failure) }
-            let messages = result.objects.compactMap(Self.message(from:))
+            let messages = Self.messages(from: result.objects)
             let aggregate = Self.aggregateSessionInfo(from: result.objects)
             return .success(
                 IndexingTailScan(
@@ -435,7 +435,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             locator: locator,
             options: options,
             limits: limits,
-            transform: Self.message(from:)
+            transform: Self.makeMessageTransform()
         )
         return JSONLAdapterSupport.stream(messages)
     }
@@ -452,7 +452,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             options: options,
             limits: limits,
             detectTruncation: options.limit == nil,
-            transform: Self.message(from:)
+            transform: Self.makeMessageTransform()
         )
         return StreamMessagesResult(
             messages: JSONLAdapterSupport.stream(result.messages),
@@ -649,7 +649,28 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             .replacingOccurrences(of: "\u{0}", with: "-")
     }
 
-    private static func message(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
+    private final class UsageMessageIdSet {
+        var ids = Set<String>()
+    }
+
+    /// Stateful transform so response-level usage is attached only once per
+    /// non-empty Claude `message.id` (content blocks still stream separately).
+    private static func makeMessageTransform() -> (JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
+        let seenUsageMessageIds = UsageMessageIdSet()
+        return { object in
+            message(from: object, seenUsageMessageIds: seenUsageMessageIds)
+        }
+    }
+
+    private static func messages(from objects: [JSONLAdapterSupport.JSONObject]) -> [NormalizedMessage] {
+        let seenUsageMessageIds = UsageMessageIdSet()
+        return objects.compactMap { message(from: $0, seenUsageMessageIds: seenUsageMessageIds) }
+    }
+
+    private static func message(
+        from object: JSONLAdapterSupport.JSONObject,
+        seenUsageMessageIds: UsageMessageIdSet
+    ) -> NormalizedMessage? {
         guard let type = JSONLAdapterSupport.string(object["type"]),
               type == "user" || type == "assistant"
         else {
@@ -671,12 +692,24 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             return nil
         }
         let role: NormalizedMessageRole = isToolResultRecord ? .tool : (type == "user" ? .user : .assistant)
+        var usage = JSONLAdapterSupport.usage(from: JSONLAdapterSupport.object(message?["usage"]))
+        if role == .assistant,
+           let messageId = JSONLAdapterSupport.string(message?["id"]),
+           !messageId.isEmpty,
+           usage != nil
+        {
+            if seenUsageMessageIds.ids.contains(messageId) {
+                usage = nil
+            } else {
+                seenUsageMessageIds.ids.insert(messageId)
+            }
+        }
         return NormalizedMessage(
             role: role,
             content: content,
             timestamp: JSONLAdapterSupport.string(object["timestamp"]),
             toolCalls: toolCalls.isEmpty ? nil : toolCalls,
-            usage: JSONLAdapterSupport.usage(from: JSONLAdapterSupport.object(message?["usage"]))
+            usage: usage
         )
     }
 
