@@ -582,6 +582,149 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(streamed.map(\.content), ["main question", "visible answer", "follow-up from shard"])
     }
 
+    // Audit KIMI-001: agentic turns must preserve tools and bind one wire turn per user turn.
+    func testKimiPreservesAgenticTurnToolsAndTimestamps_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("workspace-1/kimi-agentic", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+
+        let contextLines: [[String: Any]] = [
+            ["role": "user", "content": "Read the file"],
+            [
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [[
+                    "id": "call-1",
+                    "type": "function",
+                    "function": [
+                        "name": "read_file",
+                        "arguments": #"{"path":"README.md"}"#,
+                    ],
+                ]],
+            ],
+            ["role": "tool", "tool_call_id": "call-1", "content": "README contents"],
+            ["role": "assistant", "content": "The file is ready."],
+            ["role": "user", "content": "Summarize it"],
+            ["role": "assistant", "content": "Short summary."],
+        ]
+        let contextFile = sessionDir.appendingPathComponent("context.jsonl")
+        try contextLines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: contextFile, atomically: true, encoding: .utf8)
+
+        let firstUsage = TokenUsage(inputTokens: 10, outputTokens: 2, cacheReadTokens: 3, cacheCreationTokens: 4)
+        let secondUsage = TokenUsage(inputTokens: 20, outputTokens: 5, cacheReadTokens: 6, cacheCreationTokens: 7)
+        let wireLines: [[String: Any]] = [
+            ["timestamp": 1_700_000_000.0, "message": ["type": "TurnBegin"]],
+            [
+                "timestamp": 1_700_000_001.0,
+                "message": [
+                    "type": "StatusUpdate",
+                    "payload": [
+                        "token_usage": [
+                            "input_other": firstUsage.inputTokens,
+                            "output": firstUsage.outputTokens,
+                            "input_cache_read": firstUsage.cacheReadTokens ?? 0,
+                            "input_cache_creation": firstUsage.cacheCreationTokens ?? 0,
+                        ],
+                    ],
+                ],
+            ],
+            ["timestamp": 1_700_000_002.0, "message": ["type": "TurnEnd"]],
+            ["timestamp": 1_700_000_010.0, "message": ["type": "TurnBegin"]],
+            [
+                "timestamp": 1_700_000_011.0,
+                "message": [
+                    "type": "StatusUpdate",
+                    "payload": [
+                        "token_usage": [
+                            "input_other": secondUsage.inputTokens,
+                            "output": secondUsage.outputTokens,
+                            "input_cache_read": secondUsage.cacheReadTokens ?? 0,
+                            "input_cache_creation": secondUsage.cacheCreationTokens ?? 0,
+                        ],
+                    ],
+                ],
+            ],
+            ["timestamp": 1_700_000_012.0, "message": ["type": "TurnEnd"]],
+        ]
+        try wireLines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: sessionDir.appendingPathComponent("wire.jsonl"), atomically: true, encoding: .utf8)
+
+        let adapter = KimiAdapter(
+            sessionsRoot: root.path,
+            kimiJsonPath: root.appendingPathComponent("kimi.json").path
+        )
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: contextFile.path))
+        let streamed = try await drain(adapter, locator: contextFile.path)
+
+        XCTAssertEqual(info.messageCount, 6)
+        XCTAssertEqual(info.userMessageCount, 2)
+        XCTAssertEqual(info.assistantMessageCount, 3)
+        XCTAssertEqual(info.toolMessageCount, 1)
+        XCTAssertEqual(streamed.map(\.role), [.user, .assistant, .tool, .assistant, .user, .assistant])
+        guard streamed.count == 6 else { return }
+        XCTAssertEqual(
+            streamed[1].toolCalls,
+            [NormalizedToolCall(name: "read_file", input: #"{"path":"README.md"}"#)]
+        )
+        XCTAssertEqual(streamed[2].content, "README contents")
+        XCTAssertEqual(
+            streamed.map(\.timestamp),
+            [
+                Phase4AdapterSupport.isoFromSeconds(1_700_000_000),
+                Phase4AdapterSupport.isoFromSeconds(1_700_000_002),
+                Phase4AdapterSupport.isoFromSeconds(1_700_000_002),
+                Phase4AdapterSupport.isoFromSeconds(1_700_000_002),
+                Phase4AdapterSupport.isoFromSeconds(1_700_000_010),
+                Phase4AdapterSupport.isoFromSeconds(1_700_000_012),
+            ]
+        )
+        XCTAssertNil(streamed[1].usage)
+        XCTAssertNil(streamed[2].usage)
+        XCTAssertEqual(streamed[3].usage, firstUsage)
+        XCTAssertEqual(streamed[5].usage, secondUsage)
+    }
+
+    // Audit KIMI-002: historical sessions must resolve cwd from the workspace directory hash.
+    func testKimiResolvesHistoricalSessionCwdFromWorkspaceHash_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cases = [
+            (workspace: "6530f9eb448d96e7552a3c3a29b6cd2b", session: "old-local", cwd: "/repo"),
+            (workspace: "ssh_3e8bdf0b7c3f317d367df8cc16095151", session: "old-remote", cwd: "/repo/remote"),
+        ]
+        for item in cases {
+            let sessionDir = root.appendingPathComponent("\(item.workspace)/\(item.session)", isDirectory: true)
+            try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+            try (try jsonLine(["role": "user", "content": "Historical session"]) + "\n")
+                .write(to: sessionDir.appendingPathComponent("context.jsonl"), atomically: true, encoding: .utf8)
+        }
+        let kimiJSON: [String: Any] = [
+            "work_dirs": [
+                ["path": "/repo", "kaos": "local", "last_session_id": "new-local"],
+                ["path": "/repo/remote", "kaos": "ssh", "last_session_id": "new-remote"],
+            ],
+        ]
+        let kimiJsonURL = root.appendingPathComponent("kimi.json")
+        try JSONSerialization.data(withJSONObject: kimiJSON)
+            .write(to: kimiJsonURL)
+
+        let adapter = KimiAdapter(sessionsRoot: root.path, kimiJsonPath: kimiJsonURL.path)
+        let locators = try await adapter.listSessionLocators()
+
+        XCTAssertEqual(locators.count, 2)
+        for locator in locators {
+            let workspace = URL(fileURLWithPath: locator)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .lastPathComponent
+            let expected = try XCTUnwrap(cases.first { $0.workspace == workspace })
+            let info = try sessionInfo(await adapter.parseSessionInfo(locator: locator))
+            XCTAssertEqual(info.cwd, expected.cwd)
+        }
+    }
+
     // MARK: - Qwen
 
     // Runtime-debt repro: Qwen slash-command telemetry carries a session ID but

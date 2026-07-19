@@ -1082,6 +1082,264 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(snapshots.map(\.id), ["recent"])
     }
 
+    // Audit KIMI-002: startup indexing must repair historical cwd after workspace metadata appears.
+    func testKimiStartupReindexRepairsHistoricalSessionCwd_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kimi-startup-cwd-\(UUID().uuidString)", isDirectory: true)
+        let sessionDir = root.appendingPathComponent(
+            "6530f9eb448d96e7552a3c3a29b6cd2b/old-local",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let contextFile = sessionDir.appendingPathComponent("context.jsonl")
+        try writeJSONL(
+            [
+                ["role": "user", "content": "Historical question"],
+                ["role": "assistant", "content": "Historical answer"],
+            ],
+            to: contextFile
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000)],
+            ofItemAtPath: contextFile.path
+        )
+        let kimiJsonURL = root.appendingPathComponent("kimi.json")
+        try JSONSerialization.data(withJSONObject: ["work_dirs": []])
+            .write(to: kimiJsonURL)
+        let adapter = KimiAdapter(sessionsRoot: root.path, kimiJsonPath: kimiJsonURL.path)
+
+        let first = try await writer.indexAllSessions(adapters: [adapter])
+        let initial = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT cwd, project FROM sessions WHERE id = 'old-local'"
+            )
+        }
+        XCTAssertEqual(first.indexed, 1)
+        XCTAssertEqual(initial?["cwd"] as String?, "")
+        XCTAssertNil(initial?["project"] as String?)
+
+        let workspaceMetadata: [String: Any] = [
+            "work_dirs": [[
+                "path": "/repo",
+                "kaos": "local",
+                "last_session_id": "new-local",
+            ]],
+        ]
+        try JSONSerialization.data(withJSONObject: workspaceMetadata)
+            .write(to: kimiJsonURL)
+
+        let second = try await writer.indexAllSessions(adapters: [adapter])
+        let repaired = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT cwd, project FROM sessions WHERE id = 'old-local'"
+            )
+        }
+
+        XCTAssertEqual(second.indexed, 1)
+        XCTAssertEqual(repaired?["cwd"] as String?, "/repo")
+        XCTAssertEqual(repaired?["project"] as String?, "repo")
+    }
+
+    // Audit KIMI-003: wire-only changes must invalidate the indexed session snapshot.
+    // Exercises product recent path via RecentlyModifiedSessionAdapter so composite
+    // mtime (context + shards + wire) keeps wire-only edits in the recent set.
+    func testKimiWireOnlyChangeInvalidatesIndexedSession_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kimi-wire-change-\(UUID().uuidString)", isDirectory: true)
+        let sessionDir = root.appendingPathComponent("workspace/kimi-wire", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let contextFile = sessionDir.appendingPathComponent("context.jsonl")
+        try writeJSONL(
+            [
+                ["role": "user", "content": "Question"],
+                ["role": "assistant", "content": "Answer"],
+            ],
+            to: contextFile
+        )
+        let wireFile = sessionDir.appendingPathComponent("wire.jsonl")
+        let turnBegin: [String: Any] = [
+            "timestamp": 1_700_000_000.0,
+            "message": ["type": "TurnBegin"],
+        ]
+        let firstUsage: [String: Any] = [
+            "timestamp": 1_700_000_001.0,
+            "message": [
+                "type": "StatusUpdate",
+                "payload": ["token_usage": ["input_other": 100]],
+            ],
+        ]
+        try writeJSONL([turnBegin, firstUsage], to: wireFile)
+        let baselineModifiedAt = Date(timeIntervalSince1970: 1_000)
+        for file in [contextFile, wireFile] {
+            try FileManager.default.setAttributes(
+                [.modificationDate: baselineModifiedAt],
+                ofItemAtPath: file.path
+            )
+        }
+        let adapter = KimiAdapter(
+            sessionsRoot: root.path,
+            kimiJsonPath: root.appendingPathComponent("kimi.json").path
+        )
+
+        let first = try await writer.indexAllSessions(adapters: [adapter])
+        let initial = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT s.end_time, COALESCE(SUM(c.input_tokens), 0) AS input_tokens
+                FROM sessions s
+                LEFT JOIN session_costs c ON c.session_id = s.id
+                WHERE s.id = 'kimi-wire'
+                GROUP BY s.id
+                """
+            )
+        }
+        XCTAssertEqual(first.indexed, 1)
+        XCTAssertNil(initial?["end_time"] as String?)
+        XCTAssertEqual(initial?["input_tokens"] as Int?, 100)
+
+        let additionalUsage: [String: Any] = [
+            "timestamp": 1_700_000_001.5,
+            "message": [
+                "type": "StatusUpdate",
+                "payload": ["token_usage": ["input_other": 25]],
+            ],
+        ]
+        let turnEnd: [String: Any] = [
+            "timestamp": 1_700_000_002.0,
+            "message": ["type": "TurnEnd"],
+        ]
+        try writeJSONL([turnBegin, firstUsage, additionalUsage, turnEnd], to: wireFile)
+        // Context stays at baseline; only wire advances. Cutoff sits between them so
+        // locator discovery fails without composite mtime filtering.
+        let wireModifiedAt = Date(timeIntervalSince1970: 2_000)
+        try FileManager.default.setAttributes(
+            [.modificationDate: baselineModifiedAt],
+            ofItemAtPath: contextFile.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: wireModifiedAt],
+            ofItemAtPath: wireFile.path
+        )
+        let recentAdapter = RecentlyModifiedSessionAdapter(
+            base: adapter,
+            modifiedSince: Date(timeIntervalSince1970: 1_500)
+        )
+        let recentLocators = try await recentAdapter.listSessionLocators()
+        XCTAssertEqual(
+            recentLocators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [contextFile.resolvingSymlinksInPath().path]
+        )
+
+        let second = try await writer.indexRecentSessions(adapters: [recentAdapter])
+        let updated = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT s.end_time, COALESCE(SUM(c.input_tokens), 0) AS input_tokens
+                FROM sessions s
+                LEFT JOIN session_costs c ON c.session_id = s.id
+                WHERE s.id = 'kimi-wire'
+                GROUP BY s.id
+                """
+            )
+        }
+
+        XCTAssertEqual(second.indexed, 1)
+        XCTAssertEqual(
+            updated?["end_time"] as String?,
+            Phase4AdapterSupport.isoFromSeconds(1_700_000_002)
+        )
+        XCTAssertEqual(updated?["input_tokens"] as Int?, 125)
+    }
+
+    // Audit KIMI-003: context-shard changes must invalidate the indexed session snapshot.
+    // Exercises product recent path via RecentlyModifiedSessionAdapter so composite
+    // mtime (context + shards + wire) keeps shard-only edits in the recent set.
+    func testKimiShardOnlyChangeInvalidatesIndexedSession_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kimi-shard-change-\(UUID().uuidString)", isDirectory: true)
+        let sessionDir = root.appendingPathComponent("workspace/kimi-shard", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let contextFile = sessionDir.appendingPathComponent("context.jsonl")
+        try writeJSONL(
+            [
+                ["role": "user", "content": "First question"],
+                ["role": "assistant", "content": "First answer"],
+            ],
+            to: contextFile
+        )
+        let baselineModifiedAt = Date(timeIntervalSince1970: 1_000)
+        try FileManager.default.setAttributes(
+            [.modificationDate: baselineModifiedAt],
+            ofItemAtPath: contextFile.path
+        )
+        let adapter = KimiAdapter(
+            sessionsRoot: root.path,
+            kimiJsonPath: root.appendingPathComponent("kimi.json").path
+        )
+
+        let first = try await writer.indexAllSessions(adapters: [adapter])
+        let initial = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT message_count, size_bytes FROM sessions WHERE id = 'kimi-shard'"
+            )
+        }
+        XCTAssertEqual(first.indexed, 1)
+        XCTAssertEqual(initial?["message_count"] as Int?, 2)
+        let initialSize = try XCTUnwrap(initial?["size_bytes"] as Int64?)
+
+        let shardFile = sessionDir.appendingPathComponent("context_1.jsonl")
+        try writeJSONL(
+            [
+                ["role": "user", "content": "Second question"],
+                ["role": "assistant", "content": "Second answer"],
+            ],
+            to: shardFile
+        )
+        // Context stays at baseline; only the shard advances. Cutoff sits between them so
+        // locator discovery fails without composite mtime filtering.
+        let shardModifiedAt = Date(timeIntervalSince1970: 2_000)
+        try FileManager.default.setAttributes(
+            [.modificationDate: baselineModifiedAt],
+            ofItemAtPath: contextFile.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: shardModifiedAt],
+            ofItemAtPath: shardFile.path
+        )
+        let recentAdapter = RecentlyModifiedSessionAdapter(
+            base: adapter,
+            modifiedSince: Date(timeIntervalSince1970: 1_500)
+        )
+        let recentLocators = try await recentAdapter.listSessionLocators()
+        XCTAssertEqual(
+            recentLocators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [contextFile.resolvingSymlinksInPath().path]
+        )
+
+        let second = try await writer.indexRecentSessions(adapters: [recentAdapter])
+        let updated = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT message_count, size_bytes FROM sessions WHERE id = 'kimi-shard'"
+            )
+        }
+
+        XCTAssertEqual(second.indexed, 1)
+        XCTAssertEqual(updated?["message_count"] as Int?, 4)
+        XCTAssertGreaterThan(try XCTUnwrap(updated?["size_bytes"] as Int64?), initialSize)
+    }
+
     func testRecentModifiedAdapterUsesBackingFileForVirtualLocators() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("recent-active-virtual-\(UUID().uuidString)", isDirectory: true)

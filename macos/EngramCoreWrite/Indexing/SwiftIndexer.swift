@@ -195,7 +195,8 @@ public final class SwiftIndexer {
                     knownIndexedState?.needsInstructionBackfill == true
                     && Self.reliableInstructionSources.contains(adapter.source)
                     && (knownParseState?.parseStatus ?? .ok) == .ok
-                if let currentStat,
+                if adapter.source != .kimi,
+                   let currentStat,
                    !needsInstructionBackfill,
                    FileIndexDecision.decide(
                     stat: currentStat,
@@ -243,7 +244,8 @@ public final class SwiftIndexer {
                         break
                     }
                 }
-                if (knownParseState == nil || skipKnownFileLocators),
+                if adapter.source != .kimi,
+                   (knownParseState == nil || skipKnownFileLocators),
                    let currentFile = currentStat?.legacyState,
                    let indexed = knownIndexedState {
                     if !needsInstructionBackfill {
@@ -748,6 +750,12 @@ public final class SwiftIndexer {
         var fields: [(String, String)] = [
             ("cwd", jsonString(info.cwd))
         ]
+        if info.source == .kimi {
+            fields.append(("startTime", jsonString(info.startTime)))
+            if let endTime = info.endTime {
+                fields.append(("endTime", jsonString(endTime)))
+            }
+        }
         if let project = info.project { fields.append(("project", jsonString(project))) }
         if let model = info.model { fields.append(("model", jsonString(model))) }
         fields.append(("messageCount", "\(info.messageCount)"))
