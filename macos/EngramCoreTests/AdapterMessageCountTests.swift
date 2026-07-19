@@ -879,6 +879,258 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.messageCount, streamed.count)
     }
 
+    // Audit ADAPTER-CODEX-001: custom tool records must stream and count as tool messages.
+    func testCodexCustomToolCallAndOutputAreStreamedAndCounted_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-custom-tool.jsonl")
+        let lines: [[String: Any]] = [
+            ["timestamp": "2026-06-01T10:00:00.000Z", "type": "session_meta",
+             "payload": ["id": "codex-custom-tool-1", "timestamp": "2026-06-01T10:00:00.000Z", "cwd": "/tmp/x"]],
+            ["timestamp": "2026-06-01T10:00:01.000Z", "type": "response_item",
+             "payload": ["type": "message", "role": "user", "content": [["type": "input_text", "text": "Apply the patch"]]]],
+            ["timestamp": "2026-06-01T10:00:02.000Z", "type": "response_item",
+             "payload": [
+                 "type": "custom_tool_call",
+                 "call_id": "call-1",
+                 "name": "apply_patch",
+                 "status": "completed",
+                 "input": "*** Begin Patch\n*** End Patch",
+             ]],
+            ["timestamp": "2026-06-01T10:00:03.000Z", "type": "response_item",
+             "payload": ["type": "custom_tool_call_output", "call_id": "call-1", "output": "Success."]],
+        ]
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(sessionsRoot: root.path)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(streamed.map(\.role), [.user, .tool, .tool])
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 0)
+        XCTAssertEqual(info.toolMessageCount, 2)
+        XCTAssertEqual(info.systemMessageCount, 0)
+        XCTAssertEqual(info.messageCount, 3)
+        XCTAssertEqual(info.messageCount, streamed.count)
+        guard streamed.count == 3 else { return }
+        XCTAssertTrue(streamed[1].content.contains("apply_patch"))
+        XCTAssertTrue(streamed[1].content.contains("*** Begin Patch\n*** End Patch"))
+        XCTAssertEqual(
+            streamed[1].toolCalls,
+            [NormalizedToolCall(name: "apply_patch", input: "*** Begin Patch\n*** End Patch")]
+        )
+        XCTAssertEqual(streamed[2].content, "Success.")
+    }
+
+    // Audit ADAPTER-CODEX-002: duplicate adjacent token snapshots must not inflate usage.
+    func testCodexDuplicateTokenCountSnapshotIsNotDoubleCounted_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-duplicate-usage.jsonl")
+        let sessionMeta: [String: Any] = [
+            "timestamp": "2026-06-01T10:00:00.000Z",
+            "type": "session_meta",
+            "payload": [
+                "id": "codex-duplicate-usage-1",
+                "timestamp": "2026-06-01T10:00:00.000Z",
+                "cwd": "/tmp/codex-usage",
+            ],
+        ]
+        let user: [String: Any] = [
+            "timestamp": "2026-06-01T10:00:01.000Z",
+            "type": "response_item",
+            "payload": [
+                "type": "message",
+                "role": "user",
+                "content": [["type": "input_text", "text": "Track Codex usage"]],
+            ],
+        ]
+        let assistant: [String: Any] = [
+            "timestamp": "2026-06-01T10:00:02.000Z",
+            "type": "response_item",
+            "payload": [
+                "type": "message",
+                "role": "assistant",
+                "content": [["type": "output_text", "text": "Codex usage tracked."]],
+            ],
+        ]
+        let usageA: [String: Int] = [
+            "input_tokens": 1_000,
+            "cached_input_tokens": 400,
+            "output_tokens": 25,
+            "reasoning_output_tokens": 5,
+            "total_tokens": 1_025,
+        ]
+        let totalA: [String: Int] = usageA
+        var totalAWithDifferentReasoning = totalA
+        totalAWithDifferentReasoning["reasoning_output_tokens"] = 6
+
+        func tokenCount(
+            timestamp: String,
+            last: [String: Int],
+            total: [String: Int]?
+        ) -> [String: Any] {
+            var info: [String: Any] = ["last_token_usage": last]
+            if let total {
+                info["total_token_usage"] = total
+            }
+            return [
+                "timestamp": timestamp,
+                "type": "event_msg",
+                "payload": ["type": "token_count", "info": info],
+            ]
+        }
+
+        let snapshotA = tokenCount(
+            timestamp: "2026-06-01T10:00:03.000Z",
+            last: usageA,
+            total: totalA
+        )
+        let duplicateSnapshotA = tokenCount(
+            timestamp: "2026-06-01T10:00:04.000Z",
+            last: usageA,
+            total: totalA
+        )
+        let changedTotalSnapshotA = tokenCount(
+            timestamp: "2026-06-01T10:00:05.000Z",
+            last: usageA,
+            total: totalAWithDifferentReasoning
+        )
+        let noTotalSnapshotA = tokenCount(
+            timestamp: "2026-06-01T10:00:06.000Z",
+            last: usageA,
+            total: nil
+        )
+        let unsupportedResponseItem: [String: Any] = [
+            "timestamp": "2026-06-01T10:00:07.000Z",
+            "type": "response_item",
+            "payload": ["type": "reasoning", "summary": []],
+        ]
+        let noTotalSnapshotAfterBoundary = tokenCount(
+            timestamp: "2026-06-01T10:00:08.000Z",
+            last: usageA,
+            total: nil
+        )
+        let snapshotB = tokenCount(
+            timestamp: "2026-06-01T10:00:09.000Z",
+            last: [
+                "input_tokens": 300,
+                "cached_input_tokens": 100,
+                "output_tokens": 7,
+                "reasoning_output_tokens": 2,
+                "total_tokens": 307,
+            ],
+            total: [
+                "input_tokens": 1_300,
+                "cached_input_tokens": 500,
+                "output_tokens": 32,
+                "reasoning_output_tokens": 7,
+                "total_tokens": 1_332,
+            ]
+        )
+        try [
+            sessionMeta,
+            user,
+            assistant,
+            snapshotA,
+            duplicateSnapshotA,
+            changedTotalSnapshotA,
+            noTotalSnapshotA,
+            unsupportedResponseItem,
+            noTotalSnapshotAfterBoundary,
+            snapshotB,
+        ]
+        .map { try jsonLine($0) }
+        .joined(separator: "\n")
+        .appending("\n")
+        .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(sessionsRoot: root.path)
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(streamed.map(\.role), [.user, .assistant])
+        XCTAssertNil(streamed.first?.usage)
+        XCTAssertEqual(
+            streamed.last?.usage,
+            TokenUsage(inputTokens: 2_600, outputTokens: 107, cacheReadTokens: 1_700, cacheCreationTokens: 0)
+        )
+    }
+
+    // Audit ADAPTER-CODEX-002: token snapshot deduplication must be scoped to one read.
+    func testCodexTokenCountSnapshotDeduplicationIsInvocationLocal_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let firstFile = root.appendingPathComponent("rollout-codex-usage-first.jsonl")
+        let secondFile = root.appendingPathComponent("rollout-codex-usage-second.jsonl")
+        let snapshot: [String: Any] = [
+            "timestamp": "2026-06-01T10:00:02.000Z",
+            "type": "event_msg",
+            "payload": [
+                "type": "token_count",
+                "info": [
+                    "last_token_usage": [
+                        "input_tokens": 1_000,
+                        "cached_input_tokens": 400,
+                        "output_tokens": 25,
+                        "reasoning_output_tokens": 5,
+                        "total_tokens": 1_025,
+                    ],
+                    "total_token_usage": [
+                        "input_tokens": 1_000,
+                        "cached_input_tokens": 400,
+                        "output_tokens": 25,
+                        "reasoning_output_tokens": 5,
+                        "total_tokens": 1_025,
+                    ],
+                ],
+            ],
+        ]
+        let assistant: [String: Any] = [
+            "timestamp": "2026-06-01T10:00:01.000Z",
+            "type": "response_item",
+            "payload": [
+                "type": "message",
+                "role": "assistant",
+                "content": [["type": "output_text", "text": "Codex usage tracked."]],
+            ],
+        ]
+        let firstMeta: [String: Any] = [
+            "timestamp": "2026-06-01T10:00:00.000Z",
+            "type": "session_meta",
+            "payload": ["id": "codex-usage-first", "cwd": "/tmp/codex-usage"],
+        ]
+        let secondMeta: [String: Any] = [
+            "timestamp": "2026-06-01T10:00:00.000Z",
+            "type": "session_meta",
+            "payload": ["id": "codex-usage-second", "cwd": "/tmp/codex-usage"],
+        ]
+        try [firstMeta, assistant, snapshot]
+            .map { try jsonLine($0) }
+            .joined(separator: "\n")
+            .appending("\n")
+            .write(to: firstFile, atomically: true, encoding: .utf8)
+        try [secondMeta, snapshot, assistant]
+            .map { try jsonLine($0) }
+            .joined(separator: "\n")
+            .appending("\n")
+            .write(to: secondFile, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(sessionsRoot: root.path)
+        let expected = TokenUsage(
+            inputTokens: 600,
+            outputTokens: 25,
+            cacheReadTokens: 400,
+            cacheCreationTokens: 0
+        )
+        let firstStreamed = try await drain(adapter, locator: firstFile.path)
+        let secondStreamed = try await drain(adapter, locator: secondFile.path)
+
+        XCTAssertEqual(firstStreamed.map(\.usage), [expected])
+        XCTAssertEqual(secondStreamed.map(\.usage), [expected])
+    }
+
     func testCodexTailIndexingConformance_repro() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -63,6 +63,71 @@ final class IndexerParseOnceTests: XCTestCase {
         XCTAssertEqual(scan.messages, expectedMessages, "single-parse messages must match streamMessages")
     }
 
+    // Audit IDX-PARTIAL-001: a capped full scan must not replace a complete snapshot.
+    func testCodexTruncatedIndexScanDoesNotReplaceCompleteSnapshot_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-truncated-index-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let file = root.appendingPathComponent("rollout-codex-truncated-index.jsonl")
+        let lines: [[String: Any]] = [
+            ["timestamp": "2026-06-01T10:00:00.000Z", "type": "session_meta",
+             "payload": ["id": "codex-truncated-index-1", "timestamp": "2026-06-01T10:00:00.000Z", "cwd": "/tmp/codex-index"]],
+            ["timestamp": "2026-06-01T10:00:01.000Z", "type": "response_item",
+             "payload": ["type": "message", "role": "user", "content": [["type": "input_text", "text": "First request"]]]],
+            ["timestamp": "2026-06-01T10:00:02.000Z", "type": "response_item",
+             "payload": ["type": "message", "role": "assistant", "content": [["type": "output_text", "text": "First response"]]]],
+            ["timestamp": "2026-06-01T10:00:03.000Z", "type": "response_item",
+             "payload": ["type": "message", "role": "user", "content": [["type": "input_text", "text": "Second request"]]]],
+            ["timestamp": "2026-06-01T10:00:04.000Z", "type": "response_item",
+             "payload": ["type": "message", "role": "assistant", "content": [["type": "output_text", "text": "Second response"]]]],
+            ["timestamp": "2026-06-01T10:00:05.000Z", "type": "response_item",
+             "payload": ["type": "message", "role": "user", "content": [["type": "input_text", "text": "Third request"]]]],
+            ["timestamp": "2026-06-01T10:00:06.000Z", "type": "response_item",
+             "payload": ["type": "message", "role": "assistant", "content": [["type": "output_text", "text": "Third response"]]]],
+        ]
+        try (lines.map(jsonLine).joined(separator: "\n") + "\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let completeAdapter = CodexAdapter(
+            sessionsRoot: root.path,
+            limits: ParserLimits(maxMessages: 100)
+        )
+        let first = try await writer.indexRecentSessions(adapters: [completeAdapter])
+        let locator = try XCTUnwrap(sessionValue("source_locator", id: "codex-truncated-index-1"))
+        let firstMessageCount = try sessionIntValue("message_count", id: "codex-truncated-index-1")
+        let firstSnapshotHash = try XCTUnwrap(sessionValue("snapshot_hash", id: "codex-truncated-index-1"))
+        var firstState = try XCTUnwrap(
+            writer.knownFileIndexStates(source: .codex, locators: [locator])[locator]
+        )
+
+        XCTAssertEqual(first.indexed, 1)
+        XCTAssertEqual(firstMessageCount, 6)
+        XCTAssertEqual(firstState.parseStatus, .ok)
+
+        firstState.schemaVersion = FileIndexState.currentSchemaVersion - 1
+        try writer.upsertFileIndexState(firstState)
+
+        let cappedAdapter = CodexAdapter(
+            sessionsRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let second = try await writer.indexRecentSessions(adapters: [cappedAdapter])
+        let secondState = try XCTUnwrap(
+            writer.knownFileIndexStates(source: .codex, locators: [locator])[locator]
+        )
+
+        XCTAssertEqual(second.indexed, 0)
+        XCTAssertEqual(try sessionIntValue("message_count", id: "codex-truncated-index-1"), firstMessageCount)
+        XCTAssertEqual(try sessionValue("snapshot_hash", id: "codex-truncated-index-1"), firstSnapshotHash)
+        XCTAssertEqual(secondState.parseStatus, .terminal)
+        XCTAssertEqual(secondState.failureKind, .messageLimitExceeded)
+        XCTAssertNil(secondState.retryAfterEpochSeconds)
+        XCTAssertEqual(secondState.retryCount, 0)
+        XCTAssertEqual(secondState.lastError, "messageLimitExceeded")
+    }
+
     /// The indexer must route each changed file through `scanForIndexing` exactly
     /// once and never fall back to the old two-pass `parseSessionInfo` +
     /// `streamMessages` sequence.

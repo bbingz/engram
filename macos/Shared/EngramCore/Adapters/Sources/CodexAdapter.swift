@@ -575,7 +575,10 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
                     }
                 } else if payloadType == "message", JSONLAdapterSupport.string(payload["role"]) == "assistant" {
                     assistantCount += 1
-                } else if payloadType == "function_call" || payloadType == "function_call_output" {
+                } else if payloadType == "function_call"
+                    || payloadType == "function_call_output"
+                    || payloadType == "custom_tool_call"
+                    || payloadType == "custom_tool_call_output" {
                     // streamMessages emits both the call and its output as tool
                     // messages; counts must match so session cards agree with the
                     // transcript (M6).
@@ -667,6 +670,9 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
                 options: StreamMessagesOptions(),
                 limits: limits
             )
+            if result.truncatedAt != nil {
+                return .failure(.messageLimitExceeded)
+            }
             let checkpoint = try JSONLAdapterSupport.checkpoint(locator: locator, limits: limits)
             let checkpointBoundaryHash = checkpoint.parsedOffset == info.sizeBytes
                 ? checkpoint.boundaryHash
@@ -787,6 +793,7 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
             var pendingMessage: NormalizedMessage?
             var pendingUsageCameFromTokenCount = false
             var pendingUsage: TokenUsage?
+            var lastTokenCountSnapshot: [Int?]?
             var truncatedAt: Int?
 
             func appendWindowed(_ message: NormalizedMessage) -> Bool {
@@ -818,15 +825,23 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
                     break
                 }
 
-                if let tokenUsage = tokenCountUsage(from: object) {
+                if JSONLAdapterSupport.string(object["type"]) == "response_item" {
+                    lastTokenCountSnapshot = nil
+                }
+
+                if let tokenCount = tokenCountUsage(from: object) {
+                    if tokenCount.snapshot == lastTokenCountSnapshot {
+                        continue
+                    }
+                    lastTokenCountSnapshot = tokenCount.snapshot
                     if var message = pendingMessage, message.role != .user {
                         if pendingUsageCameFromTokenCount || message.usage == nil {
-                            message.usage = mergeUsage(message.usage, tokenUsage)
+                            message.usage = mergeUsage(message.usage, tokenCount.usage)
                             pendingUsageCameFromTokenCount = true
                             pendingMessage = message
                         }
                     } else {
-                        pendingUsage = mergeUsage(pendingUsage, tokenUsage)
+                        pendingUsage = mergeUsage(pendingUsage, tokenCount.usage)
                     }
                     continue
                 }
@@ -887,16 +902,25 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
                 toolCalls: nil,
                 usage: role == .assistant ? JSONLAdapterSupport.usage(from: JSONLAdapterSupport.object(payload["usage"])) : nil
             )
-        case "function_call":
+        case "function_call", "custom_tool_call":
             let name = JSONLAdapterSupport.string(payload["name"]) ?? ""
-            let arguments = payload["arguments"].flatMap { JSONLAdapterSupport.jsonString($0, limit: 500) } ?? ""
+            let isCustomToolCall = JSONLAdapterSupport.string(payload["type"]) == "custom_tool_call"
+            let inputValue = payload[isCustomToolCall ? "input" : "arguments"]
+            let input: String
+            if isCustomToolCall, let string = JSONLAdapterSupport.string(inputValue) {
+                input = String(string.prefix(500))
+            } else if let inputValue {
+                input = JSONLAdapterSupport.jsonString(inputValue, limit: 500) ?? ""
+            } else {
+                input = ""
+            }
             return NormalizedMessage(
                 role: .tool,
-                content: arguments.isEmpty ? name : "\(name) \(arguments)",
+                content: input.isEmpty ? name : "\(name) \(input)",
                 timestamp: timestamp,
-                toolCalls: [NormalizedToolCall(name: name, input: arguments.isEmpty ? nil : arguments)]
+                toolCalls: [NormalizedToolCall(name: name, input: input.isEmpty ? nil : input)]
             )
-        case "function_call_output":
+        case "function_call_output", "custom_tool_call_output":
             let content: String
             if let output = JSONLAdapterSupport.string(payload["output"]) {
                 content = output
@@ -912,7 +936,9 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
         }
     }
 
-    private static func tokenCountUsage(from object: JSONLAdapterSupport.JSONObject) -> TokenUsage? {
+    private static func tokenCountUsage(
+        from object: JSONLAdapterSupport.JSONObject
+    ) -> (usage: TokenUsage, snapshot: [Int?])? {
         guard JSONLAdapterSupport.string(object["type"]) == "event_msg",
               let payload = JSONLAdapterSupport.object(object["payload"]),
               JSONLAdapterSupport.string(payload["type"]) == "token_count",
@@ -938,7 +964,22 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
         else {
             return nil
         }
-        return tokenUsage
+
+        let totalUsage = JSONLAdapterSupport.object(info["total_token_usage"])
+        let snapshot = [
+            optionalInt(usage["input_tokens"]),
+            optionalInt(usage["cached_input_tokens"]),
+            optionalInt(usage["output_tokens"]),
+            optionalInt(usage["reasoning_output_tokens"]),
+            optionalInt(usage["total_tokens"]),
+            totalUsage == nil ? 0 : 1,
+            optionalInt(totalUsage?["input_tokens"]),
+            optionalInt(totalUsage?["cached_input_tokens"]),
+            optionalInt(totalUsage?["output_tokens"]),
+            optionalInt(totalUsage?["reasoning_output_tokens"]),
+            optionalInt(totalUsage?["total_tokens"]),
+        ]
+        return (tokenUsage, snapshot)
     }
 
     private static func mergeUsage(_ lhs: TokenUsage?, _ rhs: TokenUsage) -> TokenUsage {
@@ -952,9 +993,13 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
     }
 
     private static func int(_ value: Any?) -> Int {
+        optionalInt(value) ?? 0
+    }
+
+    private static func optionalInt(_ value: Any?) -> Int? {
         if let int = value as? Int { return int }
         if let number = value as? NSNumber { return number.intValue }
-        return 0
+        return nil
     }
 
     private static func isSystemInjection(_ text: String) -> Bool {
