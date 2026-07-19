@@ -122,6 +122,49 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    // Audit PARENT-BACKFILL-STARVE-001: a single LIMIT 500 batch of unparseable
+    // legacy subagent rows must not starve a later valid child in the same call.
+    func testBackfillParentLinksDoesNotStarveValidChildBehindInvalidBatch_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "real-parent", source: "codex", tier: "normal")
+            for index in 0..<500 {
+                try insertSession(
+                    db,
+                    id: String(format: "invalid-%03d", index),
+                    source: "codex",
+                    filePath: "/tmp/invalid-\(index)/no-subagent-path.jsonl",
+                    agentRole: "subagent",
+                    tier: "skip"
+                )
+            }
+            try insertSession(
+                db,
+                id: "real-child",
+                source: "codex",
+                filePath: "/tmp/real-parent/subagents/worker.jsonl",
+                agentRole: "subagent",
+                tier: "skip"
+            )
+
+            let result = try StartupBackfills.backfillParentLinks(db)
+            XCTAssertEqual(result.linked, 1, "must paginate past 500 invalid candidates in one call")
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'real-child'"),
+                "real-parent"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = 'real-child'"),
+                "path"
+            )
+            XCTAssertNil(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT parent_session_id FROM sessions WHERE id = 'invalid-000'"
+                )
+            )
+        }
+    }
+
     func testRunPeriodicParentBackfillsLinksAgentChildren() throws {
         try writer.write { db in
             try insertSession(db, id: "parent-1", source: "codex", tier: "normal")
