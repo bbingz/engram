@@ -1541,12 +1541,15 @@ final class MCPDatabase {
                 sql: "SELECT alias, canonical FROM project_aliases ORDER BY canonical, alias"
             )
         }
-        return .array(rows.map { row in
-            .object([
-                ("alias", .string(row["alias"])),
-                ("canonical", .string(row["canonical"])),
-            ])
-        })
+        // MCP 2025-11-25: structuredContent must be an object root (MCP-001).
+        return .object([
+            ("aliases", .array(rows.map { row in
+                .object([
+                    ("alias", .string(row["alias"])),
+                    ("canonical", .string(row["canonical"])),
+                ])
+            })),
+        ])
     }
 
     func resolvedProjectAliases(for project: String) throws -> [String] {
