@@ -195,7 +195,9 @@ public final class SwiftIndexer {
                     knownIndexedState?.needsInstructionBackfill == true
                     && Self.reliableInstructionSources.contains(adapter.source)
                     && (knownParseState?.parseStatus ?? .ok) == .ok
-                if adapter.source != .kimi,
+                // Composite-input sources can change without touching the main locator.
+                // Main-file FileIndexDecision would skip sidecar/aux rewrites.
+                if !Self.usesCompositeInputs(adapter.source),
                    let currentStat,
                    !needsInstructionBackfill,
                    FileIndexDecision.decide(
@@ -244,7 +246,7 @@ public final class SwiftIndexer {
                         break
                     }
                 }
-                if adapter.source != .kimi,
+                if !Self.usesCompositeInputs(adapter.source),
                    (knownParseState == nil || skipKnownFileLocators),
                    let currentFile = currentStat?.legacyState,
                    let indexed = knownIndexedState {
@@ -566,7 +568,10 @@ public final class SwiftIndexer {
         mutating func absorbSearchableContent(role: NormalizedMessageRole, content: String) {
             let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
-            guard role == .user || role == .assistant else { return }
+            // System content participates in the fingerprint so Copilot checkpoint
+            // body rewrites (and similar aux system streams) invalidate even when
+            // sizeBytes and user/assistant counts stay equal.
+            guard role == .user || role == .assistant || role == .system else { return }
             var hasher = contentDigest
             let line = "\(role.rawValue)\n\(trimmed)\n"
             hasher.update(data: Data(line.utf8))
@@ -629,6 +634,13 @@ public final class SwiftIndexer {
             if message.role == .tool {
                 guard !content.isEmpty else { continue }
                 stats.toolCount += 1
+                continue
+            }
+            if message.role == .system {
+                // Fingerprint only — system turns are not tier/instruction inputs.
+                if !content.isEmpty {
+                    stats.absorbSearchableContent(role: .system, content: content)
+                }
                 continue
             }
             guard message.role == .user || message.role == .assistant else { continue }
@@ -750,7 +762,9 @@ public final class SwiftIndexer {
         var fields: [(String, String)] = [
             ("cwd", jsonString(info.cwd))
         ]
-        if info.source == .kimi {
+        // Kimi wire/shard timestamps and Copilot workspace.yaml times must
+        // invalidate even when locator sizeBytes stay equal.
+        if info.source == .kimi || info.source == .copilot {
             fields.append(("startTime", jsonString(info.startTime)))
             if let endTime = info.endTime {
                 fields.append(("endTime", jsonString(endTime)))
@@ -765,6 +779,14 @@ public final class SwiftIndexer {
         fields.append(("systemMessageCount", "\(info.systemMessageCount)"))
         if let summary = info.summary { fields.append(("summary", jsonString(summary))) }
         fields.append(("summaryMessageCount", "\(summaryMessageCount)"))
+        // Sidecar/aux metadata (e.g. Gemini parent/role) must invalidate even when
+        // transcript body counts are unchanged.
+        if let parentSessionId = info.parentSessionId {
+            fields.append(("parentSessionId", jsonString(parentSessionId)))
+        }
+        if let agentRole = info.agentRole {
+            fields.append(("agentRole", jsonString(agentRole)))
+        }
         // Wave 7A H10: body rewrites with stable counts must change the hash.
         fields.append(("contentFingerprint", jsonString(contentFingerprint)))
 
@@ -841,4 +863,11 @@ public final class SwiftIndexer {
     // (default-visible). Graduate a source by adding it here + an adapter-uniformity
     // parity test proving its stream emits non-empty .user content.
     private static let reliableInstructionSources: Set<SourceName> = [.claudeCode, .codex]
+
+    // Composite-input sources read auxiliary files whose mtimes/sizes are not
+    // reflected in the main locator. Main-file FileIndexDecision short-circuits
+    // would permanently retain stale parent/cwd/content after aux-only rewrites.
+    private static func usesCompositeInputs(_ source: SourceName) -> Bool {
+        source == .kimi || source == .geminiCli || source == .copilot
+    }
 }

@@ -62,7 +62,7 @@ enum Phase4AdapterSupport {
     }
 }
 
-final class GeminiCliAdapter: SessionAdapter, Sendable {
+final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
     let source: SourceName = .geminiCli
     private let tmpRoot: URL
     private let projectsFile: URL
@@ -102,6 +102,18 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
             }
         }
         return locators.sorted()
+    }
+
+    // Audit ADAPTER-GEMINI-001: sidecar-only create/modify must stay in the recent
+    // set even when the transcript locator mtime is unchanged.
+    func listSessionLocators(
+        modifiedSince: Date,
+        fileManager: FileManager
+    ) async throws -> [String] {
+        try await listSessionLocators().filter { locator in
+            Self.compositeModificationDate(locator: locator, fileManager: fileManager)
+                .map { $0 >= modifiedSince } ?? false
+        }
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
@@ -232,6 +244,69 @@ final class GeminiCliAdapter: SessionAdapter, Sendable {
             .deletingLastPathComponent()
             .appendingPathComponent("\(sessionId).engram.json")
         return try? Phase4AdapterSupport.readJSONObject(locator: sidecarURL.path, limits: limits)
+    }
+
+    /// Sidecar naming matches `readSidecar`: `{sessionId}.engram.json`.
+    /// Prefer a cheap peek of the transcript's sessionId so stem≠id files
+    /// (e.g. session-sample.json → gemini-session-001.engram.json) still track
+    /// sidecar content-only rewrites. Fall back to the transcript stem when
+    /// peek fails. Parent directory mtime covers create/delete either way.
+    private static func expectedSidecarPath(locator: String) -> String {
+        let sessionId = peekSessionId(locator: locator)
+            ?? URL(fileURLWithPath: locator).deletingPathExtension().lastPathComponent
+        return URL(fileURLWithPath: locator)
+            .deletingLastPathComponent()
+            .appendingPathComponent("\(sessionId).engram.json")
+            .path
+    }
+
+    /// Read only the leading bytes for `"sessionId"` — enough for composite
+    /// mtime without a full message-array parse. An 8 KiB cutoff can land mid
+    /// multibyte UTF-8 scalar; drop an incomplete trailing sequence so a
+    /// valid leading `sessionId` still peeks when stem≠id.
+    private static func peekSessionId(locator: String) -> String? {
+        guard let handle = FileHandle(forReadingAtPath: locator) else { return nil }
+        defer { try? handle.close() }
+        var prefix = handle.readData(ofLength: 8_192)
+        guard !prefix.isEmpty else { return nil }
+        // An 8 KiB cut can land mid multibyte scalar (1–3 trailing bytes
+        // incomplete). Strict String(data:) then returns nil for the whole
+        // prefix; drop at most three trailing bytes to recover a valid stem.
+        for _ in 0..<3 where String(data: prefix, encoding: .utf8) == nil {
+            if prefix.isEmpty { break }
+            prefix.removeLast()
+        }
+        guard let text = String(data: prefix, encoding: .utf8) else { return nil }
+        guard let regex = try? NSRegularExpression(
+            pattern: #"\"sessionId\"\s*:\s*\"([^\"]+)\""#,
+            options: []
+        ) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range),
+              match.numberOfRanges >= 2,
+              let idRange = Range(match.range(at: 1), in: text)
+        else { return nil }
+        let sessionId = String(text[idRange])
+        return sessionId.isEmpty ? nil : sessionId
+    }
+
+    private static func compositeInputPaths(locator: String) -> [String] {
+        [
+            locator,
+            expectedSidecarPath(locator: locator),
+            URL(fileURLWithPath: locator).deletingLastPathComponent().path,
+        ]
+    }
+
+    private static func compositeModificationDate(
+        locator: String,
+        fileManager: FileManager
+    ) -> Date? {
+        compositeInputPaths(locator: locator).compactMap { path in
+            guard fileManager.fileExists(atPath: path) else { return nil }
+            return try? fileManager.attributesOfItem(atPath: path)[.modificationDate] as? Date
+        }
+        .max()
     }
 
     /// M23: never promote empty/self sidecar parent ids to confirmed links

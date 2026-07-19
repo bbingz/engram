@@ -1,6 +1,6 @@
 import Foundation
 
-final class CopilotAdapter: SessionAdapter, Sendable {
+final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
     let source: SourceName = .copilot
     private static let maxCheckpointBodyLength = 4_000
     private let sessionRoot: URL
@@ -26,7 +26,11 @@ final class CopilotAdapter: SessionAdapter, Sendable {
             where JSONLAdapterSupport.isDirectory(sessionURL)
         {
             let eventsURL = sessionURL.appendingPathComponent("events.jsonl")
-            if JSONLAdapterSupport.fileExists(eventsURL.path) {
+            // Prefer events only when they contain indexable conversation turns.
+            // Bare session.start (or empty) files must not hide a valid checkpoint.
+            if JSONLAdapterSupport.fileExists(eventsURL.path),
+               Self.eventsHaveConversation(eventsURL.path, limits: limits)
+            {
                 locators.append(eventsURL.path)
                 continue
             }
@@ -38,6 +42,18 @@ final class CopilotAdapter: SessionAdapter, Sendable {
             }
         }
         return locators.sorted()
+    }
+
+    // Audit COPILOT-AUX-001: workspace.yaml / checkpoint body mtimes must keep
+    // the session in the recent set even when the main locator is stale.
+    func listSessionLocators(
+        modifiedSince: Date,
+        fileManager: FileManager
+    ) async throws -> [String] {
+        try await listSessionLocators().filter { locator in
+            Self.compositeModificationDate(locator: locator, fileManager: fileManager, limits: limits)
+                .map { $0 >= modifiedSince } ?? false
+        }
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
@@ -109,7 +125,7 @@ final class CopilotAdapter: SessionAdapter, Sendable {
                     systemMessageCount: 0,
                     summary: workspace["summary"] ?? (firstUserText.isEmpty ? nil : firstUserText),
                     filePath: locator,
-                    sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
+                    sizeBytes: Self.compositeSizeBytes(locator: locator, limits: limits),
                     indexedAt: nil,
                     agentRole: nil,
                     originator: nil,
@@ -209,7 +225,7 @@ final class CopilotAdapter: SessionAdapter, Sendable {
                 systemMessageCount: entries.count,
                 summary: entries.first?.title,
                 filePath: locator,
-                sizeBytes: JSONLAdapterSupport.fileSize(locator: locator),
+                sizeBytes: Self.compositeSizeBytes(locator: locator, limits: limits),
                 indexedAt: nil,
                 agentRole: nil,
                 originator: nil,
@@ -221,6 +237,95 @@ final class CopilotAdapter: SessionAdapter, Sendable {
                 suggestedParentId: nil
             )
         )
+    }
+
+    /// Early-exit streaming sniff: stop at the first user/assistant turn so
+    /// discovery does not materialize entire histories (or fail solely because
+    /// the active file grew mid-read).
+    private static func eventsHaveConversation(_ locator: String, limits: ParserLimits) -> Bool {
+        let url = URL(fileURLWithPath: locator)
+        guard FileManager.default.fileExists(atPath: locator) else { return false }
+        do {
+            let reader = try StreamingLineReader(fileURL: url, maxLineBytes: limits.maxLineBytes)
+            for line in try reader.readLines() {
+                guard let data = line.data(using: .utf8),
+                      let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else { continue }
+                let type = JSONLAdapterSupport.string(object["type"])
+                if type == "user.message" || type == "assistant.message" {
+                    return true
+                }
+            }
+            return false
+        } catch {
+            return false
+        }
+    }
+
+    private static func sessionDirectory(for locator: String) -> URL {
+        let url = URL(fileURLWithPath: locator)
+        if isCheckpointIndex(locator) {
+            return url.deletingLastPathComponent().deletingLastPathComponent()
+        }
+        return url.deletingLastPathComponent()
+    }
+
+    private static func compositeInputPaths(locator: String, limits: ParserLimits) -> [String] {
+        var paths = [locator]
+        let sessionDir = sessionDirectory(for: locator)
+        paths.append(sessionDir.appendingPathComponent("workspace.yaml").path)
+        paths.append(sessionDir.path)
+        // Always watch events.jsonl so conversation appear/disappear transitions
+        // re-enter the recent set even when the selected locator is the checkpoint.
+        paths.append(sessionDir.appendingPathComponent("events.jsonl").path)
+        let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
+        // Directory mtime covers body create/delete when index.md itself is stale.
+        paths.append(checkpointsDir.path)
+        if isCheckpointIndex(locator) {
+            let checkpointIndexURL = URL(fileURLWithPath: locator)
+            for entry in checkpointEntries(checkpointIndexURL, limits: limits) {
+                guard let fileName = entry.fileName,
+                      fileName == URL(fileURLWithPath: fileName).lastPathComponent,
+                      fileName.hasSuffix(".md")
+                else { continue }
+                paths.append(
+                    checkpointIndexURL
+                        .deletingLastPathComponent()
+                        .appendingPathComponent(fileName)
+                        .path
+                )
+            }
+        }
+        return paths
+    }
+
+    private static func compositeModificationDate(
+        locator: String,
+        fileManager: FileManager,
+        limits: ParserLimits
+    ) -> Date? {
+        compositeInputPaths(locator: locator, limits: limits).compactMap { path in
+            guard fileManager.fileExists(atPath: path) else { return nil }
+            return try? fileManager.attributesOfItem(atPath: path)[.modificationDate] as? Date
+        }
+        .max()
+    }
+
+    private static func compositeSizeBytes(locator: String, limits: ParserLimits) -> Int64 {
+        // Count every file the adapter actually consumes so aux-only rewrites
+        // change sizeBytes and force snapshot re-merge. Directories are mtime-only.
+        let fileManager = FileManager.default
+        return Set(compositeInputPaths(locator: locator, limits: limits))
+            .filter { path in
+                var isDirectory: ObjCBool = false
+                guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else {
+                    return false
+                }
+                return !isDirectory.boolValue
+            }
+            .reduce(Int64(0)) { partial, path in
+                partial + Phase4AdapterSupport.fileSize(path)
+            }
     }
 
     private static func message(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {

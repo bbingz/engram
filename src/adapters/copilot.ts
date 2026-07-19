@@ -68,7 +68,6 @@ export class CopilotAdapter implements SessionAdapter {
         return await this.parseCheckpointSessionInfo(filePath);
       }
 
-      const fileStat = await stat(filePath);
       const sessionDir = join(filePath, '..');
 
       // Try to read workspace.yaml for metadata (simple key: value parsing)
@@ -128,7 +127,8 @@ export class CopilotAdapter implements SessionAdapter {
         systemMessageCount: 0,
         summary: workspace.summary || firstUserText || undefined,
         filePath,
-        sizeBytes: fileStat.size,
+        // Match Swift product: sum every consumed aux file, not just the locator.
+        sizeBytes: await this.compositeSizeBytes(filePath),
       };
     } catch {
       return null;
@@ -272,7 +272,6 @@ export class CopilotAdapter implements SessionAdapter {
   ): Promise<SessionInfo | null> {
     const entries = await this.checkpointEntries(filePath);
     if (entries.length === 0) return null;
-    const fileStat = await stat(filePath);
     const sessionDir = join(filePath, '..', '..');
     const workspace = await readWorkspace(join(sessionDir, 'workspace.yaml'));
     const sessionId = workspace.id || sessionDir.split('/').pop() || '';
@@ -290,8 +289,41 @@ export class CopilotAdapter implements SessionAdapter {
       systemMessageCount: entries.length,
       summary: entries[0]?.title,
       filePath,
-      sizeBytes: fileStat.size,
+      sizeBytes: await this.compositeSizeBytes(filePath),
     };
+  }
+
+  /** Sum locator + workspace.yaml + events.jsonl + safely resolved checkpoint bodies. */
+  private async compositeSizeBytes(filePath: string): Promise<number> {
+    const paths = new Set<string>([filePath]);
+    const sessionDir = this.isCheckpointIndex(filePath)
+      ? join(filePath, '..', '..')
+      : join(filePath, '..');
+    paths.add(join(sessionDir, 'workspace.yaml'));
+    // Always include events so conversation↔checkpoint transitions share a size basis.
+    paths.add(join(sessionDir, 'events.jsonl'));
+    if (this.isCheckpointIndex(filePath)) {
+      for (const entry of await this.checkpointEntries(filePath)) {
+        if (
+          !entry.fileName ||
+          entry.fileName !== basename(entry.fileName) ||
+          !entry.fileName.endsWith('.md')
+        ) {
+          continue;
+        }
+        paths.add(join(filePath, '..', entry.fileName));
+      }
+    }
+    let total = 0;
+    for (const path of paths) {
+      try {
+        const st = await stat(path);
+        if (st.isFile()) total += st.size;
+      } catch {
+        // missing aux files contribute 0
+      }
+    }
+    return total;
   }
 
   private async checkpointEntries(

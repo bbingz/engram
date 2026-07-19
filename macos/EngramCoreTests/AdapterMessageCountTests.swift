@@ -443,6 +443,142 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertNil(info.parentSessionId)
     }
 
+    // Audit ADAPTER-GEMINI-001: sidecar-only mtime must keep the locator in the
+    // recent set even when the transcript file itself is older than the cutoff.
+    func testGeminiSidecarOnlyChangeKeepsRecentLocator_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("tmp/proj/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        // Transcript stem differs from sessionId (parity fixture shape).
+        let session: [String: Any] = [
+            "sessionId": "gemini-session-001",
+            "startTime": "2026-01-01T00:00:00.000Z",
+            "lastUpdated": "2026-01-01T00:00:01.000Z",
+            "messages": [
+                ["type": "user", "timestamp": "2026-01-01T00:00:00.000Z", "content": "hello"],
+                ["type": "gemini", "timestamp": "2026-01-01T00:00:01.000Z", "content": "hi"],
+            ],
+        ]
+        let file = chatsDir.appendingPathComponent("session-sample.json")
+        try jsonLine(session).write(to: file, atomically: true, encoding: .utf8)
+        let baseline = Date(timeIntervalSince1970: 1_000)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: file.path)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: chatsDir.path)
+
+        // Sidecar is named by sessionId, not transcript stem.
+        let sidecar = chatsDir.appendingPathComponent("gemini-session-001.engram.json")
+        try """
+        {"originator":"claude-code","parentSessionId":"cc-parent"}
+        """.write(to: sidecar, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 2_000)],
+            ofItemAtPath: sidecar.path
+        )
+        // Freeze transcript + parent dir so only the sessionId-named sidecar is recent.
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: file.path)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: chatsDir.path)
+
+        let gemini = GeminiCliAdapter(
+            tmpRoot: root.appendingPathComponent("tmp").path,
+            projectsFile: root.appendingPathComponent("projects.json").path
+        )
+        let adapter = RecentlyModifiedSessionAdapter(
+            base: gemini,
+            modifiedSince: Date(timeIntervalSince1970: 1_500)
+        )
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertEqual(
+            locators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [file.resolvingSymlinksInPath().path]
+        )
+        switch try await gemini.parseSessionInfo(locator: file.path) {
+        case .success(let info):
+            XCTAssertEqual(info.id, "gemini-session-001")
+            XCTAssertEqual(info.parentSessionId, "cc-parent")
+            XCTAssertEqual(info.agentRole, "dispatched")
+        case .failure(let failure):
+            XCTFail("unexpected adapter failure: \(failure)")
+        }
+    }
+
+    // Audit ADAPTER-GEMINI-001: peekSessionId must survive an 8 KiB cutoff that
+    // lands mid multibyte UTF-8 scalar (stem≠id sidecar still tracked).
+    func testGeminiSidecarRecentSurvivesUtf8PrefixBoundary_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("tmp/proj/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        // sessionId must lead the file so the 8 KiB peek can see it; pad AFTER with
+        // 3-byte CJK so byte 8192 lands mid-codepoint under strict UTF-8 decode.
+        // (JSONSerialization key order is not stable — do not use it here.)
+        let pad = String(repeating: "你", count: 4_000)
+        let body = """
+        {"sessionId":"gemini-utf8-boundary","startTime":"2026-01-01T00:00:00.000Z","lastUpdated":"2026-01-01T00:00:02.000Z","messages":[{"type":"user","timestamp":"2026-01-01T00:00:00.000Z","content":"\(pad)"},{"type":"gemini","timestamp":"2026-01-01T00:00:01.000Z","content":"ok"}]}
+        """
+        let file = chatsDir.appendingPathComponent("session-sample.json")
+        try body.write(to: file, atomically: true, encoding: .utf8)
+        let fileBytes = try Data(contentsOf: file).count
+        XCTAssertGreaterThan(fileBytes, 8_192, "fixture must exceed the peek prefix")
+
+        // Prove the naive 8 KiB strict decode fails so the repro is meaningful.
+        var rawPrefix = Data(try Data(contentsOf: file).prefix(8_192))
+        XCTAssertNil(
+            String(data: rawPrefix, encoding: .utf8),
+            "prefix must land mid multibyte scalar for this repro"
+        )
+        // Match production: drop at most 3 trailing bytes until UTF-8 is valid.
+        // (Hard dropLast(3) can land mid-scalar again when pad mod 3 is unlucky.)
+        for _ in 0..<3 where String(data: rawPrefix, encoding: .utf8) == nil {
+            rawPrefix.removeLast()
+        }
+        XCTAssertTrue(
+            String(data: rawPrefix, encoding: .utf8)?
+                .contains("\"sessionId\":\"gemini-utf8-boundary\"") == true,
+            "repro requires sessionId inside a recoverable UTF-8 prefix"
+        )
+
+        let baseline = Date(timeIntervalSince1970: 1_000)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: file.path)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: chatsDir.path)
+
+        let sidecar = chatsDir.appendingPathComponent("gemini-utf8-boundary.engram.json")
+        try """
+        {"originator":"claude-code","parentSessionId":"cc-utf8-parent"}
+        """.write(to: sidecar, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 2_000)],
+            ofItemAtPath: sidecar.path
+        )
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: file.path)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: chatsDir.path)
+
+        let gemini = GeminiCliAdapter(
+            tmpRoot: root.appendingPathComponent("tmp").path,
+            projectsFile: root.appendingPathComponent("projects.json").path
+        )
+        let recent = RecentlyModifiedSessionAdapter(
+            base: gemini,
+            modifiedSince: Date(timeIntervalSince1970: 1_500)
+        )
+        let locators = try await recent.listSessionLocators()
+        XCTAssertEqual(
+            locators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [file.resolvingSymlinksInPath().path],
+            "sessionId-named sidecar must still advance composite mtime after UTF-8 trim"
+        )
+        switch try await gemini.parseSessionInfo(locator: file.path) {
+        case .success(let info):
+            XCTAssertEqual(info.id, "gemini-utf8-boundary")
+            XCTAssertEqual(info.parentSessionId, "cc-utf8-parent")
+            XCTAssertEqual(info.agentRole, "dispatched")
+        case .failure(let failure):
+            XCTFail("unexpected adapter failure: \(failure)")
+        }
+    }
+
     // MARK: - Iflow
 
     func testIflowAttachesAssistantUsageMetadata() async throws {
@@ -2141,6 +2277,379 @@ final class AdapterMessageCountTests: XCTestCase {
             </work_done>
             """
         ])
+    }
+
+    // Audit COPILOT-DISCOVERY-001: events with only session.start must not hide
+    // a valid checkpoint index.
+    func testCopilotFallsBackToCheckpointWhenEventsHaveNoConversation_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-start-only", isDirectory: true)
+        let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpointsDir, withIntermediateDirectories: true)
+        try """
+        id: session-start-only
+        cwd: /tmp/copilot-checkpoint-fallback
+        created_at: 2026-06-01T10:00:00.000Z
+        updated_at: 2026-06-01T10:05:00.000Z
+        """.write(to: sessionDir.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        try [
+            try jsonLine([
+                "type": "session.start",
+                "timestamp": "2026-06-01T10:00:00.000Z",
+                "data": [
+                    "startTime": "2026-06-01T10:00:00.000Z",
+                    "context": ["cwd": "/tmp/copilot-checkpoint-fallback"],
+                ],
+            ]),
+        ].joined(separator: "\n").appending("\n")
+            .write(to: sessionDir.appendingPathComponent("events.jsonl"), atomically: true, encoding: .utf8)
+        let checkpointIndex = checkpointsDir.appendingPathComponent("index.md")
+        try """
+        # Checkpoint History
+
+        | # | Title | File |
+        |---|-------|------|
+        | 1 | Recovered from checkpoint | 001-recovered.md |
+        """.write(to: checkpointIndex, atomically: true, encoding: .utf8)
+        try "<overview>Recovered body</overview>\n"
+            .write(
+                to: checkpointsDir.appendingPathComponent("001-recovered.md"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+        let adapter = CopilotAdapter(sessionRoot: root.path)
+        let locators = try await adapter.listSessionLocators()
+        XCTAssertEqual(
+            locators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [checkpointIndex.resolvingSymlinksInPath().path]
+        )
+        switch try await adapter.parseSessionInfo(locator: checkpointIndex.path) {
+        case .success(let info):
+            XCTAssertEqual(info.id, "session-start-only")
+            XCTAssertEqual(info.systemMessageCount, 1)
+            XCTAssertEqual(info.messageCount, 1)
+        case .failure(let failure):
+            XCTFail("unexpected adapter failure: \(failure)")
+        }
+    }
+
+    // Audit COPILOT-AUX-001: workspace.yaml mtime must keep the session in the
+    // recent set when the main locator and session-directory mtimes are stale.
+    func testCopilotRecentScanTracksAuxiliaryFiles_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-aux", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let workspace = sessionDir.appendingPathComponent("workspace.yaml")
+        try """
+        id: session-aux
+        cwd: /tmp/old-cwd
+        created_at: 2026-06-01T10:00:00.000Z
+        updated_at: 2026-06-01T10:05:00.000Z
+        """.write(to: workspace, atomically: true, encoding: .utf8)
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        try [
+            try jsonLine([
+                "type": "user.message",
+                "timestamp": "2026-06-01T10:01:00.000Z",
+                "data": ["content": "hello"],
+            ]),
+            try jsonLine([
+                "type": "assistant.message",
+                "timestamp": "2026-06-01T10:02:00.000Z",
+                "data": ["content": "world"],
+            ]),
+        ].joined(separator: "\n").appending("\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+
+        let baseline = Date(timeIntervalSince1970: 1_000)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: events.path)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: workspace.path)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: sessionDir.path)
+
+        let adapter = CopilotAdapter(sessionRoot: root.path)
+        let beforeSize: Int64
+        switch try await adapter.parseSessionInfo(locator: events.path) {
+        case .success(let before):
+            XCTAssertEqual(before.cwd, "/tmp/old-cwd")
+            beforeSize = before.sizeBytes
+        case .failure(let failure):
+            XCTFail("unexpected adapter failure: \(failure)")
+            return
+        }
+
+        try """
+        id: session-aux
+        cwd: /tmp/new-cwd
+        created_at: 2026-06-01T10:00:00.000Z
+        updated_at: 2026-06-01T10:05:00.000Z
+        """.write(to: workspace, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 2_000)],
+            ofItemAtPath: workspace.path
+        )
+        // Freeze events + session dir so only workspace.yaml is recent.
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: events.path)
+        try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: sessionDir.path)
+
+        let recent = RecentlyModifiedSessionAdapter(
+            base: adapter,
+            modifiedSince: Date(timeIntervalSince1970: 1_500)
+        )
+        let locators = try await recent.listSessionLocators()
+        XCTAssertEqual(
+            locators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [events.resolvingSymlinksInPath().path]
+        )
+        switch try await adapter.parseSessionInfo(locator: events.path) {
+        case .success(let after):
+            XCTAssertEqual(after.cwd, "/tmp/new-cwd")
+            XCTAssertGreaterThan(after.sizeBytes, beforeSize == 0 ? -1 : 0)
+            // composite size includes workspace.yaml + events
+            XCTAssertGreaterThan(
+                after.sizeBytes,
+                JSONLAdapterSupport.fileSize(locator: events.path)
+            )
+        case .failure(let failure):
+            XCTFail("unexpected adapter failure: \(failure)")
+        }
+    }
+
+    // Audit COPILOT-AUX-001: checkpoint body rewrites must advance composite
+    // mtime/size even when index.md, workspace.yaml, and session dir stay stale.
+    func testCopilotRecentScanTracksCheckpointBody_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-checkpoint-body", isDirectory: true)
+        let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpointsDir, withIntermediateDirectories: true)
+        let workspace = sessionDir.appendingPathComponent("workspace.yaml")
+        try """
+        id: session-checkpoint-body
+        cwd: /tmp/checkpoint-cwd
+        created_at: 2026-06-01T10:00:00.000Z
+        updated_at: 2026-06-01T10:05:00.000Z
+        """.write(to: workspace, atomically: true, encoding: .utf8)
+        let checkpointIndex = checkpointsDir.appendingPathComponent("index.md")
+        try """
+        # Checkpoint History
+
+        | # | Title | File |
+        |---|-------|------|
+        | 1 | Body rewrite | 001-body.md |
+        """.write(to: checkpointIndex, atomically: true, encoding: .utf8)
+        let body = checkpointsDir.appendingPathComponent("001-body.md")
+        try "<overview>old body</overview>\n".write(to: body, atomically: true, encoding: .utf8)
+
+        let baseline = Date(timeIntervalSince1970: 1_000)
+        for path in [workspace.path, checkpointIndex.path, body.path, sessionDir.path, checkpointsDir.path] {
+            try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: path)
+        }
+
+        let adapter = CopilotAdapter(sessionRoot: root.path)
+        let beforeSize: Int64
+        switch try await adapter.parseSessionInfo(locator: checkpointIndex.path) {
+        case .success(let before):
+            XCTAssertEqual(before.systemMessageCount, 1)
+            beforeSize = before.sizeBytes
+        case .failure(let failure):
+            XCTFail("unexpected adapter failure: \(failure)")
+            return
+        }
+
+        try "<overview>new much longer checkpoint body content for size</overview>\n"
+            .write(to: body, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 2_000)],
+            ofItemAtPath: body.path
+        )
+        for path in [workspace.path, checkpointIndex.path, sessionDir.path, checkpointsDir.path] {
+            try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: path)
+        }
+
+        let recent = RecentlyModifiedSessionAdapter(
+            base: adapter,
+            modifiedSince: Date(timeIntervalSince1970: 1_500)
+        )
+        let locators = try await recent.listSessionLocators()
+        XCTAssertEqual(
+            locators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [checkpointIndex.resolvingSymlinksInPath().path]
+        )
+        switch try await adapter.parseSessionInfo(locator: checkpointIndex.path) {
+        case .success(let after):
+            XCTAssertGreaterThan(after.sizeBytes, beforeSize)
+            XCTAssertGreaterThan(
+                after.sizeBytes,
+                JSONLAdapterSupport.fileSize(locator: checkpointIndex.path)
+            )
+        case .failure(let failure):
+            XCTFail("unexpected adapter failure: \(failure)")
+        }
+    }
+
+    // Audit COPILOT-AUX/DISCOVERY transition: conversation stripped from events
+    // must re-enter recent via events mtime and fall back to checkpoint.
+    func testCopilotEventsConversationRemovedFallsBackToCheckpoint_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-events-to-checkpoint", isDirectory: true)
+        let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpointsDir, withIntermediateDirectories: true)
+        let workspace = sessionDir.appendingPathComponent("workspace.yaml")
+        try """
+        id: session-events-to-checkpoint
+        cwd: /tmp/transition-cwd
+        created_at: 2026-06-01T10:00:00.000Z
+        updated_at: 2026-06-01T10:05:00.000Z
+        """.write(to: workspace, atomically: true, encoding: .utf8)
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        try [
+            try jsonLine([
+                "type": "user.message",
+                "timestamp": "2026-06-01T10:01:00.000Z",
+                "data": ["content": "hello"],
+            ]),
+            try jsonLine([
+                "type": "assistant.message",
+                "timestamp": "2026-06-01T10:02:00.000Z",
+                "data": ["content": "world"],
+            ]),
+        ].joined(separator: "\n").appending("\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+        let checkpointIndex = checkpointsDir.appendingPathComponent("index.md")
+        try """
+        # Checkpoint History
+
+        | # | Title | File |
+        |---|-------|------|
+        | 1 | Fallback body | 001-fallback.md |
+        """.write(to: checkpointIndex, atomically: true, encoding: .utf8)
+        try "<overview>fallback</overview>\n"
+            .write(to: checkpointsDir.appendingPathComponent("001-fallback.md"), atomically: true, encoding: .utf8)
+
+        let baseline = Date(timeIntervalSince1970: 1_000)
+        for path in [
+            workspace.path, events.path, checkpointIndex.path, sessionDir.path, checkpointsDir.path,
+            checkpointsDir.appendingPathComponent("001-fallback.md").path,
+        ] {
+            try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: path)
+        }
+
+        let adapter = CopilotAdapter(sessionRoot: root.path)
+        let initialLocators = try await adapter.listSessionLocators()
+        XCTAssertEqual(
+            initialLocators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [events.resolvingSymlinksInPath().path]
+        )
+
+        // Strip conversation so discovery must prefer the still-valid checkpoint.
+        try [
+            try jsonLine([
+                "type": "session.start",
+                "timestamp": "2026-06-01T10:00:00.000Z",
+                "data": [
+                    "startTime": "2026-06-01T10:00:00.000Z",
+                    "context": ["cwd": "/tmp/transition-cwd"],
+                ],
+            ]),
+        ].joined(separator: "\n").appending("\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 2_000)],
+            ofItemAtPath: events.path
+        )
+        for path in [
+            workspace.path, checkpointIndex.path, sessionDir.path, checkpointsDir.path,
+            checkpointsDir.appendingPathComponent("001-fallback.md").path,
+        ] {
+            try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: path)
+        }
+
+        let recent = RecentlyModifiedSessionAdapter(
+            base: adapter,
+            modifiedSince: Date(timeIntervalSince1970: 1_500)
+        )
+        let locators = try await recent.listSessionLocators()
+        XCTAssertEqual(
+            locators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [checkpointIndex.resolvingSymlinksInPath().path]
+        )
+        switch try await adapter.parseSessionInfo(locator: checkpointIndex.path) {
+        case .success(let info):
+            XCTAssertEqual(info.id, "session-events-to-checkpoint")
+            XCTAssertEqual(info.systemMessageCount, 1)
+        case .failure(let failure):
+            XCTFail("unexpected adapter failure: \(failure)")
+        }
+    }
+
+    // Audit COPILOT-AUX-001: deleting a referenced checkpoint body advances the
+    // checkpoints/ directory mtime and must keep the session in the recent set.
+    func testCopilotCheckpointBodyDeletionKeepsRecentLocator_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-body-delete", isDirectory: true)
+        let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpointsDir, withIntermediateDirectories: true)
+        let workspace = sessionDir.appendingPathComponent("workspace.yaml")
+        try """
+        id: session-body-delete
+        cwd: /tmp/delete-cwd
+        created_at: 2026-06-01T10:00:00.000Z
+        updated_at: 2026-06-01T10:05:00.000Z
+        """.write(to: workspace, atomically: true, encoding: .utf8)
+        let checkpointIndex = checkpointsDir.appendingPathComponent("index.md")
+        try """
+        # Checkpoint History
+
+        | # | Title | File |
+        |---|-------|------|
+        | 1 | Deletable body | 001-delete.md |
+        """.write(to: checkpointIndex, atomically: true, encoding: .utf8)
+        let body = checkpointsDir.appendingPathComponent("001-delete.md")
+        try "<overview>will delete</overview>\n".write(to: body, atomically: true, encoding: .utf8)
+
+        let baseline = Date(timeIntervalSince1970: 1_000)
+        for path in [workspace.path, checkpointIndex.path, body.path, sessionDir.path, checkpointsDir.path] {
+            try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: path)
+        }
+
+        let adapter = CopilotAdapter(sessionRoot: root.path)
+        let initialLocators = try await adapter.listSessionLocators()
+        XCTAssertEqual(
+            initialLocators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [checkpointIndex.resolvingSymlinksInPath().path]
+        )
+
+        try FileManager.default.removeItem(at: body)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 2_000)],
+            ofItemAtPath: checkpointsDir.path
+        )
+        for path in [workspace.path, checkpointIndex.path, sessionDir.path] {
+            try FileManager.default.setAttributes([.modificationDate: baseline], ofItemAtPath: path)
+        }
+
+        let recent = RecentlyModifiedSessionAdapter(
+            base: adapter,
+            modifiedSince: Date(timeIntervalSince1970: 1_500)
+        )
+        let locators = try await recent.listSessionLocators()
+        XCTAssertEqual(
+            locators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [checkpointIndex.resolvingSymlinksInPath().path]
+        )
+        switch try await adapter.parseSessionInfo(locator: checkpointIndex.path) {
+        case .success(let info):
+            XCTAssertEqual(info.systemMessageCount, 1)
+            // Title remains even when body file is gone.
+            XCTAssertTrue(info.summary?.contains("Deletable body") == true)
+        case .failure(let failure):
+            XCTFail("unexpected adapter failure: \(failure)")
+        }
     }
 
     func testCopilotIgnoresOversizedWorkspaceYaml() async throws {
