@@ -7,6 +7,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: EMB-STARVE idle embedding drain
+
+- Periodic scans with `scan.indexed == 0` now check the existing session and
+  insight embedding backlog instead of waiting for a later session merge.
+- `pending` and `failed_retryable` session jobs, plus insight-only backlog, can
+  trigger the existing best-effort drains while idle scans with no work still
+  avoid embedding provider calls.
+
 ### Fixed: EMB-001 skip-tier semantic artifacts
 
 - Direct tier downgrades and startup skip reconciliation now remove current

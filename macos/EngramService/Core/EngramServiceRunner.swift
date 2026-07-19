@@ -811,8 +811,13 @@ public enum EngramServiceRunner {
                 if drain.drained { break }
             }
 
-            // Wave 7C S01: idle scans must not start embedding backfills.
+            let shouldRunEmbeddingBackfill: Bool
             if scan.indexed > 0 {
+                shouldRunEmbeddingBackfill = true
+            } else {
+                shouldRunEmbeddingBackfill = try await hasPendingEmbeddingBackfill(gate: gate)
+            }
+            if shouldRunEmbeddingBackfill {
                 await runSessionEmbeddingBackfillBestEffort(
                     name: "periodicSessionEmbeddingBackfill",
                     gate: gate,
@@ -1355,6 +1360,15 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             config: config,
             breaker: EmbeddingGuardrails.sharedBreaker
         )
+    }
+
+    static func hasPendingEmbeddingBackfill(gate: ServiceWriterGate) async throws -> Bool {
+        try await gate.performReadCommand(name: "periodicEmbeddingBacklog") { writer in
+            if try !SessionEmbeddingBackfill.pendingSessions(writer: writer, limit: 1).isEmpty {
+                return true
+            }
+            return try !InsightEmbeddingBackfill.pendingInsights(writer: writer, limit: 1).isEmpty
+        }.value
     }
 
     @discardableResult
