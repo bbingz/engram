@@ -124,7 +124,10 @@ export class CursorAdapter implements SessionAdapter {
           const role =
             b.type === 1 ? 'user' : b.type === 2 ? 'assistant' : null;
           if (!role) continue;
-          const content = b.text || b.rawText || '';
+          // Prefer first non-empty-after-trim candidate; empty/whitespace text must
+          // not shadow restored rawText (matches Swift CursorAdapter).
+          const content =
+            [b.text, b.rawText].find((c) => (c ?? '').trim()) ?? '';
           if (!content.trim()) continue;
           if (role === 'user') userMessageCount++;
           else assistantMessageCount++;
@@ -207,7 +210,8 @@ export class CursorAdapter implements SessionAdapter {
           const role =
             bubble.type === 1 ? 'user' : bubble.type === 2 ? 'assistant' : null;
           if (!role) continue;
-          const content = bubble.text || bubble.rawText || '';
+          const content =
+            [bubble.text, bubble.rawText].find((c) => (c ?? '').trim()) ?? '';
           if (!content.trim()) continue;
           if (count < offset) {
             count++;
