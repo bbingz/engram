@@ -310,6 +310,10 @@ struct AISettingsSection: View {
             }
         }
         .onAppear { loadAISettings() }
+        // R9/M21 residual: cancel-on-retype alone dropped the last keystrokes when the
+        // section disappeared before the 400ms timer fired. Flush any pending debounce
+        // immediately on leave so model/baseURL/API-key edits are not lost.
+        .onDisappear { flushPendingAISettingsSaves() }
     }
 
     // MARK: - Helpers
@@ -333,6 +337,7 @@ struct AISettingsSection: View {
         saveAISettingsTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: Self.settingsSaveDebounceNanoseconds)
             guard !Task.isCancelled else { return }
+            saveAISettingsTask = nil
             saveAISettings()
         }
     }
@@ -342,6 +347,29 @@ struct AISettingsSection: View {
         saveTitleSettingsTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: Self.settingsSaveDebounceNanoseconds)
             guard !Task.isCancelled else { return }
+            saveTitleSettingsTask = nil
+            saveTitleSettings()
+        }
+    }
+
+    /// Flush any in-flight debounce timers before the section leaves the tree.
+    private func flushPendingAISettingsSaves() {
+        let flushAI = AISettingsSaveFlush.shouldFlush(
+            pendingTask: saveAISettingsTask != nil,
+            isLoadingSettings: isLoadingSettings
+        )
+        let flushTitle = AISettingsSaveFlush.shouldFlush(
+            pendingTask: saveTitleSettingsTask != nil,
+            isLoadingSettings: isLoadingSettings
+        )
+        saveAISettingsTask?.cancel()
+        saveTitleSettingsTask?.cancel()
+        saveAISettingsTask = nil
+        saveTitleSettingsTask = nil
+        if flushAI {
+            saveAISettings()
+        }
+        if flushTitle {
             saveTitleSettings()
         }
     }
@@ -515,6 +543,15 @@ enum AISettingsURLValidation {
             return nil
         }
         return url
+    }
+}
+
+/// R9/M21 residual: decide whether leaving the AI settings section must flush a
+/// pending debounce timer. Pure so the leave-flush gate is unit-testable without
+/// SwiftUI host plumbing. MainActor flock/Keychain I/O after save remains residual.
+enum AISettingsSaveFlush {
+    static func shouldFlush(pendingTask: Bool, isLoadingSettings: Bool) -> Bool {
+        pendingTask && !isLoadingSettings
     }
 }
 
