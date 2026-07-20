@@ -18,6 +18,20 @@ final class AISettingsSectionTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(AISettingsSection.settingsSaveDebounceNanoseconds, 100_000_000)
     }
 
+    /// R9/M21 residual: leave before debounce fires must flush pending saves.
+    func testAISettingsFlushesPendingSavesOnDisappear_repro() throws {
+        let source = try String(
+            contentsOf: macOSRoot.appendingPathComponent("Engram/Views/Settings/AISettingsSection.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains(".onDisappear { flushPendingAISettingsSaves() }"))
+        XCTAssertTrue(source.contains("func flushPendingAISettingsSaves()"))
+        XCTAssertTrue(source.contains("AISettingsSaveFlush.shouldFlush"))
+        XCTAssertTrue(AISettingsSaveFlush.shouldFlush(pendingTask: true, isLoadingSettings: false))
+        XCTAssertFalse(AISettingsSaveFlush.shouldFlush(pendingTask: false, isLoadingSettings: false))
+        XCTAssertFalse(AISettingsSaveFlush.shouldFlush(pendingTask: true, isLoadingSettings: true))
+    }
+
     /// M20: pure helper — invalid/empty free-text URLs must fail closed.
     func testParseConnectionURLRejectsInvalidAndEmpty_repro() {
         XCTAssertNil(AISettingsURLValidation.parseConnectionURL(""))
