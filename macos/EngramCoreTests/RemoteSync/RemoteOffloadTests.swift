@@ -57,6 +57,42 @@ final class RemoteOffloadTests: XCTestCase {
         }
     }
 
+    func testEnsureDurableRejectsForgedExpectedBundleBeforeHeadOrPut_repro() async throws {
+        let valid = BundleCodec.makeBundle(
+            sessionId: "s1", ftsContents: ["original"], summary: nil, summaryMessageCount: nil,
+            messageCount: 1, userMessageCount: 1, assistantMessageCount: 0,
+            toolMessageCount: 0, systemMessageCount: 0
+        )
+        let forged = RemoteSessionBundle(
+            sessionId: valid.sessionId,
+            ftsContents: ["forged"],
+            summary: valid.summary,
+            summaryMessageCount: valid.summaryMessageCount,
+            messageCount: valid.messageCount,
+            userMessageCount: valid.userMessageCount,
+            assistantMessageCount: valid.assistantMessageCount,
+            toolMessageCount: valid.toolMessageCount,
+            systemMessageCount: valid.systemMessageCount,
+            contentHash: valid.contentHash
+        )
+        let backend = AbsentRecordingRemoteStorageBackend()
+
+        do {
+            try await backend.ensureDurable(bundle: forged)
+            XCTFail("a forged expected bundle must fail validation")
+        } catch let error as RemoteSyncError {
+            guard case let .contentHashMismatch(expected, actual) = error else {
+                return XCTFail("expected contentHashMismatch, got \(error)")
+            }
+            XCTAssertEqual(expected, valid.contentHash)
+            XCTAssertEqual(actual, BundleCodec.recomputeHash(forged))
+        }
+
+        let calls = await backend.callCounts()
+        XCTAssertEqual(calls.head, 0, "validation must happen before probing storage")
+        XCTAssertEqual(calls.put, 0, "a forged bundle must never be uploaded")
+    }
+
     func testLocalDirectoryBackendRejectsTraversalKeys() async throws {
         let store = tempDir.appendingPathComponent("store", isDirectory: true)
         let secret = tempDir.appendingPathComponent("secret.bundle")
@@ -462,6 +498,28 @@ final class RemoteOffloadTests: XCTestCase {
         try writer.write { db in try OffloadRepo.failOffload(db, queueId: qid, error: "net") }
         let final = try writer.read { db in try String.fetchOne(db, sql: "SELECT status FROM offload_queue WHERE id = ?", arguments: [qid]) }
         XCTAssertEqual(final, "failed", "after maxAttempts the job is terminally failed")
+    }
+}
+
+private actor AbsentRecordingRemoteStorageBackend: RemoteStorageBackend {
+    private var headCallCount = 0
+    private var putCallCount = 0
+
+    func head(key: String) async throws -> Bool {
+        headCallCount += 1
+        return false
+    }
+
+    func put(key: String, data: Data) async throws {
+        putCallCount += 1
+    }
+
+    func get(key: String) async throws -> Data { Data() }
+    func delete(key: String) async throws {}
+    func catalog() async throws -> Data { Data() }
+
+    func callCounts() -> (head: Int, put: Int) {
+        (headCallCount, putCallCount)
     }
 }
 

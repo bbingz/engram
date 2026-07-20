@@ -22,9 +22,14 @@ public extension RemoteStorageBackend {
     /// is collapsed. HEAD is only an optimization: an existing object must still
     /// be fetched, decoded, and matched to the expected content hash.
     func ensureDurable(bundle: RemoteSessionBundle) async throws {
+        let encodedBundle = try BundleCodec.encode(bundle)
+        // Reuse the canonical decode verifier so callers cannot make a forged
+        // schema/hash pair durable under an attacker-controlled content key.
+        _ = try BundleCodec.decode(encodedBundle, expectedSessionId: bundle.sessionId)
+
         let key = BundleCodec.contentKey(bundle)
         guard try await head(key: key) else {
-            try await put(key: key, data: BundleCodec.encode(bundle))
+            try await put(key: key, data: encodedBundle)
             return
         }
 
