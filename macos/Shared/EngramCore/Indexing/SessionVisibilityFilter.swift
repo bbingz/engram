@@ -32,6 +32,16 @@ public enum SessionVisibilityFilter {
         "\(notHiddenSQL(alias: alias)) AND \(nonSkipTierSQL(alias: alias))"
     }
 
+    /// Default browse surfaces show roots, not confirmed or suggested children.
+    public static let topLevelSQL =
+        "(parent_session_id IS NULL AND suggested_parent_id IS NULL)"
+
+    public static func topLevelSQL(alias: String) -> String {
+        let parentSessionID = column("parent_session_id", alias: alias)
+        let suggestedParentID = column("suggested_parent_id", alias: alias)
+        return "(\(parentSessionID) IS NULL AND \(suggestedParentID) IS NULL)"
+    }
+
     private static func column(_ name: String, alias: String) -> String {
         precondition(
             alias.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" },

@@ -165,8 +165,7 @@ final class MCPDatabase {
         }
         // M18: match app top-level + non-skip defaults when include_all is false.
         if !includeAll {
-            conditions.append("parent_session_id IS NULL")
-            conditions.append("suggested_parent_id IS NULL")
+            conditions.append(SessionVisibilityFilter.topLevelSQL)
             conditions.append(SessionVisibilityFilter.nonSkipTierSQL)
         }
         var values: [DatabaseValueConvertible?] = []
@@ -316,7 +315,8 @@ final class MCPDatabase {
         SELECT \(selectColumns)
         FROM session_tools t
         JOIN sessions s ON t.session_id = s.id
-        WHERE 1 = 1
+        WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+          AND \(SessionVisibilityFilter.topLevelSQL(alias: "s"))
         """
         var arguments: [String: DatabaseValueConvertible?] = [:]
         if let project {
@@ -344,7 +344,10 @@ final class MCPDatabase {
     }
 
     func getFileActivity(project: String?, since: String?, limit: Int) throws -> OrderedJSONValue {
-        var conditions: [String] = []
+        var conditions = [
+            SessionVisibilityFilter.listVisibleSQL(alias: "s"),
+            SessionVisibilityFilter.topLevelSQL(alias: "s"),
+        ]
         var arguments: [String: DatabaseValueConvertible?] = [:]
         if let project {
             conditions.append("s.project = :project")
@@ -356,14 +359,13 @@ final class MCPDatabase {
         }
         arguments["limit"] = limit
 
-        let whereClause = conditions.isEmpty ? "" : "WHERE \(conditions.joined(separator: " AND "))"
         let sql = """
         SELECT sf.file_path, sf.action,
                SUM(sf.count) AS total_count,
                COUNT(DISTINCT sf.session_id) AS session_count
         FROM session_files sf
         JOIN sessions s ON s.id = sf.session_id
-        \(whereClause)
+        WHERE \(conditions.joined(separator: " AND "))
         GROUP BY sf.file_path, sf.action
         ORDER BY total_count DESC
         LIMIT :limit
@@ -387,7 +389,8 @@ final class MCPDatabase {
 
     func projectTimeline(project: String, since: String?, until: String?) throws -> OrderedJSONValue {
         var conditions = [
-            "hidden_at IS NULL",
+            SessionVisibilityFilter.listVisibleSQL,
+            SessionVisibilityFilter.topLevelSQL,
             "orphan_status IS NULL",
         ]
         var values: [DatabaseValueConvertible?] = []
@@ -1786,6 +1789,8 @@ final class MCPDatabase {
                 FROM session_tools t
                 JOIN sessions s ON s.id = t.session_id
                 WHERE s.start_time >= ?
+                  AND \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                  AND \(SessionVisibilityFilter.topLevelSQL(alias: "s"))
                 GROUP BY t.tool_name
                 ORDER BY call_count DESC, name ASC
                 LIMIT ?
@@ -1895,7 +1900,13 @@ final class MCPDatabase {
                        COUNT(DISTINCT sf.session_id) AS session_count
                 FROM session_files sf
                 WHERE sf.action = 'Edit'
-                  AND sf.session_id IN (SELECT id FROM sessions WHERE start_time >= ?)
+                  AND sf.session_id IN (
+                    SELECT s.id
+                    FROM sessions s
+                    WHERE s.start_time >= ?
+                      AND \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                      AND \(SessionVisibilityFilter.topLevelSQL(alias: "s"))
+                  )
                 GROUP BY sf.file_path
                 ORDER BY total_edits DESC, session_count DESC, file_path ASC
                 LIMIT ?
@@ -2086,7 +2097,8 @@ final class MCPDatabase {
                     sql: """
                     SELECT s.*
                     FROM sessions s
-                    WHERE s.hidden_at IS NULL
+                    WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                      AND \(SessionVisibilityFilter.topLevelSQL(alias: "s"))
                       AND s.orphan_status IS NULL
                       AND s.project IN (\(placeholders))
                     ORDER BY s.start_time DESC
@@ -2102,7 +2114,8 @@ final class MCPDatabase {
                 sql: """
                 SELECT s.*
                 FROM sessions s
-                WHERE s.hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                  AND \(SessionVisibilityFilter.topLevelSQL(alias: "s"))
                   AND s.orphan_status IS NULL
                   AND s.project = ?
                 ORDER BY s.start_time DESC
