@@ -313,6 +313,16 @@ final class EngramRemoteServerTests: XCTestCase {
     }
 
     func testRemoteBackendTLSPolicy() throws {
+        // Named private hosts need post-DNS private resolution (R7). Stub private
+        // A records so CI without MagicDNS/mDNS still exercises the allow path.
+        EngramRemoteBackend.resolveAddressesForTesting = { host in
+            if host.hasSuffix(".ts.net") || host.hasSuffix(".local") {
+                return ["100.64.1.9"]
+            }
+            return []
+        }
+        defer { EngramRemoteBackend.resolveAddressesForTesting = nil }
+
         // Default (strict, requireTLS: true): plain HTTP allowed only to loopback.
         XCTAssertThrowsError(try EngramRemoteBackend(baseURL: URL(string: "http://100.125.101.60:8787")!, token: "t"))
         XCTAssertThrowsError(try EngramRemoteBackend(baseURL: URL(string: "http://192.168.1.50:8787")!, token: "t"))
