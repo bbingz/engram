@@ -318,11 +318,28 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
             sessionsPage.contains("@AppStorage(\"sessions.showAll\") private var showAllSessions"),
             "SessionsPage must retain the single persisted user-facing visibility control"
         )
+        XCTAssertTrue(
+            sessionsPage.contains("Toggle(\"Show all sessions\", isOn: $showAllSessions)"),
+            "SessionsPage must expose the persisted all-sessions visibility control"
+        )
         XCTAssertEqual(
             sessionsPage.components(separatedBy: "let humanDriven = !showAllSessions").count - 1,
             2,
             "Initial loading and pagination must derive their real list predicate from sessions.showAll"
         )
+        let listSessionsCalls = sessionsPage.components(separatedBy: "db.listSessions(").dropFirst()
+        XCTAssertEqual(
+            listSessionsCalls.count,
+            2,
+            "SessionsPage must retain exactly the initial-load and pagination listSessions calls"
+        )
+        for (index, call) in listSessionsCalls.enumerated() {
+            let arguments = String(call.prefix(while: { $0 != ")" }))
+            XCTAssertTrue(
+                arguments.contains("humanDriven: humanDriven"),
+                "listSessions call \(index + 1) must pass the show-all-derived humanDriven predicate"
+            )
+        }
     }
 
     func testTranscriptDiagnosticTogglesLiveUnderAdvancedSettings() throws {
