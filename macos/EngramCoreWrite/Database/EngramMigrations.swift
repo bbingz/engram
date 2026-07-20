@@ -49,7 +49,8 @@ enum EngramMigrations {
               orphan_status TEXT,
               orphan_since TEXT,
               orphan_reason TEXT,
-              offload_state TEXT NOT NULL DEFAULT 'local'
+              offload_state TEXT NOT NULL DEFAULT 'local',
+              content_fingerprint TEXT
             );
         """)
 
@@ -648,6 +649,8 @@ enum EngramMigrations {
             ("orphan_since", "TEXT"),
             ("orphan_reason", "TEXT"),
             ("offload_state", "TEXT NOT NULL DEFAULT 'local'"),
+            // Chained content fingerprint for parity-stable tail indexing merges.
+            ("content_fingerprint", "TEXT"),
         ]
         for (name, definition) in columns where !existing.contains(name) {
             try db.execute(sql: "ALTER TABLE sessions ADD COLUMN \(name) \(definition)")

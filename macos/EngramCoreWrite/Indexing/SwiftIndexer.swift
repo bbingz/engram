@@ -426,13 +426,69 @@ public final class SwiftIndexer {
         if let source = tail.infoDelta.source, source != current.source { return nil }
         if let firstRole = tail.infoDelta.firstVisibleRole, firstRole != .user { return nil }
         guard let currentSummaryCount = current.summaryMessageCount else { return nil }
+        // H10: only merge when the prior full-parse fingerprint is durable.
+        // Rows without content_fingerprint fall back so the next full pass
+        // seeds the chain; after that pure user-led appends stay incremental.
+        guard let priorFingerprint = current.contentFingerprint, !priorFingerprint.isEmpty else {
+            return nil
+        }
 
-        // Wave 7A H10: content fingerprint cannot be extended without re-reading
-        // prior messages. Force full reparse so snapshotHash stays parity-stable
-        // with a full scan. Tail-path metadata is still validated above.
-        _ = currentSummaryCount
-        _ = tail
-        return nil
+        let tailStats = computeStats(messages: tail.messages, provableSkip: false)
+        guard let instructionSignals = mergeInstructionSignals(current: current, tailMessages: tail.messages) else {
+            return nil
+        }
+
+        var stats = SessionStreamStats()
+        stats.indexedMessageCount = currentSummaryCount + tailStats.indexedMessageCount
+        stats.assistantCount = current.assistantMessageCount + tailStats.assistantCount
+        stats.toolCount = current.toolMessageCount + tailStats.toolCount
+        stats.toolCallCounts = mergedCounts(current.toolCallCounts, tailStats.toolCallCounts)
+        stats.tokenUsage = mergedUsage(current.tokenUsage, tailStats.tokenUsage)
+        stats.humanTurnCount = instructionSignals.humanTurnCount
+        stats.instructions = instructionSignals.instructions
+        // Extend the durable chain with only the tail's searchable content.
+        // Same absorb rule as a full scan, so snapshotHash matches full reparse.
+        stats.contentFingerprintState = priorFingerprint
+        for message in tail.messages {
+            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { continue }
+            if message.role == .user, Self.isSystemInjection(content) { continue }
+            stats.absorbSearchableContent(role: message.role, content: content)
+        }
+
+        let info = NormalizedSessionInfo(
+            id: current.id,
+            source: current.source,
+            startTime: current.startTime,
+            endTime: tail.infoDelta.endTime ?? current.endTime,
+            cwd: current.cwd,
+            project: current.project,
+            model: current.model ?? tail.infoDelta.model,
+            messageCount: current.messageCount + tail.infoDelta.messageCount,
+            userMessageCount: current.userMessageCount + tail.infoDelta.userMessageCount,
+            assistantMessageCount: current.assistantMessageCount + tail.infoDelta.assistantMessageCount,
+            toolMessageCount: current.toolMessageCount + tail.infoDelta.toolMessageCount,
+            systemMessageCount: current.systemMessageCount + tail.infoDelta.systemMessageCount,
+            summary: current.summary,
+            filePath: locator,
+            sizeBytes: stat.sizeBytes,
+            indexedAt: current.indexedAt,
+            agentRole: current.agentRole,
+            origin: current.origin,
+            parentSessionId: current.parentSessionId
+        )
+        var snapshot = buildSnapshot(info: info, locator: locator, stats: stats)
+        let tailBeats = ImplementationDigestExtractor.extract(
+            messages: tailStats.implementationMessages,
+            sessionId: current.id,
+            sessionTitle: current.summary
+        ).enumerated().map { offset, beat in
+            var adjusted = beat
+            adjusted.beatIndex = current.implementationBeats.count + offset
+            return adjusted
+        }
+        snapshot.implementationBeats = current.implementationBeats + tailBeats
+        return snapshot
     }
 
     private func mergeInstructionSignals(
@@ -562,8 +618,12 @@ public final class SwiftIndexer {
         var instructions: [String] = []
         var seenInstructionKeys: Set<String> = []
         var implementationMessages: [NormalizedMessage] = []
-        /// Running SHA-256 over role + normalized searchable content (Wave 7A H10).
-        var contentDigest = SHA256()
+        /// Chained content fingerprint state (Wave 7A H10).
+        /// Each absorbed message becomes
+        /// `SHA256(hex(prev) || "\\n" || role || "\\n" || trimmed || "\\n")`,
+        /// starting from empty `prev`. The chain is durable across appends so
+        /// tail merges extend the same fingerprint a full reparse would build.
+        var contentFingerprintState = ""
 
         mutating func absorbSearchableContent(role: NormalizedMessageRole, content: String) {
             let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -572,15 +632,14 @@ public final class SwiftIndexer {
             // body rewrites (and similar aux system streams) invalidate even when
             // sizeBytes and user/assistant counts stay equal.
             guard role == .user || role == .assistant || role == .system else { return }
-            var hasher = contentDigest
-            let line = "\(role.rawValue)\n\(trimmed)\n"
-            hasher.update(data: Data(line.utf8))
-            contentDigest = hasher
+            var hasher = SHA256()
+            hasher.update(data: Data(contentFingerprintState.utf8))
+            hasher.update(data: Data("\n\(role.rawValue)\n\(trimmed)\n".utf8))
+            contentFingerprintState = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         }
 
         func contentFingerprintHex() -> String {
-            let hasher = contentDigest
-            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            contentFingerprintState
         }
 
         mutating func addUsage(_ usage: TokenUsage) {
@@ -750,7 +809,8 @@ public final class SwiftIndexer {
             parentSessionId: info.parentSessionId,
             toolCallCounts: stats.toolCallCounts,
             tokenUsage: stats.tokenUsage,
-            implementationBeats: implementationBeats
+            implementationBeats: implementationBeats,
+            contentFingerprint: stats.contentFingerprintHex()
         )
     }
 

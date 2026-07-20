@@ -244,7 +244,8 @@ public extension EngramDatabaseWriter {
             parentSessionId: row["parent_session_id"],
             toolCallCounts: try tailMergeToolCounts(sessionId: id, db: db),
             tokenUsage: try tailMergeTokenUsage(sessionId: id, db: db),
-            implementationBeats: try tailMergeWorkBeats(sessionId: id, db: db)
+            implementationBeats: try tailMergeWorkBeats(sessionId: id, db: db),
+            contentFingerprint: row["content_fingerprint"]
         )
     }
 
