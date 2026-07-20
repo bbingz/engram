@@ -248,7 +248,8 @@ public final class SessionSnapshotWriter {
             instructionSummary: row["instruction_summary"],
             origin: row["origin"],
             tier: (row["tier"] as String?).flatMap(SessionTier.init(rawValue:)),
-            agentRole: row["agent_role"]
+            agentRole: row["agent_role"],
+            contentFingerprint: row["content_fingerprint"]
         )
     }
 
@@ -263,7 +264,7 @@ public final class SessionSnapshotWriter {
               file_path, size_bytes, indexed_at, origin,
               authoritative_node, source_locator, sync_version, snapshot_hash,
               tier, agent_role, quality_score, generated_title,
-              parent_session_id, link_source
+              parent_session_id, link_source, content_fingerprint
             ) VALUES (
               ?, ?, ?, ?, ?, ?, ?,
               ?, ?, ?, ?, ?,
@@ -271,7 +272,8 @@ public final class SessionSnapshotWriter {
               ?, ?, ?, ?,
               ?, ?, ?, ?,
               ?, ?, ?, ?,
-              ?, CASE WHEN ? IS NOT NULL THEN 'path' ELSE NULL END
+              ?, CASE WHEN ? IS NOT NULL THEN 'path' ELSE NULL END,
+              ?
             )
             ON CONFLICT(id) DO UPDATE SET
               source = excluded.source,
@@ -378,7 +380,8 @@ public final class SessionSnapshotWriter {
                 WHEN sessions.link_source = 'manual' THEN sessions.link_source
                 WHEN excluded.parent_session_id IS NOT NULL THEN 'path'
                 ELSE sessions.link_source
-              END
+              END,
+              content_fingerprint = excluded.content_fingerprint
             """,
             arguments: [
                 snapshot.id,
@@ -411,7 +414,8 @@ public final class SessionSnapshotWriter {
                 computeQualityScore(snapshot),
                 generatedTitle(for: snapshot),
                 snapshot.parentSessionId,
-                snapshot.parentSessionId
+                snapshot.parentSessionId,
+                snapshot.contentFingerprint
             ]
         )
     }

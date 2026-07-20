@@ -153,6 +153,25 @@ final class MigrationRunnerTests: XCTestCase {
         XCTAssertEqual(metadata, "1")
     }
 
+    func testAddsContentFingerprintColumnForTailMerges_repro() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("content-fingerprint.sqlite"))
+        try writer.migrate()
+        let sessionColumns = try writer.read { db in
+            try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info('sessions') ORDER BY cid")
+        }
+        XCTAssertTrue(sessionColumns.contains("content_fingerprint"))
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, file_path, content_fingerprint)
+                VALUES ('s-fp', 'codex', '2026-01-01T00:00:00.000Z', '/tmp/s.jsonl', 'abc');
+            """)
+        }
+        let value = try writer.read { db in
+            try String.fetchOne(db, sql: "SELECT content_fingerprint FROM sessions WHERE id = 's-fp'")
+        }
+        XCTAssertEqual(value, "abc")
+    }
+
     func testCreatesRemoteOffloadSchema() throws {
         let writer = try EngramDatabaseWriter(path: databasePath("offload.sqlite"))
         try writer.migrate()

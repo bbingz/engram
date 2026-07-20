@@ -303,13 +303,13 @@ final class IndexerParseOnceTests: XCTestCase {
         try appendText(tailClaudeLines().joined(separator: "\n") + "\n", to: fixture.locator)
         _ = try await writer.indexRecentSessions(adapters: [adapter])
         try await drainFtsJobs(writer, adapter: adapter)
-        // Wave 7A H10: content fingerprint cannot be extended without re-reading
-        // prior messages, so append falls back to a full reparse after a tail probe.
+        // R8: durable content_fingerprint lets a user-led append merge without
+        // a second full reparse while remaining parity-stable with full scan.
         XCTAssertEqual(adapter.scanTailForIndexingCalls, 1, "must still attempt the tail path first")
-        XCTAssertGreaterThanOrEqual(
+        XCTAssertEqual(
             adapter.scanForIndexingCalls,
-            2,
-            "append pass full-reparses so content fingerprint stays parity-stable"
+            1,
+            "append pass must merge via tail path, not full reparse"
         )
 
         let fullDB = FileManager.default.temporaryDirectory
@@ -455,6 +455,172 @@ final class IndexerParseOnceTests: XCTestCase {
         XCTAssertEqual(adapter.scanForIndexingCalls, 2, "complete no-visible tails must full-reparse to refresh session size")
     }
 
+    /// R8 repro: Codex product path must merge a user-led append via
+    /// `mergeTailSnapshot` (not always nil) and stay parity-stable with a full reindex.
+    func testCodexTailMergeMatchesFullReindex_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-tail-merge-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("rollout-codex-tail-merge.jsonl")
+        let baseLines: [[String: Any]] = [
+            [
+                "timestamp": "2026-06-01T10:00:00.000Z",
+                "type": "session_meta",
+                "payload": [
+                    "id": "codex-tail-merge-1",
+                    "timestamp": "2026-06-01T10:00:00.000Z",
+                    "cwd": "/tmp/codex-tail-merge",
+                    "originator": "codex",
+                ],
+            ],
+            [
+                "timestamp": "2026-06-01T10:00:01.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "user",
+                    "content": [["type": "input_text", "text": "First codex turn"]],
+                ],
+            ],
+            [
+                "timestamp": "2026-06-01T10:00:02.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [["type": "output_text", "text": "First reply"]],
+                ],
+            ],
+            [
+                "timestamp": "2026-06-01T10:00:03.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "user",
+                    "content": [["type": "input_text", "text": "Second codex turn"]],
+                ],
+            ],
+            [
+                "timestamp": "2026-06-01T10:00:04.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [["type": "output_text", "text": "Second reply"]],
+                ],
+            ],
+            [
+                "timestamp": "2026-06-01T10:00:05.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "user",
+                    "content": [["type": "input_text", "text": "Third codex turn"]],
+                ],
+            ],
+            [
+                "timestamp": "2026-06-01T10:00:06.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [["type": "output_text", "text": "Third reply"]],
+                ],
+            ],
+        ]
+        try (baseLines.map { jsonLine($0) }.joined(separator: "\n") + "\n")
+            .write(to: locator, atomically: true, encoding: .utf8)
+
+        let adapter = CountingCodexTailAdapter(sessionsRoot: root.path)
+        let initial = try await writer.indexRecentSessions(adapters: [adapter])
+        XCTAssertEqual(initial.indexed, 1)
+        try await drainFtsJobs(writer, adapter: adapter)
+        XCTAssertEqual(adapter.scanForIndexingCalls, 1)
+        XCTAssertEqual(adapter.scanTailForIndexingCalls, 0)
+        let fingerprint = try sessionValue("content_fingerprint", id: "codex-tail-merge-1")
+        XCTAssertNotNil(fingerprint)
+        XCTAssertFalse(fingerprint?.isEmpty ?? true)
+
+        let tailLines: [[String: Any]] = [
+            [
+                "timestamp": "2026-06-01T10:00:07.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "user",
+                    "content": [["type": "input_text", "text": "Appended codex tailonlysearchtoken"]],
+                ],
+            ],
+            [
+                "timestamp": "2026-06-01T10:00:08.000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [["type": "output_text", "text": "Tail merged reply"]],
+                ],
+            ],
+        ]
+        let handle = try FileHandle(forWritingTo: locator)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((tailLines.map { jsonLine($0) }.joined(separator: "\n") + "\n").utf8))
+
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+        try await drainFtsJobs(writer, adapter: adapter)
+        XCTAssertEqual(adapter.scanTailForIndexingCalls, 1, "must attempt Codex tail path")
+        XCTAssertEqual(
+            adapter.scanForIndexingCalls,
+            1,
+            "Codex user-led append must merge without full reparse (R8)"
+        )
+        XCTAssertEqual(try sessionIntValue("message_count", id: "codex-tail-merge-1"), 8)
+        XCTAssertEqual(try ftsHits(writer, "tailonlysearchtoken"), 1)
+
+        let fullDB = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-tail-full-\(UUID().uuidString).sqlite")
+        let fullWriter = try EngramDatabaseWriter(path: fullDB.path)
+        defer { try? FileManager.default.removeItem(at: fullDB) }
+        try fullWriter.migrate()
+        _ = try await fullWriter.indexRecentSessions(adapters: [CodexAdapter(sessionsRoot: root.path)])
+        try await drainFtsJobs(fullWriter, adapter: CodexAdapter(sessionsRoot: root.path))
+
+        // session_costs.cost_usd can be NULL vs 0.0 when no token events exist; the
+        // tail path does not invent usage. Compare counts/tools/beats/fingerprint.
+        for table in stableParityTables
+            where table.name != "session_index_jobs" && table.name != "session_costs"
+        {
+            XCTAssertEqual(
+                try stableRows(writer, table.sql),
+                try stableRows(fullWriter, table.sql),
+                table.name
+            )
+        }
+        XCTAssertEqual(try sessionIntValue("message_count", id: "codex-tail-merge-1"), 8)
+        XCTAssertEqual(
+            try sessionValue("content_fingerprint", id: "codex-tail-merge-1"),
+            try fullWriter.read { db in
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT content_fingerprint FROM sessions WHERE id = ?",
+                    arguments: ["codex-tail-merge-1"]
+                )
+            }
+        )
+        XCTAssertEqual(
+            try sessionValue("snapshot_hash", id: "codex-tail-merge-1"),
+            try fullWriter.read { db in
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT snapshot_hash FROM sessions WHERE id = ?",
+                    arguments: ["codex-tail-merge-1"]
+                )
+            }
+        )
+    }
+
     private struct StableParityTable {
         var name: String
         var sql: String
@@ -471,7 +637,7 @@ final class IndexerParseOnceTests: XCTestCase {
                        summary_message_count, instruction_count, human_turn_count,
                        instruction_summary, source_locator, size_bytes, origin,
                        authoritative_node, sync_version, snapshot_hash, tier,
-                       agent_role, parent_session_id, link_source
+                       agent_role, parent_session_id, link_source, content_fingerprint
                   FROM sessions
                  ORDER BY id
                 """
@@ -755,6 +921,65 @@ private final class TailSnapshotCountingSink: IndexingWriteSink {
 }
 
 // MARK: - Test adapters
+
+private final class CountingCodexTailAdapter: TailIndexingSessionAdapter {
+    let source: SourceName = .codex
+    private let inner: CodexAdapter
+    private(set) var scanForIndexingCalls = 0
+    private(set) var scanTailForIndexingCalls = 0
+
+    init(sessionsRoot: String) {
+        self.inner = CodexAdapter(sessionsRoot: sessionsRoot)
+    }
+
+    func detect() async -> Bool {
+        await inner.detect()
+    }
+
+    func listSessionLocators() async throws -> [String] {
+        try await inner.listSessionLocators()
+    }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        try await inner.parseSessionInfo(locator: locator)
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        await inner.isAccessible(locator: locator)
+    }
+
+    func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        scanForIndexingCalls += 1
+        return try await inner.scanForIndexing(locator: locator)
+    }
+
+    func scanTailForIndexing(
+        locator: String,
+        from parsedOffset: Int64,
+        expectedBoundaryHash: String
+    ) async throws -> IndexingTailScanResult {
+        scanTailForIndexingCalls += 1
+        return try await inner.scanTailForIndexing(
+            locator: locator,
+            from: parsedOffset,
+            expectedBoundaryHash: expectedBoundaryHash
+        )
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        try await inner.streamMessages(locator: locator, options: options)
+    }
+
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        try await inner.streamMessagesWithMetadata(locator: locator, options: options)
+    }
+}
 
 private final class CountingTailAdapter: TailIndexingSessionAdapter {
     let source: SourceName = .claudeCode

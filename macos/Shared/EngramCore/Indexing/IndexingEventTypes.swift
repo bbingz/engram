@@ -31,6 +31,10 @@ public struct AuthoritativeSessionSnapshot: Equatable, Sendable {
     public var toolCallCounts: [String: Int]
     public var tokenUsage: TokenUsage?
     public var implementationBeats: [SessionImplementationBeat]
+    /// Chained content fingerprint (hex). Required for parity-stable tail merges;
+    /// nil means the row predates the column or was never fully parsed — force
+    /// full reparse before the next append can take the tail path.
+    public var contentFingerprint: String?
 
     public init(
         id: String,
@@ -62,7 +66,8 @@ public struct AuthoritativeSessionSnapshot: Equatable, Sendable {
         parentSessionId: String? = nil,
         toolCallCounts: [String: Int] = [:],
         tokenUsage: TokenUsage? = nil,
-        implementationBeats: [SessionImplementationBeat] = []
+        implementationBeats: [SessionImplementationBeat] = [],
+        contentFingerprint: String? = nil
     ) {
         self.id = id
         self.source = source
@@ -94,6 +99,7 @@ public struct AuthoritativeSessionSnapshot: Equatable, Sendable {
         self.toolCallCounts = toolCallCounts
         self.tokenUsage = tokenUsage
         self.implementationBeats = implementationBeats
+        self.contentFingerprint = contentFingerprint
     }
 }
 

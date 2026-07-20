@@ -48,7 +48,7 @@
       "rows": [
         {
           "created_at": "<volatile>",
-          "id": "codex-session-001:1:4ed29fb8f35c76caec36a23d641aa158885b9fcf13bb31fe4691ca7986578b64:embedding",
+          "id": "codex-session-001:1:384198495ec7658e606965cac1d54d96c0a606815ed70a8b68476b06013beb28:embedding",
           "job_kind": "embedding",
           "last_error": null,
           "retry_count": 0,
@@ -59,7 +59,7 @@
         },
         {
           "created_at": "<volatile>",
-          "id": "codex-session-001:1:4ed29fb8f35c76caec36a23d641aa158885b9fcf13bb31fe4691ca7986578b64:fts",
+          "id": "codex-session-001:1:384198495ec7658e606965cac1d54d96c0a606815ed70a8b68476b06013beb28:fts",
           "job_kind": "fts",
           "last_error": null,
           "retry_count": 0,
@@ -111,7 +111,7 @@
           "project": "my-project",
           "quality_score": 67,
           "size_bytes": 1199,
-          "snapshot_hash": "4ed29fb8f35c76caec36a23d641aa158885b9fcf13bb31fe4691ca7986578b64",
+          "snapshot_hash": "384198495ec7658e606965cac1d54d96c0a606815ed70a8b68476b06013beb28",
           "source": "codex",
           "source_locator": "<repo>/tests/fixtures/indexer-parity/fixture-root/codex/2026/01/15/rollout-sample.jsonl",
           "start_time": "2026-01-15T10:00:00.000Z",

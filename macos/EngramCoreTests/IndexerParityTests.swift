@@ -2250,6 +2250,8 @@ final class IndexerParityTests: XCTestCase {
         "offload_state",
         // Swift-side live-session FTS debounce scheduling column; no Node golden counterpart.
         "not_before",
+        // Swift-only durable content fingerprint for tail merges (R8).
+        "content_fingerprint",
     ]
 
     private func normalizedRows(_ rows: [Row]) -> [[String: AnyValue]] {
