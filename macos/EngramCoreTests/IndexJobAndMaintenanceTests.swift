@@ -116,12 +116,15 @@ private final class AllNoopUpsertSink: IndexingWriteSink {
 
 private final class FileStateFailingSink: IndexingWriteSink {
     var fileStateAttempts = 0
+    var receivedSessionIds: [String] = []
+    var receivedFileStateLocators: [String] = []
 
     func upsertBatch(
         _ snapshots: [AuthoritativeSessionSnapshot],
         reason: IndexingWriteReason
     ) throws -> SessionBatchUpsertResult {
-        SessionBatchUpsertResult(
+        receivedSessionIds.append(contentsOf: snapshots.map(\.id))
+        return SessionBatchUpsertResult(
             reason: reason,
             results: snapshots.map {
                 SessionBatchItemResult(sessionId: $0.id, action: .merge, enqueuedJobs: [], error: nil)
@@ -131,6 +134,7 @@ private final class FileStateFailingSink: IndexingWriteSink {
 
     func upsertFileIndexState(_ state: FileIndexState) throws {
         fileStateAttempts += 1
+        receivedFileStateLocators.append(state.locator)
         throw NSError(domain: "FileStateFailingSink", code: 1)
     }
 }
@@ -574,6 +578,41 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         XCTAssertEqual(sink.fileStateAttempts, locators.count)
     }
 
+    /// Production crash: gemini-cli can emit the same sessionId for distinct
+    /// chat files (e.g. two `a2a-server` locators). Batch file-state pairing
+    /// used Dictionary(uniqueKeysWithValues:) keyed by session id and fatally
+    /// trap on the duplicate. Pair by batch index instead.
+    func testSwiftIndexerDuplicateSessionIdsInBatchDoNotCrash_repro() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-index-dup-sid-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let locators = try (0..<2).map { index in
+            let url = dir.appendingPathComponent("session-2026-07-19T01-\(index)-a2a-serv.jsonl")
+            try Data("{}".utf8).write(to: url)
+            return url.path
+        }
+        let sink = FileStateFailingSink()
+        let adapter = StubInfoAdapter(
+            count: locators.count,
+            locators: locators,
+            fixedSessionId: "a2a-server"
+        )
+        let indexer = SwiftIndexer(sink: sink, adapters: [adapter])
+
+        let count = try await indexer.indexAll()
+
+        XCTAssertEqual(count, locators.count)
+        XCTAssertEqual(
+            sink.fileStateAttempts,
+            locators.count,
+            "each distinct locator must still record file_index_state after a shared session id"
+        )
+        XCTAssertEqual(Set(sink.receivedSessionIds), ["a2a-server"])
+        XCTAssertEqual(Set(sink.receivedFileStateLocators), Set(locators))
+    }
+
     func testIndexStatusThrowsOnMissingSchema() throws {
         // Fresh DB without migration → no sessions table.
         let bareDB = FileManager.default.temporaryDirectory
@@ -748,11 +787,19 @@ private final class StubInfoAdapter: SessionAdapter {
     let count: Int
     let usageMessages: [TokenUsage]
     let locators: [String]?
+    /// When set, every locator reports this session id (gemini-cli style collision).
+    let fixedSessionId: String?
 
-    init(count: Int, usageMessages: [TokenUsage] = [], locators: [String]? = nil) {
+    init(
+        count: Int,
+        usageMessages: [TokenUsage] = [],
+        locators: [String]? = nil,
+        fixedSessionId: String? = nil
+    ) {
         self.count = count
         self.usageMessages = usageMessages
         self.locators = locators
+        self.fixedSessionId = fixedSessionId
     }
 
     func detect() async -> Bool { true }
@@ -762,7 +809,7 @@ private final class StubInfoAdapter: SessionAdapter {
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
         .success(
             NormalizedSessionInfo(
-                id: "info-\(locator)",
+                id: fixedSessionId ?? "info-\(locator)",
                 source: .codex,
                 startTime: "2026-03-18T11:00:00Z",
                 cwd: "/repo",

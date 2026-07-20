@@ -492,6 +492,10 @@ writeFileSync(
   ].join('\n'),
 );
 
+// VACUUM rewrites the DB into a stable page layout so CI's byte-level
+// `git diff` on mcp-contract.sqlite does not flap across regenerations that
+// leave identical logical rows with different free-list / overflow layout.
+raw.exec('VACUUM');
 db.close();
 
 console.log(`Generated ${fixtureDbPath}`);
