@@ -70,12 +70,13 @@ public final class SwiftIndexer {
     /// Logs each per-snapshot failure so a silent fake-success cannot happen.
     private func writeBatchCountingSuccesses(_ batch: [ScannedSnapshot]) throws -> Int {
         let snapshots = batch.map(\.snapshot)
-        let statesBySessionId = Dictionary(uniqueKeysWithValues: batch.compactMap { scanned in
-            scanned.fileState.map { (scanned.snapshot.id, $0) }
-        })
         let result = try sink.upsertBatch(snapshots, reason: .initialScan)
         var merged = 0
-        for item in result.results {
+        // Pair file_index_state by batch index, not session id. Some adapters
+        // (notably gemini-cli) can emit the same sessionId for distinct
+        // locators in one batch; uniqueKeysWithValues would fatal on that.
+        // upsertBatch preserves input order, so index pairing is stable.
+        for (index, item) in result.results.enumerated() {
             if item.action == .failure {
                 Self.log.error(
                     "session upsert failed: session=\(item.sessionId, privacy: .private) error=\(item.error ?? "unknown", privacy: .private)"
@@ -85,9 +86,8 @@ public final class SwiftIndexer {
             if item.action == .merge {
                 merged += 1
             }
-            if let state = statesBySessionId[item.sessionId] {
-                try upsertFileIndexStateIsolated(state, source: state.source, locator: state.locator)
-            }
+            guard index < batch.count, let state = batch[index].fileState else { continue }
+            try upsertFileIndexStateIsolated(state, source: state.source, locator: state.locator)
         }
         return merged
     }
