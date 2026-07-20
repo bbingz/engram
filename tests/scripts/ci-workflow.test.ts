@@ -116,8 +116,9 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain('"$RUNNER_TEMP/actionlint"');
   });
 
-  it('does not hard-gate pull requests on npm audit advisory churn', () => {
-    expect(testWorkflow).toContain(
+  it('keeps npm audit advisory handling identical on pull requests and pushes', () => {
+    expect(testWorkflow).toContain('continue-on-error: true');
+    expect(testWorkflow).not.toContain(
       'continue-on-error: $' + "{{ github.event_name == 'pull_request' }}",
     );
   });

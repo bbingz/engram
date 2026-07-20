@@ -62,6 +62,7 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **R8** | closed (#218) | Durable `content_fingerprint` enables parity-stable `mergeTailSnapshot` for Claude/Codex user-led appends; covered by `testCodexTailMergeMatchesFullReindex_repro` + updated Claude tail parity |
 | **R9** / M21 residual | closed (flush; #219); MainActor I/O residual | AI settings flush pending debounce on disappear; MainActor flock/Keychain I/O after debounce remains accepted residual |
 | **R11 ledger** | closed | Disposition evidence columns + this followups section |
+| **F5-CI** | closed | `.github/workflows/test.yml` now treats `npm audit --audit-level=moderate` as soft-fail for both pull requests and pushes, so merge cannot change audit policy from soft to strict. |
 | **L-a…L-j** | residual | Low/Info rows in full-project review; not engineering-zero blockers |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
