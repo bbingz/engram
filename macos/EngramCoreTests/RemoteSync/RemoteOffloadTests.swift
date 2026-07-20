@@ -188,6 +188,66 @@ final class RemoteOffloadTests: XCTestCase {
             let ledgerIn = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sync_ledger WHERE session_id = 'sess-1' AND direction = 'in'")
             XCTAssertEqual(ledgerIn, 1)
         }
+
+        // 4. Offload the unchanged session again. The content-addressed object is
+        // already present, so the GET+decode+hash idempotent path must still commit.
+        let idempotentOffload = try await runner.runOffloadOnce(now: Date())
+        XCTAssertEqual(idempotentOffload, OffloadRunner.SyncOutcome(succeeded: 1, failed: 0))
+        try writer.read { db in
+            XCTAssertEqual(try OffloadRepo.offloadState(db, sessionId: "sess-1"), "offloaded")
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'sess-1'"),
+                1,
+                "a verified matching remote object may collapse FTS to the shadow"
+            )
+        }
+    }
+
+    func testOffloadRunnerPreservesLocalFtsWhenExistingRemoteBundleCannotBeFetched_repro() async throws {
+        let writer = try EngramDatabaseWriter(path: tempDir.appendingPathComponent("head-get-failure.sqlite").path)
+        try writer.migrate()
+        let fullContents = ["first original row", "second original row", "third original row"]
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions(id, source, start_time, file_path, size_bytes, hidden_at)
+                VALUES ('s', 'codex', '2024-01-01T00:00:00Z', '/tmp/s.jsonl', 4096, '2024-02-01T00:00:00Z')
+            """)
+            for line in fullContents {
+                try db.execute(
+                    sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('s', ?)",
+                    arguments: [line]
+                )
+            }
+        }
+
+        let runner = OffloadRunner(
+            writer: writer,
+            backend: ExistingButUnretrievableBackend(),
+            policy: OffloadPolicy(coldAgeDays: 90)
+        )
+
+        let outcome = try await runner.runOffloadOnce(now: Date())
+
+        XCTAssertEqual(outcome, OffloadRunner.SyncOutcome(succeeded: 0, failed: 1))
+        try writer.read { db in
+            XCTAssertEqual(try OffloadRepo.offloadState(db, sessionId: "s"), "local")
+            XCTAssertEqual(
+                try String.fetchAll(
+                    db,
+                    sql: "SELECT content FROM sessions_fts WHERE session_id = 's' ORDER BY rowid"
+                ),
+                fullContents,
+                "a failed durability proof must preserve every original FTS row"
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM sync_ledger WHERE session_id = 's' AND direction = 'out'"
+                ),
+                0,
+                "commitOffloaded must not be reached"
+            )
+        }
     }
 
     // MARK: - Review fixes
@@ -431,6 +491,16 @@ private struct CancellingRemoteStorageBackend: RemoteStorageBackend {
     func catalog() async throws -> Data {
         Data()
     }
+}
+
+private struct ExistingButUnretrievableBackend: RemoteStorageBackend {
+    func head(key: String) async throws -> Bool { true }
+    func put(key: String, data: Data) async throws {}
+    func get(key: String) async throws -> Data {
+        throw RemoteSyncError.bundleNotFound(key: key)
+    }
+    func delete(key: String) async throws {}
+    func catalog() async throws -> Data { Data() }
 }
 
 private final class ConcurrentRehydrateMutationBackend: RemoteStorageBackend, @unchecked Sendable {

@@ -17,6 +17,28 @@ public protocol RemoteStorageBackend: Sendable {
     func catalog() async throws -> Data
 }
 
+public extension RemoteStorageBackend {
+    /// Prove that the expected bundle is durable before local searchable content
+    /// is collapsed. HEAD is only an optimization: an existing object must still
+    /// be fetched, decoded, and matched to the expected content hash.
+    func ensureDurable(bundle: RemoteSessionBundle) async throws {
+        let key = BundleCodec.contentKey(bundle)
+        guard try await head(key: key) else {
+            try await put(key: key, data: BundleCodec.encode(bundle))
+            return
+        }
+
+        let storedData = try await get(key: key)
+        let storedBundle = try BundleCodec.decode(storedData, expectedSessionId: bundle.sessionId)
+        guard storedBundle.contentHash == bundle.contentHash else {
+            throw RemoteSyncError.contentHashMismatch(
+                expected: bundle.contentHash,
+                actual: storedBundle.contentHash
+            )
+        }
+    }
+}
+
 public enum RemoteStorageKey {
     public static func validate(_ key: String) throws {
         guard !key.isEmpty, key.count <= 255, !key.contains("..") else {
