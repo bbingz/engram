@@ -749,6 +749,42 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
         XCTAssertTrue(orphanDeleted)
     }
 
+    func testReconcileInsightsUsesInsightEmbeddingsAsAuthoritativeFlagSource_repro() throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO insights (id, content, has_embedding) VALUES
+                  ('embedded', 'has authoritative embedding', 0),
+                  ('legacy-only', 'has only legacy memory row', 1)
+            """)
+            try db.execute(sql: """
+                INSERT INTO insight_embeddings (insight_id, embedding, model, dim) VALUES
+                  ('embedded', X'00000000', 'test-model', 1)
+            """)
+            try db.execute(sql: """
+                INSERT INTO memory_insights (id, content) VALUES
+                  ('legacy-only', 'legacy vector row')
+            """)
+        }
+
+        let result = try writer.write { db in
+            try StartupBackfills.reconcileInsights(db)
+        }
+
+        XCTAssertEqual(result.resetEmbedding, 1)
+        try writer.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT has_embedding FROM insights WHERE id = 'embedded'"),
+                1,
+                "a matching insight_embeddings row is the authoritative success record"
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT has_embedding FROM insights WHERE id = 'legacy-only'"),
+                0,
+                "a legacy memory_insights row must not preserve the shipped embedding flag"
+            )
+        }
+    }
+
     // MARK: - Helpers
 
     private func makeMinimalSnapshot(id: String) -> AuthoritativeSessionSnapshot {

@@ -260,6 +260,7 @@ public enum InsightEmbeddingBackfill {
 
         try db.execute(sql: "DELETE FROM semantic_chunks")
         try db.execute(sql: "DELETE FROM insight_embeddings")
+        try db.execute(sql: "UPDATE insights SET has_embedding = 0 WHERE has_embedding = 1")
         // Model/dim change invalidates prior poison permanent marks so content
         // can be retried under the new embedding space.
         try db.execute(sql: "DELETE FROM insight_embedding_failures")
