@@ -55,12 +55,12 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 
 | ID | Status | Home / next step |
 |----|--------|------------------|
-| **R1** / ARCH-001 | open (partially mitigated) | Triple Read SQL stacks remain; unify shared list/search/cost predicates in CoreRead and add cross-surface parity fixtures |
+| **R1** / ARCH-001 | open (structural investment; partially mitigated) | Triple Read SQL stacks remain as accepted architecture debt until a shared CoreRead predicate + cross-surface parity suite lands; READ-001/002/003 + visibility filter tests mitigate drift without closing ARCH-001 |
 | **READ-001/002/003** | closed (post-audit follow-up) | MCP multi-term session-scoped AND, activity-time `since`, and exact project-or-alias filtering are covered by executable `_repro` tests; this does not close ARCH-001 |
-| **R6** | open | Project-move holds writer gate for entire FS+patch lifetime — availability redesign |
-| **R7** | open | Offload HTTP client weaker than Archive V2 (`URLSession.shared`, no redirect/size/post-DNS private checks); stale “default OFF” comment |
-| **R8** | open | Codex content tail indexing dead in product (`mergeTailSnapshot` always nil) |
-| **R9** / M21 residual | open | AI settings debounce can drop last edits; no flush on disappear; MainActor I/O after debounce |
+| **R6** | accepted residual (redesign deferred) | Producer intentionally holds the writer gate for the full FS+patch lifetime (finding 8 integrity). M1 prevents false timeouts; availability redesign (release gate across network/FS phases like remote offload) is product-scale work, not a defect fix |
+| **R7** | closed (#220) | Offload HTTP matches Archive V2 transport depth (ephemeral session, redirect reject, size caps, post-DNS private check); requireTLS product default fail-closed docs fixed |
+| **R8** | closed (#218 pending merge) | Durable `content_fingerprint` enables parity-stable `mergeTailSnapshot` for Claude/Codex user-led appends |
+| **R9** / M21 residual | closed (flush; #219 pending merge); MainActor I/O residual | AI settings flush pending debounce on disappear; MainActor flock/Keychain I/O after debounce remains accepted residual |
 | **R11 ledger** | closed | Disposition evidence columns + this followups section |
 | **L-a…L-j** | residual | Low/Info rows in full-project review; not engineering-zero blockers |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
