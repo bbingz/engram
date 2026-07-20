@@ -84,6 +84,20 @@ const biomeConfig = JSON.parse(
 };
 const gitignore = readFileSync(resolve(repoRoot, '.gitignore'), 'utf8');
 
+const parsedTestWorkflow = parseDocument(testWorkflow).toJS() as {
+  on?: Record<string, unknown>;
+  jobs?: Record<
+    string,
+    {
+      steps?: Array<{
+        name?: string;
+        run?: string;
+        'continue-on-error'?: boolean;
+      }>;
+    }
+  >;
+};
+
 describe('CI workflow hardening', () => {
   it('parses every workflow as YAML', () => {
     for (const workflow of allWorkflows) {
@@ -117,10 +131,16 @@ describe('CI workflow hardening', () => {
   });
 
   it('keeps npm audit advisory handling identical on pull requests and pushes', () => {
-    expect(testWorkflow).toContain('continue-on-error: true');
-    expect(testWorkflow).not.toContain(
-      'continue-on-error: $' + "{{ github.event_name == 'pull_request' }}",
+    expect(parsedTestWorkflow.on).toMatchObject({
+      pull_request: { branches: ['main'] },
+      push: { branches: ['main'] },
+    });
+    const auditStep = parsedTestWorkflow.jobs?.typescript?.steps?.find(
+      (step) =>
+        step.name === 'Dependency audit' &&
+        step.run === 'npm audit --audit-level=moderate',
     );
+    expect(auditStep?.['continue-on-error']).toBe(true);
   });
 
   it('does not mask xcodegen install failures', () => {
