@@ -1,19 +1,19 @@
 import Foundation
 import EngramCoreWrite
 
-/// Opt-in configuration for the remote session-offload loop. Default OFF, read
-/// from `~/.engram/settings.json` (env overrides for tests/dev), mirroring the
-/// web-UI opt-in posture.
+/// Opt-in configuration for the remote session-offload loop. Feature default
+/// OFF (`remoteOffloadEnabled`), read from `~/.engram/settings.json` (env
+/// overrides for tests/dev). TLS policy is independent and fail-closed.
 public struct RemoteSyncConfig: Sendable {
     public let enabled: Bool
     /// "local" → `LocalDirectoryBackend` (dir/NAS mount); "http" → the self-hosted
     /// `engram-remote` server via `EngramRemoteBackend`.
     public let backendKind: String
     public let serverURL: URL?
-    /// When true, the HTTP backend forces HTTPS for every non-loopback host. Default
-    /// OFF: plain HTTP is allowed to private / Tailscale hosts, where the LAN/VPN
-    /// already encrypts the transport. Sensitive users opt in via
-    /// `remoteOffloadRequireTLS`.
+    /// When true, the HTTP backend forces HTTPS for every non-loopback host.
+    /// Product default is **true** (SEC-H1 fail-closed via
+    /// `remoteOffloadRequireTLS`). Explicit false remains allowed for trusted
+    /// private / Tailscale cleartext ops.
     public let requireTLS: Bool
     public let storeRoot: URL
     public let policy: OffloadPolicy
@@ -32,7 +32,7 @@ public struct RemoteSyncConfig: Sendable {
         vacuumFreelistThreshold: Int,
         backendKind: String = "local",
         serverURL: URL? = nil,
-        requireTLS: Bool = false
+        requireTLS: Bool = true
     ) {
         self.enabled = enabled
         self.backendKind = backendKind
