@@ -282,6 +282,7 @@ final class AuditMediumMCPReproTests: XCTestCase {
         let content = try XCTUnwrap(result["content"] as? [[String: Any]])
         let text = try XCTUnwrap(content.first?["text"] as? String)
         XCTAssertTrue(text.contains("B2 visible summary"), text)
+        XCTAssertFalse(text.contains("B2 noise summary"), text)
         XCTAssertFalse(text.contains("B2 hidden summary"), text)
         XCTAssertFalse(text.contains("B2 skip summary"), text)
         XCTAssertFalse(text.contains("B2 confirmed child summary"), text)
@@ -296,7 +297,7 @@ final class AuditMediumMCPReproTests: XCTestCase {
 
         let text = try getContextEnvironmentText(dbPath: dbPath)
         XCTAssertTrue(text.contains("VisibilityProbeTool: 1 calls"), text)
-        XCTAssertFalse(text.contains("VisibilityProbeTool: 11111 calls"), text)
+        XCTAssertFalse(text.contains("VisibilityProbeTool: 100001 calls"), text)
     }
 
     func testGetContextFileHotspotsMatchListSessionsDefaultVisibility_repro() throws {
@@ -306,7 +307,7 @@ final class AuditMediumMCPReproTests: XCTestCase {
 
         let text = try getContextEnvironmentText(dbPath: dbPath)
         XCTAssertTrue(text.contains("/workspace/visibility.swift (1 edits, 1 sessions)"), text)
-        XCTAssertFalse(text.contains("/workspace/visibility.swift (11111 edits, 5 sessions)"), text)
+        XCTAssertFalse(text.contains("/workspace/visibility.swift (100001 edits, 2 sessions)"), text)
     }
 
     // MARK: - Seeds
@@ -332,28 +333,32 @@ final class AuditMediumMCPReproTests: XCTestCase {
             try db.execute(sql: """
                 INSERT INTO sessions (
                   id, source, start_time, cwd, project, file_path, message_count,
-                  user_message_count, instruction_count, human_turn_count, tier,
+                  user_message_count, instruction_count, human_turn_count, agent_role, tier,
                   parent_session_id, suggested_parent_id, hidden_at, summary
                 ) VALUES
                   ('b2-visible', 'codex', '2026-07-19T10:00:00.000Z',
                    '/Users/test/work/b2-visibility', 'b2-visibility', '/tmp/b2-visible.jsonl',
-                   4, 4, 4, 4, 'normal', NULL, NULL, NULL, 'B2 visible summary'),
+                   4, 4, 4, 4, NULL, 'normal', NULL, NULL, NULL, 'B2 visible summary'),
+                  ('b2-noise', 'codex', '2026-07-19T10:30:00.000Z',
+                   '/Users/test/work/b2-visibility', 'b2-visibility', '/tmp/b2-noise.jsonl',
+                   1, 0, 0, 0, NULL, 'normal', NULL, NULL, NULL, 'B2 noise summary'),
                   ('b2-hidden', 'codex', '2026-07-19T11:00:00.000Z',
                    '/Users/test/work/b2-visibility', 'b2-visibility', '/tmp/b2-hidden.jsonl',
-                   4, 4, 4, 4, 'normal', NULL, NULL, '2026-07-19T11:30:00.000Z', 'B2 hidden summary'),
+                   4, 4, 4, 4, NULL, 'normal', NULL, NULL, '2026-07-19T11:30:00.000Z', 'B2 hidden summary'),
                   ('b2-skip', 'codex', '2026-07-19T12:00:00.000Z',
                    '/Users/test/work/b2-visibility', 'b2-visibility', '/tmp/b2-skip.jsonl',
-                   4, 4, 4, 4, 'skip', NULL, NULL, NULL, 'B2 skip summary'),
+                   4, 4, 4, 4, NULL, 'skip', NULL, NULL, NULL, 'B2 skip summary'),
                   ('b2-confirmed-child', 'codex', '2026-07-19T13:00:00.000Z',
                    '/Users/test/work/b2-visibility', 'b2-visibility', '/tmp/b2-confirmed-child.jsonl',
-                   4, 4, 4, 4, 'normal', 'b2-visible', NULL, NULL, 'B2 confirmed child summary'),
+                   4, 4, 4, 4, NULL, 'normal', 'b2-visible', NULL, NULL, 'B2 confirmed child summary'),
                   ('b2-suggested-child', 'codex', '2026-07-19T14:00:00.000Z',
                    '/Users/test/work/b2-visibility', 'b2-visibility', '/tmp/b2-suggested-child.jsonl',
-                   4, 4, 4, 4, 'normal', NULL, 'b2-visible', NULL, 'B2 suggested child summary')
+                   4, 4, 4, 4, NULL, 'normal', NULL, 'b2-visible', NULL, 'B2 suggested child summary')
                 """)
             try db.execute(sql: """
                 INSERT INTO session_tools (session_id, tool_name, call_count) VALUES
                   ('b2-visible', 'VisibilityProbeTool', 1),
+                  ('b2-noise', 'VisibilityProbeTool', 100000),
                   ('b2-hidden', 'VisibilityProbeTool', 10),
                   ('b2-skip', 'VisibilityProbeTool', 100),
                   ('b2-confirmed-child', 'VisibilityProbeTool', 1000),
@@ -362,6 +367,7 @@ final class AuditMediumMCPReproTests: XCTestCase {
             try db.execute(sql: """
                 INSERT INTO session_files (session_id, file_path, action, count) VALUES
                   ('b2-visible', '/workspace/visibility.swift', 'Edit', 1),
+                  ('b2-noise', '/workspace/visibility.swift', 'Edit', 100000),
                   ('b2-hidden', '/workspace/visibility.swift', 'Edit', 10),
                   ('b2-skip', '/workspace/visibility.swift', 'Edit', 100),
                   ('b2-confirmed-child', '/workspace/visibility.swift', 'Edit', 1000),

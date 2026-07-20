@@ -155,18 +155,8 @@ final class MCPDatabase {
         includeAll: Bool = false
     ) throws -> OrderedJSONValue {
         var conditions = ["hidden_at IS NULL", "orphan_status IS NULL"]
-        // Default to human-driven sessions only (matches the app default); set
-        // include_all to browse every session. Guard on column presence so a
-        // read-only MCP over an un-migrated DB never assumes the writer's schema
-        // (mirrors insightsHasLifecycleColumns). Inner subquery is over bare
-        // `sessions`, so the shared bare-column predicate resolves directly.
-        if !includeAll, (try? sessionsHaveHumanDrivenColumns()) == true {
-            conditions.append("(\(HumanDrivenFilter.sqlPredicate))")
-        }
-        // M18: match app top-level + non-skip defaults when include_all is false.
         if !includeAll {
-            conditions.append(SessionVisibilityFilter.topLevelSQL)
-            conditions.append(SessionVisibilityFilter.nonSkipTierSQL)
+            conditions = defaultSessionVisibilityConditions() + ["orphan_status IS NULL"]
         }
         var values: [DatabaseValueConvertible?] = []
         if let source {
@@ -311,12 +301,12 @@ final class MCPDatabase {
             groupExpr = "t.tool_name"
         }
 
+        let visibilityConditions = defaultSessionVisibilityConditions(alias: "s")
         var sql = """
         SELECT \(selectColumns)
         FROM session_tools t
         JOIN sessions s ON t.session_id = s.id
-        WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
-          AND \(SessionVisibilityFilter.topLevelSQL(alias: "s"))
+        WHERE \(visibilityConditions.joined(separator: " AND "))
         """
         var arguments: [String: DatabaseValueConvertible?] = [:]
         if let project {
@@ -344,10 +334,7 @@ final class MCPDatabase {
     }
 
     func getFileActivity(project: String?, since: String?, limit: Int) throws -> OrderedJSONValue {
-        var conditions = [
-            SessionVisibilityFilter.listVisibleSQL(alias: "s"),
-            SessionVisibilityFilter.topLevelSQL(alias: "s"),
-        ]
+        var conditions = defaultSessionVisibilityConditions(alias: "s")
         var arguments: [String: DatabaseValueConvertible?] = [:]
         if let project {
             conditions.append("s.project = :project")
@@ -388,11 +375,7 @@ final class MCPDatabase {
     }
 
     func projectTimeline(project: String, since: String?, until: String?) throws -> OrderedJSONValue {
-        var conditions = [
-            SessionVisibilityFilter.listVisibleSQL,
-            SessionVisibilityFilter.topLevelSQL,
-            "orphan_status IS NULL",
-        ]
+        var conditions = defaultSessionVisibilityConditions() + ["orphan_status IS NULL"]
         var values: [DatabaseValueConvertible?] = []
         let projects = try resolveProjectAliases([project])
         if projects.count == 1, let only = projects.first {
@@ -641,8 +624,32 @@ final class MCPDatabase {
         return .object(entries)
     }
 
+    /// Default browse visibility shared by `list_sessions` and secondary MCP
+    /// reads. A read-only MCP over an un-migrated DB skips only the human-driven
+    /// predicate, matching the existing `list_sessions` compatibility behavior.
+    private func defaultSessionVisibilityConditions(alias: String? = nil) -> [String] {
+        var conditions: [String]
+        if let alias {
+            conditions = [
+                SessionVisibilityFilter.listVisibleSQL(alias: alias),
+                SessionVisibilityFilter.topLevelSQL(alias: alias),
+            ]
+        } else {
+            conditions = [
+                SessionVisibilityFilter.listVisibleSQL,
+                SessionVisibilityFilter.topLevelSQL,
+            ]
+        }
+
+        if (try? sessionsHaveHumanDrivenColumns()) == true {
+            let predicate = alias.map { HumanDrivenFilter.sqlPredicate(alias: $0) }
+                ?? HumanDrivenFilter.sqlPredicate
+            conditions.append(predicate)
+        }
+        return conditions
+    }
+
     /// True when the `sessions` table carries the human-driven signal columns.
-    /// A read-only MCP over an un-migrated DB then skips the human-driven filter.
     private func sessionsHaveHumanDrivenColumns() throws -> Bool {
         try queue.read { db in
             let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(sessions)")
@@ -1781,7 +1788,8 @@ final class MCPDatabase {
     }
 
     private func topToolsSince(_ since: String, limit: Int) throws -> [(name: String, callCount: Int)] {
-        try queue.read { db in
+        let visibilityConditions = defaultSessionVisibilityConditions(alias: "s")
+        return try queue.read { db in
             let rows = try Row.fetchAll(
                 db,
                 sql: """
@@ -1789,8 +1797,7 @@ final class MCPDatabase {
                 FROM session_tools t
                 JOIN sessions s ON s.id = t.session_id
                 WHERE s.start_time >= ?
-                  AND \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
-                  AND \(SessionVisibilityFilter.topLevelSQL(alias: "s"))
+                  AND \(visibilityConditions.joined(separator: " AND "))
                 GROUP BY t.tool_name
                 ORDER BY call_count DESC, name ASC
                 LIMIT ?
@@ -1891,7 +1898,8 @@ final class MCPDatabase {
         _ since: String,
         limit: Int
     ) throws -> [(filePath: String, totalEdits: Int, sessionCount: Int)] {
-        try queue.read { db in
+        let visibilityConditions = defaultSessionVisibilityConditions(alias: "s")
+        return try queue.read { db in
             let rows = try Row.fetchAll(
                 db,
                 sql: """
@@ -1904,8 +1912,7 @@ final class MCPDatabase {
                     SELECT s.id
                     FROM sessions s
                     WHERE s.start_time >= ?
-                      AND \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
-                      AND \(SessionVisibilityFilter.topLevelSQL(alias: "s"))
+                      AND \(visibilityConditions.joined(separator: " AND "))
                   )
                 GROUP BY sf.file_path
                 ORDER BY total_edits DESC, session_count DESC, file_path ASC
@@ -2089,6 +2096,7 @@ final class MCPDatabase {
 
     private func listContextSessions(projectName: String, cwd: String) throws -> [Row] {
         let projects = try resolveProjectAliases([projectName])
+        let visibilityConditions = defaultSessionVisibilityConditions(alias: "s")
         return try queue.read { db in
             if !projects.isEmpty {
                 let placeholders = Array(repeating: "?", count: projects.count).joined(separator: ",")
@@ -2097,8 +2105,7 @@ final class MCPDatabase {
                     sql: """
                     SELECT s.*
                     FROM sessions s
-                    WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
-                      AND \(SessionVisibilityFilter.topLevelSQL(alias: "s"))
+                    WHERE \(visibilityConditions.joined(separator: " AND "))
                       AND s.orphan_status IS NULL
                       AND s.project IN (\(placeholders))
                     ORDER BY s.start_time DESC
@@ -2114,8 +2121,7 @@ final class MCPDatabase {
                 sql: """
                 SELECT s.*
                 FROM sessions s
-                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
-                  AND \(SessionVisibilityFilter.topLevelSQL(alias: "s"))
+                WHERE \(visibilityConditions.joined(separator: " AND "))
                   AND s.orphan_status IS NULL
                   AND s.project = ?
                 ORDER BY s.start_time DESC
