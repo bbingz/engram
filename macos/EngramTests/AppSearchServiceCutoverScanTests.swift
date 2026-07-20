@@ -296,25 +296,32 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         }
     }
 
-    func testSessionFilterLivesUnderAdvancedSettings() throws {
-        let generalSettings = try source("macos/Engram/Views/Settings/GeneralSettingsSection.swift")
+    func testAdvancedSettingsDoNotExposeDeadSessionVisibilityControls_repro() throws {
         let settingsView = try source("macos/Engram/Views/SettingsView.swift")
+        let sessionsPage = try source("macos/Engram/Views/Pages/SessionsPageView.swift")
 
         XCTAssertFalse(
-            generalSettings.contains("GroupBox(\"Session Filter\")"),
-            "General settings should stay quiet; the low-level session noise filter belongs in Advanced"
-        )
-        XCTAssertTrue(
             settingsView.contains("GroupBox(\"Session Filter\")"),
-            "Advanced settings should expose the simplified session noise filter"
+            "Advanced settings must not expose a Session Filter that does not reach the product list predicate"
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             settingsView.contains("GroupBox(\"Noise Details\")"),
-            "Advanced settings should keep the low-level noise detail toggles near the simplified filter"
+            "Advanced settings must not expose noise detail controls that do not reach the product list predicate"
         )
+        for staleSetting in ["noiseFilter", "hideUsageSessions", "hideEmptySessions", "hideAutoSummary"] {
+            XCTAssertFalse(
+                settingsView.contains(staleSetting),
+                "Advanced settings must not retain dead visibility state or persistence for \(staleSetting)"
+            )
+        }
         XCTAssertTrue(
-            settingsView.contains("settings[\"noiseFilter\"] = noiseFilter"),
-            "Moving the control must preserve the existing noiseFilter settings contract"
+            sessionsPage.contains("@AppStorage(\"sessions.showAll\") private var showAllSessions"),
+            "SessionsPage must retain the single persisted user-facing visibility control"
+        )
+        XCTAssertEqual(
+            sessionsPage.components(separatedBy: "let humanDriven = !showAllSessions").count - 1,
+            2,
+            "Initial loading and pagination must derive their real list predicate from sessions.showAll"
         )
     }
 
