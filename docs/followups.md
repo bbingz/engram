@@ -3,6 +3,12 @@
 Follow-ups are verification gaps, low-priority refactors, or items that need
 real data, UI exercise, or product confirmation before becoming TODOs.
 
+## UI-001 — Advanced session visibility controls (closed)
+
+Removed the Advanced Session Filter and Noise Details controls because they
+only persisted local settings and never reached a product list predicate.
+`sessions.showAll` remains the sole user-facing session-visibility control.
+
 ## Blind-audit implementation inventory (2026-07-19)
 
 The closeout workflow completed 15/15 discovery scopes, explicitly named all

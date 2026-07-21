@@ -182,10 +182,6 @@ private struct AdvancedSettingsSection: View {
     @AppStorage("showAgentComm") var showAgentComm: Bool = false
 
     // Embedding settings state removed — see Embeddings note in body.
-    @State private var noiseFilter = "human-driven"
-    @State private var hideUsageSessions = true
-    @State private var hideEmptySessions = true
-    @State private var hideAutoSummary = true
     @State private var monitorEnabled = true
     @State private var dailyCostBudget = 20.0
     @State private var monthlyCostBudget = 0.0
@@ -223,39 +219,6 @@ private struct AdvancedSettingsSection: View {
                         .foregroundStyle(.tertiary)
                     Toggle("Show Agent Communication", isOn: $showAgentComm)
                     Text("Tool calls, skill invocations, and command outputs")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.vertical, 4)
-            }
-
-            GroupBox("Session Filter") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Picker("Session Filter", selection: $noiseFilter) {
-                        Text("Human-Driven").tag("human-driven")
-                        Text("Hide Agents & Noise").tag("hide-skip")
-                        Text("Clean View").tag("hide-noise")
-                        Text("Show All").tag("all")
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: noiseFilter) { saveAdvancedSettings() }
-
-                    Text(noiseFilterDescription)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.vertical, 4)
-            }
-
-            GroupBox("Noise Details") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Toggle("Hide usage-check sessions", isOn: $hideUsageSessions)
-                        .onChange(of: hideUsageSessions) { saveAdvancedSettings() }
-                    Toggle("Hide empty sessions", isOn: $hideEmptySessions)
-                        .onChange(of: hideEmptySessions) { saveAdvancedSettings() }
-                    Toggle("Hide auto-summary prompts", isOn: $hideAutoSummary)
-                        .onChange(of: hideAutoSummary) { saveAdvancedSettings() }
-                    Text("These are low-level filters behind the simplified Session Filter control.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -391,24 +354,11 @@ private struct AdvancedSettingsSection: View {
         .onAppear { loadAdvancedSettings() }
     }
 
-    private var noiseFilterDescription: LocalizedStringKey {
-        switch noiseFilter {
-        case "all": return "Show all sessions including agents and noise"
-        case "hide-noise": return "Hide agents, empty sessions, and low-signal sessions"
-        case "hide-skip": return "Hide sub-agents and trivial sessions"
-        default: return "Show only sessions you actively drove with multiple instructions (default)"
-        }
-    }
-
     private func loadAdvancedSettings() {
         isLoadingSettings = true
         defer { clearLoadingSettingsAfterViewUpdate() }
         guard let settings = readEngramSettings() else { return }
 
-        if let v = settings["noiseFilter"] as? String { noiseFilter = v }
-        if let v = settings["hideUsageSessions"] as? Bool { hideUsageSessions = v }
-        if let v = settings["hideEmptySessions"] as? Bool { hideEmptySessions = v }
-        if let v = settings["hideAutoSummary"] as? Bool { hideAutoSummary = v }
         if let costAlerts = settings["costAlerts"] as? [String: Any] {
             if let v = costAlerts["dailyBudget"] as? Double { dailyCostBudget = v }
             if let v = costAlerts["monthlyBudget"] as? Double { monthlyCostBudget = v }
@@ -457,10 +407,6 @@ private struct AdvancedSettingsSection: View {
             settings.removeValue(forKey: "httpBearerToken")
             settings.removeValue(forKey: "webUIEnabled")
 
-            settings["noiseFilter"] = noiseFilter
-            settings["hideUsageSessions"] = hideUsageSessions
-            settings["hideEmptySessions"] = hideEmptySessions
-            settings["hideAutoSummary"] = hideAutoSummary
             var costAlerts: [String: Any] = ["dailyBudget": dailyCostBudget]
             if monthlyCostBudget > 0 { costAlerts["monthlyBudget"] = monthlyCostBudget }
             settings["costAlerts"] = costAlerts
