@@ -107,7 +107,7 @@ public struct RemoteSyncConfig: Sendable {
 /// Drives one offload/rehydrate/reclaim cycle through the single-writer gate.
 /// Each DB mutation is its own `performWriteCommand` so the gate is RELEASED
 /// across the network PUT/GET (which run strictly between gated writes). The FTS
-/// purge happens only after a confirmed remote PUT.
+/// purge happens only after a confirmed remote PUT or a verified existing bundle.
 public struct RemoteSyncCoordinator: Sendable {
     private let gate: ServiceWriterGate
     private let backend: any RemoteStorageBackend
@@ -218,11 +218,10 @@ public struct RemoteSyncCoordinator: Sendable {
                     systemMessageCount: inputs.systemMessageCount
                 )
                 let key = BundleCodec.contentKey(bundle)
-                let data = try BundleCodec.encode(bundle)
 
-                // Network — OUTSIDE the write gate.
-                let exists = try await backend.head(key: key)
-                if !exists { try await backend.put(key: key, data: data) }
+                // Network — OUTSIDE the write gate. HEAD is only an optimization;
+                // an existing bundle is fetched and verified before commit.
+                try await backend.ensureDurable(bundle: bundle)
 
                 let shadow = OffloadShadow.line(
                     title: inputs.generatedTitle,

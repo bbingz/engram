@@ -78,6 +78,75 @@ final class RemoteSyncCoordinatorTests: XCTestCase {
         }
     }
 
+    func testCoordinatorPreservesLocalFtsWhenExistingRemoteBundleHasWrongContent_repro() async throws {
+        let paths = try makePaths()
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        _ = try await gate.performWriteCommand(name: "migrate") { try $0.migrate() }
+
+        let fullContents = ["first original row", "second original row", "third original row"]
+        _ = try await gate.performWriteCommand(name: "seed") { writer in
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO sessions(id, source, start_time, file_path, size_bytes, hidden_at)
+                    VALUES ('c-1', 'codex', '2024-01-01T00:00:00Z', '/tmp/c-1.jsonl', 4096, '2024-02-01T00:00:00Z')
+                """)
+                for line in fullContents {
+                    try db.execute(
+                        sql: "INSERT INTO sessions_fts(session_id, content) VALUES ('c-1', ?)",
+                        arguments: [line]
+                    )
+                }
+            }
+        }
+
+        let wrongBundle = BundleCodec.makeBundle(
+            sessionId: "c-1",
+            ftsContents: ["valid remote bundle for the same session, but stale content"],
+            summary: nil,
+            summaryMessageCount: nil,
+            messageCount: 1,
+            userMessageCount: 1,
+            assistantMessageCount: 0,
+            toolMessageCount: 0,
+            systemMessageCount: 0
+        )
+        let backend = ExistingWrongBundleBackend(data: try BundleCodec.encode(wrongBundle))
+        let config = RemoteSyncConfig(
+            enabled: true,
+            storeRoot: paths.store,
+            policy: OffloadPolicy(coldAgeDays: 90),
+            offloadBatch: 20,
+            rehydrateBatch: 20,
+            vacuumFreelistThreshold: 1_000_000
+        )
+        let coordinator = RemoteSyncCoordinator(gate: gate, backend: backend, config: config, peer: "test-peer")
+
+        let result = try await coordinator.runOnce(now: Date())
+
+        XCTAssertEqual(result.offloaded, 0)
+        _ = try await gate.performWriteCommand(name: "verify") { writer in
+            try writer.read { db in
+                XCTAssertEqual(try OffloadRepo.offloadState(db, sessionId: "c-1"), "local")
+                XCTAssertEqual(
+                    try String.fetchAll(
+                        db,
+                        sql: "SELECT content FROM sessions_fts WHERE session_id = 'c-1' ORDER BY rowid"
+                    ),
+                    fullContents,
+                    "a mismatched durability proof must preserve every original FTS row"
+                )
+                XCTAssertEqual(
+                    try Int.fetchOne(
+                        db,
+                        sql: "SELECT COUNT(*) FROM sync_ledger WHERE session_id = 'c-1' AND direction = 'out'"
+                    ),
+                    0,
+                    "commitOffloaded must not be reached"
+                )
+            }
+        }
+    }
+
     /// LIVE integration: a real offload→rehydrate against a *deployed*
     /// `engram-remote` server over HTTPS (the only difference from the test above
     /// is the backend: `EngramRemoteBackend` instead of `LocalDirectoryBackend`).
@@ -454,4 +523,14 @@ private actor FailingGetBackend: RemoteStorageBackend {
     }
     func delete(key: String) async throws { try await inner.delete(key: key) }
     func catalog() async throws -> Data { try await inner.catalog() }
+}
+
+private struct ExistingWrongBundleBackend: RemoteStorageBackend {
+    let data: Data
+
+    func head(key: String) async throws -> Bool { true }
+    func put(key: String, data: Data) async throws {}
+    func get(key: String) async throws -> Data { data }
+    func delete(key: String) async throws {}
+    func catalog() async throws -> Data { Data() }
 }

@@ -78,14 +78,11 @@ public struct OffloadRunner: Sendable {
                     systemMessageCount: inputs.systemMessageCount
                 )
                 let key = BundleCodec.contentKey(bundle)
-                let data = try BundleCodec.encode(bundle)
 
-                // Network — strictly outside any write transaction. Idempotent:
-                // skip the PUT when the content-addressed blob is already present.
-                let alreadyPresent = try await backend.head(key: key)
-                if !alreadyPresent {
-                    try await backend.put(key: key, data: data)
-                }
+                // Network — strictly outside any write transaction. HEAD is only
+                // an optimization: an existing object is fetched and verified;
+                // an absent object is proven by a successful idempotent PUT.
+                try await backend.ensureDurable(bundle: bundle)
 
                 let shadow = OffloadShadow.line(
                     title: inputs.generatedTitle,
