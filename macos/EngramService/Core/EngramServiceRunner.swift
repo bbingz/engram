@@ -1575,22 +1575,13 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         }
 
         let result = try await gate.performWriteCommand(name: "\(phaseName)Write") { writer in
-            var embedded = 0
-            if !outcome.successes.isEmpty {
-                embedded = try InsightEmbeddingBackfill.writeEmbeddings(
-                    writer: writer,
-                    embeddings: outcome.successes,
-                    model: provider.model,
-                    dimension: provider.dimension
-                ).embedded
-            }
-            if !outcome.failures.isEmpty {
-                try InsightEmbeddingBackfill.recordFailures(
-                    writer: writer,
-                    failures: outcome.failures
-                )
-            }
-            return embedded
+            try InsightEmbeddingBackfill.writeEmbeddings(
+                writer: writer,
+                embeddings: outcome.successes,
+                model: provider.model,
+                dimension: provider.dimension,
+                failures: outcome.failures
+            ).embedded
         }.value
         return result
     }

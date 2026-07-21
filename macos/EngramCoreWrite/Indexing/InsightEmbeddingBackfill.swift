@@ -102,18 +102,13 @@ public enum InsightEmbeddingBackfill {
         guard !pending.isEmpty else { return Result(embedded: 0, failed: 0) }
 
         let outcome = try await embedPendingIsolated(pending, provider: provider)
-        if !outcome.successes.isEmpty {
-            _ = try writeEmbeddings(
-                writer: writer,
-                embeddings: outcome.successes,
-                model: provider.model,
-                dimension: provider.dimension
-            )
-        }
-        if !outcome.failures.isEmpty {
-            try recordFailures(writer: writer, failures: outcome.failures)
-        }
-        return Result(embedded: outcome.successes.count, failed: outcome.failures.count)
+        return try writeEmbeddings(
+            writer: writer,
+            embeddings: outcome.successes,
+            model: provider.model,
+            dimension: provider.dimension,
+            failures: outcome.failures
+        )
     }
 
     public static func pendingInsights(
@@ -144,9 +139,12 @@ public enum InsightEmbeddingBackfill {
         writer: EngramDatabaseWriter,
         embeddings: [EmbeddedInsight],
         model: String,
-        dimension: Int
+        dimension: Int,
+        failures: [InsightFailure] = []
     ) throws -> Result {
-        guard !embeddings.isEmpty else { return Result(embedded: 0) }
+        if embeddings.isEmpty, failures.isEmpty {
+            return Result(embedded: 0, failed: 0)
+        }
         try validateUniformNativeDimension(embeddings.map(\.vector), configured: dimension)
         try reconcileModelChangeIfNeeded(writer: writer, model: model, dimension: dimension)
         try writer.write { db in
@@ -168,20 +166,27 @@ public enum InsightEmbeddingBackfill {
                     sql: "DELETE FROM insight_embedding_failures WHERE insight_id = ?",
                     arguments: [item.id]
                 )
+                try db.execute(
+                    sql: "UPDATE insights SET has_embedding = 1 WHERE id = ?",
+                    arguments: [item.id]
+                )
             }
-            try db.execute(
-                sql: """
-                    INSERT INTO embedding_meta (id, provider, model, dimension, updated_at)
-                    VALUES (1, 'openai-compatible', ?, ?, datetime('now'))
-                    ON CONFLICT(id) DO UPDATE SET
-                      model = excluded.model,
-                      dimension = excluded.dimension,
-                      updated_at = excluded.updated_at
-                """,
-                arguments: [model, dimension]
-            )
+            try recordFailures(db, failures: failures)
+            if !embeddings.isEmpty {
+                try db.execute(
+                    sql: """
+                        INSERT INTO embedding_meta (id, provider, model, dimension, updated_at)
+                        VALUES (1, 'openai-compatible', ?, ?, datetime('now'))
+                        ON CONFLICT(id) DO UPDATE SET
+                          model = excluded.model,
+                          dimension = excluded.dimension,
+                          updated_at = excluded.updated_at
+                    """,
+                    arguments: [model, dimension]
+                )
+            }
         }
-        return Result(embedded: embeddings.count)
+        return Result(embedded: embeddings.count, failed: failures.count)
     }
 
     public static func recordFailures(
@@ -190,29 +195,36 @@ public enum InsightEmbeddingBackfill {
     ) throws {
         guard !failures.isEmpty else { return }
         try writer.write { db in
-            for failure in failures {
-                try db.execute(
-                    sql: """
-                    INSERT INTO insight_embedding_failures (
-                      insight_id, retry_count, status, last_error, updated_at
-                    ) VALUES (?, 1, ?, ?, datetime('now'))
-                    ON CONFLICT(insight_id) DO UPDATE SET
-                      retry_count = insight_embedding_failures.retry_count + 1,
-                      status = CASE
-                        WHEN insight_embedding_failures.retry_count + 1 >= ? THEN 'failed_permanent'
-                        ELSE 'failed_retryable'
-                      END,
-                      last_error = excluded.last_error,
-                      updated_at = excluded.updated_at
-                    """,
-                    arguments: [
-                        failure.id,
-                        "failed_retryable",
-                        failure.error,
-                        maxInsightEmbedRetryCount,
-                    ]
-                )
-            }
+            try recordFailures(db, failures: failures)
+        }
+    }
+
+    private static func recordFailures(
+        _ db: Database,
+        failures: [InsightFailure]
+    ) throws {
+        for failure in failures {
+            try db.execute(
+                sql: """
+                INSERT INTO insight_embedding_failures (
+                  insight_id, retry_count, status, last_error, updated_at
+                ) VALUES (?, 1, ?, ?, datetime('now'))
+                ON CONFLICT(insight_id) DO UPDATE SET
+                  retry_count = insight_embedding_failures.retry_count + 1,
+                  status = CASE
+                    WHEN insight_embedding_failures.retry_count + 1 >= ? THEN 'failed_permanent'
+                    ELSE 'failed_retryable'
+                  END,
+                  last_error = excluded.last_error,
+                  updated_at = excluded.updated_at
+                """,
+                arguments: [
+                    failure.id,
+                    "failed_retryable",
+                    failure.error,
+                    maxInsightEmbedRetryCount,
+                ]
+            )
         }
     }
 
@@ -248,6 +260,7 @@ public enum InsightEmbeddingBackfill {
 
         try db.execute(sql: "DELETE FROM semantic_chunks")
         try db.execute(sql: "DELETE FROM insight_embeddings")
+        try db.execute(sql: "UPDATE insights SET has_embedding = 0 WHERE has_embedding = 1")
         // Model/dim change invalidates prior poison permanent marks so content
         // can be retried under the new embedding space.
         try db.execute(sql: "DELETE FROM insight_embedding_failures")
