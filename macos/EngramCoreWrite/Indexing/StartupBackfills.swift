@@ -948,7 +948,21 @@ public enum StartupBackfills {
                 UPDATE insights
                 SET has_embedding = 0
                 WHERE has_embedding = 1
-                  AND id NOT IN (SELECT id FROM memory_insights WHERE deleted_at IS NULL)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM insight_embeddings
+                    WHERE insight_embeddings.insight_id = insights.id
+                  )
+                """
+            )
+            try db.execute(
+                sql: """
+                UPDATE insights
+                SET has_embedding = 1
+                WHERE has_embedding = 0
+                  AND EXISTS (
+                    SELECT 1 FROM insight_embeddings
+                    WHERE insight_embeddings.insight_id = insights.id
+                  )
                 """
             )
             // Guard against an empty/partial `insights` table wiping the entire

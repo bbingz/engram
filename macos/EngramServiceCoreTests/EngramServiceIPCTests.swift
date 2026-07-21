@@ -4949,14 +4949,88 @@ final class EngramServiceIPCTests: XCTestCase {
         let providerWriteSucceeded = await probe.writeSucceeded()
         XCTAssertTrue(providerWriteSucceeded)
         let counts = try await gate.performWriteCommand(name: "assertInsightEmbedding") { writer in
-            try writer.read { db -> (Int, Int) in
+            try writer.read { db -> (Int, Int, Int) in
                 let embeddings = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insight_embeddings") ?? 0
                 let probes = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM embedding_gate_probe") ?? 0
-                return (embeddings, probes)
+                let hasEmbedding = try Int.fetchOne(
+                    db,
+                    sql: "SELECT has_embedding FROM insights WHERE id = 'probe-insight'"
+                ) ?? 0
+                return (embeddings, probes, hasEmbedding)
             }
         }.value
         XCTAssertEqual(counts.0, 1)
         XCTAssertEqual(counts.1, 1)
+        XCTAssertEqual(counts.2, 1, "EMB-009: a successful insight write must set has_embedding")
+    }
+
+    // R4-dual-tx: shipped runner success vectors and item-failure accounting
+    // must share one SQLite transaction, not merely one ServiceWriterGate phase.
+    func testRunnerInsightEmbeddingRollsBackSuccessWhenFailureAccountingThrows_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        let gate = try ServiceWriterGate(
+            databasePath: paths.database.path,
+            runtimeDirectory: paths.runtime,
+            queueTimeoutNanoseconds: 20_000_000
+        )
+        _ = try await gate.performWriteCommand(name: "seedAtomicInsightBatch") { writer in
+            try writer.migrate()
+            try writer.write { db in
+                try db.execute(sql: """
+                    INSERT INTO insights (id, content, importance) VALUES
+                      ('atomic-good', 'good insight content long enough for embed', 5),
+                      ('atomic-poison', 'BAD poison insight content long enough', 5)
+                    """)
+                try db.execute(sql: """
+                    CREATE TRIGGER force_insight_failure_accounting_error
+                    BEFORE INSERT ON insight_embedding_failures
+                    BEGIN
+                      SELECT RAISE(ABORT, 'forced failure accounting error');
+                    END
+                    """)
+            }
+        }
+
+        do {
+            _ = try await EngramServiceRunner.backfillInsightEmbeddingsOnce(
+                gate: gate,
+                environment: [
+                    "ENGRAM_EMBEDDING_API_KEY": "test",
+                    "ENGRAM_EMBEDDING_MODEL": "selective-model",
+                    "ENGRAM_EMBEDDING_DIM": "3",
+                ],
+                providerFactory: { _ in SelectiveFailInsightEmbeddingProvider() },
+                backoff: EmbeddingMaintenanceBackoff(),
+                limit: 10
+            )
+            XCTFail("expected forced failure-accounting error")
+        } catch {
+            XCTAssertTrue(
+                error.localizedDescription.contains("forced failure accounting error"),
+                "unexpected error: \(error)"
+            )
+        }
+
+        let state = try await gate.performWriteCommand(name: "assertAtomicInsightRollback") { writer in
+            try writer.read { db -> (Int, Int, Int) in
+                let embeddings = try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM insight_embeddings WHERE insight_id = 'atomic-good'"
+                ) ?? 0
+                let failures = try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM insight_embedding_failures WHERE insight_id = 'atomic-poison'"
+                ) ?? 0
+                let hasEmbedding = try Int.fetchOne(
+                    db,
+                    sql: "SELECT has_embedding FROM insights WHERE id = 'atomic-good'"
+                ) ?? 0
+                return (embeddings, failures, hasEmbedding)
+            }
+        }.value
+        XCTAssertEqual(state.0, 0, "success vector must roll back with failed item accounting")
+        XCTAssertEqual(state.1, 0, "forced failure accounting insert must not commit")
+        XCTAssertEqual(state.2, 0, "has_embedding must roll back with the success vector")
     }
 
     // PR #197: shipped runner isolates explicit item-local rejection and terminalizes it.
