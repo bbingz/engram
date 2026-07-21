@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 import XCTest
 
-/// Behavioral repros for M9/M18/M19/M24 driving the shipped EngramMCP binary
+/// Behavioral repros for M9/M18/M19/M24 and MCP-002/MCP-012 driving the shipped EngramMCP binary
 /// (MCPToolRegistry → MCPDatabase) with real SQLite fixtures.
 final class AuditMediumMCPReproTests: XCTestCase {
     private var repoRoot: URL {
@@ -38,7 +38,23 @@ final class AuditMediumMCPReproTests: XCTestCase {
     private func rpc(
         _ request: String,
         dbPath: String,
-        timezone: String = "UTC"
+        timezone: String = "UTC",
+        environment: [String: String] = [:]
+    ) throws -> [String: Any] {
+        let result = try rpcResult(
+            request,
+            dbPath: dbPath,
+            timezone: timezone,
+            environment: environment
+        )
+        return try XCTUnwrap(result["structuredContent"] as? [String: Any])
+    }
+
+    private func rpcResult(
+        _ request: String,
+        dbPath: String,
+        timezone: String = "UTC",
+        environment: [String: String] = [:]
     ) throws -> [String: Any] {
         let process = Process()
         process.executableURL = executableURL()
@@ -49,6 +65,7 @@ final class AuditMediumMCPReproTests: XCTestCase {
         var env = ProcessInfo.processInfo.environment
         env["TZ"] = timezone
         env["ENGRAM_MCP_DB_PATH"] = dbPath
+        env.merge(environment) { _, requested in requested }
         process.environment = env
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
@@ -72,8 +89,7 @@ final class AuditMediumMCPReproTests: XCTestCase {
         let json = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: Data(firstLine.utf8)) as? [String: Any]
         )
-        let result = try XCTUnwrap(json["result"] as? [String: Any], "raw=\(firstLine)")
-        return try XCTUnwrap(result["structuredContent"] as? [String: Any], "raw=\(firstLine)")
+        return try XCTUnwrap(json["result"] as? [String: Any], "raw=\(firstLine)")
     }
 
     // MARK: - R3 / M5 stats
@@ -196,6 +212,104 @@ final class AuditMediumMCPReproTests: XCTestCase {
         )
     }
 
+    // MARK: - MCP-002 / MCP-012
+
+    func testToolAnalyticsMatchesListSessionsDefaultVisibility_repro() throws {
+        let dbPath = try secondaryVisibilityFixture(prefix: "engram-mcp-b2-tools")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try assertOnlyVisibleSessionIsListed(at: dbPath)
+
+        let structured = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tool_analytics","arguments":{"project":"b2-visibility","group_by":"tool"}}}
+            """,
+            dbPath: dbPath
+        )
+        XCTAssertEqual(structured["totalCalls"] as? Int, 1, "structured=\(structured)")
+        let tools = try XCTUnwrap(structured["tools"] as? [[String: Any]])
+        XCTAssertEqual(tools.count, 1)
+        XCTAssertEqual(tools.first?["key"] as? String, "VisibilityProbeTool")
+        XCTAssertEqual(tools.first?["callCount"] as? Int, 1)
+        XCTAssertEqual(tools.first?["sessionCount"] as? Int, 1)
+    }
+
+    func testFileActivityMatchesListSessionsDefaultVisibility_repro() throws {
+        let dbPath = try secondaryVisibilityFixture(prefix: "engram-mcp-b2-files")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try assertOnlyVisibleSessionIsListed(at: dbPath)
+
+        let structured = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"file_activity","arguments":{"project":"b2-visibility","limit":10}}}
+            """,
+            dbPath: dbPath
+        )
+        let files = try XCTUnwrap(structured["files"] as? [[String: Any]])
+        XCTAssertEqual(files.count, 1)
+        XCTAssertEqual(files.first?["file_path"] as? String, "/workspace/visibility.swift")
+        XCTAssertEqual(files.first?["action"] as? String, "Edit")
+        XCTAssertEqual(files.first?["total_count"] as? Int, 1)
+        XCTAssertEqual(files.first?["session_count"] as? Int, 1)
+    }
+
+    func testProjectTimelineMatchesListSessionsDefaultVisibility_repro() throws {
+        let dbPath = try secondaryVisibilityFixture(prefix: "engram-mcp-b2-timeline")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try assertOnlyVisibleSessionIsListed(at: dbPath)
+
+        let structured = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"project_timeline","arguments":{"project":"b2-visibility"}}}
+            """,
+            dbPath: dbPath
+        )
+        let timeline = try XCTUnwrap(structured["timeline"] as? [[String: Any]])
+        XCTAssertEqual(timeline.compactMap { $0["sessionId"] as? String }, ["b2-visible"])
+        XCTAssertEqual(structured["total"] as? Int, 1)
+    }
+
+    func testGetContextSessionListMatchesListSessionsDefaultVisibility_repro() throws {
+        let dbPath = try secondaryVisibilityFixture(prefix: "engram-mcp-b2-context-sessions")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try assertOnlyVisibleSessionIsListed(at: dbPath)
+
+        let result = try rpcResult(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/Users/test/work/b2-visibility","include_environment":false,"max_tokens":4000}}}
+            """,
+            dbPath: dbPath
+        )
+        let content = try XCTUnwrap(result["content"] as? [[String: Any]])
+        let text = try XCTUnwrap(content.first?["text"] as? String)
+        XCTAssertTrue(text.contains("B2 visible summary"), text)
+        XCTAssertFalse(text.contains("B2 noise summary"), text)
+        XCTAssertFalse(text.contains("B2 hidden summary"), text)
+        XCTAssertFalse(text.contains("B2 skip summary"), text)
+        XCTAssertFalse(text.contains("B2 confirmed child summary"), text)
+        XCTAssertFalse(text.contains("B2 suggested child summary"), text)
+        XCTAssertTrue(text.contains("— 1 sessions"), text)
+    }
+
+    func testGetContextTopToolsMatchesListSessionsDefaultVisibility_repro() throws {
+        let dbPath = try secondaryVisibilityFixture(prefix: "engram-mcp-b2-context-tools")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try assertOnlyVisibleSessionIsListed(at: dbPath)
+
+        let text = try getContextEnvironmentText(dbPath: dbPath)
+        XCTAssertTrue(text.contains("VisibilityProbeTool: 1 calls"), text)
+        XCTAssertFalse(text.contains("VisibilityProbeTool: 100001 calls"), text)
+    }
+
+    func testGetContextFileHotspotsMatchListSessionsDefaultVisibility_repro() throws {
+        let dbPath = try secondaryVisibilityFixture(prefix: "engram-mcp-b2-context-files")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try assertOnlyVisibleSessionIsListed(at: dbPath)
+
+        let text = try getContextEnvironmentText(dbPath: dbPath)
+        XCTAssertTrue(text.contains("/workspace/visibility.swift (1 edits, 1 sessions)"), text)
+        XCTAssertFalse(text.contains("/workspace/visibility.swift (100001 edits, 2 sessions)"), text)
+    }
+
     // MARK: - Seeds
 
     private func wipeSessionsAndCosts(at dbPath: String) throws {
@@ -205,6 +319,86 @@ final class AuditMediumMCPReproTests: XCTestCase {
             try db.execute(sql: "DELETE FROM sessions")
             try? db.execute(sql: "DELETE FROM sessions_fts")
         }
+    }
+
+    private func secondaryVisibilityFixture(prefix: String) throws -> String {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: prefix)
+        let queue = try DatabaseQueue(path: dbPath)
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM session_tools")
+            try db.execute(sql: "DELETE FROM session_files")
+            try db.execute(sql: "DELETE FROM session_costs")
+            try db.execute(sql: "DELETE FROM sessions")
+            try? db.execute(sql: "DELETE FROM sessions_fts")
+            try db.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, file_path, message_count,
+                  user_message_count, instruction_count, human_turn_count, agent_role, tier,
+                  parent_session_id, suggested_parent_id, hidden_at, summary
+                ) VALUES
+                  ('b2-visible', 'codex', '2026-07-19T10:00:00.000Z',
+                   '/Users/test/work/b2-visibility', 'b2-visibility', '/tmp/b2-visible.jsonl',
+                   4, 4, 4, 4, NULL, 'normal', NULL, NULL, NULL, 'B2 visible summary'),
+                  ('b2-noise', 'codex', '2026-07-19T10:30:00.000Z',
+                   '/Users/test/work/b2-visibility', 'b2-visibility', '/tmp/b2-noise.jsonl',
+                   1, 0, 0, 0, NULL, 'normal', NULL, NULL, NULL, 'B2 noise summary'),
+                  ('b2-hidden', 'codex', '2026-07-19T11:00:00.000Z',
+                   '/Users/test/work/b2-visibility', 'b2-visibility', '/tmp/b2-hidden.jsonl',
+                   4, 4, 4, 4, NULL, 'normal', NULL, NULL, '2026-07-19T11:30:00.000Z', 'B2 hidden summary'),
+                  ('b2-skip', 'codex', '2026-07-19T12:00:00.000Z',
+                   '/Users/test/work/b2-visibility', 'b2-visibility', '/tmp/b2-skip.jsonl',
+                   4, 4, 4, 4, NULL, 'skip', NULL, NULL, NULL, 'B2 skip summary'),
+                  ('b2-confirmed-child', 'codex', '2026-07-19T13:00:00.000Z',
+                   '/Users/test/work/b2-visibility', 'b2-visibility', '/tmp/b2-confirmed-child.jsonl',
+                   4, 4, 4, 4, NULL, 'normal', 'b2-visible', NULL, NULL, 'B2 confirmed child summary'),
+                  ('b2-suggested-child', 'codex', '2026-07-19T14:00:00.000Z',
+                   '/Users/test/work/b2-visibility', 'b2-visibility', '/tmp/b2-suggested-child.jsonl',
+                   4, 4, 4, 4, NULL, 'normal', NULL, 'b2-visible', NULL, 'B2 suggested child summary')
+                """)
+            try db.execute(sql: """
+                INSERT INTO session_tools (session_id, tool_name, call_count) VALUES
+                  ('b2-visible', 'VisibilityProbeTool', 1),
+                  ('b2-noise', 'VisibilityProbeTool', 100000),
+                  ('b2-hidden', 'VisibilityProbeTool', 10),
+                  ('b2-skip', 'VisibilityProbeTool', 100),
+                  ('b2-confirmed-child', 'VisibilityProbeTool', 1000),
+                  ('b2-suggested-child', 'VisibilityProbeTool', 10000)
+                """)
+            try db.execute(sql: """
+                INSERT INTO session_files (session_id, file_path, action, count) VALUES
+                  ('b2-visible', '/workspace/visibility.swift', 'Edit', 1),
+                  ('b2-noise', '/workspace/visibility.swift', 'Edit', 100000),
+                  ('b2-hidden', '/workspace/visibility.swift', 'Edit', 10),
+                  ('b2-skip', '/workspace/visibility.swift', 'Edit', 100),
+                  ('b2-confirmed-child', '/workspace/visibility.swift', 'Edit', 1000),
+                  ('b2-suggested-child', '/workspace/visibility.swift', 'Edit', 10000)
+                """)
+        }
+        return dbPath
+    }
+
+    private func assertOnlyVisibleSessionIsListed(at dbPath: String) throws {
+        let structured = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sessions","arguments":{"project":"b2-visibility","limit":50}}}
+            """,
+            dbPath: dbPath
+        )
+        let sessions = try XCTUnwrap(structured["sessions"] as? [[String: Any]])
+        XCTAssertEqual(sessions.compactMap { $0["id"] as? String }, ["b2-visible"])
+        XCTAssertEqual(structured["total"] as? Int, 1)
+    }
+
+    private func getContextEnvironmentText(dbPath: String) throws -> String {
+        let result = try rpcResult(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/Users/test/work/b2-visibility","detail":"full","include_environment":true,"max_tokens":4000}}}
+            """,
+            dbPath: dbPath,
+            environment: ["ENGRAM_MCP_NOW": "2026-07-20T12:00:00.000Z"]
+        )
+        let content = try XCTUnwrap(result["content"] as? [[String: Any]])
+        return try XCTUnwrap(content.first?["text"] as? String)
     }
 
     private func seedListSessionsVisibilityFixture(at dbPath: String) throws {
