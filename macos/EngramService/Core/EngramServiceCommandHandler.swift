@@ -1959,16 +1959,39 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 )
             }
 
+            // Collapse any pre-existing path-shaped rows so remove/add and search
+            // share the same basename key space after this call.
+            try rewritePathShapedProjectAliases(db)
+
+            var changed = 0
             if action == "add" {
+                let before = try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM project_aliases WHERE alias = ? AND canonical = ?",
+                    arguments: [alias, canonical]
+                ) ?? 0
                 try db.execute(
                     sql: "INSERT OR IGNORE INTO project_aliases (alias, canonical) VALUES (?, ?)",
                     arguments: [alias, canonical]
                 )
-            } else {
-                try db.execute(
-                    sql: "DELETE FROM project_aliases WHERE alias = ? AND canonical = ?",
+                let after = try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM project_aliases WHERE alias = ? AND canonical = ?",
                     arguments: [alias, canonical]
+                ) ?? 0
+                changed = after > before ? 1 : 0
+            } else {
+                // Match normalized keys and the caller's raw strings (pre-normalize
+                // hosts may still have absolute-path rows until rewrite above).
+                try db.execute(
+                    sql: """
+                    DELETE FROM project_aliases
+                    WHERE (alias = ? AND canonical = ?)
+                       OR (alias = ? AND canonical = ?)
+                    """,
+                    arguments: [alias, canonical, rawAlias, rawCanonical]
                 )
+                changed = db.changesCount
             }
 
             return .object([
@@ -1976,6 +1999,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 "action": .string(action),
                 "alias": .string(alias),
                 "canonical": .string(canonical),
+                "changed": .number(Double(changed)),
                 "actor": .string(normalizedActor(request.actor, defaultActor: "mcp"))
             ])
         }
@@ -1991,6 +2015,32 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             return base.isEmpty ? trimmed : base
         }
         return trimmed
+    }
+
+    /// Rewrite legacy absolute/multi-segment alias keys to basenames.
+    /// Collisions collapse via INSERT OR IGNORE; invalid self-keys are dropped.
+    private static func rewritePathShapedProjectAliases(_ db: GRDB.Database) throws {
+        let rows = try Row.fetchAll(db, sql: "SELECT alias, canonical FROM project_aliases")
+        for row in rows {
+            let storedAlias = row["alias"] as String? ?? ""
+            let storedCanonical = row["canonical"] as String? ?? ""
+            let nextAlias = projectAliasKey(storedAlias)
+            let nextCanonical = projectAliasKey(storedCanonical)
+            if nextAlias == storedAlias && nextCanonical == storedCanonical {
+                continue
+            }
+            try db.execute(
+                sql: "DELETE FROM project_aliases WHERE alias = ? AND canonical = ?",
+                arguments: [storedAlias, storedCanonical]
+            )
+            guard !nextAlias.isEmpty, !nextCanonical.isEmpty, nextAlias != nextCanonical else {
+                continue
+            }
+            try db.execute(
+                sql: "INSERT OR IGNORE INTO project_aliases (alias, canonical) VALUES (?, ?)",
+                arguments: [nextAlias, nextCanonical]
+            )
+        }
     }
 
     private struct ExistingInsight {

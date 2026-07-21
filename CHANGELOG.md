@@ -16,7 +16,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - **manage_project_alias basename normalize (B6)**: absolute or multi-segment
   path inputs collapse to basename keys matching `sessions.project` and
   `project_move` alias writes; service `resolveProjectAliases` is bidirectional
-  (alias↔canonical) like MCPDatabase search.
+  (alias↔canonical) like MCPDatabase search. Touching alias add/remove also
+  rewrites legacy full-path rows and returns `changed` so remove cannot leave
+  path-shaped ghosts.
 - **MCP optional bool harden (MCP_BOOL)**: `project_move` / `archive` / `undo` /
   `batch` parse `dry_run`/`force` through `optionalBool` so present non-bool
   values error instead of silently defaulting via `?? false`.
