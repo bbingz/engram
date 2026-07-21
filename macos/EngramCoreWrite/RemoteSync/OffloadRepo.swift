@@ -183,7 +183,7 @@ public enum OffloadRepo {
 
     /// Commit a confirmed offload: replace the full FTS rows with the single
     /// keyword-shadow line, flip `offload_state`, record the ledger, finish the
-    /// queue row. MUST run only after the remote PUT returned success.
+    /// queue row. MUST run only after a successful PUT or a verified matching GET.
     public static func commitOffloaded(
         _ db: Database,
         queueId: String,
