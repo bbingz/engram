@@ -100,6 +100,41 @@ final class ServiceUnavailableMutatingToolTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dst), "project_move dry_run must not create destination paths")
     }
 
+    /// Non-boolean dry_run must be rejected (not coerced via `?? false`).
+    /// (repro for MCP_BOOL footgun)
+    func testProjectMoveRejectsNonBooleanDryRun_repro() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbPath = temp.appendingPathComponent("should-not-exist.sqlite").path
+        let socketPath = temp.appendingPathComponent("missing-service.sock").path
+        let src = temp.appendingPathComponent("src-project").path
+        let dst = temp.appendingPathComponent("dst-project").path
+
+        let result = try callTool(
+            name: "project_move",
+            arguments: [
+                "src": src,
+                "dst": dst,
+                "dry_run": "true",
+            ],
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "ENGRAM_MCP_SERVICE_SOCKET": socketPath,
+                "ENGRAM_MCP_DAEMON_BASE_URL": "http://127.0.0.1:9",
+            ]
+        )
+
+        XCTAssertEqual(result["isError"] as? Bool, true, "non-boolean dry_run must error")
+        let text = ((result["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        XCTAssertTrue(
+            text.localizedCaseInsensitiveContains("boolean") || text.localizedCaseInsensitiveContains("dry_run"),
+            "error should mention dry_run/boolean, got: \(text)"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dbPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+    }
+
     func testGenerateSummaryFailsClosedWithoutServiceSocket() throws {
         let temp = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }

@@ -207,8 +207,12 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain(
       'tests/scripts/swift-boundary-scripts.test.ts',
     );
-    expect(testWorkflow).toContain(
+    // pure-rg gates stay on ubuntu coverage; do not re-pin on macos-vitest
+    expect(testWorkflow).not.toContain(
       'tests/scripts/product-boundary-scripts.test.ts',
+    );
+    expect(testWorkflow).not.toContain(
+      'tests/scripts/swift-conventions.test.ts',
     );
     expect(testWorkflow).toContain('tests/scripts/version-guard.test.ts');
     expect(testWorkflow).toContain('Verify fixture determinism');

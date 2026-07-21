@@ -118,7 +118,9 @@ jobs:
           test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
       - name: Check archive v2 no-delete boundary
         run: bash scripts/check-archive-v2-safety.sh
-      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/remote-server-package.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/product-boundary-scripts.test.ts tests/scripts/archive-v2-safety-gate.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/swift-conventions.test.ts tests/scripts/version-guard.test.ts
+      # Pure-rg text gates (swift-conventions, product-boundary-scripts) already run on
+      # ubuntu via `npm run test:coverage`; keep macos-vitest for macOS-only scripts.
+      - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/remote-server-package.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/archive-v2-safety-gate.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/version-guard.test.ts
       - name: Check fixture schema version
         run: npm exec -- tsx scripts/check-fixture-schema.ts
       - name: Check MCP contract fixture freshness

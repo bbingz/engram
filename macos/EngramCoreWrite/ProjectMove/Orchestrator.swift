@@ -505,72 +505,14 @@ public enum ProjectMoveOrchestrator {
                 }
             }
 
-            var plannedTargets: [String: DirRenamePlan] = [:]
-            for plan in dirRenamePlans {
-                if let prev = plannedTargets[plan.newDir], prev.oldDir != plan.oldDir {
-                    throw DirCollisionError(sourceId: plan.sourceId, oldDir: prev.oldDir, newDir: plan.newDir)
-                }
-                plannedTargets[plan.newDir] = plan
-            }
-
-            // Step 0.6: pre-flight collision detection. APFS case-insensitive
-            // case-only renames resolve to the same realpath — allow those
-            // and only refuse genuine third-party collisions.
-            for plan in dirRenamePlans {
-                guard FileManager.default.fileExists(atPath: plan.newDir) else { continue }
-                if let oldReal = realpathSafe(plan.oldDir),
-                   let newReal = realpathSafe(plan.newDir),
-                   oldReal == newReal {
-                    continue
-                }
-                throw DirCollisionError(
-                    sourceId: plan.sourceId,
-                    oldDir: plan.oldDir,
-                    newDir: plan.newDir
-                )
-            }
-
-            // Step 0.7: Gemini-specific probes.
-            if let geminiPlan = dirRenamePlans.first(where: { $0.sourceId == .geminiCli }) {
-                let geminiRoot = roots.first { $0.id == .geminiCli }
-                if let geminiRoot {
-                    let projectsFile = ((geminiRoot.path as NSString)
-                        .deletingLastPathComponent as NSString)
-                        .appendingPathComponent("projects.json")
-
-                    let conflicts = try GeminiProjectsJSON.collectOtherCwdsSharingProjectName(
-                        filePath: projectsFile,
-                        targetProjectName: SessionSources.encodeGemini(dst),
-                        srcCwd: src
-                    )
-                    if !conflicts.isEmpty {
-                        throw SharedEncodingCollisionError(
-                            sourceId: .geminiCli,
-                            dir: geminiPlan.oldDir,
-                            sharingCwds: conflicts
-                        )
-                    }
-                }
-            }
-
-            // Step 0.8: iFlow-specific lossy encoder probe. encodeIflow strips
-            // leading/trailing dashes per segment, so src/dst can share the
-            // same project dir name and skip the generic dir-collision check.
-            if let iflowRoot = roots.first(where: { $0.id == .iflow }) {
-                let targetEncodedDir = SessionSources.encodeIflow(dst)
-                let conflicts = SessionSources.collectOtherIflowCwdsSharingEncodedDir(
-                    root: iflowRoot.path,
-                    targetEncodedDir: targetEncodedDir,
-                    srcCwd: src
-                )
-                if !conflicts.isEmpty {
-                    throw SharedEncodingCollisionError(
-                        sourceId: .iflow,
-                        dir: (iflowRoot.path as NSString).appendingPathComponent(targetEncodedDir),
-                        sharingCwds: conflicts
-                    )
-                }
-            }
+            // Steps 0.5–0.8: planned-target map + disk existence + Gemini/iFlow
+            // shared-encoding probes. Shared with dry_run so plans fail the same way.
+            try assertDirRenamePreflight(
+                plans: dirRenamePlans,
+                roots: roots,
+                src: src,
+                dst: dst
+            )
 
             // Step 0.9: archive destinations live under `_archive/<category>/…`
             // which may not exist yet. Provision only when `archived` so plain
@@ -843,7 +785,9 @@ public enum ProjectMoveOrchestrator {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) throws -> PipelineResult {
         let roots = SessionSources.roots(homeDirectory: homeDirectory)
-        var renamedDirs: [DirRenamePlan] = []
+        // Mirror live Step 0.5 plan construction (including missing old dirs),
+        // then run the same 0.5–0.8 preflight before classifying renamed vs skipped.
+        var dirRenamePlans: [DirRenamePlan] = []
         var skippedDirs: [SkippedDirEntry] = []
 
         for root in roots {
@@ -870,25 +814,28 @@ public enum ProjectMoveOrchestrator {
                     skippedDirs.append(SkippedDirEntry(sourceId: root.id, reason: .noop))
                     continue
                 }
-                let plan = DirRenamePlan(
+                dirRenamePlans.append(DirRenamePlan(
                     sourceId: root.id,
                     oldDir: oldDir,
                     newDir: (root.path as NSString).appendingPathComponent(newName)
-                )
-                if FileManager.default.fileExists(atPath: plan.oldDir) {
-                    renamedDirs.append(plan)
-                } else {
-                    skippedDirs.append(SkippedDirEntry(sourceId: root.id, reason: .missing))
-                }
+                ))
             }
         }
 
-        var plannedTargets: [String: DirRenamePlan] = [:]
-        for plan in renamedDirs {
-            if let prev = plannedTargets[plan.newDir], prev.oldDir != plan.oldDir {
-                throw DirCollisionError(sourceId: plan.sourceId, oldDir: prev.oldDir, newDir: plan.newDir)
+        try assertDirRenamePreflight(
+            plans: dirRenamePlans,
+            roots: roots,
+            src: src,
+            dst: dst
+        )
+
+        var renamedDirs: [DirRenamePlan] = []
+        for plan in dirRenamePlans {
+            if FileManager.default.fileExists(atPath: plan.oldDir) {
+                renamedDirs.append(plan)
+            } else {
+                skippedDirs.append(SkippedDirEntry(sourceId: plan.sourceId, reason: .missing))
             }
-            plannedTargets[plan.newDir] = plan
         }
 
         var perSource: [PerSourceStats] = []
@@ -1166,6 +1113,83 @@ private func formatFailureWithCompensation(
 }
 
 // MARK: - helpers
+
+/// Shared Steps 0.5–0.8 preflight for live and dry_run.
+/// plannedTargets map + on-disk newDir collision + Gemini/iFlow shared-encoding probes.
+/// Must run before any FS mutation (and on dry_run before reporting a green plan).
+private func assertDirRenamePreflight(
+    plans: [DirRenamePlan],
+    roots: [SourceRoot],
+    src: String,
+    dst: String
+) throws {
+    var plannedTargets: [String: DirRenamePlan] = [:]
+    for plan in plans {
+        if let prev = plannedTargets[plan.newDir], prev.oldDir != plan.oldDir {
+            throw DirCollisionError(sourceId: plan.sourceId, oldDir: prev.oldDir, newDir: plan.newDir)
+        }
+        plannedTargets[plan.newDir] = plan
+    }
+
+    // Step 0.6: pre-flight collision detection. APFS case-insensitive
+    // case-only renames resolve to the same realpath — allow those
+    // and only refuse genuine third-party collisions.
+    for plan in plans {
+        guard FileManager.default.fileExists(atPath: plan.newDir) else { continue }
+        if let oldReal = realpathSafe(plan.oldDir),
+           let newReal = realpathSafe(plan.newDir),
+           oldReal == newReal {
+            continue
+        }
+        throw DirCollisionError(
+            sourceId: plan.sourceId,
+            oldDir: plan.oldDir,
+            newDir: plan.newDir
+        )
+    }
+
+    // Step 0.7: Gemini-specific probes.
+    if let geminiPlan = plans.first(where: { $0.sourceId == .geminiCli }) {
+        let geminiRoot = roots.first { $0.id == .geminiCli }
+        if let geminiRoot {
+            let projectsFile = ((geminiRoot.path as NSString)
+                .deletingLastPathComponent as NSString)
+                .appendingPathComponent("projects.json")
+
+            let conflicts = try GeminiProjectsJSON.collectOtherCwdsSharingProjectName(
+                filePath: projectsFile,
+                targetProjectName: SessionSources.encodeGemini(dst),
+                srcCwd: src
+            )
+            if !conflicts.isEmpty {
+                throw SharedEncodingCollisionError(
+                    sourceId: .geminiCli,
+                    dir: geminiPlan.oldDir,
+                    sharingCwds: conflicts
+                )
+            }
+        }
+    }
+
+    // Step 0.8: iFlow-specific lossy encoder probe. encodeIflow strips
+    // leading/trailing dashes per segment, so src/dst can share the
+    // same project dir name and skip the generic dir-collision check.
+    if let iflowRoot = roots.first(where: { $0.id == .iflow }) {
+        let targetEncodedDir = SessionSources.encodeIflow(dst)
+        let conflicts = SessionSources.collectOtherIflowCwdsSharingEncodedDir(
+            root: iflowRoot.path,
+            targetEncodedDir: targetEncodedDir,
+            srcCwd: src
+        )
+        if !conflicts.isEmpty {
+            throw SharedEncodingCollisionError(
+                sourceId: .iflow,
+                dir: (iflowRoot.path as NSString).appendingPathComponent(targetEncodedDir),
+                sharingCwds: conflicts
+            )
+        }
+    }
+}
 
 private struct PatchOutcome: Sendable {
     let file: String

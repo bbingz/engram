@@ -4385,6 +4385,77 @@ final class EngramServiceIPCTests: XCTestCase {
         }
     }
 
+    /// Full-path alias inputs must normalize to basenames so search project
+    /// filters match sessions.project. (repro for B6 path-shape mismatch)
+    func testManageProjectAliasNormalizesAbsolutePathsToBasename_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let addResult = try await client.manageProjectAlias(
+            EngramServiceProjectAliasRequest(
+                action: "add",
+                oldProject: "/Users/bing/-Code-/_maintenance",
+                newProject: "/Users/bing/-Code-/-Code-",
+                actor: "test"
+            )
+        )
+        let addObject = try XCTUnwrap(addResult.objectValue)
+        XCTAssertEqual(addObject["alias"]?.stringValue, "_maintenance")
+        XCTAssertEqual(addObject["canonical"]?.stringValue, "-Code-")
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.read { db in
+            let aliasCount = try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT COUNT(*)
+                    FROM project_aliases
+                    WHERE alias = '_maintenance' AND canonical = '-Code-'
+                """
+            )
+            XCTAssertEqual(aliasCount, 1)
+
+            let fullPathCount = try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT COUNT(*)
+                    FROM project_aliases
+                    WHERE alias LIKE '/%' OR canonical LIKE '/%'
+                """
+            )
+            XCTAssertEqual(fullPathCount, 0, "aliases must not store absolute paths")
+        }
+
+        // remove also accepts path-shaped inputs after normalize
+        _ = try await client.manageProjectAlias(
+            EngramServiceProjectAliasRequest(
+                action: "remove",
+                oldProject: "/tmp/_maintenance",
+                newProject: "/other/-Code-",
+                actor: "test"
+            )
+        )
+        try await queue.read { db in
+            let aliasCount = try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT COUNT(*)
+                    FROM project_aliases
+                    WHERE alias = '_maintenance' AND canonical = '-Code-'
+                """
+            )
+            XCTAssertEqual(aliasCount, 0)
+        }
+    }
+
     func testSaveInsightSupersedesSameScopeNormalizedMatch() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
