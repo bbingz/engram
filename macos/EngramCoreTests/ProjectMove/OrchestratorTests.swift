@@ -691,6 +691,43 @@ final class OrchestratorTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: lockPath))
     }
 
+    /// dry_run must surface the same Step 0.6 DirCollision as live, without
+    /// writing migration_log or touching the lock. (repro for dry_run preflight gap)
+    func testDryRunDirCollisionRejectedWithoutSideEffects_repro() async throws {
+        let (src, _) = try makeProjectFixture(name: "proj-dry-collision")
+        let dst = tempRoot.appendingPathComponent("renamed-dry").path
+
+        let renamedCcDir = ClaudeCodeProjectDir.encode(dst)
+        let foreignCcDir = tempRoot
+            .appendingPathComponent(".claude/projects/\(renamedCcDir)")
+        try FileManager.default.createDirectory(
+            at: foreignCcDir, withIntermediateDirectories: true
+        )
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst, dryRun: true)
+            )
+            XCTFail("expected DirCollisionError on dry_run")
+        } catch let err as DirCollisionError {
+            XCTAssertEqual(err.sourceId, .claudeCode)
+        } catch {
+            XCTFail("expected DirCollisionError, got \(error)")
+        }
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM migration_log") ?? -1,
+                0,
+                "dry_run preflight failure must not write migration_log"
+            )
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lockPath))
+    }
+
     func testIflowSharedEncodingRejectedEvenWhenDirRenameWouldBeNoop() async throws {
         let srcURL = tempRoot
             .appendingPathComponent("a", isDirectory: true)
@@ -733,6 +770,53 @@ final class OrchestratorTests: XCTestCase {
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: srcURL.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+    }
+
+    /// dry_run must run the same Step 0.8 iFlow shared-encoding probe as live.
+    func testDryRunIflowSharedEncodingRejected_repro() async throws {
+        let srcURL = tempRoot
+            .appendingPathComponent("a", isDirectory: true)
+            .appendingPathComponent("-foo-", isDirectory: true)
+            .appendingPathComponent("p-dry", isDirectory: true)
+        let dst = tempRoot
+            .appendingPathComponent("a", isDirectory: true)
+            .appendingPathComponent("foo", isDirectory: true)
+            .appendingPathComponent("p-dry", isDirectory: true)
+            .path
+        try FileManager.default.createDirectory(at: srcURL, withIntermediateDirectories: true)
+        try makeRealGitRepo(atPath: srcURL.path)
+
+        let encoded = SessionSources.encodeIflow(dst)
+        XCTAssertEqual(encoded, SessionSources.encodeIflow(srcURL.path))
+        let iflowDir = tempRoot.appendingPathComponent(".iflow/projects/\(encoded)", isDirectory: true)
+        try FileManager.default.createDirectory(at: iflowDir, withIntermediateDirectories: true)
+        try """
+        {"sessionId":"src","cwd":"\(srcURL.path)","type":"summary"}
+        {"sessionId":"other","cwd":"\(dst)","type":"summary"}
+        """.write(to: iflowDir.appendingPathComponent("session-1.jsonl"), atomically: true, encoding: .utf8)
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: srcURL.path, dst: dst, dryRun: true)
+            )
+            XCTFail("expected SharedEncodingCollisionError on dry_run")
+        } catch let err as SharedEncodingCollisionError {
+            XCTAssertEqual(err.sourceId, .iflow)
+            XCTAssertEqual(err.sharingCwds, [dst])
+        } catch {
+            XCTFail("expected SharedEncodingCollisionError, got \(error)")
+        }
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM migration_log") ?? -1,
+                0
+            )
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: srcURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lockPath))
     }
 
     // MARK: - lock contract

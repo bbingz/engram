@@ -1182,8 +1182,8 @@ enum MCPToolRegistry {
                 EngramServiceProjectMoveRequest(
                     src: src,
                     dst: dst,
-                    dryRun: arguments["dry_run"]?.boolValue ?? false,
-                    force: arguments["force"]?.boolValue ?? false,
+                    dryRun: try optionalBool("dry_run", in: arguments),
+                    force: try optionalBool("force", in: arguments),
                     auditNote: arguments["note"]?.stringValue,
                     actor: "mcp"
                 )
@@ -1201,8 +1201,8 @@ enum MCPToolRegistry {
                 EngramServiceProjectArchiveRequest(
                     src: src,
                     archiveTo: arguments["to"]?.stringValue,
-                    dryRun: arguments["dry_run"]?.boolValue ?? false,
-                    force: arguments["force"]?.boolValue ?? false,
+                    dryRun: try optionalBool("dry_run", in: arguments),
+                    force: try optionalBool("force", in: arguments),
                     auditNote: arguments["note"]?.stringValue,
                     actor: "mcp"
                 )
@@ -1214,7 +1214,7 @@ enum MCPToolRegistry {
             let response = try await serviceClient.projectUndo(
                 EngramServiceProjectUndoRequest(
                     migrationId: try requiredString("migration_id", in: arguments),
-                    force: arguments["force"]?.boolValue ?? false,
+                    force: try optionalBool("force", in: arguments),
                     actor: "mcp"
                 )
             )
@@ -1225,8 +1225,8 @@ enum MCPToolRegistry {
             let raw = try await serviceClient.projectMoveBatch(
                 EngramServiceProjectMoveBatchRequest(
                     yaml: try requiredString("yaml", in: arguments),
-                    dryRun: arguments["dry_run"]?.boolValue ?? false,
-                    force: arguments["force"]?.boolValue ?? false,
+                    dryRun: try optionalBool("dry_run", in: arguments),
+                    force: try optionalBool("force", in: arguments),
                     actor: "mcp"
                 )
             )
@@ -1500,6 +1500,20 @@ enum MCPToolRegistry {
             throw MCPToolError.invalidArguments("\(key) is required")
         }
         return value
+    }
+
+    /// Optional boolean argument. Missing → default; present non-bool → error.
+    /// Defense-in-depth beyond schema validateArgumentType (boolean).
+    private static func optionalBool(
+        _ key: String,
+        in arguments: [String: JSONValue],
+        default defaultValue: Bool = false
+    ) throws -> Bool {
+        guard let value = arguments[key] else { return defaultValue }
+        guard let bool = value.boolValue else {
+            throw MCPToolError.invalidArguments("\(key) must be a boolean")
+        }
+        return bool
     }
 
     private static func clampedInt(

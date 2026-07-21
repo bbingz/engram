@@ -7,6 +7,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: project_move dry_run preflight + alias basename + MCP bool
+
+- **dry_run preflight parity (B5)**: `buildDryRunPlan` now runs the same Steps
+  0.5–0.8 DirCollision / Gemini / iFlow shared-encoding probes as live moves
+  via shared `assertDirRenamePreflight`, so collision plans fail closed without
+  green dry-run output.
+- **manage_project_alias basename normalize (B6)**: absolute or multi-segment
+  path inputs collapse to basename keys matching `sessions.project` and
+  `project_move` alias writes; service `resolveProjectAliases` is bidirectional
+  (alias↔canonical) like MCPDatabase search. Touching alias add/remove also
+  rewrites legacy full-path rows and returns `changed` so remove cannot leave
+  path-shaped ghosts.
+- **MCP optional bool harden (MCP_BOOL)**: `project_move` / `archive` / `undo` /
+  `batch` parse `dry_run`/`force` through `optionalBool` so present non-bool
+  values error instead of silently defaulting via `?? false`.
+- **CI A1**: drop pure-rg `swift-conventions` and `product-boundary-scripts`
+  from macos-vitest (already covered by ubuntu `test:coverage`).
+
 ### Fixed: Batch B residual closeout (#222–#226)
 
 - **#224**: Removed dead Advanced session filter / Noise Details settings; `sessions.showAll` is the sole user-facing session-visibility control.

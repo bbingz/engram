@@ -4385,6 +4385,128 @@ final class EngramServiceIPCTests: XCTestCase {
         }
     }
 
+    /// Full-path alias inputs must normalize to basenames so search project
+    /// filters match sessions.project. (repro for B6 path-shape mismatch)
+    func testManageProjectAliasNormalizesAbsolutePathsToBasename_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        let addResult = try await client.manageProjectAlias(
+            EngramServiceProjectAliasRequest(
+                action: "add",
+                oldProject: "/Users/bing/-Code-/_maintenance",
+                newProject: "/Users/bing/-Code-/-Code-",
+                actor: "test"
+            )
+        )
+        let addObject = try XCTUnwrap(addResult.objectValue)
+        XCTAssertEqual(addObject["alias"]?.stringValue, "_maintenance")
+        XCTAssertEqual(addObject["canonical"]?.stringValue, "-Code-")
+        XCTAssertEqual(addObject["changed"]?.intValue, 1)
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.read { db in
+            let aliasCount = try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT COUNT(*)
+                    FROM project_aliases
+                    WHERE alias = '_maintenance' AND canonical = '-Code-'
+                """
+            )
+            XCTAssertEqual(aliasCount, 1)
+
+            let fullPathCount = try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT COUNT(*)
+                    FROM project_aliases
+                    WHERE alias LIKE '/%' OR canonical LIKE '/%'
+                """
+            )
+            XCTAssertEqual(fullPathCount, 0, "aliases must not store absolute paths")
+        }
+
+        // remove also accepts path-shaped inputs after normalize
+        let removeResult = try await client.manageProjectAlias(
+            EngramServiceProjectAliasRequest(
+                action: "remove",
+                oldProject: "/tmp/_maintenance",
+                newProject: "/other/-Code-",
+                actor: "test"
+            )
+        )
+        XCTAssertEqual(removeResult.objectValue?["changed"]?.intValue, 1)
+        try await queue.read { db in
+            let aliasCount = try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT COUNT(*)
+                    FROM project_aliases
+                    WHERE alias = '_maintenance' AND canonical = '-Code-'
+                """
+            )
+            XCTAssertEqual(aliasCount, 0)
+        }
+    }
+
+    /// Legacy absolute-path alias rows must be rewritten/removed so post-normalize
+    /// remove cannot leave ghosts. (repro for P1 residual full-path store)
+    func testManageProjectAliasRewritesLegacyFullPathRowsOnTouch_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO project_aliases (alias, canonical)
+                VALUES ('/Users/bing/-Code-/_maintenance', '/Users/bing/-Code-/-Code-')
+                """
+            )
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+        // Touch via remove with path-shaped inputs; rewrite should collapse then delete.
+        let removeResult = try await client.manageProjectAlias(
+            EngramServiceProjectAliasRequest(
+                action: "remove",
+                oldProject: "/Users/bing/-Code-/_maintenance",
+                newProject: "/Users/bing/-Code-/-Code-",
+                actor: "test"
+            )
+        )
+        XCTAssertEqual(removeResult.objectValue?["alias"]?.stringValue, "_maintenance")
+        XCTAssertEqual(removeResult.objectValue?["canonical"]?.stringValue, "-Code-")
+        XCTAssertEqual(removeResult.objectValue?["changed"]?.intValue, 1)
+
+        try await queue.read { db in
+            let remaining = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM project_aliases") ?? -1
+            XCTAssertEqual(remaining, 0)
+            let fullPath = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM project_aliases WHERE alias LIKE '/%' OR canonical LIKE '/%'"
+            ) ?? -1
+            XCTAssertEqual(fullPath, 0)
+        }
+    }
+
     func testSaveInsightSupersedesSameScopeNormalizedMatch() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)
@@ -5362,6 +5484,11 @@ private extension EngramServiceJSONValue {
 
     var boolValue: Bool? {
         if case .bool(let value) = self { return value }
+        return nil
+    }
+
+    var intValue: Int? {
+        if case .number(let value) = self { return Int(value) }
         return nil
     }
 }
