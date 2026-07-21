@@ -3,7 +3,7 @@
 Follow-ups are verification gaps, low-priority refactors, or items that need
 real data, UI exercise, or product confirmation before becoming TODOs.
 
-## UI-001 — Advanced session visibility controls (closed)
+## UI-001 — Advanced session visibility controls (closed, #224)
 
 Removed the Advanced Session Filter and Noise Details controls because they
 only persisted local settings and never reached a product list predicate.
@@ -68,11 +68,11 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **MCP-012** | closed (#225) | `project_timeline` now excludes hidden, skip-tier, confirmed-child, and suggested-child sessions, with shipped-binary `_repro` coverage against `list_sessions` defaults. |
 | **R6** | accepted residual (redesign deferred) | Producer intentionally holds the writer gate for the full FS+patch lifetime (finding 8 integrity). M1 prevents false timeouts; availability redesign (release gate across network/FS phases like remote offload) is product-scale work, not a defect fix |
 | **R7** | closed (#220) | Offload HTTP matches Archive V2 transport depth (ephemeral session, redirect reject, size caps, post-DNS private check for named private hosts); requireTLS product default fail-closed docs fixed |
-| **SEC-001** | closed (pending PR review) | Auto-offload treats remote HEAD as a soft optimization: absent objects require a successful PUT, while existing objects require GET + bundle decode + exact expected content-hash match before `commitOffloaded` may collapse local FTS; both shipped call paths have `_repro` coverage |
+| **SEC-001** | closed (#226) | Auto-offload treats remote HEAD as a soft optimization: absent objects require a successful PUT, while existing objects require GET + bundle decode + exact expected content-hash match before `commitOffloaded` may collapse local FTS; both shipped call paths have `_repro` coverage |
 | **R8** | closed (#218) | Durable `content_fingerprint` enables parity-stable `mergeTailSnapshot` for Claude/Codex user-led appends; covered by `testCodexTailMergeMatchesFullReindex_repro` + updated Claude tail parity |
 | **R9** / M21 residual | closed (flush; #219); MainActor I/O residual | AI settings flush pending debounce on disappear; MainActor flock/Keychain I/O after debounce remains accepted residual |
 | **R11 ledger** | closed | Disposition evidence columns + this followups section |
-| **F5-CI** | closed | `.github/workflows/test.yml` now treats `npm audit --audit-level=moderate` as soft-fail for both pull requests and pushes, so merge cannot change audit policy from soft to strict. |
+| **F5-CI** | closed (#222) | `.github/workflows/test.yml` now treats `npm audit --audit-level=moderate` as soft-fail for both pull requests and pushes, so merge cannot change audit policy from soft to strict. |
 | **L-a…L-j** | residual | Low/Info rows in full-project review; not engineering-zero blockers |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
