@@ -7,6 +7,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: Batch B residual closeout (#222–#226)
+
+- **#224**: Removed dead Advanced session filter / Noise Details settings; `sessions.showAll` is the sole user-facing session-visibility control.
+- **#225**: Aligned MCP secondary session visibility (`get_context`, `tool_analytics`, `file_activity`, `project_timeline`) with list-visible and top-level predicates (MCP-002/012).
+- **#226**: Auto-offload proves remote object durability (PUT for missing, GET+hash match for existing) before collapsing local FTS (SEC-001).
+- **#223**: Insight embedding dual-write is atomic; successful rows set `insights.has_embedding=1` in the same writer transaction as vector insert.
+- **#222**: Soft `npm audit --audit-level=moderate` policy now applies on both pull_request and push so merge cannot flip CI audit strictness.
+
 ### Fixed: MCP-001 manage_project_alias list object root
 
 - `manage_project_alias` action=`list` now returns MCP 2025-11-25-compatible
