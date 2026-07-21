@@ -550,6 +550,89 @@ final class InsightEmbeddingBackfillTests: XCTestCase {
         }
     }
 
+    func testModelDimensionChangeResetsAllInsightEmbeddingFlags_repro() throws {
+        let path = tempDir.appendingPathComponent("model-change-flags.sqlite").path
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+        try seedEmbeddedInsights(writer: writer)
+
+        let changed = try InsightEmbeddingBackfill.reconcileModelChangeIfNeeded(
+            writer: writer,
+            model: "new-model",
+            dimension: 4
+        )
+
+        XCTAssertTrue(changed)
+        try writer.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insight_embeddings"), 0)
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insights WHERE has_embedding = 1"),
+                0,
+                "deleted insight embeddings must not leave successful flags behind"
+            )
+        }
+    }
+
+    func testModelDimensionChangeRollsBackEmbeddingDeletionWhenFlagResetFails_repro() throws {
+        let path = tempDir.appendingPathComponent("model-change-atomic.sqlite").path
+        let writer = try EngramDatabaseWriter(path: path)
+        try writer.migrate()
+        try seedEmbeddedInsights(writer: writer)
+        try writer.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_insight_flag_reset_repro
+                BEFORE UPDATE OF has_embedding ON insights
+                WHEN OLD.has_embedding = 1 AND NEW.has_embedding = 0
+                BEGIN
+                  SELECT RAISE(ABORT, 'forced insight flag reset failure');
+                END
+            """)
+        }
+
+        XCTAssertThrowsError(
+            try InsightEmbeddingBackfill.reconcileModelChangeIfNeeded(
+                writer: writer,
+                model: "new-model",
+                dimension: 4
+            )
+        )
+
+        try writer.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insight_embeddings"),
+                2,
+                "embedding deletion must roll back with the failed flag reset"
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM insights WHERE has_embedding = 1"),
+                2
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT model FROM embedding_meta WHERE id = 1"),
+                "old-model"
+            )
+        }
+    }
+
+    private func seedEmbeddedInsights(writer: EngramDatabaseWriter) throws {
+        try writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO insights (id, content, has_embedding) VALUES
+                  ('embedded-1', 'first embedded insight', 1),
+                  ('embedded-2', 'second embedded insight', 1)
+            """)
+            try db.execute(sql: """
+                INSERT INTO insight_embeddings (insight_id, embedding, model, dim) VALUES
+                  ('embedded-1', X'000000000000000000000000', 'old-model', 3),
+                  ('embedded-2', X'000000000000000000000000', 'old-model', 3)
+            """)
+            try db.execute(sql: """
+                INSERT INTO embedding_meta (id, provider, model, dimension)
+                VALUES (1, 'openai-compatible', 'old-model', 3)
+            """)
+        }
+    }
+
     private func seedEmbeddingSessions(
         writer: EngramDatabaseWriter,
         sessions: [(sessionId: String, jobId: String, fts: String)]
