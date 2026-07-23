@@ -20,6 +20,13 @@ const perfWorkflow = readFileSync(
   resolve(repoRoot, '.github/workflows/perf.yml'),
   'utf8',
 );
+const xcodegenInstallerPath = resolve(
+  repoRoot,
+  'scripts/ci/install-xcodegen.sh',
+);
+const xcodegenInstaller = existsSync(xcodegenInstallerPath)
+  ? readFileSync(xcodegenInstallerPath, 'utf8')
+  : '';
 const dependencyReviewPath = resolve(
   repoRoot,
   '.github/workflows/dependency-review.yml',
@@ -143,19 +150,24 @@ describe('CI workflow hardening', () => {
     expect(auditStep?.['continue-on-error']).toBe(true);
   });
 
-  it('does not mask xcodegen install failures', () => {
-    for (const workflow of xcodegenWorkflows) {
-      expect(workflow).not.toContain('brew install xcodegen || true');
-    }
-  });
-
-  it('pins the expected xcodegen generator version in CI', () => {
+  it('installs the expected xcodegen release with a pinned checksum', () => {
+    const installerCommand =
+      'bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"';
     for (const workflow of xcodegenWorkflows) {
       expect(workflow).toContain('XCODEGEN_VERSION: "2.45.4"');
       expect(workflow).toContain(
-        'test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"',
+        'XCODEGEN_SHA256: "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef"',
       );
+      expect(workflow).toContain(installerCommand);
+      expect(workflow).not.toContain('brew install xcodegen');
     }
+    expect(xcodegenInstaller).toContain(
+      'https://github.com/yonaskolb/XcodeGen/releases/download/$' +
+        '{version}/xcodegen.zip',
+    );
+    expect(xcodegenInstaller).toContain('shasum -a 256 -c -');
+    expect(xcodegenInstaller).toContain('>> "$GITHUB_PATH"');
+    expect(xcodegenInstaller).toContain('"$binary" --version');
   });
 
   it('fails CI when generated Xcode project is stale', () => {
@@ -200,7 +212,7 @@ describe('CI workflow hardening', () => {
 
   it('runs macOS-only vitest suites on pull requests', () => {
     expect(testWorkflow).toContain('macos-vitest:');
-    expect(testWorkflow).toContain('brew install xcodegen ripgrep');
+    expect(testWorkflow).toContain('brew install ripgrep');
     expect(testWorkflow).toContain(
       'npm test -- tests/scripts/build-release-script.test.ts',
     );
@@ -263,9 +275,7 @@ describe('CI workflow hardening', () => {
       releaseWorkflow.indexOf('  release-tests:'),
       releaseWorkflow.indexOf('  release-bundle-gate:'),
     );
-    const installIndex = releaseTestsJob.indexOf(
-      'brew install xcodegen ripgrep',
-    );
+    const installIndex = releaseTestsJob.indexOf('brew install ripgrep');
     const coverageIndex = releaseTestsJob.indexOf('npm run test:coverage');
 
     expect(installIndex).toBeGreaterThan(-1);

@@ -13,6 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  XCODEGEN_SHA256: "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef"
   XCODEGEN_VERSION: "2.45.4"
 
 jobs:
@@ -30,16 +31,8 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-      - name: Cache Homebrew (xcodegen)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ~/Library/Caches/Homebrew
-          key: brew-xcodegen-${{ runner.os }}
-
       - name: Install xcodegen
-        run: |
-          brew install xcodegen
-          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
+        run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
 
       - name: Cache SPM packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6

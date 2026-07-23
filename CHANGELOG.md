@@ -7,6 +7,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: deterministic XcodeGen installation in CI (2026-07-23)
+
+- Replaced Homebrew's moving `xcodegen` package in Tests, Release, CodeQL, and
+  Perf workflows with the official XcodeGen 2.45.4 release archive, pinned to
+  SHA-256
+  `090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef`.
+- Added `scripts/ci/install-xcodegen.sh` to validate version/checksum inputs,
+  verify the downloaded archive before extraction, confirm the installed
+  version, and expose it through `GITHUB_PATH`.
+- Removed obsolete Homebrew caches that only served XcodeGen and extended the
+  CodeQL path classifier so installer changes fail closed through every
+  language lane.
+- Added workflow contract coverage. Local verification passed actionlint,
+  shell syntax, the real installer and generated-project freshness check,
+  build, test typecheck, lint, knip, 35 focused CI tests, and the full 1,464
+  Vitest coverage suite on Node 24.
+
 ### Fixed: project_move dry_run preflight + alias basename + MCP bool
 
 - **dry_run preflight parity (B5)**: `buildDryRunPlan` now runs the same Steps
