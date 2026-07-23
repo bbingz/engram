@@ -4,6 +4,7 @@
 
 ### 2026-07-23
 
+- [候选版] 已将 npm 与 macOS 权威版本元数据对齐到 `1.0.5`；仍须通过生成项目无漂移、精确提交 CI、Developer ID、notarization/stapling、产物哈希和运行 smoke，当前不创建 tag 或 GitHub Release。
 - [CI] Tests、Release、CodeQL、Perf 已统一改用带官方 SHA-256 校验的 XcodeGen 2.45.4 安装脚本，不再依赖 Homebrew 当前版本；安装器变更会触发全部 CodeQL lane。
 - [验证] 本地 actionlint、shell 语法、真实下载/校验/生成项目、build、测试 typecheck、lint、knip、35 项聚焦 CI 测试和 Node 24 下全量 1,464 项 coverage 均通过；详细证据见 `CHANGELOG.md`。
 - [整理] 已核对 Orca/Grok 会话、Orca worktree 清单、Git worktree/分支/reflog 与 7 月 17 日后的 dangling commits；旧 Orca workspace 已无登记或目录，独有实现均已由 #218–#228 的最终提交覆盖，主工作区仍与 `origin/main@3ba6e2a3` 对齐。
