@@ -24,6 +24,39 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   values error instead of silently defaulting via `?? false`.
 - **CI A1**: drop pure-rg `swift-conventions` and `product-boundary-scripts`
   from macos-vitest (already covered by ubuntu `test:coverage`).
+- **Shipped**: squash-merged as #228 (`3ba6e2a3`). Local Developer ID
+  build `1.0.4 (20260721142837)` via `macos/scripts/build-release.sh
+  --local-only` + `deploy-local.sh` replaced `/Applications/Engram.app`;
+  `release-verify` PASS; app + `EngramService` relaunched with socket
+  `~/.engram/run/engram-service.sock`. No notarization/DMG/public release.
+- **Prod alias cleanup (2026-07-21)**: authorized write via service
+  `manageProjectAlias` touch on `coding-memory`→`engram` (triggers
+  `rewritePathShapedProjectAliases`). Backup
+  `~/.engram/backups/index.sqlite.before-alias-cleanup-20260721144628.bak`.
+  `project_aliases` 18→15; path-shaped rows 10→0; two self-key path rows
+  dropped (`CIP-Salary`→`CIP-Salary`, `_项目扫描报告`→`_项目扫描报告`).
+  Write-up: `docs/verification/prod-alias-cleanup-2026-07-21.md`. Follow-ups
+  `OPS-ALIAS-001` (closed) / `ALIAS-P2` (open, low) in `docs/followups.md`.
+  `docs/mcp-tools.md` + MCP schema descriptions document basename normalize.
+
+### Maintenance: Orca/Grok worktree reconciliation (2026-07-23)
+
+- Recovered the final `grok-4.5-build` session
+  `e698d514-6f6c-481a-850d-93a74c7cde49` and matched its last handoff to the
+  five-file production-alias documentation/schema-description diff above.
+- Refreshed `origin`, compared Orca's repo/worktree inventory with
+  `git worktree list`, local/remote refs, reflogs, and recent unreachable
+  commits. Only `/Users/bing/-Code-/engram` remains registered; the former
+  Orca workspace paths are absent, and the recent dangling commits are
+  equivalent to or superseded by the merged #218–#228 history.
+- Preserved the recovered pre-closeout state in local-only stash
+  `0cf3715f6bd07943af8d1dd5af01035c242542e4` before reapplying it on `main`.
+  No old worktree directory, branch, Git object, production data, or installed
+  app was deleted or rewritten during reconciliation.
+- Fresh verification: `git diff --check` passed; the complete
+  `EngramMCPTests` scheme passed 169/169 on macOS; read-only
+  `manage_project_alias list` returned 15 basename-only rows and zero
+  path-shaped rows.
 
 ### Fixed: Batch B residual closeout (#222–#226)
 

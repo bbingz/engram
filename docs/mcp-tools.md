@@ -214,10 +214,10 @@ Link two project names so sessions from one appear in queries for the other. Use
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | action | string | **yes** | Action to perform. Enum: `add`, `remove`, `list` |
-| old_project | string | no | Old project name (required for `add`/`remove`) |
-| new_project | string | no | New project name (required for `add`/`remove`) |
+| old_project | string | no | Old project name (required for `add`/`remove`). Absolute or multi-segment paths collapse to basename. |
+| new_project | string | no | New project name (required for `add`/`remove`). Absolute or multi-segment paths collapse to basename. |
 
-**Notes:** The `list` action requires no additional parameters. For `add` and `remove`, both `old_project` and `new_project` are required. Aliases are bidirectional for query resolution -- searching for either name returns sessions from both. Use this only for directories moved manually outside Engram. Do not call it after `project_move`; that tool already creates the alias automatically.
+**Notes:** The `list` action requires no additional parameters and is read-only (no service required). For `add` and `remove`, both `old_project` and `new_project` are required and go through EngramService. Inputs are normalized to basename keys so they match `sessions.project` and aliases written by `project_move`; empty keys and self-keys (`old` and `new` resolve equal) are rejected. Each mutating call also rewrites any pre-existing path-shaped rows in `project_aliases` to basenames (self-keys after rewrite are dropped; collisions use `INSERT OR IGNORE`). Response includes `changed` (0/1 for add presence, delete count for remove). Aliases are bidirectional for query resolution — searching for either name returns sessions from both. Use this only for directories moved manually outside Engram. Do not call it after `project_move`; that tool already creates the alias automatically.
 
 ---
 

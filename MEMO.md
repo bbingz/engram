@@ -2,6 +2,13 @@
 
 ## Changelog Memo
 
+### 2026-07-23
+
+- [整理] 已核对 Orca/Grok 会话、Orca worktree 清单、Git worktree/分支/reflog 与 7 月 17 日后的 dangling commits；旧 Orca workspace 已无登记或目录，独有实现均已由 #218–#228 的最终提交覆盖，主工作区仍与 `origin/main@3ba6e2a3` 对齐。
+- [归档] Grok 最后一批生产 alias 清理记录已从未提交交接收回 `main`：详细证据见 `CHANGELOG.md` 与 `docs/verification/prod-alias-cleanup-2026-07-21.md`；低优先级残留为 `docs/followups.md` 的 `ALIAS-P2`。
+- [保护] 整理前状态保存在本机 Git stash `0cf3715f6bd07943af8d1dd5af01035c242542e4`；本轮未删除 Git 对象、旧分支、生产数据，也未 push、部署或重跑生产清理。
+- [验证] `git diff --check` 通过，完整 `EngramMCPTests` 169/169 通过；只读 alias 清单仍为 15 条 basename、0 条 path-shaped。
+
 ### 2026-07-16
 
 - [性能] `0b754c2f` 至 `6ea7a98f` 收口周期性 Service 维护：embedding 按小批处理并对失败 provider 指数退避，repo 探测轮转限流，Archive policy/reconcile 避免无变化重扫，productive backlog pass 间隔 30 秒并在每轮后释放 allocator pressure，周期索引只把真实 merge 计为新增工作。
