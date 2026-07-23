@@ -67,6 +67,7 @@ describe('CodeQL path classifier', () => {
     ['macos/Shared/EngramCore/ArchiveV2/ArchiveHash.swift', false, true, true],
     ['macos/project.yml', false, true, true],
     ['.github/workflows/codeql.yml', true, true, true],
+    ['scripts/ci/install-xcodegen.sh', true, true, true],
   ])('classifies %s', (path, typescript, swiftProduct, swiftRemoteServer) => {
     expect(classify(path)).toEqual({
       typescript: String(typescript),

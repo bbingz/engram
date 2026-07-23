@@ -17,6 +17,7 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  XCODEGEN_SHA256: "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef"
   XCODEGEN_VERSION: "2.45.4"
 
 jobs:
@@ -85,9 +86,7 @@ jobs:
           restore-keys: codeql-spm-${{ runner.os }}-${{ runner.arch }}-xcode16-
 
       - name: Install xcodegen
-        run: |
-          brew install xcodegen
-          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
+        run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
@@ -136,9 +135,7 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_26.6.app
 
       - name: Install xcodegen
-        run: |
-          brew install xcodegen
-          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
+        run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0

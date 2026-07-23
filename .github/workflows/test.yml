@@ -16,6 +16,7 @@ concurrency:
 env:
   ACTIONLINT_LINUX_AMD64_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
   ACTIONLINT_VERSION: "1.7.12"
+  XCODEGEN_SHA256: "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef"
   XCODEGEN_VERSION: "2.45.4"
 
 jobs:
@@ -113,9 +114,10 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npm run build
-      - run: |
-          brew install xcodegen ripgrep
-          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
+      - name: Install xcodegen and archive safety tools
+        run: |
+          brew install ripgrep
+          bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
       - name: Check archive v2 no-delete boundary
         run: bash scripts/check-archive-v2-safety.sh
       # Pure-rg text gates (swift-conventions, product-boundary-scripts) already run on
@@ -148,16 +150,8 @@ jobs:
           node-version: 24
           cache: 'npm'
 
-      - name: Cache Homebrew (xcodegen)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ~/Library/Caches/Homebrew
-          key: brew-xcodegen-${{ runner.os }}
-
       - name: Install xcodegen
-        run: |
-          brew install xcodegen
-          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
+        run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
 
       - name: Cache SPM packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -229,9 +223,7 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_26.6.app
 
       - name: Install xcodegen
-        run: |
-          brew install xcodegen
-          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
+        run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
 
       - name: Generate Xcode project
         run: cd macos && xcodegen generate
@@ -319,9 +311,8 @@ jobs:
           path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
           key: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
           restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-
-      - run: |
-          brew install xcodegen
-          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
+      - name: Install xcodegen
+        run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
       - run: cd macos && xcodegen generate
       - run: npm run generate:fixtures
       - name: Dismiss macOS setup assistant
@@ -396,9 +387,8 @@ jobs:
           path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
           key: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-${{ hashFiles('macos/project.yml', 'macos/Engram.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
           restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-xcode15-
-      - run: |
-          brew install xcodegen
-          test "$(xcodegen --version)" = "Version: $XCODEGEN_VERSION"
+      - name: Install xcodegen
+        run: bash scripts/ci/install-xcodegen.sh "$XCODEGEN_VERSION" "$XCODEGEN_SHA256"
       - run: cd macos && xcodegen generate
       - run: npm run generate:fixtures
       - name: Dismiss macOS setup assistant

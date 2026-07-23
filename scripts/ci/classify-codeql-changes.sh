@@ -19,7 +19,7 @@ if [[ -n "$base_sha" && ! "$base_sha" =~ ^0+$ ]] &&
 
   while IFS= read -r path; do
     case "$path" in
-      .github/workflows/codeql.yml|scripts/ci/classify-codeql-changes.sh|scripts/ci/verify-codeql-gate.sh)
+      .github/workflows/codeql.yml|scripts/ci/classify-codeql-changes.sh|scripts/ci/install-xcodegen.sh|scripts/ci/verify-codeql-gate.sh)
         typescript=true
         swift_product=true
         swift_remote_server=true

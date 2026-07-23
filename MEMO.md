@@ -4,6 +4,8 @@
 
 ### 2026-07-23
 
+- [CI] Tests、Release、CodeQL、Perf 已统一改用带官方 SHA-256 校验的 XcodeGen 2.45.4 安装脚本，不再依赖 Homebrew 当前版本；安装器变更会触发全部 CodeQL lane。
+- [验证] 本地 actionlint、shell 语法、真实下载/校验/生成项目、build、测试 typecheck、lint、knip、35 项聚焦 CI 测试和 Node 24 下全量 1,464 项 coverage 均通过；详细证据见 `CHANGELOG.md`。
 - [整理] 已核对 Orca/Grok 会话、Orca worktree 清单、Git worktree/分支/reflog 与 7 月 17 日后的 dangling commits；旧 Orca workspace 已无登记或目录，独有实现均已由 #218–#228 的最终提交覆盖，主工作区仍与 `origin/main@3ba6e2a3` 对齐。
 - [归档] Grok 最后一批生产 alias 清理记录已从未提交交接收回 `main`：详细证据见 `CHANGELOG.md` 与 `docs/verification/prod-alias-cleanup-2026-07-21.md`；低优先级残留为 `docs/followups.md` 的 `ALIAS-P2`。
 - [保护] 整理前状态保存在本机 Git stash `0cf3715f6bd07943af8d1dd5af01035c242542e4`；本轮未删除 Git 对象、旧分支、生产数据，也未 push、部署或重跑生产清理。
