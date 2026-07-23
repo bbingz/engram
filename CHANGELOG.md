@@ -7,6 +7,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Release candidate: v1.0.5 metadata (2026-07-23)
+
+- Aligned the npm package version and the authoritative macOS
+  `MARKETING_VERSION` at 1.0.5. The generated Xcode project, release build,
+  Developer ID signing, notarization/stapling, artifact hashes, and runtime
+  smoke remain release gates; this metadata change does not create a tag or
+  publish a GitHub Release.
+
 ### Fixed: deterministic XcodeGen installation in CI (2026-07-23)
 
 - Replaced Homebrew's moving `xcodegen` package in Tests, Release, CodeQL, and
