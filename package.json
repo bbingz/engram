@@ -47,7 +47,7 @@
     "@vitest/coverage-v8": "^4.1.8",
     "husky": "^9.1.7",
     "knip": "^6.25.0",
-    "lint-staged": "^17.0.8",
+    "lint-staged": "^17.2.0",
     "pixelmatch": "^6.0.0",
     "sharp": "^0.35.3",
     "ssim.js": "^3.5.0",
