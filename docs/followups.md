@@ -3,6 +3,23 @@
 Follow-ups are verification gaps, low-priority refactors, or items that need
 real data, UI exercise, or product confirmation before becoming TODOs.
 
+## OPS-ALIAS-001 — Prod path-shaped project_aliases cleanup (closed, 2026-07-21)
+
+Authorized post-#228 service touch rewrote production `project_aliases` from
+18 rows (10 path-shaped) to 15 basename-only rows. Backup
+`~/.engram/backups/index.sqlite.before-alias-cleanup-20260721144628.bak`.
+Verification write-up: `docs/verification/prod-alias-cleanup-2026-07-21.md`.
+No further prod alias rewrite is planned; do not re-run without a fresh
+inventory + backup.
+
+## ALIAS-P2 — Same-basename different-parent ghost remove (open, low)
+
+Codex residual on #228: a pathological full-path pair that normalizes to the
+same basename self-key cannot be removed via `manage_project_alias` because
+input normalize rejects equal keys before delete. Not observed in prod after
+OPS-ALIAS-001. Fix only if a repro host reappears; prefer preventing path-
+shaped inserts over special-case remove.
+
 ## UI-001 — Advanced session visibility controls (closed, #224)
 
 Removed the Advanced Session Filter and Noise Details controls because they

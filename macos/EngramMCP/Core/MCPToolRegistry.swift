@@ -848,11 +848,11 @@ enum MCPToolRegistry {
                     ]),
                     "old_project": .object([
                         "type": .string("string"),
-                        "description": .string("Old project name (for add/remove)"),
+                        "description": .string("Old project name (for add/remove). Absolute or multi-segment paths collapse to basename."),
                     ]),
                     "new_project": .object([
                         "type": .string("string"),
-                        "description": .string("New project name (for add/remove)"),
+                        "description": .string("New project name (for add/remove). Absolute or multi-segment paths collapse to basename."),
                     ]),
                 ]),
                 "additionalProperties": .bool(false),
