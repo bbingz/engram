@@ -94,6 +94,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // One-time: scrub settings + Keychain entries for removed features (e.g. Viking)
         removeDeprecatedSettingsKeysIfNeeded()
 
+        // Row 16: opt-in main-thread stall monitor (DEBUG only; no-ops without
+        // ENGRAM_PERF_MONITOR). Release has no MainThreadStallMonitor type.
+        #if DEBUG
+        MainThreadStallMonitor.shared.start()
+        #endif
+
         // Hide from Dock — menu bar only (keep .regular for test/popover so XCUITest can see the window)
         if environment.popoverStandalone || environment.windowSize != nil {
             NSApp.setActivationPolicy(.regular)

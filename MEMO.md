@@ -2,6 +2,10 @@
 
 ## Changelog Memo
 
+### 2026-07-25
+
+- [性能观测] DEBUG 下为转录/列表分页路径加 `os_signpost` 与可选主线程 stall 监视；Release 为空操作。行 15 构建溯源仍延后。
+
 ### 2026-07-24
 
 - [插件] 新增独立的 Claude Code 插件 MVP：复用已安装的 `EngramCLI` / `EngramMCP`，提供 SessionStart 上下文注入与手动 `catch-up`、`remember`、`handoff` 技能，不捆绑第二套 Swift 二进制。
