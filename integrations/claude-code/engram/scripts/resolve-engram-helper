@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Resolve Engram helper binaries without user-specific absolute paths.
+# Preference order (first existing executable wins):
+#   1) explicit env override
+#   2) sibling of a known EngramCLI path
+#   3) app-bundle Helpers (relative to discovered CLI, then /Applications)
+set -euo pipefail
+
+usage() {
+  echo "Usage: resolve-engram-helper cli|mcp" >&2
+  exit 64
+}
+
+[[ $# -eq 1 ]] || usage
+kind="$1"
+
+is_exec() {
+  local path="$1"
+  [[ -n "$path" && -f "$path" && -x "$path" ]]
+}
+
+emit_first_exec() {
+  local candidate
+  for candidate in "$@"; do
+    if is_exec "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_cli() {
+  # Explicit override is exclusive: a set-but-missing path fails closed so
+  # callers can detect misconfiguration (SessionStart still fail-opens).
+  if [[ -n "${ENGRAM_CLI_PATH:-}" ]]; then
+    if is_exec "${ENGRAM_CLI_PATH}"; then
+      printf '%s\n' "${ENGRAM_CLI_PATH}"
+      return 0
+    fi
+    return 1
+  fi
+
+  local candidates=(
+    "/Applications/Engram.app/Contents/Helpers/EngramCLI"
+    "/Applications/Engram.app/Contents/MacOS/EngramCLI"
+  )
+  # PATH lookup last so product install paths win over stray names.
+  if command -v EngramCLI >/dev/null 2>&1; then
+    candidates+=("$(command -v EngramCLI)")
+  fi
+  emit_first_exec "${candidates[@]}"
+}
+
+resolve_mcp() {
+  local candidates=()
+  local cli=""
+  local cli_dir=""
+
+  if [[ -n "${ENGRAM_MCP_PATH:-}" ]]; then
+    if is_exec "${ENGRAM_MCP_PATH}"; then
+      printf '%s\n' "${ENGRAM_MCP_PATH}"
+      return 0
+    fi
+    return 1
+  fi
+  if [[ -n "${ENGRAM_CLI_MCP_HELPER:-}" ]]; then
+    if is_exec "${ENGRAM_CLI_MCP_HELPER}"; then
+      printf '%s\n' "${ENGRAM_CLI_MCP_HELPER}"
+      return 0
+    fi
+    return 1
+  fi
+
+  if cli="$(resolve_cli 2>/dev/null)"; then
+    cli_dir="$(cd "$(dirname "$cli")" && pwd)"
+    candidates+=(
+      "${cli_dir}/EngramMCP"
+      "$(cd "${cli_dir}/.." && pwd)/Helpers/EngramMCP"
+    )
+  fi
+
+  candidates+=(
+    "/Applications/Engram.app/Contents/Helpers/EngramMCP"
+    "/Applications/Engram.app/Contents/MacOS/EngramMCP"
+  )
+  if command -v EngramMCP >/dev/null 2>&1; then
+    candidates+=("$(command -v EngramMCP)")
+  fi
+  emit_first_exec "${candidates[@]}"
+}
+
+case "$kind" in
+  cli) resolve_cli ;;
+  mcp) resolve_mcp ;;
+  *) usage ;;
+esac

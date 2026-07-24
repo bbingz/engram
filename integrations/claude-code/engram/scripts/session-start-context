@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# SessionStart command hook: inject bounded Engram get_context via EngramCLI.
+# Fail-open: missing app/CLI/helper/timeout must never block Claude Code.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Best-effort cwd: prefer Claude project dir, then PWD.
+CWD="${CLAUDE_PROJECT_DIR:-}"
+if [[ -z "${CWD}" ]]; then
+  CWD="$(pwd -P 2>/dev/null || pwd)"
+fi
+
+CLI=""
+if CLI="$("${SCRIPT_DIR}/resolve-engram-helper" cli 2>/dev/null)"; then
+  :
+else
+  # Fail-open
+  exit 0
+fi
+
+# Drain stdin (SessionStart JSON) so Claude does not see a broken pipe; we do not require it.
+if [[ ! -t 0 ]]; then
+  cat >/dev/null 2>&1 || true
+fi
+
+# Hard fail-open around EngramCLI context. EngramCLI itself also fail-opens.
+set +e
+OUTPUT="$("${CLI}" context --cwd "${CWD}" --timeout-ms 2500 --max-bytes 8192 2>/dev/null)"
+STATUS=$?
+set -e
+
+if [[ "${STATUS}" -ne 0 ]]; then
+  exit 0
+fi
+
+if [[ -n "${OUTPUT}" ]]; then
+  printf '%s\n' "${OUTPUT}"
+fi
+exit 0
