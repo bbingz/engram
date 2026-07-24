@@ -2,6 +2,10 @@
 
 ## Changelog Memo
 
+### 2026-07-25
+
+- [格式漂移] 本地 fingerprinter + 200 文件 baseline；desync/schemaVersion 纯函数；accept 折叠在 check 脚本（`baseline:adapter-format`）；Swift drift 测试 failure→XCTFail。
+
 ### 2026-07-24
 
 - [插件] 新增独立的 Claude Code 插件 MVP：复用已安装的 `EngramCLI` / `EngramMCP`，提供 SessionStart 上下文注入与手动 `catch-up`、`remember`、`handoff` 技能，不捆绑第二套 Swift 二进制。

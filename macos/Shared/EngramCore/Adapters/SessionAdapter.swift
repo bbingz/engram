@@ -226,17 +226,23 @@ public struct IndexingScan: Sendable {
     public var messages: [NormalizedMessage]
     public var checkpointParsedOffset: Int64?
     public var checkpointBoundaryHash: String?
+    /// Record kinds seen on the parse-once path that the adapter deliberately
+    /// drops and that are not on its known-ignored allowlist. Empty for adapters
+    /// that do not accumulate (protocol default / non-Claude-Code sources).
+    public var unknownRecordKinds: Set<String>
 
     public init(
         info: NormalizedSessionInfo,
         messages: [NormalizedMessage],
         checkpointParsedOffset: Int64? = nil,
-        checkpointBoundaryHash: String? = nil
+        checkpointBoundaryHash: String? = nil,
+        unknownRecordKinds: Set<String> = []
     ) {
         self.info = info
         self.messages = messages
         self.checkpointParsedOffset = checkpointParsedOffset
         self.checkpointBoundaryHash = checkpointBoundaryHash
+        self.unknownRecordKinds = unknownRecordKinds
     }
 }
 

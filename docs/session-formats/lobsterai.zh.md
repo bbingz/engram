@@ -2,7 +2,7 @@
 
 > 本文档为英文权威版 lobsterai.md 的中文阅读副本;若有出入以英文版为准。
 
-Last researched: 2026-06-21
+Last researched: 2026-07-24
 
 > **证据基础:** 适配器源码(Swift + TypeScript)+ 适配器一致性
 > 测试,并与本机的**磁盘实时数据**交叉核对:

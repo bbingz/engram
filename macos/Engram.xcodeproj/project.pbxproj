@@ -308,6 +308,7 @@
 		6D9B4EB5394C4CE713B3968D /* SnippetHighlighterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDFCC5EAA4FCA45CCC95A55C /* SnippetHighlighterTests.swift */; };
 		6DE2DD430838E61ABB8E6170 /* test-fixtures in Resources */ = {isa = PBXBuildFile; fileRef = 86B79EEC60447188C7D8C605 /* test-fixtures */; };
 		6E90B5112EC8F829B70A6898 /* SearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D8EF17C6D28CE971DAD62BF /* SearchTests.swift */; };
+		700288B611A6B18B80BF8512 /* AdapterSchemaDriftTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE17BC91C29E0ECFC56263ED /* AdapterSchemaDriftTests.swift */; };
 		7088C2A31448B493BE954A31 /* CommandPaletteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D71B6F2F670B5F9C79904E7B /* CommandPaletteTests.swift */; };
 		70A62C8528848EF5F80684C1 /* ArchiveModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B132577A172E114C44589557 /* ArchiveModels.swift */; };
 		70A93AE7B2D3AA93C9B98B11 /* EngramCLIContextCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F92EEFE86A15C22006453F8 /* EngramCLIContextCommand.swift */; };
@@ -360,6 +361,7 @@
 		8208F152898312B920C7C975 /* EngramCLIArchiveCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EA21C83675B0312417C952B /* EngramCLIArchiveCommand.swift */; };
 		82AC9F191D52FA3BC6C9FD76 /* AGENTS.md in Resources */ = {isa = PBXBuildFile; fileRef = 5CDCAD62ECCF9F31008E376B /* AGENTS.md */; };
 		8352A84898143779A0D84087 /* ImportRepo.swift in Sources */ = {isa = PBXBuildFile; fileRef = E82D19B2FEFE12422A15C4F9 /* ImportRepo.swift */; };
+		8459EBFCF9D8B7D931107A50 /* EngramRemoteServerCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5C1C8678A914AA14E36D52FF /* EngramRemoteServerCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		84CA919848FE27F9DC670F7A /* EngramCoreWrite.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */; };
 		84FC451B5E95245BD82626DE /* BarChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D04F3C79286C371A9D5E91B /* BarChart.swift */; };
 		85C1D3A4478EB20C2329C274 /* DeprecatedSettingsScrubTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD89017C638FB890D09C357 /* DeprecatedSettingsScrubTests.swift */; };
@@ -915,6 +917,7 @@
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
+				8459EBFCF9D8B7D931107A50 /* EngramRemoteServerCore.framework in Embed Frameworks */,
 				CE5ACE0C65F4594BC19CF4C3 /* EngramCoreWrite.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
@@ -1313,6 +1316,7 @@
 		BCBDF2E74FDC6BE088A6B2E4 /* SkeletonRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkeletonRow.swift; sourceTree = "<group>"; };
 		BD362E1468F8B43A3B8C1C21 /* OSLogReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OSLogReaderTests.swift; sourceTree = "<group>"; };
 		BDE4DF61DD3A039FECFB821D /* ProjectsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectsTests.swift; sourceTree = "<group>"; };
+		BE17BC91C29E0ECFC56263ED /* AdapterSchemaDriftTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdapterSchemaDriftTests.swift; sourceTree = "<group>"; };
 		BFCCDD3FC302BD745EDD110E /* SecureSettingsFileWriterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureSettingsFileWriterTests.swift; sourceTree = "<group>"; };
 		C0043D8A369FA7BDECC84AB8 /* Archive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Archive.swift; sourceTree = "<group>"; };
 		C04C58A206A1CA264C46A089 /* AgentsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsTests.swift; sourceTree = "<group>"; };
@@ -2456,6 +2460,7 @@
 			children = (
 				A141030045556B1AF55E63B6 /* AdapterMessageCountTests.swift */,
 				0C5B4BFC753862149BB4D986 /* AdapterParityTests.swift */,
+				BE17BC91C29E0ECFC56263ED /* AdapterSchemaDriftTests.swift */,
 				4FD389D7AA0661A42286E5F4 /* AdapterWindowedReadTests.swift */,
 				8EBD4EE6D945BEE3EEA9A58A /* EngramUserDataDirectoryTests.swift */,
 				04F796D7BB52854AAD26F0A7 /* HumanDrivenFilterTests.swift */,
@@ -3029,21 +3034,21 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				CBCDC5ABCED1290D34EC5E45 /* Engram */,
-				6EFB8FB1AB1AF1754D7D12E2 /* EngramCLI */,
 				9FCF956C8AC992AD35121793 /* EngramCoreRead */,
-				761CAC11525229DAF20DAFFE /* EngramCoreSchemaTool */,
-				625906E26599963CA0363FA5 /* EngramCoreTests */,
 				66715EBDF64143B4B7424B90 /* EngramCoreWrite */,
-				790D3733722391768E6E845B /* EngramMCP */,
-				4BEDF7101A8E6E1E3BE7587E /* EngramMCPTests */,
-				8FB9D4E7CB22CA508A1F4FC0 /* EngramRemoteServer */,
-				5729B9A54FF3E39F8C58A630 /* EngramRemoteServerCore */,
-				AD2DF7CFD4ED593A08D8EC0D /* EngramRemoteServerCoreTests */,
-				50CCD8ABB3B0D0D90287CF4D /* EngramService */,
+				625906E26599963CA0363FA5 /* EngramCoreTests */,
+				761CAC11525229DAF20DAFFE /* EngramCoreSchemaTool */,
 				0DFC19162331C57E93BD3D83 /* EngramServiceCore */,
 				1565AAD24D4ADE0D74FCB64A /* EngramServiceCoreTests */,
+				50CCD8ABB3B0D0D90287CF4D /* EngramService */,
+				CBCDC5ABCED1290D34EC5E45 /* Engram */,
+				6EFB8FB1AB1AF1754D7D12E2 /* EngramCLI */,
+				790D3733722391768E6E845B /* EngramMCP */,
+				5729B9A54FF3E39F8C58A630 /* EngramRemoteServerCore */,
+				8FB9D4E7CB22CA508A1F4FC0 /* EngramRemoteServer */,
+				AD2DF7CFD4ED593A08D8EC0D /* EngramRemoteServerCoreTests */,
 				30D8E174D1B1B7E0305A85E7 /* EngramTests */,
+				4BEDF7101A8E6E1E3BE7587E /* EngramMCPTests */,
 				3E8B4E524AA151B373A0BC91 /* EngramUITests */,
 			);
 		};
@@ -3254,6 +3259,7 @@
 			files = (
 				BA685621C4933D3E8B6C4708 /* AdapterMessageCountTests.swift in Sources */,
 				8801D3673FBF62F05195E8C4 /* AdapterParityTests.swift in Sources */,
+				700288B611A6B18B80BF8512 /* AdapterSchemaDriftTests.swift in Sources */,
 				F8281DFB2911C2E0D88B1A2A /* AdapterWindowedReadTests.swift in Sources */,
 				AAC156B2627621CC99102F33 /* ArchiveCASEvictorTests.swift in Sources */,
 				76F5EF80ADB3F6A366412C58 /* ArchiveCaptureCoordinatorTests.swift in Sources */,

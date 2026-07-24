@@ -1,6 +1,6 @@
 # LobsterAI — On-Disk Session Format (Detection Overlay)
 
-Last researched: 2026-06-21
+Last researched: 2026-07-24
 
 > **Evidence basis:** adapter source (Swift + TypeScript) + adapter parity
 > tests, cross-checked against **live on-disk data** on this machine:
