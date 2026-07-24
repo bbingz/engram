@@ -2,6 +2,10 @@
 
 ## Changelog Memo
 
+### 2026-07-25
+
+- [Codex 原生父子] 启动回填读 line-1 `thread_spawn`/`parent_thread_id`；无条件 `session_meta` 门；多字节头边界/全拒排水/游标三次不重读测试；格式文档与 ledger #2 同步。
+
 ### 2026-07-24
 
 - [插件] 新增独立的 Claude Code 插件 MVP：复用已安装的 `EngramCLI` / `EngramMCP`，提供 SessionStart 上下文注入与手动 `catch-up`、`remember`、`handoff` 技能，不捆绑第二套 Swift 二进制。

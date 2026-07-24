@@ -978,6 +978,7 @@ final class StartupBackfillTests: XCTestCase {
                 "backfillFilePaths",
                 "downgradeSubagentTiers",
                 "backfillParentLinks",
+                "backfillCodexNativeParents",
                 "resetStaleDetections",
                 "backfillCodexOriginator",
                 "backfillPolycliProviderParents",
@@ -1021,6 +1022,7 @@ final class StartupBackfillTests: XCTestCase {
                 StartupBackfillEvent(event: "backfill", payload: ["type": .string("file_paths"), "count": .int(8)]),
                 StartupBackfillEvent(event: "backfill", payload: ["type": .string("subagent_tier_downgrade"), "count": .int(9)]),
                 StartupBackfillEvent(event: "backfill", payload: ["type": .string("parent_links"), "linked": .int(10)]),
+                StartupBackfillEvent(event: "backfill", payload: ["type": .string("codex_native_parents"), "linked": .int(42)]),
                 StartupBackfillEvent(event: "backfill", payload: ["type": .string("detection_reset"), "count": .int(11)]),
                 StartupBackfillEvent(event: "backfill", payload: ["type": .string("codex_originator"), "updated": .int(12)]),
                 StartupBackfillEvent(
@@ -1938,6 +1940,8 @@ final class StartupBackfillTests: XCTestCase {
         linkCheckedAt: String? = nil,
         suggestionStatus: String? = nil,
         suggestionCandidates: String? = nil,
+        suggestedParentId: String? = nil,
+        parentSessionId: String? = nil,
         model: String? = nil,
         userMessageCount: Int = 0,
         assistantMessageCount: Int = 0,
@@ -1950,19 +1954,514 @@ final class StartupBackfillTests: XCTestCase {
             INSERT INTO sessions(
               id, source, start_time, end_time, cwd, project, summary, file_path,
               source_locator, agent_role, tier, link_source, link_checked_at,
-              suggestion_status, suggestion_candidates,
+              suggestion_status, suggestion_candidates, suggested_parent_id, parent_session_id,
               model, user_message_count, assistant_message_count, tool_message_count, system_message_count,
               quality_score
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             arguments: [
                 id, source, startTime, endTime, cwd, project, summary, filePath,
                 sourceLocator, agentRole, tier, linkSource, linkCheckedAt,
-                suggestionStatus, suggestionCandidates, model,
+                suggestionStatus, suggestionCandidates, suggestedParentId, parentSessionId, model,
                 userMessageCount, assistantMessageCount, toolMessageCount, systemMessageCount,
                 qualityScore
             ]
         )
+    }
+
+    private func writeCodexSpawnRollout(
+        id: String,
+        parentThreadId: String?,
+        depth: Int? = 1,
+        shape: CodexSpawnShape = .threadSpawn,
+        padLine1Past: Int? = nil,
+        padFilePast: Int? = nil
+    ) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-spawn-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(".codex", isDirectory: true)
+            .appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("rollout-\(id).jsonl")
+
+        var sourcePayload: Any
+        switch shape {
+        case .threadSpawn:
+            var spawn: [String: Any] = [:]
+            if let parentThreadId {
+                spawn["parent_thread_id"] = parentThreadId
+            } else {
+                spawn["parent_thread_id"] = NSNull()
+            }
+            if let depth { spawn["depth"] = depth }
+            spawn["agent_nickname"] = "Test"
+            sourcePayload = ["subagent": ["thread_spawn": spawn]]
+        case .reviewWithParent:
+            sourcePayload = ["subagent": "review"]
+        }
+
+        var payload: [String: Any] = [
+            "id": id,
+            "source": sourcePayload,
+        ]
+        if shape == .reviewWithParent, let parentThreadId {
+            payload["parent_thread_id"] = parentThreadId
+        }
+        if shape == .threadSpawn, parentThreadId != nil {
+            // Also stamp top-level when present (corpus agreement).
+            payload["parent_thread_id"] = parentThreadId as Any
+        }
+
+        var lineObject: [String: Any] = [
+            "type": "session_meta",
+            "payload": payload,
+        ]
+        if let padLine1Past {
+            // Inflate base_instructions so line 1 exceeds the pad threshold.
+            lineObject["payload"] = {
+                var p = payload
+                p["base_instructions"] = String(repeating: "x", count: padLine1Past)
+                return p
+            }()
+        }
+
+        let lineData = try JSONSerialization.data(withJSONObject: lineObject, options: [])
+        var body = lineData
+        body.append(contentsOf: [0x0A])
+        if let padFilePast {
+            // Pad so a multi-byte UTF-8 sequence *starts* at `padFilePast` and
+            // straddles the 256 KiB head cut (262_144). Example: padFilePast =
+            // 262_142 + 3-byte U+2713 (E2 9C 93) → window holds E2 9C only;
+            // whole-head UTF-8 decode fails, first-line decode still succeeds.
+            let padNeeded = max(0, padFilePast - body.count)
+            body.append(contentsOf: Array(repeating: UInt8(0x41), count: padNeeded))
+            body.append(contentsOf: [0xE2, 0x9C, 0x93]) // ✓ U+2713, 3 bytes
+        }
+        try body.write(to: url)
+        return url
+    }
+
+    private enum CodexSpawnShape {
+        case threadSpawn
+        case reviewWithParent
+    }
+
+    // docs/codex-native-parentage-design-2026-07.md — mirror row 22.
+    func testBackfillCodexNativeParentsLinksVendorStampedChild_repro() throws {
+        let parentId = "019cb312-98af-7be2-8524-a8c90a1a2b16"
+        let childId = "019cb6c7-d7da-7d81-97a7-f2deb2c20a8a"
+        let wrongSuggestion = "claude-wrong-parent"
+        let rollout = try writeCodexSpawnRollout(id: childId, parentThreadId: parentId)
+        defer { try? FileManager.default.removeItem(at: rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "premium")
+            try insertSession(
+                db,
+                id: childId,
+                source: "codex",
+                filePath: rollout.path,
+                agentRole: nil,
+                tier: "premium",
+                linkCheckedAt: "2026-07-01T00:00:00.000Z",
+                suggestedParentId: wrongSuggestion
+            )
+
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [childId]))
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = ?", arguments: [childId]),
+                wrongSuggestion
+            )
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 1)
+
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [childId]),
+                parentId
+            )
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = ?", arguments: [childId]), "path")
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = ?", arguments: [childId]))
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = ?", arguments: [childId]), "dispatched")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = ?", arguments: [childId]), "skip")
+        }
+    }
+
+    func testBackfillCodexNativeParentsSkipsDepthTwoChains() throws {
+        let parentId = "depth2-parent"
+        let childId = "depth2-child"
+        let rollout = try writeCodexSpawnRollout(id: childId, parentThreadId: parentId, depth: 2)
+        defer { try? FileManager.default.removeItem(at: rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "premium")
+            try insertSession(db, id: childId, source: "codex", filePath: rollout.path, tier: "premium")
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 0)
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [childId]))
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = ?", arguments: [childId]), "premium")
+        }
+    }
+
+    func testBackfillCodexNativeParentsSkipsSkipTierParents() throws {
+        let parentId = "skip-parent"
+        let childId = "skip-parent-child"
+        let wrong = "wrong-suggestion"
+        let rollout = try writeCodexSpawnRollout(id: childId, parentThreadId: parentId)
+        defer { try? FileManager.default.removeItem(at: rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "skip")
+            try insertSession(
+                db,
+                id: childId,
+                source: "codex",
+                filePath: rollout.path,
+                tier: "premium",
+                suggestedParentId: wrong
+            )
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 0)
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [childId]))
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = ?", arguments: [childId]),
+                wrong
+            )
+        }
+    }
+
+    func testBackfillCodexNativeParentsPreservesManualUnlink() throws {
+        let parentId = "manual-parent"
+        let childId = "manual-child"
+        let rollout = try writeCodexSpawnRollout(id: childId, parentThreadId: parentId)
+        defer { try? FileManager.default.removeItem(at: rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "premium")
+            try insertSession(
+                db,
+                id: childId,
+                source: "codex",
+                filePath: rollout.path,
+                linkSource: "manual",
+                parentSessionId: nil
+            )
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 0)
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [childId]))
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = ?", arguments: [childId]), "manual")
+        }
+    }
+
+    func testBackfillCodexNativeParentsClearsOnlyLinkedRowsSuggestions() throws {
+        let parentId = "clear-parent"
+        let linkedId = "clear-linked"
+        let untouchedId = "clear-untouched"
+        let rollout = try writeCodexSpawnRollout(id: linkedId, parentThreadId: parentId)
+        defer { try? FileManager.default.removeItem(at: rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "premium")
+            try insertSession(
+                db,
+                id: linkedId,
+                source: "codex",
+                filePath: rollout.path,
+                suggestedParentId: "wrong-a"
+            )
+            try insertSession(
+                db,
+                id: untouchedId,
+                source: "codex",
+                filePath: "/tmp/.codex/no-spawn.jsonl",
+                suggestedParentId: "wrong-b"
+            )
+            // no-spawn file does not exist → not linked
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 1)
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = ?", arguments: [linkedId]))
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT suggested_parent_id FROM sessions WHERE id = ?", arguments: [untouchedId]),
+                "wrong-b"
+            )
+        }
+    }
+
+    func testBackfillCodexNativeParentsUsesTopLevelParentThreadIdFallback() throws {
+        let parentId = "review-parent"
+        let childId = "review-child"
+        let rollout = try writeCodexSpawnRollout(id: childId, parentThreadId: parentId, shape: .reviewWithParent)
+        defer { try? FileManager.default.removeItem(at: rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "premium")
+            try insertSession(db, id: childId, source: "codex", filePath: rollout.path, agentRole: "explorer", tier: "skip")
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [childId]),
+                parentId
+            )
+            // Existing role preserved.
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT agent_role FROM sessions WHERE id = ?", arguments: [childId]), "explorer")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = ?", arguments: [childId]), "skip")
+        }
+    }
+
+    func testBackfillCodexNativeParentsReadsLineOneBeyond16KiB() throws {
+        let parentId = "pad-parent"
+        let childId = "pad-child"
+        let rollout = try writeCodexSpawnRollout(id: childId, parentThreadId: parentId, padLine1Past: 20_000)
+        defer { try? FileManager.default.removeItem(at: rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "premium")
+            try insertSession(db, id: childId, source: "codex", filePath: rollout.path, tier: "premium")
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [childId]),
+                parentId
+            )
+        }
+    }
+
+    /// Multi-byte UTF-8 straddling the 256 KiB head cut: whole-head decode fails;
+    /// `readFirstLineBytes` still decodes line 1 and links the child.
+    func testBackfillCodexNativeParentsDecodesLineOneAcrossMultiByteHeadBoundary() throws {
+        let parentId = "mb-parent"
+        let childId = "mb-child"
+        let headScan = 256 * 1024 // StartupBackfills.codexModelHeadScanBytes
+        // 3-byte U+2713 starts at 262_142 → bytes 262_142..262_144 straddle the cut.
+        let multiByteStart = headScan - 2
+        let rollout = try writeCodexSpawnRollout(
+            id: childId,
+            parentThreadId: parentId,
+            padFilePast: multiByteStart
+        )
+        defer { try? FileManager.default.removeItem(at: rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+
+        // Prove the fixture actually straddles: whole-head UTF-8 fails, first line succeeds.
+        let headData = try Data(contentsOf: rollout).prefix(headScan)
+        XCTAssertEqual(headData.count, headScan)
+        XCTAssertNil(
+            String(data: Data(headData), encoding: .utf8),
+            "fixture must place a truncated multi-byte sequence at the head cut"
+        )
+        let firstLine = StartupBackfills.readFirstLineBytes(path: rollout.path, maxBytes: headScan)
+        XCTAssertNotNil(firstLine, "first-line decode must survive the straddling multi-byte tail")
+        XCTAssertTrue(firstLine?.contains(parentId) == true, firstLine ?? "")
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "premium")
+            try insertSession(db, id: childId, source: "codex", filePath: rollout.path, tier: "premium")
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [childId]),
+                parentId
+            )
+        }
+    }
+
+    /// >500 fully rejected candidates must not strand a later valid child
+    /// (guards against LIMIT-500 loops that never advance past rejects).
+    func testBackfillCodexNativeParentsDrainsPastAFullyRejectedFirstPage() throws {
+        let parentId = "drain-parent"
+        let goodChildId = "drain-good-child"
+        let goodRollout = try writeCodexSpawnRollout(id: goodChildId, parentThreadId: parentId)
+        var rejectRoots: [URL] = []
+        defer {
+            try? FileManager.default.removeItem(at: goodRollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent())
+            for root in rejectRoots {
+                try? FileManager.default.removeItem(at: root)
+            }
+        }
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "premium")
+            for i in 0..<501 {
+                let rejectId = String(format: "drain-reject-%03d", i)
+                // depth=2 is always declined; parent exists so path is not the failure mode.
+                let rollout = try writeCodexSpawnRollout(id: rejectId, parentThreadId: parentId, depth: 2)
+                rejectRoots.append(
+                    rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                )
+                try insertSession(db, id: rejectId, source: "codex", filePath: rollout.path, tier: "premium")
+            }
+            try insertSession(db, id: goodChildId, source: "codex", filePath: goodRollout.path, tier: "premium")
+
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 1)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [goodChildId]),
+                parentId
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: ["drain-reject-000"])
+            )
+        }
+    }
+
+    /// Rowid high-water cursor: after scanning rejected rows, later calls do not re-read them
+    /// even if the on-disk stamp becomes linkable.
+    func testBackfillCodexNativeParentsDoesNotRereadRejectedRowsOnThirdCall() throws {
+        let parentId = "cursor-parent"
+        let childId = "cursor-reject-then-valid"
+        // First pass: depth=2 → rejected but still eligible by SQL (parent null).
+        let rejectRollout = try writeCodexSpawnRollout(id: childId, parentThreadId: parentId, depth: 2)
+        let root = rejectRollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "premium")
+            try insertSession(db, id: childId, source: "codex", filePath: rejectRollout.path, tier: "premium")
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 0)
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [childId]))
+        }
+
+        // On disk the stamp is now depth=1 and would link if re-read.
+        let validRollout = try writeCodexSpawnRollout(id: childId, parentThreadId: parentId, depth: 1)
+        defer { try? FileManager.default.removeItem(at: validRollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+        try FileManager.default.removeItem(at: rejectRollout)
+        try FileManager.default.copyItem(at: validRollout, to: rejectRollout)
+
+        try writer.write { db in
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 0)
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 0)
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [childId]))
+        }
+    }
+
+    func testBackfillCodexNativeParentsDeletesFtsRowsWhenTierBecomesSkip() throws {
+        let parentId = "fts-parent"
+        let childId = "fts-child"
+        let rollout = try writeCodexSpawnRollout(id: childId, parentThreadId: parentId)
+        defer { try? FileManager.default.removeItem(at: rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "premium")
+            try insertSession(db, id: childId, source: "codex", filePath: rollout.path, agentRole: nil, tier: "premium")
+            try db.execute(sql: "INSERT INTO sessions_fts(session_id, content) VALUES (?, 'child content')", arguments: [childId])
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = ?", arguments: [childId]), 0)
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT tier FROM sessions WHERE id = ?", arguments: [childId]), "skip")
+        }
+    }
+
+    func testBackfillCodexNativeParentsVersionGatePreventsSecondSweep() throws {
+        let parentId = "vg-parent"
+        let childId = "vg-child"
+        let rollout = try writeCodexSpawnRollout(id: childId, parentThreadId: parentId)
+        let root = rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "premium")
+            try insertSession(db, id: childId, source: "codex", filePath: rollout.path, tier: "premium")
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 1)
+        }
+        try? FileManager.default.removeItem(at: rollout)
+        try writer.write { db in
+            // Unlink so a re-read would re-link if it still read the file.
+            try db.execute(sql: "UPDATE sessions SET parent_session_id = NULL, link_source = NULL WHERE id = ?", arguments: [childId])
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 0)
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [childId]))
+        }
+    }
+
+    func testBackfillCodexNativeParentsIsIdempotentOverAlreadyLinkedRows() throws {
+        let parentId = "idemp-parent"
+        let childId = "idemp-child"
+        let rollout = try writeCodexSpawnRollout(id: childId, parentThreadId: parentId)
+        defer { try? FileManager.default.removeItem(at: rollout.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "premium")
+            try insertSession(
+                db,
+                id: childId,
+                source: "codex",
+                filePath: rollout.path,
+                linkSource: "path",
+                parentSessionId: parentId
+            )
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 0)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [childId]),
+                parentId
+            )
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = ?", arguments: [childId]), "path")
+        }
+    }
+
+    func testBackfillCodexNativeParentsIgnoresClaudeOpenAIPaths() throws {
+        let parentId = "coai-parent"
+        let childId = "coai-child"
+        // Path deliberately lacks `/.codex/`.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-openai-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(".claude-openai/projects", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent().deletingLastPathComponent()) }
+        let url = root.appendingPathComponent("rollout.jsonl")
+        let spawn = try writeCodexSpawnRollout(id: childId, parentThreadId: parentId)
+        try FileManager.default.copyItem(at: spawn, to: url)
+        try? FileManager.default.removeItem(at: spawn.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent())
+
+        try writer.write { db in
+            try insertSession(db, id: parentId, source: "codex", filePath: "/tmp/.codex/parent.jsonl", tier: "premium")
+            try insertSession(db, id: childId, source: "codex", filePath: url.path, tier: "premium")
+            XCTAssertEqual(try StartupBackfills.backfillCodexNativeParents(db), 0)
+            XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = ?", arguments: [childId]))
+        }
+    }
+
+    func testCodexSpawnParentParserShapes() {
+        // Shape 1: thread_spawn
+        let shape1 = """
+        {"type":"session_meta","payload":{"id":"c1","source":{"subagent":{"thread_spawn":{"parent_thread_id":"p1","depth":1}}},"agent_role":"explorer"}}
+        """
+        let r1 = StartupBackfills.codexSpawnParent(head: shape1)
+        XCTAssertEqual(r1?.parentId, "p1")
+        XCTAssertEqual(r1?.depth, 1)
+
+        // Shape 3: review + top-level parent_thread_id
+        let shape3 = """
+        {"type":"session_meta","payload":{"id":"c3","source":{"subagent":"review"},"parent_thread_id":"p3"}}
+        """
+        XCTAssertEqual(StartupBackfills.codexSpawnParent(head: shape3)?.parentId, "p3")
+
+        // Shape 4: review, no parent
+        let shape4 = """
+        {"type":"session_meta","payload":{"id":"c4","source":{"subagent":"review"}}}
+        """
+        XCTAssertNil(StartupBackfills.codexSpawnParent(head: shape4))
+
+        // Bare-string source
+        let bare = """
+        {"type":"session_meta","payload":{"id":"c5","source":"cli"}}
+        """
+        XCTAssertNil(StartupBackfills.codexSpawnParent(head: bare))
+
+        // Null parent_thread_id inside thread_spawn
+        let nullParent = """
+        {"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":null,"depth":1}}}}}
+        """
+        XCTAssertNil(StartupBackfills.codexSpawnParent(head: nullParent))
+
+        // Depth 2
+        let depth2 = """
+        {"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"p2","depth":2}}}}}
+        """
+        XCTAssertEqual(StartupBackfills.codexSpawnParent(head: depth2)?.depth, 2)
+
+        // Unconditional type gate: bare payload / missing session_meta → nil
+        let barePayload = """
+        {"id":"c-bare","parent_thread_id":"p-bare","source":{"subagent":{"thread_spawn":{"parent_thread_id":"p-bare","depth":1}}}}
+        """
+        XCTAssertNil(StartupBackfills.codexSpawnParent(head: barePayload))
+
+        let wrongType = """
+        {"type":"event_msg","payload":{"parent_thread_id":"p-wrong","source":{"subagent":{"thread_spawn":{"parent_thread_id":"p-wrong","depth":1}}}}}
+        """
+        XCTAssertNil(StartupBackfills.codexSpawnParent(head: wrongType))
+
+        let payloadOnlyNoType = """
+        {"payload":{"parent_thread_id":"p-not","source":{"subagent":{"thread_spawn":{"parent_thread_id":"p-not","depth":1}}}}}
+        """
+        XCTAssertNil(StartupBackfills.codexSpawnParent(head: payloadOnlyNoType))
     }
 
     private func createRecoverableArtifactTables(_ db: Database) throws {
@@ -2345,6 +2844,11 @@ private final class RecordingStartupDatabase: StartupBackfillDatabase {
     func backfillParentLinks() throws -> StartupBackfills.ParentLinkResult {
         callOrder.append("backfillParentLinks")
         return StartupBackfills.ParentLinkResult(linked: 10)
+    }
+
+    func backfillCodexNativeParents() throws -> Int {
+        callOrder.append("backfillCodexNativeParents")
+        return 42
     }
 
     func resetStaleDetections() throws -> Int {
