@@ -7,6 +7,38 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Local-only: external build storage and disk cleanup (2026-07-24)
+
+- PR #240 is merged at
+  `cb6bffc3528df3ddbe07add040508f757009173f`, and the installed Developer ID
+  App remains `1.0.5 (1340)`. The machine-specific build-path implementation is
+  retained only on local branch `local/external-build-root` at
+  `da595285e93dc13099af3c959e7aa41ae62486af`; it has no upstream or remote
+  branch. Shared main intentionally does not default to
+  `/Volumes/Bing-SSD-5`, which would break CI and other Macs.
+- The local-only branch routes DerivedData, archive, and export logs through
+  `/Volumes/Bing-SSD-5/XcodeBuilds/Engram`, supports
+  `ENGRAM_BUILD_ROOT`/`--print-paths`, and fails before writes when an external
+  volume is unavailable. Final exports and rollback artifacts remain under
+  `macos/build`.
+- Removed the clean squash-equivalent Claude plugin worktree/branch, nine
+  audit branches already reachable from main, reproducible `node_modules`
+  (595 MB), and the installed-copy-equivalent `macos/build/EngramExport`
+  (50 MB). A normal `git gc` reduced `.git` from 459 MB to about 174 MB;
+  `.codegraph` and the rollback ZIP were preserved.
+- Rollback
+  `macos/build/rollback/Engram-1.0.4-20260721142837-before-plugin-20260724T050733Z.app.zip`
+  passed ZIP integrity with SHA-256
+  `3d92e132256ff973044efe12abeb4b3d55baae2517c177c2e6e389bc4ae08a03`.
+  Post-cleanup App/Service process checks and read-only archive-status IPC
+  passed. No rebuild, reinstall, restart, migration, Keychain/MCP change, or
+  remote write occurred.
+- Before dependency cleanup, shell syntax/shellcheck, Biome, test typecheck,
+  29/29 focused release-script tests, `git diff --check`, and a real mounted
+  volume smoke passed. Full coverage remained environment-blocked by the
+  Node 26.5.0 versus `better-sqlite3` ABI mismatch and coverage parsing
+  `src/AGENTS.md`; restore tooling with Node 24 plus `npm ci`.
+
 ### Added: Claude Code plugin MVP (2026-07-24)
 
 - Added a thin plugin under `integrations/claude-code/engram` that reuses the
@@ -36,9 +68,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   three skills, connected the plugin MCP server, injected SessionStart context,
   returned `PLUGIN_OK`, and left the fixture database byte-identical; 10 direct
   context starts stayed below the 1-second p95 gate.
-- This work remains isolated on `feat/claude-code-plugin-mvp` for Draft PR
-  review. It does not change the 1.0.5 release candidate, merge to `main`,
-  create a tag or release, notarize, or deploy an app.
+- PR #240 passed its required checks, squash-merged as `cb6bffc`, and was
+  deployed locally as Developer ID Engram `1.0.5 (1340)`. This deployment did
+  not create a tag/GitHub Release, notarize, staple, or modify Keychain/MCP
+  configuration.
 
 ### Release candidate: v1.0.5 metadata (2026-07-23)
 
