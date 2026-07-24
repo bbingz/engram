@@ -33,7 +33,7 @@ enum MCPOutputSchemas {
     )
 
     static let getCosts = j(
-        #"{"type":"object","additionalProperties":false,"required":["totalCostUsd","totalInputTokens","totalOutputTokens","breakdown"],"properties":{"totalCostUsd":{"type":"number"},"totalInputTokens":{"type":"integer"},"totalOutputTokens":{"type":"integer"},"breakdown":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["key","inputTokens","outputTokens","cacheReadTokens","cacheCreationTokens","costUsd","sessionCount"],"properties":{"key":{"type":["string","null"]},"inputTokens":{"type":"integer"},"outputTokens":{"type":"integer"},"cacheReadTokens":{"type":"integer"},"cacheCreationTokens":{"type":"integer"},"costUsd":{"type":"number"},"sessionCount":{"type":"integer"}}}}}}"#
+        #"{"type":"object","additionalProperties":false,"required":["totalCostUsd","totalInputTokens","totalOutputTokens","breakdown"],"properties":{"totalCostUsd":{"type":"number"},"totalInputTokens":{"type":"integer"},"totalOutputTokens":{"type":"integer"},"unpricedUnattributedSessions":{"type":"integer"},"unpricedNoPriceSessions":{"type":"integer"},"unpricedUnattributedTokens":{"type":"integer"},"unpricedNoPriceTokens":{"type":"integer"},"breakdown":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["key","inputTokens","outputTokens","cacheReadTokens","cacheCreationTokens","costUsd","sessionCount"],"properties":{"key":{"type":["string","null"]},"inputTokens":{"type":"integer"},"outputTokens":{"type":"integer"},"cacheReadTokens":{"type":"integer"},"cacheCreationTokens":{"type":"integer"},"costUsd":{"type":"number"},"sessionCount":{"type":"integer"}}}}}}"#
     )
 
     static let toolAnalytics = j(

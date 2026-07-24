@@ -2690,6 +2690,57 @@ struct EngramServiceCostsResponse: Codable, Equatable, Sendable {
     let perDay: [DayRow]
     let monthToDateUsd: Double
     let todayUsd: Double
+    /// Token-carrying sessions with NULL cost and no model attribution (row 4).
+    let unpricedUnattributedSessions: Int
+    let unpricedNoPriceSessions: Int
+    let unpricedUnattributedTokens: Int
+    let unpricedNoPriceTokens: Int
+
+    init(
+        totalUsd: Double,
+        perSource: [SourceRow],
+        perDay: [DayRow],
+        monthToDateUsd: Double,
+        todayUsd: Double,
+        unpricedUnattributedSessions: Int = 0,
+        unpricedNoPriceSessions: Int = 0,
+        unpricedUnattributedTokens: Int = 0,
+        unpricedNoPriceTokens: Int = 0
+    ) {
+        self.totalUsd = totalUsd
+        self.perSource = perSource
+        self.perDay = perDay
+        self.monthToDateUsd = monthToDateUsd
+        self.todayUsd = todayUsd
+        self.unpricedUnattributedSessions = unpricedUnattributedSessions
+        self.unpricedNoPriceSessions = unpricedNoPriceSessions
+        self.unpricedUnattributedTokens = unpricedUnattributedTokens
+        self.unpricedNoPriceTokens = unpricedNoPriceTokens
+    }
+}
+
+extension EngramServiceCostsResponse {
+    /// Forward-compatible decode: older service payloads without unpriced keys
+    /// still decode (row 4). Kept in an extension so the memberwise init above
+    /// is not suppressed.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        totalUsd = try container.decode(Double.self, forKey: .totalUsd)
+        perSource = try container.decode([SourceRow].self, forKey: .perSource)
+        perDay = try container.decode([DayRow].self, forKey: .perDay)
+        monthToDateUsd = try container.decode(Double.self, forKey: .monthToDateUsd)
+        todayUsd = try container.decode(Double.self, forKey: .todayUsd)
+        unpricedUnattributedSessions = try container.decodeIfPresent(Int.self, forKey: .unpricedUnattributedSessions) ?? 0
+        unpricedNoPriceSessions = try container.decodeIfPresent(Int.self, forKey: .unpricedNoPriceSessions) ?? 0
+        unpricedUnattributedTokens = try container.decodeIfPresent(Int.self, forKey: .unpricedUnattributedTokens) ?? 0
+        unpricedNoPriceTokens = try container.decodeIfPresent(Int.self, forKey: .unpricedNoPriceTokens) ?? 0
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case totalUsd, perSource, perDay, monthToDateUsd, todayUsd
+        case unpricedUnattributedSessions, unpricedNoPriceSessions
+        case unpricedUnattributedTokens, unpricedNoPriceTokens
+    }
 }
 
 struct ServiceCommandLatency: Codable, Equatable, Identifiable, Sendable {

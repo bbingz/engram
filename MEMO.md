@@ -2,6 +2,10 @@
 
 ## Changelog Memo
 
+### 2026-07-25
+
+- [成本诚实] `get_insights` 按真实窗口日投影月花费，不足 3 天拒绝投影；`get_costs`/服务 costs 披露未计价会话并按归因缺失 vs 价表缺口分桶；CostSummary 有未计价提示行。Part C prices.json 仍延后。
+
 ### 2026-07-24
 
 - [插件] 新增独立的 Claude Code 插件 MVP：复用已安装的 `EngramCLI` / `EngramMCP`，提供 SessionStart 上下文注入与手动 `catch-up`、`remember`、`handoff` 技能，不捆绑第二套 Swift 二进制。

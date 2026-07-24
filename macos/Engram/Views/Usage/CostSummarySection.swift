@@ -29,6 +29,9 @@ struct CostSummarySection: View {
                 }
             } else if let costs, hasData {
                 summaryRow(costs)
+                if Self.showsUnpricedRow(costs) {
+                    unpricedDisclosure(costs)
+                }
                 if !costs.perSource.isEmpty {
                     perSourceBreakdown(costs.perSource)
                 }
@@ -52,6 +55,27 @@ struct CostSummarySection: View {
             KPICard(value: Self.formatUsd(costs.todayUsd), label: "Today")
             KPICard(value: Self.formatUsd(costs.monthToDateUsd), label: "Month to Date")
         }
+    }
+
+    /// Pure show/hide for the unpriced disclosure (row 4) — unit-testable.
+    static func showsUnpricedRow(_ costs: EngramServiceCostsResponse?) -> Bool {
+        guard let costs else { return false }
+        return costs.unpricedUnattributedSessions > 0
+            || costs.unpricedNoPriceSessions > 0
+            || costs.unpricedUnattributedTokens > 0
+            || costs.unpricedNoPriceTokens > 0
+    }
+
+    @ViewBuilder
+    private func unpricedDisclosure(_ costs: EngramServiceCostsResponse) -> some View {
+        let total = costs.unpricedUnattributedSessions + costs.unpricedNoPriceSessions
+        Text(
+            "\(total) sessions unpriced — \(costs.unpricedUnattributedSessions) unattributed, \(costs.unpricedNoPriceSessions) unknown model"
+        )
+        .font(.caption)
+        .foregroundStyle(Theme.tertiaryText)
+        .help("Token-carrying sessions Engram could not price. Not a billing figure.")
+        .accessibilityIdentifier("cost_unpricedDisclosure")
     }
 
     @ViewBuilder

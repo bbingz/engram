@@ -144,6 +144,48 @@ final class EngramServiceCostsTests: XCTestCase {
         XCTAssertEqual(codex.sessionCount, 2)
     }
 
+    // row 4 (mcp-cost-honesty): unpriced rows split by attribution vs table-gap.
+    // Fails before the four unpriced fields exist on EngramServiceCostsResponse.
+    func testCostsSplitUnpricedByCause_repro() async throws {
+        let todayInstant = Calendar.current.date(
+            bySettingHour: 12, minute: 0, second: 0, of: Date()
+        ) ?? Date()
+        let path = try seedCostsFixture { db in
+            try insertSession(db, id: "priced", source: "codex", startTime: isoInstant(todayInstant))
+            try insertSession(db, id: "unattrib", source: "codex", startTime: isoInstant(todayInstant.addingTimeInterval(60)))
+            try insertSession(db, id: "noprice", source: "codex", startTime: isoInstant(todayInstant.addingTimeInterval(120)))
+            try insertSession(db, id: "zerotok", source: "codex", startTime: isoInstant(todayInstant.addingTimeInterval(180)))
+            try insertCost(
+                db, sessionId: "priced", costUsd: 2.0, model: "gpt-5",
+                inputTokens: 100, outputTokens: 50
+            )
+            try insertCost(
+                db, sessionId: "unattrib", costUsd: nil, model: nil,
+                inputTokens: 200, outputTokens: 0
+            )
+            try insertCost(
+                db, sessionId: "noprice", costUsd: nil, model: "gpt-5.6-sol",
+                inputTokens: 300, outputTokens: 10
+            )
+            // Zero-token NULL-cost must not enter either unpriced bucket.
+            try insertCost(
+                db, sessionId: "zerotok", costUsd: nil, model: nil,
+                inputTokens: 0, outputTokens: 0
+            )
+        }
+
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: path)
+        let costs = try await provider.costs()
+
+        XCTAssertEqual(costs.totalUsd, 2.0, accuracy: 0.001)
+        XCTAssertEqual(costs.unpricedUnattributedSessions, 1)
+        XCTAssertEqual(costs.unpricedNoPriceSessions, 1)
+        XCTAssertEqual(costs.unpricedUnattributedTokens, 200)
+        XCTAssertEqual(costs.unpricedNoPriceTokens, 310)
+        // sessionCount still includes all cost rows (unchanged conflated total).
+        XCTAssertEqual(costs.perSource.first?.sessionCount, 4)
+    }
+
     // MARK: - Helpers
 
     /// Full UTC ISO instant (what adapters store in `start_time`).
@@ -221,10 +263,21 @@ final class EngramServiceCostsTests: XCTestCase {
         )
     }
 
-    private func insertCost(_ db: GRDB.Database, sessionId: String, costUsd: Double?) throws {
+    private func insertCost(
+        _ db: GRDB.Database,
+        sessionId: String,
+        costUsd: Double?,
+        model: String? = nil,
+        inputTokens: Int = 0,
+        outputTokens: Int = 0
+    ) throws {
         try db.execute(
-            sql: "INSERT INTO session_costs (session_id, cost_usd) VALUES (?, ?)",
-            arguments: [sessionId, costUsd]
+            sql: """
+                INSERT INTO session_costs (
+                  session_id, model, input_tokens, output_tokens, cost_usd
+                ) VALUES (?, ?, ?, ?, ?)
+            """,
+            arguments: [sessionId, model, inputTokens, outputTokens, costUsd]
         )
     }
 }

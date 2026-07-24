@@ -2987,6 +2987,88 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    // MARK: - get_insights honest projection (mirror row 3 / PR #251)
+
+    /// PR #251 (mirror row 3): windows shorter than 3 calendar days withhold the
+    /// monthly projection (no amount, no pace bullet). Behavioral via real binary.
+    func testGetInsightsWithholdsProjectionForShortWindow_repro() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-insights-short.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        // ENGRAM_MCP_NOW = 2026-07-01; since = now-2d → windowDays = 2 < 3.
+        try seedPricedInsightSpend(
+            dbURL,
+            sessionId: "mcp-fixture-01",
+            startTime: "2026-06-30T12:00:00.000Z",
+            costUsd: 30.0
+        )
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_insights","arguments":{"since":"2026-06-29T00:00:00.000Z"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+                "ENGRAM_MCP_NOW": "2026-07-01T00:00:00.000Z",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error, String(describing: capture.response.error))
+        let text = try XCTUnwrap(
+            capture.ordered["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue
+        )
+        XCTAssertTrue(text.contains("too short to project"), text)
+        XCTAssertFalse(
+            text.contains("Projected monthly $"),
+            "short window must not emit a projected dollar amount: \(text)"
+        )
+        XCTAssertFalse(text.contains("Monthly pace:"), text)
+    }
+
+    /// PR #251 (mirror row 3): $30 over 30 days projects to $30.00, not the old
+    /// hardcoded `/7.0` bug value $128.57.
+    func testGetInsightsProjectsOverActualWindow() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-insights-30d.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        // ENGRAM_MCP_NOW = 2026-07-01; since = 2026-06-01 → windowDays = 30.
+        try seedPricedInsightSpend(
+            dbURL,
+            sessionId: "mcp-fixture-01",
+            startTime: "2026-06-15T12:00:00.000Z",
+            costUsd: 30.0
+        )
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_insights","arguments":{"since":"2026-06-01T00:00:00.000Z"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+                "ENGRAM_MCP_NOW": "2026-07-01T00:00:00.000Z",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error, String(describing: capture.response.error))
+        let text = try XCTUnwrap(
+            capture.ordered["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue
+        )
+        XCTAssertTrue(text.contains("$30.00"), text)
+        XCTAssertFalse(
+            text.contains("$128.57"),
+            "must not use the old hardcoded /7.0 projection: \(text)"
+        )
+        XCTAssertTrue(text.contains("Projected monthly $30.00"), text)
+    }
+
     func testLinkSessionsMatchesGolden() throws {
         let targetDir = try temporaryFixtureCopy(
             "mcp-runtime/engram",
@@ -4842,6 +4924,31 @@ final class EngramMCPExecutableTests: XCTestCase {
             try db.execute(
                 sql: "UPDATE session_costs SET cost_usd = ? WHERE session_id = ?",
                 arguments: [0.25, "mcp-fixture-02"]
+            )
+        }
+    }
+
+    /// Zero other costs, then place one priced session inside the insights window.
+    private func seedPricedInsightSpend(
+        _ dbURL: URL,
+        sessionId: String,
+        startTime: String,
+        costUsd: Double
+    ) throws {
+        let queue = try DatabaseQueue(path: dbURL.path)
+        try queue.write { db in
+            try db.execute(sql: "UPDATE session_costs SET cost_usd = 0")
+            try db.execute(
+                sql: "UPDATE sessions SET start_time = ?, hidden_at = NULL WHERE id = ?",
+                arguments: [startTime, sessionId]
+            )
+            try db.execute(
+                sql: """
+                UPDATE session_costs
+                SET cost_usd = ?, input_tokens = 1000, output_tokens = 500, model = 'gpt-test'
+                WHERE session_id = ?
+                """,
+                arguments: [costUsd, sessionId]
             )
         }
     }
