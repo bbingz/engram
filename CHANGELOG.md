@@ -7,6 +7,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: MCP activation and onboarding polish (rows 7/17/24/28) (2026-07-25)
+
+- Onboarding completion records on any window dismissal (close button / Cmd-W /
+  Open Engram), not only the primary button; Windsurf probe uses
+  `.engram/cache/windsurf`.
+- MCP helper path defaults from the running bundle via `mcpHelperCandidates`;
+  stale hardcoded `/Applications/…` values migrate once; Node MCP legacy copy
+  removed.
+- Help menu + menu-bar context items for Report an Issue and Show Onboarding
+  (ordered before the separator so row 5 Restart Service can land after it).
+- Home MCP activation card gated on indexed sessions, Claude Code `engram`
+  config key, and dismiss; onboarding gains an MCP step before Ready.
+- In-app MCP "Test now" verification ladder (resolve → exec → handshake → socket).
+
+
 ### Added: Claude Code plugin MVP (2026-07-24)
 
 - Added a thin plugin under `integrations/claude-code/engram` that reuses the

@@ -176,6 +176,9 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private func showContextMenu() {
         let menu = NSMenu()
 
+        // Order (integrate with service-resilience row 5): Open Window / Settings /
+        // (Report an Issue, Show Onboarding) / separator / [Restart Service when
+        // isFailed] / Quit — Help items before the separator.
         let openItem = NSMenuItem(title: String(localized: "Open Window"), action: #selector(openWindow), keyEquivalent: "")
         openItem.target = self
         menu.addItem(openItem)
@@ -183,6 +186,22 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         let settingsItem = NSMenuItem(title: String(localized: "Settings..."), action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
+
+        let reportItem = NSMenuItem(
+            title: String(localized: "Report an Issue…"),
+            action: #selector(reportAnIssue),
+            keyEquivalent: ""
+        )
+        reportItem.target = self
+        menu.addItem(reportItem)
+
+        let onboardItem = NSMenuItem(
+            title: String(localized: "Show Onboarding"),
+            action: #selector(showOnboardingFromMenu),
+            keyEquivalent: ""
+        )
+        onboardItem.target = self
+        menu.addItem(onboardItem)
 
         menu.addItem(.separator())
 
@@ -194,6 +213,16 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         menu.delegate = self          // menuDidClose will nil out statusItem.menu
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
+    }
+
+    @objc func reportAnIssue() {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        NSWorkspace.shared.open(GitHubIssueURL.reportIssue(version: version, build: build))
+    }
+
+    @objc func showOnboardingFromMenu() {
+        NotificationCenter.default.post(name: .showOnboarding, object: nil)
     }
 
     // Remove the menu after it closes so left-click still triggers the popover
@@ -555,6 +584,27 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         windowMenuItem.submenu = windowMenu
         mainMenu.addItem(windowMenuItem)
         NSApp.windowsMenu = windowMenu
+
+        // Help menu (row 17) — after Window, before mainMenu assignment.
+        let helpMenu = NSMenu(title: String(localized: "Help"))
+        let reportItem = NSMenuItem(
+            title: String(localized: "Report an Issue…"),
+            action: #selector(reportAnIssue),
+            keyEquivalent: ""
+        )
+        reportItem.target = self
+        helpMenu.addItem(reportItem)
+        let onboardItem = NSMenuItem(
+            title: String(localized: "Show Onboarding"),
+            action: #selector(showOnboardingFromMenu),
+            keyEquivalent: ""
+        )
+        onboardItem.target = self
+        helpMenu.addItem(onboardItem)
+        let helpMenuItem = NSMenuItem()
+        helpMenuItem.submenu = helpMenu
+        mainMenu.addItem(helpMenuItem)
+        NSApp.helpMenu = helpMenu
 
         NSApp.mainMenu = mainMenu
     }

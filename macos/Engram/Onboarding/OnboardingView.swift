@@ -2,7 +2,7 @@
 import AppKit
 import SwiftUI
 
-/// First-run onboarding: 4-step flow (Welcome -> Sources -> Full Disk Access -> Ready).
+/// First-run onboarding: Welcome → Sources → Full Disk Access → MCP → Ready (row 24).
 struct OnboardingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var step = 0
@@ -13,7 +13,7 @@ struct OnboardingView: View {
         VStack(spacing: 0) {
             // Step indicators
             HStack(spacing: 6) {
-                ForEach(0..<4) { i in
+                ForEach(0..<5) { i in
                     Capsule()
                         .fill(i <= step ? Theme.accent : Theme.surfaceHighlight)
                         .frame(width: i == step ? 20 : 8, height: 4)
@@ -26,9 +26,11 @@ struct OnboardingView: View {
 
             Group {
                 switch step {
-                case 0:  welcomeStep
-                case 1:  sourcesStep
-                case 2:  fullDiskAccessStep
+                case 0: welcomeStep
+                case 1: sourcesStep
+                case 2: fullDiskAccessStep
+                case 3: mcpStep
+                case 4: readyStep
                 default: readyStep
                 }
             }
@@ -176,7 +178,36 @@ struct OnboardingView: View {
         }
     }
 
-    // MARK: - Step 4: Ready
+    // MARK: - Step 4: MCP (row 24)
+
+    private var mcpStep: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "network")
+                .font(.system(size: 48))
+                .foregroundStyle(Theme.accent)
+
+            Text("Connect your AI tools")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(Theme.primaryText)
+
+            Text("Engram is a memory layer for AI coding tools. Connect it over MCP so agents can call get_context, search, and save_insight across your past sessions.")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.secondaryText)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+
+            Button(action: { advance(to: 4) }) {
+                Text("Continue")
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: 140, height: 32)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.accent)
+            .padding(.top, 4)
+        }
+    }
+
+    // MARK: - Step 5: Ready
 
     private var readyStep: some View {
         let count = detectedSources.filter(\.found).count
@@ -225,7 +256,7 @@ private func scanSources() -> [SourceCheck] {
         ("codex",        "Codex CLI",     ".codex/sessions"),
         ("gemini-cli",   "Gemini CLI",    ".gemini/tmp"),
         ("cursor",       "Cursor",        "Library/Application Support/Cursor/User/globalStorage/state.vscdb"),
-        ("windsurf",     "Windsurf",      ".codeium/windsurf"),
+        ("windsurf",     "Windsurf",      ".engram/cache/windsurf"),
         ("cline",        "Cline",         ".cline/data/tasks"),
         ("copilot",      "Copilot",       ".copilot/session-state"),
         ("opencode",     "OpenCode",      ".local/share/opencode/opencode.db"),

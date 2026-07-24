@@ -28,12 +28,22 @@ struct HomeView: View {
     @State private var alertMessage: String? = nil
     @State private var resumeSession: Session?
     @State private var copyingSessionId: String?
+    /// Row 24: MCP activation card — computed off-main in loadData, not in body.
+    @State private var mcpConfigured = false
+    @AppStorage("mcp.activationCardDismissed") private var mcpActivationCardDismissed = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 headerSection
                 kpiSection
+                if MCPActivationGate.shouldShow(
+                    indexedSessions: serviceStatusStore.totalSessions,
+                    mcpConfigured: mcpConfigured,
+                    dismissed: mcpActivationCardDismissed
+                ) {
+                    mcpActivationCard
+                }
                 if let alertMessage {
                     AlertBanner(message: alertMessage)
                 }
@@ -126,6 +136,50 @@ struct HomeView: View {
                 serviceStateSection
             }
         }
+    }
+
+    /// Home MCP activation card (row 24): explain + consent, not silent install.
+    @ViewBuilder
+    private var mcpActivationCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Connect Engram over MCP")
+                        .font(.headline)
+                        .foregroundStyle(Theme.primaryText)
+                    Text("Engram is a memory layer for AI coding tools. Connect it over MCP to give Claude get_context, search, and save_insight across your past sessions.")
+                        .font(.callout)
+                        .foregroundStyle(Theme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button {
+                    mcpActivationCardDismissed = true
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption)
+                        .foregroundStyle(Theme.tertiaryText)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss MCP activation card")
+            }
+            Button {
+                NotificationCenter.default.post(name: .openSettings, object: nil)
+            } label: {
+                Text("Set up MCP")
+                    .font(.system(size: 13, weight: .medium))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.accent)
+        }
+        .padding(14)
+        .background(Theme.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.cornerRadius)
+                .stroke(Theme.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
+        .accessibilityIdentifier("home_mcpActivationCard")
     }
 
     private var indexingState: some View {
@@ -359,6 +413,8 @@ struct HomeView: View {
         let serviceClient = self.serviceClient
         let handledIds = handledFollowUps.handledIds
         let humanDriven = !showAllSessions
+        // Row 24: only re-read ~/.claude.json while the card could still show.
+        let shouldProbeMCP = !mcpConfigured
         do {
             let data = try await Task.detached {
                 let kpi = try db.kpiStats()
@@ -375,7 +431,8 @@ struct HomeView: View {
                     suggestedCounts: suggested,
                     limit: 8
                 )
-                return (kpi, recent, followUps, projects, repos, confirmed, suggested)
+                let mcp = shouldProbeMCP ? MCPClientDetection.isEngramConfiguredOnDisk() : true
+                return (kpi, recent, followUps, projects, repos, confirmed, suggested, mcp)
             }.value
             let migrations = (try? await serviceClient.projectMigrations(
                 EngramServiceProjectMigrationsRequest(state: "committed", limit: 25)
@@ -396,6 +453,9 @@ struct HomeView: View {
             })
             confirmedCounts = data.5
             suggestedCounts = data.6
+            if shouldProbeMCP {
+                mcpConfigured = data.7
+            }
             alertMessage = nil
         } catch {
             EngramLogger.error("HomeView load failed", module: .ui, error: error)
