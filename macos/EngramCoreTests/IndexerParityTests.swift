@@ -74,6 +74,13 @@ final class IndexerParityTests: XCTestCase {
     func testComputeTierMatchesNodeReferenceCases() {
         XCTAssertEqual(SessionTier.compute(TierInput(agentRole: "subagent")), .skip)
         XCTAssertEqual(SessionTier.compute(TierInput(filePath: "/home/user/.claude/projects/abc/subagents/xyz.jsonl")), .skip)
+        // row 32: workflow-nested path is still /subagents/ → skip.
+        XCTAssertEqual(
+            SessionTier.compute(TierInput(
+                filePath: "/home/user/.claude/projects/abc/uuid/subagents/workflows/wf_x/agent-y.jsonl"
+            )),
+            .skip
+        )
         XCTAssertEqual(SessionTier.compute(TierInput(messageCount: 1)), .skip)
         XCTAssertEqual(SessionTier.compute(TierInput(messageCount: 5, isPreamble: true)), .skip)
         XCTAssertEqual(SessionTier.compute(TierInput(messageCount: 2, filePath: "/Users/x/.engram/probes/claude/session.jsonl")), .skip)

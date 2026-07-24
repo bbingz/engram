@@ -337,21 +337,44 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
         project: String,
         name: String,
         model: String = "claude-sonnet-4",
-        subagentSession: String? = nil
+        subagentSession: String? = nil,
+        workflowRun: String? = nil
     ) throws -> URL {
         var directory = root.appendingPathComponent(project, isDirectory: true)
         if let subagentSession {
             directory = directory
                 .appendingPathComponent(subagentSession, isDirectory: true)
                 .appendingPathComponent("subagents", isDirectory: true)
+            if let workflowRun {
+                // Workflow nesting: subagents/workflows/wf_*/agent-*.jsonl (row 32).
+                directory = directory
+                    .appendingPathComponent("workflows", isDirectory: true)
+                    .appendingPathComponent(workflowRun, isDirectory: true)
+            }
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let file = directory.appendingPathComponent("\(name).jsonl")
+        // Workflow agents must use the agent- filename prefix (listing filter);
+        // direct subagents keep the historical `\(name).jsonl` layout.
+        let fileName: String
+        if workflowRun != nil {
+            fileName = name.hasPrefix("agent-") ? "\(name).jsonl" : "agent-\(name).jsonl"
+        } else {
+            fileName = "\(name).jsonl"
+        }
+        let file = directory.appendingPathComponent(fileName)
+        let agentId: String
+        if subagentSession == nil {
+            agentId = ""
+        } else if name.hasPrefix("agent-") {
+            agentId = name
+        } else {
+            agentId = "agent-\(name)"
+        }
         let records: [[String: Any]] = [
             [
                 "type": "user",
                 "sessionId": "session-\(name)",
-                "agentId": subagentSession == nil ? "" : "agent-\(name)",
+                "agentId": agentId,
                 "cwd": "/Users/test/\(name)",
                 "timestamp": "2026-07-13T00:00:00Z",
                 "message": ["role": "user", "content": "request \(name)"],
@@ -359,7 +382,7 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
             [
                 "type": "assistant",
                 "sessionId": "session-\(name)",
-                "agentId": subagentSession == nil ? "" : "agent-\(name)",
+                "agentId": agentId,
                 "timestamp": "2026-07-13T00:00:01Z",
                 "message": ["role": "assistant", "model": model, "content": "response \(name)"],
             ],
@@ -370,6 +393,69 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
         }
         try (lines.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
         return file
+    }
+
+    // row 32 (claude-workflow-subagents): workflow-nested agent-*.jsonl under
+    // subagents/workflows/wf_*/ must be discovered and parent-linked. Fails
+    // before the listSessionLocators descent lands.
+    func testClaudeWorkflowSubagentsAreDiscovered_repro() async throws {
+        let root = try makeProjectsRoot(parent: homeDirectory.appendingPathComponent(".claude"))
+        let parentUUID = "11111111-2222-3333-4444-555555555555"
+        let project = "-Users-workflow"
+        let workflowFile = try makeTranscript(
+            root: root,
+            project: project,
+            name: "worker",
+            subagentSession: parentUUID,
+            workflowRun: "wf_run1"
+        )
+
+        // A3: journal.jsonl control file must not be listed.
+        let wfDir = workflowFile.deletingLastPathComponent()
+        try " {\"type\":\"started\"}\n".write(
+            to: wfDir.appendingPathComponent("journal.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+        // A4: session-level workflows/ sibling must not be listed.
+        let sessionWorkflows = root
+            .appendingPathComponent(project, isDirectory: true)
+            .appendingPathComponent(parentUUID, isDirectory: true)
+            .appendingPathComponent("workflows", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionWorkflows, withIntermediateDirectories: true)
+        try "{}\n".write(
+            to: sessionWorkflows.appendingPathComponent("wf_a.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let adapter = ClaudeCodeAdapter(projectsRoot: root.path)
+        let locators = try await adapter.listSessionLocators()
+        let workflowPath = workflowFile.resolvingSymlinksInPath().standardizedFileURL.path
+        XCTAssertTrue(
+            locators.contains(workflowPath),
+            "workflow agent-*.jsonl must be discovered under subagents/workflows/wf_*/"
+        )
+        XCTAssertFalse(
+            locators.contains(where: { $0.hasSuffix("/journal.jsonl") }),
+            "journal.jsonl control files must not be listed"
+        )
+        XCTAssertFalse(
+            locators.contains(where: { $0.hasSuffix("/wf_a.json") }),
+            "session-level workflows/*.json must not be listed"
+        )
+
+        let info = try await adapter.parseSessionInfo(locator: workflowPath)
+        switch info {
+        case .success(let session):
+            XCTAssertEqual(session.agentRole, "subagent")
+            XCTAssertEqual(session.parentSessionId, parentUUID)
+            // Row id is agentId, not the parent UUID.
+            XCTAssertEqual(session.id, "agent-worker")
+            XCTAssertNotEqual(session.id, parentUUID)
+        case .failure(let error):
+            XCTFail("parseSessionInfo failed: \(error)")
+        }
     }
 
     private func writeSettings(autoDiscover: Bool, customProjectsRoots: [String]) throws {
