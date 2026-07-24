@@ -2,6 +2,10 @@
 
 ## Changelog Memo
 
+### 2026-07-25
+
+- [发布说明] 新增 `docs/release-notes/1.0.5.md` 用户向发行说明，并在 tag CI 强制存在对应版本文件；不执行 tag/release/repo 元数据变更。
+
 ### 2026-07-24
 
 - [插件] 新增独立的 Claude Code 插件 MVP：复用已安装的 `EngramCLI` / `EngramMCP`，提供 SessionStart 上下文注入与手动 `catch-up`、`remember`、`handoff` 技能，不捆绑第二套 Swift 二进制。
