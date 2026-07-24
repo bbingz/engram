@@ -51,6 +51,16 @@ struct AboutSettingsSection: View {
                         Text(verbatim: exportMessage)
                             .font(.caption)
                             .foregroundStyle(exportMessage.hasPrefix("Export failed") ? Color.red : Color.secondary)
+                        if !exportMessage.hasPrefix("Export failed") {
+                            // Row 17: no upload — point at GitHub issue attach.
+                            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+                            let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+                            Link(
+                                "Attach the saved file to a GitHub issue",
+                                destination: GitHubIssueURL.reportIssue(version: version, build: build)
+                            )
+                            .font(.caption)
+                        }
                     }
                 }
                 .padding(.vertical, 4)
