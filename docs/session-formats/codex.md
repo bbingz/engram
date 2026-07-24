@@ -715,7 +715,7 @@ so it re-enters parent scoring. `readCodexOriginator()` reads only the first JSO
 a Claude-Code-dispatched Codex rollout is hidden (tier skip), accessed through its Claude Code
 parent, and excluded from independent display.
 
-### (B) Codex's NATIVE subagent spawn tree (`multi_agent_version: "v1"`) — NOT consumed by Engram
+### (B) Codex's NATIVE subagent spawn tree (`multi_agent_version: "v1"`) — consumed by Engram (child-side)
 
 Codex's own multi-agent feature spawns child threads (roles `explorer`/`worker`/`awaiter`/
 `default`, plus third-party `lazycodex-*`/`metis`). This is recorded in **three redundant
@@ -726,6 +726,11 @@ places** in the rollout + DB:
    `{"subagent":{"thread_spawn":{"parent_thread_id","depth","agent_path","agent_nickname","agent_role"}}}`.
    A simpler form `{"subagent":"review"}` tags review subagents.
 3. `state_5.sqlite.thread_spawn_edges` — the authoritative parent→child graph.
+
+**Engram consumer:** `StartupBackfills.backfillCodexNativeParents` reads (1) and (2) from
+rollout line 1 (version-gated startup backfill; `link_source = 'path'`). It does **not**
+read (3) or the parent-side `collab_*` events below. Depth `> 1` and skip-tier parents are
+declined so children stay reachable. See `docs/codex-native-parentage-design-2026-07.md`.
 
 The `parent_thread_id` appears **twice** (top-level AND nested in `source.subagent.thread_spawn`),
 both equal, both feed `thread_spawn_edges`.
@@ -782,9 +787,9 @@ DB `threads.source` distribution (verbatim copy of the meta source), grouped by 
 > as a small enum of strings will misclassify the majority of rows. (evidence:
 > `sqlite3 state_5.sqlite` GROUP BY on the `source` prefix; `thread_spawn_edges` COUNT = 1561.)
 
-> **Neither Engram adapter reads `meta.source`.** The rich `{subagent:{thread_spawn:{...}}}`
-> parent/depth/role graph is currently **un-mined** — a deterministic Layer-1 signal beyond
-> `parent_thread_id` that Engram could consume.
+> **JSONL adapters do not read `meta.source`.** Child-side parent/depth is consumed by
+> `StartupBackfills.backfillCodexNativeParents` on startup (see §(B)); `thread_spawn_edges`
+> SQLite and parent-side `collab_*` remain un-mined.
 
 ```json
 // session_meta — subagent (NEW format) — key structure intact, content redacted
@@ -1174,7 +1179,8 @@ Concrete table: source record/field → Engram `Session`/`Message` field → ada
 | incremental fast path | per-day roots `~/.codex/sessions/YYYY/MM/DD` for last N (local) days (sessions/ only; excludes archived) | — | `SessionAdapterFactory.swift` `recentCodexAdapters` L31-51 |
 | registration | `CodexAdapter()` in `defaultAdapters()` / `recentActiveAdapters()` | — | `SessionAdapterFactory.swift` L8-11, L53-74 |
 | `reasoning`, `custom_tool_call*`, `web_search_call`, `tool_search_*`, `turn_context`, `compacted`, all non-`token_count` `event_msg` | **dropped** (default branch) | (gap) | `message(from:)` `default` L513-514 |
-| `session_meta.source`, `parent_thread_id`, `forked_from_id`, `thread_source`, `git`, `base_instructions` | **not read** | (gap) | (gap) |
+| `session_meta.source` (`thread_spawn` / subagent), `parent_thread_id` | **read by startup backfill** (not adapter) — `StartupBackfills.backfillCodexNativeParents` | — | `StartupBackfills.swift` |
+| `forked_from_id`, `thread_source`, `git`, `base_instructions` | **not read** | (gap) | (gap) |
 | any SQLite DB (`state_5`/`threads`/`thread_spawn_edges`/…) | **never read** — Engram re-derives from JSONL only | (gap) | (gap) |
 
 > Verified: a grep for `state_5` / `.sqlite` / `thread_spawn` / `stage1` across all Codex
@@ -1221,9 +1227,10 @@ Concrete table: source record/field → Engram `Session`/`Message` field → ada
 10. **Compaction invisibility:** Engram skips `compacted`/`context_compacted`, so
     pre-compaction turns surviving only in `replacement_history` are absent from Engram's
     transcript/search/`messageCount`.
-11. **Native subagent graph un-mined:** `thread_spawn_edges` + `meta.source` give a
-    deterministic parent→child graph (explorer/worker/awaiter), but Engram reads none of it —
-    Codex native subagents are likely surfaced as independent sessions.
+11. **Native subagent graph partially mined:** child-side `session_meta.parent_thread_id` /
+    `source.subagent.thread_spawn` are consumed by `StartupBackfills.backfillCodexNativeParents`
+    (not the JSONL adapter). `thread_spawn_edges` SQLite and parent-side `collab_*` events remain
+    un-mined; depth `> 1` and skip-tier parents are declined.
 12. **`token_count.info` can be `null`** (interrupted/credits-exhausted turns) — both adapters
     null-guard and skip.
 13. **`function_call_output.output` non-string form is `content_items`, not `{output,
