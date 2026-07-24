@@ -16,6 +16,7 @@ struct TranscriptFindBar: View {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
                     .font(.system(size: 12))
+                    .accessibilityHidden(true)
                 TextField("Find in transcript...", text: $searchText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
@@ -30,6 +31,8 @@ struct TranscriptFindBar: View {
                             .font(.system(size: 11))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Clear search")
+                    .help("Clear search")
                 }
             }
             .padding(.horizontal, 8)
@@ -50,6 +53,8 @@ struct TranscriptFindBar: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(matchCount == 0)
+                .accessibilityLabel("Previous match")
+                .help("Previous match")
 
                 Button(action: onNext) {
                     Image(systemName: "chevron.down")
@@ -57,6 +62,8 @@ struct TranscriptFindBar: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(matchCount == 0)
+                .accessibilityLabel("Next match")
+                .help("Next match")
             }
 
             Spacer()
@@ -70,6 +77,8 @@ struct TranscriptFindBar: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Close find bar")
+            .help("Close find bar")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)

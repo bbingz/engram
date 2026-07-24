@@ -17,6 +17,20 @@ struct MessageTypeChip: View {
     // bound, not the session total, and chip Prev/Next only cycles the loaded set.
     private var countLabel: String { "\(totalCount)\(partiallyLoaded ? "+" : "")" }
 
+    enum NavDirection {
+        case prev
+        case next
+    }
+
+    /// Pure label builder so VoiceOver prev/next strings stay type-specific and
+    /// unit-testable without view introspection (row 19).
+    static func chipNavLabel(_ direction: NavDirection, type: MessageType) -> String {
+        switch direction {
+        case .prev: return "Previous \(type.label)"
+        case .next: return "Next \(type.label)"
+        }
+    }
+
     var body: some View {
         HStack(spacing: 4) {
             Button(action: onToggle) {
@@ -30,6 +44,7 @@ struct MessageTypeChip: View {
                 }
             }
             .buttonStyle(.plain)
+            .accessibilityValue(isVisible ? "shown" : "hidden")
 
             if totalCount > 0 && isVisible {
                 Button(action: onPrev) {
@@ -37,12 +52,16 @@ struct MessageTypeChip: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
+                .accessibilityLabel(Self.chipNavLabel(.prev, type: type))
+                .help("Previous \(type.label) message")
 
                 Button(action: onNext) {
                     Text("∨").font(.system(size: 9))
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
+                .accessibilityLabel(Self.chipNavLabel(.next, type: type))
+                .help("Next \(type.label) message")
             }
         }
         .opacity(isVisible ? 1.0 : 0.5)

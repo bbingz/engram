@@ -4,21 +4,27 @@ import SwiftUI
 struct ToolCallView: View {
     let parsed: ParsedToolCall
     @AppStorage("contentFontSize") var fontSize: Double = 14
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var copied = false
     @State private var copyResetTask: Task<Void, Never>? = nil
     @State private var expandedParams: Set<Int> = []
 
     private let tintColor = Color(red: 0.60, green: 0.32, blue: 0.85) // purple
 
+    /// Compose OS Dynamic Type with the A± knob (row 31).
+    private var effectiveFontSize: Double {
+        Theme.scaledFontSize(base: fontSize, category: dynamicTypeSize)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header: tool name badge
             HStack(spacing: 6) {
                 Image(systemName: "wrench.and.screwdriver")
-                    .font(.system(size: fontSize - 2))
+                    .font(.system(size: effectiveFontSize - 2))
                     .foregroundStyle(tintColor)
                 Text(parsed.toolName)
-                    .font(.system(size: fontSize - 1, weight: .semibold))
+                    .font(.system(size: effectiveFontSize - 1, weight: .semibold))
                     .foregroundStyle(tintColor)
                 Spacer()
                 // Copy button
@@ -78,37 +84,37 @@ struct ToolCallView: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .top, spacing: 0) {
                 Text(verbatim: key)
-                    .font(.system(size: fontSize - 2, weight: .medium, design: .monospaced))
+                    .font(.system(size: effectiveFontSize - 2, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .frame(minWidth: 80, alignment: .leading)
 
                 Text(": ")
-                    .font(.system(size: fontSize - 2, design: .monospaced))
+                    .font(.system(size: effectiveFontSize - 2, design: .monospaced))
                     .foregroundStyle(.secondary)
 
                 if isLong && !isExpanded {
                     HStack(alignment: .top, spacing: 4) {
                         Text(verbatim: String(value.prefix(200)) + "…")
-                            .font(.system(size: fontSize - 2, design: .monospaced))
+                            .font(.system(size: effectiveFontSize - 2, design: .monospaced))
                             .foregroundStyle(.primary)
                         Button("expand") {
                             expandedParams.insert(idx)
                         }
-                        .font(.system(size: fontSize - 3))
+                        .font(.system(size: effectiveFontSize - 3))
                         .foregroundStyle(tintColor)
                         .buttonStyle(.plain)
                     }
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
                         Text(verbatim: value)
-                            .font(.system(size: fontSize - 2, design: .monospaced))
+                            .font(.system(size: effectiveFontSize - 2, design: .monospaced))
                             .foregroundStyle(.primary)
                             .textSelection(.enabled)
                         if isLong && isExpanded {
                             Button("collapse") {
                                 expandedParams.remove(idx)
                             }
-                            .font(.system(size: fontSize - 3))
+                            .font(.system(size: effectiveFontSize - 3))
                             .foregroundStyle(tintColor.opacity(0.8))
                             .buttonStyle(.plain)
                         }
@@ -127,7 +133,7 @@ struct ToolCallView: View {
         VStack(alignment: .leading, spacing: 4) {
             Divider().overlay(tintColor.opacity(0.15))
             Text(verbatim: isLong && !isExpanded ? lines.prefix(5).joined(separator: "\n") + "\n…" : parsed.rawContent)
-                .font(.system(size: fontSize - 2, design: .monospaced))
+                .font(.system(size: effectiveFontSize - 2, design: .monospaced))
                 .foregroundStyle(.primary)
                 .textSelection(.enabled)
                 .padding(.horizontal, 10)

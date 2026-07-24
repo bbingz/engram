@@ -71,7 +71,7 @@ struct SourcePulseView: View {
                     sessionGroup("Recent", color: .gray, sessions: recentSessions)
                 }
                 if let error {
-                    AlertBanner(message: "Failed to load source data: \(error)")
+                    AlertBanner(message: "Failed to load source data: \(error)", action: ("Retry", { Task { await loadData() } }))
                 }
                 SectionHeader(icon: "antenna.radiowaves.left.and.right", title: "Sources",
                              onRefresh: { Task { await loadData() } })
@@ -134,7 +134,7 @@ struct SourcePulseView: View {
         do {
             sources = try await serviceClient.sources()
         } catch {
-            self.error = error.localizedDescription
+            self.error = ServiceErrorPresenter.displayMessage(for: error)
             // UI-C1/C2: DB fallback read runs off the main thread.
             if let dist = try? await Task.detached(operation: { try db.sourceDistribution() }).value {
                 sourceDist = dist
@@ -166,7 +166,7 @@ struct SourcePulseView: View {
             }
             await loadData()
         } catch {
-            self.error = error.localizedDescription
+            self.error = ServiceErrorPresenter.displayMessage(for: error)
         }
     }
 
@@ -175,7 +175,7 @@ struct SourcePulseView: View {
             costs = try await serviceClient.costs()
             costsError = nil
         } catch {
-            costsError = error.localizedDescription
+            costsError = ServiceErrorPresenter.displayMessage(for: error)
         }
     }
 

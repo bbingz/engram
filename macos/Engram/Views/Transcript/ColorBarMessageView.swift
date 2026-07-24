@@ -6,10 +6,16 @@ struct ColorBarMessageView: View {
     let searchText: String
     var onCopyAll: (() -> Void)? = nil
     @AppStorage("contentFontSize") var fontSize: Double = 14
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     // Per-row memo for find highlighting, keyed on the active query. Reference
     // type so `body` (non-mutating) can populate it; view identity is the
     // message id, so the effective key is (message id, searchText). See #27.
     @State private var highlightCache = HighlightCache()
+
+    /// Compose OS Dynamic Type with the A± knob (row 31). Knob stays authoritative.
+    private var effectiveFontSize: Double {
+        Theme.scaledFontSize(base: fontSize, category: dynamicTypeSize)
+    }
 
     private var barColor: Color { indexed.messageType.color }
 
@@ -165,12 +171,12 @@ struct ColorBarMessageView: View {
                         SegmentedMessageView(content: indexed.message.content)
                     } else {
                         Text(highlightedText(indexed.message.content))
-                            .font(.system(size: fontSize))
+                            .font(.system(size: effectiveFontSize))
                             .textSelection(.enabled)
                     }
                 case .thinking:
                     Text(highlightedText(indexed.message.content))
-                        .font(.system(size: fontSize))
+                        .font(.system(size: effectiveFontSize))
                         .textSelection(.enabled)
                         .foregroundStyle(.secondary)
                         .italic()
@@ -179,7 +185,7 @@ struct ColorBarMessageView: View {
                         ToolCallView(parsed: toolCall)
                     } else {
                         Text(highlightedText(indexed.message.content))
-                            .font(.system(size: fontSize))
+                            .font(.system(size: effectiveFontSize))
                             .textSelection(.enabled)
                     }
                 case .toolResult:
@@ -187,14 +193,14 @@ struct ColorBarMessageView: View {
                         ToolResultView(parsed: toolResult)
                     } else {
                         Text(highlightedText(indexed.message.content))
-                            .font(.system(size: fontSize))
+                            .font(.system(size: effectiveFontSize))
                             .textSelection(.enabled)
                     }
                 case .system:
                     CollapsibleSystemBubble(message: indexed.message)
                 default:
                     Text(highlightedText(indexed.message.content))
-                        .font(.system(size: fontSize))
+                        .font(.system(size: effectiveFontSize))
                         .textSelection(.enabled)
                         .foregroundStyle(indexed.messageType == .error ? barColor.opacity(0.85) : .primary)
                 }

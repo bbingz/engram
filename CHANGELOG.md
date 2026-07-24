@@ -7,6 +7,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: UI honesty and accessibility polish (rows 13/19/29/31) (2026-07-25)
+
+- Limitless cross-source usage shares render as self-labeling text instead of
+  green quota bars; dead `resetAt` view threading removed.
+- Transcript icon-only controls gain VoiceOver labels and `.help` strings;
+  chip prev/next labels are type-specific via `chipNavLabel`.
+- Four highest-traffic load-failure banners wire Retry and route errors through
+  `ServiceErrorPresenter` (Sessions, Repos, SourcePulse, Timeline).
+- Introduces `Theme.scaledFontSize` / `.scaledFont`; sidebar width scales with
+  Dynamic Type; transcript body composes OS size with the A± knob.
+
+
 ### Added: Claude Code plugin MVP (2026-07-24)
 
 - Added a thin plugin under `integrations/claude-code/engram` that reuses the
