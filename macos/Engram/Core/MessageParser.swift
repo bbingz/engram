@@ -13,8 +13,17 @@ struct ChatMessage: Identifiable {
     let role: String    // "user" or "assistant"
     let content: String
     let systemCategory: SystemCategory
+    /// ISO timestamp when known (adapter path); nil for legacy parsers (row 30).
+    var timestamp: String? = nil
 
     var isSystem: Bool { systemCategory != .none }
+
+    init(role: String, content: String, systemCategory: SystemCategory, timestamp: String? = nil) {
+        self.role = role
+        self.content = content
+        self.systemCategory = systemCategory
+        self.timestamp = timestamp
+    }
 }
 
 struct MessageParser {
@@ -181,7 +190,12 @@ struct MessageParser {
                 }
                 let role = message.role == .user ? "user" : "assistant"
                 let category = message.role == .user ? classifySystem(content: message.content, source: source) : .none
-                messages.append(ChatMessage(role: role, content: message.content, systemCategory: category))
+                messages.append(ChatMessage(
+                    role: role,
+                    content: message.content,
+                    systemCategory: category,
+                    timestamp: message.timestamp
+                ))
             }
             return (messages, produced)
         } catch {

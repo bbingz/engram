@@ -3,6 +3,7 @@
 ## Changelog Memo
 
 ### 2026-07-25
+- [转录分页] Load more 改为 append-only 重建；助手首条显示 turn 耗时芯片（时钟回拨则隐藏）；堆叠在 #247 之上。
 
 - [转录查找] 用户/助手/代码消息在 ⌘F 激活时仍走分段渲染，高亮落在渲染后文本上，不再把 markdown 压成 raw source；隐藏类型的匹配会计数并一键正确翻闸（type 与 systemPrompt/agentComm 分桶）。
 - [验证] `TranscriptLabelAndCopyTests` / `TranscriptFindTests` 含 `_repro` 用例；相对 `origin/main` 仅功能提交。

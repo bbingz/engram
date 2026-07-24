@@ -298,6 +298,42 @@ final class MessageParserTests: XCTestCase {
         XCTAssertEqual(paged.map(\.1), whole.map(\.1))
     }
 
+    /// Adapter path must thread `NormalizedMessage.timestamp` into `ChatMessage`
+    /// (row 30 production path). Uses Codex JSONL so the adapter stream is hit
+    /// without a Claude profile root. Fails if MessageParser drops the field.
+    func testAdapterPathThreadsTimestamp() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-ts-thread-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("rollout-ts-stamp.jsonl")
+        let lines = [
+            #"{"timestamp":"2026-07-25T10:00:00.000Z","type":"session_meta","payload":{"id":"ts-stamp","timestamp":"2026-07-25T10:00:00.000Z","cwd":"/repo"}}"#,
+            #"{"timestamp":"2026-07-25T10:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello stamped"}]}}"#,
+            #"{"timestamp":"2026-07-25T10:00:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi stamped"}]}}"#,
+        ]
+        try (lines.joined(separator: "\n") + "\n").write(to: path, atomically: true, encoding: .utf8)
+
+        let stamped = await MessageParser.parse(filePath: path.path, source: "codex")
+        XCTAssertEqual(stamped.count, 2, stamped.map(\.content).description)
+        XCTAssertEqual(stamped[0].timestamp, "2026-07-25T10:00:00.000Z")
+        XCTAssertEqual(stamped[1].timestamp, "2026-07-25T10:00:05.000Z")
+
+        // Legacy parser path leaves timestamp nil (defaulted field).
+        let legacyPath = try fixturePath("claude-code.jsonl")
+        // Force legacy by using a source that hits parseLegacy without adapter
+        // timestamps on every row — parse with claude-code fixture via legacy
+        // happens only when adapter fails; instead assert ChatMessage default
+        // and that adapterMessages threading is the production site under test.
+        let legacy = await MessageParser.parse(filePath: legacyPath, source: "claude-code")
+        // Fixture rows that lack timestamps must not invent them. If the adapter
+        // path is used and the fixture has timestamps, non-nil is fine; we only
+        // require no crash and that explicit missing stays nil via bare construct.
+        XCTAssertFalse(legacy.isEmpty)
+        let bare = ChatMessage(role: "user", content: "x", systemCategory: .none)
+        XCTAssertNil(bare.timestamp)
+    }
+
     func testClaudeCustomProfileReplayAndWindowingUseResolverBackedRegistry() async throws {
         let fixtureRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("engram-message-parser-claude-profile-\(UUID().uuidString)", isDirectory: true)

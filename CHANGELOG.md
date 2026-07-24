@@ -7,6 +7,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: transcript paging + turn duration chips (rows 27/30) (2026-07-25)
+
+- Load-more rebuilds are append-only: only the new page is classified and type
+  counters carry forward (`IndexedMessage.appending`); turn durations use a
+  single-row boundary backfill (not a full-prefix recompute) and display filter
+  appends only the new slice.
+- Per-turn duration chips on the first assistant message of each user→user span,
+  from adapter timestamps; clock skew / missing timestamps hide the chip; bucketed
+  `4.8s` / `42s` / `3m 5s` formatting. Byte-seek cursor (Part B) deferred.
+
 ### Fixed: transcript find fidelity (rows 8/10/26) (2026-07-25)
 
 - User, assistant, and code turns always render through `SegmentedMessageView`
