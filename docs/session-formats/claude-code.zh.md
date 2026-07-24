@@ -2,7 +2,7 @@
 
 > 本文档为英文权威版 claude-code.md 的中文阅读副本;若有出入以英文版为准。
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-24
 
 这是关于 **Claude Code 如何在磁盘上持久化其交互式会话** 以及 **Engram 的适配器如何
 消费该格式** 的权威参考。它合并了针对用户真实存储库(`~/.claude/projects/`,Claude Code

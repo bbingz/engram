@@ -1,0 +1,486 @@
+{
+  "schemaVersion": 1,
+  "format": "codex",
+  "sources": [
+    "codex"
+  ],
+  "acceptedAtUtc": "2026-07-24T18:01:01.170Z",
+  "acceptedNote": "Stage-1 rework: reseed at BASELINE_FILES=200",
+  "vendorVersions": {
+    "min": "0.142.0",
+    "max": "0.146.0-alpha.6"
+  },
+  "corpusFiles": 200,
+  "corpusNewestMtimeUtc": "2026-07-24T18:00:57.026Z",
+  "sampling": {
+    "headLines": 200,
+    "tailLines": 800,
+    "excludeGlobs": []
+  },
+  "digest": "sha256:1da2c902f09f8e73144ee6d21c91054dc936ad8623c630a1192eebacd51d2994",
+  "buckets": {
+    "record:session_meta": {
+      "files": 200,
+      "records": 208,
+      "keys": {
+        "timestamp": 200,
+        "type": 200,
+        "payload": 200
+      }
+    },
+    "payload:session_meta/-": {
+      "files": 200,
+      "records": 208,
+      "keys": {
+        "session_id": 200,
+        "id": 200,
+        "timestamp": 200,
+        "cwd": 200,
+        "originator": 200,
+        "cli_version": 200,
+        "source": 200,
+        "thread_source": 181,
+        "model_provider": 200,
+        "base_instructions": 200,
+        "history_mode": 151,
+        "context_window": 197,
+        "git": 168,
+        "forked_from_id": 12,
+        "parent_thread_id": 59,
+        "agent_nickname": 57,
+        "agent_path": 25,
+        "multi_agent_version": 59,
+        "dynamic_tools": 3,
+        "agent_role": 30
+      }
+    },
+    "record:event_msg": {
+      "files": 200,
+      "records": 38906,
+      "keys": {
+        "timestamp": 200,
+        "type": 200,
+        "payload": 200
+      }
+    },
+    "payload:event_msg/task_started": {
+      "files": 200,
+      "records": 666,
+      "keys": {
+        "type": 200,
+        "turn_id": 200,
+        "started_at": 200,
+        "model_context_window": 200,
+        "collaboration_mode_kind": 200
+      }
+    },
+    "record:response_item": {
+      "files": 200,
+      "records": 60066,
+      "keys": {
+        "timestamp": 200,
+        "type": 200,
+        "payload": 200
+      }
+    },
+    "payload:response_item/message": {
+      "files": 200,
+      "records": 8959,
+      "keys": {
+        "type": 200,
+        "id": 198,
+        "role": 200,
+        "content": 200,
+        "internal_chat_message_metadata_passthrough": 200,
+        "phase": 195
+      }
+    },
+    "record:world_state": {
+      "files": 149,
+      "records": 264,
+      "keys": {
+        "timestamp": 149,
+        "type": 149,
+        "payload": 149
+      }
+    },
+    "payload:world_state/-": {
+      "files": 149,
+      "records": 264,
+      "keys": {
+        "full": 149,
+        "state": 149
+      }
+    },
+    "record:turn_context": {
+      "files": 196,
+      "records": 763,
+      "keys": {
+        "timestamp": 196,
+        "type": 196,
+        "payload": 196
+      }
+    },
+    "payload:turn_context/-": {
+      "files": 196,
+      "records": 763,
+      "keys": {
+        "turn_id": 196,
+        "cwd": 196,
+        "workspace_roots": 196,
+        "current_date": 196,
+        "timezone": 196,
+        "approval_policy": 196,
+        "approvals_reviewer": 70,
+        "sandbox_policy": 196,
+        "permission_profile": 196,
+        "model": 196,
+        "comp_hash": 196,
+        "personality": 196,
+        "collaboration_mode": 196,
+        "multi_agent_version": 196,
+        "multi_agent_mode": 55,
+        "realtime_active": 196,
+        "effort": 196,
+        "summary": 196,
+        "file_system_sandbox_policy": 2
+      }
+    },
+    "payload:event_msg/user_message": {
+      "files": 181,
+      "records": 641,
+      "keys": {
+        "type": 181,
+        "message": 181,
+        "images": 181,
+        "local_images": 181,
+        "audio": 36,
+        "local_audio": 36,
+        "text_elements": 181,
+        "client_id": 3
+      }
+    },
+    "payload:event_msg/agent_reasoning": {
+      "files": 54,
+      "records": 10405,
+      "keys": {
+        "type": 54,
+        "text": 54
+      }
+    },
+    "payload:response_item/reasoning": {
+      "files": 194,
+      "records": 13420,
+      "keys": {
+        "type": 194,
+        "id": 194,
+        "summary": 194,
+        "encrypted_content": 194,
+        "internal_chat_message_metadata_passthrough": 194
+      }
+    },
+    "payload:event_msg/agent_message": {
+      "files": 197,
+      "records": 8567,
+      "keys": {
+        "type": 197,
+        "message": 197,
+        "phase": 197,
+        "memory_citation": 197
+      }
+    },
+    "payload:response_item/function_call": {
+      "files": 187,
+      "records": 15091,
+      "keys": {
+        "type": 187,
+        "id": 187,
+        "name": 187,
+        "arguments": 187,
+        "call_id": 187,
+        "internal_chat_message_metadata_passthrough": 187,
+        "namespace": 81
+      }
+    },
+    "payload:response_item/function_call_output": {
+      "files": 187,
+      "records": 15076,
+      "keys": {
+        "type": 187,
+        "id": 38,
+        "call_id": 187,
+        "output": 187,
+        "internal_chat_message_metadata_passthrough": 186
+      }
+    },
+    "payload:event_msg/token_count": {
+      "files": 197,
+      "records": 15938,
+      "keys": {
+        "type": 197,
+        "info": 197,
+        "rate_limits": 197
+      }
+    },
+    "payload:response_item/custom_tool_call": {
+      "files": 116,
+      "records": 3506,
+      "keys": {
+        "type": 116,
+        "id": 116,
+        "status": 116,
+        "call_id": 116,
+        "name": 116,
+        "input": 116,
+        "internal_chat_message_metadata_passthrough": 116
+      }
+    },
+    "payload:response_item/custom_tool_call_output": {
+      "files": 116,
+      "records": 3506,
+      "keys": {
+        "type": 116,
+        "id": 29,
+        "call_id": 116,
+        "output": 116,
+        "internal_chat_message_metadata_passthrough": 115
+      }
+    },
+    "payload:event_msg/patch_apply_end": {
+      "files": 94,
+      "records": 909,
+      "keys": {
+        "type": 94,
+        "call_id": 94,
+        "turn_id": 94,
+        "stdout": 94,
+        "stderr": 94,
+        "success": 94,
+        "changes": 94,
+        "status": 94
+      }
+    },
+    "record:compacted": {
+      "files": 79,
+      "records": 120,
+      "keys": {
+        "timestamp": 79,
+        "type": 79,
+        "payload": 79
+      }
+    },
+    "payload:compacted/-": {
+      "files": 79,
+      "records": 120,
+      "keys": {
+        "message": 79,
+        "replacement_history": 79,
+        "window_number": 79,
+        "first_window_id": 79,
+        "previous_window_id": 79,
+        "window_id": 79
+      }
+    },
+    "payload:event_msg/context_compacted": {
+      "files": 79,
+      "records": 119,
+      "keys": {
+        "type": 79
+      }
+    },
+    "payload:response_item/tool_search_call": {
+      "files": 66,
+      "records": 109,
+      "keys": {
+        "type": 66,
+        "id": 66,
+        "call_id": 66,
+        "status": 66,
+        "execution": 66,
+        "arguments": 66,
+        "internal_chat_message_metadata_passthrough": 66
+      }
+    },
+    "payload:response_item/tool_search_output": {
+      "files": 66,
+      "records": 109,
+      "keys": {
+        "type": 66,
+        "id": 10,
+        "call_id": 66,
+        "status": 66,
+        "execution": 66,
+        "tools": 66,
+        "internal_chat_message_metadata_passthrough": 66
+      }
+    },
+    "payload:event_msg/mcp_tool_call_end": {
+      "files": 79,
+      "records": 397,
+      "keys": {
+        "type": 79,
+        "call_id": 79,
+        "invocation": 79,
+        "duration": 79,
+        "result": 79,
+        "connector_id": 1,
+        "link_id": 1
+      }
+    },
+    "payload:event_msg/sub_agent_activity": {
+      "files": 24,
+      "records": 132,
+      "keys": {
+        "type": 24,
+        "event_id": 24,
+        "occurred_at_ms": 24,
+        "agent_thread_id": 24,
+        "agent_path": 24,
+        "kind": 24
+      }
+    },
+    "payload:event_msg/web_search_end": {
+      "files": 46,
+      "records": 262,
+      "keys": {
+        "type": 46,
+        "call_id": 46,
+        "query": 46,
+        "action": 46,
+        "results": 17
+      }
+    },
+    "payload:event_msg/task_complete": {
+      "files": 195,
+      "records": 632,
+      "keys": {
+        "type": 195,
+        "turn_id": 195,
+        "last_agent_message": 195,
+        "started_at": 60,
+        "completed_at": 195,
+        "duration_ms": 195,
+        "time_to_first_token_ms": 192,
+        "error": 2
+      }
+    },
+    "payload:event_msg/thread_settings_applied": {
+      "files": 44,
+      "records": 166,
+      "keys": {
+        "type": 44,
+        "thread_settings": 44
+      }
+    },
+    "payload:event_msg/turn_aborted": {
+      "files": 18,
+      "records": 23,
+      "keys": {
+        "type": 18,
+        "turn_id": 18,
+        "reason": 18,
+        "started_at": 9,
+        "completed_at": 18,
+        "duration_ms": 18
+      }
+    },
+    "record:inter_agent_communication_metadata": {
+      "files": 27,
+      "records": 111,
+      "keys": {
+        "timestamp": 27,
+        "type": 27,
+        "payload": 27
+      }
+    },
+    "payload:inter_agent_communication_metadata/-": {
+      "files": 27,
+      "records": 111,
+      "keys": {
+        "trigger_turn": 27
+      }
+    },
+    "payload:response_item/agent_message": {
+      "files": 27,
+      "records": 111,
+      "keys": {
+        "type": 27,
+        "id": 17,
+        "author": 27,
+        "recipient": 27,
+        "content": 27,
+        "internal_chat_message_metadata_passthrough": 27
+      }
+    },
+    "payload:response_item/web_search_call": {
+      "files": 21,
+      "records": 162,
+      "keys": {
+        "type": 21,
+        "id": 21,
+        "status": 21,
+        "action": 18,
+        "internal_chat_message_metadata_passthrough": 21
+      }
+    },
+    "payload:event_msg/thread_rolled_back": {
+      "files": 3,
+      "records": 5,
+      "keys": {
+        "type": 3,
+        "num_turns": 3
+      }
+    },
+    "payload:event_msg/image_generation_end": {
+      "files": 2,
+      "records": 19,
+      "keys": {
+        "type": 2,
+        "call_id": 2,
+        "status": 2,
+        "revised_prompt": 2,
+        "result": 2,
+        "saved_path": 2
+      }
+    },
+    "payload:event_msg/entered_review_mode": {
+      "files": 2,
+      "records": 2,
+      "keys": {
+        "type": 2,
+        "target": 2,
+        "user_facing_hint": 2
+      }
+    },
+    "payload:event_msg/exited_review_mode": {
+      "files": 2,
+      "records": 2,
+      "keys": {
+        "type": 2,
+        "review_output": 2
+      }
+    },
+    "payload:event_msg/thread_goal_updated": {
+      "files": 17,
+      "records": 21,
+      "keys": {
+        "type": 17,
+        "threadId": 17,
+        "goal": 17
+      }
+    },
+    "payload:response_item/image_generation_call": {
+      "files": 1,
+      "records": 17,
+      "keys": {
+        "type": 1,
+        "id": 1,
+        "status": 1,
+        "revised_prompt": 1,
+        "result": 1,
+        "internal_chat_message_metadata_passthrough": 1
+      }
+    }
+  },
+  "note": "key names only; no values are recorded"
+}
