@@ -7,6 +7,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: DEBUG app-process perf signposts (row 16) (2026-07-25)
+
+- New `PerfSignpost` with Instruments-visible spans and an opt-in main-thread
+  stall monitor gated on `ENGRAM_PERF_MONITOR` (DEBUG only; Release no-op shim).
+- Instrument `parseWindow`, `rebuildIndexed`, `loadData`, and `loadMoreIfNeeded`.
+- Vitest source guard asserts DEBUG/Release structure and env gate name.
+- Bundle provenance (row 15 / ledger 16) is intentionally deferred.
+
+
 ### Added: Claude Code plugin MVP (2026-07-24)
 
 - Added a thin plugin under `integrations/claude-code/engram` that reuses the
