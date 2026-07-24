@@ -2,6 +2,11 @@
 
 ## Changelog Memo
 
+### 2026-07-25
+
+- [UI 诚实/无障碍] 用量 share 不再画成绿条；转录图标控件补 VoiceOver/help；四页加载失败条补 Retry+ServiceErrorPresenter；侧栏与转录正文接入 Dynamic Type 缩放。
+- [合并约束] 须在 #242 与 #247 之后合入（SourcePulseView / ColorBarMessageView 交叠）。
+
 ### 2026-07-24
 
 - [插件] 新增独立的 Claude Code 插件 MVP：复用已安装的 `EngramCLI` / `EngramMCP`，提供 SessionStart 上下文注入与手动 `catch-up`、`remember`、`handoff` 技能，不捆绑第二套 Swift 二进制。

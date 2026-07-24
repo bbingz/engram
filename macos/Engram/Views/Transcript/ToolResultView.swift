@@ -4,6 +4,12 @@ import SwiftUI
 struct ToolResultView: View {
     let parsed: ParsedToolResult
     @AppStorage("contentFontSize") var fontSize: Double = 14
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// Compose OS Dynamic Type with the A± knob (row 31).
+    private var effectiveFontSize: Double {
+        Theme.scaledFontSize(base: fontSize, category: dynamicTypeSize)
+    }
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var isExpanded: Bool = false
@@ -34,21 +40,21 @@ struct ToolResultView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: headerIcon)
-                        .font(.system(size: fontSize - 2))
+                        .font(.system(size: effectiveFontSize - 2))
                         .foregroundStyle(tintColor)
 
                     if let toolName = parsed.toolName {
                         Text(verbatim: toolName)
-                            .font(.system(size: fontSize - 1, weight: .semibold))
+                            .font(.system(size: effectiveFontSize - 1, weight: .semibold))
                             .foregroundStyle(tintColor)
                     } else {
                         Text(parsed.isError ? "Error" : "Result")
-                            .font(.system(size: fontSize - 1, weight: .semibold))
+                            .font(.system(size: effectiveFontSize - 1, weight: .semibold))
                             .foregroundStyle(tintColor)
                     }
 
                     Text(verbatim: "· \(formatSize(parsed.byteSize))")
-                        .font(.system(size: fontSize - 3))
+                        .font(.system(size: effectiveFontSize - 3))
                         .foregroundStyle(.tertiary)
 
                     Spacer()
@@ -69,7 +75,7 @@ struct ToolResultView: View {
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     Text(verbatim: parsed.output)
-                        .font(.system(size: max(fontSize - 2, 10), design: .monospaced))
+                        .font(.system(size: max(effectiveFontSize - 2, 10), design: .monospaced))
                         .foregroundStyle(parsed.isError ? tintColor.opacity(0.85) : .primary)
                         .textSelection(.enabled)
                         .padding(10)

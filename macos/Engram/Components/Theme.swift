@@ -89,6 +89,56 @@ enum Theme {
     /// Dominant card / surface corner radius. Shared token so cards, banners,
     /// and pills stop re-spelling the literal value.
     static let cornerRadius: CGFloat = 8
+
+    // MARK: - Typography (Dynamic Type)
+
+    /// Map a base point size through OS Dynamic Type. Monotonic: larger
+    /// category → ≥ effective size. Used by `View.scaledFont` and as the base
+    /// for transcript body composition with the A± knob (row 31).
+    static func scaledFontSize(base: CGFloat, category: DynamicTypeSize) -> CGFloat {
+        let factor: CGFloat
+        switch category {
+        case .xSmall: factor = 0.82
+        case .small: factor = 0.88
+        case .medium: factor = 0.94
+        case .large: factor = 1.0
+        case .xLarge: factor = 1.12
+        case .xxLarge: factor = 1.23
+        case .xxxLarge: factor = 1.35
+        case .accessibility1: factor = 1.6
+        case .accessibility2: factor = 1.9
+        case .accessibility3: factor = 2.2
+        case .accessibility4: factor = 2.5
+        case .accessibility5: factor = 2.8
+        @unknown default: factor = 1.0
+        }
+        return max(1, (base * factor * 100).rounded() / 100)
+    }
+}
+
+// MARK: - Scaled font modifier (mirrors MotionAware)
+
+private struct ScaledFont: ViewModifier {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let size: CGFloat
+    let weight: Font.Weight
+
+    func body(content: Content) -> some View {
+        content.font(
+            .system(
+                size: Theme.scaledFontSize(base: size, category: dynamicTypeSize),
+                weight: weight
+            )
+        )
+    }
+}
+
+extension View {
+    /// Apply a Dynamic-Type-aware system font. Call sites swap
+    /// `.font(.system(size: N))` for `.scaledFont(N)` (row 31).
+    func scaledFont(_ size: CGFloat, weight: Font.Weight = .regular) -> some View {
+        modifier(ScaledFont(size: size, weight: weight))
+    }
 }
 
 // MARK: - Shared Utilities

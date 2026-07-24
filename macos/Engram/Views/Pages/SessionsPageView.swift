@@ -146,7 +146,7 @@ struct SessionsPageView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 if let loadError {
-                    AlertBanner(message: "Failed to load sessions: \(loadError)")
+                    AlertBanner(message: "Failed to load sessions: \(loadError)", action: ("Retry", { Task { await loadData() } }))
                 }
                 if let actionStatus {
                     AlertBanner(message: actionStatus)
@@ -404,7 +404,7 @@ struct SessionsPageView: View {
                 isCancelled: Task.isCancelled
             ) else { return }
             EngramLogger.error("SessionsPage load failed", module: .ui, error: error)
-            loadError = error.localizedDescription
+            loadError = ServiceErrorPresenter.displayMessage(for: error)
         }
     }
 

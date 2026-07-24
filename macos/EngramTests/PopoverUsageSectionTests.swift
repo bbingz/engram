@@ -232,4 +232,48 @@ final class PopoverUsageSectionTests: XCTestCase {
             accuracy: 0.0001
         )
     }
+
+    // row 13 (uiux-polish-a11y): limitless shares route to text, not bars.
+    // Fails before isLimitlessShare exists.
+    func testLimitlessSharePredicateIsTrue_repro() {
+        XCTAssertTrue(
+            UsageMetricRow.isLimitlessShare(metric: "7d token share", limit: nil)
+        )
+        XCTAssertTrue(
+            UsageMetricRow.isLimitlessShare(metric: "5h token share", limit: nil)
+        )
+    }
+
+    // Scoped-predicate guard: remaining/used percent meters stay on the bar branch.
+    func testRemainingPercentStaysOnBarBranch_repro() {
+        XCTAssertFalse(
+            UsageMetricRow.isLimitlessShare(metric: "weekly remaining", limit: nil)
+        )
+        XCTAssertFalse(
+            UsageMetricRow.isLimitlessShare(metric: "5h remaining", limit: nil)
+        )
+        // A share with an explicit limit is not "limitless".
+        XCTAssertFalse(
+            UsageMetricRow.isLimitlessShare(metric: "7d token share", limit: 100)
+        )
+    }
+
+    func testShareTextIsSelfLabeling() {
+        XCTAssertEqual(
+            UsageMetricRow.shareText(value: 62, metric: "7d token share", suffix: ""),
+            "62% of 7d tokens"
+        )
+        XCTAssertEqual(
+            UsageMetricRow.shareText(value: 41, metric: "7d cost share", suffix: ""),
+            "41% of 7d cost"
+        )
+        XCTAssertEqual(
+            UsageMetricRow.shareText(value: 30, metric: "5h token share", suffix: ""),
+            "30% of 5h tokens"
+        )
+        XCTAssertEqual(
+            UsageMetricRow.shareText(value: 62, metric: "7d token share", suffix: "7d"),
+            "62% 7d share"
+        )
+    }
 }

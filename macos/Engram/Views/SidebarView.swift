@@ -7,6 +7,9 @@ struct SidebarView: View {
     // Tools are enabled (default off). The Settings toggle that flips this flag
     // is added by a later Settings WP.
     @AppStorage("showDeveloperTools") private var showDeveloperTools = false
+    // Row 31: scale column width with Dynamic Type so larger fonts don't clip
+    // lineLimit(1) labels against a hard 160pt pin.
+    @ScaledMetric(relativeTo: .body) private var sidebarWidth: CGFloat = 160
 
     private func screens(in section: Screen.Section) -> [Screen] {
         section.screens.filter { showDeveloperTools || $0 != .observability }
@@ -18,7 +21,7 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(Screen.Section.allCases, id: \.self) { section in
                         Text(LocalizedStringKey(section.rawValue))
-                            .font(.system(size: 8, weight: .semibold))
+                            .scaledFont(8, weight: .semibold)
                             .foregroundStyle(Theme.tertiaryText)
                             .padding(.horizontal, 12)
                             .padding(.top, section == .overview ? 6 : 8)
@@ -44,7 +47,12 @@ struct SidebarView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
         }
-        .frame(minWidth: 160, maxWidth: 160)
+        .frame(minWidth: sidebarWidth)
+        .navigationSplitViewColumnWidth(
+            min: max(120, sidebarWidth * 0.9),
+            ideal: sidebarWidth,
+            max: max(sidebarWidth * 1.8, 280)
+        )
         .accessibilityIdentifier("sidebar")
     }
 }
@@ -119,10 +127,10 @@ private struct SidebarFooter: View {
         Button(action: action) {
             HStack(spacing: 4) {
                 Image(systemName: icon)
-                    .font(.system(size: 10))
+                    .scaledFont(10)
                     .frame(width: 13)
                 Text(LocalizedStringKey(title))
-                    .font(.system(size: 10, weight: isSelected ? .semibold : .regular))
+                    .scaledFont(10, weight: isSelected ? .semibold : .regular)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
@@ -147,10 +155,10 @@ private struct SidebarItem: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: screen.icon)
-                    .font(.system(size: 10.5))
+                    .scaledFont(10.5)
                     .frame(width: 16)
                 Text(LocalizedStringKey(screen.title))
-                    .font(.system(size: 10.5))
+                    .scaledFont(10.5)
                     .lineLimit(1)
                 Spacer()
             }
