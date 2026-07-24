@@ -7,6 +7,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: transcript find fidelity (rows 8/10/26) (2026-07-25)
+
+- User, assistant, and code turns always render through `SegmentedMessageView`
+  (including under an active find query) so markdown headings, tables, and
+  fenced code no longer flatten to raw source during search.
+- Find highlights paint on **rendered** text after the source-keyed parse
+  cache; syntax-highlighted code uses background-only paint so colors survive.
+- ⌘F counts matches in type/system gates that are currently hidden and offers
+  a one-tap reveal that flips the correct gate (`typeVisibility` vs
+  `showSystemPrompts` / `showAgentComm`), instead of reporting a bare
+  "No matches".
+- Covered by `_repro` unit tests on `usesSegmentedView`, `highlightRendered`,
+  and `hiddenTypeMatchSummary` / `applyReveal`.
+
+
 ### Added: Claude Code plugin MVP (2026-07-24)
 
 - Added a thin plugin under `integrations/claude-code/engram` that reuses the
