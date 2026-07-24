@@ -86,6 +86,7 @@ public protocol StartupBackfillDatabase: AnyObject {
     func backfillFilePaths() throws -> Int
     func downgradeSubagentTiers() throws -> Int
     func backfillParentLinks() throws -> StartupBackfills.ParentLinkResult
+    func backfillCodexNativeParents() throws -> Int
     func resetStaleDetections() throws -> Int
     func backfillCodexOriginator() throws -> Int
     func backfillCodexModelLabels() throws -> Int
@@ -123,6 +124,9 @@ public enum StartupBackfills {
 
     static let codexModelBackfillMetadataKey = "codex_model_backfill_version"
     static let codexModelBackfillVersion = "1"
+    static let codexSpawnParentBackfillMetadataKey = "codex_spawn_parent_backfill_version"
+    static let codexSpawnParentBackfillVersion = "1"
+    static let codexSpawnParentCursorMetadataKey = "codex_spawn_parent_scan_rowid"
     static let skipTierArtifactReconcileMetadataKey = "skip_tier_artifact_reconcile_version"
     static let skipTierArtifactReconcileVersion = "1"
     static let groupedDirReconcileMetadataKey = "grouped_dir_reconcile_version"
@@ -339,6 +343,13 @@ public enum StartupBackfills {
             let parentLinks = try database.backfillParentLinks()
             if parentLinks.linked > 0 {
                 emit(StartupBackfillEvent(event: "backfill", payload: ["type": .string("parent_links"), "linked": .int(parentLinks.linked)]))
+            }
+            let codexNativeLinked = try database.backfillCodexNativeParents()
+            if codexNativeLinked > 0 {
+                emit(StartupBackfillEvent(
+                    event: "backfill",
+                    payload: ["type": .string("codex_native_parents"), "linked": .int(codexNativeLinked)]
+                ))
             }
             let detectionReset = try database.resetStaleDetections()
             if detectionReset > 0 {
@@ -1359,6 +1370,155 @@ public enum StartupBackfills {
             arguments: ["\(ParentDetection.detectionVersion)"]
         )
         return resetAmbiguous + resetUnchecked + resetDispatched
+    }
+
+    /// Link Codex children from vendor-stamped `thread_spawn` / `parent_thread_id`
+    /// in rollout line 1. Version-gated one-shot sweep + rowid high-water cursor.
+    /// See `docs/codex-native-parentage-design-2026-07.md`.
+    public static func backfillCodexNativeParents(_ db: Database) throws -> Int {
+        let storedVersion = try String.fetchOne(
+            db,
+            sql: "SELECT value FROM metadata WHERE key = ?",
+            arguments: [codexSpawnParentBackfillMetadataKey]
+        )
+        let isSweep = storedVersion != codexSpawnParentBackfillVersion
+        let cursor: Int64
+        if isSweep {
+            cursor = 0
+        } else {
+            let raw = try String.fetchOne(
+                db,
+                sql: "SELECT value FROM metadata WHERE key = ?",
+                arguments: [codexSpawnParentCursorMetadataKey]
+            )
+            cursor = Int64(raw ?? "0") ?? 0
+        }
+
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT rowid, id, file_path, agent_role FROM sessions
+            WHERE source = 'codex'
+              AND file_path LIKE '%/.codex/%'
+              AND parent_session_id IS NULL
+              AND (link_source IS NULL OR link_source != 'manual')
+              AND rowid > ?
+            ORDER BY rowid
+            """,
+            arguments: [cursor]
+        )
+
+        var linked = 0
+        var maxRowID: Int64 = cursor
+        for row in rows {
+            let rowID: Int64 = row["rowid"]
+            if rowID > maxRowID { maxRowID = rowID }
+            let id: String = row["id"]
+            let filePath: String = row["file_path"]
+            let existingRole: String? = row["agent_role"]
+
+            guard let firstLine = readFirstLineBytes(path: filePath, maxBytes: codexModelHeadScanBytes),
+                  let spawn = codexSpawnParent(head: firstLine)
+            else {
+                continue
+            }
+            // Vendor depth > 1 is order-dependent under validateParentLink; skip.
+            if let depth = spawn.depth, depth > 1 {
+                continue
+            }
+            guard try validateParentLink(db, sessionId: id, parentId: spawn.parentId) else {
+                continue
+            }
+            // Do not link under a skip-tier parent — child would be unreachable.
+            let parentTier = try String.fetchOne(
+                db,
+                sql: "SELECT tier FROM sessions WHERE id = ?",
+                arguments: [spawn.parentId]
+            )
+            if parentTier == "skip" {
+                continue
+            }
+
+            if existingRole == nil {
+                let changes = try db.executeAndCountChanges(
+                    sql: """
+                    UPDATE sessions
+                    SET agent_role = 'dispatched', tier = 'skip'
+                    WHERE id = ?
+                    """,
+                    arguments: [id]
+                )
+                if changes > 0 {
+                    try deleteRecoverableIndexArtifactsForSkippedSession(db, sessionId: id)
+                }
+            }
+            try setParentSession(db, sessionId: id, parentId: spawn.parentId, linkSource: "path")
+            linked += 1
+        }
+
+        try db.execute(
+            sql: """
+            INSERT INTO metadata(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            arguments: [codexSpawnParentBackfillMetadataKey, codexSpawnParentBackfillVersion]
+        )
+        if !rows.isEmpty {
+            try db.execute(
+                sql: """
+                INSERT INTO metadata(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                arguments: [codexSpawnParentCursorMetadataKey, String(maxRowID)]
+            )
+        }
+        return linked
+    }
+
+    /// Parse vendor-stamped Codex spawn parent from a session_meta first line.
+    /// Internal (not private) so tests can exercise it via `@testable`.
+    static func codexSpawnParent(head: String) -> (parentId: String, depth: Int?)? {
+        guard let data = head.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+        let payload: [String: Any]
+        if let typed = object["payload"] as? [String: Any] {
+            guard object["type"] as? String == "session_meta" else { return nil }
+            payload = typed
+        } else {
+            // Some fixtures/tests pass the payload object alone.
+            payload = object
+        }
+
+        var parentId: String?
+        var depth: Int?
+        if let source = payload["source"] as? [String: Any],
+           let subagent = source["subagent"] as? [String: Any],
+           let threadSpawn = subagent["thread_spawn"] as? [String: Any]
+        {
+            parentId = threadSpawn["parent_thread_id"] as? String
+            if let d = threadSpawn["depth"] as? Int {
+                depth = d
+            } else if let d = threadSpawn["depth"] as? NSNumber {
+                depth = d.intValue
+            }
+        }
+        if parentId == nil {
+            parentId = payload["parent_thread_id"] as? String
+        }
+        guard let parentId, !parentId.isEmpty else { return nil }
+        return (parentId, depth)
+    }
+
+    /// Read up to `maxBytes`, truncate at the first 0x0A, decode only that prefix.
+    static func readFirstLineBytes(path: String, maxBytes: Int) -> String? {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        let data = handle.readData(ofLength: maxBytes)
+        let line = data.firstIndex(of: 0x0A).map { data[..<$0] } ?? data[...]
+        return String(data: Data(line), encoding: .utf8)
     }
 
     public static func backfillCodexOriginator(_ db: Database) throws -> Int {

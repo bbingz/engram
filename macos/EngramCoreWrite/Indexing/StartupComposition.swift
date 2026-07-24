@@ -212,6 +212,10 @@ public final class WriterStartupBackfillDatabase: StartupBackfillDatabase {
         try writer.write { db in try StartupBackfills.backfillParentLinks(db) }
     }
 
+    public func backfillCodexNativeParents() throws -> Int {
+        try writer.write { db in try StartupBackfills.backfillCodexNativeParents(db) }
+    }
+
     public func resetStaleDetections() throws -> Int {
         try writer.write { db in try StartupBackfills.resetStaleDetections(db) }
     }

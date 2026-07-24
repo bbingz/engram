@@ -689,7 +689,7 @@ effectiveRole = explicit agent_role ?? (originator is Claude Code ? "dispatched"
 父级评分。`readCodexOriginator()` 只读取第一行 JSONL。净效果:一个由 Claude-Code 派发的 Codex
 rollout 被隐藏(tier skip),通过其 Claude Code 父级访问,并被排除在独立显示之外。
 
-### (B) Codex 的**原生** subagent spawn 树(`multi_agent_version: "v1"`)— Engram 不消费
+### (B) Codex 的**原生** subagent spawn 树(`multi_agent_version: "v1"`)— Engram 消费(子级一侧)
 
 Codex 自己的多代理功能会派生子线程(角色 `explorer`/`worker`/`awaiter`/`default`,外加
 第三方 `lazycodex-*`/`metis`)。它在 rollout + 数据库中被**冗余地记录在三处**:
@@ -699,6 +699,11 @@ Codex 自己的多代理功能会派生子线程(角色 `explorer`/`worker`/`awa
    `{"subagent":{"thread_spawn":{"parent_thread_id","depth","agent_path","agent_nickname","agent_role"}}}`。
    一种更简单的形式 `{"subagent":"review"}` 标记 review subagent。
 3. `state_5.sqlite.thread_spawn_edges` — 权威的父→子图。
+
+**Engram 消费方:** `StartupBackfills.backfillCodexNativeParents` 从 rollout 第一行读取 (1)
+与 (2)(版本门控的启动回填;`link_source = 'path'`)。**不**读取 (3) 或下方父级一侧的
+`collab_*` 事件。深度 `> 1` 与 skip 级父级会被拒绝,以保持子会话可达。见
+`docs/codex-native-parentage-design-2026-07.md`。
 
 `parent_thread_id` 出现**两次**(顶层 *和* 嵌套在 `source.subagent.thread_spawn` 中),
 两者相等,都馈入 `thread_spawn_edges`。

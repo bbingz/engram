@@ -715,7 +715,7 @@ so it re-enters parent scoring. `readCodexOriginator()` reads only the first JSO
 a Claude-Code-dispatched Codex rollout is hidden (tier skip), accessed through its Claude Code
 parent, and excluded from independent display.
 
-### (B) Codex's NATIVE subagent spawn tree (`multi_agent_version: "v1"`) — NOT consumed by Engram
+### (B) Codex's NATIVE subagent spawn tree (`multi_agent_version: "v1"`) — consumed by Engram (child-side)
 
 Codex's own multi-agent feature spawns child threads (roles `explorer`/`worker`/`awaiter`/
 `default`, plus third-party `lazycodex-*`/`metis`). This is recorded in **three redundant
@@ -726,6 +726,11 @@ places** in the rollout + DB:
    `{"subagent":{"thread_spawn":{"parent_thread_id","depth","agent_path","agent_nickname","agent_role"}}}`.
    A simpler form `{"subagent":"review"}` tags review subagents.
 3. `state_5.sqlite.thread_spawn_edges` — the authoritative parent→child graph.
+
+**Engram consumer:** `StartupBackfills.backfillCodexNativeParents` reads (1) and (2) from
+rollout line 1 (version-gated startup backfill; `link_source = 'path'`). It does **not**
+read (3) or the parent-side `collab_*` events below. Depth `> 1` and skip-tier parents are
+declined so children stay reachable. See `docs/codex-native-parentage-design-2026-07.md`.
 
 The `parent_thread_id` appears **twice** (top-level AND nested in `source.subagent.thread_spawn`),
 both equal, both feed `thread_spawn_edges`.
