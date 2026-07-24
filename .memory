@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-16): 102 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-24): 103 dated entries; regenerate after adding sections -->
+- [2026-07-24 - Local external build storage and disk cleanup retained off main (Codex)](#2026-07-24---local-external-build-storage-and-disk-cleanup-retained-off-main-codex)
 - [2026-07-16 - Periodic service maintenance memory and redundant work bounded (Codex)](#2026-07-16---periodic-service-maintenance-memory-and-redundant-work-bounded-codex)
 - [2026-07-16 - TypeScript 7 retained-tooling upgrade merged without app deployment (Codex)](#2026-07-16---typescript-7-retained-tooling-upgrade-merged-without-app-deployment-codex)
 - [2026-07-15 - Bounded service startup memory deployed as build 1205 (Codex)](#2026-07-15---bounded-service-startup-memory-deployed-as-build-1205-codex)
@@ -106,6 +107,61 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-24 - Local external build storage and disk cleanup retained off main (Codex)
+
+### Current local Git state
+
+- PR #240 was squash-merged as
+  `cb6bffc3528df3ddbe07add040508f757009173f`. `origin/main` remains at that
+  commit. The current main checkout carries only the local documentation sync
+  that records this machine state; do not push it as product behavior.
+- The machine-specific build-path implementation is preserved on local branch
+  `local/external-build-root` at
+  `da595285e93dc13099af3c959e7aa41ae62486af`. It has no upstream and no remote
+  branch. Its `build-release.sh` defaults rebuildable intermediates to
+  `/Volumes/Bing-SSD-5/XcodeBuilds/Engram`, but shared main intentionally does
+  not contain that default because CI and other Macs do not have this volume.
+- Only the main worktree remains. The squash-equivalent Claude plugin worktree
+  and branch plus nine audit branches already reachable from main were removed.
+  Before removal, the plugin branch tree exactly matched merged main and every
+  audit branch passed an ancestor check.
+
+### Local storage and runtime boundary
+
+- Rebuildable `node_modules` (595 MB) and the verified-copy-equivalent
+  `macos/build/EngramExport` (50 MB) were removed. Restore Node tooling with
+  Node 24 and `npm ci`; rebuild the export only when another release is needed.
+- A normal `git gc` reduced `.git` from 459 MB to about 174 MB without
+  aggressive or immediate pruning. The repository measured about 367 MB after
+  the final local-branch split. `.codegraph` (about 81 MB) remains available.
+- The external build root `/Volumes/Bing-SSD-5/XcodeBuilds/Engram` exists and
+  was empty at closeout. The local-only branch routes DerivedData, archive, and
+  export logs there while retaining final exports and rollback artifacts under
+  `macos/build`.
+- Preserve
+  `macos/build/rollback/Engram-1.0.4-20260721142837-before-plugin-20260724T050733Z.app.zip`.
+  Its SHA-256 is
+  `3d92e132256ff973044efe12abeb4b3d55baae2517c177c2e6e389bc4ae08a03`,
+  and ZIP integrity passed after cleanup.
+- `/Applications/Engram.app` remained Developer ID Engram `1.0.5 (1340)`.
+  App/Service process checks and read-only `EngramCLI archive status --json`
+  IPC passed after cleanup. No rebuild, reinstall, restart, Keychain/MCP
+  configuration change, notarization, migration, or remote write occurred.
+
+### Verification and resume
+
+- Before deleting `node_modules`, `bash -n`, shellcheck, Biome, test typecheck,
+  29/29 focused release-script tests, `git diff --check`, and a real external
+  volume path/write smoke passed.
+- Full `npm run test:coverage` was attempted but environment-blocked: the
+  installed `better-sqlite3` binary used Node module ABI 137 while Node 26.5.0
+  required ABI 147, and coverage collection also tried to parse
+  `src/AGENTS.md` as source. Do not report the full suite green from this run.
+- To use the external build implementation, explicitly switch to or rebase
+  `local/external-build-root`. Do not push its hard-coded Bing-SSD-5 default.
+  A future upstream version must keep a portable repository default and inject
+  the machine path through a local override.
 
 ## 2026-07-16 - Periodic service maintenance memory and redundant work bounded (Codex)
 

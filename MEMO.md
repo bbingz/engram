@@ -4,11 +4,15 @@
 
 ### 2026-07-24
 
+- [本机分支] PR #240 已合并为 `cb6bffc`；机器专属外置构建实现仅保留在无 upstream/远端的本地 `local/external-build-root@da595285`，共享 main 不硬编码 Bing-SSD-5。
+- [构建路径] 本地分支把 DerivedData、archive、export log 放到 `/Volumes/Bing-SSD-5/XcodeBuilds/Engram`，最终 export 与 rollback 仍在 `macos/build`；使用前需明确切换或 rebase 该分支，禁止直接 push 机器专属默认值。
+- [空间] 已删除 squash 等价的插件 worktree/分支、9 个已合入 audit 分支、595 MB `node_modules` 和 50 MB 旧 EngramExport；普通 `git gc` 将 `.git` 从 459 MB 降至约 174 MB，保留 81 MB CodeGraph 与 rollback。恢复 Node 工具链时使用 Node 24 执行 `npm ci`。
+- [保护] rollback ZIP 完整性与 SHA-256 `3d92e132256ff973044efe12abeb4b3d55baae2517c177c2e6e389bc4ae08a03` 通过；清理后 App/Service 与只读 archive status IPC 正常，未重编译、重装、重启、迁移、改 Keychain/MCP 或写远端。
 - [插件] 新增独立的 Claude Code 插件 MVP：复用已安装的 `EngramCLI` / `EngramMCP`，提供 SessionStart 上下文注入与手动 `catch-up`、`remember`、`handoff` 技能，不捆绑第二套 Swift 二进制。
 - [边界] `EngramCLI context` 只经 MCP 调用 `get_context`，完整输出限制 8KB，缺 helper、异常响应或超时均 fail-open；自动 hook 不写 memory，只有用户手动调用 `remember` 才允许 `save_insight`。
 - [复核] 真实 Claude Code 2.1.218 加载发现并修正标准 `hooks/hooks.json` 被 manifest 重复声明的问题；MCP 初始化顺序、超时进程回收、JSON 字节上限和路径解析也经独立 review 收紧。
 - [验证] strict plugin validation、7 项插件测试、18 项 CLI 测试、显式写入路由/持久化测试、完整 MCP 169/169、Node build/typecheck/lint/knip 均通过；真实插件 smoke 成功注入上下文且临时 DB 字节不变，10 次启动 p95 低于 1 秒。详细命令和证据见 `CHANGELOG.md`。
-- [发布边界] 工作保留在 `feat/claude-code-plugin-mvp` 的 Draft PR 流程；未合并 `main`，未改 1.0.5 版本，未 tag、release、notarize 或部署。
+- [发布] PR #240 已通过门禁并 squash merge 为 `cb6bffc`，本机已部署 Developer ID Engram `1.0.5 (1340)`；未 tag/GitHub Release、notarize、staple 或修改 Keychain/MCP 配置。
 
 ### 2026-07-23
 
