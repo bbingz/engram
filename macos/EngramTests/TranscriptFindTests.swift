@@ -87,4 +87,115 @@ final class TranscriptFindTests: XCTestCase {
         XCTAssertTrue(bar.contains("onSubmit"))
         XCTAssertTrue(bar.contains("onNext"))
     }
+
+    // MARK: - Row 10: honest hidden-type match count
+
+    /// Default visibility shows only user + assistant (all keys present, rest false).
+    private static var defaultVisibility: [MessageType: Bool] {
+        Dictionary(uniqueKeysWithValues: MessageType.allCases.map { type in
+            (type, type == .user || type == .assistant)
+        })
+    }
+
+    private func indexed(
+        content: String,
+        category: SystemCategory = .none,
+        type: MessageType
+    ) -> IndexedMessage {
+        IndexedMessage(
+            message: ChatMessage(role: "assistant", content: content, systemCategory: category),
+            messageType: type,
+            typeIndex: 1
+        )
+    }
+
+    // row 10: a Tools-only match under default visibility must surface a hidden
+    // bucket (not a flat "No matches"). Fails before hiddenTypeMatchSummary.
+    func testFindReportsMatchesInHiddenTypes_repro() {
+        let messages = [
+            indexed(content: "hello user", type: .user),
+            indexed(content: "secret-tool-token in tools", type: .tool)
+        ]
+        let buckets = SessionDetailView.hiddenTypeMatchSummary(
+            messages,
+            query: "secret-tool-token",
+            typeVisibility: Self.defaultVisibility,
+            showSystemPrompts: false,
+            showAgentComm: false
+        )
+        XCTAssertEqual(buckets.count, 1)
+        XCTAssertEqual(buckets[0].revealKind, .typeVisibility(.tool))
+        XCTAssertEqual(buckets[0].count, 1)
+        XCTAssertEqual(buckets[0].label, MessageType.tool.label)
+    }
+
+    // B3: agentComm classifies as MessageType.system/toolCall but must bucket
+    // under revealKind .agentComm, never .typeVisibility(.system).
+    func testHiddenSystemMatchBucketsBySystemCategory_repro() {
+        let messages = [
+            indexed(content: "agent-comm-marker", category: .agentComm, type: .system)
+        ]
+        let buckets = SessionDetailView.hiddenTypeMatchSummary(
+            messages,
+            query: "agent-comm-marker",
+            typeVisibility: Self.defaultVisibility,
+            showSystemPrompts: false,
+            showAgentComm: false
+        )
+        XCTAssertEqual(buckets.count, 1)
+        XCTAssertEqual(buckets[0].revealKind, .agentComm)
+        XCTAssertNotEqual(buckets[0].revealKind, .typeVisibility(.system))
+        XCTAssertEqual(buckets[0].label, "Agent Comm")
+    }
+
+    func testHiddenMatchRevealFlipsCorrectGate() {
+        let toolMsg = indexed(content: "hidden-tool", type: .tool)
+        let agentMsg = indexed(content: "hidden-agent", category: .agentComm, type: .system)
+        var visibility = Self.defaultVisibility
+        var showSystemPrompts = false
+        var showAgentComm = false
+
+        XCTAssertFalse(SessionDetailView.isMessageVisible(
+            toolMsg, typeVisibility: visibility,
+            showSystemPrompts: showSystemPrompts, showAgentComm: showAgentComm
+        ))
+        XCTAssertFalse(SessionDetailView.isMessageVisible(
+            agentMsg, typeVisibility: visibility,
+            showSystemPrompts: showSystemPrompts, showAgentComm: showAgentComm
+        ))
+
+        SessionDetailView.applyReveal(
+            [.typeVisibility(.tool), .agentComm],
+            typeVisibility: &visibility,
+            showSystemPrompts: &showSystemPrompts,
+            showAgentComm: &showAgentComm
+        )
+
+        XCTAssertTrue(visibility[.tool] == true)
+        XCTAssertTrue(showAgentComm)
+        XCTAssertFalse(showSystemPrompts, "agentComm reveal must not flip system prompts")
+        XCTAssertTrue(SessionDetailView.isMessageVisible(
+            toolMsg, typeVisibility: visibility,
+            showSystemPrompts: showSystemPrompts, showAgentComm: showAgentComm
+        ))
+        XCTAssertTrue(SessionDetailView.isMessageVisible(
+            agentMsg, typeVisibility: visibility,
+            showSystemPrompts: showSystemPrompts, showAgentComm: showAgentComm
+        ))
+    }
+
+    func testHiddenMatchBucketsEmptyWhenAllVisible() {
+        let messages = [
+            indexed(content: "hello visible", type: .user),
+            indexed(content: "also visible", type: .assistant)
+        ]
+        let buckets = SessionDetailView.hiddenTypeMatchSummary(
+            messages,
+            query: "visible",
+            typeVisibility: Self.defaultVisibility,
+            showSystemPrompts: false,
+            showAgentComm: false
+        )
+        XCTAssertTrue(buckets.isEmpty)
+    }
 }

@@ -75,6 +75,57 @@ final class TranscriptLabelAndCopyTests: XCTestCase {
         }
     }
 
+    // rows 8+26 (transcript-find-rendering): user/assistant/code always take the
+    // segmented path — including under active search — so find never flattens
+    // rich rendering. Fails before usesSegmentedView exists / admits .user.
+    func testUserMessagesUseSegmentedView_repro() {
+        XCTAssertTrue(ColorBarMessageView.usesSegmentedView(for: .user))
+        XCTAssertTrue(ColorBarMessageView.usesSegmentedView(for: .assistant))
+        XCTAssertTrue(ColorBarMessageView.usesSegmentedView(for: .code))
+        XCTAssertFalse(ColorBarMessageView.usesSegmentedView(for: .thinking))
+        XCTAssertFalse(ColorBarMessageView.usesSegmentedView(for: .toolCall))
+    }
+
+    // row 26: highlight on rendered markdown (markers consumed), not raw source.
+    // Template: SnippetHighlighterTests. Fails before highlightRendered exists.
+    func testHighlightPaintsOnRenderedMarkdownNotRawSource_repro() {
+        let rendered = try! AttributedString(
+            markdown: "**bold**",
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )
+        let result = ColorBarMessageView.highlightRendered(rendered, query: "bold")
+        XCTAssertFalse(
+            String(result.characters).contains("*"),
+            "rendered characters must not reintroduce markdown markers"
+        )
+        var painted = ""
+        for run in result.runs where run.backgroundColor == .yellow {
+            painted += String(result[run.range].characters)
+        }
+        XCTAssertEqual(painted, "bold", "yellow background should cover the rendered 'bold' run")
+    }
+
+    /// Parse caches stay keyed on source text alone — re-keying on query would
+    /// re-parse markdown every keystroke (row 26 acceptance).
+    func testSegmentAndAttrCachesNotKeyedOnQuery() throws {
+        let content = try source("macos/Engram/Views/ContentSegmentViews.swift")
+        let normalized = content.filter { !$0.isWhitespace }
+        // attrCache setObject uses text key; must not include searchText/query.
+        XCTAssertTrue(normalized.contains("attrCache.setObject(CachedAttributedString(value:result),forKey:key,cost:text.utf16.count*2)"))
+        XCTAssertTrue(normalized.contains("segmentCache.setObject(entry,forKey:NSString(string:content),cost:content.utf16.count*2)"))
+        // Leaves accept searchText; highlight is layered after cache fetch.
+        XCTAssertTrue(content.contains("var searchText: String = \"\""))
+        XCTAssertTrue(content.contains("ColorBarMessageView.highlightRendered"))
+        // No searchText.isEmpty fork left on ColorBarMessageView for segmented path.
+        let colorBar = try source("macos/Engram/Views/Transcript/ColorBarMessageView.swift")
+        XCTAssertFalse(
+            colorBar.filter { !$0.isWhitespace }.contains("ifsearchText.isEmpty{SegmentedMessageView"),
+            "search must not destroy segmented rendering via an isEmpty fork"
+        )
+        XCTAssertTrue(colorBar.contains("usesSegmentedView(for:"))
+        XCTAssertTrue(colorBar.contains("SegmentedMessageView(content: indexed.message.content, searchText: searchText)"))
+    }
+
     // #5: "Copy Entire Conversation" has one testable source of truth.
     func testConversationTextJoinsRowsWithRolePrefixes() {
         let msgs = [

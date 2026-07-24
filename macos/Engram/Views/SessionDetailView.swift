@@ -68,6 +68,9 @@ struct SessionDetailView: View {
 
     @State private var displayIndexed: [IndexedMessage] = []
     @State private var matchIndices: [Int] = []
+    /// Hidden-type find matches (row 10): buckets of query hits that the current
+    /// type / system-category gates hide. Cleared when the query is empty.
+    @State private var hiddenMatchBuckets: [HiddenMatchBucket] = []
 
     // Transcript paging state. `hasMoreToLoad` gates the "Load more / Load all"
     // footer. `loadedProducedCount` is the next adapter offset in PRODUCED-message
@@ -124,6 +127,96 @@ struct SessionDetailView: View {
         }
     }
 
+    /// Gate that hid a matching message — system buckets key on
+    /// `systemCategory`, type buckets on `MessageType` (never
+    /// `MessageType.system`, which cannot reveal either system toggle).
+    enum RevealKind: Hashable, Equatable {
+        case systemPrompt
+        case agentComm
+        case typeVisibility(MessageType)
+    }
+
+    struct HiddenMatchBucket: Equatable {
+        let label: String
+        let revealKind: RevealKind
+        let count: Int
+    }
+
+    /// Counts query matches that the current filters hide, partitioned by the
+    /// gate that must flip to reveal them (row 10). Scans the loaded prefix
+    /// (`indexedMessages`) — same scope as the partial-load search hint.
+    static func hiddenTypeMatchSummary(
+        _ all: [IndexedMessage],
+        query: String,
+        typeVisibility: [MessageType: Bool],
+        showSystemPrompts: Bool,
+        showAgentComm: Bool
+    ) -> [HiddenMatchBucket] {
+        // Trim so whitespace-padded queries do not diverge from the visible
+        // matchIndices scan (aligned intentionally; marker-query count vs
+        // rendered-highlight divergence remains SPEC R2 accepted).
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return [] }
+        var counts: [RevealKind: Int] = [:]
+        for msg in all {
+            guard msg.message.content.range(of: q, options: .caseInsensitive) != nil else {
+                continue
+            }
+            let visible = isMessageVisible(
+                msg,
+                typeVisibility: typeVisibility,
+                showSystemPrompts: showSystemPrompts,
+                showAgentComm: showAgentComm
+            )
+            guard !visible else { continue }
+            let kind: RevealKind
+            switch msg.message.systemCategory {
+            case .systemPrompt:
+                kind = .systemPrompt
+            case .agentComm:
+                kind = .agentComm
+            case .none:
+                kind = .typeVisibility(msg.messageType)
+            }
+            counts[kind, default: 0] += 1
+        }
+        return counts.map { kind, count in
+            HiddenMatchBucket(label: label(for: kind), revealKind: kind, count: count)
+        }
+        .sorted { lhs, rhs in
+            if lhs.count != rhs.count { return lhs.count > rhs.count }
+            return lhs.label < rhs.label
+        }
+    }
+
+    static func label(for kind: RevealKind) -> String {
+        switch kind {
+        case .systemPrompt: return "System Prompts"
+        case .agentComm: return "Agent Comm"
+        case .typeVisibility(let type): return type.label
+        }
+    }
+
+    /// Flips the gates named by `kinds` so previously hidden matches become
+    /// visible. Pure so reveal correctness is unit-testable (row 10).
+    static func applyReveal(
+        _ kinds: [RevealKind],
+        typeVisibility: inout [MessageType: Bool],
+        showSystemPrompts: inout Bool,
+        showAgentComm: inout Bool
+    ) {
+        for kind in kinds {
+            switch kind {
+            case .systemPrompt:
+                showSystemPrompts = true
+            case .agentComm:
+                showAgentComm = true
+            case .typeVisibility(let type):
+                typeVisibility[type] = true
+            }
+        }
+    }
+
     /// Initial transcript window: `nil` (load the whole transcript, the prior
     /// behavior) for sessions at or below the paging threshold; a first-page
     /// limit for larger ones. Pure so the gating is unit-testable.
@@ -149,18 +242,42 @@ struct SessionDetailView: View {
     /// re-runs (cancelling the prior scan) whenever the query OR the displayed set
     /// changes — always reading live state, so it can't clobber a concurrent edit.
     private func updateMatchIndicesDebounced() async {
-        let query = searchText.lowercased()
-        guard !query.isEmpty else { matchIndices = []; return }
+        // Trim before lowercasing so the visible match scan and
+        // hiddenTypeMatchSummary share the same needle (SPEC R2 accepted
+        // count/highlight divergence for marker queries, not for whitespace).
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else {
+            matchIndices = []
+            hiddenMatchBuckets = []
+            return
+        }
         try? await Task.sleep(nanoseconds: 200_000_000)
         if Task.isCancelled { return }
         let snapshot = displayIndexed
-        let indices: [Int] = await Task.detached(priority: .userInitiated) {
-            snapshot.enumerated().compactMap { i, msg in
+        let allLoaded = indexedMessages
+        let visibility = typeVisibility
+        let systemPrompts = showSystemPrompts
+        let agentComm = showAgentComm
+        let rawQuery = searchText
+        let (indices, hidden): ([Int], [HiddenMatchBucket]) = await Task.detached(priority: .userInitiated) {
+            let visibleMatches = snapshot.enumerated().compactMap { i, msg in
                 msg.message.content.lowercased().contains(query) ? i : nil
             }
+            // Full-prefix hidden-type scan (row 10) — not page-incremental.
+            // Must stay wholesale per query change; do not fold into a per-page
+            // matchIndices slice or filter toggles leave stale bucket counts.
+            let hiddenBuckets = SessionDetailView.hiddenTypeMatchSummary(
+                allLoaded,
+                query: rawQuery,
+                typeVisibility: visibility,
+                showSystemPrompts: systemPrompts,
+                showAgentComm: agentComm
+            )
+            return (visibleMatches, hiddenBuckets)
         }.value
         if Task.isCancelled { return }
         matchIndices = indices
+        hiddenMatchBuckets = hidden
         // Auto-scroll to the first match when navigation hasn't started yet
         // (currentMatchIndex < 0). The guard keeps an in-progress Prev/Next from
         // being yanked back to the top by a filter/page re-scan.
@@ -263,6 +380,44 @@ struct SessionDetailView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
                 .accessibilityIdentifier("detail_findPartialHint")
+                Divider()
+            }
+
+            // Hidden-type match disclosure (row 10). Independent of the
+            // partial-load hint: default visibility hides 7 of 9 MessageType
+            // cases, so a Tools/Thinking/System-only query must not report a
+            // flat "No matches".
+            if !searchText.isEmpty && !hiddenMatchBuckets.isEmpty {
+                let total = hiddenMatchBuckets.reduce(0) { $0 + $1.count }
+                let typeList = hiddenMatchBuckets.map(\.label).joined(separator: ", ")
+                HStack(spacing: 8) {
+                    Image(systemName: "eye.slash").font(.caption2)
+                    Text("\(total) more matches in hidden types (\(typeList))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Button("Show") {
+                        var visibility = typeVisibility
+                        var systemPrompts = showSystemPrompts
+                        var agentComm = showAgentComm
+                        Self.applyReveal(
+                            hiddenMatchBuckets.map(\.revealKind),
+                            typeVisibility: &visibility,
+                            showSystemPrompts: &systemPrompts,
+                            showAgentComm: &agentComm
+                        )
+                        typeVisibility = visibility
+                        showSystemPrompts = systemPrompts
+                        showAgentComm = agentComm
+                        updateDisplayIndexed()
+                    }
+                    .font(.caption2)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.accent)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .accessibilityIdentifier("detail_findHiddenHint")
                 Divider()
             }
 
