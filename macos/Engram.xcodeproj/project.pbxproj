@@ -360,6 +360,7 @@
 		8208F152898312B920C7C975 /* EngramCLIArchiveCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EA21C83675B0312417C952B /* EngramCLIArchiveCommand.swift */; };
 		82AC9F191D52FA3BC6C9FD76 /* AGENTS.md in Resources */ = {isa = PBXBuildFile; fileRef = 5CDCAD62ECCF9F31008E376B /* AGENTS.md */; };
 		8352A84898143779A0D84087 /* ImportRepo.swift in Sources */ = {isa = PBXBuildFile; fileRef = E82D19B2FEFE12422A15C4F9 /* ImportRepo.swift */; };
+		8459EBFCF9D8B7D931107A50 /* EngramRemoteServerCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5C1C8678A914AA14E36D52FF /* EngramRemoteServerCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		84CA919848FE27F9DC670F7A /* EngramCoreWrite.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C3BD994C35766F89AECF7BB2 /* EngramCoreWrite.framework */; };
 		84FC451B5E95245BD82626DE /* BarChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D04F3C79286C371A9D5E91B /* BarChart.swift */; };
 		85C1D3A4478EB20C2329C274 /* DeprecatedSettingsScrubTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD89017C638FB890D09C357 /* DeprecatedSettingsScrubTests.swift */; };
@@ -596,6 +597,7 @@
 		D5A8B366292E66360A5ABA72 /* FilterPills.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AC3AA3C44730AC0E7F3C527 /* FilterPills.swift */; };
 		D5B821FF354D2B79934F0BD3 /* ClaudeCodeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31D903BD85D36FAC47363151 /* ClaudeCodeAdapter.swift */; };
 		D5F714EE8B0947882F9DDA58 /* HomePopoverActionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E16C3F307C21116E24F83AC /* HomePopoverActionsTests.swift */; };
+		D6467B81FF8E3A9155997C25 /* CostUnpricedDisclosureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B617D817E8E8F16B465A5BA /* CostUnpricedDisclosureTests.swift */; };
 		D65525BA91CEC2DBB12AAA6E /* ErrorDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3782803300BEC751CABAA35 /* ErrorDashboardView.swift */; };
 		D6734F5F85D69F2C8794FD8B /* TestLaunchConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 109661C042659F74CE3C59DB /* TestLaunchConfig.swift */; };
 		D6A21CDE4A313CC4DBFC855D /* ClaudeCodeProfileResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E3EE43828C32F82E08928FA /* ClaudeCodeProfileResolver.swift */; };
@@ -915,6 +917,7 @@
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
+				8459EBFCF9D8B7D931107A50 /* EngramRemoteServerCore.framework in Embed Frameworks */,
 				CE5ACE0C65F4594BC19CF4C3 /* EngramCoreWrite.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
@@ -1144,6 +1147,7 @@
 		6A0E4988B449A25982524EB7 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		6AF8688CCE38881CA45A3544 /* Round5RemediationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Round5RemediationTests.swift; sourceTree = "<group>"; };
 		6B2025D154E8A1578248F902 /* ProjectMoveLongOpIPCTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectMoveLongOpIPCTests.swift; sourceTree = "<group>"; };
+		6B617D817E8E8F16B465A5BA /* CostUnpricedDisclosureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CostUnpricedDisclosureTests.swift; sourceTree = "<group>"; };
 		6BB1C3D2DCAAB6F0FC5705EA /* AntigravityAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityAdapter.swift; sourceTree = "<group>"; };
 		6C235E505D90CB7E541947A7 /* SearchPageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchPageView.swift; sourceTree = "<group>"; };
 		6C8D9998DBB8A760B558CDB9 /* SearchSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchSupport.swift; sourceTree = "<group>"; };
@@ -2220,6 +2224,7 @@
 				D71B6F2F670B5F9C79904E7B /* CommandPaletteTests.swift */,
 				769B51F3186E047A03FD910E /* ContentSegmentAndGitRepoTests.swift */,
 				55153C9D6E5FBCF7EC5BB744 /* CostBudgetNotifierTests.swift */,
+				6B617D817E8E8F16B465A5BA /* CostUnpricedDisclosureTests.swift */,
 				9CFFDA5C866D579174B8B396 /* DashboardDrillInTests.swift */,
 				2B43EB84B465B6F88E97F893 /* DatabaseManagerTests.swift */,
 				BBD89017C638FB890D09C357 /* DeprecatedSettingsScrubTests.swift */,
@@ -3029,21 +3034,21 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				CBCDC5ABCED1290D34EC5E45 /* Engram */,
-				6EFB8FB1AB1AF1754D7D12E2 /* EngramCLI */,
 				9FCF956C8AC992AD35121793 /* EngramCoreRead */,
-				761CAC11525229DAF20DAFFE /* EngramCoreSchemaTool */,
-				625906E26599963CA0363FA5 /* EngramCoreTests */,
 				66715EBDF64143B4B7424B90 /* EngramCoreWrite */,
-				790D3733722391768E6E845B /* EngramMCP */,
-				4BEDF7101A8E6E1E3BE7587E /* EngramMCPTests */,
-				8FB9D4E7CB22CA508A1F4FC0 /* EngramRemoteServer */,
-				5729B9A54FF3E39F8C58A630 /* EngramRemoteServerCore */,
-				AD2DF7CFD4ED593A08D8EC0D /* EngramRemoteServerCoreTests */,
-				50CCD8ABB3B0D0D90287CF4D /* EngramService */,
+				625906E26599963CA0363FA5 /* EngramCoreTests */,
+				761CAC11525229DAF20DAFFE /* EngramCoreSchemaTool */,
 				0DFC19162331C57E93BD3D83 /* EngramServiceCore */,
 				1565AAD24D4ADE0D74FCB64A /* EngramServiceCoreTests */,
+				50CCD8ABB3B0D0D90287CF4D /* EngramService */,
+				CBCDC5ABCED1290D34EC5E45 /* Engram */,
+				6EFB8FB1AB1AF1754D7D12E2 /* EngramCLI */,
+				790D3733722391768E6E845B /* EngramMCP */,
+				5729B9A54FF3E39F8C58A630 /* EngramRemoteServerCore */,
+				8FB9D4E7CB22CA508A1F4FC0 /* EngramRemoteServer */,
+				AD2DF7CFD4ED593A08D8EC0D /* EngramRemoteServerCoreTests */,
 				30D8E174D1B1B7E0305A85E7 /* EngramTests */,
+				4BEDF7101A8E6E1E3BE7587E /* EngramMCPTests */,
 				3E8B4E524AA151B373A0BC91 /* EngramUITests */,
 			);
 		};
@@ -3638,6 +3643,7 @@
 				7088C2A31448B493BE954A31 /* CommandPaletteTests.swift in Sources */,
 				482DEBC8C3E42AE12510614C /* ContentSegmentAndGitRepoTests.swift in Sources */,
 				0504619CC649F61C72E6A697 /* CostBudgetNotifierTests.swift in Sources */,
+				D6467B81FF8E3A9155997C25 /* CostUnpricedDisclosureTests.swift in Sources */,
 				3427328FC80E20DF4DE7AFF9 /* DashboardDrillInTests.swift in Sources */,
 				F05AEAE6801A6859E41848C9 /* DatabaseManagerTests.swift in Sources */,
 				85C1D3A4478EB20C2329C274 /* DeprecatedSettingsScrubTests.swift in Sources */,

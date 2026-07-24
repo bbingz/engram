@@ -2,13 +2,17 @@
   "content": [
     {
       "type": "text",
-      "text": "{\n  \"totalCostUsd\": 2.1,\n  \"totalInputTokens\": 31800,\n  \"totalOutputTokens\": 13500,\n  \"breakdown\": [\n    {\n      \"key\": \"nova\",\n      \"inputTokens\": 8490,\n      \"outputTokens\": 3645,\n      \"cacheReadTokens\": 300,\n      \"cacheCreationTokens\": 60,\n      \"costUsd\": 0.687,\n      \"sessionCount\": 6\n    },\n    {\n      \"key\": \"delta-kit\",\n      \"inputTokens\": 8130,\n      \"outputTokens\": 3465,\n      \"cacheReadTokens\": 300,\n      \"cacheCreationTokens\": 60,\n      \"costUsd\": 0.579,\n      \"sessionCount\": 6\n    },\n    {\n      \"key\": \"apollo\",\n      \"inputTokens\": 7770,\n      \"outputTokens\": 3285,\n      \"cacheReadTokens\": 300,\n      \"cacheCreationTokens\": 60,\n      \"costUsd\": 0.471,\n      \"sessionCount\": 6\n    },\n    {\n      \"key\": \"engram\",\n      \"inputTokens\": 7410,\n      \"outputTokens\": 3105,\n      \"cacheReadTokens\": 300,\n      \"cacheCreationTokens\": 60,\n      \"costUsd\": 0.363,\n      \"sessionCount\": 6\n    }\n  ]\n}"
+      "text": "{\n  \"totalCostUsd\": 2.1,\n  \"totalInputTokens\": 31800,\n  \"totalOutputTokens\": 13500,\n  \"unpricedUnattributedSessions\": 0,\n  \"unpricedNoPriceSessions\": 0,\n  \"unpricedUnattributedTokens\": 0,\n  \"unpricedNoPriceTokens\": 0,\n  \"breakdown\": [\n    {\n      \"key\": \"nova\",\n      \"inputTokens\": 8490,\n      \"outputTokens\": 3645,\n      \"cacheReadTokens\": 300,\n      \"cacheCreationTokens\": 60,\n      \"costUsd\": 0.687,\n      \"sessionCount\": 6\n    },\n    {\n      \"key\": \"delta-kit\",\n      \"inputTokens\": 8130,\n      \"outputTokens\": 3465,\n      \"cacheReadTokens\": 300,\n      \"cacheCreationTokens\": 60,\n      \"costUsd\": 0.579,\n      \"sessionCount\": 6\n    },\n    {\n      \"key\": \"apollo\",\n      \"inputTokens\": 7770,\n      \"outputTokens\": 3285,\n      \"cacheReadTokens\": 300,\n      \"cacheCreationTokens\": 60,\n      \"costUsd\": 0.471,\n      \"sessionCount\": 6\n    },\n    {\n      \"key\": \"engram\",\n      \"inputTokens\": 7410,\n      \"outputTokens\": 3105,\n      \"cacheReadTokens\": 300,\n      \"cacheCreationTokens\": 60,\n      \"costUsd\": 0.363,\n      \"sessionCount\": 6\n    }\n  ]\n}"
     }
   ],
   "structuredContent": {
     "totalCostUsd": 2.1,
     "totalInputTokens": 31800,
     "totalOutputTokens": 13500,
+    "unpricedUnattributedSessions": 0,
+    "unpricedNoPriceSessions": 0,
+    "unpricedUnattributedTokens": 0,
+    "unpricedNoPriceTokens": 0,
     "breakdown": [
       {
         "key": "nova",

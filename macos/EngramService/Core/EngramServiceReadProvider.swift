@@ -1194,12 +1194,44 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                   AND date(s.start_time, 'localtime') = date('now', 'localtime')
             """) ?? 0
 
+            // Row 4: unpriced disclosure split by cause (attribution vs table-gap).
+            // Tokens > 0 so legitimately zero-usage $0 sessions are not flagged.
+            // Sibling query inside the same read closure (GRDB queue is non-reentrant).
+            let unpricedRow = try Row.fetchOne(db, sql: """
+                SELECT
+                  SUM(CASE WHEN COALESCE(c.cost_usd,0)=0
+                           AND (c.input_tokens+c.output_tokens+c.cache_read_tokens+c.cache_creation_tokens) > 0
+                           AND (c.model IS NULL OR c.model = '')
+                      THEN 1 ELSE 0 END) AS unpriced_unattributed_sessions,
+                  SUM(CASE WHEN COALESCE(c.cost_usd,0)=0
+                           AND (c.input_tokens+c.output_tokens+c.cache_read_tokens+c.cache_creation_tokens) > 0
+                           AND c.model IS NOT NULL AND c.model <> ''
+                      THEN 1 ELSE 0 END) AS unpriced_no_price_sessions,
+                  SUM(CASE WHEN COALESCE(c.cost_usd,0)=0
+                           AND (c.input_tokens+c.output_tokens+c.cache_read_tokens+c.cache_creation_tokens) > 0
+                           AND (c.model IS NULL OR c.model = '')
+                      THEN (c.input_tokens+c.output_tokens+c.cache_read_tokens+c.cache_creation_tokens)
+                      ELSE 0 END) AS unpriced_unattributed_tokens,
+                  SUM(CASE WHEN COALESCE(c.cost_usd,0)=0
+                           AND (c.input_tokens+c.output_tokens+c.cache_read_tokens+c.cache_creation_tokens) > 0
+                           AND c.model IS NOT NULL AND c.model <> ''
+                      THEN (c.input_tokens+c.output_tokens+c.cache_read_tokens+c.cache_creation_tokens)
+                      ELSE 0 END) AS unpriced_no_price_tokens
+                FROM session_costs c
+                JOIN sessions s ON c.session_id = s.id
+                WHERE s.hidden_at IS NULL
+            """)
+
             return EngramServiceCostsResponse(
                 totalUsd: Self.roundCents(totalUsd),
                 perSource: perSource,
                 perDay: perDay,
                 monthToDateUsd: Self.roundCents(monthToDateUsd),
-                todayUsd: Self.roundCents(todayUsd)
+                todayUsd: Self.roundCents(todayUsd),
+                unpricedUnattributedSessions: (unpricedRow?["unpriced_unattributed_sessions"] as Int?) ?? 0,
+                unpricedNoPriceSessions: (unpricedRow?["unpriced_no_price_sessions"] as Int?) ?? 0,
+                unpricedUnattributedTokens: (unpricedRow?["unpriced_unattributed_tokens"] as Int?) ?? 0,
+                unpricedNoPriceTokens: (unpricedRow?["unpriced_no_price_tokens"] as Int?) ?? 0
             )
         }
     }

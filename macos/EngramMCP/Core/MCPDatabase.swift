@@ -251,8 +251,48 @@ final class MCPDatabase {
         }
         sql += " GROUP BY \(groupExpr) ORDER BY costUsd DESC"
 
-        let rows = try queue.read { db in
-            try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
+        // Unpriced cause split (row 4): same WHERE predicate, whole-window aggregates.
+        // Must run as a sibling fetch inside the same `queue.read` closure — nested
+        // `queue.read` deadlocks (GRDB non-reentrant).
+        var unpricedSQL = """
+        SELECT
+          SUM(CASE WHEN COALESCE(c.cost_usd,0)=0
+                   AND (c.input_tokens+c.output_tokens+c.cache_read_tokens+c.cache_creation_tokens) > 0
+                   AND (c.model IS NULL OR c.model = '')
+              THEN 1 ELSE 0 END) AS unpricedUnattributedSessions,
+          SUM(CASE WHEN COALESCE(c.cost_usd,0)=0
+                   AND (c.input_tokens+c.output_tokens+c.cache_read_tokens+c.cache_creation_tokens) > 0
+                   AND c.model IS NOT NULL AND c.model <> ''
+              THEN 1 ELSE 0 END) AS unpricedNoPriceSessions,
+          SUM(CASE WHEN COALESCE(c.cost_usd,0)=0
+                   AND (c.input_tokens+c.output_tokens+c.cache_read_tokens+c.cache_creation_tokens) > 0
+                   AND (c.model IS NULL OR c.model = '')
+              THEN (c.input_tokens+c.output_tokens+c.cache_read_tokens+c.cache_creation_tokens)
+              ELSE 0 END) AS unpricedUnattributedTokens,
+          SUM(CASE WHEN COALESCE(c.cost_usd,0)=0
+                   AND (c.input_tokens+c.output_tokens+c.cache_read_tokens+c.cache_creation_tokens) > 0
+                   AND c.model IS NOT NULL AND c.model <> ''
+              THEN (c.input_tokens+c.output_tokens+c.cache_read_tokens+c.cache_creation_tokens)
+              ELSE 0 END) AS unpricedNoPriceTokens
+        FROM session_costs c
+        JOIN sessions s ON c.session_id = s.id
+        WHERE s.hidden_at IS NULL
+        """
+        if since != nil {
+            unpricedSQL += " AND s.start_time >= :since"
+        }
+        if until != nil {
+            unpricedSQL += " AND s.start_time < :until"
+        }
+
+        let (rows, unpriced): ([Row], Row?) = try queue.read { db in
+            let grouped = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
+            let unpricedRow = try Row.fetchOne(
+                db,
+                sql: unpricedSQL,
+                arguments: StatementArguments(arguments)
+            )
+            return (grouped, unpricedRow)
         }
         let totalCostUsd = rows.reduce(0.0) { partial, row in
             partial + doubleValue(row["costUsd"])
@@ -268,6 +308,10 @@ final class MCPDatabase {
             ("totalCostUsd", .double((totalCostUsd * 100).rounded() / 100)),
             ("totalInputTokens", .int(totalInputTokens)),
             ("totalOutputTokens", .int(totalOutputTokens)),
+            ("unpricedUnattributedSessions", .int(intValue(unpriced?["unpricedUnattributedSessions"]))),
+            ("unpricedNoPriceSessions", .int(intValue(unpriced?["unpricedNoPriceSessions"]))),
+            ("unpricedUnattributedTokens", .int(intValue(unpriced?["unpricedUnattributedTokens"]))),
+            ("unpricedNoPriceTokens", .int(intValue(unpriced?["unpricedNoPriceTokens"]))),
             ("breakdown", .array(rows.map(costSummaryObject(from:)))),
         ])
     }
@@ -2537,7 +2581,10 @@ private func stringValue(_ value: DatabaseValueConvertible?) -> String? {
     }
 }
 
-private func contextNow() -> Date {
+/// Shared clock for MCP tools. Injectable via `ENGRAM_MCP_NOW` (ISO-8601).
+/// Module-internal (not `private`) so tools like `MCPInsightsTool` can share it
+/// for honest window-day math (row 3 / mcp-cost Part A).
+func contextNow() -> Date {
     if let raw = ProcessInfo.processInfo.environment["ENGRAM_MCP_NOW"] {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
