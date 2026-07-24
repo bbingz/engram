@@ -7,6 +7,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: index-eligible source health denominator and reason (row 2) (2026-07-25)
+
+- Source health and Search N% use a non-skip (index-eligible) session
+  denominator so skip-tier FTS absence no longer permanent-oranges healthy sources.
+- `EngramServiceSourceInfo` carries `healthReason` for badge tooltips.
+- Ledger entry 3 Verified-by updated for the new IPC tests.
+
+
 ### Added: Claude Code plugin MVP (2026-07-24)
 
 - Added a thin plugin under `integrations/claude-code/engram` that reuses the
