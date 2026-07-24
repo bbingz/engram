@@ -23,20 +23,17 @@ class ReplayState {
     var error: String? = nil
 
     private var playTimer: Timer?
-    private static let isoFractionalFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-    private static let isoFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
 
-    // 容忍带/不带小数秒的 ISO8601（不同来源时间戳格式不一致）
-    static func parseISO(_ value: String) -> Date? {
-        isoFractionalFormatter.date(from: value) ?? isoFormatter.date(from: value)
+    // 容忍带/不带小数秒的 ISO8601（不同来源时间戳格式不一致）。
+    // nonisolated + per-call formatters: safe for off-main turn-duration walks
+    // (IndexedMessage) and for MainActor replay pacing.
+    nonisolated static func parseISO(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) { return date }
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return plain.date(from: value)
     }
 
     enum PlaybackSpeed: Double, CaseIterable {
