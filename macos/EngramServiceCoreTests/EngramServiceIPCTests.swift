@@ -1760,6 +1760,134 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(opencode?.healthStatus, "healthy")
     }
 
+    // Mirror row 2 / source-health-predicate: skip sessions must not dilute the
+    // health denominator. Parent: s3 makes coverage 67% partial; branch: healthy.
+    // See docs/source-health-predicate-design-2026-07.md.
+    func testSourceHealthExcludesSkipTierSessions_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes,
+                  indexed_at, tier
+                ) VALUES (
+                  's3', 'codex', '2026-04-23T03:00:00Z', '/tmp/engram', 'engram',
+                  'gpt-5.4', 2, 1, 1, '/tmp/s3.jsonl', 44, '2026-04-23T03:00:00Z', 'skip'
+                );
+                """)
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        let sources = try await provider.sources()
+        let codex = try XCTUnwrap(sources.first { $0.name == "codex" })
+        XCTAssertEqual(codex.healthStatus, "healthy")
+        XCTAssertEqual(codex.searchableSessionCount, 2)
+        XCTAssertEqual(codex.searchCoveragePercent, 100)
+        XCTAssertNil(codex.healthReason)
+    }
+
+    // Mirror row 2: lite is index-eligible; skip is not. s6 forces parent vs branch
+    // coverage to diverge (60 vs 75). Counts also reject searchableTierSQL.
+    // See docs/source-health-predicate-design-2026-07.md.
+    func testSourceHealthCountsLiteTierSessions_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes,
+                  indexed_at, tier
+                ) VALUES
+                  ('s4', 'codex', '2026-04-23T04:00:00Z', '/tmp/engram', 'engram',
+                   'gpt-5.4', 2, 1, 1, '/tmp/s4.jsonl', 44, '2026-04-23T04:00:00Z', 'lite'),
+                  ('s5', 'codex', '2026-04-23T05:00:00Z', '/tmp/engram', 'engram',
+                   'gpt-5.4', 2, 1, 1, '/tmp/s5.jsonl', 44, '2026-04-23T05:00:00Z', 'lite'),
+                  ('s6', 'codex', '2026-04-23T06:00:00Z', '/tmp/engram', 'engram',
+                   'gpt-5.4', 2, 1, 1, '/tmp/s6.jsonl', 44, '2026-04-23T06:00:00Z', 'skip');
+                INSERT INTO sessions_fts(session_id, content) VALUES ('s4', 'lite with fts');
+                """)
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        let sources = try await provider.sources()
+        let codex = try XCTUnwrap(sources.first { $0.name == "codex" })
+        XCTAssertEqual(codex.searchableSessionCount, 3)
+        XCTAssertEqual(codex.searchCoveragePercent, 75)
+        XCTAssertEqual(codex.healthStatus, "partial")
+        let reason = try XCTUnwrap(codex.healthReason)
+        XCTAssertTrue(reason.contains("1 of 4"), reason)
+    }
+
+    func testSourceHealthExcludesSkipTierSessionsFromNumerator() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes,
+                  indexed_at, tier
+                ) VALUES (
+                  's-skip', 'codex', '2026-04-23T03:00:00Z', '/tmp/engram', 'engram',
+                  'gpt-5.4', 2, 1, 1, '/tmp/skip.jsonl', 44, '2026-04-23T03:00:00Z', 'skip'
+                );
+                INSERT INTO sessions_fts(session_id, content) VALUES ('s-skip', 'hello from skipped noise');
+                """)
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        let sources = try await provider.sources()
+        let codex = try XCTUnwrap(sources.first { $0.name == "codex" })
+        XCTAssertEqual(codex.searchableSessionCount, 2)
+        XCTAssertEqual(codex.healthStatus, "healthy")
+        XCTAssertNil(codex.healthReason)
+    }
+
+    func testSourceHealthReportsEmptyWhenAllSessionsAreSkipTier() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes,
+                  indexed_at, tier
+                ) VALUES (
+                  'g1', 'glm', '2026-04-23T03:00:00Z', '/tmp/engram', 'engram',
+                  'glm', 2, 1, 1, '/tmp/g1.jsonl', 44, '2026-04-23T03:00:00Z', 'skip'
+                );
+                """)
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        let sources = try await provider.sources()
+        let glm = try XCTUnwrap(sources.first { $0.name == "glm" })
+        XCTAssertEqual(glm.sessionCount, 1)
+        XCTAssertEqual(glm.searchableSessionCount, 0)
+        XCTAssertEqual(glm.searchCoveragePercent, 0)
+        XCTAssertEqual(glm.healthStatus, "empty")
+        let reason = try XCTUnwrap(glm.healthReason)
+        XCTAssertTrue(reason.contains("subagent or noise"), reason)
+    }
+
+    func testSourceHealthSurvivesMissingFTSTable() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: "DROP TABLE sessions_fts")
+        }
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        let sources = try await provider.sources()
+        let codex = try XCTUnwrap(sources.first { $0.name == "codex" })
+        XCTAssertEqual(codex.searchableSessionCount, 0)
+        XCTAssertEqual(codex.healthStatus, "partial")
+        XCTAssertNotNil(codex.healthReason)
+    }
+
     func testSQLiteReadProviderSourcesInferCriticalUsageForLegacyRemainingPercentWithoutUnit() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)

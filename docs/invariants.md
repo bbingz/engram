@@ -20,7 +20,7 @@ Invariants are properties that must survive every change; each entry names where
 
 - **Statement** - `skip` sessions are hidden from normal read surfaces; `lite` sessions remain visible in lists but are excluded from keyword search results.
 - **Enforced by** - `macos/Shared/EngramCore/Indexing/SessionTier.swift`, `macos/EngramService/Core/EngramServiceReadProvider.swift`, `macos/Engram/Core/Database.swift`, `macos/EngramMCP/Core/MCPDatabase.swift`, `macos/Shared/EngramCore/AI/SessionSemanticSearchPolicy.swift` (keyword + semantic tier filter SQL shared with service/MCP).
-- **Verified by** - `macos/EngramTests/DatabaseManagerTests.swift` (testListSessionsExcludesSkipTier, testSearchExcludesSkipAndLiteSessions, testListSessionsWithAllTiers, testCountSessionsExcludesSkipTier), `macos/EngramMCPTests/EngramMCPExecutableTests.swift` (hybrid/semantic search cases).
+- **Verified by** - `macos/EngramTests/DatabaseManagerTests.swift` (testListSessionsExcludesSkipTier, testSearchExcludesSkipAndLiteSessions, testListSessionsWithAllTiers, testCountSessionsExcludesSkipTier), `macos/EngramMCPTests/EngramMCPExecutableTests.swift` (hybrid/semantic search cases), `macos/EngramServiceCoreTests/EngramServiceIPCTests.swift` (testSourceHealthExcludesSkipTierSessions_repro, testSourceHealthCountsLiteTierSessions_repro, testSourceHealthExcludesSkipTierSessionsFromNumerator, testSourceHealthReportsEmptyWhenAllSessionsAreSkipTier).
 - **Gate** - `none`.
 
 ## 4. Parent-Detection Parity Triple Lock

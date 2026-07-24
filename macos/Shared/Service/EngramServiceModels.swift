@@ -482,6 +482,9 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
     let latestUsageResetAt: String?
     let latestUsageStatus: String?
     let healthStatus: String
+    /// One-sentence explanation for a non-`healthy` badge; nil iff healthy.
+    /// Defaulted nil so existing callers, tests, and legacy JSON keep compiling.
+    let healthReason: String?
     /// True for cache-only sources (Windsurf/Antigravity) whose adapters run
     /// with live gRPC sync disabled. Defaulted false so all existing callers,
     /// tests, and legacy JSON keep decoding/compiling.
@@ -504,6 +507,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         latestUsageResetAt: String? = nil,
         latestUsageStatus: String? = nil,
         healthStatus: String = "unknown",
+        healthReason: String? = nil,
         liveSyncDisabled: Bool = false
     ) {
         self.name = name
@@ -522,6 +526,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         self.latestUsageResetAt = latestUsageResetAt
         self.latestUsageStatus = latestUsageStatus
         self.healthStatus = healthStatus
+        self.healthReason = healthReason
         self.liveSyncDisabled = liveSyncDisabled
     }
 
@@ -542,6 +547,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         case latestUsageResetAt
         case latestUsageStatus
         case healthStatus
+        case healthReason
         case liveSyncDisabled
     }
 
@@ -563,6 +569,7 @@ struct EngramServiceSourceInfo: Codable, Equatable, Identifiable, Sendable {
         latestUsageResetAt = try container.decodeIfPresent(String.self, forKey: .latestUsageResetAt)
         latestUsageStatus = try container.decodeIfPresent(String.self, forKey: .latestUsageStatus)
         healthStatus = try container.decodeIfPresent(String.self, forKey: .healthStatus) ?? "unknown"
+        healthReason = try container.decodeIfPresent(String.self, forKey: .healthReason)
         liveSyncDisabled = try container.decodeIfPresent(Bool.self, forKey: .liveSyncDisabled) ?? false
     }
 }

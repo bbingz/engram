@@ -138,7 +138,14 @@ struct SourcePulseView: View {
             // UI-C1/C2: DB fallback read runs off the main thread.
             if let dist = try? await Task.detached(operation: { try db.sourceDistribution() }).value {
                 sourceDist = dist
-                sources = dist.map { EngramServiceSourceInfo(name: $0.source, sessionCount: $0.count, latestIndexed: nil) }
+                sources = dist.map {
+                    EngramServiceSourceInfo(
+                        name: $0.source,
+                        sessionCount: $0.count,
+                        latestIndexed: nil,
+                        healthReason: "Service unavailable — counts were read directly from the local database."
+                    )
+                }
             }
         }
         // Distribution chart read also off-main.
@@ -265,7 +272,7 @@ struct SourcePulseView: View {
     private func detectedRow(_ source: EngramServiceSourceInfo, isArchived: Bool) -> some View {
         HStack(spacing: 12) {
             SourcePill(source: source.name)
-            healthBadge(source.healthStatus)
+            healthBadge(source.healthStatus, reason: source.healthReason)
             Spacer()
             Text("\(source.sessionCount) sessions")
                 .font(.caption)
@@ -509,7 +516,7 @@ struct SourcePulseView: View {
     }
 
     @ViewBuilder
-    private func healthBadge(_ status: String) -> some View {
+    private func healthBadge(_ status: String, reason: String?) -> some View {
         let color: Color = switch status {
         case "critical": .red
         case "healthy": Theme.green
@@ -525,6 +532,8 @@ struct SourcePulseView: View {
             .padding(.vertical, 2)
             .background(color.opacity(0.14))
             .clipShape(RoundedRectangle(cornerRadius: 4))
+            .help(reason ?? status.uppercased())
+            .accessibilityLabel(reason.map { "\(status.uppercased()): \($0)" } ?? status.uppercased())
     }
 
     private func usageColor(_ status: String?) -> Color {
