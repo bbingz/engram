@@ -7,6 +7,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: exclude superseded insights from agent-facing MCP reads (row 1) (2026-07-25)
+
+- `get_context`, `search`, `get_memory`, and `resources/list` exclude insights
+  with a non-null `superseded_by` (FTS and CJK LIKE branches).
+- Ledger invariant 14 records the supersede filter; MCP tool docs note the
+  lifecycle rule. CJK LIKE repro shares a query substring with both active and
+  superseded rows so the filter is what drops the hit.
+
+
 ### Added: Claude Code plugin MVP (2026-07-24)
 
 - Added a thin plugin under `integrations/claude-code/engram` that reuses the

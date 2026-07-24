@@ -1956,7 +1956,17 @@ final class MCPDatabase {
         }
     }
 
+    /// Active-set SQL fragment for agent-facing insight reads.
+    /// Evaluated **outside** any `queue.read` (the probe itself is a read).
+    private func supersededFilterSQL(alias: String) -> String {
+        ((try? insightsHasLifecycleColumns()) == true) ? " AND \(alias)superseded_by IS NULL" : ""
+    }
+
     private func searchInsightsFTS(query: String, limit: Int) throws -> [Row] {
+        // Probe once before any queue.read — nested GRDB access traps.
+        let filter = supersededFilterSQL(alias: "")
+        let aliasedFilter = supersededFilterSQL(alias: "i.")
+
         // R1: use shared CJKText (includes Hangul); do not keep a private subset detector.
         if CJKText.containsCJK(query) {
             // Escape LIKE wildcards so literal "%"/"_" match verbatim.
@@ -1964,7 +1974,7 @@ final class MCPDatabase {
             return try queue.read { db in
                 try Row.fetchAll(
                     db,
-                    sql: "SELECT * FROM insights WHERE content LIKE :pattern ESCAPE '\\' ORDER BY created_at DESC LIMIT :limit",
+                    sql: "SELECT * FROM insights WHERE content LIKE :pattern ESCAPE '\\'\(filter) ORDER BY created_at DESC LIMIT :limit",
                     arguments: ["pattern": pattern, "limit": limit]
                 )
             }
@@ -1978,7 +1988,7 @@ final class MCPDatabase {
                     SELECT i.*
                     FROM insights_fts f
                     JOIN insights i ON i.id = f.insight_id
-                    WHERE insights_fts MATCH :query
+                    WHERE insights_fts MATCH :query\(aliasedFilter)
                     ORDER BY f.rank
                     LIMIT :limit
                     """,
@@ -1996,17 +2006,19 @@ final class MCPDatabase {
     }
 
     private func listInsightsByWing(wing: String?, limit: Int) throws -> [Row] {
-        try queue.read { db in
+        // Probe once before any queue.read — nested GRDB access traps.
+        let filter = supersededFilterSQL(alias: "")
+        return try queue.read { db in
             if let wing {
                 return try Row.fetchAll(
                     db,
-                    sql: "SELECT * FROM insights WHERE wing = :wing ORDER BY created_at DESC LIMIT :limit",
+                    sql: "SELECT * FROM insights WHERE wing = :wing\(filter) ORDER BY created_at DESC LIMIT :limit",
                     arguments: ["wing": wing, "limit": limit]
                 )
             }
             return try Row.fetchAll(
                 db,
-                sql: "SELECT * FROM insights ORDER BY created_at DESC LIMIT :limit",
+                sql: "SELECT * FROM insights WHERE 1=1\(filter) ORDER BY created_at DESC LIMIT :limit",
                 arguments: ["limit": limit]
             )
         }
