@@ -2,6 +2,14 @@
 
 ## Changelog Memo
 
+### 2026-07-24
+
+- [插件] 新增独立的 Claude Code 插件 MVP：复用已安装的 `EngramCLI` / `EngramMCP`，提供 SessionStart 上下文注入与手动 `catch-up`、`remember`、`handoff` 技能，不捆绑第二套 Swift 二进制。
+- [边界] `EngramCLI context` 只经 MCP 调用 `get_context`，完整输出限制 8KB，缺 helper、异常响应或超时均 fail-open；自动 hook 不写 memory，只有用户手动调用 `remember` 才允许 `save_insight`。
+- [复核] 真实 Claude Code 2.1.218 加载发现并修正标准 `hooks/hooks.json` 被 manifest 重复声明的问题；MCP 初始化顺序、超时进程回收、JSON 字节上限和路径解析也经独立 review 收紧。
+- [验证] strict plugin validation、7 项插件测试、18 项 CLI 测试、显式写入路由/持久化测试、完整 MCP 169/169、Node build/typecheck/lint/knip 均通过；真实插件 smoke 成功注入上下文且临时 DB 字节不变，10 次启动 p95 低于 1 秒。详细命令和证据见 `CHANGELOG.md`。
+- [发布边界] 工作保留在 `feat/claude-code-plugin-mvp` 的 Draft PR 流程；未合并 `main`，未改 1.0.5 版本，未 tag、release、notarize 或部署。
+
 ### 2026-07-23
 
 - [候选版] 已将 npm 与 macOS 权威版本元数据对齐到 `1.0.5`；仍须通过生成项目无漂移、精确提交 CI、Developer ID、notarization/stapling、产物哈希和运行 smoke，当前不创建 tag 或 GitHub Release。

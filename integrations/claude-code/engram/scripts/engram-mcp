@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Thin wrapper: exec product EngramMCP. Does not bundle a second Swift binary.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=resolve-engram-helper
+HELPER="$("${SCRIPT_DIR}/resolve-engram-helper" mcp || true)"
+
+if [[ -z "${HELPER}" ]]; then
+  echo "Engram plugin: EngramMCP not found. Install Engram.app or set ENGRAM_MCP_PATH / ENGRAM_CLI_MCP_HELPER." >&2
+  exit 1
+fi
+
+exec "${HELPER}" "$@"

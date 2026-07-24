@@ -7,6 +7,39 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added: Claude Code plugin MVP (2026-07-24)
+
+- Added a thin plugin under `integrations/claude-code/engram` that reuses the
+  installed `EngramCLI` and `EngramMCP` helpers instead of bundling another
+  Swift runtime. The standard plugin layout provides MCP registration, a
+  `SessionStart` command hook, and explicit `catch-up`, `remember`, and
+  `handoff` skills.
+- Added `EngramCLI context`, a read-only bridge that performs the MCP
+  `initialize` / `notifications/initialized` lifecycle before calling
+  `get_context`. It emits valid Claude `SessionStart` JSON capped at 8,192
+  UTF-8 bytes and fails open on missing helpers, malformed responses, broken
+  pipes, subprocess failure, or timeout; timed-out children receive bounded
+  termination and are reaped.
+- Kept writes explicit: automatic hook surfaces contain no `save_insight`,
+  all plugin skills are manual-only, and `remember` is the sole skill allowed
+  to request a memory write. Existing MCP/service tests prove that one explicit
+  request routes once and persists one insight plus its FTS row.
+- Independent review corrected the MCP lifecycle handshake, complete-JSON byte
+  bounding, timeout cleanup, helper metadata, temporary-path safety, and the
+  standard-hook manifest contract. A real Claude Code 2.1.218 plugin load
+  caught and removed a duplicate `hooks/hooks.json` declaration that static
+  plugin validation did not reject.
+- Fresh verification passed strict Claude plugin validation, shell syntax, the
+  7 plugin contract tests, 18 focused CLI context tests, the explicit
+  save-insight MCP/service tests, all 169 Engram MCP tests, TypeScript build and
+  test typecheck, lint, and knip. A real `claude --plugin-dir` smoke loaded all
+  three skills, connected the plugin MCP server, injected SessionStart context,
+  returned `PLUGIN_OK`, and left the fixture database byte-identical; 10 direct
+  context starts stayed below the 1-second p95 gate.
+- This work remains isolated on `feat/claude-code-plugin-mvp` for Draft PR
+  review. It does not change the 1.0.5 release candidate, merge to `main`,
+  create a tag or release, notarize, or deploy an app.
+
 ### Release candidate: v1.0.5 metadata (2026-07-23)
 
 - Aligned the npm package version and the authoritative macOS

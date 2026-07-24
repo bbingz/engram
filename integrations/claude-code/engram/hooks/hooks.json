@@ -1,0 +1,19 @@
+{
+  "description": "Engram SessionStart injects bounded project context via EngramCLI command hook (MCP servers are often not connected yet at SessionStart).",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/session-start-context",
+            "args": [],
+            "timeout": 5,
+            "statusMessage": "Loading Engram context"
+          }
+        ]
+      }
+    ]
+  }
+}

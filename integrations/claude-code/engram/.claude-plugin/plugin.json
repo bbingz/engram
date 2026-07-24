@@ -1,0 +1,12 @@
+{
+  "name": "engram",
+  "displayName": "Engram",
+  "version": "0.1.0",
+  "description": "Cross-tool project memory for Claude Code: SessionStart context injection via EngramCLI, MCP tools from the bundled Engram app helpers, and explicit catch-up / remember / handoff skills.",
+  "author": {
+    "name": "BingZ"
+  },
+  "homepage": "https://github.com/bbingz/engram",
+  "keywords": ["memory", "context", "sessions", "mcp", "engram"],
+  "mcpServers": "./.mcp.json"
+}

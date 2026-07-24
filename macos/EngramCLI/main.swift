@@ -9,6 +9,10 @@ if let resumeExitCode = runResumeCommandIfRequested() {
     exit(resumeExitCode)
 }
 
+if let contextExitCode = runContextCommandIfRequested() {
+    exit(contextExitCode)
+}
+
 execSwiftMCPHelper()
 
 func runArchiveCommandIfRequested() -> Int32? {
@@ -61,6 +65,23 @@ func runResumeCommandIfRequested() -> Int32? {
     } catch {
         writeStderr("\(error)\n")
         return 64
+    }
+}
+
+func runContextCommandIfRequested() -> Int32? {
+    do {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        guard let options = try EngramCLIContextOptions.parse(arguments: arguments) else {
+            return nil
+        }
+        let result = EngramCLIContextCommand.run(options: options)
+        if !result.stdout.isEmpty {
+            print(result.stdout)
+        }
+        return result.exitCode
+    } catch {
+        writeStderr("\(error)\n")
+        return EngramCLIContextCommand.exitUsage
     }
 }
 
