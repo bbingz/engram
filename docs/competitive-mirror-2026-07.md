@@ -394,10 +394,13 @@ Rows 33-35 are hard-gated on row 0. Row 18 should land in the same PR sequence a
 
 ## Follow-up specs
 
-Four of the seven "do first" rows were written up as design docs against
-`docs/templates/design-doc.md` on 2026-07-24, then reconciled in a single
-integration pass. Each spec re-verified the mirror's `path:line` anchors rather
-than copying them, and each records where the mirror was wrong.
+Thirteen design docs now cover the backlog, written against
+`docs/templates/design-doc.md` on 2026-07-24 and reconciled across two
+integration passes (the four accepted baseline specs first, then the nine
+mirror-follow-up specs on 2026-07-25). Each spec re-verified the mirror's
+`path:line` anchors rather than copying them, and each records where the mirror
+was wrong. The first four rows below are **accepted** and being implemented; the
+remaining nine are **draft** and composed against the accepted four.
 
 | Row | Spec | One line |
 |---|---|---|
@@ -405,49 +408,125 @@ than copying them, and each records where the mirror was wrong.
 | 2 | `docs/source-health-predicate-design-2026-07.md` | Source health verdict and `Search N%` move to an index-eligible (non-`skip`) denominator, plus a `healthReason` string on the DTO and a badge tooltip; orange badges go 18 → 8, not 18 → 0. |
 | 22 | `docs/codex-native-parentage-design-2026-07.md` | New version-gated startup backfill `backfillCodexNativeParents` reads the vendor-stamped Codex spawn parent off the rollout head — no adapter change, no forced re-parse — and clears the wrong suggestions on exactly the rows it links. |
 | 23 | `docs/adapter-format-drift-design-2026-07.md` | Local-only fingerprint of real sessions per format against a committed baseline, a freshness gate keyed on the embedded vendor version, a support matrix, and Swift drift guards for `world_state` + Claude Code lifecycle records. |
+| 3, 4, 14 | `docs/mcp-cost-honesty-design-2026-07.md` | Every cost figure is correct or explicitly refused: `get_insights` divides by the real window and withholds under 3 days; both cost readers disclose unpriced spend split by cause (attribution vs. table-gap); a local `~/.engram/prices.json` overlay forces one full recompute per correction. |
+| 5, 9, 12, 25 | `docs/service-resilience-design-2026-07.md` | Service failures become visible and recoverable: reachable `.restartService` from HomeView + menu bar; a last-good `LiveSessionsHold` across failed polls; a per-source persisted-parse-failure chip + MCP `stats` field; a `scanNow` command + currency-annotated search. |
+| 8, 10, 26 | `docs/transcript-find-rendering-design-2026-07.md` | Find never destroys or lies about the transcript: user turns render segmented; rich rendering survives active search via rendered-text highlight; ⌘F reports hidden-type matches with a correct per-gate reveal. |
+| 27, 30 | `docs/transcript-paging-timing-design-2026-07.md` | Linear incremental paging (append-only rebuild; optional byte-seek cursor) and an honest per-turn duration chip that hides on clock skew. |
+| 7, 17, 24, 28 | `docs/mcp-activation-onboarding-design-2026-07.md` | First run terminates on any window dismissal; a Help menu with Report-an-Issue; a HomeView MCP activation card + onboarding MCP step; a user-run verification ladder (resolve → exec → handshake → socket). |
+| 13, 19, 29, 31 | `docs/uiux-polish-a11y-design-2026-07.md` | Honest meters (limitless shares render as text, not green quota bars), VoiceOver labels for transcript controls, four filled Retry/presenter remediation slots, and a Dynamic-Type scaling pattern on sidebar + transcript body. |
+| 15, 16 | `docs/build-provenance-perf-design-2026-07.md` | Stamp the producing commit SHA + dirty flag into the signed bundle (ledger 16) and add a DEBUG-only app-process signpost + main-thread stall monitor, no-op in Release. |
+| 32 | `docs/claude-workflow-subagents-design-2026-07.md` | Descend `subagents/workflows/wf_*/agent-*.jsonl` so ~30k workflow subagent transcripts index as `skip` rows linked to their parent. |
+| 0, 6, 18 | `docs/publish-readiness-design-2026-07.md` | Make publishing 1.0.5 a one-command owner act: truthful repo description/README + `check-public-copy` gate (ledger 15), a `docs/release-notes/1.0.5.md` artifact + CI presence gate, and a staged runbook with every remote step owner-authorized. |
 
 ### Implementation sequence
 
-Land in this order. Only one dependency is hard; the rest are line-level merge
-serialization on shared files.
+One order across all thirteen specs. The accepted four keep their sequence
+(1 → 2 → 22 → 23); the nine follow-ups slot in behind the Stage-1 surfaces they
+compose with. Hard dependencies are stated with their reason; everything else is
+line-level merge serialization on shared files, and the two big **parallel
+tracks** (service/MCP vs. app-only transcript/UI) can be developed concurrently.
 
-1. **Row 1** — MCP-only read path. Touches no file any other spec touches except
-   `docs/invariants.md`, where it *appends* a new entry 14 and amends nothing,
-   so it has zero merge surface. Its slices are internally ordered: slice 3
-   (ledger + `docs/mcp-tools.md`) must not land before slice 2, or the published
-   claim outruns the fix.
-2. **Row 2** — service read path. Amends `docs/invariants.md:23` (entry 3's
-   `Verified by` list). Slices 1 and 2 should reach the same release; branch 5
-   (`empty` for 100%-skip sources) must stay inside slice 1 or slice 1 alone is
-   a regression.
-3. **Row 22** — writer-side startup backfill. Amends `docs/invariants.md`
-   entries 2, 3, 9, 10 — including the same `:23` line row 2 edits, so it rebases
-   onto row 2's amendment (the two additions are a union). Slice 4 also flips
-   `docs/session-formats/codex.md:718` **and** its Chinese mirror
-   `codex.zh.md:692`.
-4. **Row 23** — dev tooling + adapter counter. Adds nothing to the ledger.
+**Stage 1 — accepted baseline (fixed order).**
 
-**The one hard dependency: 22 → 23, and it is documentary, not structural.**
-Row 23's `--accept` path stamps `docs/session-formats/codex.md` and `codex.zh.md`
-as freshly researched; row 22 slice 4 rewrites the "NOT consumed by Engram" claim
-inside those same files. Running the first Codex accept before row 22 slice 4
-lands produces a doc carrying a 2026-07-24 verification stamp beside a claim that
-is about to become false. Land row 22 slice 4 first, or re-run the Codex accept
-afterwards.
+1. **Row 1** (`insight-supersede`) — MCP-only read path; *appends* ledger entry
+   **14**, amends nothing, zero merge surface. Internal: slice 3 (ledger +
+   `docs/mcp-tools.md`) must not precede slice 2.
+2. **Row 2** (`source-health`) — service read; amends ledger #3; adds
+   `healthReason` to `EngramServiceSourceInfo` and the badge/`Search N%` pill on
+   `SourcePulseView`. **Gates every `EngramServiceSourceInfo` and `SourcePulseView`
+   follow-up** (rows 9, 12, 29). Branch 5 (`empty` for 100%-skip sources) must stay
+   inside slice 1.
+3. **Row 22** (`codex-native-parentage`) — writer startup backfill; amends ledger
+   #2/3/9/10, rebasing on row 2's #3 (union). **Gates every `StartupBackfills` and
+   ledger-#9 follow-up** (mcp-cost Part C, claude-workflow slice C). Slice 4 flips
+   `docs/session-formats/codex.md:718` + `codex.zh.md:692`.
+4. **Row 23** (`adapter-format-drift`) — dev tooling + adapter counter; no ledger.
+   **Hard dep 22 → 23 (documentary):** row 22 slice 4 rewrites the Codex "NOT
+   consumed" claim that row 23's `--accept` stamp touches; land 22 slice 4 first or
+   re-run the accept. Row 23's baseline capture is *not* ordered vs. row 22 (the
+   observed key surface is unchanged by a backfill-only fix). **If row 23 moves the
+   tool or source count, its README bump must land with publish-readiness's
+   `check-public-copy` gate (row 6), or that gate fails closed.**
 
-**Row 23's baseline capture is *not* ordered relative to row 22.** The
-fingerprint is taken over the vendor's on-disk key surface under
-`~/.codex/sessions`. Row 22 explicitly rejects the adapter route and changes no
-parser, no on-disk file, and no record shape — it adds a startup backfill that
-reads rollout heads and writes `sessions.parent_session_id`. The observed
-bucket/key set is therefore identical before and after row 22, and a baseline
-seeded early does not need to be re-taken.
+**Stage 2 — ledger tail + Stage-1 shared surfaces.**
 
-Rows 1 and 2 are mutually independent (different processes: `EngramMCP` vs
-`EngramService`) and can be developed in parallel; only their `docs/invariants.md`
-commits need serializing.
+5. **publish-readiness Part A** (rows 6 + row-0 metadata staging) — appends ledger
+   entry **15**. **Hard dep: 14 → 15** (contiguous append to the numbered tail of
+   `docs/invariants.md`). Text/scripts only; the actual `gh repo edit`/README-CTA
+   are owner-gated (Part C).
+6. **build-provenance Part A** (row 15) — appends ledger entry **16**. **Hard dep:
+   15 → 16** (contiguous append). Scripts/`project.yml` only; otherwise standalone.
+7. **service-resilience Part C** (row 12) — `parseFailureCount` sits *after*
+   row 2's `healthReason` in `EngramServiceSourceInfo` (5 edit points) and the chip
+   beside row 2's pill on `SourcePulseView`. **Depends on row 2.**
+8. **service-resilience Part B** (row 9) ‖ **uiux Part C** (row 29) — both rebase
+   onto row 2 on `SourcePulseView` in **disjoint regions** (live-poll `LiveSessionsHold`
+   vs. load-failure `AlertBanner`); parallel with each other, both after row 2.
 
-**Rows 6 and 18 were deliberately deferred by the owner** — publishing the repo
-description/README fix and the `docs/release-notes/<version>.md` presence check
-both derive most of their value from row 0 (the publication decision), which
-remains open, so neither was specified in this pass.
+**Stage 3 — `StartupBackfills` / ledger-#9 followers (after row 22).**
+
+9. **mcp-cost Part C** (row 14, `prices.json`) — edits `backfillCosts`; appends its
+   recompute-once test to ledger #9's `Verified by`. **Depends on row 22.**
+10. **claude-workflow slice C** (row 32, optional) — widens the `backfillParentLinks`
+    regex; touches #9. **Depends on row 22.** (Slices A/B are independent — Stage 5.)
+
+**Stage 4 — service / MCP read + command track (parallel track; serialize on the
+two shared files `MCPDatabase.swift` + `EngramServiceReadProvider.swift`).**
+
+11. **mcp-cost Part A** (row 3, `get_insights`) ‖ **Part B** (row 4, unpriced
+    disclosure) — distinct methods from rows 1/12/25 on `MCPDatabase.swift`; both
+    inherit the non-reentrant `queue.read` probe-hoist trap.
+12. **service-resilience Part D** (row 25, `scanNow` + currency search) — new
+    service command + search-read annotation; serialize on the search read with
+    Part C and mcp-cost.
+13. **service-resilience Part A** (row 5) ‖ **mcp-activation Parts A–D** (rows
+    7/17/24/28) — App.swift + MenuBarController. **Collision fixed in place:**
+    `showContextMenu()` is edited by both row 5 (Restart Service) and row 7 (Help
+    items) — additive, merge into one menu build (see each spec's collision note).
+    App.swift regions are disjoint across rows 5, 7, and build-provenance row 16.
+
+**Stage 5 — app-only transcript & UI track (parallel track; no Stage-1
+dependency; serialize only among themselves on shared view files).**
+
+14. **transcript-find Part A** (rows 8/26) ‖ **uiux Part D** (row 31) ‖
+    **build-provenance Part B** (row 16) — all three touch
+    `ColorBarMessageView.swift` / `ContentSegmentViews.swift` leaves (a `searchText`
+    param, a `scaledFont` change, DEBUG spans). **Land serially on these files**,
+    threading each new input through the leaf initializers together.
+15. **transcript-find Part B** (row 10) ‖ **transcript-paging Parts A/C** (rows
+    27/30) — serialize on `SessionDetailView.updateMatchIndicesDebounced` /
+    `rebuildIndexed`: keep both the incremental `matchIndices` extension (row 27)
+    and the full-prefix hidden-type scan (row 10) inside the one detached pass.
+16. **transcript-paging Part B** (row 27 byte-seek, optional) — gated behind the
+    owner-run local `parsedLineCount`/Load-more go/no-go measurement; land last or
+    drop.
+17. **claude-workflow slices A/B** (row 32) — adapter descent + repro; independent.
+18. **uiux Parts A/B** (rows 13/19) — `PopoverUsageSection` + `Views/Transcript`
+    labels; fully independent, any time.
+19. **publish-readiness Part B** (row 18) ‖ **Part C** (row 0 runbook) — release
+    notes artifact + CI presence gate + publish runbook; text lands any time, the
+    publish itself stays owner-gated.
+
+Rows 1 and 2 remain mutually independent (`EngramMCP` vs `EngramService`); only
+their `docs/invariants.md` commits serialize.
+
+### Owner decisions still required
+
+- **Row 0 (publish 1.0.5)** is now specced in `publish-readiness` but the decision
+  stays owner-gated — every notarize/tag/`gh release`/`gh repo edit` step is marked
+  `[needs owner authorization]`. Parts A/B (honest copy, gate, release-notes
+  artifact) land now regardless; only the publish act is withheld.
+- **Rows 33/34/35 remain unspecced**, pending row 0: each presumes a current public
+  baseline (the value flip and the download/onboarding funnel), which only exists
+  once 1.0.5 is the Latest release.
+- **Rows 20 and 21 are below spec threshold — apply as direct edits, not docs:**
+  - **Row 20** — a dated update block appended to `docs/competitive-relaunch-2026-06.md`:
+    > **Update (2026-07-25).** Correction: the MCP surface exposes **27** tools,
+    > not 28 (`docs/mcp-tools.md:5`). P0-1 (Claude Code plugin) **shipped** in
+    > `cb6bffc3` (PR #240, `integrations/claude-code/`); remove it from the
+    > outstanding-P0 list.
+  - **Row 21** — one bullet added to `CLAUDE.md` immediately after the repro-tests
+    rule under "Conventions":
+    > - When a fix site is covered by a `docs/invariants.md` entry, name that entry
+    >   (e.g. `# invariant 9`) in the repro test's comment so the guarded red line
+    >   is traceable from the test.
