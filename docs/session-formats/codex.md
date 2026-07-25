@@ -1,6 +1,6 @@
 # Codex Session Format — Definitive Reference
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-24
 
 This is the permanent, exhaustive reference for how the **Codex CLI** (OpenAI's coding
 agent) persists sessions on disk, and how Engram's `CodexAdapter` consumes them. It is

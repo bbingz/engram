@@ -2,7 +2,7 @@
 
 > 本文档为英文权威版 minimax.md 的中文阅读副本;若有出入以英文版为准。
 
-Last researched: 2026-06-21
+Last researched: 2026-07-24
 
 MiniMax **并非**独立的会话存储。它是叠加在 Claude Code 之上的一个*检测叠加层*:仅通过检查模型名称,就把一个会话从 `claude-code` 重新归类为 `minimax`,而磁盘上的字节仍然是普通的 Claude Code JSONL。不存在 MiniMax 专属的文件、目录、schema 或存储技术。
 

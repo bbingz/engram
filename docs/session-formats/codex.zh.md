@@ -2,7 +2,7 @@
 
 > 本文档为英文权威版 codex.md 的中文阅读副本;若有出入以英文版为准。
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-24
 
 本文档是关于 **Codex CLI**(OpenAI 的编码代理)如何把会话持久化到磁盘、以及 Engram 的
 `CodexAdapter` 如何消费它们的永久性、详尽参考。它针对两类事实来源进行了交叉核对:

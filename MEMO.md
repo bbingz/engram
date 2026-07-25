@@ -14,6 +14,7 @@
 - [洞察生命周期] 代理可读路径过滤 `superseded_by` 非空洞察（含 CJK LIKE）；ledger #14；CJK repro 查询改为两行公共子串以保证回归有效。
 - [源健康] 可索引（非 skip）分母 + `healthReason` 提示；橙色徽章 18→8 量级。
 - [Codex 原生父子] 启动回填读 line-1 `thread_spawn`/`parent_thread_id`；无条件 `session_meta` 门；多字节头边界/全拒排水/游标三次不重读测试；格式文档与 ledger #2 同步。
+- [格式漂移] 本地 fingerprinter + 200 文件 baseline；desync/schemaVersion 纯函数；accept 折叠在 check 脚本（`baseline:adapter-format`）；Swift drift 测试 failure→XCTFail。
 
 ### 2026-07-24
 

@@ -86,6 +86,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Coverage: multi-byte head boundary (`padFilePast: 262_144`), drain past
   501 rejected candidates, third-call cursor does not re-read rejects;
   EN/ZH format docs + ledger entry 2 Verified-by updated.
+### Added: adapter format-drift fingerprint check (row 23) (2026-07-25)
+
+- Local-only fingerprinter for monitored formats (claude-code, codex)
+  against committed 200-file baselines under `docs/session-formats/baselines/`.
+- Freshness gates (sample recency, vendor version, required-type absence);
+  baseline/matrix desync when baseline.max < matrix.max (exit 1, no diff);
+  accept path via `npm run baseline:adapter-format`.
+- Vitest pure-function suite (desync, schemaVersion, novel-rare, path keys)
+  + Swift `AdapterSchemaDriftTests` (world_state + unknown kinds, XCTFail on
+  unexpected adapter failure).
 
 
 ### Added: Claude Code plugin MVP (2026-07-24)
