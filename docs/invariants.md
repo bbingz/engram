@@ -93,6 +93,13 @@ Invariants are properties that must survive every change; each entry names where
 - **Verified by** - `macos/EngramCoreTests/IndexerParseOnceTests.swift` (testClaudeCodeTailParseAppendMatchesFullReindex, testClaudeCodeTailParseNoTrailingNewlineFallsBackWithoutDoubleCounting, testClaudeCodeTailParseNoVisibleCompleteTailFallsBackAndRefreshesSize, testClaudeCodeTailParseRewriteInPlaceFallsBackToFullReparse, testClaudeCodeTailParseTruncationFallsBackToFullReparse, testClaudeCodeTailParseDoesNotAdvancePastPartialLineAndLaterIndexesIt).
 - **Gate** - `none`.
 
+## 14. Superseded Insights Stay Off Agent-Facing Reads
+
+- **Statement** - An insight whose `superseded_by` names an existing insight is never returned by an agent-facing `EngramMCP` read: `get_context`, `search`, `get_memory`, or `resources/list`. The predicate is applied when `insightsHasLifecycleColumns()` is true (all three of `superseded_by`, `insight_type`, `access_count` present) and omitted otherwise, which is safe because both writer paths add all four lifecycle columns inside a single transaction, so a partial-column state is unreachable. Rows whose `superseded_by` points at a deleted id are out of the partition and outside this invariant.
+- **Enforced by** - `macos/EngramMCP/Core/MCPDatabase.swift`, `macos/EngramCoreWrite/Database/EngramMigrations.swift`.
+- **Verified by** - `macos/EngramMCPTests/AuditMediumMCPReproTests.swift` (testGetContextExcludesSupersededInsights_repro, testSearchExcludesSupersededInsights_repro, testGetContextExcludesSupersededInsightsForCJKQuery_repro, testResourceCatalogExcludesSupersededInsights_repro, testGetMemoryRecencyFillsActiveMemoriesPastOverfetchWindow_repro).
+- **Gate** - `none`.
+
 ## Unverified Anchors
 
 None.
