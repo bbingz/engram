@@ -620,8 +620,10 @@ is dropped — a persistently-unparseable file SHOULD surface. Guard with
 > 1. Prune orphan `file_index_state` rows — delete rows whose locator the current
 >    scan no longer enumerates. This is the actual defect; the chip is only the
 >    first surface that would have exposed it.
-> 2. Failing that, scope the chip to locators the current scan still enumerates,
->    so orphans cannot inflate it regardless of how they got there.
+> 2. Failing that, scope every count derived from this predicate — the service
+>    DTO, chip, MCP aggregate, and acceptance checks — to locators the current
+>    scan still enumerates, so orphans cannot inflate any surface regardless of
+>    how they got there.
 > 3. Weakest: exclude `…/subagents/workflows/%journal.jsonl` from the predicate
 >    and say so in the help text. Cosmetic — it leaves the orphans in the table
 >    and only hides this one shape.
@@ -673,7 +675,10 @@ re-opens a decision row 2 owns).
 mirror the `failedIndexJobCount` pill. Per the measurement above the label must
 carry its denominator rather than a bare count — `"\(n)/\(total) unparsed"`, or a
 bare count only if the share is stated in `.help`. Neutral gray, informational —
-not an error state. Help text: "Files this source could not parse (excludes empty,
+not an error state. `n` and `total` must come from the same repaired/scoped
+locator domain: the declared domain after prune, or the currently enumerated
+locators under option 2. Never pair a scoped numerator with a table-wide
+denominator. Help text: "Files this source could not parse (excludes empty,
 oversized, and virtual sessions). A sudden rise can signal a vendor format change."
 
 **MCP `stats`.** After the prerequisite above, add one top-level `parseFailures`
