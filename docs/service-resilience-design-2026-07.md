@@ -521,6 +521,49 @@ exact count is not measured here and the earlier draft's "0 in steady state" cla
 is dropped — a persistently-unparseable file SHOULD surface. Guard with
 `tableExists("file_index_state")`.
 
+> **Measured, 2026-07-25 (before implementing).** The paragraph above left the
+> count unmeasured; it has now been run against a real `~/.engram/index.sqlite`
+> (42,421 `ok` / 529 `retry` / 756 `terminal`). Two of its assumptions do not
+> survive contact with the data.
+>
+> **1. The `retry_count >= 3` floor filters nothing.** Identical counts with and
+> without it:
+>
+> | predicate | rows |
+> |---|---|
+> | format-breakage kinds, `retry_count >= 1` | 528 |
+> | format-breakage kinds, `retry_count >= 3` | **528** |
+>
+> `MIN(retry_count)` over the matching rows is **3** (max 58). The single
+> `retry_count = 1` row in the table is an environmental kind the IN-list already
+> excludes. So the floor does not "exclude files that failed once and self-healed"
+> — no such row is ever in the counted set. **Keep the floor as a defensive lower
+> bound (another corpus may differ), but do not write a comment claiming a
+> flap-protection it does not currently provide.** A comment that describes a
+> guard the data shows is inert is the same class of defect as the rest of this
+> backlog.
+>
+> **2. The chip is not a rare badge.** Per-source hits and their denominators:
+>
+> | source | rows | hits | share |
+> |---|---|---|---|
+> | claude-code | 28,724 | 262 | 0.91% |
+> | codex | 6,014 | 169 | 2.81% |
+> | glm | 2,359 | 44 | 1.87% |
+> | deepseek | 569 | 16 | 2.81% |
+> | doubao | 30 | 2 | 6.67% |
+>
+> `"\(n) unparsed"` therefore renders a permanent three-digit number on the two
+> main sources. A bare `262` reads as an alarm; `0.9%` reads as negligible — same
+> fact, opposite impression. **The chip must carry its denominator** (e.g.
+> `262 / 28,724 unparsed`, or the share in the `.help` text), for the same reason
+> row 13 stopped drawing a limitless share as a filled quota meter.
+>
+> **Not yet checked:** all 528 matching rows are `malformedJSON` from a single
+> kind. Whether those files are genuinely broken, or an adapter mis-classifies a
+> legal format, is unverified. Sample real locators before trusting the number as
+> a fault count.
+
 **DTO.** Add `parseFailureCount: Int` (default 0) to `EngramServiceSourceInfo` at
 all five edit points, after `healthReason`. Named `parseFailureCount`, **not**
 `drifted`/`failedIndexJobCount`, so it does not read as row 2's ladder input or the
@@ -528,11 +571,13 @@ existing `session_index_jobs` counter. It does **not** feed the health ladder
 (row 2 is rewriting it concurrently; a ladder branch invites a merge conflict and
 re-opens a decision row 2 owns).
 
-**Chip.** In `SourcePulseView.swift:291-304`, mirror the `failedIndexJobCount` pill
-(`:297-299`): `if source.parseFailureCount > 0 { factPill("\(n) unparsed", color:
-Theme.gray).help("Files this source could not parse (excludes empty, oversized,
-and virtual sessions). A sudden rise can signal a vendor format change.") }`.
-Neutral gray, informational — not an error state.
+**Chip.** In `SourcePulseView.swift` (re-anchored 2026-07-25: chip `HStack` at
+`:298-323`, `failedIndexJobCount` pill at `:304-307`; PR #262 shifts these again),
+mirror the `failedIndexJobCount` pill. Per the measurement above the label must
+carry its denominator rather than a bare count — `"\(n)/\(total) unparsed"`, or a
+bare count only if the share is stated in `.help`. Neutral gray, informational —
+not an error state. Help text: "Files this source could not parse (excludes empty,
+oversized, and virtual sessions). A sudden rise can signal a vendor format change."
 
 **MCP `stats`.** Add one top-level `parseFailures` integer = the global sum of the
 same predicate. Edit the schema string (`MCPOutputSchemas.swift:31-33`: add
