@@ -13,6 +13,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MACOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$MACOS_DIR/.." && pwd)"
 
 LOCAL_ONLY=0
 for arg in "$@"; do
@@ -94,10 +95,15 @@ rm -rf ~/Library/Developer/Xcode/DerivedData/Engram-*
 echo "      Done."
 echo ""
 
-# 2. Regenerate Xcode project from project.yml
-echo "[2/5] Running xcodegen generate..."
+# 2. Regenerate Xcode project from project.yml with the CI-pinned xcodegen.
+#    A different xcodegen writes a project.pbxproj that CI rejects, and it dirties
+#    the checkout *after* step 0 already resolved the build number as "clean" — so
+#    the archive silently ships a drifted project under an official build number.
+#    check-xcodeproj-drift.sh refuses to run on an unpinned xcodegen and fails on
+#    any resulting diff.
+echo "[2/5] Running pinned xcodegen generate..."
+"$REPO_ROOT/scripts/check-xcodeproj-drift.sh"
 cd "$MACOS_DIR"
-xcodegen generate
 echo "      Done."
 echo ""
 
