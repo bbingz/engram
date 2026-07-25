@@ -7,6 +7,35 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### PR #263 post-merge CI adjudication and PR #268 status refresh (2026-07-26)
+
+PR #263 squash-merged as exact main `4087dc53`. Its first Tests attempt
+(`30178625833`) was canceled only because `swift-unit` reached the workflow's
+45-minute timeout: the log contained no assertion or compilation failure, had
+already passed the 792-test app scheme and many service suites, and then stopped
+emitting output until GitHub canceled the orphaned `xcodebuild`. The merge tree
+was byte-identical to reviewed PR head `a5273928`, whose fresh `swift-unit`
+passed; every other first-attempt Tests lane passed, all 31 full-UI screenshots
+matched (including Source Pulse at SSIM `1`, pHash distance `0`, pixel diff
+`0%`), and CodeQL run `30178625858` passed.
+
+With that non-code hang evidence recorded, the failed jobs were rerun exactly
+once. Attempt 2 completed `swift-unit` in 7m21s: EngramCoreTests 1,013 tests
+with one environment skip, EngramTests 792, EngramServiceCoreTests 585 with one
+environment skip, and EngramMCPTests 176, all with zero failures. The rerun CI
+Gate also passed, making Tests run `30178625833` terminal success. No successful
+lane was rerun, no second rerun was issued, and nothing was deployed.
+
+PR #268's verified backlog block is rebased onto that exact main and refreshed
+to the post-#262/#264/#263 state. Row 9 is now landed; the arithmetic is 20
+landed + 2 partial + 13 open = 35 engineering rows. Row 12 remains open for its
+unimplemented DTO/UI/MCP work, but is no longer described as blocked on a
+missing prune. The old `~1,001` post-prune estimate is retired; a real
+post-#264 runtime count remains `UNVERIFIED` until a complete indexing pass and
+the documented read-only remeasurement. An exact-head adversarial review also
+caught that the original status block separated the Markdown table header from
+row 0; the header now sits immediately before the contiguous 0-35 data rows.
+
 ### PR #263 row-12 prerequisite reconciliation (2026-07-26)
 
 PR #264 squash-merged as `33887fc4`, so the row-12 design may no longer state
