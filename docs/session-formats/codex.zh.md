@@ -2,7 +2,7 @@
 
 > 本文档为英文权威版 codex.md 的中文阅读副本;若有出入以英文版为准。
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-24
 
 本文档是关于 **Codex CLI**(OpenAI 的编码代理)如何把会话持久化到磁盘、以及 Engram 的
 `CodexAdapter` 如何消费它们的永久性、详尽参考。它针对两类事实来源进行了交叉核对:
@@ -689,7 +689,7 @@ effectiveRole = explicit agent_role ?? (originator is Claude Code ? "dispatched"
 父级评分。`readCodexOriginator()` 只读取第一行 JSONL。净效果:一个由 Claude-Code 派发的 Codex
 rollout 被隐藏(tier skip),通过其 Claude Code 父级访问,并被排除在独立显示之外。
 
-### (B) Codex 的**原生** subagent spawn 树(`multi_agent_version: "v1"`)— Engram 不消费
+### (B) Codex 的**原生** subagent spawn 树(`multi_agent_version: "v1"`)— Engram 消费(子级一侧)
 
 Codex 自己的多代理功能会派生子线程(角色 `explorer`/`worker`/`awaiter`/`default`,外加
 第三方 `lazycodex-*`/`metis`)。它在 rollout + 数据库中被**冗余地记录在三处**:
@@ -699,6 +699,11 @@ Codex 自己的多代理功能会派生子线程(角色 `explorer`/`worker`/`awa
    `{"subagent":{"thread_spawn":{"parent_thread_id","depth","agent_path","agent_nickname","agent_role"}}}`。
    一种更简单的形式 `{"subagent":"review"}` 标记 review subagent。
 3. `state_5.sqlite.thread_spawn_edges` — 权威的父→子图。
+
+**Engram 消费方:** `StartupBackfills.backfillCodexNativeParents` 从 rollout 第一行读取 (1)
+与 (2)(版本门控的启动回填;`link_source = 'path'`)。**不**读取 (3) 或下方父级一侧的
+`collab_*` 事件。深度 `> 1` 与 skip 级父级会被拒绝,以保持子会话可达。见
+`docs/codex-native-parentage-design-2026-07.md`。
 
 `parent_thread_id` 出现**两次**(顶层 *和* 嵌套在 `source.subagent.thread_spawn` 中),
 两者相等,都馈入 `thread_spawn_edges`。
@@ -750,9 +755,9 @@ JSONL 中** — 发送方→子级,带角色/昵称/提示/模型 — 因此仅�
 > 而非分散的长尾。任何把 `source` 当作小型字符串枚举的天真消费者都会错误分类多数行。(证据:
 > `sqlite3 state_5.sqlite` 对 `source` 前缀 GROUP BY;`thread_spawn_edges` COUNT = 1561。)
 
-> **两个 Engram 适配器都不读取 `meta.source`。** 丰富的 `{subagent:{thread_spawn:{...}}}`
-> parent/depth/role 图目前**未被挖掘** — 这是一个超出 `parent_thread_id`、Engram 本可消费的
-> 确定性 Layer-1 信号。
+> **JSONL 适配器不读取 `meta.source`。** 子级一侧的 parent/depth 图由
+> `StartupBackfills.backfillCodexNativeParents` 在启动回填中消费（见 §(B)）；`thread_spawn_edges`
+> SQLite 与父级 `collab_*` 仍未挖掘。
 
 ```json
 // session_meta — subagent (NEW format) — key structure intact, content redacted
@@ -1127,7 +1132,8 @@ PK `(thread_id, position)`(FK → `threads` CASCADE)、`name`、`description`、
 | 增量快速路径 | 最近 N(本地)天的每日根 `~/.codex/sessions/YYYY/MM/DD`(仅 sessions/;排除归档) | — | `SessionAdapterFactory.swift` `recentCodexAdapters` L31-51 |
 | 注册 | `defaultAdapters()` / `recentActiveAdapters()` 中的 `CodexAdapter()` | — | `SessionAdapterFactory.swift` L8-11, L53-74 |
 | `reasoning`、`custom_tool_call*`、`web_search_call`、`tool_search_*`、`turn_context`、`compacted`、所有非 `token_count` 的 `event_msg` | **丢弃**(默认分支) | (缺口) | `message(from:)` `default` L513-514 |
-| `session_meta.source`、`parent_thread_id`、`forked_from_id`、`thread_source`、`git`、`base_instructions` | **不读取** | (缺口) | (缺口) |
+| `session_meta.source`（`thread_spawn` / subagent）、`parent_thread_id` | **由启动回填读取**（非 adapter）— `StartupBackfills.backfillCodexNativeParents` | — | `StartupBackfills.swift` |
+| `forked_from_id`、`thread_source`、`git`、`base_instructions` | **不读取** | (缺口) | (缺口) |
 | 任何 SQLite DB(`state_5`/`threads`/`thread_spawn_edges`/…) | **从不读取** — Engram 仅从 JSONL 重新派生 | (缺口) | (缺口) |
 
 > 已验证:在所有 Codex 适配器文件上对 `state_5` / `.sqlite` / `thread_spawn` / `stage1` 的
@@ -1168,9 +1174,10 @@ PK `(thread_id, position)`(FK → `threads` CASCADE)、`name`、`description`、
    `gpt-4*` 条目 → 当前 Codex 会话成本为零。`reasoning_output_tokens` 从未单独计价。
 10. **压缩不可见:** Engram 跳过 `compacted`/`context_compacted`,因此仅在
     `replacement_history` 中幸存的压缩前回合不在 Engram 的转录/搜索/`messageCount` 中。
-11. **原生 subagent 图未挖掘:** `thread_spawn_edges` + `meta.source` 提供一个确定性的父→子图
-    (explorer/worker/awaiter),但 Engram 一个都不读 — Codex 原生 subagent 很可能被当作独立
-    会话呈现。
+11. **原生 subagent 图部分挖掘:** 子级一侧的 `session_meta.parent_thread_id` /
+    `source.subagent.thread_spawn` 由 `StartupBackfills.backfillCodexNativeParents` 消费
+    （非 JSONL adapter）。`thread_spawn_edges` SQLite 与父级一侧 `collab_*` 事件仍未挖掘；
+    深度 `> 1` 与 skip 级父级会被拒绝。
 12. **`token_count.info` 可以是 `null`**(被中断/额度耗尽的回合)— 两个适配器都做 null 防护
     并跳过。
 13. **`function_call_output.output` 的非字符串形式是 `content_items`,而非 `{output,

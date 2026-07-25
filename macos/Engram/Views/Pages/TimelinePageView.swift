@@ -229,7 +229,7 @@ struct TimelinePageView: View {
                     .accessibilityIdentifier("timeline_projectPicker")
                 }
                 if let loadError {
-                    AlertBanner(message: "Failed to load timeline: \(loadError)")
+                    AlertBanner(message: "Failed to load timeline: \(loadError)", action: ("Retry", { Task { await loadData() } }))
                         .accessibilityIdentifier("timeline_loadError")
                 }
                 if let actionStatus {
@@ -402,7 +402,7 @@ struct TimelinePageView: View {
                 isCancelled: Task.isCancelled
             ) else { return }
             EngramLogger.error("TimelinePage load failed", module: .ui, error: error)
-            loadError = error.localizedDescription
+            loadError = ServiceErrorPresenter.displayMessage(for: error)
         }
     }
 
@@ -417,7 +417,7 @@ struct TimelinePageView: View {
                 await loadData()
             } catch {
                 EngramLogger.error("TimelinePage confirm suggestion failed", module: .ui, error: error)
-                loadError = error.localizedDescription
+                loadError = ServiceErrorPresenter.displayMessage(for: error)
             }
         }
     }
@@ -434,7 +434,7 @@ struct TimelinePageView: View {
                 await loadData()
             } catch {
                 EngramLogger.error("TimelinePage dismiss suggestion failed", module: .ui, error: error)
-                loadError = error.localizedDescription
+                loadError = ServiceErrorPresenter.displayMessage(for: error)
             }
         }
     }

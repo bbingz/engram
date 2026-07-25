@@ -6,10 +6,16 @@ struct ColorBarMessageView: View {
     let searchText: String
     var onCopyAll: (() -> Void)? = nil
     @AppStorage("contentFontSize") var fontSize: Double = 14
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     // Per-row memo for find highlighting, keyed on the active query. Reference
     // type so `body` (non-mutating) can populate it; view identity is the
     // message id, so the effective key is (message id, searchText). See #27.
     @State private var highlightCache = HighlightCache()
+
+    /// Compose OS Dynamic Type with the A± knob (row 31). Knob stays authoritative.
+    private var effectiveFontSize: Double {
+        Theme.scaledFontSize(base: fontSize, category: dynamicTypeSize)
+    }
 
     private var barColor: Color { indexed.messageType.color }
 
@@ -96,6 +102,13 @@ struct ColorBarMessageView: View {
                 Text(label)
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(barColor)
+                if let seconds = indexed.turnDurationSeconds {
+                    Text(TurnDurationFormat.chip(seconds))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .accessibilityLabel("Turn duration \(TurnDurationFormat.chip(seconds))")
+                }
                 Spacer(minLength: 0)
             }
         } else {
@@ -143,6 +156,53 @@ struct ColorBarMessageView: View {
         return attr
     }
 
+    /// Whether a message type renders through `SegmentedMessageView` (markdown
+    /// segments + optional rendered-text find highlight). User/assistant/code
+    /// always take this path — including while search is active — so find never
+    /// flattens rich rendering (rows 8 + 26).
+    static func usesSegmentedView(for type: MessageType) -> Bool {
+        switch type {
+        case .user, .assistant, .code:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Highlight matches on an already-rendered `AttributedString` (markdown
+    /// markers consumed). Scans `String(attr.characters)` and maps each
+    /// `String.Index` range back via `Range(NSRange(...), in: attr)` — the same
+    /// index bridge as `computeHighlight`, but on rendered text. When
+    /// `backgroundOnly` is true (syntax-highlighted code), only the yellow
+    /// background is applied so syntax foreground colors survive.
+    static func highlightRendered(
+        _ attr: AttributedString,
+        query: String,
+        backgroundOnly: Bool = false
+    ) -> AttributedString {
+        guard !query.isEmpty else { return attr }
+        var result = attr
+        let rendered = String(attr.characters)
+        var searchStart = rendered.startIndex
+        while let range = rendered.range(
+            of: query,
+            options: .caseInsensitive,
+            range: searchStart..<rendered.endIndex
+        ) {
+            if let attrRange = Range(NSRange(range, in: rendered), in: result) {
+                result[attrRange].backgroundColor = .yellow
+                if !backgroundOnly {
+                    result[attrRange].foregroundColor = .black
+                }
+            }
+            searchStart = range.upperBound > range.lowerBound
+                ? range.upperBound
+                : rendered.index(after: range.lowerBound)
+            if searchStart >= rendered.endIndex { break }
+        }
+        return result
+    }
+
     var body: some View {
         // Parse the row once; header label and tool sub-views share this result.
         let parsed = parsedRow
@@ -160,17 +220,11 @@ struct ColorBarMessageView: View {
                 roleHeader(label)
 
                 switch indexed.messageType {
-                case .assistant, .code:
-                    if searchText.isEmpty {
-                        SegmentedMessageView(content: indexed.message.content)
-                    } else {
-                        Text(highlightedText(indexed.message.content))
-                            .font(.system(size: fontSize))
-                            .textSelection(.enabled)
-                    }
+                case _ where Self.usesSegmentedView(for: indexed.messageType):
+                    SegmentedMessageView(content: indexed.message.content, searchText: searchText)
                 case .thinking:
                     Text(highlightedText(indexed.message.content))
-                        .font(.system(size: fontSize))
+                        .font(.system(size: effectiveFontSize))
                         .textSelection(.enabled)
                         .foregroundStyle(.secondary)
                         .italic()
@@ -179,7 +233,7 @@ struct ColorBarMessageView: View {
                         ToolCallView(parsed: toolCall)
                     } else {
                         Text(highlightedText(indexed.message.content))
-                            .font(.system(size: fontSize))
+                            .font(.system(size: effectiveFontSize))
                             .textSelection(.enabled)
                     }
                 case .toolResult:
@@ -187,14 +241,14 @@ struct ColorBarMessageView: View {
                         ToolResultView(parsed: toolResult)
                     } else {
                         Text(highlightedText(indexed.message.content))
-                            .font(.system(size: fontSize))
+                            .font(.system(size: effectiveFontSize))
                             .textSelection(.enabled)
                     }
                 case .system:
                     CollapsibleSystemBubble(message: indexed.message)
                 default:
                     Text(highlightedText(indexed.message.content))
-                        .font(.system(size: fontSize))
+                        .font(.system(size: effectiveFontSize))
                         .textSelection(.enabled)
                         .foregroundStyle(indexed.messageType == .error ? barColor.opacity(0.85) : .primary)
                 }

@@ -2,8 +2,9 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-25): 103 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-25): 104 dated entries; regenerate after adding sections -->
 - [2026-07-25 - xcodeproj drift is a silent test-coverage hole (Claude)](#2026-07-25---xcodeproj-drift-is-a-silent-test-coverage-hole-claude)
+- [2026-07-24 - Local external build storage and disk cleanup retained off main (Codex)](#2026-07-24---local-external-build-storage-and-disk-cleanup-retained-off-main-codex)
 - [2026-07-16 - Periodic service maintenance memory and redundant work bounded (Codex)](#2026-07-16---periodic-service-maintenance-memory-and-redundant-work-bounded-codex)
 - [2026-07-16 - TypeScript 7 retained-tooling upgrade merged without app deployment (Codex)](#2026-07-16---typescript-7-retained-tooling-upgrade-merged-without-app-deployment-codex)
 - [2026-07-15 - Bounded service startup memory deployed as build 1205 (Codex)](#2026-07-15---bounded-service-startup-memory-deployed-as-build-1205-codex)
@@ -160,6 +161,48 @@
   being forbidden (the `.onChange` closure signature), the way the
   `SessionsPageView` assertion in the same test already was.
 
+### A PR based on a feature branch runs no Swift tests
+
+- The Tests and CodeQL workflows only trigger for pull requests targeting
+  `main`. A PR stacked on another feature branch gets a check list holding just
+  `Dependency Review`, and GitHub still reports `mergeStateStatus: CLEAN` —
+  "no required check is failing" and "the required checks ran" are the same
+  status when nothing ran. #253 merged-ready in that state with zero Swift test
+  runs. Read the check list, not the rollup verdict, and re-target to `main`
+  before treating a stacked PR's status as evidence.
+- That blind spot hid a real regression. Row 30 made `ReplayState.parseISO`
+  usable off the main actor by dropping the cached static formatters for
+  per-call ones; three callers invoke it inside a loop, so replay density
+  rendering and the turn-duration walk allocated two `ISO8601DateFormatter`s
+  per row. `makeISOParser()` gives each caller a reusable parser instead.
+- Merging a batch through one integration branch off `main`, then running the
+  suite locally, is what caught it. Sequential per-PR merges cannot: the
+  combined state is never compiled until the last merge lands.
+
+### Distinguish "no conclusion" from a conclusion
+
+- Three different non-results all look like results here: a drift-gate abort
+  makes `swift-unit` produce an empty test report, a mutation that fails to
+  compile produces `** TEST FAILED **`, and a PR whose workflows never trigger
+  produces `CLEAN`. Before reading red or green as a signal, confirm
+  `xcodebuild_exit`, a nonzero count of executed test cases, and zero real
+  compiler errors (filter the `NSCocoaErrorDomain` / `Connection` XPC noise).
+- Same rule for reporting: count with `grep -c "^Test Case .* failed"` rather
+  than sampling the tail of a log, and write `xcodebuild_exit=$?` on its own
+  line instead of ending a background command with `echo`, which swallows the
+  real exit status.
+
+### Source-scan guards must pin properties, not identifiers
+
+- `ViewMainThreadReadTests` and `TodayWorkbenchScopeTests` assert on the text of
+  view and model sources. Three of those assertions broke or misfired in one
+  day because they keyed on a spelling rather than the property: a Retry button
+  tripped a ban on `Task { await loadData() } }`, a deleted
+  `private static let isoFormatter` silently disarmed a perf guard, and a
+  `snapshot` → `fullSnapshot` rename failed an off-main check whose property
+  still held. Anchor to the construct — the `.onChange` closure signature, the
+  loop boundary, the `Task.detached` body — and mutation-check both directions.
+
 ### Local memory scaffolding is not the per-file convention
 
 - `~/.claude/projects/-Users-bing--Code--engram/memory` is a symlink to this
@@ -167,6 +210,61 @@
   markdown document. It is not a directory, so Claude's default one-fact-per-
   file auto-memory layout with a `MEMORY.md` index cannot be used here without
   destroying the shared document. Append a dated section to this file instead.
+
+## 2026-07-24 - Local external build storage and disk cleanup retained off main (Codex)
+
+### Current local Git state
+
+- PR #240 was squash-merged as
+  `cb6bffc3528df3ddbe07add040508f757009173f`. `origin/main` remains at that
+  commit. The current main checkout carries only the local documentation sync
+  that records this machine state; do not push it as product behavior.
+- The machine-specific build-path implementation is preserved on local branch
+  `local/external-build-root` at
+  `da595285e93dc13099af3c959e7aa41ae62486af`. It has no upstream and no remote
+  branch. Its `build-release.sh` defaults rebuildable intermediates to
+  `/Volumes/Bing-SSD-5/XcodeBuilds/Engram`, but shared main intentionally does
+  not contain that default because CI and other Macs do not have this volume.
+- Only the main worktree remains. The squash-equivalent Claude plugin worktree
+  and branch plus nine audit branches already reachable from main were removed.
+  Before removal, the plugin branch tree exactly matched merged main and every
+  audit branch passed an ancestor check.
+
+### Local storage and runtime boundary
+
+- Rebuildable `node_modules` (595 MB) and the verified-copy-equivalent
+  `macos/build/EngramExport` (50 MB) were removed. Restore Node tooling with
+  Node 24 and `npm ci`; rebuild the export only when another release is needed.
+- A normal `git gc` reduced `.git` from 459 MB to about 174 MB without
+  aggressive or immediate pruning. The repository measured about 367 MB after
+  the final local-branch split. `.codegraph` (about 81 MB) remains available.
+- The external build root `/Volumes/Bing-SSD-5/XcodeBuilds/Engram` exists and
+  was empty at closeout. The local-only branch routes DerivedData, archive, and
+  export logs there while retaining final exports and rollback artifacts under
+  `macos/build`.
+- Preserve
+  `macos/build/rollback/Engram-1.0.4-20260721142837-before-plugin-20260724T050733Z.app.zip`.
+  Its SHA-256 is
+  `3d92e132256ff973044efe12abeb4b3d55baae2517c177c2e6e389bc4ae08a03`,
+  and ZIP integrity passed after cleanup.
+- `/Applications/Engram.app` remained Developer ID Engram `1.0.5 (1340)`.
+  App/Service process checks and read-only `EngramCLI archive status --json`
+  IPC passed after cleanup. No rebuild, reinstall, restart, Keychain/MCP
+  configuration change, notarization, migration, or remote write occurred.
+
+### Verification and resume
+
+- Before deleting `node_modules`, `bash -n`, shellcheck, Biome, test typecheck,
+  29/29 focused release-script tests, `git diff --check`, and a real external
+  volume path/write smoke passed.
+- Full `npm run test:coverage` was attempted but environment-blocked: the
+  installed `better-sqlite3` binary used Node module ABI 137 while Node 26.5.0
+  required ABI 147, and coverage collection also tried to parse
+  `src/AGENTS.md` as source. Do not report the full suite green from this run.
+- To use the external build implementation, explicitly switch to or rebase
+  `local/external-build-root`. Do not push its hard-coded Bing-SSD-5 default.
+  A future upstream version must keep a portable repository default and inject
+  the machine path through a local override.
 
 ## 2026-07-16 - Periodic service maintenance memory and redundant work bounded (Codex)
 

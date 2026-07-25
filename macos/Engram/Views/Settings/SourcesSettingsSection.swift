@@ -541,10 +541,40 @@ struct MCPClientDef {
 }
 
 struct MCPSetupGuideView: View {
-    @AppStorage("mcpHelperPath") var helperPath: String = "/Applications/Engram.app/Contents/Helpers/EngramMCP"
+    @AppStorage("mcpHelperPath") var helperPath: String = Self.defaultHelperPath()
+    @Environment(EngramServiceStatusStore.self) private var serviceStatusStore
+    @State private var verifyState: VerifyUIState = .untested
+    @State private var isVerifying = false
+
+    private enum VerifyUIState: Equatable {
+        case untested
+        case testing
+        case result(MCPVerifyResult)
+    }
 
     private var resolvedHelperPath: String {
         (helperPath as NSString).expandingTildeInPath
+    }
+
+    /// Bundle-relative helper default (row 7 / A3). Falls back to /Applications only last.
+    static func defaultHelperPath() -> String {
+        let executable = Bundle.main.executableURL?.path
+            ?? CommandLine.arguments.first
+            ?? ""
+        let candidates = EngramCLIContextCommand.mcpHelperCandidates(
+            explicit: nil,
+            executablePath: executable,
+            environment: ProcessInfo.processInfo.environment
+        )
+        if let live = candidates.first(where: EngramCLIContextCommand.isExecutableFile) {
+            return live
+        }
+        return EngramCLIContextCommand.mcpHelperCandidates(
+            explicit: nil,
+            executablePath: Bundle.main.executableURL?.path ?? "",
+            environment: [:]
+        ).first
+            ?? "/Applications/Engram.app/Contents/Helpers/EngramMCP"
     }
 
     private static let clients: [MCPClientDef] = [
@@ -603,15 +633,81 @@ struct MCPSetupGuideView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Node MCP and daemon HTTP settings are legacy rollback paths for Stage 3; keep them only for advanced compatibility.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
+
+            // Row 28: user-initiated verification only — never on timer/render.
+            HStack(spacing: 8) {
+                Button {
+                    Task { await runVerify() }
+                } label: {
+                    if isVerifying {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("Test now")
+                    }
+                }
+                .disabled(isVerifying)
+                .accessibilityIdentifier("mcp_verify_testNow")
+
+                switch verifyState {
+                case .untested:
+                    EmptyView()
+                case .testing:
+                    Text("Testing…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .result(let result) where result.passed:
+                    Text("MCP setup verified")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                case .result(let result):
+                    Text(verbatim: result.remedy ?? "Verification failed")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
             ForEach(Self.clients, id: \.name) { client in
                 MCPClientRow(client: client, helperPath: resolvedHelperPath)
             }
         }
+        .onAppear {
+            // Migrate stale hardcoded defaults once (row 7 / A3).
+            if helperPath == "/Applications/Engram.app/Contents/Helpers/EngramMCP" {
+                helperPath = Self.defaultHelperPath()
+            }
+        }
+    }
+
+    @MainActor
+    private func runVerify() async {
+        isVerifying = true
+        verifyState = .testing
+        let helper = resolvedHelperPath
+        let serviceRunning = serviceStatusStore.isRunning
+        let result = await Task.detached(priority: .userInitiated) {
+            let candidates = EngramCLIContextCommand.mcpHelperCandidates(
+                explicit: helper,
+                executablePath: Bundle.main.executableURL?.path ?? "",
+                environment: ProcessInfo.processInfo.environment
+            )
+            return MCPVerificationLadder.verify(
+                candidates: candidates,
+                isExecutable: EngramCLIContextCommand.isExecutableFile,
+                invoke: { path in
+                    EngramCLIContextCommand.invokeMCPGetContext(
+                        helperPath: path,
+                        cwd: FileManager.default.currentDirectoryPath,
+                        task: nil,
+                        maxTokens: 256,
+                        timeoutMs: 5000
+                    )
+                },
+                serviceRunning: serviceRunning
+            )
+        }.value
+        verifyState = .result(result)
+        isVerifying = false
     }
 }
 

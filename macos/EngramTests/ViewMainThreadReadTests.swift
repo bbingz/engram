@@ -126,7 +126,8 @@ final class ViewMainThreadReadTests: XCTestCase {
     func testFilterChangesUseCancellingTaskId() throws {
         let timeline = try source("macos/Engram/Views/Pages/TimelinePageView.swift")
         XCTAssertTrue(timeline.contains(".task(id:"), "TimelinePageView must use a cancelling .task(id:) (ui-7)")
-        XCTAssertFalse(timeline.contains("Task { await loadData() } }"))
+        // 锚定到 .onChange 闭包签名，避免误伤重试按钮之类的合法 Task { await loadData() }
+        XCTAssertFalse(timeline.contains("_, _ in Task { await loadData() }"))
 
         let sessions = try source("macos/Engram/Views/Pages/SessionsPageView.swift")
         XCTAssertTrue(sessions.contains(".task(id:"), "SessionsPageView must use a cancelling .task(id:) (ui-7)")
@@ -219,10 +220,28 @@ final class ViewMainThreadReadTests: XCTestCase {
         let densityStart = try XCTUnwrap(replay.range(of: "var densityBuckets"))
         let densityEnd = try XCTUnwrap(replay.range(of: "func play()"))
         let densitySource = String(replay[densityStart.lowerBound..<densityEnd.lowerBound])
-        XCTAssertTrue(replay.contains("private static let isoFormatter"))
+        // Row 30 replaced the cached static formatters with a caller-owned parser,
+        // so pin the property (built once, above the loop) rather than the old name.
+        XCTAssertTrue(
+            densitySource.contains("makeISOParser()"),
+            "ReplayState.densityBuckets must own a reusable ISO parser"
+        )
+        let densityLoop = densitySource.components(separatedBy: "for entry in entries {").last ?? ""
+        XCTAssertFalse(
+            densityLoop.contains("makeISOParser()"),
+            "ReplayState.densityBuckets must build its ISO parser above the per-entry loop"
+        )
         XCTAssertFalse(
             densitySource.contains("ISO8601DateFormatter()"),
             "ReplayState.densityBuckets runs repeatedly while rendering replay density and must reuse its parser"
+        )
+        // Same hazard on the turn-duration walk, which parses one timestamp per row.
+        let indexed = try source("macos/Engram/Models/IndexedMessage.swift")
+        let walkStart = try XCTUnwrap(indexed.range(of: "for i in from..<indexed.count {"))
+        let walkSource = String(indexed[walkStart.lowerBound...])
+        XCTAssertFalse(
+            walkSource.contains("makeISOParser()"),
+            "IndexedMessage.walkTurns must build its ISO parser above the per-row loop"
         )
         XCTAssertTrue(
             densitySource.contains("max(0, min(99,"),

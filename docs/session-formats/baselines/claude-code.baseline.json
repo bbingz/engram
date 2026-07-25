@@ -1,0 +1,298 @@
+{
+  "schemaVersion": 1,
+  "format": "claude-code",
+  "sources": [
+    "claude-code",
+    "minimax",
+    "lobsterai"
+  ],
+  "acceptedAtUtc": "2026-07-24T18:00:52.111Z",
+  "acceptedNote": "Stage-1 rework: reseed at BASELINE_FILES=200",
+  "vendorVersions": {
+    "min": "2.1.170",
+    "max": "2.1.218"
+  },
+  "corpusFiles": 200,
+  "corpusNewestMtimeUtc": "2026-07-24T17:57:57.050Z",
+  "sampling": {
+    "headLines": 200,
+    "tailLines": 800,
+    "excludeGlobs": [
+      "**/subagents/**"
+    ]
+  },
+  "digest": "sha256:befe2dc1e98c9f6bda7f2171b3452ac7fb2eee2e60c572f8334de0348b9ee107",
+  "buckets": {
+    "record:mode": {
+      "files": 148,
+      "records": 4784,
+      "keys": {
+        "type": 148,
+        "mode": 148,
+        "sessionId": 148
+      }
+    },
+    "record:permission-mode": {
+      "files": 133,
+      "records": 4313,
+      "keys": {
+        "type": 133,
+        "permissionMode": 133,
+        "sessionId": 133
+      }
+    },
+    "record:file-history-snapshot": {
+      "files": 147,
+      "records": 806,
+      "keys": {
+        "type": 147,
+        "messageId": 147,
+        "snapshot": 147,
+        "isSnapshotUpdate": 147
+      }
+    },
+    "record:user": {
+      "files": 200,
+      "records": 18402,
+      "keys": {
+        "parentUuid": 200,
+        "isSidechain": 200,
+        "promptId": 199,
+        "type": 200,
+        "message": 200,
+        "uuid": 200,
+        "timestamp": 200,
+        "permissionMode": 194,
+        "origin": 141,
+        "promptSource": 194,
+        "userType": 200,
+        "entrypoint": 200,
+        "cwd": 200,
+        "sessionId": 200,
+        "version": 200,
+        "gitBranch": 200,
+        "toolUseResult": 148,
+        "sourceToolAssistantUUID": 148,
+        "session_id": 138,
+        "isMeta": 118,
+        "queuePriority": 11,
+        "isVisibleInTranscriptOnly": 59,
+        "isCompactSummary": 59,
+        "slug": 110,
+        "sourceToolUseID": 46,
+        "interruptedMessageId": 13,
+        "toolDenialKind": 7,
+        "interruptedByShutdown": 4,
+        "imagePasteIds": 2,
+        "mcpMeta": 3,
+        "classifierMetaLines": 2
+      }
+    },
+    "message:user": {
+      "files": 200,
+      "records": 18402,
+      "keys": {
+        "role": 200,
+        "content": 200
+      }
+    },
+    "record:attachment": {
+      "files": 194,
+      "records": 5213,
+      "keys": {
+        "parentUuid": 194,
+        "isSidechain": 194,
+        "attachment": 194,
+        "type": 194,
+        "uuid": 194,
+        "timestamp": 194,
+        "userType": 194,
+        "entrypoint": 194,
+        "cwd": 194,
+        "sessionId": 194,
+        "version": 194,
+        "gitBranch": 194,
+        "session_id": 135,
+        "slug": 110
+      }
+    },
+    "record:ai-title": {
+      "files": 138,
+      "records": 4582,
+      "keys": {
+        "type": 138,
+        "aiTitle": 138,
+        "sessionId": 138
+      }
+    },
+    "record:queue-operation": {
+      "files": 163,
+      "records": 1864,
+      "keys": {
+        "type": 163,
+        "operation": 163,
+        "timestamp": 163,
+        "sessionId": 163,
+        "content": 163
+      }
+    },
+    "record:assistant": {
+      "files": 178,
+      "records": 33208,
+      "keys": {
+        "parentUuid": 178,
+        "isSidechain": 178,
+        "message": 178,
+        "type": 178,
+        "uuid": 178,
+        "timestamp": 178,
+        "effort": 131,
+        "session_id": 138,
+        "userType": 178,
+        "entrypoint": 178,
+        "cwd": 178,
+        "sessionId": 178,
+        "version": 178,
+        "gitBranch": 178,
+        "slug": 94,
+        "requestId": 96,
+        "error": 30,
+        "isApiErrorMessage": 35,
+        "apiErrorStatus": 16,
+        "attributionSkill": 50,
+        "attributionMcpServer": 8,
+        "attributionMcpTool": 8,
+        "isAbortedMidStream": 2,
+        "advisorModel": 3,
+        "attributionPlugin": 3,
+        "apiErrorIsTransient": 2
+      }
+    },
+    "message:assistant": {
+      "files": 178,
+      "records": 33208,
+      "keys": {
+        "type": 178,
+        "id": 178,
+        "role": 178,
+        "content": 178,
+        "model": 178,
+        "stop_reason": 178,
+        "stop_sequence": 163,
+        "usage": 178,
+        "stop_details": 178,
+        "diagnostics": 96,
+        "container": 35,
+        "context_management": 35
+      }
+    },
+    "record:last-prompt": {
+      "files": 197,
+      "records": 4930,
+      "keys": {
+        "type": 197,
+        "lastPrompt": 193,
+        "leafUuid": 197,
+        "sessionId": 197
+      }
+    },
+    "record:file-history-delta": {
+      "files": 104,
+      "records": 684,
+      "keys": {
+        "type": 104,
+        "messageId": 104,
+        "snapshotMessageId": 104,
+        "trackingPath": 104,
+        "backup": 104,
+        "timestamp": 104
+      }
+    },
+    "record:system": {
+      "files": 142,
+      "records": 2079,
+      "keys": {
+        "parentUuid": 142,
+        "isSidechain": 142,
+        "type": 142,
+        "subtype": 142,
+        "hookCount": 77,
+        "hookInfos": 77,
+        "hookErrors": 77,
+        "hookAdditionalContext": 77,
+        "preventedContinuation": 77,
+        "stopReason": 77,
+        "hasOutput": 77,
+        "level": 122,
+        "timestamp": 142,
+        "uuid": 142,
+        "toolUseID": 77,
+        "session_id": 76,
+        "userType": 142,
+        "entrypoint": 142,
+        "cwd": 142,
+        "sessionId": 142,
+        "version": 142,
+        "gitBranch": 142,
+        "durationMs": 136,
+        "messageCount": 136,
+        "isMeta": 141,
+        "content": 117,
+        "logicalParentUuid": 59,
+        "compactMetadata": 59,
+        "slug": 67,
+        "pendingWorkflowCount": 59,
+        "pendingBackgroundAgentCount": 16,
+        "originalModel": 8,
+        "requestId": 8,
+        "apiRefusalCategory": 8,
+        "apiRefusalExplanation": 8,
+        "refusedUserMessageUuid": 8,
+        "trigger": 5,
+        "direction": 5,
+        "fallbackModel": 5,
+        "retractedMessageUuids": 5
+      }
+    },
+    "record:pr-link": {
+      "files": 31,
+      "records": 1157,
+      "keys": {
+        "type": 31,
+        "sessionId": 31,
+        "prNumber": 31,
+        "prUrl": 31,
+        "prRepository": 31,
+        "timestamp": 31
+      }
+    },
+    "record:agent-name": {
+      "files": 13,
+      "records": 556,
+      "keys": {
+        "type": 13,
+        "agentName": 13,
+        "sessionId": 13
+      }
+    },
+    "record:relocated": {
+      "files": 3,
+      "records": 83,
+      "keys": {
+        "type": 3,
+        "relocatedCwd": 3,
+        "sessionId": 3
+      }
+    },
+    "record:worktree-state": {
+      "files": 3,
+      "records": 82,
+      "keys": {
+        "type": 3,
+        "worktreeSession": 3,
+        "sessionId": 3
+      }
+    }
+  },
+  "note": "key names only; no values are recorded"
+}

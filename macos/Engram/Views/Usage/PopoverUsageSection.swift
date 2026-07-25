@@ -46,7 +46,6 @@ struct PopoverUsageSection: View {
                                 value: item.value,
                                 unit: item.unit,
                                 limit: item.limit,
-                                resetAt: item.resetAt,
                                 status: item.status,
                                 metric: item.metric
                             )
@@ -65,7 +64,6 @@ struct PopoverUsageSection: View {
                             value: item.value,
                             unit: item.unit,
                             limit: item.limit,
-                            resetAt: item.resetAt,
                             status: item.status,
                             metric: item.metric,
                             suffix: Self.windowSuffix(for: item.metric)
@@ -165,18 +163,24 @@ struct UsageMetricRow: View {
     let value: Double
     var unit: String? = "%"
     var limit: Double? = nil
-    var resetAt: String? = nil
     var status: String? = nil
     var metric: String? = nil
     var suffix: String = ""
 
     var body: some View {
-        if Self.isPercent(unit) {
+        // Limitless cross-source shares (row 13) are not quota meters — render
+        // as self-labeling text before the percent-bar branch. Scoped to metrics
+        // whose name contains "share" so remaining/used percent meters stay bars.
+        if Self.isLimitlessShare(metric: metric ?? label, limit: limit) {
+            UsageValueRow(
+                label: label,
+                text: Self.shareText(value: value, metric: metric ?? label, suffix: suffix)
+            )
+        } else if Self.isPercent(unit) {
             UsageBar(
                 label: label,
                 value: value,
                 limit: limit,
-                resetAt: resetAt,
                 status: status,
                 metric: metric ?? label,
                 suffix: suffix
@@ -187,6 +191,37 @@ struct UsageMetricRow: View {
                 text: Self.formattedValue(value: value, unit: unit, limit: limit, suffix: suffix)
             )
         }
+    }
+
+    /// Share metrics have no quota; they are a source's fraction of the
+    /// cross-source total and must not draw as a green filled bar (row 13).
+    static func isLimitlessShare(metric: String, limit: Double?) -> Bool {
+        limit == nil && metric.lowercased().contains("share")
+    }
+
+    /// Self-describing share copy. Expanded (`suffix` empty) names the window;
+    /// compact reuses the existing bare `windowSuffix` and appends "share".
+    static func shareText(value: Double, metric: String, suffix: String) -> String {
+        if suffix.isEmpty {
+            return "\(Int(value))% of \(shareWindowLabel(for: metric))"
+        }
+        return "\(Int(value))% \(suffix) share"
+    }
+
+    /// "7d token share" → "7d tokens"; "7d cost share" → "7d cost".
+    static func shareWindowLabel(for metric: String) -> String {
+        var parts = metric
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .split(separator: " ")
+            .map(String.init)
+        if parts.last == "share" {
+            parts.removeLast()
+        }
+        if let idx = parts.lastIndex(of: "token") {
+            parts[idx] = "tokens"
+        }
+        return parts.joined(separator: " ")
     }
 
     static func formattedValue(value: Double, unit: String?, limit: Double? = nil, suffix: String = "") -> String {
@@ -266,7 +301,6 @@ struct UsageBar: View {
     let label: String
     let value: Double
     var limit: Double? = nil
-    var resetAt: String? = nil
     var status: String? = nil
     var metric: String? = nil
     var suffix: String = ""

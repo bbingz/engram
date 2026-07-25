@@ -7,6 +7,9 @@ import SwiftUI
 struct MarkdownText: View {
     let text: String
     let fontSize: Double
+    /// Active find query; highlight is layered on a value copy of the cached
+    /// parse (cache stays keyed on `text` alone — rows 8/26).
+    var searchText: String = ""
 
     // Cache AttributedString results to avoid re-parsing markdown every render.
     // totalCostLimit bounds memory even when a few entries are very large
@@ -32,11 +35,19 @@ struct MarkdownText: View {
         return result
     }
 
-    private var attributed: AttributedString? { Self.cachedAttributed(text) }
+    private var attributed: AttributedString? {
+        guard let base = Self.cachedAttributed(text) else { return nil }
+        guard !searchText.isEmpty else { return base }
+        return ColorBarMessageView.highlightRendered(base, query: searchText)
+    }
 
     var body: some View {
         if let attributed {
             Text(attributed)
+                .font(.system(size: fontSize))
+                .textSelection(.enabled)
+        } else if !searchText.isEmpty {
+            Text(ColorBarMessageView.highlightRendered(AttributedString(text), query: searchText))
                 .font(.system(size: fontSize))
                 .textSelection(.enabled)
         } else {
@@ -63,9 +74,16 @@ private class SegmentCacheEntry {
 
 struct SegmentedMessageView: View {
     let content: String
+    var searchText: String = ""
     @AppStorage("contentFontSize") var fontSize: Double = 14
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var parsedContent: String = ""
     @State private var parsedSegments: [ContentSegment] = []
+
+    /// Compose OS Dynamic Type with the A± knob (row 31).
+    private var effectiveFontSize: Double {
+        Theme.scaledFontSize(base: fontSize, category: dynamicTypeSize)
+    }
 
     // Cache parsed segments keyed by content — avoids re-parsing on every render.
     // totalCostLimit bounds memory even when a few entries are very large
@@ -105,19 +123,19 @@ struct SegmentedMessageView: View {
             ForEach(Array(displaySegments.enumerated()), id: \.offset) { _, segment in
                 switch segment {
                 case .text(let text):
-                    MarkdownText(text: text, fontSize: fontSize)
+                    MarkdownText(text: text, fontSize: effectiveFontSize, searchText: searchText)
                 case .codeBlock(let lang, let code):
-                    CodeBlockView(language: lang, code: code, fontSize: fontSize)
+                    CodeBlockView(language: lang, code: code, fontSize: effectiveFontSize, searchText: searchText)
                 case .heading(let level, let text):
-                    HeadingView(level: level, text: text, fontSize: fontSize)
+                    HeadingView(level: level, text: text, fontSize: effectiveFontSize, searchText: searchText)
                 case .bulletList(let items):
-                    BulletListView(items: items, fontSize: fontSize)
+                    BulletListView(items: items, fontSize: effectiveFontSize, searchText: searchText)
                 case .numberedList(let items):
-                    NumberedListView(items: items, fontSize: fontSize)
+                    NumberedListView(items: items, fontSize: effectiveFontSize, searchText: searchText)
                 case .taskList(let items):
-                    TaskListView(items: items, fontSize: fontSize)
+                    TaskListView(items: items, fontSize: effectiveFontSize, searchText: searchText)
                 case .table(let headers, let rows):
-                    TableBlockView(headers: headers, rows: rows, fontSize: fontSize)
+                    TableBlockView(headers: headers, rows: rows, fontSize: effectiveFontSize, searchText: searchText)
                 case .horizontalRule:
                     Divider().padding(.vertical, 4)
                 }
@@ -149,12 +167,21 @@ struct HeadingView: View {
     let level: Int
     let text: String
     let fontSize: Double
+    var searchText: String = ""
 
     var body: some View {
         // Reuse MarkdownText's bounded NSCache instead of re-parsing markdown on
         // every body evaluation (scroll, font-size drag, theme/find-bar updates).
-        if let attributed = MarkdownText.cachedAttributed(text) {
+        if let base = MarkdownText.cachedAttributed(text) {
+            let attributed = searchText.isEmpty
+                ? base
+                : ColorBarMessageView.highlightRendered(base, query: searchText)
             Text(attributed)
+                .font(.system(size: fontSize, weight: .bold))
+                .textSelection(.enabled)
+                .padding(.top, level <= 2 ? 4 : 2)
+        } else if !searchText.isEmpty {
+            Text(ColorBarMessageView.highlightRendered(AttributedString(text), query: searchText))
                 .font(.system(size: fontSize, weight: .bold))
                 .textSelection(.enabled)
                 .padding(.top, level <= 2 ? 4 : 2)
@@ -173,6 +200,7 @@ struct CodeBlockView: View {
     let language: String
     let code: String
     let fontSize: Double
+    var searchText: String = ""
     @State private var copied = false
     @State private var copyResetTask: Task<Void, Never>? = nil
 
@@ -209,15 +237,27 @@ struct CodeBlockView: View {
             .padding(.vertical, 5)
             .background(Color(nsColor: .windowBackgroundColor).opacity(0.6))
 
-            // Code content
+            // Code content — both branches take rendered-text highlight with
+            // backgroundOnly so syntax colors survive an active search (row 26).
             ScrollView(.horizontal, showsIndicators: false) {
                 if !language.isEmpty {
-                    Text(SyntaxHighlighter.highlight(code, language: language))
+                    let base = SyntaxHighlighter.highlight(code, language: language)
+                    let painted = searchText.isEmpty
+                        ? base
+                        : ColorBarMessageView.highlightRendered(base, query: searchText, backgroundOnly: true)
+                    Text(painted)
                         .font(.system(size: max(fontSize - 1, 10), design: .monospaced))
                         .textSelection(.enabled)
                         .padding(10)
                 } else {
-                    Text(verbatim: code)
+                    let painted = searchText.isEmpty
+                        ? AttributedString(code)
+                        : ColorBarMessageView.highlightRendered(
+                            AttributedString(code),
+                            query: searchText,
+                            backgroundOnly: true
+                        )
+                    Text(painted)
                         .font(.system(size: max(fontSize - 1, 10), design: .monospaced))
                         .textSelection(.enabled)
                         .padding(10)
@@ -239,6 +279,7 @@ struct CodeBlockView: View {
 struct BulletListView: View {
     let items: [String]
     let fontSize: Double
+    var searchText: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -247,7 +288,7 @@ struct BulletListView: View {
                     Text("•")
                         .font(.system(size: fontSize))
                         .foregroundStyle(.secondary)
-                    MarkdownText(text: item, fontSize: fontSize)
+                    MarkdownText(text: item, fontSize: fontSize, searchText: searchText)
                 }
             }
         }
@@ -260,6 +301,7 @@ struct BulletListView: View {
 struct NumberedListView: View {
     let items: [String]
     let fontSize: Double
+    var searchText: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -269,7 +311,7 @@ struct NumberedListView: View {
                         .font(.system(size: fontSize))
                         .foregroundStyle(.secondary)
                         .frame(minWidth: 20, alignment: .trailing)
-                    MarkdownText(text: item, fontSize: fontSize)
+                    MarkdownText(text: item, fontSize: fontSize, searchText: searchText)
                 }
             }
         }
@@ -282,6 +324,7 @@ struct NumberedListView: View {
 struct TaskListView: View {
     let items: [(done: Bool, text: String)]
     let fontSize: Double
+    var searchText: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -290,7 +333,7 @@ struct TaskListView: View {
                     Image(systemName: item.done ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(item.done ? .green : .secondary)
                         .font(.system(size: fontSize - 1))
-                    MarkdownText(text: item.text, fontSize: fontSize)
+                    MarkdownText(text: item.text, fontSize: fontSize, searchText: searchText)
                         .strikethrough(item.done, color: .secondary)
                         .foregroundStyle(item.done ? .secondary : .primary)
                 }
@@ -306,6 +349,14 @@ struct TableBlockView: View {
     let headers: [String]
     let rows: [[String]]
     let fontSize: Double
+    var searchText: String = ""
+
+    private func cellText(_ cell: String) -> Text {
+        if searchText.isEmpty {
+            return Text(verbatim: cell)
+        }
+        return Text(ColorBarMessageView.highlightRendered(AttributedString(cell), query: searchText))
+    }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -313,7 +364,7 @@ struct TableBlockView: View {
                 // Header row
                 GridRow {
                     ForEach(Array(headers.enumerated()), id: \.offset) { _, header in
-                        Text(verbatim: header)
+                        cellText(header)
                             .font(.system(size: fontSize - 1, weight: .semibold))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 5)
@@ -328,7 +379,7 @@ struct TableBlockView: View {
                 ForEach(Array(rows.enumerated()), id: \.offset) { rowIdx, row in
                     GridRow {
                         ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                            Text(verbatim: cell)
+                            cellText(cell)
                                 .font(.system(size: fontSize - 1))
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
@@ -354,7 +405,12 @@ struct CollapsibleSystemBubble: View {
     let message: ChatMessage
     @State private var isExpanded = false
     @AppStorage("contentFontSize") var fontSize: Double = 14
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var effectiveFontSize: Double {
+        Theme.scaledFontSize(base: fontSize, category: dynamicTypeSize)
+    }
 
     private var categoryLabel: String {
         switch message.systemCategory {
@@ -419,7 +475,7 @@ struct CollapsibleSystemBubble: View {
             // Expanded content
             if isExpanded {
                 Text(verbatim: message.content)
-                    .font(.system(size: max(fontSize - 2, 10), design: .monospaced))
+                    .font(.system(size: max(effectiveFontSize - 2, 10), design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .padding(.horizontal, 12)

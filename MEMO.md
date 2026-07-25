@@ -4,6 +4,13 @@
 
 ### 2026-07-25
 
+- [排查] **base 指向 feature 分支的 PR 完全不跑 Swift 测试**：#253 的 base 是 `feat/transcript-find-rendering`，Tests / CodeQL 工作流只在 base 为 main 时触发，它的 check 列表只有一条 `Dependency Review`；GitHub 仍报 `CLEAN`，因为"没有必需检查失败"和"必需检查跑过了"是同一个状态。看 check 列表，别信 rollup 结论。
+- [修复] 上述盲区藏住一个真实性能回归：row 30 为线程安全把 `ReplayState.parseISO` 改成 per-call 分配两个 `ISO8601DateFormatter`，而 `densityBuckets` / `walkTurns` / `closeTurnsAfterAppend` 三处在循环里调它。改为 `makeISOParser()` 由调用方各持一份复用，每轮遍历只分配一次。
+- [修复] 两条源码扫描断言因钉标识符而失效（`private static let isoFormatter` 被合理删除、`snapshot` 被改名为 `fullSnapshot`），已重锚到性质本身，并做了能编译、能执行的变异验证。
+- [验证] 13 个 PR 合入集成分支后本地全量 Swift 单测 1772 通过 / 0 失败；逐个合并无法发现上述问题——组合态从未被编译过，#253 的代码从未被测过。
+- [未验证] "没有结论"不等于结论：drift 闸中止 → 测试报告为空；变异编译失败 → 报 `TEST FAILED`；工作流未触发 → 报 `CLEAN`。三者都不是测试结果，需查 `xcodebuild_exit`、已执行测试数、真编译错误数。
+- [转录分页] Load more 改为 append-only 重建；助手首条显示 turn 耗时芯片（时钟回拨则隐藏）；堆叠在 #247 之上。
+
 - [排查] 评审板记为"可合并"的五个 PR（#245 #248 #249 #251 #252）实际 `swift-unit` 全红，卡在同一步 xcodeproj drift 闸，测试一行都没跑；详见 CHANGELOG。
 - [修复] 两类根因：#248/#249/#252 新增 Swift 文件未提交重新生成的 `project.pbxproj`（文件不在构建里，其测试从未编译执行），#245/#251 用本地 xcodegen 2.46.0 生成而 CI 钉 2.45.4。已用钉版重新生成并推送。
 - [验证] 修复后 `PopoverUsageSectionTests`、`TranscriptAccessibilityTests`、`UIUXPolishWiringTests`、`MCPActivationOnboardingTests` 首次真正执行并通过。
@@ -11,14 +18,38 @@
 - [修复] #245 的两条 CodeQL `js/regex-injection` 不可达（`--format` 必须命中 support-matrix key），但元字符会改错矩阵行；已加 `escapeRegExp`（`b632452f`）。
 - [新增] `scripts/check-xcodeproj-drift.sh` + pre-commit 接线（PR #255），把 CI 那道闸搬到本地，钉版不符直接拒跑。
 - [未验证] `.husky/pre-commit` 缺 shebang（SC2148）、`feat/adapter-format-drift` 分支配了两条 upstream、`docs/mirror-followup-specs` 本地有一个未推送 commit `7ed3d2a6` —— 均为既有问题，本次未动。
+- [洞察生命周期] 代理可读路径过滤 `superseded_by` 非空洞察（含 CJK LIKE）；ledger #14；CJK repro 查询改为两行公共子串以保证回归有效。
+- [源健康] 可索引（非 skip）分母 + `healthReason` 提示；橙色徽章 18→8 量级。
+- [Codex 原生父子] 启动回填读 line-1 `thread_spawn`/`parent_thread_id`；无条件 `session_meta` 门；多字节头边界/全拒排水/游标三次不重读测试；格式文档与 ledger #2 同步。
+- [格式漂移] 本地 fingerprinter + 200 文件 baseline；desync/schemaVersion 纯函数；accept 折叠在 check 脚本（`baseline:adapter-format`）；Swift drift 测试 failure→XCTFail。
+- [转录查找] 用户/助手/代码消息在 ⌘F 激活时仍走分段渲染，高亮落在渲染后文本上，不再把 markdown 压成 raw source；隐藏类型的匹配会计数并一键正确翻闸（type 与 systemPrompt/agentComm 分桶）。
+- [验证] `TranscriptLabelAndCopyTests` / `TranscriptFindTests` 含 `_repro` 用例；相对 `origin/main` 仅功能提交。
+
+- [UI 诚实/无障碍] 用量 share 不再画成绿条；转录图标控件补 VoiceOver/help；四页加载失败条补 Retry+ServiceErrorPresenter；侧栏与转录正文接入 Dynamic Type 缩放。
+- [合并约束] 须在 #242 与 #247 之后合入（SourcePulseView / ColorBarMessageView 交叠）。
+
+- [性能观测] DEBUG 下为转录/列表分页路径加 `os_signpost` 与可选主线程 stall 监视；Release 为空操作。行 15 构建溯源仍延后。
+
+- [Claude 工作流] 适配器下沉发现 `subagents/workflows/wf_*/agent-*.jsonl`，按 path 挂父会话并保持 skip；不读 journal、不碰 session 级 workflows/。
+- [路线裁决] 相对 row 22：工作流文件从未入库，只能走适配器发现；backfill 无法插入未发现行，slice C 正则加宽延后。
+
+- [成本诚实] `get_insights` 按真实窗口日投影月花费，不足 3 天拒绝投影；`get_costs`/服务 costs 披露未计价会话并按归因缺失 vs 价表缺口分桶；CostSummary 有未计价提示行。Part C prices.json 仍延后。
+
+- [MCP 激活] 首次引导任意关闭即完成；Help/右键菜单可报 issue 与重开引导；首页 MCP 激活卡 + 引导 MCP 步；设置内 Test now 四阶验证；helper 路径从 bundle 推导。
+
+- [发布说明] 新增 `docs/release-notes/1.0.5.md` 用户向发行说明，并在 tag CI 强制存在对应版本文件；不执行 tag/release/repo 元数据变更。
 
 ### 2026-07-24
 
+- [本机分支] PR #240 已合并为 `cb6bffc`；机器专属外置构建实现仅保留在无 upstream/远端的本地 `local/external-build-root@da595285`，共享 main 不硬编码 Bing-SSD-5。
+- [构建路径] 本地分支把 DerivedData、archive、export log 放到 `/Volumes/Bing-SSD-5/XcodeBuilds/Engram`，最终 export 与 rollback 仍在 `macos/build`；使用前需明确切换或 rebase 该分支，禁止直接 push 机器专属默认值。
+- [空间] 已删除 squash 等价的插件 worktree/分支、9 个已合入 audit 分支、595 MB `node_modules` 和 50 MB 旧 EngramExport；普通 `git gc` 将 `.git` 从 459 MB 降至约 174 MB，保留 81 MB CodeGraph 与 rollback。恢复 Node 工具链时使用 Node 24 执行 `npm ci`。
+- [保护] rollback ZIP 完整性与 SHA-256 `3d92e132256ff973044efe12abeb4b3d55baae2517c177c2e6e389bc4ae08a03` 通过；清理后 App/Service 与只读 archive status IPC 正常，未重编译、重装、重启、迁移、改 Keychain/MCP 或写远端。
 - [插件] 新增独立的 Claude Code 插件 MVP：复用已安装的 `EngramCLI` / `EngramMCP`，提供 SessionStart 上下文注入与手动 `catch-up`、`remember`、`handoff` 技能，不捆绑第二套 Swift 二进制。
 - [边界] `EngramCLI context` 只经 MCP 调用 `get_context`，完整输出限制 8KB，缺 helper、异常响应或超时均 fail-open；自动 hook 不写 memory，只有用户手动调用 `remember` 才允许 `save_insight`。
 - [复核] 真实 Claude Code 2.1.218 加载发现并修正标准 `hooks/hooks.json` 被 manifest 重复声明的问题；MCP 初始化顺序、超时进程回收、JSON 字节上限和路径解析也经独立 review 收紧。
 - [验证] strict plugin validation、7 项插件测试、18 项 CLI 测试、显式写入路由/持久化测试、完整 MCP 169/169、Node build/typecheck/lint/knip 均通过；真实插件 smoke 成功注入上下文且临时 DB 字节不变，10 次启动 p95 低于 1 秒。详细命令和证据见 `CHANGELOG.md`。
-- [发布边界] 工作保留在 `feat/claude-code-plugin-mvp` 的 Draft PR 流程；未合并 `main`，未改 1.0.5 版本，未 tag、release、notarize 或部署。
+- [发布] PR #240 已通过门禁并 squash merge 为 `cb6bffc`，本机已部署 Developer ID Engram `1.0.5 (1340)`；未 tag/GitHub Release、notarize、staple 或修改 Keychain/MCP 配置。
 
 ### 2026-07-23
 

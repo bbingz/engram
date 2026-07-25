@@ -525,6 +525,7 @@ public extension EngramDatabaseWriter {
     func runPeriodicParentBackfills() throws {
         try write { db in
             _ = try StartupBackfills.backfillParentLinks(db)
+            _ = try StartupBackfills.backfillCodexNativeParents(db)
             _ = try StartupBackfills.backfillCodexOriginator(db)
             _ = try StartupBackfills.backfillPolycliProviderParents(db)
             _ = try StartupBackfills.backfillSuggestedParents(db)
@@ -555,6 +556,7 @@ public extension EngramDatabaseWriter {
             // (D01 / wave-6 task 4).
             try write { db in
                 _ = try StartupBackfills.backfillParentLinks(db)
+                _ = try StartupBackfills.backfillCodexNativeParents(db)
                 _ = try StartupBackfills.backfillCodexOriginator(db)
                 _ = try StartupBackfills.backfillPolycliProviderParents(db)
                 _ = try StartupBackfills.backfillSuggestedParents(db)

@@ -48,6 +48,7 @@ struct TranscriptToolbar: View {
                         .foregroundStyle(.blue)
                     }
                     .buttonStyle(.plain)
+                    .help("Back to session list")
 
                     Divider().frame(height: 14)
                 }
@@ -60,6 +61,7 @@ struct TranscriptToolbar: View {
                 .buttonStyle(.plain)
                 // UI-H3: icon-only button needs a VoiceOver label.
                 .accessibilityLabel(isFavorite ? "Remove from favorites" : "Add to favorites")
+                .help(isFavorite ? "Remove from favorites" : "Add to favorites")
 
                 Divider().frame(height: 14)
 
@@ -70,6 +72,7 @@ struct TranscriptToolbar: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 180)
+                .accessibilityLabel("Transcript view mode")
 
                 Button {
                     NSPasteboard.general.clearContents()
@@ -141,11 +144,15 @@ struct TranscriptToolbar: View {
                     Text("A\u{2212}").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Decrease text size")
+                .help("Decrease transcript text size")
 
                 Button { fontSize = min(22, fontSize + 1) } label: {
                     Text("A+").font(.system(size: 14)).foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Increase text size")
+                .help("Increase transcript text size")
 
                 Divider().frame(height: 14)
 
@@ -158,6 +165,7 @@ struct TranscriptToolbar: View {
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                 }
                 .buttonStyle(.plain)
+                .help("Copy entire conversation")
 
                 Divider().frame(height: 14)
 
@@ -167,6 +175,8 @@ struct TranscriptToolbar: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Find in transcript")
+                .help("Find in transcript (⌘F)")
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -184,6 +194,7 @@ struct TranscriptToolbar: View {
                             .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                     .buttonStyle(.plain)
+                    .help("Show all message types")
 
                     ForEach(MessageType.chipTypes, id: \.self) { type in
                         MessageTypeChip(

@@ -1,6 +1,6 @@
 # MiniMax — On-Disk Session Format (Detection Overlay)
 
-Last researched: 2026-06-21
+Last researched: 2026-07-24
 
 MiniMax is **not** a standalone session store. It is a *detection overlay* on
 top of Claude Code: a session is reclassified from `claude-code` to `minimax`

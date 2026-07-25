@@ -1,0 +1,205 @@
+# Machine-read format support matrix for adapter format-drift detection.
+# See docs/adapter-format-drift-design-2026-07.md (mirror row 23).
+schemaVersion: 1
+formats:
+  claude-code:
+    sources: [claude-code, minimax, lobsterai]
+    roots:
+      - "~/.claude/projects"
+    glob: "**/*.jsonl"
+    excludeGlobs: ["**/subagents/**"]
+    requiredTypes: [user, assistant]
+    versionField: "$.version"
+    max_verified_version: "2.1.218"
+    last_checked_utc: "2026-07-24T18:00:52.120Z"
+    monitored: true
+    docs:
+      - docs/session-formats/claude-code.md
+      - docs/session-formats/claude-code.zh.md
+      - docs/session-formats/minimax.md
+      - docs/session-formats/minimax.zh.md
+      - docs/session-formats/lobsterai.md
+      - docs/session-formats/lobsterai.zh.md
+  codex:
+    sources: [codex]
+    roots:
+      - "~/.codex/sessions"
+    glob: "**/rollout-*.jsonl"
+    excludeGlobs: []
+    requiredTypes: [session_meta, response_item]
+    versionField: "$.payload.cli_version"
+    max_verified_version: "0.146.0-alpha.6"
+    last_checked_utc: "2026-07-24T18:01:01.180Z"
+    monitored: true
+    docs:
+      - docs/session-formats/codex.md
+      - docs/session-formats/codex.zh.md
+  gemini-cli:
+    sources: [gemini-cli]
+    roots: ["~/.gemini"]
+    glob: "**/*"
+    excludeGlobs: []
+    requiredTypes: []
+    versionField: not_logged
+    max_verified_version: null
+    last_checked_utc: "2026-06-21T00:00:00Z"
+    monitored: false
+    docs:
+      - docs/session-formats/gemini-cli.md
+      - docs/session-formats/gemini-cli.zh.md
+  antigravity:
+    sources: [antigravity]
+    roots: ["~/.gemini/antigravity"]
+    glob: "**/*"
+    excludeGlobs: []
+    requiredTypes: []
+    versionField: not_logged
+    max_verified_version: null
+    last_checked_utc: "2026-06-21T00:00:00Z"
+    monitored: false
+    docs:
+      - docs/session-formats/antigravity.md
+      - docs/session-formats/antigravity.zh.md
+  opencode:
+    sources: [opencode]
+    roots: []
+    glob: "**/*"
+    excludeGlobs: []
+    requiredTypes: []
+    versionField: not_logged
+    max_verified_version: null
+    last_checked_utc: "2026-06-21T00:00:00Z"
+    monitored: false
+    docs:
+      - docs/session-formats/opencode.md
+      - docs/session-formats/opencode.zh.md
+  cursor:
+    sources: [cursor]
+    roots: []
+    glob: "**/*"
+    excludeGlobs: []
+    requiredTypes: []
+    versionField: not_logged
+    max_verified_version: null
+    last_checked_utc: "2026-06-21T00:00:00Z"
+    monitored: false
+    docs:
+      - docs/session-formats/cursor.md
+      - docs/session-formats/cursor.zh.md
+  copilot:
+    sources: [copilot]
+    roots: []
+    glob: "**/*"
+    excludeGlobs: []
+    requiredTypes: []
+    versionField: not_logged
+    max_verified_version: null
+    last_checked_utc: "2026-06-21T00:00:00Z"
+    monitored: false
+    docs:
+      - docs/session-formats/copilot.md
+      - docs/session-formats/copilot.zh.md
+  qwen:
+    sources: [qwen]
+    roots: []
+    glob: "**/*"
+    excludeGlobs: []
+    requiredTypes: []
+    versionField: not_logged
+    max_verified_version: null
+    last_checked_utc: "2026-06-21T00:00:00Z"
+    monitored: false
+    docs:
+      - docs/session-formats/qwen.md
+      - docs/session-formats/qwen.zh.md
+  kimi:
+    sources: [kimi]
+    roots: []
+    glob: "**/*"
+    excludeGlobs: []
+    requiredTypes: []
+    versionField: not_logged
+    max_verified_version: null
+    last_checked_utc: "2026-06-21T00:00:00Z"
+    monitored: false
+    docs:
+      - docs/session-formats/kimi.md
+      - docs/session-formats/kimi.zh.md
+  qoder:
+    sources: [qoder]
+    roots: []
+    glob: "**/*"
+    excludeGlobs: []
+    requiredTypes: []
+    versionField: not_logged
+    max_verified_version: null
+    last_checked_utc: "2026-06-21T00:00:00Z"
+    monitored: false
+    docs:
+      - docs/session-formats/qoder.md
+      - docs/session-formats/qoder.zh.md
+  commandcode:
+    sources: [commandcode]
+    roots: []
+    glob: "**/*"
+    excludeGlobs: []
+    requiredTypes: []
+    versionField: not_logged
+    max_verified_version: null
+    last_checked_utc: "2026-06-21T00:00:00Z"
+    monitored: false
+    docs:
+      - docs/session-formats/commandcode.md
+      - docs/session-formats/commandcode.zh.md
+  vscode:
+    sources: [vscode]
+    roots: []
+    glob: "**/*"
+    excludeGlobs: []
+    requiredTypes: []
+    versionField: not_logged
+    max_verified_version: null
+    last_checked_utc: "2026-06-21T00:00:00Z"
+    monitored: false
+    docs:
+      - docs/session-formats/vscode.md
+      - docs/session-formats/vscode.zh.md
+  windsurf:
+    sources: [windsurf]
+    roots: []
+    glob: "**/*"
+    excludeGlobs: []
+    requiredTypes: []
+    versionField: not_logged
+    max_verified_version: null
+    last_checked_utc: "2026-06-21T00:00:00Z"
+    monitored: false
+    docs:
+      - docs/session-formats/windsurf.md
+      - docs/session-formats/windsurf.zh.md
+  cline:
+    sources: [cline]
+    roots: []
+    glob: "**/*"
+    excludeGlobs: []
+    requiredTypes: []
+    versionField: not_logged
+    max_verified_version: null
+    last_checked_utc: "2026-06-21T00:00:00Z"
+    monitored: false
+    docs:
+      - docs/session-formats/cline.md
+      - docs/session-formats/cline.zh.md
+  iflow:
+    sources: [iflow]
+    roots: []
+    glob: "**/*"
+    excludeGlobs: []
+    requiredTypes: []
+    versionField: not_logged
+    max_verified_version: null
+    last_checked_utc: "2026-06-21T00:00:00Z"
+    monitored: false
+    docs:
+      - docs/session-formats/iflow.md
+      - docs/session-formats/iflow.zh.md

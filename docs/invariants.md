@@ -13,14 +13,14 @@ Invariants are properties that must survive every change; each entry names where
 
 - **Statement** - Subagent, dispatch, and noise sessions stay `tier='skip'`; parent-link operations such as setParentSession do not upgrade child sessions out of skip.
 - **Enforced by** - `macos/EngramService/Core/EngramServiceCommandHandler.swift`, `macos/EngramCoreWrite/Indexing/StartupBackfills.swift`, `macos/Shared/EngramCore/Indexing/SessionTier.swift`.
-- **Verified by** - `macos/EngramCoreTests/StartupBackfillTests.swift` (testDowngradeSubagentTiersAndRemoveFTSRows, testReconcileSkipTierDeletesStaleArtifactsWithoutTouchingTierOrNonSkip), `macos/EngramTests/AgentsViewTests.swift` (testExpandableSessionCardHasNoSetParentHook).
+- **Verified by** - `macos/EngramCoreTests/StartupBackfillTests.swift` (testDowngradeSubagentTiersAndRemoveFTSRows, testReconcileSkipTierDeletesStaleArtifactsWithoutTouchingTierOrNonSkip, testBackfillCodexNativeParentsLinksVendorStampedChild_repro, testBackfillCodexNativeParentsUsesTopLevelParentThreadIdFallback), `macos/EngramTests/AgentsViewTests.swift` (testExpandableSessionCardHasNoSetParentHook).
 - **Gate** - `none`.
 
 ## 3. Tier Visibility
 
 - **Statement** - `skip` sessions are hidden from normal read surfaces; `lite` sessions remain visible in lists but are excluded from keyword search results.
 - **Enforced by** - `macos/Shared/EngramCore/Indexing/SessionTier.swift`, `macos/EngramService/Core/EngramServiceReadProvider.swift`, `macos/Engram/Core/Database.swift`, `macos/EngramMCP/Core/MCPDatabase.swift`, `macos/Shared/EngramCore/AI/SessionSemanticSearchPolicy.swift` (keyword + semantic tier filter SQL shared with service/MCP).
-- **Verified by** - `macos/EngramTests/DatabaseManagerTests.swift` (testListSessionsExcludesSkipTier, testSearchExcludesSkipAndLiteSessions, testListSessionsWithAllTiers, testCountSessionsExcludesSkipTier), `macos/EngramMCPTests/EngramMCPExecutableTests.swift` (hybrid/semantic search cases).
+- **Verified by** - `macos/EngramTests/DatabaseManagerTests.swift` (testListSessionsExcludesSkipTier, testSearchExcludesSkipAndLiteSessions, testListSessionsWithAllTiers, testCountSessionsExcludesSkipTier), `macos/EngramMCPTests/EngramMCPExecutableTests.swift` (hybrid/semantic search cases), `macos/EngramServiceCoreTests/EngramServiceIPCTests.swift` (testSourceHealthExcludesSkipTierSessions_repro, testSourceHealthCountsLiteTierSessions_repro, testSourceHealthExcludesSkipTierSessionsFromNumerator, testSourceHealthReportsEmptyWhenAllSessionsAreSkipTier), `macos/EngramCoreTests/StartupBackfillTests.swift` (testBackfillCodexNativeParentsDeletesFtsRowsWhenTierBecomesSkip).
 - **Gate** - `none`.
 
 ## 4. Parent-Detection Parity Triple Lock
@@ -62,14 +62,14 @@ Invariants are properties that must survive every change; each entry names where
 
 - **Statement** - Startup backfills are version-gated and idempotent; the Codex model-label backfill runs before the session cost backfill so relabeled rows get correct costs.
 - **Enforced by** - `macos/EngramCoreWrite/Indexing/StartupBackfills.swift`.
-- **Verified by** - `macos/EngramCoreTests/StartupBackfillTests.swift` (testBackfillCodexModelLabelsVersionGatePreventsSecondScan, testCodexModelBackfillRunsBeforeCostBackfillAndRecomputesRelabeledCost, testRunInitialScanEmitsNodeCompatibleStartupEventsInOrder).
+- **Verified by** - `macos/EngramCoreTests/StartupBackfillTests.swift` (testBackfillCodexModelLabelsVersionGatePreventsSecondScan, testCodexModelBackfillRunsBeforeCostBackfillAndRecomputesRelabeledCost, testRunInitialScanEmitsNodeCompatibleStartupEventsInOrder, testBackfillCodexNativeParentsVersionGatePreventsSecondSweep, testBackfillCodexNativeParentsIsIdempotentOverAlreadyLinkedRows).
 - **Gate** - `none`.
 
 ## 10. Manual Unlink Is Respected
 
 - **Statement** - `link_source='manual'` with a NULL parent means explicitly unlinked; parent backfills and rescoring must not relink those rows.
 - **Enforced by** - `macos/EngramCoreWrite/Indexing/StartupBackfills.swift`, `src/core/db/maintenance.ts`.
-- **Verified by** - `macos/EngramCoreTests/StartupBackfillTests.swift` (testBackfillParentLinksUsesPathAndPreservesManualLinks, testResetStaleDetectionsStoresVersionAndSkipsManualLinks), `tests/core/maintenance.test.ts` (manual-link preservation cases).
+- **Verified by** - `macos/EngramCoreTests/StartupBackfillTests.swift` (testBackfillParentLinksUsesPathAndPreservesManualLinks, testResetStaleDetectionsStoresVersionAndSkipsManualLinks, testBackfillCodexNativeParentsPreservesManualUnlink), `tests/core/maintenance.test.ts` (manual-link preservation cases).
 - **Gate** - `none`.
 
 ## 11. Sessions Schema Migrations Are Idempotent
@@ -91,6 +91,13 @@ Invariants are properties that must survive every change; each entry names where
 - **Statement** - Append-tail checkpoints advance `file_index_state.parsed_offset` only to a newline-complete JSONL boundary and persist a bounded boundary hash for that offset; boundary mismatch, shrink, or unprovable merge context must fall back to full reparse.
 - **Enforced by** - `macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift`, `macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift`, `macos/EngramCoreWrite/Indexing/SwiftIndexer.swift`.
 - **Verified by** - `macos/EngramCoreTests/IndexerParseOnceTests.swift` (testClaudeCodeTailParseAppendMatchesFullReindex, testClaudeCodeTailParseNoTrailingNewlineFallsBackWithoutDoubleCounting, testClaudeCodeTailParseNoVisibleCompleteTailFallsBackAndRefreshesSize, testClaudeCodeTailParseRewriteInPlaceFallsBackToFullReparse, testClaudeCodeTailParseTruncationFallsBackToFullReparse, testClaudeCodeTailParseDoesNotAdvancePastPartialLineAndLaterIndexesIt).
+- **Gate** - `none`.
+
+## 14. Superseded Insights Stay Off Agent-Facing Reads
+
+- **Statement** - An insight whose `superseded_by` names an existing insight is never returned by an agent-facing `EngramMCP` read: `get_context`, `search`, `get_memory`, or `resources/list`. The predicate is applied when `insightsHasLifecycleColumns()` is true (all three of `superseded_by`, `insight_type`, `access_count` present) and omitted otherwise, which is safe because both writer paths add all four lifecycle columns inside a single transaction, so a partial-column state is unreachable. Rows whose `superseded_by` points at a deleted id are out of the partition and outside this invariant.
+- **Enforced by** - `macos/EngramMCP/Core/MCPDatabase.swift`, `macos/EngramCoreWrite/Database/EngramMigrations.swift`.
+- **Verified by** - `macos/EngramMCPTests/AuditMediumMCPReproTests.swift` (testGetContextExcludesSupersededInsights_repro, testSearchExcludesSupersededInsights_repro, testGetContextExcludesSupersededInsightsForCJKQuery_repro, testResourceCatalogExcludesSupersededInsights_repro, testGetMemoryRecencyFillsActiveMemoriesPastOverfetchWindow_repro).
 - **Gate** - `none`.
 
 ## Unverified Anchors

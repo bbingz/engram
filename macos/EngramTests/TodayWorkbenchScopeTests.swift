@@ -196,13 +196,21 @@ final class TodayWorkbenchScopeTests: XCTestCase {
     func testSessionDetailBuildsTranscriptOffMain() throws {
         let s = try source("macos/Engram/Views/SessionDetailView.swift")
         // IndexedMessage.build must run inside the detached parse task, not on main.
-        XCTAssertFalse(
-            s.contains("let result = IndexedMessage.build(from: messages)"),
-            "transcript classification must not run on the main actor (perf finding)"
+        // Row 27 renamed the local snapshot, so pin where the call sits rather than
+        // the identifier it is passed.
+        let detachedStart = try XCTUnwrap(s.range(of: "let built = await Task.detached"))
+        let detachedEnd = try XCTUnwrap(
+            s.range(of: "}.value", range: detachedStart.upperBound..<s.endIndex)
         )
+        let detachedBody = String(s[detachedStart.upperBound..<detachedEnd.lowerBound])
         XCTAssertTrue(
-            s.contains("IndexedMessage.build(from: snapshot)"),
+            detachedBody.contains("IndexedMessage.build(from:"),
             "transcript must be built off-main inside the detached rebuild task"
+        )
+        XCTAssertFalse(
+            s.replacingOccurrences(of: detachedBody, with: "")
+                .contains("IndexedMessage.build(from:"),
+            "transcript classification must not run on the main actor (perf finding)"
         )
         // isFavorite must be read off the main actor.
         XCTAssertFalse(

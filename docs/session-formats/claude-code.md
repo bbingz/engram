@@ -1,6 +1,6 @@
 # Claude Code — On-Disk Session Format (Definitive Reference)
 
-Last researched: 2026-06-21 (Engram session-format research workflow)
+Last researched: 2026-07-24
 
 This is the canonical reference for **how Claude Code persists its interactive
 sessions on disk**, plus **how Engram's adapters consume that format**. It

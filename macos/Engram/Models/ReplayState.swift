@@ -23,20 +23,22 @@ class ReplayState {
     var error: String? = nil
 
     private var playTimer: Timer?
-    private static let isoFractionalFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-    private static let isoFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
 
-    // 容忍带/不带小数秒的 ISO8601（不同来源时间戳格式不一致）
-    static func parseISO(_ value: String) -> Date? {
-        isoFractionalFormatter.date(from: value) ?? isoFormatter.date(from: value)
+    // 容忍带/不带小数秒的 ISO8601（不同来源时间戳格式不一致）。
+    // nonisolated + caller-owned parsers: safe for off-main turn-duration walks
+    // (IndexedMessage) and for MainActor replay pacing, with no shared formatter.
+    /// 循环解析必须先建一次 parser 再复用；每个 parser 自带 formatter，不共享状态。
+    nonisolated static func makeISOParser() -> (String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return { fractional.date(from: $0) ?? plain.date(from: $0) }
+    }
+
+    /// 一次性解析用；循环里请改用 `makeISOParser()`。
+    nonisolated static func parseISO(_ value: String) -> Date? {
+        makeISOParser()(value)
     }
 
     enum PlaybackSpeed: Double, CaseIterable {
@@ -76,8 +78,9 @@ class ReplayState {
             return Array(repeating: 0, count: 100)
         }
 
-        guard let startDate = Self.parseISO(first),
-              let endDate = Self.parseISO(last) else {
+        let parse = Self.makeISOParser()
+        guard let startDate = parse(first),
+              let endDate = parse(last) else {
             return Array(repeating: 0, count: 100)
         }
 
@@ -91,7 +94,7 @@ class ReplayState {
         var buckets = Array(repeating: 0, count: 100)
         for entry in entries {
             guard let ts = entry.timestamp,
-                  let date = Self.parseISO(ts) else { continue }
+                  let date = parse(ts) else { continue }
             let fraction = date.timeIntervalSince(startDate) / totalDuration
             let bucket = max(0, min(99, Int(fraction * 100)))
             buckets[bucket] += 1

@@ -310,6 +310,192 @@ final class AuditMediumMCPReproTests: XCTestCase {
         XCTAssertFalse(text.contains("/workspace/visibility.swift (100001 edits, 2 sessions)"), text)
     }
 
+    // MARK: - Superseded insight filter (mirror row 1 / PR #241)
+
+    /// Lifecycle seed used by the supersede-filter repros (PR #241): two ASCII
+    /// FTS rows and two CJK LIKE-branch rows, one active + one superseded each.
+    private func seedSupersedeProbeInsights(at dbPath: String) throws {
+        try DatabaseQueue(path: dbPath).write { db in
+            for ddl in [
+                "ALTER TABLE insights ADD COLUMN insight_type TEXT DEFAULT 'semantic'",
+                "ALTER TABLE insights ADD COLUMN superseded_by TEXT",
+                "ALTER TABLE insights ADD COLUMN last_accessed_at TEXT",
+                "ALTER TABLE insights ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0",
+            ] {
+                try? db.execute(sql: ddl)
+            }
+            try db.execute(sql: "DELETE FROM insights")
+            try db.execute(sql: "DELETE FROM insights_fts")
+            // CJK rows stay pure CJK so an ASCII FTS query ("supersede probe")
+            // does not also hit them; the CJK LIKE branch is covered separately.
+            let rows: [(id: String, content: String, superseded: String?)] = [
+                ("sup-active", "supersede probe active fact", nil),
+                ("sup-old", "supersede probe obsolete fact", "sup-active"),
+                ("sup-cjk-active", "有效事实探针内容", nil),
+                ("sup-cjk-old", "废弃事实探针内容", "sup-cjk-active"),
+            ]
+            for row in rows {
+                try db.execute(
+                    sql: """
+                    INSERT INTO insights
+                      (id, content, importance, created_at, insight_type, superseded_by, access_count)
+                    VALUES (?, ?, 5, '2026-07-01 00:00:00', 'semantic', ?, 0)
+                    """,
+                    arguments: [row.id, row.content, row.superseded]
+                )
+                try db.execute(
+                    sql: "INSERT INTO insights_fts (insight_id, content) VALUES (?, ?)",
+                    arguments: [row.id, row.content]
+                )
+            }
+        }
+    }
+
+    // PR #241 (mirror row 1): get_context must drop superseded FTS insights.
+    func testGetContextExcludesSupersededInsights_repro() throws {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-supersede-ctx")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedSupersedeProbeInsights(at: dbPath)
+
+        let result = try rpcResult(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/tmp/engram-supersede-probe","task":"supersede probe","include_environment":false}}}
+            """,
+            dbPath: dbPath
+        )
+        let content = try XCTUnwrap(result["content"] as? [[String: Any]])
+        let text = try XCTUnwrap(content.first?["text"] as? String)
+        XCTAssertTrue(text.contains("supersede probe active fact"), text)
+        XCTAssertFalse(text.contains("supersede probe obsolete fact"), text)
+        XCTAssertTrue(text.contains("+ 1 memories"), text)
+    }
+
+    // PR #241 (mirror row 1): search insightResults drop superseded rows.
+    func testSearchExcludesSupersededInsights_repro() throws {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-supersede-search")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedSupersedeProbeInsights(at: dbPath)
+
+        let structured = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"supersede probe","limit":5}}}
+            """,
+            dbPath: dbPath
+        )
+        let insightResults = try XCTUnwrap(structured["insightResults"] as? [String])
+        XCTAssertEqual(insightResults.count, 1, "\(insightResults)")
+        XCTAssertFalse(insightResults.contains { $0.contains("obsolete") }, "\(insightResults)")
+    }
+
+    // PR #241 (mirror row 1 / AC6): CJK LIKE branch must also honor superseded_by.
+    // Query uses the shared substring present in BOTH active and superseded CJK
+    // rows so the filter is what drops the superseded hit (not query mismatch).
+    func testGetContextExcludesSupersededInsightsForCJKQuery_repro() throws {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-supersede-cjk")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedSupersedeProbeInsights(at: dbPath)
+
+        let result = try rpcResult(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/tmp/engram-supersede-probe","task":"事实探针内容","include_environment":false}}}
+            """,
+            dbPath: dbPath
+        )
+        let content = try XCTUnwrap(result["content"] as? [[String: Any]])
+        let text = try XCTUnwrap(content.first?["text"] as? String)
+        XCTAssertTrue(text.contains("有效事实探针内容"), text)
+        XCTAssertFalse(text.contains("废弃事实"), text)
+        XCTAssertTrue(text.contains("+ 1 memories"), text)
+    }
+
+    // PR #241 (mirror row 1): resources/list omits superseded insight URIs.
+    func testResourceCatalogExcludesSupersededInsights_repro() throws {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-supersede-res")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedSupersedeProbeInsights(at: dbPath)
+
+        let result = try rpcResult(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"resources/list"}
+            """,
+            dbPath: dbPath
+        )
+        let resources = try XCTUnwrap(result["resources"] as? [[String: Any]])
+        let uris = resources.compactMap { $0["uri"] as? String }
+        XCTAssertTrue(uris.contains("engram://insight/sup-active"), "\(uris)")
+        XCTAssertFalse(uris.contains("engram://insight/sup-old"), "\(uris)")
+    }
+
+    // PR #241 (mirror row 1): get_memory recency fills past overfetch after supersede filter.
+    func testGetMemoryRecencyFillsActiveMemoriesPastOverfetchWindow_repro() throws {
+        let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-supersede-recency")
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try DatabaseQueue(path: dbPath).write { db in
+            for ddl in [
+                "ALTER TABLE insights ADD COLUMN insight_type TEXT DEFAULT 'semantic'",
+                "ALTER TABLE insights ADD COLUMN superseded_by TEXT",
+                "ALTER TABLE insights ADD COLUMN last_accessed_at TEXT",
+                "ALTER TABLE insights ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0",
+            ] {
+                try? db.execute(sql: ddl)
+            }
+            try db.execute(sql: "DELETE FROM insights")
+            try db.execute(sql: "DELETE FROM insights_fts")
+            // 40 most-recent rows all superseded; 5 older active rows fill after filter.
+            for i in 0..<40 {
+                let id = "recency-super-\(i)"
+                try db.execute(
+                    sql: """
+                    INSERT INTO insights
+                      (id, content, importance, created_at, insight_type, superseded_by, access_count)
+                    VALUES (?, ?, 5, ?, 'semantic', 'recency-active-0', 0)
+                    """,
+                    arguments: [
+                        id,
+                        "recency superseded row \(i)",
+                        String(format: "2026-07-20T%02d:00:00.000Z", i % 24),
+                    ]
+                )
+                try db.execute(
+                    sql: "INSERT INTO insights_fts (insight_id, content) VALUES (?, ?)",
+                    arguments: [id, "recency superseded row \(i)"]
+                )
+            }
+            for i in 0..<5 {
+                let id = "recency-active-\(i)"
+                try db.execute(
+                    sql: """
+                    INSERT INTO insights
+                      (id, content, importance, created_at, insight_type, superseded_by, access_count)
+                    VALUES (?, ?, 5, ?, 'semantic', NULL, 0)
+                    """,
+                    arguments: [
+                        id,
+                        "recency active durable fact \(i)",
+                        String(format: "2026-01-%02dT00:00:00.000Z", i + 1),
+                    ]
+                )
+                try db.execute(
+                    sql: "INSERT INTO insights_fts (insight_id, content) VALUES (?, ?)",
+                    arguments: [id, "recency active durable fact \(i)"]
+                )
+            }
+        }
+
+        let structured = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"zzzznomatch"}}}
+            """,
+            dbPath: dbPath
+        )
+        let memories = try XCTUnwrap(structured["memories"] as? [[String: Any]])
+        XCTAssertEqual(memories.count, 5, "\(memories.map { $0["id"] as? String })")
+        for memory in memories {
+            let id = memory["id"] as? String ?? ""
+            XCTAssertTrue(id.hasPrefix("recency-active-"), "unexpected id \(id)")
+        }
+    }
+
     // MARK: - Seeds
 
     private func wipeSessionsAndCosts(at dbPath: String) throws {

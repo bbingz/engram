@@ -7,6 +7,41 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: a PR based on a feature branch runs no Swift tests at all (2026-07-25)
+
+- #253 targeted `feat/transcript-find-rendering` rather than `main`. The Tests
+  and CodeQL workflows only trigger for pull requests against `main`, so its
+  entire check list was a single `Dependency Review`. GitHub still reported
+  `mergeStateStatus: CLEAN`, because "no required check is failing" and "the
+  required checks ran" are the same status when nothing ran. Any PR stacked on
+  a feature branch has this hole; re-target to `main` before trusting its
+  status, or read the check list rather than the rollup verdict.
+- Merging the backlog through one integration branch off `main` and running
+  `xcodebuild test -scheme Engram -skip-testing:EngramUITests` locally is what
+  surfaced the two defects below. Neither could have been caught by merging the
+  PRs one at a time: the combined state had never been compiled, and #253's own
+  code had never been tested at all.
+- Regression: row 30 moved `ReplayState.parseISO` off the main actor by
+  replacing the cached static formatters with per-call ones. Correct for
+  concurrency, but it allocates two `ISO8601DateFormatter`s per call and three
+  callers call it in a loop — `densityBuckets` (per entry, on every replay
+  density render), `walkTurns` (per row) and `closeTurnsAfterAppend`.
+  `makeISOParser()` now hands each caller its own reusable parser: one
+  allocation per walk, still no shared state.
+- Two source-scan guards had gone stale by keying on identifiers instead of
+  properties. `ViewMainThreadReadTests` required the literal
+  `private static let isoFormatter`, which row 30 legitimately deleted;
+  `TodayWorkbenchScopeTests` required `IndexedMessage.build(from: snapshot)`,
+  which row 27 renamed to `fullSnapshot`. Both now pin the property — parser
+  built above the loop; build call inside the `Task.detached` body and nowhere
+  outside — and both were mutation-checked with a build that compiles and runs.
+- Verification hygiene this round depended on separating "no conclusion" from a
+  conclusion. A drift-gate abort produces an empty test report, a mutation that
+  fails to compile produces `** TEST FAILED **`, and a PR with no triggered
+  workflow produces `CLEAN`; none of the three is a test result. Check
+  `xcodebuild_exit`, a nonzero executed-test count, and the absence of real
+  compiler errors before reading red or green as a signal.
+
 ### Fixed: xcodeproj drift hid five red PRs and three never-run test suites (2026-07-25)
 
 - Five open PRs were recorded on the review board as mergeable but had a
@@ -63,6 +98,155 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   paths are staged. Covered by `tests/scripts/xcodeproj-drift-gate.test.ts`
   (3 exit paths, stub xcodegen) and reproduced by hand against both real
   failure classes.
+### Fixed: exclude superseded insights from agent-facing MCP reads (row 1) (2026-07-25)
+
+- `get_context`, `search`, `get_memory`, and `resources/list` exclude insights
+  with a non-null `superseded_by` (FTS and CJK LIKE branches).
+- Ledger invariant 14 records the supersede filter; MCP tool docs note the
+  lifecycle rule. CJK LIKE repro shares a query substring with both active and
+  superseded rows so the filter is what drops the hit.
+### Fixed: index-eligible source health denominator and reason (row 2) (2026-07-25)
+
+- Source health and Search N% use a non-skip (index-eligible) session
+  denominator so skip-tier FTS absence no longer permanent-oranges healthy sources.
+- `EngramServiceSourceInfo` carries `healthReason` for badge tooltips.
+- Ledger entry 3 Verified-by updated for the new IPC tests.
+### Added: Codex native spawn parent backfill (row 22) (2026-07-25)
+
+- Version-gated `backfillCodexNativeParents` links Codex children from
+  vendor-stamped line-1 `thread_spawn` / top-level `parent_thread_id`
+  (`link_source = path`); declines depth > 1 and skip-tier parents.
+- Unconditional `type == session_meta` gate (no bare-payload fallthrough);
+  rowid high-water cursor drains past fully rejected pages.
+- Coverage: multi-byte head boundary (`padFilePast: 262_144`), drain past
+  501 rejected candidates, third-call cursor does not re-read rejects;
+  EN/ZH format docs + ledger entry 2 Verified-by updated.
+### Added: adapter format-drift fingerprint check (row 23) (2026-07-25)
+
+- Local-only fingerprinter for monitored formats (claude-code, codex)
+  against committed 200-file baselines under `docs/session-formats/baselines/`.
+- Freshness gates (sample recency, vendor version, required-type absence);
+  baseline/matrix desync when baseline.max < matrix.max (exit 1, no diff);
+  accept path via `npm run baseline:adapter-format`.
+- Vitest pure-function suite (desync, schemaVersion, novel-rare, path keys)
+  + Swift `AdapterSchemaDriftTests` (world_state + unknown kinds, XCTFail on
+  unexpected adapter failure).
+### Fixed: transcript paging + turn duration chips (rows 27/30) (2026-07-25)
+
+- Load-more rebuilds are append-only: only the new page is classified and type
+  counters carry forward (`IndexedMessage.appending`); turn durations use a
+  single-row boundary backfill (not a full-prefix recompute) and display filter
+  appends only the new slice.
+- Per-turn duration chips on the first assistant message of each user→user span,
+  from adapter timestamps; clock skew / missing timestamps hide the chip; bucketed
+  `4.8s` / `42s` / `3m 5s` formatting. Byte-seek cursor (Part B) deferred.
+
+### Fixed: transcript find fidelity (rows 8/10/26) (2026-07-25)
+
+- User, assistant, and code turns always render through `SegmentedMessageView`
+  (including under an active find query) so markdown headings, tables, and
+  fenced code no longer flatten to raw source during search.
+- Find highlights paint on **rendered** text after the source-keyed parse
+  cache; syntax-highlighted code uses background-only paint so colors survive.
+- ⌘F counts matches in type/system gates that are currently hidden and offers
+  a one-tap reveal that flips the correct gate (`typeVisibility` vs
+  `showSystemPrompts` / `showAgentComm`), instead of reporting a bare
+  "No matches".
+- Covered by `_repro` unit tests on `usesSegmentedView`, `highlightRendered`,
+  and `hiddenTypeMatchSummary` / `applyReveal`.
+### Fixed: UI honesty and accessibility polish (rows 13/19/29/31) (2026-07-25)
+
+- Limitless cross-source usage shares render as self-labeling text instead of
+  green quota bars; dead `resetAt` view threading removed.
+- Transcript icon-only controls gain VoiceOver labels and `.help` strings;
+  chip prev/next labels are type-specific via `chipNavLabel`.
+- Four highest-traffic load-failure banners wire Retry and route errors through
+  `ServiceErrorPresenter` (Sessions, Repos, SourcePulse, Timeline).
+- Introduces `Theme.scaledFontSize` / `.scaledFont`; sidebar width scales with
+  Dynamic Type; transcript body composes OS size with the A± knob.
+### Added: DEBUG app-process perf signposts (row 16) (2026-07-25)
+
+- New `PerfSignpost` with Instruments-visible spans and an opt-in main-thread
+  stall monitor gated on `ENGRAM_PERF_MONITOR` (DEBUG only; Release no-op shim).
+- Instrument `parseWindow`, `rebuildIndexed`, `loadData`, and `loadMoreIfNeeded`.
+- Vitest source guard asserts DEBUG/Release structure and env gate name.
+- Bundle provenance (row 15 / ledger 16) is intentionally deferred.
+### Added: Claude Code workflow-nested subagent discovery (row 32) (2026-07-25)
+
+- `ClaudeCodeAdapter.listSessionLocators` descends `subagents/workflows/wf_*/`
+  and indexes `agent-*.jsonl` as skip-tier sessions with path-derived parents.
+- Excludes `journal.jsonl` control files and session-level `workflows/*.json`
+  orchestration state.
+- Covered by `testClaudeWorkflowSubagentsAreDiscovered_repro` and a
+  `SessionTier` skip guard for the workflow path shape.
+- Optional backfill-regex widen (slice C) is deferred until row 22 / ledger #9.
+### Fixed: honest MCP cost projection and unpriced disclosure (rows 3/4) (2026-07-25)
+
+- `get_insights` divides projected monthly spend by the real `since`→now window
+  (not a hardcoded 7 days) and withholds the projection when the window is under
+  3 days (`too short to project`), suppressing the `>$50` pace advice when withheld.
+- Service `costs()` and MCP `get_costs` emit unpriced session/token counts split by
+  cause (unattributed model vs present-but-unpriced); CostSummary shows a
+  disclosure row when any count is non-zero.
+- `get_costs` output schema and golden updated; fields are properties-only
+  (not required) for forward compatibility.
+- Part A regression is behavioral (spawn EngramMCP + `ENGRAM_MCP_NOW`); source
+  string-scan projection tests removed.
+- Local `prices.json` overlay (row 14 / Part C) is intentionally deferred until
+  row 22 / ledger #9.
+### Added: MCP activation and onboarding polish (rows 7/17/24/28) (2026-07-25)
+
+- Onboarding completion records on any window dismissal (close button / Cmd-W /
+  Open Engram), not only the primary button; Windsurf probe uses
+  `.engram/cache/windsurf`.
+- MCP helper path defaults from the running bundle via `mcpHelperCandidates`;
+  stale hardcoded `/Applications/…` values migrate once; Node MCP legacy copy
+  removed.
+- Help menu + menu-bar context items for Report an Issue and Show Onboarding
+  (ordered before the separator so row 5 Restart Service can land after it).
+- Home MCP activation card gated on indexed sessions, Claude Code `engram`
+  config key, and dismiss; onboarding gains an MCP step before Ready.
+- In-app MCP "Test now" verification ladder (resolve → exec → handshake → socket).
+### Added: user-facing release notes for 1.0.5 (row 18) (2026-07-25)
+
+- Added `docs/release-notes/` with house rules (`README.md`) and a second-person
+  `1.0.5.md` note curated against the last public release (1.0.3).
+- Tag-time CI (`validate-release-tag`) now requires a non-empty
+  `docs/release-notes/<version>.md` before the release build.
+- Publish/runbook steps that mutate remotes remain owner-authorized and are not
+  executed in this change (Part C deferred).
+
+### Local-only: external build storage and disk cleanup (2026-07-24)
+
+- PR #240 is merged at
+  `cb6bffc3528df3ddbe07add040508f757009173f`, and the installed Developer ID
+  App remains `1.0.5 (1340)`. The machine-specific build-path implementation is
+  retained only on local branch `local/external-build-root` at
+  `da595285e93dc13099af3c959e7aa41ae62486af`; it has no upstream or remote
+  branch. Shared main intentionally does not default to
+  `/Volumes/Bing-SSD-5`, which would break CI and other Macs.
+- The local-only branch routes DerivedData, archive, and export logs through
+  `/Volumes/Bing-SSD-5/XcodeBuilds/Engram`, supports
+  `ENGRAM_BUILD_ROOT`/`--print-paths`, and fails before writes when an external
+  volume is unavailable. Final exports and rollback artifacts remain under
+  `macos/build`.
+- Removed the clean squash-equivalent Claude plugin worktree/branch, nine
+  audit branches already reachable from main, reproducible `node_modules`
+  (595 MB), and the installed-copy-equivalent `macos/build/EngramExport`
+  (50 MB). A normal `git gc` reduced `.git` from 459 MB to about 174 MB;
+  `.codegraph` and the rollback ZIP were preserved.
+- Rollback
+  `macos/build/rollback/Engram-1.0.4-20260721142837-before-plugin-20260724T050733Z.app.zip`
+  passed ZIP integrity with SHA-256
+  `3d92e132256ff973044efe12abeb4b3d55baae2517c177c2e6e389bc4ae08a03`.
+  Post-cleanup App/Service process checks and read-only archive-status IPC
+  passed. No rebuild, reinstall, restart, migration, Keychain/MCP change, or
+  remote write occurred.
+- Before dependency cleanup, shell syntax/shellcheck, Biome, test typecheck,
+  29/29 focused release-script tests, `git diff --check`, and a real mounted
+  volume smoke passed. Full coverage remained environment-blocked by the
+  Node 26.5.0 versus `better-sqlite3` ABI mismatch and coverage parsing
+  `src/AGENTS.md`; restore tooling with Node 24 plus `npm ci`.
 
 ### Added: Claude Code plugin MVP (2026-07-24)
 
@@ -93,9 +277,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   three skills, connected the plugin MCP server, injected SessionStart context,
   returned `PLUGIN_OK`, and left the fixture database byte-identical; 10 direct
   context starts stayed below the 1-second p95 gate.
-- This work remains isolated on `feat/claude-code-plugin-mvp` for Draft PR
-  review. It does not change the 1.0.5 release candidate, merge to `main`,
-  create a tag or release, notarize, or deploy an app.
+- PR #240 passed its required checks, squash-merged as `cb6bffc`, and was
+  deployed locally as Developer ID Engram `1.0.5 (1340)`. This deployment did
+  not create a tag/GitHub Release, notarize, staple, or modify Keychain/MCP
+  configuration.
 
 ### Release candidate: v1.0.5 metadata (2026-07-23)
 

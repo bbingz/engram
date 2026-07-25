@@ -41,7 +41,7 @@ struct ReposView: View {
                 }
 
                 if let error {
-                    AlertBanner(message: "Failed to load repos: \(error)")
+                    AlertBanner(message: "Failed to load repos: \(error)", action: ("Retry", { Task { await loadData() } }))
                 }
 
                 if !activeRepos.isEmpty {
@@ -97,7 +97,7 @@ struct ReposView: View {
             repos = loaded.0
             sparklines = loaded.1
         } catch {
-            self.error = error.localizedDescription
+            self.error = ServiceErrorPresenter.displayMessage(for: error)
         }
     }
 }

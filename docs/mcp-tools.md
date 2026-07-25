@@ -19,7 +19,7 @@ clients can type-check the JSON without guessing.
 |------|------------|----------------|-----------------|
 | `list_sessions` | object | `sessions[]`, `total` | — |
 | `stats` | object | `groupBy`, `groups[]`, `indexJobs`, `totalSessions` | — |
-| `get_costs` | object | `totalCostUsd`, `totalInputTokens`, `totalOutputTokens`, `breakdown[]` | — |
+| `get_costs` | object | `totalCostUsd`, `totalInputTokens`, `totalOutputTokens`, unpriced* counts, `breakdown[]` | — |
 | `tool_analytics` | object | `tools[]`, `totalCalls`, `groupCount` | per-row `sessionCount` / `toolCount` / `label` depend on `group_by` |
 | `file_activity` | object | `files[]`, `totalFiles` | — |
 | `project_timeline` | object | `project`, `timeline[]`, `total` | — |
@@ -121,7 +121,7 @@ Full-text keyword search across session content; optional semantic / hybrid when
 | limit | number | no | Max results. Default 10, max 50 |
 | mode | string | no | Search mode. Enum from `tools/list`: always `keyword`; adds `semantic` and `hybrid` only when session vectors are usable. Default `keyword` |
 
-**Notes:** Keyword path uses SQLite FTS. UUID-shaped queries do direct session ID lookup. Queries shorter than 3 characters use a session LIKE fallback. Semantic mode embeds the query (online provider via `EmbeddingSettings`) and runs brute-force cosine KNN over `semantic_chunks` filtered to `embedding_meta` model/dim (never mix models); tiers `skip` and `lite` are excluded like the app/service search path. Hybrid fuses keyword + semantic session id lists with RRF via shared constants in `SessionSemanticSearchPolicy` (`rrfK = 60`, same KNN shortlist / candidate-cap formulas as `EngramServiceReadProvider`). MCP multi-term keyword search uses per-token CTEs joined at session scope, `since` uses `COALESCE(end_time, start_time)` across keyword/LIKE/semantic paths, and project filters resolve configured aliases before exact matching. **Ranking parity scope (honest contract):** MCP and service share the fusion constants and both fuse as `[keywordIds, semanticIds]`; they are **not** guaranteed to return identical session order for every query. One known search-surface delta remains: MCP applies `orphan_status IS NULL`, while service search does not filter orphan status. Side-by-side parity tests cover single-token, unfiltered, non-orphan fixtures where keyword id lists already match. When semantic/hybrid is not usable, those modes return `isError` + `searchModeUnavailable` instead of keyword results. Keyword mode also searches insights FTS and may return matching curated memories in `insightResults`. **Output:** `structuredContent` is `{ results, query, searchModes }` with optional `warning` / `insightResults`; declared via `outputSchema`.
+**Notes:** Keyword path uses SQLite FTS. UUID-shaped queries do direct session ID lookup. Queries shorter than 3 characters use a session LIKE fallback. Semantic mode embeds the query (online provider via `EmbeddingSettings`) and runs brute-force cosine KNN over `semantic_chunks` filtered to `embedding_meta` model/dim (never mix models); tiers `skip` and `lite` are excluded like the app/service search path. Hybrid fuses keyword + semantic session id lists with RRF via shared constants in `SessionSemanticSearchPolicy` (`rrfK = 60`, same KNN shortlist / candidate-cap formulas as `EngramServiceReadProvider`). MCP multi-term keyword search uses per-token CTEs joined at session scope, `since` uses `COALESCE(end_time, start_time)` across keyword/LIKE/semantic paths, and project filters resolve configured aliases before exact matching. **Ranking parity scope (honest contract):** MCP and service share the fusion constants and both fuse as `[keywordIds, semanticIds]`; they are **not** guaranteed to return identical session order for every query. One known search-surface delta remains: MCP applies `orphan_status IS NULL`, while service search does not filter orphan status. Side-by-side parity tests cover single-token, unfiltered, non-orphan fixtures where keyword id lists already match. When semantic/hybrid is not usable, those modes return `isError` + `searchModeUnavailable` instead of keyword results. Keyword mode also searches insights FTS and may return matching curated memories in `insightResults`; only non-superseded insights are returned when lifecycle columns are present. **Output:** `structuredContent` is `{ results, query, searchModes }` with optional `warning` / `insightResults`; declared via `outputSchema`.
 
 ---
 
@@ -140,7 +140,7 @@ Auto-extract relevant historical session context for the current working directo
 | sort_by | string | no | Sort order. Enum: `recency` (default, reverse chronological), `score` (by quality score) |
 | include_environment | boolean | no | Include live environment data (active sessions, today's cost, tool usage, alerts). Default `true` |
 
-**Notes:** Project name is derived from `basename(cwd)`. Respects project aliases. When `task` is provided, matching saved insights are pulled with FTS keyword lookup before recent session summaries. Includes curated insights (from `save_insight`) when available. The environment section progressively drops lower-priority data (config status, file hotspots, git repos, recent errors) if it exceeds 30% of the token budget. `abstract` mode only shows cost and alerts. **Output:** text-only (`content[].text`); no `structuredContent` / `outputSchema`.
+**Notes:** Project name is derived from `basename(cwd)`. Respects project aliases. When `task` is provided, matching saved insights are pulled with FTS keyword lookup before recent session summaries. Includes curated insights (from `save_insight`) when available; only non-superseded insights are returned when lifecycle columns are present. The environment section progressively drops lower-priority data (config status, file hotspots, git repos, recent errors) if it exceeds 30% of the token budget. `abstract` mode only shows cost and alerts. **Output:** text-only (`content[].text`); no `structuredContent` / `outputSchema`.
 
 ---
 
@@ -312,7 +312,7 @@ Get token usage costs across sessions, grouped by various dimensions.
 | since | string | no | Start time (ISO 8601) |
 | until | string | no | End time (ISO 8601) |
 
-**Notes:** Returns totalCostUsd (rounded to 2 decimal places), totalInputTokens, totalOutputTokens, and a detailed breakdown array. **Output:** `structuredContent` matches that envelope; declared via `outputSchema`.
+**Notes:** Returns totalCostUsd (rounded to 2 decimal places), totalInputTokens, totalOutputTokens, unpriced disclosure counts (`unpricedUnattributedSessions` / `unpricedNoPriceSessions` and matching token sums — attribution defect vs pricing-table gap), and a detailed breakdown array. Unpriced fields are always emitted (properties only, not required). **Output:** `structuredContent` matches that envelope; declared via `outputSchema`.
 
 ---
 
@@ -372,7 +372,7 @@ Get actionable cost optimization suggestions with savings estimates.
 |------|------|----------|-------------|
 | since | string | no | ISO timestamp for start of analysis window. Default: 7 days ago |
 
-**Notes:** Returns a formatted report with period summary (total spent, projected monthly), potential savings, and prioritized suggestions (high/medium/low severity). Each suggestion includes a title, detail, savings estimate, and top contributing items. **Output:** `structuredContent` is `{ content: [{ type, text }] }`; declared via `outputSchema`.
+**Notes:** Returns a formatted report with period summary (total spent, projected monthly), potential savings, and prioritized suggestions (high/medium/low severity). Projected monthly divides by the **real** `since`→now window (not a hardcoded 7 days) and is **withheld** when the window is under 3 days (`too short to project`). Each suggestion includes a title, detail, savings estimate, and top contributing items. **Output:** `structuredContent` is `{ content: [{ type, text }] }`; declared via `outputSchema`.
 
 ---
 

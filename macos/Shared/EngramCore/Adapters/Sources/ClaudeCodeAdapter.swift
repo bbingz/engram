@@ -117,6 +117,27 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                     try Task.checkCancellation()
                     locators.append(subagentURL.path)
                 }
+
+                // Row 32: Claude Code workflow runs nest agents under
+                // subagents/workflows/wf_*/agent-*.jsonl. Direct children of
+                // subagents/ are already collected above; only agent-*.jsonl
+                // under wf_* dirs (never journal.jsonl or session-level
+                // workflows/ siblings).
+                let workflowsURL = subagentsURL.appendingPathComponent("workflows")
+                guard JSONLAdapterSupport.isDirectory(workflowsURL) else { continue }
+                for runURL in JSONLAdapterSupport.directChildren(of: workflowsURL)
+                    where JSONLAdapterSupport.isDirectory(runURL)
+                    && runURL.lastPathComponent.hasPrefix("wf_")
+                {
+                    try Task.checkCancellation()
+                    for agentURL in JSONLAdapterSupport.directChildren(of: runURL)
+                        where agentURL.pathExtension == "jsonl"
+                        && agentURL.deletingPathExtension().lastPathComponent.hasPrefix("agent-")
+                    {
+                        try Task.checkCancellation()
+                        locators.append(agentURL.path)
+                    }
+                }
             }
         }
         return locators
@@ -225,10 +246,13 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 reportFailures: true
             )
             if let failure { return .failure(failure) }
+            // One sink feeds both gates so unknown kinds form a set, not a double count.
+            let unknownKinds = UnknownRecordKindSink()
             switch Self.sessionInfo(
                 from: objects,
                 locator: locator,
-                forceClaudeCodeSource: profile.origin != .default
+                forceClaudeCodeSource: profile.origin != .default,
+                unknownKinds: unknownKinds
             ) {
             case .failure(let reason):
                 return .failure(reason)
@@ -240,9 +264,10 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 return .success(
                     IndexingScan(
                         info: info,
-                        messages: Self.messages(from: objects),
+                        messages: Self.messages(from: objects, unknownKinds: unknownKinds),
                         checkpointParsedOffset: checkpoint.parsedOffset,
-                        checkpointBoundaryHash: checkpointBoundaryHash
+                        checkpointBoundaryHash: checkpointBoundaryHash,
+                        unknownRecordKinds: unknownKinds.kinds
                     )
                 )
             }
@@ -270,8 +295,8 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             )
             guard !result.boundaryHash.isEmpty else { return .fallback }
             if let failure = result.failure { return .failure(failure) }
-            let messages = Self.messages(from: result.objects)
-            let aggregate = Self.aggregateSessionInfo(from: result.objects)
+            let messages = Self.messages(from: result.objects, unknownKinds: nil)
+            let aggregate = Self.aggregateSessionInfo(from: result.objects, unknownKinds: nil)
             return .success(
                 IndexingTailScan(
                     infoDelta: IndexingTailInfoDelta(
@@ -303,9 +328,10 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     private static func sessionInfo(
         from objects: [JSONLAdapterSupport.JSONObject],
         locator: String,
-        forceClaudeCodeSource: Bool
+        forceClaudeCodeSource: Bool,
+        unknownKinds: UnknownRecordKindSink? = nil
     ) -> AdapterParseResult<NormalizedSessionInfo> {
-        let aggregate = aggregateSessionInfo(from: objects)
+        let aggregate = aggregateSessionInfo(from: objects, unknownKinds: unknownKinds)
         guard aggregate.messageCount > 0 else {
             return objects.isEmpty ? .failure(.malformedJSON) : .failure(.noVisibleMessages)
         }
@@ -372,7 +398,18 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         }
     }
 
-    private static func aggregateSessionInfo(from objects: [JSONLAdapterSupport.JSONObject]) -> SessionInfoAggregate {
+    /// Lifecycle / sidecar record kinds we deliberately drop (not parse failures).
+    /// Seeded from live corpus + committed claude-code fixtures (mirror row 23).
+    private static let knownIgnoredRecordKinds: Set<String> = [
+        "agent-name", "ai-title", "attachment", "file-history-delta",
+        "file-history-snapshot", "last-prompt", "mode", "permission-mode",
+        "pr-link", "queue-operation", "result", "started", "summary", "system",
+    ]
+
+    private static func aggregateSessionInfo(
+        from objects: [JSONLAdapterSupport.JSONObject],
+        unknownKinds: UnknownRecordKindSink?
+    ) -> SessionInfoAggregate {
         var aggregate = SessionInfoAggregate()
         for object in objects {
             if aggregate.sessionId.isEmpty, let value = JSONLAdapterSupport.string(object["sessionId"]) {
@@ -384,6 +421,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             guard let type = JSONLAdapterSupport.string(object["type"]),
                   type == "user" || type == "assistant"
             else {
+                noteUnknownRecordKind(JSONLAdapterSupport.string(object["type"]), into: unknownKinds)
                 continue
             }
 
@@ -653,27 +691,47 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         var ids = Set<String>()
     }
 
+    /// Accumulates unknown dropped record kinds for `scanForIndexing` only.
+    private final class UnknownRecordKindSink: @unchecked Sendable {
+        var kinds = Set<String>()
+    }
+
+    private static func noteUnknownRecordKind(_ type: String?, into sink: UnknownRecordKindSink?) {
+        guard let sink, let type, !type.isEmpty else { return }
+        if type == "user" || type == "assistant" { return }
+        if knownIgnoredRecordKinds.contains(type) { return }
+        sink.kinds.insert(type)
+    }
+
     /// Stateful transform so response-level usage is attached only once per
     /// non-empty Claude `message.id` (content blocks still stream separately).
+    /// Streaming paths discard unknown-kind accumulation (no IndexingScan).
     private static func makeMessageTransform() -> (JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
         let seenUsageMessageIds = UsageMessageIdSet()
         return { object in
-            message(from: object, seenUsageMessageIds: seenUsageMessageIds)
+            message(from: object, seenUsageMessageIds: seenUsageMessageIds, unknownKinds: nil)
         }
     }
 
-    private static func messages(from objects: [JSONLAdapterSupport.JSONObject]) -> [NormalizedMessage] {
+    private static func messages(
+        from objects: [JSONLAdapterSupport.JSONObject],
+        unknownKinds: UnknownRecordKindSink?
+    ) -> [NormalizedMessage] {
         let seenUsageMessageIds = UsageMessageIdSet()
-        return objects.compactMap { message(from: $0, seenUsageMessageIds: seenUsageMessageIds) }
+        return objects.compactMap {
+            message(from: $0, seenUsageMessageIds: seenUsageMessageIds, unknownKinds: unknownKinds)
+        }
     }
 
     private static func message(
         from object: JSONLAdapterSupport.JSONObject,
-        seenUsageMessageIds: UsageMessageIdSet
+        seenUsageMessageIds: UsageMessageIdSet,
+        unknownKinds: UnknownRecordKindSink?
     ) -> NormalizedMessage? {
         guard let type = JSONLAdapterSupport.string(object["type"]),
               type == "user" || type == "assistant"
         else {
+            noteUnknownRecordKind(JSONLAdapterSupport.string(object["type"]), into: unknownKinds)
             return nil
         }
 
