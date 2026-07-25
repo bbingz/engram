@@ -19,6 +19,9 @@
 - [复核] Qwen 在 `7250e7d7` 确认修复并撤回疑似 shared-root bug；仅要求说明 canonical 去重与防御性 symlink 解析，现已补注释、无行为变更（run `run_ff75ff8140954c178b17`）。
 - [变更] #264@`8e6a96df` 的 16 checks 全绿；#270 推进 main 后因同改 durable docs 变为 DIRTY，现已 rebase 到 `main@351c339a`。`range-diff` 证明代码/设计 patch-equivalent，冲突仅保留双方记录。
 - [验证] 新 base 上 orphan-prune 13/13、完整 EngramCoreTests 1,011 项 / 1 环境 skip / 0 失败；`build-for-testing`、xcodeproj drift、diff check 通过。本机 `xcodebuild test` 的一次 IDE-session 启动卡死在测试体前，已终止且不计结论。
+- [裁决] Qwen 对 rebased `04d8a048` 的首轮 code/test slice 要求修改（run `run_5077b33de83d442eb279`）。其中“应遍历 symlink 子项目”和“失败时保留旧 roots”均与既有安全边界/防误删红灯相冲突，拒绝；projects 根本身仍允许 symlink，根下 symlink 子项继续不遍历。
+- [修复] 接受有效项：prune 错误改为私有日志后隔离、补重叠/重复 roots 数据库测试、明确 symlink 子项目测试及双层去重注释、简化 protocol-default 测试。
+- [验证] 整改后 `build-for-testing`、orphan-prune 14/14、Claude symlink 聚焦 1/1、完整 EngramCoreTests 1,013 项 / 1 环境 skip / 0 失败。
 - [未验证] #264 的 rebased exact head 仍须异家明确批准、force-with-lease push 与 fresh PR CI，方可合并。
 
 ### 2026-07-25

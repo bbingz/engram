@@ -105,7 +105,27 @@ records. On the new base, direct `xcrun xctest` passed the complete
 `build-for-testing`, xcodeproj drift, and diff checks also pass. A direct
 `xcodebuild test` attempt on local Xcode beta 27 was terminated after its
 XCTest driver stalled before loading the test bundle and is not counted as a
-test result. The rebased exact head still requires an independent
+test result.
+
+Qwen's first code/test-slice review of rebased head `04d8a048` requested
+changes. Its proposed symlink blocker was rejected against repository history
+and current tests: the June security hardening intentionally permits a
+symlinked projects root while refusing to traverse symlink children, and the
+new throwing helper preserves that exact `directChildren` boundary. A focused
+Claude test now makes the child-project rule explicit. The suggestion to keep
+old enumeration roots during a failed refresh was also rejected because it
+would reintroduce the partial keep-set deletion proven by the two red
+regressions above.
+
+The valid review items were addressed: prune failures now produce a private
+indexer error log while remaining isolated from the healthy scan; overlapping
+and duplicate roots have a direct database regression test; and the defensive
+writer-side root deduplication plus the protocol-default test are clearer.
+After these changes, `build-for-testing` passed, the orphan-prune class passed
+14/14, the focused Claude symlink test passed 1/1, and the complete
+`EngramCoreTests` bundle executed 1,013 tests with one environment skip and
+zero failures. Evidence for the initial review: Polycli run
+`run_5077b33de83d442eb279`. The new exact head still requires an independent
 adversarial approval and fresh PR CI before merge.
 
 ### PR #262 adversarial-review remediation (2026-07-26)

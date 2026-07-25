@@ -428,6 +428,31 @@ final class FileIndexStateOrphanPruneTests: XCTestCase {
         )
     }
 
+    func testOverlappingEnumerationRootsDeleteEachOrphanOnce() throws {
+        let outerRoot = "/tmp/overlapping-prune"
+        let nestedRoot = "\(outerRoot)/nested"
+        let keep = "\(nestedRoot)/keep.jsonl"
+        let nestedOrphan = "\(nestedRoot)/orphan.jsonl"
+        let outerOrphan = "\(outerRoot)/outer-orphan.jsonl"
+        let outside = "/tmp/overlapping-prune-neighbour/outside.jsonl"
+        try seedState(source: .claudeCode, locator: keep)
+        try seedState(source: .claudeCode, locator: nestedOrphan)
+        try seedState(source: .claudeCode, locator: outerOrphan)
+        try seedState(source: .claudeCode, locator: outside)
+
+        let deleted = try writer.pruneOrphanFileIndexStates(
+            source: .claudeCode,
+            keeping: [keep],
+            under: [outerRoot, nestedRoot, outerRoot]
+        )
+
+        XCTAssertEqual(deleted, 2)
+        XCTAssertTrue(try hasState(source: .claudeCode, locator: keep))
+        XCTAssertFalse(try hasState(source: .claudeCode, locator: nestedOrphan))
+        XCTAssertFalse(try hasState(source: .claudeCode, locator: outerOrphan))
+        XCTAssertTrue(try hasState(source: .claudeCode, locator: outside))
+    }
+
     func testEmptyEnumerationRootsNeverPrunes() throws {
         let locator = "/tmp/no-domain/\(UUID().uuidString).jsonl"
         try seedState(source: .codex, locator: locator)
@@ -475,15 +500,11 @@ final class FileIndexStateOrphanPruneTests: XCTestCase {
     }
 
     func testDefaultAdapterEnumerationRootsAreEmpty() {
-        let adapter = DomainSessionAdapter(source: .codex, locators: ["/x"], roots: nil)
-        // When roots is nil, DomainSessionAdapter uses protocol default via no override path —
-        // use a plain adapter without roots property override.
         XCTAssertEqual(
             (FixedDefaultRootsAdapter() as any SessionAdapter).enumerationRoots,
             [],
             "default domain must be empty so non-opted-in adapters never prune"
         )
-        XCTAssertEqual(adapter.enumerationRoots, [])
     }
 }
 

@@ -50,7 +50,9 @@ enum JSONLAdapterSupport {
     static func requiredDirectChildren(of url: URL, includingHidden: Bool = false) throws -> [URL] {
         try Task.checkCancellation()
         // Keep this helper safe for non-canonical callers even though Claude
-        // profile roots are already resolved before enumeration.
+        // profile roots are already resolved before enumeration. Match
+        // `directChildren`: a symlinked root is supported, but symlink children
+        // are not traversed as source content.
         let root = url.resolvingSymlinksInPath()
         let options: FileManager.DirectoryEnumerationOptions = includingHidden ? [] : [.skipsHiddenFiles]
         let children = try FileManager.default.contentsOfDirectory(

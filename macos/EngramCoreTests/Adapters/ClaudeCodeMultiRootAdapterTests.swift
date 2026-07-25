@@ -61,6 +61,24 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
         XCTAssertEqual(Set(locators).count, locators.count)
     }
 
+    func testListingDoesNotTraverseSymlinkedProjectDirectories() async throws {
+        let defaultRoot = try makeProjectsRoot(parent: homeDirectory.appendingPathComponent(".claude"))
+        let outsideRoot = try makeProjectsRoot(parent: fixtureRoot.appendingPathComponent("outside"))
+        let outsideFile = try makeTranscript(root: outsideRoot, project: "-Users-outside", name: "outside")
+        let linkedProject = defaultRoot.appendingPathComponent("-Users-linked", isDirectory: true)
+        try FileManager.default.createSymbolicLink(
+            at: linkedProject,
+            withDestinationURL: outsideFile.deletingLastPathComponent()
+        )
+
+        let locators = try await ClaudeCodeAdapter(profileResolver: makeResolver()).listSessionLocators()
+
+        XCTAssertTrue(
+            locators.isEmpty,
+            "a symlinked projects root is supported, but child project symlinks must not widen source discovery"
+        )
+    }
+
     func testNonDefaultProfilesForceClaudeSourceWhileDefaultKeepsDerivedSources() async throws {
         let defaultRoot = try makeProjectsRoot(parent: homeDirectory.appendingPathComponent(".claude"))
         let automaticRoot = try makeProjectsRoot(parent: homeDirectory.appendingPathComponent(".claude-minimax-api"))

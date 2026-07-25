@@ -441,6 +441,8 @@ public extension EngramDatabaseWriter {
     }
 
     private static func normalizedEnumerationRoots(_ roots: [String]) -> [String] {
+        // Adapters normally de-duplicate their own domains, but this writer
+        // boundary also accepts custom/test sinks and stays defensive.
         var seen = Set<String>()
         var result: [String] = []
         for root in roots {
