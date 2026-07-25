@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -416,9 +417,75 @@ describe('CI workflow hardening', () => {
 
   it('keeps durable records and historical reviews off heavy product lanes', () => {
     expect(testWorkflow).toContain(
-      '.memory|.memory/*|CHANGELOG.md|MEMO.md|docs/archive/*|docs/reviews/*|docs/roadmap.md|docs/TODO.md|docs/followups.md)',
+      '.memory|.memory/*|CHANGELOG.md|MEMO.md|docs/archive/*|docs/reviews/*|docs/roadmap.md|docs/TODO.md|docs/followups.md|docs/competitive-*.md)',
     );
     expect(testWorkflow).not.toContain('.memory|*.md|docs/*)');
+    // docs/archive/scripts/* is carved back out above the allowlist: those files
+    // are scanned by tests/tooling/no-static-viking-creds.test.ts.
+    expect(testWorkflow).toContain('docs/archive/scripts/*)');
+  });
+
+  // A classified-light path skips every job, Node included. If a test or gate
+  // reads such a path, a change to it ships with the check that covers it
+  // silently skipped — the same shape as the stacked-PR blind spot #258 closed.
+  // This walks the real allowlist against the real repo rather than asserting a
+  // frozen list, so a future addition cannot quietly reintroduce it. (repro)
+  it('never classifies as light a path that tests or scripts read', () => {
+    const clause = testWorkflow
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line.startsWith('.memory|') && line.endsWith(')'));
+    expect(clause, 'durable-docs allowlist clause not found').toBeDefined();
+
+    const carveOuts = testWorkflow
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(
+        (line) =>
+          line.endsWith(')') && line.startsWith('docs/archive/scripts/'),
+      )
+      .flatMap((line) => line.slice(0, -1).split('|'));
+
+    // Shell `case` globs match `/` freely, so `*` is `.*` here — translating it
+    // as `[^/]*` under-approximates the allowlist and lets real offenders pass.
+    const toRegExp = (pattern: string): RegExp =>
+      new RegExp(
+        `^${pattern.replace(/[.+^${}()[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`,
+      );
+    const allow = (clause as string).slice(0, -1).split('|').map(toRegExp);
+    const deny = carveOuts.map(toRegExp);
+    const isLight = (path: string): boolean =>
+      !deny.some((re) => re.test(path)) && allow.some((re) => re.test(path));
+
+    // Every repo-relative path a file under tests/ or scripts/ names as a string.
+    const consumers = execFileSync(
+      'git',
+      [
+        'grep',
+        '-hoI',
+        '-E',
+        '[\'"][A-Za-z0-9_./-]+\\.(md|sh|ts|json|jsonl)[\'"]',
+        '--',
+        'tests',
+        'scripts',
+      ],
+      { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+    )
+      .split('\n')
+      .map((raw) => raw.trim().replace(/^['"]|['"]$/g, ''))
+      .filter((path) => path.length > 0 && existsSync(resolve(repoRoot, path)));
+
+    const offenders = [...new Set(consumers)]
+      .filter(isLight)
+      // The classifier declaration and this test necessarily name the paths.
+      .filter(
+        (path) => !['ci-workflow.test.ts'].some((self) => path.endsWith(self)),
+      );
+
+    expect(
+      offenders,
+      `these paths are read by tests/ or scripts/ but classify as durable-docs, so a change to them would skip the check that reads them: ${offenders.join(', ')}`,
+    ).toEqual([]);
   });
 
   it('runs PR smoke and main full UI without exposing AI-triage secrets', () => {
