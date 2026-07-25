@@ -66,13 +66,14 @@ struct EngramApp: App {
 }
 
 @MainActor
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let environment: AppEnvironment
     let db: DatabaseManager
     let serviceStatusStore: EngramServiceStatusStore
     let serviceClient: EngramServiceClient
     let serviceLauncher: EngramServiceLauncher
     private var restartObserverToken: NSObjectProtocol?
+    private var showOnboardingObserverToken: NSObjectProtocol?
     private var menuBarController: MenuBarController?
     private var onboardingWindow: NSWindow?
     private var popoverWindow: NSWindow?
@@ -198,6 +199,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // Help menu / context menu can re-open onboarding (row 17).
+        showOnboardingObserverToken = NotificationCenter.default.addObserver(
+            forName: .showOnboarding, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.showOnboarding() }
+        }
+
         // First-run onboarding (skip in test mode)
         let isTestMode = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
             || !environment.autoStartService
@@ -218,6 +226,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         if let restartObserverToken {
             NotificationCenter.default.removeObserver(restartObserverToken)
+        }
+        if let showOnboardingObserverToken {
+            NotificationCenter.default.removeObserver(showOnboardingObserverToken)
         }
         serviceLauncher.stopIfOwned()
         serviceClient.close()
@@ -282,6 +293,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         win.isMovableByWindowBackground = true
         win.isReleasedWhenClosed = false
         win.center()
+        // Row 7: any window dismissal records completion.
+        win.delegate = self
 
         NSApp.setActivationPolicy(.regular)
         win.makeKeyAndOrderFront(nil)
@@ -290,7 +303,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         self.onboardingWindow = win
     }
 
+    /// Single completion path for button, red close, and Cmd-W (row 7).
     private func completeOnboarding() {
+        // Nil delegate before close so close→windowWillClose cannot re-enter.
+        onboardingWindow?.delegate = nil
         UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
         onboardingWindow?.close()
         onboardingWindow = nil
@@ -298,5 +314,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Revert to accessory mode, then open the main window
         NSApp.setActivationPolicy(.accessory)
         menuBarController?.openWindow()
+    }
+
+    nonisolated func windowWillClose(_ notification: Notification) {
+        Task { @MainActor in
+            guard (notification.object as? NSWindow) === self.onboardingWindow else { return }
+            self.completeOnboarding()
+        }
     }
 }
