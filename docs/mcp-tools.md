@@ -19,7 +19,7 @@ clients can type-check the JSON without guessing.
 |------|------------|----------------|-----------------|
 | `list_sessions` | object | `sessions[]`, `total` | — |
 | `stats` | object | `groupBy`, `groups[]`, `indexJobs`, `totalSessions` | — |
-| `get_costs` | object | `totalCostUsd`, `totalInputTokens`, `totalOutputTokens`, `breakdown[]` | — |
+| `get_costs` | object | `totalCostUsd`, `totalInputTokens`, `totalOutputTokens`, unpriced* counts, `breakdown[]` | — |
 | `tool_analytics` | object | `tools[]`, `totalCalls`, `groupCount` | per-row `sessionCount` / `toolCount` / `label` depend on `group_by` |
 | `file_activity` | object | `files[]`, `totalFiles` | — |
 | `project_timeline` | object | `project`, `timeline[]`, `total` | — |
@@ -312,7 +312,7 @@ Get token usage costs across sessions, grouped by various dimensions.
 | since | string | no | Start time (ISO 8601) |
 | until | string | no | End time (ISO 8601) |
 
-**Notes:** Returns totalCostUsd (rounded to 2 decimal places), totalInputTokens, totalOutputTokens, and a detailed breakdown array. **Output:** `structuredContent` matches that envelope; declared via `outputSchema`.
+**Notes:** Returns totalCostUsd (rounded to 2 decimal places), totalInputTokens, totalOutputTokens, unpriced disclosure counts (`unpricedUnattributedSessions` / `unpricedNoPriceSessions` and matching token sums — attribution defect vs pricing-table gap), and a detailed breakdown array. Unpriced fields are always emitted (properties only, not required). **Output:** `structuredContent` matches that envelope; declared via `outputSchema`.
 
 ---
 
@@ -372,7 +372,7 @@ Get actionable cost optimization suggestions with savings estimates.
 |------|------|----------|-------------|
 | since | string | no | ISO timestamp for start of analysis window. Default: 7 days ago |
 
-**Notes:** Returns a formatted report with period summary (total spent, projected monthly), potential savings, and prioritized suggestions (high/medium/low severity). Each suggestion includes a title, detail, savings estimate, and top contributing items. **Output:** `structuredContent` is `{ content: [{ type, text }] }`; declared via `outputSchema`.
+**Notes:** Returns a formatted report with period summary (total spent, projected monthly), potential savings, and prioritized suggestions (high/medium/low severity). Projected monthly divides by the **real** `since`→now window (not a hardcoded 7 days) and is **withheld** when the window is under 3 days (`too short to project`). Each suggestion includes a title, detail, savings estimate, and top contributing items. **Output:** `structuredContent` is `{ content: [{ type, text }] }`; declared via `outputSchema`.
 
 ---
 

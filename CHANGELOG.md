@@ -145,6 +145,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Covered by `testClaudeWorkflowSubagentsAreDiscovered_repro` and a
   `SessionTier` skip guard for the workflow path shape.
 - Optional backfill-regex widen (slice C) is deferred until row 22 / ledger #9.
+### Fixed: honest MCP cost projection and unpriced disclosure (rows 3/4) (2026-07-25)
+
+- `get_insights` divides projected monthly spend by the real `since`→now window
+  (not a hardcoded 7 days) and withholds the projection when the window is under
+  3 days (`too short to project`), suppressing the `>$50` pace advice when withheld.
+- Service `costs()` and MCP `get_costs` emit unpriced session/token counts split by
+  cause (unattributed model vs present-but-unpriced); CostSummary shows a
+  disclosure row when any count is non-zero.
+- `get_costs` output schema and golden updated; fields are properties-only
+  (not required) for forward compatibility.
+- Part A regression is behavioral (spawn EngramMCP + `ENGRAM_MCP_NOW`); source
+  string-scan projection tests removed.
+- Local `prices.json` overlay (row 14 / Part C) is intentionally deferred until
+  row 22 / ledger #9.
 
 
 ### Added: Claude Code plugin MVP (2026-07-24)
