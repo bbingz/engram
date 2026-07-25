@@ -22,6 +22,19 @@ enum ServiceDataFreshness: Equatable, Sendable {
     case live
     case stale(asOf: Date)
     case expired
+
+    /// Shared "as of HH:mm" caption for stale surfaces. HomeView / PopoverView
+    /// keep their private copies; new call sites must use this (no third copy).
+    static func asOfText(_ date: Date) -> String {
+        "as of \(timeFormatter.string(from: date))"
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
 }
 
 private struct UsagePressureCandidate: Sendable {
@@ -33,7 +46,9 @@ private struct UsagePressureCandidate: Sendable {
 @MainActor
 @Observable
 final class EngramServiceStatusStore {
-    private static let staleUsefulInterval: TimeInterval = 30 * 60
+    /// 30-minute TTL shared by status-poll freshness and live-list holds.
+    /// `nonisolated` so `LiveSessionsHold` (Sendable, non-MainActor) can read it.
+    nonisolated static let staleUsefulInterval: TimeInterval = 30 * 60
 
     var status: EngramServiceStatus = .stopped
     var totalSessions = 0

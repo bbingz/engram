@@ -9,7 +9,8 @@ struct SourcePulseView: View {
 
     @State private var sources: [EngramServiceSourceInfo] = []
     @State private var sourceDist: [(source: String, count: Int)] = []
-    @State private var liveSessions: [EngramServiceLiveSessionInfo] = []
+    /// 10s poll × 1.5 slack — live window is per-site, not a shared constant.
+    @State private var liveHold = LiveSessionsHold(liveWindow: 10 * 1.5)
     @State private var costs: EngramServiceCostsResponse? = nil
     @State private var costsError: String? = nil
     @State private var isLoading = true
@@ -18,9 +19,12 @@ struct SourcePulseView: View {
     @State private var liveRefreshTask: Task<Void, Never>? = nil
     @State private var expandedGroups: Set<String> = []
     @State private var disabledSources: Set<String> = []
+    /// Suppress the "unavailable" row until the first poll finishes (never-polled is also `.expired`).
+    @State private var livePollAttempted = false
 
     private var totalIndexed: Int { sources.reduce(0) { $0 + $1.sessionCount } }
     private var archiveStorePath: String { (db.path as NSString).abbreviatingWithTildeInPath }
+    private var liveSessions: [EngramServiceLiveSessionInfo] { liveHold.sessions }
     private var activeSessions: [EngramServiceLiveSessionInfo] { liveSessions.filter { $0.activityLevel == "active" } }
     private var idleSessions: [EngramServiceLiveSessionInfo] { liveSessions.filter { $0.activityLevel == "idle" } }
     private var recentSessions: [EngramServiceLiveSessionInfo] { liveSessions.filter { $0.activityLevel == "recent" || $0.activityLevel == nil } }
@@ -61,11 +65,33 @@ struct SourcePulseView: View {
                 .font(.caption)
                 .accessibilityIdentifier("sourcePulse_archiveStore")
 
-                // Live Sessions section — grouped by activity level
-                if !liveSessions.isEmpty {
-                    SectionHeader(icon: "bolt.fill", title: "Sessions (\(liveSessions.count))",
-                                 onRefresh: { Task { await loadLiveSessions() } })
-
+                // Live Sessions — hold last-good across a failed poll (row 9).
+                // Past TTL: show unavailable (do not render held rows as if live).
+                // Within TTL: show held sessions; caption when .stale.
+                let liveFreshness = liveHold.freshness(now: Date())
+                if livePollAttempted && liveFreshness == .expired {
+                    SectionHeader(
+                        icon: "bolt.fill",
+                        title: "Sessions",
+                        onRefresh: { Task { await loadLiveSessions() } }
+                    )
+                    Text("Live sessions unavailable")
+                        .font(.caption)
+                        .foregroundStyle(Theme.secondaryText)
+                        .accessibilityIdentifier("sourcePulse_liveUnavailable")
+                } else if !liveSessions.isEmpty {
+                    let staleCaption: String? = {
+                        if case .stale(let asOf) = liveFreshness {
+                            return ServiceDataFreshness.asOfText(asOf)
+                        }
+                        return nil
+                    }()
+                    SectionHeader(
+                        icon: "bolt.fill",
+                        title: "Sessions (\(liveSessions.count))",
+                        badge: staleCaption,
+                        onRefresh: { Task { await loadLiveSessions() } }
+                    )
                     sessionGroup("Active", color: .green, sessions: activeSessions)
                     sessionGroup("Idle", color: .yellow, sessions: idleSessions)
                     sessionGroup("Recent", color: .gray, sessions: recentSessions)
@@ -119,11 +145,15 @@ struct SourcePulseView: View {
     }
 
     private func loadLiveSessions() async {
+        defer { livePollAttempted = true }
         do {
             let response = try await serviceClient.liveSessions()
-            liveSessions = response.sessions
+            // @State struct: reassign so the mutation is observed.
+            var hold = liveHold
+            hold.succeeded(response.sessions)
+            liveHold = hold
         } catch {
-            liveSessions = []
+            // Keep last-good; freshness ages the hold into .stale / .expired.
         }
     }
 

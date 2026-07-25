@@ -29,6 +29,10 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
     // recently and just refresh the cheap today-count label instead.
     private var lastBadgeScan: Date = .distantPast
     private static let badgeScanMinInterval: TimeInterval = 5
+    /// Badge timer is 30s; 1.5× slack keeps a healthy poll `.live` for the full
+    /// interval (a shared 15s threshold would false-stale age ~29s).
+    private static let badgePollInterval: TimeInterval = 30
+    private var liveHold = LiveSessionsHold(liveWindow: badgePollInterval * 1.5)
     private var dockIconObserver: NSObjectProtocol?
     private var lastShowDockIcon: Bool?
     private var lastShowMenuBarActivity: Bool?
@@ -101,7 +105,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         // live-session scan for 30s, so polling faster (the old 10s) just paid
         // extra IPC round-trips for the same cached payload; aligning the cadence
         // to the cache TTL removes ~2/3 of the always-on idle badge IPC traffic.
-        badgeTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        badgeTimer = Timer.scheduledTimer(withTimeInterval: Self.badgePollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.updateBadge()
                 await self?.checkCostBudget()
@@ -471,15 +475,31 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
         Task {
             do {
                 let response = try await serviceClient.liveSessions()
-                let live = response.sessions.filter { $0.activityLevel == "active" }
-                if live.isEmpty {
-                    self.statusItem.button?.title = today > 0 ? " \(today)" : ""
-                } else {
-                    self.statusItem.button?.title = " \(today) \u{25CF} \(live.count)"
-                }
+                self.liveHold.succeeded(response.sessions)
+                // Badge counts only active; hold stores the full unfiltered list.
+                let live = response.sessions.filter { $0.activityLevel == "active" }.count
+                self.applyLiveBadge(today: today, activeCount: live)
             } catch {
-                self.statusItem.button?.title = today > 0 ? " \(today)" : ""
+                // Hold last-good active count; drop the dot only when expired.
+                let activeCount: Int
+                switch self.liveHold.freshness(now: Date()) {
+                case .live, .stale:
+                    activeCount = self.liveHold.sessions
+                        .filter { $0.activityLevel == "active" }
+                        .count
+                case .expired:
+                    activeCount = 0
+                }
+                self.applyLiveBadge(today: today, activeCount: activeCount)
             }
+        }
+    }
+
+    private func applyLiveBadge(today: Int, activeCount: Int) {
+        if activeCount <= 0 {
+            statusItem.button?.title = today > 0 ? " \(today)" : ""
+        } else {
+            statusItem.button?.title = " \(today) \u{25CF} \(activeCount)"
         }
     }
 
