@@ -19,6 +19,9 @@
 - [转录查找] 用户/助手/代码消息在 ⌘F 激活时仍走分段渲染，高亮落在渲染后文本上，不再把 markdown 压成 raw source；隐藏类型的匹配会计数并一键正确翻闸（type 与 systemPrompt/agentComm 分桶）。
 - [验证] `TranscriptLabelAndCopyTests` / `TranscriptFindTests` 含 `_repro` 用例；相对 `origin/main` 仅功能提交。
 
+- [UI 诚实/无障碍] 用量 share 不再画成绿条；转录图标控件补 VoiceOver/help；四页加载失败条补 Retry+ServiceErrorPresenter；侧栏与转录正文接入 Dynamic Type 缩放。
+- [合并约束] 须在 #242 与 #247 之后合入（SourcePulseView / ColorBarMessageView 交叠）。
+
 ### 2026-07-24
 
 - [插件] 新增独立的 Claude Code 插件 MVP：复用已安装的 `EngramCLI` / `EngramMCP`，提供 SessionStart 上下文注入与手动 `catch-up`、`remember`、`handoff` 技能，不捆绑第二套 Swift 二进制。

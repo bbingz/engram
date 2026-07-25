@@ -76,8 +76,14 @@ struct SegmentedMessageView: View {
     let content: String
     var searchText: String = ""
     @AppStorage("contentFontSize") var fontSize: Double = 14
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var parsedContent: String = ""
     @State private var parsedSegments: [ContentSegment] = []
+
+    /// Compose OS Dynamic Type with the A± knob (row 31).
+    private var effectiveFontSize: Double {
+        Theme.scaledFontSize(base: fontSize, category: dynamicTypeSize)
+    }
 
     // Cache parsed segments keyed by content — avoids re-parsing on every render.
     // totalCostLimit bounds memory even when a few entries are very large
@@ -117,19 +123,19 @@ struct SegmentedMessageView: View {
             ForEach(Array(displaySegments.enumerated()), id: \.offset) { _, segment in
                 switch segment {
                 case .text(let text):
-                    MarkdownText(text: text, fontSize: fontSize, searchText: searchText)
+                    MarkdownText(text: text, fontSize: effectiveFontSize, searchText: searchText)
                 case .codeBlock(let lang, let code):
-                    CodeBlockView(language: lang, code: code, fontSize: fontSize, searchText: searchText)
+                    CodeBlockView(language: lang, code: code, fontSize: effectiveFontSize, searchText: searchText)
                 case .heading(let level, let text):
-                    HeadingView(level: level, text: text, fontSize: fontSize, searchText: searchText)
+                    HeadingView(level: level, text: text, fontSize: effectiveFontSize, searchText: searchText)
                 case .bulletList(let items):
-                    BulletListView(items: items, fontSize: fontSize, searchText: searchText)
+                    BulletListView(items: items, fontSize: effectiveFontSize, searchText: searchText)
                 case .numberedList(let items):
-                    NumberedListView(items: items, fontSize: fontSize, searchText: searchText)
+                    NumberedListView(items: items, fontSize: effectiveFontSize, searchText: searchText)
                 case .taskList(let items):
-                    TaskListView(items: items, fontSize: fontSize, searchText: searchText)
+                    TaskListView(items: items, fontSize: effectiveFontSize, searchText: searchText)
                 case .table(let headers, let rows):
-                    TableBlockView(headers: headers, rows: rows, fontSize: fontSize, searchText: searchText)
+                    TableBlockView(headers: headers, rows: rows, fontSize: effectiveFontSize, searchText: searchText)
                 case .horizontalRule:
                     Divider().padding(.vertical, 4)
                 }
@@ -399,7 +405,12 @@ struct CollapsibleSystemBubble: View {
     let message: ChatMessage
     @State private var isExpanded = false
     @AppStorage("contentFontSize") var fontSize: Double = 14
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var effectiveFontSize: Double {
+        Theme.scaledFontSize(base: fontSize, category: dynamicTypeSize)
+    }
 
     private var categoryLabel: String {
         switch message.systemCategory {
@@ -464,7 +475,7 @@ struct CollapsibleSystemBubble: View {
             // Expanded content
             if isExpanded {
                 Text(verbatim: message.content)
-                    .font(.system(size: max(fontSize - 2, 10), design: .monospaced))
+                    .font(.system(size: max(effectiveFontSize - 2, 10), design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .padding(.horizontal, 12)

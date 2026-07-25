@@ -126,7 +126,8 @@ final class ViewMainThreadReadTests: XCTestCase {
     func testFilterChangesUseCancellingTaskId() throws {
         let timeline = try source("macos/Engram/Views/Pages/TimelinePageView.swift")
         XCTAssertTrue(timeline.contains(".task(id:"), "TimelinePageView must use a cancelling .task(id:) (ui-7)")
-        XCTAssertFalse(timeline.contains("Task { await loadData() } }"))
+        // 锚定到 .onChange 闭包签名，避免误伤重试按钮之类的合法 Task { await loadData() }
+        XCTAssertFalse(timeline.contains("_, _ in Task { await loadData() }"))
 
         let sessions = try source("macos/Engram/Views/Pages/SessionsPageView.swift")
         XCTAssertTrue(sessions.contains(".task(id:"), "SessionsPageView must use a cancelling .task(id:) (ui-7)")
