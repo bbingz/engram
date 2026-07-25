@@ -398,6 +398,7 @@
 		909ACCF030DD1E1D3F8296B9 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EF78E4EF7AA7613D39D1160 /* main.swift */; };
 		90CB386B2D156A805D6E093D /* QoderAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31F84C4D0860A06E7036F321 /* QoderAdapter.swift */; };
 		90CDB60C1821678D8EAB1997 /* SessionTier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78FD43E2ECCEAE95A5C32244 /* SessionTier.swift */; };
+		914F15EEE170FB9BE56AD849 /* FileIndexStateOrphanPruneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB8BC9B47F8659DFC457DFA /* FileIndexStateOrphanPruneTests.swift */; };
 		91EBBCCBED12D7E47B9BE1D7 /* LogStreamView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DF5DE90234FA9F8D2219C77 /* LogStreamView.swift */; };
 		9274F7C05094BC88A9817446 /* FTSRebuildPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03DA7556A54D18C5612782CD /* FTSRebuildPolicyTests.swift */; };
 		9360E470E6D4542CF14CE6E7 /* EngramServiceCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F5C71A73606B0BEBE33B3711 /* EngramServiceCore.framework */; };
@@ -1326,6 +1327,7 @@
 		B987E0F6F5A8890C760F92AC /* EngramCLIResumeCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngramCLIResumeCommandTests.swift; sourceTree = "<group>"; };
 		B9EA0FC1FBCAE6B2E1982FFF /* TranscriptExportServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptExportServiceTests.swift; sourceTree = "<group>"; };
 		BB0E77ABEB8588A160B7ABAA /* Batch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Batch.swift; sourceTree = "<group>"; };
+		BBB8BC9B47F8659DFC457DFA /* FileIndexStateOrphanPruneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileIndexStateOrphanPruneTests.swift; sourceTree = "<group>"; };
 		BBC72889AD73299ACF4534DE /* LaunchAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAgent.swift; sourceTree = "<group>"; };
 		BBD89017C638FB890D09C357 /* DeprecatedSettingsScrubTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeprecatedSettingsScrubTests.swift; sourceTree = "<group>"; };
 		BBF37F8BD0ECD7BE3964FE85 /* AgentsViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsViewTests.swift; sourceTree = "<group>"; };
@@ -2498,6 +2500,7 @@
 				BE17BC91C29E0ECFC56263ED /* AdapterSchemaDriftTests.swift */,
 				4FD389D7AA0661A42286E5F4 /* AdapterWindowedReadTests.swift */,
 				8EBD4EE6D945BEE3EEA9A58A /* EngramUserDataDirectoryTests.swift */,
+				BBB8BC9B47F8659DFC457DFA /* FileIndexStateOrphanPruneTests.swift */,
 				04F796D7BB52854AAD26F0A7 /* HumanDrivenFilterTests.swift */,
 				3292AF2C16EEF1D9DBD524D0 /* ImplementationDigestExtractorTests.swift */,
 				DAA5784C06C9784D8C69D9B5 /* IndexAutoTitleTests.swift */,
@@ -3318,6 +3321,7 @@
 				69965DADB3367F1B4B1015F0 /* ExactSourceCapturerTests.swift in Sources */,
 				0797B89257DFC1EB3A8C2A26 /* FTSIncrementalTests.swift in Sources */,
 				9274F7C05094BC88A9817446 /* FTSRebuildPolicyTests.swift in Sources */,
+				914F15EEE170FB9BE56AD849 /* FileIndexStateOrphanPruneTests.swift in Sources */,
 				FA8EE88DF68DC513938CB4F2 /* FsOpsTests.swift in Sources */,
 				3EE1AC77E3B439B94DFAF10F /* GeminiProjectsJSONTests.swift in Sources */,
 				6C8C41E4B39363350DBA33DF /* GeminiSidecarParentValidationTests.swift in Sources */,

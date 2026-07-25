@@ -47,6 +47,25 @@ enum JSONLAdapterSupport {
             .sorted { $0.path < $1.path } ?? []
     }
 
+    static func requiredDirectChildren(of url: URL, includingHidden: Bool = false) throws -> [URL] {
+        try Task.checkCancellation()
+        // Keep this helper safe for non-canonical callers even though Claude
+        // profile roots are already resolved before enumeration. Match
+        // `directChildren`: a symlinked root is supported, but symlink children
+        // are not traversed as source content.
+        let root = url.resolvingSymlinksInPath()
+        let options: FileManager.DirectoryEnumerationOptions = includingHidden ? [] : [.skipsHiddenFiles]
+        let children = try FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: options
+        )
+        try Task.checkCancellation()
+        return children
+            .filter { !isSymlink($0) }
+            .sorted { $0.path < $1.path }
+    }
+
     static func recursiveFiles(under root: URL, matching predicate: (URL) -> Bool) throws -> [String] {
         try Task.checkCancellation()
         guard isDirectory(root) else { return [] }

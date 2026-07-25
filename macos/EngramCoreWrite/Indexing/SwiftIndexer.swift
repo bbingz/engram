@@ -169,6 +169,24 @@ public final class SwiftIndexer {
                 continue
             }
 
+            // Domain-scoped orphan prune. Empty enumerationRoots (default) skips;
+            // only opted-in adapters (ClaudeCode) declare roots. A prune failure
+            // is observable but cannot abort an otherwise healthy scan.
+            let roots = adapter.enumerationRoots
+            if !roots.isEmpty {
+                do {
+                    _ = try sink.pruneOrphanFileIndexStates(
+                        source: adapter.source,
+                        keeping: locators,
+                        under: roots
+                    )
+                } catch {
+                    Self.log.error(
+                        "file_index_state prune failed: source=\(adapter.source.rawValue, privacy: .private) error=\(String(describing: error), privacy: .private)"
+                    )
+                }
+            }
+
             let knownFileStates = skipUnchangedFileLocators
                 ? (try? sink.knownIndexedFileStates(source: adapter.source, locators: locators))
                 : nil

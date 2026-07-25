@@ -325,6 +325,11 @@ public protocol SessionAdapter: MessageAdapter {
     func listSessionLocators() async throws -> [String]
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo>
     func isAccessible(locator: String) async -> Bool
+    /// Absolute path prefixes this adapter enumerates exhaustively. A prune may
+    /// delete a `file_index_state` row only when its locator falls under one of
+    /// these. Empty — the default — means the adapter declares no domain and is
+    /// never pruned. Protocol requirement so it dispatches through `any SessionAdapter`.
+    var enumerationRoots: [String] { get }
     /// Parse a session's info and messages together. The default reuses the two
     /// existing entry points (two parses); adapters that can produce both from a
     /// single file read override this to parse once. Declared as a protocol
@@ -341,6 +346,9 @@ public protocol TailIndexingSessionAdapter: SessionAdapter {
 }
 
 public extension SessionAdapter {
+    /// Safe default: no declared domain → orphan prune never runs for this adapter.
+    var enumerationRoots: [String] { [] }
+
     func streamMessagesWithMetadata(
         locator: String,
         options: StreamMessagesOptions

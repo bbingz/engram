@@ -36,8 +36,97 @@ race. The focused UI test bundle passes `build-for-testing`, and a focused
 the test body because the macOS 27 runner timed out while enabling automation
 mode, so it is not treated as product evidence. A second result-bundle unit
 test attempt hung waiting for Xcode workers and was terminated; no test count
-is claimed from it. The failed workflow was not rerun; the corrective push
-must earn a fresh full-UI result.
+is claimed from it. The failed workflow was not rerun. PR #270 squash-merged
+the fix as `351c339a`; fresh main Tests `30173625010` passed all 31 screenshots
+with `sourcePulse_statusGrid` at SSIM `1`, pHash distance `0`, and pixel diff
+`0%`, and CodeQL `30173625009` also passed.
+
+### PR #264 partial-enumeration safety remediation (2026-07-26)
+
+The first adversarial review of PR #264 found a destructive edge case in its
+domain-scoped `file_index_state` prune. `ClaudeCodeAdapter` published roots
+before enumeration, included profiles whose resolver snapshot said
+`available=false`, and used `directChildren`, which converted any directory
+read failure into an empty list. A healthy sibling profile could therefore
+provide the non-empty keep-set that authorized deleting every state row under
+an unavailable or only partially enumerated root.
+
+Replayed local commit `0d81bfdb` fixes that exact range without widening the
+prune:
+
+- clear the prior domain before each full listing;
+- enumerate only profiles marked available by the refreshed resolver snapshot;
+- use a throwing direct-child walk for every directory that participates in
+  the declared Claude listing;
+- publish base and derived-source roots only after the complete walk succeeds;
+- preserve the existing non-throwing helper for adapters that do not opt into
+  destructive completeness.
+
+Two tests first reproduced the old deletion: an unavailable profile beside a
+healthy profile, and a root that became a regular file after profile
+resolution. The red run executed 2 tests with 5 assertion failures and logged
+one deletion in each scenario. After replaying the fix onto the post-#262
+base, those 2 tests passed; the full `FileIndexStateOrphanPruneTests` class
+passed 13/13; and the full `EngramCoreTests` scheme executed 1,011 tests with
+1 environment skip and zero failures. `scripts/check-xcodeproj-drift.sh` and
+`git diff --check` are clean.
+
+The original local-only patch `3a854567` was reviewed by Qwen job
+`pv-8239bb0e` over exact range `783eb5d3..3a854567` and received explicit
+`APPROVE`. Its only Medium observation was the deliberate availability
+tradeoff: one profile read error skips the whole Claude adapter for that pass.
+The live `SwiftIndexer.scanSnapshots` call chain catches non-cancellation
+listing errors per adapter and continues with the next adapter, so the failure
+does not abort the global scan. Keeping the Claude adapter atomic is required
+to prevent a partial keep-set from authorizing deletion. The existing
+`testOrphanUnderDeclaredRootIsPruned_repro` is the positive control proving
+successful complete listings still prune.
+
+After PR #262 merged as `a598ed59`, GitHub rebased PR #264 to
+`7ed3c612`; the safety patch replayed without a code conflict as `0d81bfdb`.
+A Qwen review of exact head `8b40f3ea` found that a shared base snapshot could
+change between a derived listing and its roots read. Commit `f3b2e8fb` returns
+both from one captured profile list. Its structural test went compile-red then
+passed 1/1; related classes passed 22/22 and all 1,011 Core tests passed with
+1 skip. Evidence: run `run_5d146ddba574469089e0`.
+
+Qwen then verified that fix at `7250e7d7` and withdrew a suspected shared-root
+bug. Its remaining request was limited to comments explaining canonical-root
+deduplication and defensive symlink resolution; both are now explicit with no
+behavior change. Evidence: run `run_ff75ff8140954c178b17`.
+
+Head `8e6a96df` passed all 16 PR checks. After PR #270 advanced `main`, GitHub
+correctly reported PR #264 as conflicting because both branches updated the
+durable records. Rebasing onto `main@351c339a` kept every code/design patch
+equivalent by `git range-diff`; conflict resolution preserved both incident
+records. On the new base, direct `xcrun xctest` passed the complete
+`FileIndexStateOrphanPruneTests` class 13/13 and all 1,011
+`EngramCoreTests` with one environment skip and zero failures.
+`build-for-testing`, xcodeproj drift, and diff checks also pass. A direct
+`xcodebuild test` attempt on local Xcode beta 27 was terminated after its
+XCTest driver stalled before loading the test bundle and is not counted as a
+test result.
+
+Qwen's first code/test-slice review of rebased head `04d8a048` requested
+changes. Its proposed symlink blocker was rejected against repository history
+and current tests: the June security hardening intentionally permits a
+symlinked projects root while refusing to traverse symlink children, and the
+new throwing helper preserves that exact `directChildren` boundary. A focused
+Claude test now makes the child-project rule explicit. The suggestion to keep
+old enumeration roots during a failed refresh was also rejected because it
+would reintroduce the partial keep-set deletion proven by the two red
+regressions above.
+
+The valid review items were addressed: prune failures now produce a private
+indexer error log while remaining isolated from the healthy scan; overlapping
+and duplicate roots have a direct database regression test; and the defensive
+writer-side root deduplication plus the protocol-default test are clearer.
+After these changes, `build-for-testing` passed, the orphan-prune class passed
+14/14, the focused Claude symlink test passed 1/1, and the complete
+`EngramCoreTests` bundle executed 1,013 tests with one environment skip and
+zero failures. Evidence for the initial review: Polycli run
+`run_5077b33de83d442eb279`. The new exact head still requires an independent
+adversarial approval and fresh PR CI before merge.
 
 ### PR #262 adversarial-review remediation (2026-07-26)
 

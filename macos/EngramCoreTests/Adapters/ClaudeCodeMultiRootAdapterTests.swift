@@ -61,6 +61,24 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
         XCTAssertEqual(Set(locators).count, locators.count)
     }
 
+    func testListingDoesNotTraverseSymlinkedProjectDirectories() async throws {
+        let defaultRoot = try makeProjectsRoot(parent: homeDirectory.appendingPathComponent(".claude"))
+        let outsideRoot = try makeProjectsRoot(parent: fixtureRoot.appendingPathComponent("outside"))
+        let outsideFile = try makeTranscript(root: outsideRoot, project: "-Users-outside", name: "outside")
+        let linkedProject = defaultRoot.appendingPathComponent("-Users-linked", isDirectory: true)
+        try FileManager.default.createSymbolicLink(
+            at: linkedProject,
+            withDestinationURL: outsideFile.deletingLastPathComponent()
+        )
+
+        let locators = try await ClaudeCodeAdapter(profileResolver: makeResolver()).listSessionLocators()
+
+        XCTAssertTrue(
+            locators.isEmpty,
+            "a symlinked projects root is supported, but child project symlinks must not widen source discovery"
+        )
+    }
+
     func testNonDefaultProfilesForceClaudeSourceWhileDefaultKeepsDerivedSources() async throws {
         let defaultRoot = try makeProjectsRoot(parent: homeDirectory.appendingPathComponent(".claude"))
         let automaticRoot = try makeProjectsRoot(parent: homeDirectory.appendingPathComponent(".claude-minimax-api"))
@@ -125,6 +143,17 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
             model: "claude-sonnet-4"
         )
         let base = ClaudeCodeAdapter(profileResolver: makeResolver())
+
+        let listing = try await base.listDerivedSessionLocators(source: .minimax)
+        XCTAssertEqual(
+            listing.locators,
+            [defaultMiniMax.resolvingSymlinksInPath().standardizedFileURL.path]
+        )
+        XCTAssertEqual(
+            Set(listing.enumerationRoots),
+            [defaultRoot.resolvingSymlinksInPath().standardizedFileURL.path],
+            "derived locators and roots must come from the same captured profile list"
+        )
 
         let minimax = try await ClaudeCodeDerivedSourceAdapter(source: .minimax, base: base)
             .listSessionLocators()

@@ -5,12 +5,20 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
 
     private let profileResolutionProvider: (@Sendable () -> [ClaudeCodeProfile])?
     private let profileSnapshot: ClaudeCodeProfileSnapshot
+    /// Roots from the same profile list that produced the latest keep-set.
+    /// Empty until the first successful `listSessionLocators` so a reorder of
+    /// the scan cannot prune against a stale or second profile read.
+    private let lastListingRoots = ClaudeCodeEnumerationRoots()
     private let limits: ParserLimits
     private let sourceHintCache: ClaudeCodeSourceHintCache
     private static let sourceHintScanByteLimit = 1024 * 1024
     private static let sourceHintMaxLineBytes = 512 * 1024
     private static let sourceHintLineLimit = 64
     private static let sourceHintChunkSize = 64 * 1024
+
+    /// Same profile snapshot as the keep-set from the last list call — not a
+    /// second resolver pass (autoDiscover off must shrink roots with the list).
+    var enumerationRoots: [String] { lastListingRoots.read() }
 
     /// - Parameter sourceHintCacheDirectory: When non-nil, the derived-source
     ///   signature cache is persisted here (keyed on path + mtime + size) so a
@@ -77,7 +85,12 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     }
 
     func listSessionLocators() async throws -> [String] {
-        try await listSessionLocators(profiles: refreshProfilesForListing())
+        // One profile refresh feeds both the keep-set and enumerationRoots.
+        lastListingRoots.replace(with: [])
+        let profiles = refreshProfilesForListing().filter(\.available)
+        let locators = try await listSessionLocators(profiles: profiles)
+        lastListingRoots.replace(with: Self.enumerationRoots(from: profiles))
+        return locators
     }
 
     private func listSessionLocators(profiles: [ClaudeCodeProfile]) async throws -> [String] {
@@ -98,11 +111,11 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
 
     private func listSessionLocators(projectsRoot: URL) async throws -> [String] {
         var locators: [String] = []
-        for projectURL in JSONLAdapterSupport.directChildren(of: projectsRoot, includingHidden: true)
+        for projectURL in try JSONLAdapterSupport.requiredDirectChildren(of: projectsRoot, includingHidden: true)
             where JSONLAdapterSupport.isDirectory(projectURL)
         {
             try Task.checkCancellation()
-            for entryURL in JSONLAdapterSupport.directChildren(of: projectURL) {
+            for entryURL in try JSONLAdapterSupport.requiredDirectChildren(of: projectURL) {
                 try Task.checkCancellation()
                 if entryURL.pathExtension == "jsonl" {
                     locators.append(entryURL.path)
@@ -111,7 +124,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
 
                 let subagentsURL = entryURL.appendingPathComponent("subagents")
                 guard JSONLAdapterSupport.isDirectory(subagentsURL) else { continue }
-                for subagentURL in JSONLAdapterSupport.directChildren(of: subagentsURL)
+                for subagentURL in try JSONLAdapterSupport.requiredDirectChildren(of: subagentsURL)
                     where subagentURL.pathExtension == "jsonl"
                 {
                     try Task.checkCancellation()
@@ -125,12 +138,12 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 // workflows/ siblings).
                 let workflowsURL = subagentsURL.appendingPathComponent("workflows")
                 guard JSONLAdapterSupport.isDirectory(workflowsURL) else { continue }
-                for runURL in JSONLAdapterSupport.directChildren(of: workflowsURL)
+                for runURL in try JSONLAdapterSupport.requiredDirectChildren(of: workflowsURL)
                     where JSONLAdapterSupport.isDirectory(runURL)
                     && runURL.lastPathComponent.hasPrefix("wf_")
                 {
                     try Task.checkCancellation()
-                    for agentURL in JSONLAdapterSupport.directChildren(of: runURL)
+                    for agentURL in try JSONLAdapterSupport.requiredDirectChildren(of: runURL)
                         where agentURL.pathExtension == "jsonl"
                         && agentURL.deletingPathExtension().lastPathComponent.hasPrefix("agent-")
                     {
@@ -172,19 +185,26 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     }
 
     func listSessionLocators(modifiedSince: Date, fileManager: FileManager) async throws -> [String] {
-        try await listSessionLocators().filter {
+        let filtered = try await listSessionLocators().filter {
             guard let modifiedAt = try? Self.modifiedAt(locator: $0, fileManager: fileManager) else { return false }
             return modifiedAt >= modifiedSince
         }
+        // The full listing above stamped a domain; this result is a strict subset
+        // of it. Leaving the domain stamped would let a caller prune everything
+        // outside the recency window. Today the only caller is a wrapper that
+        // reports no domain of its own, so this keeps the invariant on the object
+        // rather than on the caller's discretion.
+        lastListingRoots.replace(with: [])
+        return filtered
     }
 
     func listDerivedSessionLocators(
         source: SourceName,
         modifiedSince: Date? = nil,
         fileManager: FileManager = .default
-    ) async throws -> [String] {
+    ) async throws -> (locators: [String], enumerationRoots: [String]) {
         let profiles = refreshProfilesForListing()
-        let defaultProfiles = profiles.filter { $0.origin == .default }
+        let defaultProfiles = profiles.filter { $0.available && $0.origin == .default }
         var locators: [String] = []
         for locator in try await listSessionLocators(profiles: defaultProfiles) {
             try Task.checkCancellation()
@@ -207,7 +227,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             }
         }
         await sourceHintCache.flush()
-        return locators
+        return (locators, Self.enumerationRoots(from: defaultProfiles))
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
@@ -1052,9 +1072,53 @@ private final class ClaudeCodeProfileSnapshot: @unchecked Sendable {
     }
 }
 
+/// Thread-safe last-list enumeration roots for `ClaudeCodeAdapter`.
+private final class ClaudeCodeEnumerationRoots: @unchecked Sendable {
+    private let lock = NSLock()
+    private var roots: [String] = []
+
+    func read() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return roots
+    }
+
+    func replace(with roots: [String]) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.roots = roots
+    }
+}
+
+extension ClaudeCodeAdapter {
+    /// Prune domain for a set of profiles: the resolved root **and** every
+    /// spelling that resolved to it. Enumeration emits canonical locators only,
+    /// so a symlink-spelled row is never in the keep-set; without its spelling in
+    /// the domain it can never be pruned either, and it accumulates forever.
+    /// On a layout of real directories the two coincide and dedupe to one.
+    fileprivate static func enumerationRoots(from profiles: [ClaudeCodeProfile]) -> [String] {
+        var seen = Set<String>()
+        var roots: [String] = []
+        for profile in profiles {
+            // The declared spellings may repeat the canonical root; `seen`
+            // preserves canonical-first order while removing that duplicate.
+            for candidate in [canonicalURL(path: profile.projectsRoot).path] + profile.declaredProjectsRoots {
+                var path = candidate
+                while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+                guard !path.isEmpty, seen.insert(path).inserted else { continue }
+                roots.append(path)
+            }
+        }
+        return roots
+    }
+}
+
 final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
     let source: SourceName
     private let base: ClaudeCodeAdapter
+    /// Separate from the base's holder: three adapters share one base instance in
+    /// `defaultAdapters()`, and their domains differ.
+    private let lastListingRoots = ClaudeCodeEnumerationRoots()
 
     init(source: SourceName, base: ClaudeCodeAdapter) {
         precondition(source == .minimax || source == .lobsterai)
@@ -1084,16 +1148,27 @@ final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, ModificationFiltered
         await base.detect()
     }
 
+    /// Own domain, not the base's: a derived listing walks only default-origin
+    /// profiles, so forwarding the base's roots would declare a domain wider than
+    /// what was enumerated.
+    var enumerationRoots: [String] { lastListingRoots.read() }
+
     func listSessionLocators() async throws -> [String] {
-        try await base.listDerivedSessionLocators(source: source)
+        lastListingRoots.replace(with: [])
+        let listing = try await base.listDerivedSessionLocators(source: source)
+        lastListingRoots.replace(with: listing.enumerationRoots)
+        return listing.locators
     }
 
     func listSessionLocators(modifiedSince: Date, fileManager: FileManager) async throws -> [String] {
-        try await base.listDerivedSessionLocators(
+        // Recency-filtered: a subset, so no domain (see the base's equivalent).
+        lastListingRoots.replace(with: [])
+        let listing = try await base.listDerivedSessionLocators(
             source: source,
             modifiedSince: modifiedSince,
             fileManager: fileManager
         )
+        return listing.locators
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
