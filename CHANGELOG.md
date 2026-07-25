@@ -82,9 +82,20 @@ successful complete listings still prune.
 
 After PR #262 merged as `a598ed59`, GitHub rebased PR #264 to
 `7ed3c612`; the safety patch replayed without a code conflict as `0d81bfdb`.
-The post-rebase focused and full tests plus xcodeproj drift are green. This
-branch remains local-only until the exact-head adversarial review approves;
-the pushed head must then pass the final PR CI.
+A fresh Qwen review of exact head `8b40f3ea` returned `CHANGES_REQUESTED`
+because the derived adapter read roots from its shared base snapshot after an
+asynchronous listing. Although that read did not re-run profile resolution,
+another listing could replace the snapshot while three derived adapters share
+the same `Sendable` base. Commit `f3b2e8fb` closes the gap by returning
+locators and roots together from the same captured profile list. Its
+structural regression first failed to compile against the old array-only
+contract, then passed 1/1; the two related test classes passed 22/22, and the
+full `EngramCoreTests` scheme again passed 1,011 tests with 1 environment skip
+and zero failures. The review is recorded as Polycli run
+`run_5d146ddba574469089e0`, invocation `inv_3f1b88bcb2bf4626b123`.
+
+This branch remains local-only until a new exact-head adversarial review
+approves; the pushed head must then pass the final PR CI.
 
 ### PR #262 adversarial-review remediation (2026-07-26)
 
