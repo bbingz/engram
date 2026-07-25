@@ -322,6 +322,47 @@ One row per surviving recommendation. **The ordering is a work sequence, not a v
 
 | # | Recommendation | Effort | Impact | Landing zone | Ref |
 |---|---|---|---|---|---|
+### Verified status (2026-07-25)
+
+The table below carries no status column, which made it read as fully open long
+after most of it had shipped. Each row was re-checked against `origin/main`
+(`138a3740`) by opening the cited anchor. **What was checked is anchor presence,
+not the full acceptance criteria** — a row marked landed may still have gaps that
+only its own acceptance list would catch. 20 landed + 1 partial + 14 open = 35;
+row 0 is an owner decision, not engineering work.
+
+**Landed (20):** 1, 2, 3, 4, 5, 6, 7, 8, 10, 13, 16, 17, 18, 19, 22, 23, 24, 29,
+30, 32.
+
+Anchors worth naming because they are not obvious from the table: row 7's Windsurf
+path fix is pinned by `MCPActivationOnboardingTests.swift:137`
+(`XCTAssertFalse(onboarding.contains(".codeium/windsurf"))`); row 8 routes `.user`
+through `case .user, .assistant, .code: return true`
+(`ColorBarMessageView.swift:165`); row 10 is `hiddenMatchBuckets`
+(`SessionDetailView.swift:73`); row 24 carries a literal `Row 24:` comment
+(`HomeView.swift:31`); **row 32 shipped in `08fb7837` on 2026-07-25** — the
+adapter descends into `subagents/workflows/wf_*/` and collects `agent-*.jsonl`
+while excluding `journal.jsonl`.
+
+**Partial (1):** row **31** (Dynamic Type). `SidebarView.swift:12` has the only
+`@ScaledMetric` in the app, and it scales a *width*. The transcript body threads a
+numeric `effectiveFontSize` (`ContentSegmentViews.swift:84`) rather than following
+Dynamic Type, and 141 `.font(.system(size: N))` call sites remain against 237
+semantic-font uses. The row's "transcript body" half is not done.
+
+**Open (14):** 9 (PR #262), 11, 12, 14, 15, 20 (PR #266), 21 (PR #265), 25, 26,
+27, 28, 33, 34, 35. Row **12** is blocked on orphan `file_index_state` rows — see
+`docs/file-index-state-orphan-prune-design-2026-07.md`; after that prune the
+predicate would still count ~1,001 rows of residue.
+
+**Method limits, stated so the next reader can discount accordingly.** These are
+single-anchor greps. Two errors surfaced while making this pass, both mine: row 19
+was first called open because the table cites `MessageTypeChip.swift` without a
+directory and the file is under `Views/Transcript/`, not `Components/` (it does
+carry `accessibilityLabel`, `:55`, `:63`); and row 32 was carried as open for a
+full session because no commit message names it. A row here is "the anchor
+exists", nothing stronger.
+
 | 0 | **Decide whether to publish.** Owner decision, not engineering — the report names it as the root cause of the whole distribution section but never gave it a row. Rows 33, 34, 35 are hard-gated on it; rows 6 (CTA half), 17 and 18 derive most of their value from it | — | Highest | `docs/TODO.md:8-33` (authorization boundary), `docs/roadmap.md:65-68` | UX-11 |
 | 1 | `get_context`/`search`: filter `superseded_by IS NULL`, emit insight ids | S | High | `MCPDatabase.swift:1959-1998,:1070-1080` | F1 |
 | 2 | Source health: exclude skip from both numerator and denominator, add `healthReason` | S | Medium | `EngramServiceReadProvider.swift:1011-1017,:1842` | F3 |
