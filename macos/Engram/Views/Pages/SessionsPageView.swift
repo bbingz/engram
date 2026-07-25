@@ -325,6 +325,16 @@ struct SessionsPageView: View {
                 isLoading = false
             }
         }
+        // Capture before begin — detail evaluates at end() (row 16).
+        let capturedPageSize = preservePagination
+            ? BrowseReloadCoalescer.refreshLimit(loadedCount: sessions.count, pageSize: Self.pageSize)
+            : Self.pageSize
+        let capturedSessionCount = sessions.count
+        let span = Perf.begin(
+            "loadData",
+            "pageSize=\(capturedPageSize) sessions=\(capturedSessionCount) preserve=\(preservePagination)"
+        )
+        defer { Perf.end(span) }
         do {
             let db = self.db
             let sources: Set<String> = sourceFilter.map { [$0] } ?? []
@@ -334,9 +344,7 @@ struct SessionsPageView: View {
             let favoritesOnly = self.favoritesOnly
             // Preserve the loaded window on an index-tick refresh; otherwise a
             // fresh load starts at the first page.
-            let pageSize = preservePagination
-                ? BrowseReloadCoalescer.refreshLimit(loadedCount: sessions.count, pageSize: Self.pageSize)
-                : Self.pageSize
+            let pageSize = capturedPageSize
             let data = try await Task.detached {
                 let loaded = try db.listSessions(
                     sources: sources,
@@ -466,6 +474,9 @@ struct SessionsPageView: View {
                 let humanDriven = !showAllSessions
                 let offset = sessions.count
                 let pageSize = Self.pageSize
+                // Capture before begin — detail evaluates at end() (row 16).
+                let span = Perf.begin("loadMoreIfNeeded", "offset=\(offset) pageSize=\(pageSize)")
+                defer { Perf.end(span) }
                 let more = try await Task.detached {
                     let loaded = try db.listSessions(
                         sources: sources,

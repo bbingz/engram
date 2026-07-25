@@ -1165,6 +1165,12 @@ struct SessionDetailView: View {
     private func parseWindow(offset: Int, limit: Int?) async -> (messages: [ChatMessage], producedCount: Int) {
         let path = resolvedTranscriptPath()
         let source = session.source
+        // Capture loop-variant values before begin — detail evaluates at end().
+        let capturedOffset = offset
+        let capturedLimit = limit
+        let messageCount = session.messageCount
+        let span = Perf.begin("parseWindow", "offset=\(capturedOffset) limit=\(String(describing: capturedLimit)) messages=\(messageCount)")
+        defer { Perf.end(span) }
         return await Task.detached(priority: .userInitiated) {
             await MessageParser.parseWindowed(filePath: path, source: source, offset: offset, limit: limit)
         }.value
@@ -1184,6 +1190,8 @@ struct SessionDetailView: View {
         let priorCount = priorIndexed.count
         let fullSnapshot = messages
         let isAppend = appended != nil && !priorIndexed.isEmpty
+        let span = Perf.begin("rebuildIndexed", "messages=\(fullSnapshot.count)")
+        defer { Perf.end(span) }
         let built = await Task.detached(priority: .userInitiated) {
             if isAppend, let appended {
                 return IndexedMessage.appending(appended, to: priorIndexed, counts: priorCounts)
