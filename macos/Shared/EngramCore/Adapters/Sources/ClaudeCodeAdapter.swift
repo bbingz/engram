@@ -1100,6 +1100,8 @@ extension ClaudeCodeAdapter {
         var seen = Set<String>()
         var roots: [String] = []
         for profile in profiles {
+            // The declared spellings may repeat the canonical root; `seen`
+            // preserves canonical-first order while removing that duplicate.
             for candidate in [canonicalURL(path: profile.projectsRoot).path] + profile.declaredProjectsRoots {
                 var path = candidate
                 while path.count > 1, path.hasSuffix("/") { path.removeLast() }

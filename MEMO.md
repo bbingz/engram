@@ -14,9 +14,10 @@
 - [验证] 两条回归先红：2 tests / 5 assertions failed，两个场景都实际删了 1 行；重放到包含 #262 的新 base 后，聚焦 2/2、完整 orphan-prune 13/13、全量 EngramCoreTests 1,011 项 / 0 失败 / 1 环境 skip，xcodeproj drift 与 diff check 均通过。完整命令与因果见 `CHANGELOG.md`。
 - [复核] Qwen 只读对抗 review job `pv-8239bb0e` 锁定 exact range `783eb5d3..3a854567`，明确返回 `APPROVE`。唯一 Medium 是单个 profile 读取失败会跳过整次 Claude adapter；已核实 `SwiftIndexer` 只跳该 adapter、继续其他 adapters，这是防止部分 keep-set 参与删除的必要边界。成功枚举仍裁剪由既有正向测试覆盖。
 - [变更] #262 已 squash merge 为 `a598ed59`；#264 远端已 rebase 为 `7ed3c612`，安全补丁无代码冲突重放为本地 `0d81bfdb`。文档冲突仅合并两边同日事实。
-- [复核] post-rebase exact head `8b40f3ea` 的 Qwen review（Polycli run `run_5d146ddba574469089e0`）返回 `CHANGES_REQUESTED`：derived adapter 在异步 listing 后从共享 base snapshot 另读 roots，存在并发漂移缝隙。`f3b2e8fb` 已让 locators 与 roots 从同一局部 profile 列表一次返回。
+- [复核] Qwen 在 `8b40f3ea` 找到 derived listing 与 roots 间的 shared-snapshot 漂移；`f3b2e8fb` 改为一次返回同源 locators/roots（run `run_5d146ddba574469089e0`）。
 - [验证] 上述结构性回归先在旧 array-only 契约上编译失败，修复后 1/1；两个相关测试类 22/22，全量 EngramCoreTests 再次 1,011 项 / 0 失败 / 1 环境 skip，xcodeproj drift 与 diff check 均通过。
-- [未验证] #264 仍未 push；需让包含 `f3b2e8fb` 与本记录的最终 exact head 取得异家明确批准，再等待推送后 PR CI。
+- [复核] Qwen 在 `7250e7d7` 确认修复并撤回疑似 shared-root bug；仅要求说明 canonical 去重与防御性 symlink 解析，现已补注释、无行为变更（run `run_ff75ff8140954c178b17`）。
+- [未验证] #264 仍未 push；需让包含上述注释与本记录的最终 exact head 取得异家明确批准，再等待推送后 PR CI。
 
 ### 2026-07-25
 

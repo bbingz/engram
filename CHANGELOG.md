@@ -82,17 +82,16 @@ successful complete listings still prune.
 
 After PR #262 merged as `a598ed59`, GitHub rebased PR #264 to
 `7ed3c612`; the safety patch replayed without a code conflict as `0d81bfdb`.
-A fresh Qwen review of exact head `8b40f3ea` returned `CHANGES_REQUESTED`
-because the derived adapter read roots from its shared base snapshot after an
-asynchronous listing. Although that read did not re-run profile resolution,
-another listing could replace the snapshot while three derived adapters share
-the same `Sendable` base. Commit `f3b2e8fb` closes the gap by returning
-locators and roots together from the same captured profile list. Its
-structural regression first failed to compile against the old array-only
-contract, then passed 1/1; the two related test classes passed 22/22, and the
-full `EngramCoreTests` scheme again passed 1,011 tests with 1 environment skip
-and zero failures. The review is recorded as Polycli run
-`run_5d146ddba574469089e0`, invocation `inv_3f1b88bcb2bf4626b123`.
+A Qwen review of exact head `8b40f3ea` found that a shared base snapshot could
+change between a derived listing and its roots read. Commit `f3b2e8fb` returns
+both from one captured profile list. Its structural test went compile-red then
+passed 1/1; related classes passed 22/22 and all 1,011 Core tests passed with
+1 skip. Evidence: run `run_5d146ddba574469089e0`.
+
+Qwen then verified that fix at `7250e7d7` and withdrew a suspected shared-root
+bug. Its remaining request was limited to comments explaining canonical-root
+deduplication and defensive symlink resolution; both are now explicit with no
+behavior change. Evidence: run `run_ff75ff8140954c178b17`.
 
 This branch remains local-only until a new exact-head adversarial review
 approves; the pushed head must then pass the final PR CI.
