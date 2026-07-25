@@ -1016,6 +1016,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 ORDER BY source
             """)
             let searchableCounts = try sourceSearchableCounts(db)
+            let indexEligibleCounts = try sourceIndexEligibleCounts(db)
             let failedIndexJobCounts = try sourceFailedIndexJobCounts(db)
             let tokenCounts = try sourceTokenCounts(db)
             let costedCounts = try sourceCostedCounts(db)
@@ -1024,15 +1025,24 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 let source: String = row["source"]
                 let sessionCount: Int = row["session_count"]
                 let searchable = searchableCounts[source] ?? 0
+                // 0 is load-bearing: all-skip sources have no GROUP BY row.
+                let indexEligible = indexEligibleCounts[source] ?? 0
                 let failed = failedIndexJobCounts[source] ?? 0
                 let tokenized = tokenCounts[source] ?? 0
-                let coverage = sessionCount > 0
-                    ? min(100, max(0, Int((Double(searchable) / Double(sessionCount) * 100).rounded())))
+                let coverage = indexEligible > 0
+                    ? min(100, max(0, Int((Double(searchable) / Double(indexEligible) * 100).rounded())))
                     : 0
                 let tokenCoverage = sessionCount > 0
                     ? min(100, max(0, Int((Double(tokenized) / Double(sessionCount) * 100).rounded())))
                     : 0
                 let usage = latestUsage[source]
+                let health = sourceHealth(
+                    sessionCount: sessionCount,
+                    indexEligibleCount: indexEligible,
+                    searchableSessionCount: searchable,
+                    failedIndexJobCount: failed,
+                    latestUsageStatus: usage?.status
+                )
                 return EngramServiceSourceInfo(
                     name: source,
                     sessionCount: sessionCount,
@@ -1049,12 +1059,8 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                     latestUsageLimitValue: usage?.limitValue,
                     latestUsageResetAt: usage?.resetAt,
                     latestUsageStatus: usage?.status,
-                    healthStatus: sourceHealthStatus(
-                        sessionCount: sessionCount,
-                        searchableSessionCount: searchable,
-                        failedIndexJobCount: failed,
-                        latestUsageStatus: usage?.status
-                    ),
+                    healthStatus: health.status,
+                    healthReason: health.reason,
                     liveSyncDisabled: LiveSyncDisabledSources.isLiveSyncDisabled(source)
                 )
             }
@@ -1693,6 +1699,17 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         return Set(rows.map { $0["name"] as String })
     }
 
+    /// Per-source count of non-hidden, non-`skip` sessions (index-eligible).
+    private func sourceIndexEligibleCounts(_ db: GRDB.Database) throws -> [String: Int] {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT source AS source, COUNT(*) AS count
+            FROM sessions
+            WHERE hidden_at IS NULL AND \(SessionVisibilityFilter.nonSkipTierSQL)
+            GROUP BY source
+        """)
+        return sourceCountDictionary(rows)
+    }
+
     private func sourceSearchableCounts(_ db: GRDB.Database) throws -> [String: Int] {
         guard try tableExists("sessions_fts", db: db) else { return [:] }
         let rows = try Row.fetchAll(db, sql: """
@@ -1700,6 +1717,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             FROM sessions_fts f
             JOIN sessions s ON s.id = f.session_id
             WHERE s.hidden_at IS NULL
+              AND \(SessionVisibilityFilter.nonSkipTierSQL(alias: "s"))
             GROUP BY s.source
         """)
         return sourceCountDictionary(rows)
@@ -1829,18 +1847,43 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         })
     }
 
-    private func sourceHealthStatus(
+    private func sourceHealth(
         sessionCount: Int,
+        indexEligibleCount: Int,
         searchableSessionCount: Int,
         failedIndexJobCount: Int,
         latestUsageStatus: String?
-    ) -> String {
-        if sessionCount == 0 { return "empty" }
-        if latestUsageStatus == "critical" { return "critical" }
-        if failedIndexJobCount > 0 { return "attention" }
-        if latestUsageStatus == "attention" { return "attention" }
-        if searchableSessionCount < sessionCount { return "partial" }
-        return "healthy"
+    ) -> (status: String, reason: String?) {
+        if sessionCount == 0 {
+            return ("empty", "No sessions indexed for this source yet.")
+        }
+        if latestUsageStatus == "critical" {
+            return ("critical", "Provider usage for this source is at a critical level.")
+        }
+        if failedIndexJobCount > 0 {
+            let jobs = failedIndexJobCount == 1 ? "job" : "jobs"
+            return (
+                "attention",
+                "\(failedIndexJobCount) index \(jobs) failed for this source. They retry on the next indexing pass."
+            )
+        }
+        if latestUsageStatus == "attention" {
+            return ("attention", "Provider usage for this source needs attention.")
+        }
+        if indexEligibleCount == 0 {
+            return (
+                "empty",
+                "All \(sessionCount) sessions are subagent or noise sessions. They are searched through their parent session, not on their own."
+            )
+        }
+        if searchableSessionCount < indexEligibleCount {
+            let missing = indexEligibleCount - searchableSessionCount
+            return (
+                "partial",
+                "\(missing) of \(indexEligibleCount) indexable sessions are missing search-index rows."
+            )
+        }
+        return ("healthy", nil)
     }
 
     private func sourceUsageStatus(explicitStatus: String?, metric: String, value: Double, unit: String?) -> String {

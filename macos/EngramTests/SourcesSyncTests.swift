@@ -53,12 +53,71 @@ final class SourcesSyncTests: XCTestCase {
         XCTAssertFalse(info.liveSyncDisabled)
     }
 
+    // MARK: - healthReason DTO
+
+    func testSourceInfoEncodesHealthReason() throws {
+        let info = EngramServiceSourceInfo(
+            name: "codex",
+            sessionCount: 1,
+            latestIndexed: nil,
+            healthStatus: "partial",
+            healthReason: "1 of 4 indexable sessions are missing search-index rows."
+        )
+        let data = try JSONEncoder().encode(info)
+        let decoded = try JSONDecoder().decode(EngramServiceSourceInfo.self, from: data)
+        XCTAssertEqual(decoded.healthReason, info.healthReason)
+    }
+
+    func testSourceInfoDecodesLegacyJsonWithoutHealthReasonAsNil() throws {
+        let json = #"{"name":"codex","sessionCount":3,"healthStatus":"healthy"}"#
+        let decoded = try JSONDecoder().decode(
+            EngramServiceSourceInfo.self,
+            from: Data(json.utf8)
+        )
+        XCTAssertNil(decoded.healthReason)
+    }
+
+    func testMemberwiseInitDefaultsHealthReasonNil() {
+        let info = EngramServiceSourceInfo(name: "codex", sessionCount: 0, latestIndexed: nil)
+        XCTAssertNil(info.healthReason)
+    }
+
     // MARK: - Source-text guards
 
     func testSourcePulseRendersCacheOnlyPillGatedOnFlag() throws {
         let text = try source("macos/Engram/Views/Pages/SourcePulseView.swift")
         XCTAssertTrue(text.contains("Cache only"))
         XCTAssertTrue(text.contains("source.liveSyncDisabled"))
+    }
+
+    func testSourceHealthPredicatesUseNonSkipTierSQL() throws {
+        let text = try source("macos/EngramService/Core/EngramServiceReadProvider.swift")
+        guard
+            let start = text.range(of: "private func sourceIndexEligibleCounts"),
+            let mid = text.range(of: "private func sourceSearchableCounts", range: start.upperBound..<text.endIndex),
+            let end = text.range(of: "private func sourceFailedIndexJobCounts", range: mid.upperBound..<text.endIndex)
+        else {
+            return XCTFail("could not locate sourceIndexEligibleCounts / sourceSearchableCounts slice")
+        }
+        let slice = String(text[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(slice.contains("SessionVisibilityFilter.nonSkipTierSQL"), slice)
+        XCTAssertFalse(slice.contains("searchableTierSQL"), slice)
+        XCTAssertFalse(slice.contains("'lite'"), slice)
+    }
+
+    func testSourcePulseHealthBadgeExposesReason() throws {
+        let text = try source("macos/Engram/Views/Pages/SourcePulseView.swift")
+        XCTAssertTrue(text.contains("source.healthReason"))
+        guard
+            let start = text.range(of: "private func healthBadge"),
+            let end = text.range(of: "private func usageColor", range: start.upperBound..<text.endIndex)
+        else {
+            return XCTFail("could not locate healthBadge / usageColor slice")
+        }
+        let slice = String(text[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(slice.contains(".accessibilityLabel"), slice)
+        XCTAssertTrue(slice.contains(".help("), slice)
+        XCTAssertTrue(slice.contains("reason"), slice)
     }
 
     func testSourcesSettingsHasNoDeadPathKeysAndKeepsCatalogReadOnly() throws {

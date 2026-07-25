@@ -12,6 +12,7 @@
 - [新增] `scripts/check-xcodeproj-drift.sh` + pre-commit 接线（PR #255），把 CI 那道闸搬到本地，钉版不符直接拒跑。
 - [未验证] `.husky/pre-commit` 缺 shebang（SC2148）、`feat/adapter-format-drift` 分支配了两条 upstream、`docs/mirror-followup-specs` 本地有一个未推送 commit `7ed3d2a6` —— 均为既有问题，本次未动。
 - [洞察生命周期] 代理可读路径过滤 `superseded_by` 非空洞察（含 CJK LIKE）；ledger #14；CJK repro 查询改为两行公共子串以保证回归有效。
+- [源健康] 可索引（非 skip）分母 + `healthReason` 提示；橙色徽章 18→8 量级。
 
 ### 2026-07-24
 
