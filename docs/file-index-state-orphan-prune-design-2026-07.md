@@ -47,13 +47,22 @@ Measured on the local corpus, every one of the 528 rows with a format-breakage
 
 Their `updated_at` is frozen at 2026-06-21 (the 10 missing), 2026-07-02 (3),
 and 2026-07-02..07-04 (the 514), while the table's newest `updated_at` is the
-current day. Nothing is retrying them, and nothing can: `ClaudeCodeAdapter`'s
-`listSessionLocators` descends exactly one level into `subagents/` and takes
-`.jsonl` direct children (`ClaudeCodeAdapter.swift:112-119`, unchanged since
-`6a472734`, 2026-04-24), so it cannot produce a
-`subagents/workflows/<wf>/journal.jsonl` locator at all. **1,166** such files
-exist under `~/.claude` alone against **262** recorded `claude-code` rows — a
-live enumeration would hold all of them.
+current day. Nothing is retrying them, and nothing can — though not for the
+reason an earlier draft of this doc gave. That draft claimed the adapter
+"descends exactly one level into `subagents/`, unchanged since `6a472734`". Both
+halves are false: row 32 (`08fb7837`, 2026-07-25) added a descent into
+`subagents/workflows/wf_*/`, and it lands in this doc's own base commit. The
+conclusion survives for a different reason — **that descent deliberately collects
+`agent-*.jsonl` and excludes `journal.jsonl`** (`ClaudeCodeAdapter.swift:132-141`),
+so a journal locator is never enumerated. **1,176** journals exist under
+`~/.claude` against **262** recorded `claude-code` rows.
+
+The distinction matters for this change, and the corpus run confirms it: the
+same tree holds **24,295** `claude-code` rows for `subagents/workflows/wf_*/agent-*.jsonl`.
+Those *are* enumerated, so they are in the keep-set, and the prune left every one
+of them while deleting 7,679 others under the same declared root. Sibling files
+one directory apart, opposite outcomes, both correct — on real data that is the
+strongest available check that the keep-set and the domain compose properly.
 
 Who is affected today: nobody visibly, because nothing reads
 `failure_kind`. That is exactly why this must land first. Row 12 exists to put a
