@@ -318,6 +318,32 @@ independently during review rather than taken from the implementation report.
 | `instr(…) = 1` reverted to `LIKE ? \|\| '/%'` — **reproduced** | exit 65, 0 compile errors, 8 executed, **only** `testRootWithLikeWildcardDoesNotOverMatch_repro` red (2 assertions) |
 | all restored | exit 0, 8 executed, 0 failures, 0 Swift warnings, `xcodeproj drift ok` |
 
+### Full-suite regression
+
+`enumerationRoots` is a protocol requirement, so the risk was never the prune
+logic but whether every existing conformance still compiles and behaves. All
+three schemes CI's `swift-unit` job runs (`.github/workflows/test.yml:201`,
+`:216`, `:217`) were run locally at `88daa384`:
+
+| scheme | test bundle | executed | skipped | failures | exit | Swift compile errors |
+|---|---|---|---|---|---|---|
+| `Engram -skip-testing:EngramUITests` | `EngramCoreTests` | 1,006 | 1 | 0 | 0 | 0 |
+| " | `EngramTests` | 781 | 0 | 0 | 0 | 0 |
+| `EngramServiceCore` | `EngramServiceCoreTests` | 585 | 1 | 0 | 0 | 0 |
+| `EngramMCPTests` | `EngramMCPTests` | 176 | 0 | 0 | 0 | 0 |
+| **total** | | **2,548** | **2** | **0** | | **0** |
+
+Both skips are pre-existing environment gates, not fallout:
+`IndexerPerformanceTests.testSwiftIndexerThroughputForGeneratedSessionFixtures`
+(gated on `ENGRAM_PERF`) and
+`RemoteSyncCoordinatorTests.testLiveOffloadRehydrateAgainstDeployedServer`
+(needs a deployed server).
+
+Not run locally: `EngramUITests` (skipped here as CI's `swift-unit` skips it —
+`ui-test-smoke`/`ui-test-full` own it), the `EngramRemoteServerCore` /
+`EngramRemoteServer` schemes (the separate `remote-server-swift` job), and
+`scripts/release-verify.sh --hygiene-only`.
+
 A first attempt at the domain-scoping mutation deleted the SQL clause without
 dropping its bound arguments and failed with `SQLite error 21: wrong number of
 statement arguments`. That red proved only that the tests reach the real SQL path,
@@ -343,10 +369,13 @@ should delete 0 more. Row 12 (Part C of
   behind — which is how the 514 survived. Now they are removed and re-parsed from
   offset 0 when discovery is fixed. That is the intended trade; the logged delete
   count is the detector.
-- **Only one test class has been run.** `enumerationRoots` is a new protocol
-  requirement. The extension default covers every conformance, but whether any
-  mock adapter elsewhere in the suite changes behaviour is unverified pending a
-  full run.
+- ~~**Only one test class has been run.**~~ **Closed.** All three schemes CI's
+  `swift-unit` runs were run locally and are green — see "Full-suite regression"
+  below. `enumerationRoots` is a new protocol requirement, and the extension
+  default absorbed every conformance including the four adapter mocks in
+  `EngramServiceCoreTests` (`ArchiveV2ServiceCoordinatorTests.swift:3244`,
+  `:3313`, `:3355`, `ArchiveV2RunnerIntegrationTests.swift:735`) with zero
+  compile errors.
 - **`ClaudeCodeDerivedSourceAdapter`** (minimax/lobsterai over Claude files)
   defaults to `[]` and never prunes. That is correct as written, but which
   `SourceName` those adapters write `file_index_state` under was not
