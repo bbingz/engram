@@ -481,17 +481,25 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 self.applyLiveBadge(today: today, activeCount: live)
             } catch {
                 // Hold last-good active count; drop the dot only when expired.
-                let activeCount: Int
-                switch self.liveHold.freshness(now: Date()) {
-                case .live, .stale:
-                    activeCount = self.liveHold.sessions
-                        .filter { $0.activityLevel == "active" }
-                        .count
-                case .expired:
-                    activeCount = 0
-                }
+                let activeCount = Self.heldActiveCount(self.liveHold)
                 self.applyLiveBadge(today: today, activeCount: activeCount)
             }
+        }
+    }
+
+    /// Badge-facing count from a held live list.
+    ///
+    /// The hold stores the full unfiltered `response.sessions`; the badge only
+    /// ever showed `activityLevel == "active"`. Re-apply that filter here or a
+    /// failed-poll path over-counts vs a successful poll (idle/recent/nil leak in).
+    /// Returns 0 when the hold is `.expired` (or never succeeded) so the `●` drops.
+    /// `nonisolated` — pure over a Sendable hold; unit tests call it off MainActor.
+    nonisolated static func heldActiveCount(_ hold: LiveSessionsHold, now: Date = Date()) -> Int {
+        switch hold.freshness(now: now) {
+        case .live, .stale:
+            return hold.sessions.filter { $0.activityLevel == "active" }.count
+        case .expired:
+            return 0
         }
     }
 

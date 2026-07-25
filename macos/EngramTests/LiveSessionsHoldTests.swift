@@ -98,4 +98,71 @@ final class LiveSessionsHoldTests: XCTestCase {
         XCTAssertTrue(text.hasPrefix("as of "), "shared helper must use the as-of caption shape")
         XCTAssertFalse(text.contains("as of as of"), "must not double-prefix")
     }
+
+    // MARK: - MenuBarController.heldActiveCount (badge over-count trap)
+
+    private func session(
+        id: String,
+        activityLevel: String?
+    ) -> EngramServiceLiveSessionInfo {
+        EngramServiceLiveSessionInfo(
+            source: "codex",
+            sessionId: id,
+            project: "engram",
+            title: "Session \(id)",
+            cwd: "/tmp/engram",
+            filePath: "/tmp/\(id).jsonl",
+            startedAt: "2026-07-25T00:00:00Z",
+            model: "gpt-5",
+            currentActivity: activityLevel == "active" ? "coding" : nil,
+            lastModifiedAt: "2026-07-25T00:01:00Z",
+            activityLevel: activityLevel
+        )
+    }
+
+    /// Full unfiltered list: 2 active + idle + recent + nil level (= 5).
+    private func mixedHold(at t0: Date, liveWindow: TimeInterval = 45) -> LiveSessionsHold {
+        var hold = LiveSessionsHold(liveWindow: liveWindow)
+        hold.succeeded(
+            [
+                session(id: "a1", activityLevel: "active"),
+                session(id: "a2", activityLevel: "active"),
+                session(id: "idle", activityLevel: "idle"),
+                session(id: "recent", activityLevel: "recent"),
+                session(id: "nilLevel", activityLevel: nil),
+            ],
+            at: t0
+        )
+        return hold
+    }
+
+    /// Repro: hold stores the full list; badge must count only active or it
+    /// over-counts vs a successful-poll badge (2 active ≠ 5 total).
+    func testHeldActiveCountFiltersToActiveOnly_repro() {
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        let hold = mixedHold(at: t0)
+        XCTAssertEqual(hold.sessions.count, 5, "fixture must hold the full unfiltered list")
+        XCTAssertEqual(
+            MenuBarController.heldActiveCount(hold, now: t0.addingTimeInterval(5)),
+            2,
+            "held badge count must re-apply activityLevel == active (not sessions.count)"
+        )
+    }
+
+    func testHeldActiveCountDropsToZeroWhenExpired() {
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        let hold = mixedHold(at: t0)
+        let pastTTL = t0.addingTimeInterval(EngramServiceStatusStore.staleUsefulInterval + 1)
+        XCTAssertEqual(hold.freshness(now: pastTTL), .expired)
+        XCTAssertEqual(
+            MenuBarController.heldActiveCount(hold, now: pastTTL),
+            0,
+            "badge must drop the live dot only when the hold is expired"
+        )
+    }
+
+    func testHeldActiveCountNeverSucceededIsZero() {
+        let hold = LiveSessionsHold(liveWindow: 45)
+        XCTAssertEqual(MenuBarController.heldActiveCount(hold, now: Date()), 0)
+    }
 }
