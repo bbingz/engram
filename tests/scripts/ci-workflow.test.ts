@@ -425,6 +425,59 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain('docs/archive/scripts/*)');
   });
 
+  // The allowlist is shell, and a shell `case` can be wrong in ways no string
+  // assertion sees — a stray pattern, a missing `;;`, a carve-out placed after
+  // the clause it must precede. This extracts the real `case`/`esac` block from
+  // the workflow and runs it under bash against representative paths, so the
+  // behaviour is checked rather than the text. (repro)
+  it('executes the real classifier and routes representative paths correctly', () => {
+    const body = testWorkflow.slice(
+      testWorkflow.indexOf('              case "$path" in'),
+      testWorkflow.indexOf('              esac') + '              esac'.length,
+    );
+    expect(body, 'classifier case block not found').toContain('esac');
+
+    const classify = (paths: string[]): string => {
+      const script = [
+        'set -euo pipefail',
+        'heavy=false',
+        'while IFS= read -r path; do',
+        body,
+        "done <<'PATHS'",
+        ...paths,
+        'PATHS',
+        'printf %s "$heavy"',
+      ].join('\n');
+      return execFileSync('bash', ['-c', script], { encoding: 'utf8' }).trim();
+    };
+
+    // Durable records: light.
+    expect(classify(['CHANGELOG.md'])).toBe('false');
+    expect(classify(['docs/roadmap.md', 'MEMO.md'])).toBe('false');
+    expect(classify(['docs/competitive-mirror-2026-07.md'])).toBe('false');
+    expect(classify(['docs/reviews/some-review.md'])).toBe('false');
+    expect(classify(['.memory'])).toBe('false');
+
+    // Product and config: heavy.
+    expect(classify(['macos/Engram/App.swift'])).toBe('true');
+    expect(classify(['src/core/db.ts'])).toBe('true');
+    expect(classify(['package.json'])).toBe('true');
+
+    // CLAUDE.md is a checked root path for the invariants gate: must stay heavy.
+    expect(classify(['CLAUDE.md'])).toBe('true');
+
+    // The carve-out has to win over docs/archive/*, which means it has to come
+    // first in the case; ordering is the whole mechanism.
+    expect(classify(['docs/archive/scripts/search-audit.sh'])).toBe('true');
+    expect(classify(['docs/archive/plans/old-plan.md'])).toBe('false');
+
+    // One heavy path in an otherwise-durable set still goes heavy.
+    expect(classify(['CHANGELOG.md', 'macos/Engram/App.swift'])).toBe('true');
+    expect(
+      classify(['docs/archive/plans/a.md', 'docs/archive/scripts/b.sh']),
+    ).toBe('true');
+  });
+
   // A classified-light path skips every job, Node included. If a test or gate
   // reads such a path, a change to it ships with the check that covers it
   // silently skipped — the same shape as the stacked-PR blind spot #258 closed.
@@ -457,12 +510,16 @@ describe('CI workflow hardening', () => {
     const isLight = (path: string): boolean =>
       !deny.some((re) => re.test(path)) && allow.some((re) => re.test(path));
 
-    // Every repo-relative path a file under tests/ or scripts/ names as a string.
-    const consumers = execFileSync(
+    // Every repo-relative path a file under tests/ or scripts/ names as a string,
+    // kept with the file that names it: this test necessarily mentions
+    // allowlisted paths in its own fixtures, and only those must be discounted.
+    const selfPath = 'tests/scripts/ci-workflow.test.ts';
+    const namedBy = new Map<string, Set<string>>();
+    for (const line of execFileSync(
       'git',
       [
         'grep',
-        '-hoI',
+        '-oI',
         '-E',
         '[\'"][A-Za-z0-9_./-]+\\.(md|sh|ts|json|jsonl)[\'"]',
         '--',
@@ -470,17 +527,24 @@ describe('CI workflow hardening', () => {
         'scripts',
       ],
       { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-    )
-      .split('\n')
-      .map((raw) => raw.trim().replace(/^['"]|['"]$/g, ''))
-      .filter((path) => path.length > 0 && existsSync(resolve(repoRoot, path)));
+    ).split('\n')) {
+      const separator = line.indexOf(':');
+      if (separator < 0) continue;
+      const source = line.slice(0, separator);
+      const named = line
+        .slice(separator + 1)
+        .trim()
+        .replace(/^['"]|['"]$/g, '');
+      if (named.length === 0 || !existsSync(resolve(repoRoot, named))) continue;
+      const sources = namedBy.get(named) ?? new Set<string>();
+      sources.add(source);
+      namedBy.set(named, sources);
+    }
 
-    const offenders = [...new Set(consumers)]
-      .filter(isLight)
-      // The classifier declaration and this test necessarily name the paths.
-      .filter(
-        (path) => !['ci-workflow.test.ts'].some((self) => path.endsWith(self)),
-      );
+    const offenders = [...namedBy.entries()]
+      .filter(([, sources]) => ![...sources].every((s) => s === selfPath))
+      .map(([named]) => named)
+      .filter(isLight);
 
     expect(
       offenders,
