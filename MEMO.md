@@ -2,6 +2,16 @@
 
 ## Changelog Memo
 
+### 2026-07-25
+
+- [排查] 评审板记为"可合并"的五个 PR（#245 #248 #249 #251 #252）实际 `swift-unit` 全红，卡在同一步 xcodeproj drift 闸，测试一行都没跑；详见 CHANGELOG。
+- [修复] 两类根因：#248/#249/#252 新增 Swift 文件未提交重新生成的 `project.pbxproj`（文件不在构建里，其测试从未编译执行），#245/#251 用本地 xcodegen 2.46.0 生成而 CI 钉 2.45.4。已用钉版重新生成并推送。
+- [验证] 修复后 `PopoverUsageSectionTests`、`TranscriptAccessibilityTests`、`UIUXPolishWiringTests`、`MCPActivationOnboardingTests` 首次真正执行并通过。
+- [修复] #248 随后触发既有源码扫描断言的假阳性——重试按钮渲染出与反模式相同的子串。已锚定到 `.onChange` 闭包签名（`d3b31a39`），并用变异验证守卫仍会响。
+- [修复] #245 的两条 CodeQL `js/regex-injection` 不可达（`--format` 必须命中 support-matrix key），但元字符会改错矩阵行；已加 `escapeRegExp`（`b632452f`）。
+- [新增] `scripts/check-xcodeproj-drift.sh` + pre-commit 接线（PR #255），把 CI 那道闸搬到本地，钉版不符直接拒跑。
+- [未验证] `.husky/pre-commit` 缺 shebang（SC2148）、`feat/adapter-format-drift` 分支配了两条 upstream、`docs/mirror-followup-specs` 本地有一个未推送 commit `7ed3d2a6` —— 均为既有问题，本次未动。
+
 ### 2026-07-24
 
 - [插件] 新增独立的 Claude Code 插件 MVP：复用已安装的 `EngramCLI` / `EngramMCP`，提供 SessionStart 上下文注入与手动 `catch-up`、`remember`、`handoff` 技能，不捆绑第二套 Swift 二进制。
