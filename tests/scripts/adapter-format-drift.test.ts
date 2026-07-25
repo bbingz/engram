@@ -6,6 +6,7 @@ import {
   checkBaselineSchemaVersion,
   compareFingerprints,
   compareVersions,
+  escapeRegExp,
   evaluateFreshness,
   type FormatMatrixEntry,
   fingerprintRecords,
@@ -47,6 +48,33 @@ describe('compareVersions', () => {
     expect(() => compareVersions('not-a-version', '1.0.0')).toThrow(
       /unparseable/,
     );
+  });
+});
+
+describe('escapeRegExp', () => {
+  // A dotted format name is a wildcard unescaped, so the accept path rewrites
+  // whichever matrix row happens to sit above the intended one.
+  const matrix = [
+    '  geminixcli:',
+    '    last_checked_utc: "WRONG-ROW"',
+    '  gemini.cli:',
+    '    last_checked_utc: "RIGHT-ROW"',
+  ].join('\n');
+  const rowRe = (name: string) =>
+    new RegExp(`(^  ${name}:[\\s\\S]*?last_checked_utc: )[^\\n]+`, 'm');
+
+  it('escapes regex metacharacters', () => {
+    expect(escapeRegExp('gemini.cli')).toBe('gemini\\.cli');
+    expect(escapeRegExp('claude-code')).toBe('claude-code');
+  });
+
+  it('stops a dotted format name from rewriting a neighbouring row', () => {
+    expect(matrix.replace(rowRe('gemini.cli'), '$1"NEW"')).toContain(
+      '"NEW"\n  gemini.cli:',
+    );
+    expect(
+      matrix.replace(rowRe(escapeRegExp('gemini.cli')), '$1"NEW"'),
+    ).toContain('  gemini.cli:\n    last_checked_utc: "NEW"');
   });
 });
 

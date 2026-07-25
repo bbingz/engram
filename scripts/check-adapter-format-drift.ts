@@ -101,6 +101,16 @@ export function expandHome(path: string, home = homedir()): string {
   return path;
 }
 
+/**
+ * Escape regex metacharacters in an interpolated literal. --format is checked
+ * against the support-matrix keys before it reaches any RegExp, so this is not
+ * an injection barrier; it stops a format name containing `.` or `|` from
+ * silently matching the wrong matrix rows.
+ */
+export function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /** Compare dotted versions with optional prerelease. Returns -1 | 0 | 1. */
 export function compareVersions(a: string, b: string): -1 | 0 | 1 {
   const parse = (raw: string) => {
@@ -859,7 +869,7 @@ function main(): void {
         ) {
           matrixText = matrixText.replace(
             new RegExp(
-              `(^  ${onlyFormat}:[\\s\\S]*?max_verified_version: )[^\\n]+`,
+              `(^  ${escapeRegExp(onlyFormat)}:[\\s\\S]*?max_verified_version: )[^\\n]+`,
               'm',
             ),
             `$1"${fp.vendorVersions.max}"`,
@@ -876,7 +886,10 @@ function main(): void {
       }
     }
     matrixText = matrixText.replace(
-      new RegExp(`(^  ${onlyFormat}:[\\s\\S]*?last_checked_utc: )[^\\n]+`, 'm'),
+      new RegExp(
+        `(^  ${escapeRegExp(onlyFormat)}:[\\s\\S]*?last_checked_utc: )[^\\n]+`,
+        'm',
+      ),
       `$1"${today}"`,
     );
     writeFileSync(
