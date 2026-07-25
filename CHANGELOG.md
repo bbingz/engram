@@ -7,6 +7,114 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Closeout: mirror-backlog follow-ups merged; 14 of 36 rows still open (2026-07-25)
+
+Two PRs, both merged: `f84cd3fe` (#257) and `487d6d09` (#258). The post-merge
+push run `30146378087` on `487d6d09` is green including `ui-test-full`, which
+only runs on push to `main` and is therefore the one job no PR run covers.
+
+**Stacked PRs no longer report green without running.** `test.yml` and
+`codeql.yml` both filtered `pull_request` to `branches: [main]`; only
+`dependency-review.yml` had no base filter. A PR based on a feature branch
+triggered exactly one check and `gh pr checks` showed all-green — "no Swift
+test ran" and "every Swift test passed" were the same state. `test.yml`'s
+filter is removed. `codeql.yml` keeps its filter deliberately: the blind spot
+was Swift tests, and CodeQL Swift is the slowest pair in the matrix.
+`scripts/ci/verify-test-gate.sh` needed no change — it branches on
+`event_name`, never on the base ref. `tests/scripts/ci-workflow.test.ts` parses
+both workflows and asserts the asymmetry is intentional; mutation-verified by
+restoring `branches: [main]`.
+
+**The release build no longer runs an unpinned xcodegen.**
+`macos/scripts/build-release.sh` step 2 called a bare `xcodegen generate`. Any
+xcodegen other than the `swift-unit` pin rewrites `project.pbxproj` — and does
+so *after* step 0 has already resolved the build number from a clean worktree,
+so the archive can ship a drifted project under an official build number.
+Deploying 1.0.5 (1382) took three attempts for this; attempt 2 produced
+`build=20260725034737`. Step 2 now calls `scripts/check-xcodeproj-drift.sh`,
+which refuses an unpinned xcodegen and fails on any diff. A release build now
+requires the pinned xcodegen; the failure names `--install`.
+
+**better-sqlite3 was never built locally.** npm 12 blocks a package's install
+script unless `allowScripts` covers it. With better-sqlite3 blocked, `npm ci`
+leaves no `better_sqlite3.node` and 503 of 1501 vitest tests fail with
+`Could not locate the bindings file … node-v147-darwin-arm64`. That names a
+Node ABI directory and reads like an ABI mismatch; nothing was ever built. CI
+pins Node 24 with an older npm and never saw it. `package.json` now approves
+`better-sqlite3` **unpinned**, so a dependabot bump (#236, 12.11.1 → 13.0.1)
+cannot silently re-break local runs. Only better-sqlite3 is approved: `sharp`,
+`esbuild`, `protobufjs` and `fsevents` were each verified working from their
+prebuilt platform packages with their scripts still blocked.
+
+Also: `.husky/pre-commit` gained its missing shebang (SC2148); 14 merged
+worktrees and 15 branches were removed (`~/.engram-worktrees` back to 0B),
+which also cleared the duplicate upstream on `feat/adapter-format-drift`;
+`CLAUDE.md` gained a `## Local Dev Environment` section.
+
+**Two open items were withdrawn, not fixed.** `ui-test-full` is not "always
+skipped" — its condition is `event_name == 'push' && ref == 'refs/heads/main'`,
+and it ran and passed on `487d6d09`. `.gitignore`'s `node_modules/` not
+matching a symlink does not apply: neither the main checkout nor any worktree
+had a symlinked `node_modules`.
+
+**Publish decision: no.** 2026-07-25, owner declined to release 1.0.5 — no
+external users. That closes backlog **row 0** and, with it, rows **33, 34, 35**
+(hero asset, public product page, Sparkle updater), which the mirror recorded
+as hard-gated on row 0. `release.yml` gates stay ready:
+`docs/release-notes/1.0.5.md` exists and `validate-release-tag` checks it.
+Latest tag remains `v1.0.4`, latest GitHub Release `v1.0.3`, installed app
+1.0.5 (1382). No notarization; `spctl -a -vvv` reports
+`override=security disabled` on this machine, so its "accepted" verdict is not
+evidence the bundle would pass where Gatekeeper is enabled.
+
+**Mirror backlog accounting.** `docs/competitive-mirror-2026-07.md` lists rows
+0–35. The 13 merged PRs covered 22 of them: 1, 2, 3, 4, 7, 8, 10, 13, 16, 17,
+18, 19, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32. Fourteen remain:
+
+- **Closed by the publish decision (4):** 0, 33, 34, 35.
+- **Specced, never implemented (4):** rows 5, 9, 12, 25 — the whole of
+  `docs/service-resilience-design-2026-07.md`, the one design doc from
+  `7ed3d2a6` that never got a PR. Row 5 is the sharpest: `App.swift:159-165`
+  registers a `.restartService` observer under a comment claiming "WP09's
+  menu-bar item / Service-State banner post `.restartService`", and nothing in
+  the codebase posts it. The one-click service recovery is unreachable and the
+  comment is false — exactly what mirror finding Q3 reported.
+- **Unspecced, not implemented (6):** row 6 (README:117 still claims
+  incremental updates via file watching — a false statement independent of
+  publishing), 11 (suppress Resume where it cannot succeed), 14
+  (`~/.engram/prices.json` overlay), 15 (`git_head`/`git_dirty` injected
+  pre-archive, `--require-ci-green`), 20 (dated update block on
+  `docs/competitive-relaunch-2026-06.md`), 21 (invariant back-references bullet
+  in CLAUDE.md).
+
+**Still open, unrelated to the backlog.** 14 `EngramMCP` helper processes still
+run the 1340 image. They are spawned per MCP client session and only pick up
+1382 when those sessions restart; #251 (cost honesty), #241 (insight filtering)
+and #252 (MCP activation) all live on that path.
+
+**Verification**
+
+- `npm ci` from a wiped `node_modules`: exit 0; `better_sqlite3.node` built;
+  sharp / proto-loader / esbuild all load with their scripts blocked
+- `npm test` on that fresh install: 1502 passed
+- `npm run build`, `npm run typecheck:test`, `npm run lint`, `actionlint`,
+  `shellcheck`, `bash -n` / `sh -n`: all clean; `package-lock.json` unchanged
+- main push run `30146378087` on `487d6d09`: success, including `ui-test-full`
+
+**Process failures worth keeping.** Both CI failures this session came from
+running a local verification command that is not the one CI runs:
+
+- A test exercising `build-release.sh` was placed in a file the ubuntu
+  `Node quality and tests` job runs. Linux has no `/usr/libexec/PlistBuddy`, so
+  the script exits at the TEAM_ID check and never reaches the gate under test.
+  It now lives in `tests/scripts/build-release-script.test.ts`, which
+  `macos-vitest` runs by name on macos-15, behind
+  `describe.skipIf(process.platform !== 'darwin')`. It also needs
+  `ENGRAM_BUILD_NUMBER`: `actions/checkout` defaults to `fetch-depth: 1`, so
+  `git rev-list --count HEAD` is 1 and step 0 rejects it as the placeholder.
+- `npx tsc --noEmit` does not cover `tests/`; `npm run typecheck:test`
+  (`tsconfig.test.json`) does, and caught a TS18048 the former missed.
+
 ### Fixed: a PR based on a feature branch runs no Swift tests at all (2026-07-25)
 
 - #253 targeted `feat/transcript-find-rendering` rather than `main`. The Tests
