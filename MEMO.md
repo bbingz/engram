@@ -4,9 +4,12 @@
 
 ### 2026-07-26
 
+- [裁决] #262 合入后的 Tests `30170009516` 不是 runner 抖动：近四次绿 run 的 Source Pulse 指标稳定，而 exact merge artifact 因新增的 `Live sessions unavailable` 过期态确定性越过阈值；归类为预期 UI 变化导致的 baseline drift。
+- [修复] 只用 `main@a598ed59` 的 CI 原图刷新 `sourcePulse_statusGrid.png`；同一 artifact 对旧基线复现 `SSIM 0.8945 / diff 7.9513%`。新 LFS 对象与原图 SHA-256 同为 `39fd9021…`；`SSIM 1 / diff 0%` 只作同一性校验，不作产品正确性证明。UI test 现先等 `sourcePulse_liveUnavailable`，消除 live poll 完成前抢拍。
+- [未验证] 本机 macOS 27 UI runner 在启用 automation mode 时超时、测试体未执行；该限制不作为产品失败证据。修复 push 后仍须 fresh full-UI CI，期间 #264 不得合并。详细证据见 `CHANGELOG.md`。
 - [修复] #262 exact-head 对抗 review 抓到连续失败轮询不一定触发 SwiftUI freshness 重算；`LiveSessionsHold.failed(at:)` 现只更新尝试时间，不覆盖 last-good 或成功时钟，三处消费者均接线。Popover stale badge 同时保留 active count 与 as-of。
 - [验证] 两个复现先红（缺失失败状态成员；stale badge 丢 count），修复后定向 `EngramTests` 39/39；`xcodeproj drift ok`。完整证据见 `CHANGELOG.md`。
-- [未验证] #262 尚未合并；仍需新 head 全套 CI 与另一模型明确 APPROVE/NO FINDINGS。
+- [验证] #262 已 squash merge 为 `a598ed59`；合入后唯一红项按上方 baseline drift 记录继续收口。
 
 ### 2026-07-25
 

@@ -25,6 +25,8 @@ final class SourcePulseTests: XCTestCase {
         let hasEmpty = sourcePulse.emptyState.waitForExistence(timeout: 3)
         XCTAssertTrue(hasGrid || hasEmpty,
                       "SourcePulse should show status grid or empty state")
+        XCTAssertTrue(sourcePulse.liveUnavailable.waitForExistence(timeout: 5),
+                      "SourcePulse should finish the mock-service live poll before capture")
         ScreenshotCapture.capture(name: "sourcePulse_statusGrid", app: app, screen: "sourcePulse", test: #function)
     }
 
