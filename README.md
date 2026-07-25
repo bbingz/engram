@@ -114,7 +114,7 @@ macos/scripts/deploy-local.sh macos/build/EngramExport/Engram.app
 # get_context cwd=/your/project/path
 ```
 
-首次启动 `Engram.app` 时，`EngramService` 会自动扫描所有会话文件并建立索引（存储在 `~/.engram/index.sqlite`）。之后通过文件监听增量更新，无需手动维护。
+首次启动 `Engram.app` 时，`EngramService` 会自动扫描所有会话文件并建立索引（存储在 `~/.engram/index.sqlite`）。之后由后台调度器周期性重扫增量更新，间隔随空闲程度在 15 分钟到 1 小时之间自适应，无需手动维护。刚结束的会话最长可能要等一个周期才出现在索引里。
 
 ## 注册为 MCP Server
 
