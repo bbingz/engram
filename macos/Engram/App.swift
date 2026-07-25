@@ -155,9 +155,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 EngramLogger.error("EngramService launch failed", module: .daemon, error: error)
             }
 
-            // One-click recovery: WP09's menu-bar item / Service-State banner post
-            // .restartService when status is .error/.degraded. Gated on
-            // autoStartService so headless test runs never spawn the helper.
+            // One-click recovery: the HomeView Service State panel and the
+            // menu-bar right-click menu post .restartService while
+            // serviceStatusStore.isFailed. Gated on autoStartService so headless
+            // test runs never spawn the helper.
             restartObserverToken = NotificationCenter.default.addObserver(
                 forName: .restartService, object: nil, queue: .main
             ) { [weak self] _ in

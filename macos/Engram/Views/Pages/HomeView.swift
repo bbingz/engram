@@ -324,6 +324,17 @@ struct HomeView: View {
                     value: serviceParentSessionsText(freshness),
                     tint: Theme.accent
                 )
+                // 只在失败态出现；ServiceStateRow 是两行共用的非交互行，
+                // 不为一个按钮给它穿回调。
+                if serviceStatusStore.isFailed {
+                    Button {
+                        NotificationCenter.default.post(name: .restartService, object: nil)
+                    } label: {
+                        Label("Restart Service", systemImage: "arrow.clockwise")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .accessibilityIdentifier("home_restartService")
+                }
             }
         }
         .accessibilityIdentifier("home_serviceState")
