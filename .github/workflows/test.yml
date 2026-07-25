@@ -3,8 +3,13 @@ name: Tests
 on:
   push:
     branches: [main]
+  # Deliberately unfiltered by base branch. Only dependency-review.yml runs
+  # without a base filter, so a PR stacked on a feature branch used to trigger
+  # nothing else and still report all-green — three PRs in the 2026-07 mirror
+  # backlog shipped Swift test files that had never compiled because of this.
+  # codeql.yml stays filtered to main: the blind spot was Swift tests, and
+  # CodeQL Swift is the slowest pair in the matrix.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
