@@ -39,6 +39,53 @@ test attempt hung waiting for Xcode workers and was terminated; no test count
 is claimed from it. The failed workflow was not rerun; the corrective push
 must earn a fresh full-UI result.
 
+### PR #264 partial-enumeration safety remediation (local only, 2026-07-26)
+
+The first adversarial review of PR #264 found a destructive edge case in its
+domain-scoped `file_index_state` prune. `ClaudeCodeAdapter` published roots
+before enumeration, included profiles whose resolver snapshot said
+`available=false`, and used `directChildren`, which converted any directory
+read failure into an empty list. A healthy sibling profile could therefore
+provide the non-empty keep-set that authorized deleting every state row under
+an unavailable or only partially enumerated root.
+
+Replayed local commit `0d81bfdb` fixes that exact range without widening the
+prune:
+
+- clear the prior domain before each full listing;
+- enumerate only profiles marked available by the refreshed resolver snapshot;
+- use a throwing direct-child walk for every directory that participates in
+  the declared Claude listing;
+- publish base and derived-source roots only after the complete walk succeeds;
+- preserve the existing non-throwing helper for adapters that do not opt into
+  destructive completeness.
+
+Two tests first reproduced the old deletion: an unavailable profile beside a
+healthy profile, and a root that became a regular file after profile
+resolution. The red run executed 2 tests with 5 assertion failures and logged
+one deletion in each scenario. After replaying the fix onto the post-#262
+base, those 2 tests passed; the full `FileIndexStateOrphanPruneTests` class
+passed 13/13; and the full `EngramCoreTests` scheme executed 1,011 tests with
+1 environment skip and zero failures. `scripts/check-xcodeproj-drift.sh` and
+`git diff --check` are clean.
+
+The original local-only patch `3a854567` was reviewed by Qwen job
+`pv-8239bb0e` over exact range `783eb5d3..3a854567` and received explicit
+`APPROVE`. Its only Medium observation was the deliberate availability
+tradeoff: one profile read error skips the whole Claude adapter for that pass.
+The live `SwiftIndexer.scanSnapshots` call chain catches non-cancellation
+listing errors per adapter and continues with the next adapter, so the failure
+does not abort the global scan. Keeping the Claude adapter atomic is required
+to prevent a partial keep-set from authorizing deletion. The existing
+`testOrphanUnderDeclaredRootIsPruned_repro` is the positive control proving
+successful complete listings still prune.
+
+After PR #262 merged as `a598ed59`, GitHub rebased PR #264 to
+`7ed3c612`; the safety patch replayed without a code conflict as `0d81bfdb`.
+The post-rebase focused and full tests plus xcodeproj drift are green. This
+branch remains local-only until the exact-head adversarial review approves;
+the pushed head must then pass the final PR CI.
+
 ### PR #262 adversarial-review remediation (2026-07-26)
 
 After rebasing `feat/live-sessions-hold` onto `main@ca3989fa`, an exact-head

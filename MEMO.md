@@ -10,6 +10,11 @@
 - [修复] #262 exact-head 对抗 review 抓到连续失败轮询不一定触发 SwiftUI freshness 重算；`LiveSessionsHold.failed(at:)` 现只更新尝试时间，不覆盖 last-good 或成功时钟，三处消费者均接线。Popover stale badge 同时保留 active count 与 as-of。
 - [验证] 两个复现先红（缺失失败状态成员；stale badge 丢 count），修复后定向 `EngramTests` 39/39；`xcodeproj drift ok`。完整证据见 `CHANGELOG.md`。
 - [验证] #262 已 squash merge 为 `a598ed59`；合入后唯一红项按上方 baseline drift 记录继续收口。
+- [修复] PR #264 的首次对抗 review 找到误删边界：不可用或中途枚举失败的 Claude profile 仍可能借健康 sibling 的非空 keep-set 进入裁剪域。重放提交 `0d81bfdb`（原 `3a854567`）现在先清旧域、只枚举 available profiles、目录读取失败即中止，并且仅在完整成功后发布 base/derived roots。
+- [验证] 两条回归先红：2 tests / 5 assertions failed，两个场景都实际删了 1 行；重放到包含 #262 的新 base 后，聚焦 2/2、完整 orphan-prune 13/13、全量 EngramCoreTests 1,011 项 / 0 失败 / 1 环境 skip，xcodeproj drift 与 diff check 均通过。完整命令与因果见 `CHANGELOG.md`。
+- [复核] Qwen 只读对抗 review job `pv-8239bb0e` 锁定 exact range `783eb5d3..3a854567`，明确返回 `APPROVE`。唯一 Medium 是单个 profile 读取失败会跳过整次 Claude adapter；已核实 `SwiftIndexer` 只跳该 adapter、继续其他 adapters，这是防止部分 keep-set 参与删除的必要边界。成功枚举仍裁剪由既有正向测试覆盖。
+- [变更] #262 已 squash merge 为 `a598ed59`；#264 远端已 rebase 为 `7ed3c612`，安全补丁无代码冲突重放为本地 `0d81bfdb`。文档冲突仅合并两边同日事实。
+- [未验证] #264 仍未 push；需先取得异家 exact-head review 的明确批准，再等待推送后 PR CI。
 
 ### 2026-07-25
 
