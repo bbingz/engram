@@ -7,6 +7,41 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: a PR based on a feature branch runs no Swift tests at all (2026-07-25)
+
+- #253 targeted `feat/transcript-find-rendering` rather than `main`. The Tests
+  and CodeQL workflows only trigger for pull requests against `main`, so its
+  entire check list was a single `Dependency Review`. GitHub still reported
+  `mergeStateStatus: CLEAN`, because "no required check is failing" and "the
+  required checks ran" are the same status when nothing ran. Any PR stacked on
+  a feature branch has this hole; re-target to `main` before trusting its
+  status, or read the check list rather than the rollup verdict.
+- Merging the backlog through one integration branch off `main` and running
+  `xcodebuild test -scheme Engram -skip-testing:EngramUITests` locally is what
+  surfaced the two defects below. Neither could have been caught by merging the
+  PRs one at a time: the combined state had never been compiled, and #253's own
+  code had never been tested at all.
+- Regression: row 30 moved `ReplayState.parseISO` off the main actor by
+  replacing the cached static formatters with per-call ones. Correct for
+  concurrency, but it allocates two `ISO8601DateFormatter`s per call and three
+  callers call it in a loop — `densityBuckets` (per entry, on every replay
+  density render), `walkTurns` (per row) and `closeTurnsAfterAppend`.
+  `makeISOParser()` now hands each caller its own reusable parser: one
+  allocation per walk, still no shared state.
+- Two source-scan guards had gone stale by keying on identifiers instead of
+  properties. `ViewMainThreadReadTests` required the literal
+  `private static let isoFormatter`, which row 30 legitimately deleted;
+  `TodayWorkbenchScopeTests` required `IndexedMessage.build(from: snapshot)`,
+  which row 27 renamed to `fullSnapshot`. Both now pin the property — parser
+  built above the loop; build call inside the `Task.detached` body and nowhere
+  outside — and both were mutation-checked with a build that compiles and runs.
+- Verification hygiene this round depended on separating "no conclusion" from a
+  conclusion. A drift-gate abort produces an empty test report, a mutation that
+  fails to compile produces `** TEST FAILED **`, and a PR with no triggered
+  workflow produces `CLEAN`; none of the three is a test result. Check
+  `xcodebuild_exit`, a nonzero executed-test count, and the absence of real
+  compiler errors before reading red or green as a signal.
+
 ### Fixed: xcodeproj drift hid five red PRs and three never-run test suites (2026-07-25)
 
 - Five open PRs were recorded on the review board as mergeable but had a

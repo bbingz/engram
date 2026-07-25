@@ -3,6 +3,12 @@
 ## Changelog Memo
 
 ### 2026-07-25
+
+- [排查] **base 指向 feature 分支的 PR 完全不跑 Swift 测试**：#253 的 base 是 `feat/transcript-find-rendering`，Tests / CodeQL 工作流只在 base 为 main 时触发，它的 check 列表只有一条 `Dependency Review`；GitHub 仍报 `CLEAN`，因为"没有必需检查失败"和"必需检查跑过了"是同一个状态。看 check 列表，别信 rollup 结论。
+- [修复] 上述盲区藏住一个真实性能回归：row 30 为线程安全把 `ReplayState.parseISO` 改成 per-call 分配两个 `ISO8601DateFormatter`，而 `densityBuckets` / `walkTurns` / `closeTurnsAfterAppend` 三处在循环里调它。改为 `makeISOParser()` 由调用方各持一份复用，每轮遍历只分配一次。
+- [修复] 两条源码扫描断言因钉标识符而失效（`private static let isoFormatter` 被合理删除、`snapshot` 被改名为 `fullSnapshot`），已重锚到性质本身，并做了能编译、能执行的变异验证。
+- [验证] 13 个 PR 合入集成分支后本地全量 Swift 单测 1772 通过 / 0 失败；逐个合并无法发现上述问题——组合态从未被编译过，#253 的代码从未被测过。
+- [未验证] "没有结论"不等于结论：drift 闸中止 → 测试报告为空；变异编译失败 → 报 `TEST FAILED`；工作流未触发 → 报 `CLEAN`。三者都不是测试结果，需查 `xcodebuild_exit`、已执行测试数、真编译错误数。
 - [转录分页] Load more 改为 append-only 重建；助手首条显示 turn 耗时芯片（时钟回拨则隐藏）；堆叠在 #247 之上。
 
 - [排查] 评审板记为"可合并"的五个 PR（#245 #248 #249 #251 #252）实际 `swift-unit` 全红，卡在同一步 xcodeproj drift 闸，测试一行都没跑；详见 CHANGELOG。
