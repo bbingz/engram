@@ -142,9 +142,11 @@ describe('CI workflow hardening', () => {
   // Swift test passed". Dropping the base filter here is what makes a stacked
   // PR actually verified; codeql.yml keeps its filter on purpose.
   it('runs tests for pull requests against any base branch', () => {
-    expect(parsedTestWorkflow.on.push).toEqual({ branches: ['main'] });
-    expect(parsedTestWorkflow.on).toHaveProperty('pull_request');
-    expect(parsedTestWorkflow.on.pull_request ?? null).toBeNull();
+    const on = parsedTestWorkflow.on;
+    expect(on).toBeDefined();
+    expect(on?.push).toEqual({ branches: ['main'] });
+    expect(on).toHaveProperty('pull_request');
+    expect(on?.pull_request ?? null).toBeNull();
 
     const parsedCodeql = parseDocument(codeqlWorkflow).toJS() as {
       on: { pull_request?: { branches?: string[] } };
