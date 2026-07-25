@@ -8,6 +8,7 @@ struct SourcePulseScreen {
     var container: XCUIElement { app.element(id: "sourcePulse_container") }
     var statusGrid: XCUIElement { app.element(id: "sourcePulse_statusGrid") }
     var emptyState: XCUIElement { app.element(id: "sourcePulse_emptyState") }
+    var liveUnavailable: XCUIElement { app.element(id: "sourcePulse_liveUnavailable") }
 
     // MARK: - Waits
 

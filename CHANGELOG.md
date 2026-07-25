@@ -7,6 +7,38 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Source Pulse screenshot baseline drift after PR #262 (2026-07-26)
+
+The post-merge Tests run `30170009516` failed only in
+`ui-test-full`: 30 of 31 screenshots passed, while
+`sourcePulse_statusGrid` measured SSIM `0.8945`, pHash distance `36`, and
+pixel diff `7.9513%`. The CI screenshot shows the intentional
+`Live sessions unavailable` expired-hold state added by PR #262. Four recent
+successful full-UI runs had stable metrics near SSIM `0.9219` and pixel diff
+`5.93%`, so the new failure is deterministic baseline drift rather than
+runner noise.
+
+Only `sourcePulse_statusGrid.png` was refreshed, directly from the exact
+`a598ed59010ccaad403844d65506a79a12ac5000` CI artifact. Replaying that
+artifact against the old baseline reproduced the CI failure. The artifact
+SHA-256 matches the refreshed LFS object
+`39fd902188c898b0edeaf3049d192d24a848f778d67abf09d9e9001b2b9f9473`;
+the resulting SSIM `1`, pHash distance `0`, and pixel diff `0%` are an
+integrity/identity check, not independent proof of UI correctness.
+
+The screenshot test now explicitly waits for
+`sourcePulse_liveUnavailable` before capture. In test mode the app uses an
+unavailable test socket with service auto-start disabled; the initial hold
+has no successful value, so the completed failed poll exposes the expired
+state without depending on hold age. This removes the capture-before-poll
+race. The focused UI test bundle passes `build-for-testing`, and a focused
+`LiveSessionsHoldTests` command exited 0. A full local UI attempt did not enter
+the test body because the macOS 27 runner timed out while enabling automation
+mode, so it is not treated as product evidence. A second result-bundle unit
+test attempt hung waiting for Xcode workers and was terminated; no test count
+is claimed from it. The failed workflow was not rerun; the corrective push
+must earn a fresh full-UI result.
+
 ### PR #262 adversarial-review remediation (2026-07-26)
 
 After rebasing `feat/live-sessions-hold` onto `main@ca3989fa`, an exact-head
@@ -38,7 +70,8 @@ new files, and `scripts/check-xcodeproj-drift.sh` passes.
 - Green: focused `EngramTests` run executed 39 tests with 0 failures, including
   10 `LiveSessionsHoldTests` and 29 `HomePopoverActionsTests`.
 - `scripts/check-xcodeproj-drift.sh`: `xcodeproj drift ok`.
-- Merge remains gated on fresh CI and a new exact-head adversarial approval.
+- PR #262 was squash merged as `a598ed59010ccaad403844d65506a79a12ac5000`;
+  its post-merge screenshot failure is adjudicated in the entry above.
 
 ### Closeout: mirror-backlog follow-ups merged; 14 of 36 rows still open (2026-07-25)
 
