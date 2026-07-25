@@ -206,6 +206,29 @@ final class FileIndexStateOrphanPruneTests: XCTestCase {
         )
     }
 
+    // A declared root containing a SQL LIKE wildcard must not widen the domain.
+    // `LIKE root || '/%'` reads `_` as "any character", so the `.claude-a_b`
+    // profile would have swept `.claude-aXb` — the exact cross-domain delete the
+    // root scoping exists to prevent, arrived at through the predicate itself.
+    func testRootWithLikeWildcardDoesNotOverMatch_repro() throws {
+        let declaredRoot = "/tmp/prune_wildcard/.claude-a_b/projects"
+        let neighbourRoot = "/tmp/prune_wildcard/.claude-aXb/projects"
+        let neighbour = "\(neighbourRoot)/\(UUID().uuidString).jsonl"
+        try seedState(source: .claudeCode, locator: neighbour)
+
+        let deleted = try writer.pruneOrphanFileIndexStates(
+            source: .claudeCode,
+            keeping: ["\(declaredRoot)/kept.jsonl"],
+            under: [declaredRoot]
+        )
+
+        XCTAssertEqual(deleted, 0, "a wildcard in the root must not delete outside the declared domain")
+        XCTAssertTrue(
+            try hasState(source: .claudeCode, locator: neighbour),
+            "rows under a neighbouring root must survive a root containing '_'"
+        )
+    }
+
     func testEmptyEnumerationRootsNeverPrunes() throws {
         let locator = "/tmp/no-domain/\(UUID().uuidString).jsonl"
         try seedState(source: .codex, locator: locator)

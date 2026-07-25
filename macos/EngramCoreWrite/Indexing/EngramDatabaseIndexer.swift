@@ -407,9 +407,13 @@ public extension EngramDatabaseWriter {
                 )
             }
 
-            // `= root OR LIKE root || '/%'` avoids `/foo` matching `/foobar`.
+            // `instr(locator, root || '/') = 1` is an exact prefix test, which
+            // `LIKE root || '/%'` is not: LIKE reads `_` and `%` in the root as
+            // wildcards, so a profile directory named `.claude-a_b` would also
+            // match `.claude-aXb`. This predicate is the whole guarantee that a
+            // prune stays inside its own domain, so it must not have wildcards.
             let rootClauses = Array(
-                repeating: "(locator = ? OR locator LIKE ? || '/%')",
+                repeating: "(locator = ? OR instr(locator, ? || '/') = 1)",
                 count: normalizedRoots.count
             ).joined(separator: " OR ")
             var deleteArgs = StatementArguments([source.rawValue])
