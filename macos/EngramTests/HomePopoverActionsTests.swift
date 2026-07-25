@@ -101,6 +101,18 @@ final class HomePopoverActionsTests: XCTestCase {
         )
     }
 
+    func testPopoverStaleLiveBadgeKeepsActiveCount() throws {
+        let s = try popoverView()
+        XCTAssertTrue(
+            s.contains("let activeCountText"),
+            "Popover stale badge must retain its active-count text"
+        )
+        XCTAssertTrue(
+            s.contains("\\(activeCountText) · \\(ServiceDataFreshness.asOfText(asOf))"),
+            "Popover stale badge must combine active count with the as-of caption"
+        )
+    }
+
     func testPopoverLiveSectionCapsAndFiltersCards() throws {
         let s = try popoverView()
         XCTAssertFalse(
@@ -256,14 +268,23 @@ final class HomePopoverActionsTests: XCTestCase {
 
     func testPopoverAssignsStatsBeforeAwaitingLiveSessions() throws {
         let s = try popoverView()
+        // Live poll stamps LiveSessionsHold via Result; DB snapshot still paints first.
         guard let statsAssignment = s.range(of: "data = result"),
-              let liveAssignment = s.range(of: "liveSessions = await liveSessionsResult") else {
+              let liveAssignment = s.range(of: "switch await livePoll") else {
             return XCTFail("Popover loadData must assign DB stats before awaiting live sessions")
         }
         XCTAssertLessThan(statsAssignment.lowerBound, liveAssignment.lowerBound)
         XCTAssertTrue(
-            s.contains("async let liveSessionsResult"),
+            s.contains("async let livePoll"),
             "liveSessions() must start in a child task concurrently with the detached DB block"
+        )
+        XCTAssertFalse(
+            s.contains("(try? await serviceClient.liveSessions().sessions) ?? []"),
+            "Popover must not collapse live-poll failure into an empty list (row 9 hold)"
+        )
+        XCTAssertTrue(
+            s.contains("LiveSessionsHold"),
+            "Popover must hold last-good live sessions across a failed poll"
         )
     }
 

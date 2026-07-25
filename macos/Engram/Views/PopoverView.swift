@@ -18,13 +18,19 @@ struct PopoverView: View {
     @Environment(EngramServiceClient.self) var serviceClient
 
     @State private var data = PopoverDataSnapshot.empty
-    @State private var liveSessions: [EngramServiceLiveSessionInfo] = []
+    /// Poll interval × 1.5 slack — must not share SourcePulse's 10s-scale window.
+    @State private var liveHold = LiveSessionsHold(
+        liveWindow: PopoverRefreshPolicy.refreshInterval * 1.5
+    )
+    @State private var livePollAttempted = false
     @State private var refreshTimer: Timer?
     @State private var refreshTask: Task<Void, Never>?
 
     // The Live section is a glance surface: cap how many cards can render so it
     // can't dominate the popover, spilling the rest into one overflow row.
     private static let liveSectionLimit = 5
+
+    private var liveSessions: [EngramServiceLiveSessionInfo] { liveHold.sessions }
 
     private var activeLiveCount: Int {
         liveSessions.filter { $0.activityLevel == "active" }.count
@@ -107,15 +113,32 @@ struct PopoverView: View {
     @ViewBuilder
     private var liveSection: some View {
         let visible = visibleLiveSessions
-        if !visible.isEmpty {
+        let liveFreshness = liveHold.freshness(now: Date())
+        if livePollAttempted && liveFreshness == .expired {
             VStack(alignment: .leading, spacing: 6) {
+                SectionHeader(icon: "dot.radiowaves.left.and.right", title: "Live")
+                Text("Live sessions unavailable")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("popover_liveUnavailable")
+            }
+            .accessibilityIdentifier("popover_liveSection")
+        } else if !visible.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                let activeCountText = String.localizedStringWithFormat(
+                    String(localized: "%lld active"),
+                    activeLiveCount
+                )
+                let badge: String = {
+                    if case .stale(let asOf) = liveFreshness {
+                        return "\(activeCountText) · \(ServiceDataFreshness.asOfText(asOf))"
+                    }
+                    return activeCountText
+                }()
                 SectionHeader(
                     icon: "dot.radiowaves.left.and.right",
                     title: "Live",
-                    badge: String.localizedStringWithFormat(
-                        String(localized: "%lld active"),
-                        activeLiveCount
-                    )
+                    badge: badge
                 )
                 ForEach(visible.prefix(Self.liveSectionLimit)) { session in
                     LiveSessionCard(session: session, onOpen: { openLive(session) })
@@ -227,7 +250,9 @@ struct PopoverView: View {
     private func loadData() async {
         let db = self.db
         let serviceClient = self.serviceClient
-        async let liveSessionsResult: [EngramServiceLiveSessionInfo] = Self.loadLiveSessions(serviceClient)
+        // Live poll runs in parallel with the timeline DB read; success stamps
+        // the hold, failure leaves last-good (no empty-list collapse on throw).
+        async let livePoll: Result<[EngramServiceLiveSessionInfo], Error> = Self.pollLiveSessions(serviceClient)
 
         // Only the recent-session timeline needs DB work now; run it detached so
         // nothing blocks the main thread, and assign it before awaiting the live
@@ -260,15 +285,29 @@ struct PopoverView: View {
         }.value
         data = result
 
-        // Live section — silent-fail like the menu-bar badge so a transient
-        // service hiccup hides the section instead of surfacing an error.
-        liveSessions = await liveSessionsResult
+        livePollAttempted = true
+        switch await livePoll {
+        case .success(let sessions):
+            var hold = liveHold
+            hold.succeeded(sessions)
+            liveHold = hold
+        case .failure:
+            var hold = liveHold
+            hold.failed()
+            liveHold = hold
+        }
     }
 
     // MARK: - Helpers
 
-    private static func loadLiveSessions(_ serviceClient: EngramServiceClient) async -> [EngramServiceLiveSessionInfo] {
-        (try? await serviceClient.liveSessions().sessions) ?? []
+    private static func pollLiveSessions(
+        _ serviceClient: EngramServiceClient
+    ) async -> Result<[EngramServiceLiveSessionInfo], Error> {
+        do {
+            return .success(try await serviceClient.liveSessions().sessions)
+        } catch {
+            return .failure(error)
+        }
     }
 
     private func timelineEmptyText(_ freshness: ServiceDataFreshness) -> String {
