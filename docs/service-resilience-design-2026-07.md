@@ -570,25 +570,56 @@ is dropped — a persistently-unparseable file SHOULD surface. Guard with
 >
 > A sampled workflow journal parses as **94 valid JSON lines, 0 invalid**, with
 > top-level keys `agentId` / `key` / `result` / `type` — a workflow-journal
-> schema, not a chat transcript. The file is not malformed; the adapter meets a
-> record type it does not model and records `malformedJSON`.
+> schema, not a chat transcript. The file is not malformed.
 >
-> So the predicate as written would put a permanent `262` on claude-code of which
-> **~97% is a schema mismatch the product already knows about**, not a corpus
-> fault. Shipping that chip would be a new false claim in a backlog whose whole
-> subject is false claims.
+> **4. Those 514 rows are stale orphans, not live failures.** This corrects the
+> first draft of finding 3 above, which read them as an adapter that "meets a
+> record type it does not model" and as "514 rows retrying forever". Both are
+> wrong. The timestamps say the retries stopped three weeks ago:
+>
+> | field, over the 514 journal rows | value |
+> |---|---|
+> | `updated_at` range | 2026-07-02 09:10 → **2026-07-04 07:44** |
+> | `retry_after` max | **2026-07-04 08:44** (long past) |
+> | newest `updated_at` anywhere in the table | 2026-07-25 17:39 (today) |
+>
+> The table is live today; these rows have not been touched since 2026-07-04, so
+> nothing is currently retrying them. Nor could it: `ClaudeCodeAdapter.discover`
+> descends exactly one level into `subagents/` and takes `.jsonl` direct children
+> (`where subagentURL.pathExtension == "jsonl"`, unchanged since `6a472734`,
+> 2026-04-24), and `ClaudeCodeProfileService` walks the same shape. Neither can
+> produce a `subagents/workflows/<wf>/journal.jsonl` locator. The corpus confirms
+> it: **1,166** such files exist under `~/.claude` alone against **262** recorded
+> claude-code rows — a live scan would have all of them.
+>
+> They persist because **nothing ever prunes `file_index_state`**. Product code
+> only creates the table (`EngramMigrations.swift:163`), inserts
+> (`EngramDatabaseIndexer.swift:330`), and reads it; the sole `DELETE FROM
+> file_index_state` in the tree is `EngramCoreTests/IndexerParityTests.swift:658`.
+> A row written by a discovery path that no longer exists is counted forever.
+>
+> So the predicate as written would put a permanent `262` on claude-code that is
+> **~97% three-week-old residue from code that is not in the tree**. Shipping that
+> chip would be a new false claim in a backlog whose whole subject is false
+> claims.
 >
 > **Row 12 cannot ship on this predicate.** Options, in the order they should be
 > considered:
-> 1. Classify workflow journals correctly at the adapter (a distinct
->    non-transcript record kind, not `malformedJSON`) — fixes the count at its
->    source and stops 514 rows retrying forever (`retry_count` up to 58).
-> 2. Failing that, exclude `…/subagents/workflows/%journal.jsonl` from the
->    predicate and say so in the help text.
+> 1. Prune orphan `file_index_state` rows — delete rows whose locator the current
+>    scan no longer enumerates. This is the actual defect; the chip is only the
+>    first surface that would have exposed it.
+> 2. Failing that, scope the chip to locators the current scan still enumerates,
+>    so orphans cannot inflate it regardless of how they got there.
+> 3. Weakest: exclude `…/subagents/workflows/%journal.jsonl` from the predicate
+>    and say so in the help text. Cosmetic — it leaves the orphans in the table
+>    and only hides this one shape.
 >
-> Option 1 is out of row 12's scope. Row 12 should not be implemented until the
-> misclassification is resolved or explicitly excluded, or its chip will report a
-> fault that does not exist.
+> Option 1 is out of row 12's scope. Row 12 should not be implemented until orphan
+> rows are pruned or excluded, or its chip will report a fault that does not exist.
+>
+> **Not established:** which code wrote these rows during 2026-07-02..04. It is
+> not in `main` — the window coincides with the `codex/perf-integration-review`
+> merges, but that was not traced to a specific commit and is not claimed here.
 >
 > **Still unverified:** whether the remaining 14 session-transcript rows are
 > genuine breakage. They were not opened.
