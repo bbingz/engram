@@ -422,7 +422,11 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).not.toContain('.memory|*.md|docs/*)');
     // docs/archive/scripts/* is carved back out above the allowlist: those files
     // are scanned by tests/tooling/no-static-viking-creds.test.ts.
-    expect(testWorkflow).toContain('docs/archive/scripts/*)');
+    const carveOutIndex = testWorkflow.indexOf('docs/archive/scripts/*)');
+    const allowlistIndex = testWorkflow.indexOf('.memory|.memory/*|');
+    expect(carveOutIndex).toBeGreaterThan(-1);
+    expect(allowlistIndex).toBeGreaterThan(-1);
+    expect(carveOutIndex).toBeLessThan(allowlistIndex);
   });
 
   // The allowlist is shell, and a shell `case` can be wrong in ways no string
@@ -431,11 +435,28 @@ describe('CI workflow hardening', () => {
   // the workflow and runs it under bash against representative paths, so the
   // behaviour is checked rather than the text. (repro)
   it('executes the real classifier and routes representative paths correctly', () => {
-    const body = testWorkflow.slice(
-      testWorkflow.indexOf('              case "$path" in'),
-      testWorkflow.indexOf('              esac') + '              esac'.length,
+    const workflowLines = testWorkflow.split('\n');
+    const caseStart = workflowLines.findIndex(
+      (line) => line.trim() === 'case "$path" in',
     );
-    expect(body, 'classifier case block not found').toContain('esac');
+    expect(caseStart, 'classifier case block not found').toBeGreaterThan(-1);
+
+    let caseDepth = 0;
+    let caseEnd = -1;
+    for (let index = caseStart; index < workflowLines.length; index += 1) {
+      const line = workflowLines[index]?.trim() ?? '';
+      if (/^case\b.*\bin$/.test(line)) caseDepth += 1;
+      if (line !== 'esac') continue;
+      caseDepth -= 1;
+      if (caseDepth === 0) {
+        caseEnd = index;
+        break;
+      }
+    }
+    expect(caseEnd, 'matching classifier esac not found').toBeGreaterThan(
+      caseStart,
+    );
+    const body = workflowLines.slice(caseStart, caseEnd + 1).join('\n');
 
     const classify = (paths: string[]): string => {
       const script = [
@@ -481,9 +502,10 @@ describe('CI workflow hardening', () => {
   // A classified-light path skips every job, Node included. If a test or gate
   // reads such a path, a change to it ships with the check that covers it
   // silently skipped — the same shape as the stacked-PR blind spot #258 closed.
-  // This walks the real allowlist against the real repo rather than asserting a
-  // frozen list, so a future addition cannot quietly reintroduce it. (repro)
-  it('never classifies as light a path that tests or scripts read', () => {
+  // This is a lower-bound guard over existing quoted literal repo paths. Dynamic
+  // path construction and directory walks still require direct audit when the
+  // allowlist changes. (repro)
+  it('keeps existing literal paths named by tests or scripts out of the light allowlist', () => {
     const clause = testWorkflow
       .split('\n')
       .map((line) => line.trim())
@@ -510,9 +532,10 @@ describe('CI workflow hardening', () => {
     const isLight = (path: string): boolean =>
       !deny.some((re) => re.test(path)) && allow.some((re) => re.test(path));
 
-    // Every repo-relative path a file under tests/ or scripts/ names as a string,
-    // kept with the file that names it: this test necessarily mentions
-    // allowlisted paths in its own fixtures, and only those must be discounted.
+    // Every existing repo-relative path a file under tests/ or scripts/ names as
+    // a quoted string, kept with the file that names it: this test necessarily
+    // mentions allowlisted paths in its own fixtures, and only those are
+    // discounted.
     const selfPath = 'tests/scripts/ci-workflow.test.ts';
     const namedBy = new Map<string, Set<string>>();
     for (const line of execFileSync(
@@ -548,8 +571,21 @@ describe('CI workflow hardening', () => {
 
     expect(
       offenders,
-      `these paths are read by tests/ or scripts/ but classify as durable-docs, so a change to them would skip the check that reads them: ${offenders.join(', ')}`,
+      `these literal paths are named by tests/ or scripts/ but classify as durable-docs, so a change to them would skip the check that names them: ${offenders.join(', ')}`,
     ).toEqual([]);
+
+    // docs/competitive-*.md is the new allowlist surface in this change. Check
+    // its stable prefix separately so literal globs and directory-walk roots are
+    // not lost merely because the generic path extractor requires a real file.
+    const competitiveConsumers = execFileSync(
+      'git',
+      ['grep', '-lF', 'docs/competitive-', '--', 'tests', 'scripts'],
+      { cwd: repoRoot, encoding: 'utf8' },
+    )
+      .split('\n')
+      .filter(Boolean)
+      .filter((path) => path !== selfPath);
+    expect(competitiveConsumers).toEqual([]);
   });
 
   it('runs PR smoke and main full UI without exposing AI-triage secrets', () => {

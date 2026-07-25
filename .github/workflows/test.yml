@@ -48,17 +48,18 @@ jobs:
             heavy=false
             while IFS= read -r path; do
               case "$path" in
-                # Durable records with no consumer under tests/ or scripts/. A path
-                # listed here skips EVERY job, Node included, so anything a test or
-                # gate actually reads must stay out — see the allowlist-consumer
-                # test in tests/scripts/ci-workflow.test.ts, which fails if one
-                # creeps in. Notably CLAUDE.md is NOT here: it is a checked root
-                # path in scripts/check-invariants-ledger.sh, so an edit to it can
-                # break the very gate this classifier would skip.
+                # Archive scripts are read by credential-safety tests, so this
+                # carve-out must precede the broader docs/archive/* allowlist.
                 docs/archive/scripts/*)
                   heavy=true
                   break
                   ;;
+                # Durable records audited as having no current test/script
+                # consumer. A listed path skips EVERY job, Node included. The
+                # literal-consumer test is a lower-bound guard, not proof against
+                # dynamically constructed paths, so new entries still require a
+                # direct consumer audit. Notably CLAUDE.md is NOT here: it is a
+                # checked root path in scripts/check-invariants-ledger.sh.
                 .memory|.memory/*|CHANGELOG.md|MEMO.md|docs/archive/*|docs/reviews/*|docs/roadmap.md|docs/TODO.md|docs/followups.md|docs/competitive-*.md)
                   ;;
                 *)
