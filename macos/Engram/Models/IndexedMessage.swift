@@ -85,6 +85,7 @@ struct IndexedMessage: Identifiable {
     private static func closeTurnsAfterAppend(priorCount: Int, indexed: inout [IndexedMessage]) {
         lastDurationWalkISOParses = 0
         guard priorCount < indexed.count else { return }
+        let parse = ReplayState.makeISOParser()
 
         // Seed with the last open prior user (if any). An unparseable user at
         // the seam breaks the chain (no boundary backfill).
@@ -94,7 +95,7 @@ struct IndexedMessage: Identifiable {
             while i >= 0 {
                 let row = indexed[i]
                 if row.message.role == "user", !row.message.isSystem {
-                    if let date = parseUserTimestamp(row.message.timestamp) {
+                    if let date = parseUserTimestamp(row.message.timestamp, using: parse) {
                         seed = (i, date)
                     } else {
                         seed = nil
@@ -116,10 +117,11 @@ struct IndexedMessage: Identifiable {
     ) {
         var openUser = seedOpenUser
         guard from < indexed.count else { return }
+        let parse = ReplayState.makeISOParser()
         for i in from..<indexed.count {
             let row = indexed[i]
             guard row.message.role == "user", !row.message.isSystem else { continue }
-            guard let date = parseUserTimestamp(row.message.timestamp) else {
+            guard let date = parseUserTimestamp(row.message.timestamp, using: parse) else {
                 // Hard break: do not close previous turn with a fake endpoint.
                 openUser = nil
                 continue
@@ -131,10 +133,13 @@ struct IndexedMessage: Identifiable {
         }
     }
 
-    private static func parseUserTimestamp(_ raw: String?) -> Date? {
+    private static func parseUserTimestamp(
+        _ raw: String?,
+        using parse: (String) -> Date?
+    ) -> Date? {
         guard let raw else { return nil }
         lastDurationWalkISOParses += 1
-        return ReplayState.parseISO(raw)
+        return parse(raw)
     }
 
     private static func applyOneTurn(
