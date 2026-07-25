@@ -356,11 +356,50 @@ orphans under the declared roots, so there is no backfill step and no version
 gate. Reverting stops pruning; it does not restore deleted rows, which is
 acceptable because a deleted row costs a re-parse and nothing else.
 
-**Corpus check — still outstanding.** Not run. The 528 rows should go to 0 across
-full scans (the 514 workflow journals sit under `~/.claude/projects/**`, inside a
-declared root and outside the keep-set, so they are in scope), and a second scan
-should delete 0 more. Row 12 (Part C of
-`docs/service-resilience-design-2026-07.md`) unblocks once that is recorded.
+### Corpus check — run, and it contradicts the prediction
+
+The prediction above ("the 528 rows go to 0") was **wrong**. Measured against an
+online `.backup` copy of the real `~/.engram/index.sqlite` (52,943 rows), driving
+the production sequence — `SessionAdapterFactory.defaultAdapters()` → the real
+`ClaudeCodeAdapter.listSessionLocators()` → `enumerationRoots` →
+`pruneOrphanFileIndexStates` — the live database was never opened for writing.
+
+| | before | after |
+|---|---|---|
+| `file_index_state` rows | 52,943 | 48,970 |
+| `source='claude-code'` | 37,940 | 33,967 |
+| `failure_kind IS NOT NULL` | 1,284 | **1,022** |
+| `failure_kind='malformedJSON'` | 528 | **266** |
+| workflow-journal rows, all sources | 514 | **252** |
+| workflow-journal rows, `claude-code` | 262 | **0** |
+| `~/.claude-mimosg` rows | 23 | **23** |
+
+Enumeration: **37,841** locators, **1** declared root. Deleted **3,973** rows, of
+which 262 were workflow journals. A second prune with identical inputs deleted
+**0** — idempotent as designed.
+
+**Why one root, not thirteen.** Every `~/.claude-*/projects` on this machine is a
+**symlink to `~/.claude/projects`**. `canonicalProjectsRoots` resolves and
+de-duplicates them, so the thirteen profiles collapse to one canonical root. That
+is correct behaviour, not a defect — but it means the 3,709 `claude-code` rows
+recorded under symlink spellings (`~/.claude-doubao/projects/…`) fall outside the
+declared root by string prefix and are **kept**. 3,624 of them have a canonical
+twin row, i.e. they are duplicate spellings of files already tracked under
+`~/.claude/projects`. They are as stale as the journals; the prune simply cannot
+see them.
+
+**Why 252 journals survive.** They belong to `codex` (156), `glm` (43),
+`deepseek` (16), `kimi` (14), `mimo` (9), `qwen` (8), `minimax` (4) and `doubao`
+(2). Those adapters declare no roots, so by design they never prune. Nothing is
+wrong with the prune; the opt-in is simply one adapter wide.
+
+**Row 12 is therefore still blocked.** Its predicate would count 266 malformed /
+1,022 total rows after this change, and every one of those is still residue. This
+change removes half the target set. Unblocking row 12 needs at least one more
+step — extending the opt-in to the other Claude-profile-backed sources, and
+handling symlink-spelled locators (canonicalise on write, or match roots after
+resolving symlinks rather than by string prefix). Neither is in this change's
+scope, and neither should be bolted on without its own measurement.
 
 ## Risks and open questions
 
@@ -385,6 +424,16 @@ should delete 0 more. Row 12 (Part C of
   the raw locator string exactly as `upsertFileIndexState` wrote it, and the root
   test is a prefix, so a composite locator under a declared root behaves like any
   other. Covered by `testPruneKeepsEnumeratedRowsAndTheirParseOffsets`.
+- **Symlink-spelled locators are unreachable by this prune.** `~/.claude-*/projects`
+  are symlinks to `~/.claude/projects` on this machine, so 3,709 `claude-code`
+  rows carry a spelling no canonical root prefixes. Keeping them is the safe
+  outcome, but they are stale and this change cannot remove them. A follow-up must
+  either canonicalise locators on write or compare roots after resolving symlinks
+  instead of by string prefix.
+- **The opt-in is one adapter wide.** 252 of the 514 workflow-journal rows belong
+  to seven other sources whose adapters declare no roots. Extending the opt-in is
+  the obvious next step and needs its own per-source measurement, not a blanket
+  default.
 - **Not established:** which code wrote the 514 journal rows during
   2026-07-02..04, or the 10 rows on 2026-06-21. Neither path is in `main`. The
   July window coincides with the `codex/perf-integration-review` merges, but that
