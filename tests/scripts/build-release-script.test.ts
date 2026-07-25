@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const repoRoot = resolve(import.meta.dirname, '../..');
 const verifyScript = resolve(repoRoot, 'macos/scripts/release-verify.sh');
+const releaseScript = resolve(repoRoot, 'macos/scripts/build-release.sh');
 const releaseWorkflow = resolve(repoRoot, '.github/workflows/release.yml');
 
 let workdir: string;
@@ -355,3 +356,55 @@ describe('macOS release notarization verification', () => {
     }
   });
 });
+
+// build-release.sh reads the team ID through /usr/libexec/PlistBuddy, so it can
+// only be exercised end-to-end on macOS. This file is in the macos-vitest job's
+// explicit list, so the test still runs in CI — on macos-15, not ubuntu.
+describe.skipIf(process.platform !== 'darwin')(
+  'release build xcodegen pin',
+  () => {
+    // Deploying 1.0.5 (1382) took three attempts: a bare `xcodegen generate` at
+    // step 2 ran Homebrew's newer xcodegen, which rewrote project.pbxproj after
+    // step 0 had already resolved the build number as "clean" — so the archive
+    // would have carried a drifted project under an official build number. The
+    // release path must abort at the gate rather than archive whatever xcodegen
+    // happens to be installed.
+    it('aborts before archiving when the pinned xcodegen is unavailable', () => {
+      // A fake HOME keeps step 1's DerivedData rm -rf inside the sandbox, and an
+      // unusable XCODEGEN_BIN fails the gate regardless of what is installed.
+      // ENGRAM_BUILD_NUMBER short-circuits step 0: CI checks out at depth 1, so
+      // `rev-list --count HEAD` is 1 and the script would reject it as the
+      // default placeholder before ever reaching the gate under test.
+      const home = mkdtempSync(join(tmpdir(), 'engram-relhome-'));
+      let status: number | null = 0;
+      let stdout = '';
+      let stderr = '';
+      try {
+        stdout = execFileSync('bash', [releaseScript], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            ENGRAM_BUILD_NUMBER: '99999',
+            HOME: home,
+            XCODEGEN_BIN: '/nonexistent/xcodegen',
+            XDG_CACHE_HOME: mkdtempSync(join(tmpdir(), 'engram-xg-')),
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (error) {
+        const e = error as { status: number; stdout: string; stderr: string };
+        status = e.status;
+        stdout = e.stdout;
+        stderr = e.stderr;
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+
+      expect(status).not.toBe(0);
+      expect(stderr).toContain('needs xcodegen');
+      expect(stdout).toContain('[2/5]');
+      expect(stdout).not.toContain('[3/5] Archiving');
+    });
+  },
+);
