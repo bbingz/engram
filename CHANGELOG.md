@@ -76,6 +76,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   denominator so skip-tier FTS absence no longer permanent-oranges healthy sources.
 - `EngramServiceSourceInfo` carries `healthReason` for badge tooltips.
 - Ledger entry 3 Verified-by updated for the new IPC tests.
+### Added: Codex native spawn parent backfill (row 22) (2026-07-25)
+
+- Version-gated `backfillCodexNativeParents` links Codex children from
+  vendor-stamped line-1 `thread_spawn` / top-level `parent_thread_id`
+  (`link_source = path`); declines depth > 1 and skip-tier parents.
+- Unconditional `type == session_meta` gate (no bare-payload fallthrough);
+  rowid high-water cursor drains past fully rejected pages.
+- Coverage: multi-byte head boundary (`padFilePast: 262_144`), drain past
+  501 rejected candidates, third-call cursor does not re-read rejects;
+  EN/ZH format docs + ledger entry 2 Verified-by updated.
 
 
 ### Added: Claude Code plugin MVP (2026-07-24)
