@@ -4,6 +4,17 @@
 
 ### 2026-07-25
 
+- [修复] **栈式 PR 假绿已修**：去掉 `test.yml` 的 `pull_request: branches:[main]`；`codeql.yml` 有意保留过滤——咬人的是 Swift 测试，而 CodeQL Swift 是最慢的一对。`verify-test-gate.sh` 按 `event_name` 分支不按 base ref，无需改。PR #258 / `487d6d09`。
+- [修复] `build-release.sh` step 2 的裸 `xcodegen generate` 改为调 `scripts/check-xcodeproj-drift.sh`：非钉版直接拒跑、有 diff 直接失败。部署 1382 那三次尝试就栽在这里（第二次拿到 `build=20260725034737`）。PR #257 / `f84cd3fe`。
+- [排查] 本地 vitest 挂 503 个的**真根因不是 Node ABI，是 npm 12 默认封禁 install script**——better-sqlite3 从没编译过。`allowScripts` 已批且不 pin（dependabot #236 要把它升到 13.0.1）。注意该字段会**整体覆盖** `~/.npmrc` 的 allow-scripts 列表；`sharp`/`esbuild`/`protobufjs`/`fsevents` 实测被拦也照常工作。
+- [变更] 14 个 worktree、15 个分支已清（`~/.engram-worktrees` 回到 0B），双 upstream 随之消解；`.husky/pre-commit` 补 shebang；`CLAUDE.md` 增 `## Local Dev Environment`。
+- [撤销] 两条开放项前提不成立：`ui-test-full` 不是恒 SKIPPED（只在 push 到 main 时跑，`487d6d09` 上跑了且通过）；`.gitignore` 不匹配 symlink（主仓和 worktree 都没有 symlink 形态）。
+- [决定] **不发 1.0.5**——无外部用户。这关掉镜像 backlog 的 row 0，以及硬门禁在它上面的 row 33/34/35。`release.yml` 门禁保留，想发时打 tag 即触发。当前 tag 停在 `v1.0.4`、Release 停在 `v1.0.3`，本机装的是 1.0.5 (1382)。
+- [清账] **镜像 backlog 36 行（0–35），13 个 PR 覆盖 22 行，仍剩 14 行**：4 行随不发布关闭；4 行（5/9/12/25）是 `docs/service-resilience-design-2026-07.md` 整个包——**写了 spec 但从没开 PR**；6 行（6/11/14/15/20/21）连 spec 都没有。其中 row 5 最刺眼：`App.swift:159-165` 注册了 `.restartService` 观察者，注释声称菜单栏项和状态横幅会 post 它，**全代码库无人 post**——一键服务恢复不可达，注释是假的。
+- [验证] 清空 node_modules 后 `npm ci` exit 0 + `npm test` 1502 passed；`487d6d09` 的 main push 全绿含 `ui-test-full`。
+- [教训] 本轮两次 CI 红**都因为本地验证命令和 CI 不是同一条**：`npx tsc --noEmit` 不覆盖 `tests/`（要用 `npm run typecheck:test`）；`Node quality and tests` 跑在 ubuntu 上，依赖 `/usr/libexec/PlistBuddy` 的测试要放 `build-release-script.test.ts`（macos-vitest 按文件名点跑），并显式传 `ENGRAM_BUILD_NUMBER`（CI 的 `fetch-depth: 1` 让 `rev-list --count HEAD` = 1，会被当成占位构建号拒绝）。
+- [未验证] 14 个 `EngramMCP` 助手仍跑 1340，需各 MCP 会话自己重启才换代；#251/#241/#252 都在这条路径上。
+
 - [排查] **base 指向 feature 分支的 PR 完全不跑 Swift 测试**：#253 的 base 是 `feat/transcript-find-rendering`，Tests / CodeQL 工作流只在 base 为 main 时触发，它的 check 列表只有一条 `Dependency Review`；GitHub 仍报 `CLEAN`，因为"没有必需检查失败"和"必需检查跑过了"是同一个状态。看 check 列表，别信 rollup 结论。
 - [修复] 上述盲区藏住一个真实性能回归：row 30 为线程安全把 `ReplayState.parseISO` 改成 per-call 分配两个 `ISO8601DateFormatter`，而 `densityBuckets` / `walkTurns` / `closeTurnsAfterAppend` 三处在循环里调它。改为 `makeISOParser()` 由调用方各持一份复用，每轮遍历只分配一次。
 - [修复] 两条源码扫描断言因钉标识符而失效（`private static let isoFormatter` 被合理删除、`snapshot` 被改名为 `fullSnapshot`），已重锚到性质本身，并做了能编译、能执行的变异验证。

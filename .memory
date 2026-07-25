@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-25): 104 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-25): 105 dated entries; regenerate after adding sections -->
+- [2026-07-25 - CI blind spot closed, npm 12 blocks native builds, 14 mirror rows open (Claude)](#2026-07-25---ci-blind-spot-closed-npm-12-blocks-native-builds-14-mirror-rows-open-claude)
 - [2026-07-25 - xcodeproj drift is a silent test-coverage hole (Claude)](#2026-07-25---xcodeproj-drift-is-a-silent-test-coverage-hole-claude)
 - [2026-07-24 - Local external build storage and disk cleanup retained off main (Codex)](#2026-07-24---local-external-build-storage-and-disk-cleanup-retained-off-main-codex)
 - [2026-07-16 - Periodic service maintenance memory and redundant work bounded (Codex)](#2026-07-16---periodic-service-maintenance-memory-and-redundant-work-bounded-codex)
@@ -108,6 +109,103 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-25 - CI blind spot closed, npm 12 blocks native builds, 14 mirror rows open (Claude)
+
+### Workflow triggers
+
+- Only `dependency-review.yml` ran without a base-branch filter. `test.yml` and
+  `codeql.yml` both had `pull_request: branches: [main]`, so a PR stacked on a
+  feature branch triggered exactly one check and `gh pr checks` showed
+  all-green. `test.yml`'s filter is now removed (`487d6d09`); `codeql.yml`
+  keeps its own on purpose — the blind spot was Swift tests, and CodeQL Swift
+  is the slowest pair in the matrix.
+- `scripts/ci/verify-test-gate.sh` branches on `event_name`, never on the base
+  ref, so its ui-smoke/ui-full expectations hold for any base.
+- `ui-test-full` is not "always skipped": its condition is
+  `event_name == 'push' && ref == 'refs/heads/main'`. It is the only job that
+  no PR run ever covers.
+
+### npm 12 blocks install scripts
+
+- npm 12 refuses to run a package's install script unless `allowScripts`
+  covers it. With `better-sqlite3` blocked, `npm ci` leaves no
+  `better_sqlite3.node` and 503 of 1501 vitest tests fail with `Could not
+  locate the bindings file … node-v147-darwin-arm64`. That names a Node ABI
+  directory and reads like an ABI mismatch — nothing was ever built. CI pins
+  Node 24 with an older npm and never sees it.
+- `require('better-sqlite3')` succeeds with no addon present: the wrapper is JS
+  and the native module loads lazily at `new Database()`. Probe with
+  `new Database(':memory:')`, not `require`.
+- An `allowScripts` field in `package.json` **replaces** any `allow-scripts`
+  list in `~/.npmrc` for that repo, silently blocking packages approved
+  globally. `sharp`, `esbuild`, `protobufjs` and `fsevents` were each verified
+  to work with their scripts blocked — prebuilt platform packages
+  (`@img/sharp-*`, `@esbuild/*`) and protobufjs' shipped
+  `light.js`/`minimal.js`.
+- `npm install-scripts approve --dry-run` still writes `package.json` in
+  npm 12.0.1.
+
+### Local verification commands that are not CI's
+
+- `npx tsc --noEmit` does not cover `tests/`. `npm run typecheck:test`
+  (`tsconfig.test.json`) does. Two CI failures in one session came from running
+  the former locally and believing it.
+- `Node quality and tests` runs on ubuntu-24.04 and executes the whole vitest
+  suite. A test that shells out to a macOS-only script — anything reaching
+  `/usr/libexec/PlistBuddy` — belongs in
+  `tests/scripts/build-release-script.test.ts`, which `macos-vitest` runs by
+  name on macos-15, behind `describe.skipIf(process.platform !== 'darwin')`.
+- `actions/checkout` defaults to `fetch-depth: 1`, so
+  `git rev-list --count HEAD` is 1 in CI. `build-release.sh` rejects that as
+  the placeholder build number, so a test driving that script must pass
+  `ENGRAM_BUILD_NUMBER`.
+
+### Release build
+
+- `build-release.sh` resolves the build number in step 0 from a clean worktree,
+  then regenerated the project in step 2. An unpinned xcodegen dirties
+  `project.pbxproj` *after* the number is fixed, so the archive can carry a
+  drifted project under an official build number. Step 2 now goes through
+  `scripts/check-xcodeproj-drift.sh`; a release build requires the pinned
+  xcodegen.
+
+### Git and process
+
+- A squash-merged PR leaves its branch out of `git branch --merged origin/main`
+  even though its content is on main. #255 merged as `9ba7a4dd` and its branch
+  needed `-D`. Verify content, not ancestry, before deleting.
+- One `ps` invocation returned no Engram processes while `pgrep -lf` and
+  `/bin/ps` showed 18; not reproducible. Confirm any "nothing found" result
+  with a second independent tool before reporting an absence.
+
+### Publish decision and mirror backlog status
+
+- 2026-07-25: owner declined to release 1.0.5 — no external users. No tag, no
+  GitHub Release, no notarization. `release.yml` gates stay ready
+  (`docs/release-notes/1.0.5.md` exists; `validate-release-tag` checks it).
+  Latest tag `v1.0.4`, latest Release `v1.0.3`, installed app 1.0.5 (1382).
+- `spctl -a -vvv` on this machine reports `override=security disabled`, so its
+  "accepted" verdict is not evidence a bundle would pass where Gatekeeper is
+  enabled.
+- `docs/competitive-mirror-2026-07.md` lists rows 0–35. The 13 merged PRs
+  covered 22: 1, 2, 3, 4, 7, 8, 10, 13, 16, 17, 18, 19, 22, 23, 24, 26, 27, 28,
+  29, 30, 31, 32. Fourteen remain:
+  - closed by the publish decision: 0, 33, 34, 35
+  - specced but never implemented: 5, 9, 12, 25 — the whole of
+    `docs/service-resilience-design-2026-07.md`, the one spec from `7ed3d2a6`
+    that never got a PR
+  - unspecced: 6, 11, 14, 15, 20, 21
+- Row 5 concretely: `macos/Engram/App.swift:159-165` registers a
+  `.restartService` observer under a comment claiming the menu-bar item and
+  Service-State banner post it. Nothing in the codebase posts it. The one-click
+  service recovery is unreachable and the comment is false.
+- Row 6 concretely: `README.md:117` still claims incremental updates happen
+  through file watching ("之后通过文件监听增量更新，无需手动维护"). Verified
+  false on 2026-07-25: no FSEvents, kqueue, `DispatchSource` vnode source or
+  file-watcher type exists anywhere under `macos/EngramService/`,
+  `macos/EngramCoreWrite/` or `macos/Shared/`. Correcting it does not depend on
+  publishing.
 
 ## 2026-07-25 - xcodeproj drift is a silent test-coverage hole (Claude)
 
