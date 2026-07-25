@@ -481,6 +481,7 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 self.applyLiveBadge(today: today, activeCount: live)
             } catch {
                 // Hold last-good active count; drop the dot only when expired.
+                self.liveHold.failed()
                 let activeCount = Self.heldActiveCount(self.liveHold)
                 self.applyLiveBadge(today: today, activeCount: activeCount)
             }

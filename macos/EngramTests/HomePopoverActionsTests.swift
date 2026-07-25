@@ -101,6 +101,18 @@ final class HomePopoverActionsTests: XCTestCase {
         )
     }
 
+    func testPopoverStaleLiveBadgeKeepsActiveCount() throws {
+        let s = try popoverView()
+        XCTAssertTrue(
+            s.contains("let activeCountText"),
+            "Popover stale badge must retain its active-count text"
+        )
+        XCTAssertTrue(
+            s.contains("\\(activeCountText) · \\(ServiceDataFreshness.asOfText(asOf))"),
+            "Popover stale badge must combine active count with the as-of caption"
+        )
+    }
+
     func testPopoverLiveSectionCapsAndFiltersCards() throws {
         let s = try popoverView()
         XCTAssertFalse(

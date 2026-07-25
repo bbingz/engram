@@ -153,7 +153,9 @@ struct SourcePulseView: View {
             hold.succeeded(response.sessions)
             liveHold = hold
         } catch {
-            // Keep last-good; freshness ages the hold into .stale / .expired.
+            var hold = liveHold
+            hold.failed()
+            liveHold = hold
         }
     }
 

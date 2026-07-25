@@ -7,6 +7,39 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### PR #262 adversarial-review remediation (2026-07-26)
+
+After rebasing `feat/live-sessions-hold` onto `main@ca3989fa`, an exact-head
+Grok adversarial review of `370db9d6` found that `SourcePulseView` could keep
+rendering held sessions as current after repeated poll failures. Its freshness
+was derived from `Date()`, but the failure path left `liveHold` unchanged and
+only reassigned `livePollAttempted = true`; that did not provide a new state
+value to drive the `.stale` and `.expired` transitions.
+
+`LiveSessionsHold` now records `lastAttemptAt` on both success and failure.
+`failed(at:)` changes the Equatable hold value without replacing the last-good
+sessions or moving `lastSuccessAt`; all three consumers call it after a failed
+poll. The popover stale badge also retains its active count and appends the
+shared as-of caption instead of replacing the count.
+
+The review's empty-list expiry and 30-minute TTL concerns were checked against
+the existing row-9 design and kept unchanged: the design explicitly chooses an
+unavailable row after expiry and reuses `staleUsefulInterval`. The claimed
+`project.yml` omission was also false: directory source entries include both
+new files, and `scripts/check-xcodeproj-drift.sh` passes.
+
+**Verification**
+
+- Red repro: `LiveSessionsHold` initially had no `failed(at:)` or
+  `lastAttemptAt`; the focused Xcode test failed to compile with those two
+  missing-member errors.
+- Red repro: `testPopoverStaleLiveBadgeKeepsActiveCount` failed both source
+  assertions before the badge change.
+- Green: focused `EngramTests` run executed 39 tests with 0 failures, including
+  10 `LiveSessionsHoldTests` and 29 `HomePopoverActionsTests`.
+- `scripts/check-xcodeproj-drift.sh`: `xcodeproj drift ok`.
+- Merge remains gated on fresh CI and a new exact-head adversarial approval.
+
 ### Closeout: mirror-backlog follow-ups merged; 14 of 36 rows still open (2026-07-25)
 
 Two PRs, both merged: `f84cd3fe` (#257) and `487d6d09` (#258). The post-merge

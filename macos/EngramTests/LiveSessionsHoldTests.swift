@@ -44,6 +44,25 @@ final class LiveSessionsHoldTests: XCTestCase {
         XCTAssertEqual(hold.sessions.map(\.sessionId), ["a", "b"])
     }
 
+    /// Repro: a failed poll must change the Equatable hold value so an `@State`
+    /// owner invalidates and re-evaluates time-derived stale/expired freshness.
+    func testFailedPollRecordsAttemptWithoutReplacingLastGood_repro() {
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        let failedAt = t0.addingTimeInterval(16)
+        let session = sampleSession(id: "held")
+        var hold = LiveSessionsHold(liveWindow: 15)
+        hold.succeeded([session], at: t0)
+        let beforeFailure = hold
+
+        hold.failed(at: failedAt)
+
+        XCTAssertNotEqual(hold, beforeFailure, "failed poll must invalidate an @State hold owner")
+        XCTAssertEqual(hold.sessions, [session], "failed poll must retain the last-good list")
+        XCTAssertEqual(hold.lastSuccessAt, t0, "failed poll must not refresh the success clock")
+        XCTAssertEqual(hold.lastAttemptAt, failedAt)
+        XCTAssertEqual(hold.freshness(now: failedAt), .stale(asOf: t0))
+    }
+
     /// Successful empty poll is not a failure: list clears and stays `.live`
     /// for a few seconds (real-render case), not only at exact timestamp equality.
     func testSuccessfulEmptyPollIsLiveWithinWindow() {

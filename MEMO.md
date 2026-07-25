@@ -2,6 +2,12 @@
 
 ## Changelog Memo
 
+### 2026-07-26
+
+- [修复] #262 exact-head 对抗 review 抓到连续失败轮询不一定触发 SwiftUI freshness 重算；`LiveSessionsHold.failed(at:)` 现只更新尝试时间，不覆盖 last-good 或成功时钟，三处消费者均接线。Popover stale badge 同时保留 active count 与 as-of。
+- [验证] 两个复现先红（缺失失败状态成员；stale badge 丢 count），修复后定向 `EngramTests` 39/39；`xcodeproj drift ok`。完整证据见 `CHANGELOG.md`。
+- [未验证] #262 尚未合并；仍需新 head 全套 CI 与另一模型明确 APPROVE/NO FINDINGS。
+
 ### 2026-07-25
 
 - [修复] **栈式 PR 假绿已修**：去掉 `test.yml` 的 `pull_request: branches:[main]`；`codeql.yml` 有意保留过滤——咬人的是 Swift 测试，而 CodeQL Swift 是最慢的一对。`verify-test-gate.sh` 按 `event_name` 分支不按 base ref，无需改。PR #258 / `487d6d09`。

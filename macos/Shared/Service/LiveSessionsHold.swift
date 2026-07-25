@@ -14,6 +14,7 @@ import Foundation
 struct LiveSessionsHold: Equatable, Sendable {
     private(set) var sessions: [EngramServiceLiveSessionInfo] = []
     private(set) var lastSuccessAt: Date?
+    private(set) var lastAttemptAt: Date?
 
     /// Max age that still counts as `.live` for this hold's owner.
     /// Pass poll cadence × slack (1.5×) so a healthy site stays live across one
@@ -29,6 +30,14 @@ struct LiveSessionsHold: Equatable, Sendable {
     mutating func succeeded(_ sessions: [EngramServiceLiveSessionInfo], at now: Date = Date()) {
         self.sessions = sessions
         self.lastSuccessAt = now
+        self.lastAttemptAt = now
+    }
+
+    /// Record a failed poll without replacing the last-good list or success
+    /// clock. The attempt stamp also gives `@State` owners a changed value so
+    /// they re-evaluate time-derived freshness after every completed failure.
+    mutating func failed(at now: Date = Date()) {
+        self.lastAttemptAt = now
     }
 
     /// Freshness of the held list on the **live-poll** clock (not the status channel).

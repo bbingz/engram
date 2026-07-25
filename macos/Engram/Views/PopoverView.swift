@@ -125,14 +125,15 @@ struct PopoverView: View {
             .accessibilityIdentifier("popover_liveSection")
         } else if !visible.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
+                let activeCountText = String.localizedStringWithFormat(
+                    String(localized: "%lld active"),
+                    activeLiveCount
+                )
                 let badge: String = {
                     if case .stale(let asOf) = liveFreshness {
-                        return ServiceDataFreshness.asOfText(asOf)
+                        return "\(activeCountText) · \(ServiceDataFreshness.asOfText(asOf))"
                     }
-                    return String.localizedStringWithFormat(
-                        String(localized: "%lld active"),
-                        activeLiveCount
-                    )
+                    return activeCountText
                 }()
                 SectionHeader(
                     icon: "dot.radiowaves.left.and.right",
@@ -291,8 +292,9 @@ struct PopoverView: View {
             hold.succeeded(sessions)
             liveHold = hold
         case .failure:
-            // Keep last-good; section captions via liveHold.freshness.
-            break
+            var hold = liveHold
+            hold.failed()
+            liveHold = hold
         }
     }
 
