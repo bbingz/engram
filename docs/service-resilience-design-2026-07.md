@@ -559,10 +559,39 @@ is dropped — a persistently-unparseable file SHOULD surface. Guard with
 > `262 / 28,724 unparsed`, or the share in the `.help` text), for the same reason
 > row 13 stopped drawing a limitless share as a filled quota meter.
 >
-> **Not yet checked:** all 528 matching rows are `malformedJSON` from a single
-> kind. Whether those files are genuinely broken, or an adapter mis-classifies a
-> legal format, is unverified. Sample real locators before trusting the number as
-> a fault count.
+> **3. 97% of the counted rows are not parse failures.** The note above ("all 528
+> are `malformedJSON`; sample before trusting it") was followed up. Sampling the
+> locators:
+>
+> | subset | rows |
+> |---|---|
+> | `…/subagents/workflows/*/journal.jsonl` | **514** |
+> | real session transcripts | 14 |
+>
+> A sampled workflow journal parses as **94 valid JSON lines, 0 invalid**, with
+> top-level keys `agentId` / `key` / `result` / `type` — a workflow-journal
+> schema, not a chat transcript. The file is not malformed; the adapter meets a
+> record type it does not model and records `malformedJSON`.
+>
+> So the predicate as written would put a permanent `262` on claude-code of which
+> **~97% is a schema mismatch the product already knows about**, not a corpus
+> fault. Shipping that chip would be a new false claim in a backlog whose whole
+> subject is false claims.
+>
+> **Row 12 cannot ship on this predicate.** Options, in the order they should be
+> considered:
+> 1. Classify workflow journals correctly at the adapter (a distinct
+>    non-transcript record kind, not `malformedJSON`) — fixes the count at its
+>    source and stops 514 rows retrying forever (`retry_count` up to 58).
+> 2. Failing that, exclude `…/subagents/workflows/%journal.jsonl` from the
+>    predicate and say so in the help text.
+>
+> Option 1 is out of row 12's scope. Row 12 should not be implemented until the
+> misclassification is resolved or explicitly excluded, or its chip will report a
+> fault that does not exist.
+>
+> **Still unverified:** whether the remaining 14 session-transcript rows are
+> genuine breakage. They were not opened.
 
 **DTO.** Add `parseFailureCount: Int` (default 0) to `EngramServiceSourceInfo` at
 all five edit points, after `healthReason`. Named `parseFailureCount`, **not**
