@@ -86,9 +86,11 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
 
     func listSessionLocators() async throws -> [String] {
         // One profile refresh feeds both the keep-set and enumerationRoots.
-        let profiles = refreshProfilesForListing()
+        lastListingRoots.replace(with: [])
+        let profiles = refreshProfilesForListing().filter(\.available)
+        let locators = try await listSessionLocators(profiles: profiles)
         lastListingRoots.replace(with: Self.enumerationRoots(from: profiles))
-        return try await listSessionLocators(profiles: profiles)
+        return locators
     }
 
     private func listSessionLocators(profiles: [ClaudeCodeProfile]) async throws -> [String] {
@@ -109,11 +111,11 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
 
     private func listSessionLocators(projectsRoot: URL) async throws -> [String] {
         var locators: [String] = []
-        for projectURL in JSONLAdapterSupport.directChildren(of: projectsRoot, includingHidden: true)
+        for projectURL in try JSONLAdapterSupport.requiredDirectChildren(of: projectsRoot, includingHidden: true)
             where JSONLAdapterSupport.isDirectory(projectURL)
         {
             try Task.checkCancellation()
-            for entryURL in JSONLAdapterSupport.directChildren(of: projectURL) {
+            for entryURL in try JSONLAdapterSupport.requiredDirectChildren(of: projectURL) {
                 try Task.checkCancellation()
                 if entryURL.pathExtension == "jsonl" {
                     locators.append(entryURL.path)
@@ -122,7 +124,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
 
                 let subagentsURL = entryURL.appendingPathComponent("subagents")
                 guard JSONLAdapterSupport.isDirectory(subagentsURL) else { continue }
-                for subagentURL in JSONLAdapterSupport.directChildren(of: subagentsURL)
+                for subagentURL in try JSONLAdapterSupport.requiredDirectChildren(of: subagentsURL)
                     where subagentURL.pathExtension == "jsonl"
                 {
                     try Task.checkCancellation()
@@ -136,12 +138,12 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                 // workflows/ siblings).
                 let workflowsURL = subagentsURL.appendingPathComponent("workflows")
                 guard JSONLAdapterSupport.isDirectory(workflowsURL) else { continue }
-                for runURL in JSONLAdapterSupport.directChildren(of: workflowsURL)
+                for runURL in try JSONLAdapterSupport.requiredDirectChildren(of: workflowsURL)
                     where JSONLAdapterSupport.isDirectory(runURL)
                     && runURL.lastPathComponent.hasPrefix("wf_")
                 {
                     try Task.checkCancellation()
-                    for agentURL in JSONLAdapterSupport.directChildren(of: runURL)
+                    for agentURL in try JSONLAdapterSupport.requiredDirectChildren(of: runURL)
                         where agentURL.pathExtension == "jsonl"
                         && agentURL.deletingPathExtension().lastPathComponent.hasPrefix("agent-")
                     {
@@ -202,7 +204,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         fileManager: FileManager = .default
     ) async throws -> [String] {
         let profiles = refreshProfilesForListing()
-        let defaultProfiles = profiles.filter { $0.origin == .default }
+        let defaultProfiles = profiles.filter { $0.available && $0.origin == .default }
         var locators: [String] = []
         for locator in try await listSessionLocators(profiles: defaultProfiles) {
             try Task.checkCancellation()
@@ -1112,7 +1114,7 @@ extension ClaudeCodeAdapter {
     /// only), read from the snapshot that listing already refreshed — not a
     /// second resolver pass.
     fileprivate func defaultProfileEnumerationRoots() -> [String] {
-        Self.enumerationRoots(from: currentProfiles().filter { $0.origin == .default })
+        Self.enumerationRoots(from: currentProfiles().filter { $0.available && $0.origin == .default })
     }
 }
 

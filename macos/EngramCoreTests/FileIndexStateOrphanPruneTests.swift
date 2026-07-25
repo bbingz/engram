@@ -177,6 +177,98 @@ final class FileIndexStateOrphanPruneTests: XCTestCase {
         XCTAssertTrue(try hasState(source: .claudeCode, locator: primaryFile.path))
     }
 
+    /// A profile can remain configured while its root is unavailable. A healthy
+    /// sibling must not supply the non-empty keep-set that authorizes deleting
+    /// every row under the unavailable root.
+    func testUnavailableProfileDoesNotEnterPruneDomain_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-unavailable-\(UUID().uuidString)", isDirectory: true)
+        let healthyRoot = root.appendingPathComponent("healthy/projects", isDirectory: true)
+        let healthyProject = healthyRoot.appendingPathComponent("-Users-test", isDirectory: true)
+        let unavailableRoot = root.appendingPathComponent("unavailable/projects", isDirectory: true)
+        let unavailableLocator = unavailableRoot.appendingPathComponent("-Users-test/held.jsonl").path
+        try FileManager.default.createDirectory(at: healthyProject, withIntermediateDirectories: true)
+        try Data("{}\n".utf8).write(to: healthyProject.appendingPathComponent("keep.jsonl"))
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try seedState(source: .claudeCode, locator: unavailableLocator, parsedOffset: 91)
+        let profiles = [
+            ClaudeCodeProfile(
+                id: "healthy",
+                displayName: "healthy",
+                projectsRoot: healthyRoot.path,
+                origin: .custom,
+                available: true,
+                sourceReclamationAllowed: true
+            ),
+            ClaudeCodeProfile(
+                id: "unavailable",
+                displayName: "unavailable",
+                projectsRoot: unavailableRoot.path,
+                origin: .custom,
+                available: false,
+                sourceReclamationAllowed: true
+            ),
+        ]
+        let adapter = ClaudeCodeAdapter(profileResolutionProvider: { profiles })
+
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+
+        XCTAssertTrue(
+            try hasState(source: .claudeCode, locator: unavailableLocator),
+            "a sibling keep-set must not authorize pruning an unavailable profile"
+        )
+        XCTAssertEqual(try parsedOffset(source: .claudeCode, locator: unavailableLocator), 91)
+    }
+
+    /// The root can change after profile resolution. A non-directory/read error
+    /// must fail the whole declared enumeration and leave no live prune domain.
+    func testPartialEnumerationFailureClearsDomainAndSkipsPrune_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-partial-failure-\(UUID().uuidString)", isDirectory: true)
+        let healthyRoot = root.appendingPathComponent("healthy/projects", isDirectory: true)
+        let healthyProject = healthyRoot.appendingPathComponent("-Users-test", isDirectory: true)
+        let failedRoot = root.appendingPathComponent("failed-projects")
+        let failedLocator = failedRoot.appendingPathComponent("-Users-test/held.jsonl").path
+        try FileManager.default.createDirectory(at: healthyProject, withIntermediateDirectories: true)
+        try Data("{}\n".utf8).write(to: healthyProject.appendingPathComponent("keep.jsonl"))
+        try Data("not a directory".utf8).write(to: failedRoot)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try seedState(source: .claudeCode, locator: failedLocator, parsedOffset: 92)
+        let profiles = [
+            ClaudeCodeProfile(
+                id: "healthy",
+                displayName: "healthy",
+                projectsRoot: healthyRoot.path,
+                origin: .custom,
+                available: true,
+                sourceReclamationAllowed: true
+            ),
+            ClaudeCodeProfile(
+                id: "failed",
+                displayName: "failed",
+                projectsRoot: failedRoot.path,
+                origin: .custom,
+                available: true,
+                sourceReclamationAllowed: true
+            ),
+        ]
+        let adapter = ClaudeCodeAdapter(profileResolutionProvider: { profiles })
+
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+
+        XCTAssertTrue(
+            try hasState(source: .claudeCode, locator: failedLocator),
+            "a partial listing must not delete rows under the failed root"
+        )
+        XCTAssertTrue(
+            adapter.enumerationRoots.isEmpty,
+            "failed enumeration must not leave a reusable prune domain"
+        )
+        XCTAssertEqual(try parsedOffset(source: .claudeCode, locator: failedLocator), 92)
+    }
+
     // MARK: - Symlinked profile spellings and the derived-source opt-in
 
     /// `~/.claude-<x>/projects` symlinked to `~/.claude/projects` collapses to one
