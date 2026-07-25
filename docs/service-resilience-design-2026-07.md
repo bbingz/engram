@@ -523,8 +523,8 @@ is dropped — a persistently-unparseable file SHOULD surface. Guard with
 
 > **Measured, 2026-07-25 (before implementing).** The paragraph above left the
 > count unmeasured; it has now been run against a real `~/.engram/index.sqlite`
-> (42,421 `ok` / 529 `retry` / 756 `terminal`). Two of its assumptions do not
-> survive contact with the data.
+> (42,421 `ok` / 529 `retry` / 756 `terminal`). The follow-up below overturns
+> several of its assumptions.
 >
 > **1. The `retry_count >= 3` floor filters nothing.** Identical counts with and
 > without it:
@@ -551,7 +551,16 @@ is dropped — a persistently-unparseable file SHOULD surface. Guard with
 > | codex | 6,014 | 169 | 2.81% |
 > | glm | 2,359 | 44 | 1.87% |
 > | deepseek | 569 | 16 | 2.81% |
+> | kimi | 2,665 | 14 | 0.53% |
+> | mimo | 272 | 9 | 3.31% |
+> | qwen | 1,484 | 8 | 0.54% |
+> | minimax | 414 | 4 | 0.97% |
 > | doubao | 30 | 2 | 6.67% |
+>
+> These nine rows are the complete 528-hit set. `file_index_state.source` is raw
+> persisted text from the adapter that wrote the row, so the workflow-journal
+> residue is distributed across derived and legacy source values; it is not all
+> recorded as `claude-code`.
 >
 > `"\(n) unparsed"` therefore renders a permanent three-digit number on the two
 > main sources. A bare `262` reads as an alarm; `0.9%` reads as negligible — same
@@ -581,16 +590,19 @@ is dropped — a persistently-unparseable file SHOULD surface. Guard with
 > |---|---|
 > | `updated_at` range | 2026-07-02 09:10 → **2026-07-04 07:44** |
 > | `retry_after` max | **2026-07-04 08:44** (long past) |
-> | newest `updated_at` anywhere in the table | 2026-07-25 17:39 (today) |
+> | newest `updated_at` anywhere in the table | 2026-07-25 17:39 (at measurement) |
 >
-> The table is live today; these rows have not been touched since 2026-07-04, so
-> nothing is currently retrying them. Nor could it: `ClaudeCodeAdapter.discover`
-> descends exactly one level into `subagents/` and takes `.jsonl` direct children
-> (`where subagentURL.pathExtension == "jsonl"`, unchanged since `6a472734`,
-> 2026-04-24), and `ClaudeCodeProfileService` walks the same shape. Neither can
-> produce a `subagents/workflows/<wf>/journal.jsonl` locator. The corpus confirms
-> it: **1,166** such files exist under `~/.claude` alone against **262** recorded
-> claude-code rows — a live scan would have all of them.
+> The table was live at measurement time; these rows had not been touched since
+> 2026-07-04, so nothing was retrying them. Nor could it:
+> `ClaudeCodeProfileService`
+> counts only direct `.jsonl` children one level under `subagents/`.
+> `ClaudeCodeAdapter` also enumerates direct children and now descends into
+> `subagents/workflows/wf_*`, but accepts only `agent-*.jsonl` there — explicitly
+> never `journal.jsonl`. Neither current path can produce a
+> `subagents/workflows/<wf>/journal.jsonl` locator. **1,166** such files exist
+> under `~/.claude` alone against only **262** rows persisted as `claude-code`;
+> that partial, frozen coverage is consistent with a removed historical discovery
+> path, not evidence that a current live scan would enumerate the journals.
 >
 > They persist because **nothing ever prunes `file_index_state`**. Product code
 > only creates the table (`EngramMigrations.swift:163`), inserts
@@ -598,10 +610,10 @@ is dropped — a persistently-unparseable file SHOULD surface. Guard with
 > file_index_state` in the tree is `EngramCoreTests/IndexerParityTests.swift:658`.
 > A row written by a discovery path that no longer exists is counted forever.
 >
-> So the predicate as written would put a permanent `262` on claude-code that is
-> **~97% three-week-old residue from code that is not in the tree**. Shipping that
-> chip would be a new false claim in a backlog whose whole subject is false
-> claims.
+> All **262** claude-code hits are journal rows. Globally, the 514 journal rows
+> are **~97%** of the 528-hit set and span nine persisted source values. Shipping
+> a permanent `262` claude-code chip would therefore be a new false claim in a
+> backlog whose whole subject is false claims.
 >
 > **Row 12 cannot ship on this predicate.** Options, in the order they should be
 > considered:
@@ -633,13 +645,21 @@ is dropped — a persistently-unparseable file SHOULD surface. Guard with
 > **Across all 528 counted rows, zero are a file that currently fails to parse.**
 > Every one is residue: an orphan row for a file that is gone, or one written by a
 > discovery path no longer in the tree. A chip reading `262` on claude-code would
-> be reporting corpus damage of which none exists. This makes option 1 (prune) not
-> merely preferable but the only option that makes the number mean anything —
-> options 2 and 3 would still be dividing by a set that is entirely stale.
+> be reporting corpus damage of which none exists. Option 1 (prune) remains the
+> preferred repair because it fixes the stored state. Option 2 can still produce
+> an honest live-domain reading (`0 / N` on this corpus) without deleting the
+> residue. Only option 3 leaves unrelated orphan shapes in the measured set and is
+> merely cosmetic.
 >
 > **Not established:** which code wrote these rows during 2026-06-21..07-04. It is
 > not in `main` — the July window coincides with the `codex/perf-integration-review`
 > merges, but that was not traced to a specific commit and is not claimed here.
+
+**Prerequisite for every C slice below.** Do not execute C1-C3 against the raw
+table predicate above. First land option 1, or implement option 2 so every count
+is scoped to the current enumeration domain. The DTO, chip, MCP field, and
+acceptance criteria below describe the post-prerequisite surface; a denominator
+alone does not make the stale numerator honest.
 
 **DTO.** Add `parseFailureCount: Int` (default 0) to `EngramServiceSourceInfo` at
 all five edit points, after `healthReason`. Named `parseFailureCount`, **not**
@@ -656,8 +676,9 @@ bare count only if the share is stated in `.help`. Neutral gray, informational �
 not an error state. Help text: "Files this source could not parse (excludes empty,
 oversized, and virtual sessions). A sudden rise can signal a vendor format change."
 
-**MCP `stats`.** Add one top-level `parseFailures` integer = the global sum of the
-same predicate. Edit the schema string (`MCPOutputSchemas.swift:31-33`: add
+**MCP `stats`.** After the prerequisite above, add one top-level `parseFailures`
+integer = the global sum of the repaired/scoped predicate. Edit the schema string
+(`MCPOutputSchemas.swift:31-33`: add
 `parseFailures` to `properties`; leave it out of `required` so a missing
 `file_index_state` table is valid) **and** the emitter
 (`MCPDatabase.swift:123-146`: append `("parseFailures", .int(count))`) in the same
