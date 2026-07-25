@@ -58,4 +58,41 @@ final class UIUXPolishWiringTests: XCTestCase {
             )
         }
     }
+
+    /// The check above only proves each file mentions the scaled size somewhere.
+    /// Assistant and code messages render through SegmentedMessageView, so the
+    /// scaled value has to survive two more hops: the routing decision, and the
+    /// argument each segment view is actually handed. Passing the raw `fontSize`
+    /// to one segment would stop that segment scaling while every file-level
+    /// assertion kept passing.
+    func testSegmentedTranscriptPathCarriesScaledFontSizeToEverySegment() throws {
+        let colorBar = try source("macos/Engram/Views/Transcript/ColorBarMessageView.swift")
+        let routeStart = try XCTUnwrap(colorBar.range(of: "static func usesSegmentedView"))
+        let routeEnd = try XCTUnwrap(
+            colorBar.range(of: "}", range: routeStart.upperBound..<colorBar.endIndex)
+        )
+        let route = String(colorBar[routeStart.upperBound..<routeEnd.upperBound])
+        for role in ["assistant", "code"] {
+            XCTAssertTrue(
+                route.contains(".\(role)"),
+                "\(role) messages must route to SegmentedMessageView, which owns the scaling"
+            )
+        }
+
+        let segments = try source("macos/Engram/Views/ContentSegmentViews.swift")
+        let bodyStart = try XCTUnwrap(segments.range(of: "ForEach(Array(displaySegments.enumerated())"))
+        let bodyEnd = try XCTUnwrap(
+            segments.range(of: ".task(id: content)", range: bodyStart.upperBound..<segments.endIndex)
+        )
+        let body = String(segments[bodyStart.upperBound..<bodyEnd.lowerBound])
+        XCTAssertFalse(
+            body.contains("fontSize: fontSize"),
+            "every segment view must be handed effectiveFontSize, not the unscaled fontSize"
+        )
+        XCTAssertEqual(
+            body.components(separatedBy: "fontSize: effectiveFontSize").count - 1,
+            body.components(separatedBy: "fontSize:").count - 1,
+            "a segment view is being handed some other font size"
+        )
+    }
 }
