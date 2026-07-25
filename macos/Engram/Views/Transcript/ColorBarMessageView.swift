@@ -96,6 +96,13 @@ struct ColorBarMessageView: View {
                 Text(label)
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(barColor)
+                if let seconds = indexed.turnDurationSeconds {
+                    Text(TurnDurationFormat.chip(seconds))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .accessibilityLabel("Turn duration \(TurnDurationFormat.chip(seconds))")
+                }
                 Spacer(minLength: 0)
             }
         } else {

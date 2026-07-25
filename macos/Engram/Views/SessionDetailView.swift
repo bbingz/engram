@@ -91,14 +91,32 @@ struct SessionDetailView: View {
         }
     )
 
-    private func updateDisplayIndexed() {
-        displayIndexed = indexedMessages.filter { idx in
-            Self.isMessageVisible(
-                idx,
-                typeVisibility: typeVisibility,
-                showSystemPrompts: showSystemPrompts,
-                showAgentComm: showAgentComm
-            )
+    /// Recompute the visible transcript rows.
+    /// - Full path (`appendedSlice == nil`): filter-toggle / session rebuild —
+    ///   re-filters the whole `indexedMessages` array.
+    /// - Append path: filter **only** the newly indexed slice and append
+    ///   (acceptance A3 — plain append must not re-filter the whole array).
+    /// Always bumps `displayVersion` so the off-main match scan re-runs.
+    private func updateDisplayIndexed(appendedSlice: [IndexedMessage]? = nil) {
+        if let appendedSlice {
+            let visibleNew = appendedSlice.filter { idx in
+                Self.isMessageVisible(
+                    idx,
+                    typeVisibility: typeVisibility,
+                    showSystemPrompts: showSystemPrompts,
+                    showAgentComm: showAgentComm
+                )
+            }
+            displayIndexed.append(contentsOf: visibleNew)
+        } else {
+            displayIndexed = indexedMessages.filter { idx in
+                Self.isMessageVisible(
+                    idx,
+                    typeVisibility: typeVisibility,
+                    showSystemPrompts: showSystemPrompts,
+                    showAgentComm: showAgentComm
+                )
+            }
         }
         // Drive the off-main match rescan (keyed on displayVersion + searchText).
         displayVersion &+= 1
@@ -1158,10 +1176,19 @@ struct SessionDetailView: View {
     /// over the full loaded prefix keeps `typeIndex`/counts correct; because loaded
     /// `ChatMessage`s keep their identity, an appended page diffs cleanly so the
     /// scroll position is preserved.
-    private func rebuildIndexed() async {
-        let snapshot = messages
+    /// Rebuild indexed messages. When `appended` is non-nil (Load more path),
+    /// classify only the new page and carry type counters (row 27).
+    private func rebuildIndexed(appended: [ChatMessage]? = nil) async {
+        let priorIndexed = indexedMessages
+        let priorCounts = typeCounts
+        let priorCount = priorIndexed.count
+        let fullSnapshot = messages
+        let isAppend = appended != nil && !priorIndexed.isEmpty
         let built = await Task.detached(priority: .userInitiated) {
-            IndexedMessage.build(from: snapshot)
+            if isAppend, let appended {
+                return IndexedMessage.appending(appended, to: priorIndexed, counts: priorCounts)
+            }
+            return IndexedMessage.build(from: fullSnapshot)
         }.value
         // The detached build can outlive a session switch; don't clobber the reset.
         if Task.isCancelled { return }
@@ -1170,7 +1197,14 @@ struct SessionDetailView: View {
         // Derive display + matches from LIVE state (not the entry snapshot): a chip
         // toggle or search edit during the off-main build must not be overwritten.
         // updateDisplayIndexed bumps displayVersion → the match scan re-runs off-main.
-        updateDisplayIndexed()
+        // Plain append: filter only the new slice (A3). Filter-toggle / full rebuild:
+        // re-filter the whole array (preserves #247 hidden-match-bucket behavior).
+        if isAppend, priorCount <= built.messages.count {
+            let newSlice = Array(built.messages[priorCount...])
+            updateDisplayIndexed(appendedSlice: newSlice)
+        } else {
+            updateDisplayIndexed()
+        }
     }
 
     /// First load for a session: the whole transcript for normal sessions, or a
@@ -1182,7 +1216,7 @@ struct SessionDetailView: View {
         messages = parsed
         loadedProducedCount = produced
         hasMoreToLoad = Self.hasMoreAfterLoad(returnedCount: produced, requestedLimit: limit)
-        await rebuildIndexed()
+        await rebuildIndexed(appended: nil)
     }
 
     /// Append the next page — or, when `all`, the entire remainder — to the loaded
@@ -1197,7 +1231,7 @@ struct SessionDetailView: View {
         messages += parsed
         loadedProducedCount += produced
         hasMoreToLoad = all ? false : Self.hasMoreAfterLoad(returnedCount: produced, requestedLimit: pageLimit)
-        await rebuildIndexed()
+        await rebuildIndexed(appended: parsed)
     }
 
     private func loadMoreMessages(all: Bool) {
