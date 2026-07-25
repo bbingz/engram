@@ -31,6 +31,8 @@
 
 - [MCP 激活] 首次引导任意关闭即完成；Help/右键菜单可报 issue 与重开引导；首页 MCP 激活卡 + 引导 MCP 步；设置内 Test now 四阶验证；helper 路径从 bundle 推导。
 
+- [发布说明] 新增 `docs/release-notes/1.0.5.md` 用户向发行说明，并在 tag CI 强制存在对应版本文件；不执行 tag/release/repo 元数据变更。
+
 ### 2026-07-24
 
 - [插件] 新增独立的 Claude Code 插件 MVP：复用已安装的 `EngramCLI` / `EngramMCP`，提供 SessionStart 上下文注入与手动 `catch-up`、`remember`、`handoff` 技能，不捆绑第二套 Swift 二进制。

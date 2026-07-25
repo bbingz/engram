@@ -34,6 +34,16 @@ jobs:
             exit 1
           }
 
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Require a user-facing release note for this tag
+        run: |
+          note="docs/release-notes/${GITHUB_REF_NAME#v}.md"
+          test -s "$note" || {
+            echo "Missing/empty release note $note for tag $GITHUB_REF_NAME" >&2
+            exit 1
+          }
+
   release-tests:
     needs: validate-release-tag
     runs-on: macos-15

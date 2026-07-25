@@ -172,6 +172,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Home MCP activation card gated on indexed sessions, Claude Code `engram`
   config key, and dismiss; onboarding gains an MCP step before Ready.
 - In-app MCP "Test now" verification ladder (resolve → exec → handshake → socket).
+### Added: user-facing release notes for 1.0.5 (row 18) (2026-07-25)
+
+- Added `docs/release-notes/` with house rules (`README.md`) and a second-person
+  `1.0.5.md` note curated against the last public release (1.0.3).
+- Tag-time CI (`validate-release-tag`) now requires a non-empty
+  `docs/release-notes/<version>.md` before the release build.
+- Publish/runbook steps that mutate remotes remain owner-authorized and are not
+  executed in this change (Part C deferred).
 
 
 ### Added: Claude Code plugin MVP (2026-07-24)
