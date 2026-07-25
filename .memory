@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-16): 102 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-25): 103 dated entries; regenerate after adding sections -->
+- [2026-07-25 - xcodeproj drift is a silent test-coverage hole (Claude)](#2026-07-25---xcodeproj-drift-is-a-silent-test-coverage-hole-claude)
 - [2026-07-16 - Periodic service maintenance memory and redundant work bounded (Codex)](#2026-07-16---periodic-service-maintenance-memory-and-redundant-work-bounded-codex)
 - [2026-07-16 - TypeScript 7 retained-tooling upgrade merged without app deployment (Codex)](#2026-07-16---typescript-7-retained-tooling-upgrade-merged-without-app-deployment-codex)
 - [2026-07-15 - Bounded service startup memory deployed as build 1205 (Codex)](#2026-07-15---bounded-service-startup-memory-deployed-as-build-1205-codex)
@@ -106,6 +107,66 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-25 - xcodeproj drift is a silent test-coverage hole (Claude)
+
+### The failure mode
+
+- `swift-unit`'s first step is `cd macos && xcodegen generate && git diff
+  --exit-code Engram.xcodeproj`. It runs before any test, so when it fails the
+  whole job aborts and every Swift test in that PR reports nothing. A review
+  board reading "tests pass" from a PR in this state is reading an empty run.
+- A new Swift file committed without the regenerated `project.pbxproj` is not
+  in the build at all. Its tests compile and pass locally (a local `xcodegen
+  generate` registers them) and then never compile in CI. #248, #249 and #252
+  each shipped test files in exactly this state; after the pbxproj was
+  committed, `PopoverUsageSectionTests`, `TranscriptAccessibilityTests`,
+  `UIUXPolishWiringTests` and `MCPActivationOnboardingTests` ran for the first
+  time. Treat "new Swift file, no pbxproj change in the diff" as a coverage
+  red flag, not a formatting detail.
+- Regenerating with a local xcodegen that does not match the CI pin produces
+  the mirror-image failure: 2.46.0 emits an extra `EngramRemoteServerCore
+  .framework in Embed Frameworks` entry and the opposite target ordering, which
+  the pinned 2.45.4 in CI rejects (#245, #251).
+
+### What to run
+
+- `scripts/check-xcodeproj-drift.sh` reproduces the CI gate locally. It reads
+  the pin from `.github/workflows/test.yml` and refuses to run on any other
+  xcodegen. `scripts/check-xcodeproj-drift.sh --install` fetches the pinned
+  build once into `~/.cache/engram/xcodegen` via
+  `scripts/ci/install-xcodegen.sh`. `.husky/pre-commit` runs it when `macos/`
+  paths are staged. Homebrew's `xcodegen` was 2.46.0 while the pin was 2.45.4;
+  check this before trusting a locally regenerated pbxproj.
+
+### Two evidence-gathering facts worth keeping
+
+- CodeQL alerts raised by a pull request are not visible under
+  `code-scanning/alerts?ref=refs/pull/<n>/head` or under the branch ref; query
+  `ref=refs/pull/<n>/merge`. The aggregate `CodeQL` check can also carry a
+  stale `failure` conclusion while a later `CodeQL Swift product` analysis is
+  still running, so read the alert list rather than the check conclusion.
+- `gh pr checks` can misreport: a job that only runs on smoke failure shows as
+  `skipped` and gets counted as failed. Confirm with
+  `gh api repos/bbingz/engram/commits/<head-sha>/check-runs` instead.
+
+### Source-scan assertions
+
+- `macos/EngramTests/ViewMainThreadReadTests.swift` asserts on the text of view
+  source files. An unanchored `XCTAssertFalse(contains(...))` there produces
+  false positives: the assertion forbidding `Task { await loadData() } }`
+  anywhere in `TimelinePageView.swift` fired on a legitimate Retry button whose
+  closure renders the same sequence. Anchor these to the construct actually
+  being forbidden (the `.onChange` closure signature), the way the
+  `SessionsPageView` assertion in the same test already was.
+
+### Local memory scaffolding is not the per-file convention
+
+- `~/.claude/projects/-Users-bing--Code--engram/memory` is a symlink to this
+  file, `/Users/bing/-Code-/engram/.memory`, which is a git-tracked single
+  markdown document. It is not a directory, so Claude's default one-fact-per-
+  file auto-memory layout with a `MEMORY.md` index cannot be used here without
+  destroying the shared document. Append a dated section to this file instead.
 
 ## 2026-07-16 - Periodic service maintenance memory and redundant work bounded (Codex)
 
