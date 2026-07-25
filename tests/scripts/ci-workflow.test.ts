@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -416,9 +417,175 @@ describe('CI workflow hardening', () => {
 
   it('keeps durable records and historical reviews off heavy product lanes', () => {
     expect(testWorkflow).toContain(
-      '.memory|.memory/*|CHANGELOG.md|MEMO.md|docs/archive/*|docs/reviews/*|docs/roadmap.md|docs/TODO.md|docs/followups.md)',
+      '.memory|.memory/*|CHANGELOG.md|MEMO.md|docs/archive/*|docs/reviews/*|docs/roadmap.md|docs/TODO.md|docs/followups.md|docs/competitive-*.md)',
     );
     expect(testWorkflow).not.toContain('.memory|*.md|docs/*)');
+    // docs/archive/scripts/* is carved back out above the allowlist: those files
+    // are scanned by tests/tooling/no-static-viking-creds.test.ts.
+    const carveOutIndex = testWorkflow.indexOf('docs/archive/scripts/*)');
+    const allowlistIndex = testWorkflow.indexOf('.memory|.memory/*|');
+    expect(carveOutIndex).toBeGreaterThan(-1);
+    expect(allowlistIndex).toBeGreaterThan(-1);
+    expect(carveOutIndex).toBeLessThan(allowlistIndex);
+  });
+
+  // The allowlist is shell, and a shell `case` can be wrong in ways no string
+  // assertion sees — a stray pattern, a missing `;;`, a carve-out placed after
+  // the clause it must precede. This extracts the real `case`/`esac` block from
+  // the workflow and runs it under bash against representative paths, so the
+  // behaviour is checked rather than the text. (repro)
+  it('executes the real classifier and routes representative paths correctly', () => {
+    const workflowLines = testWorkflow.split('\n');
+    const caseStart = workflowLines.findIndex(
+      (line) => line.trim() === 'case "$path" in',
+    );
+    expect(caseStart, 'classifier case block not found').toBeGreaterThan(-1);
+
+    let caseDepth = 0;
+    let caseEnd = -1;
+    for (let index = caseStart; index < workflowLines.length; index += 1) {
+      const line = workflowLines[index]?.trim() ?? '';
+      if (/^case\b.*\bin$/.test(line)) caseDepth += 1;
+      if (line !== 'esac') continue;
+      caseDepth -= 1;
+      if (caseDepth === 0) {
+        caseEnd = index;
+        break;
+      }
+    }
+    expect(caseEnd, 'matching classifier esac not found').toBeGreaterThan(
+      caseStart,
+    );
+    const body = workflowLines.slice(caseStart, caseEnd + 1).join('\n');
+
+    const classify = (paths: string[]): string => {
+      const script = [
+        'set -euo pipefail',
+        'heavy=false',
+        'while IFS= read -r path; do',
+        body,
+        "done <<'PATHS'",
+        ...paths,
+        'PATHS',
+        'printf %s "$heavy"',
+      ].join('\n');
+      return execFileSync('bash', ['-c', script], { encoding: 'utf8' }).trim();
+    };
+
+    // Durable records: light.
+    expect(classify(['CHANGELOG.md'])).toBe('false');
+    expect(classify(['docs/roadmap.md', 'MEMO.md'])).toBe('false');
+    expect(classify(['docs/competitive-mirror-2026-07.md'])).toBe('false');
+    expect(classify(['docs/reviews/some-review.md'])).toBe('false');
+    expect(classify(['.memory'])).toBe('false');
+
+    // Product and config: heavy.
+    expect(classify(['macos/Engram/App.swift'])).toBe('true');
+    expect(classify(['src/core/db.ts'])).toBe('true');
+    expect(classify(['package.json'])).toBe('true');
+
+    // CLAUDE.md is a checked root path for the invariants gate: must stay heavy.
+    expect(classify(['CLAUDE.md'])).toBe('true');
+
+    // The carve-out has to win over docs/archive/*, which means it has to come
+    // first in the case; ordering is the whole mechanism.
+    expect(classify(['docs/archive/scripts/search-audit.sh'])).toBe('true');
+    expect(classify(['docs/archive/plans/old-plan.md'])).toBe('false');
+
+    // One heavy path in an otherwise-durable set still goes heavy.
+    expect(classify(['CHANGELOG.md', 'macos/Engram/App.swift'])).toBe('true');
+    expect(
+      classify(['docs/archive/plans/a.md', 'docs/archive/scripts/b.sh']),
+    ).toBe('true');
+  });
+
+  // A classified-light path skips every job, Node included. If a test or gate
+  // reads such a path, a change to it ships with the check that covers it
+  // silently skipped — the same shape as the stacked-PR blind spot #258 closed.
+  // This is a lower-bound guard over existing quoted literal repo paths. Dynamic
+  // path construction and directory walks still require direct audit when the
+  // allowlist changes. (repro)
+  it('keeps existing literal paths named by tests or scripts out of the light allowlist', () => {
+    const clause = testWorkflow
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line.startsWith('.memory|') && line.endsWith(')'));
+    expect(clause, 'durable-docs allowlist clause not found').toBeDefined();
+
+    const carveOuts = testWorkflow
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(
+        (line) =>
+          line.endsWith(')') && line.startsWith('docs/archive/scripts/'),
+      )
+      .flatMap((line) => line.slice(0, -1).split('|'));
+
+    // Shell `case` globs match `/` freely, so `*` is `.*` here — translating it
+    // as `[^/]*` under-approximates the allowlist and lets real offenders pass.
+    const toRegExp = (pattern: string): RegExp =>
+      new RegExp(
+        `^${pattern.replace(/[.+^${}()[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`,
+      );
+    const allow = (clause as string).slice(0, -1).split('|').map(toRegExp);
+    const deny = carveOuts.map(toRegExp);
+    const isLight = (path: string): boolean =>
+      !deny.some((re) => re.test(path)) && allow.some((re) => re.test(path));
+
+    // Every existing repo-relative path a file under tests/ or scripts/ names as
+    // a quoted string, kept with the file that names it: this test necessarily
+    // mentions allowlisted paths in its own fixtures, and only those are
+    // discounted.
+    const selfPath = 'tests/scripts/ci-workflow.test.ts';
+    const namedBy = new Map<string, Set<string>>();
+    for (const line of execFileSync(
+      'git',
+      [
+        'grep',
+        '-oI',
+        '-E',
+        '[\'"][A-Za-z0-9_./-]+\\.(md|sh|ts|json|jsonl)[\'"]',
+        '--',
+        'tests',
+        'scripts',
+      ],
+      { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+    ).split('\n')) {
+      const separator = line.indexOf(':');
+      if (separator < 0) continue;
+      const source = line.slice(0, separator);
+      const named = line
+        .slice(separator + 1)
+        .trim()
+        .replace(/^['"]|['"]$/g, '');
+      if (named.length === 0 || !existsSync(resolve(repoRoot, named))) continue;
+      const sources = namedBy.get(named) ?? new Set<string>();
+      sources.add(source);
+      namedBy.set(named, sources);
+    }
+
+    const offenders = [...namedBy.entries()]
+      .filter(([, sources]) => ![...sources].every((s) => s === selfPath))
+      .map(([named]) => named)
+      .filter(isLight);
+
+    expect(
+      offenders,
+      `these literal paths are named by tests/ or scripts/ but classify as durable-docs, so a change to them would skip the check that names them: ${offenders.join(', ')}`,
+    ).toEqual([]);
+
+    // docs/competitive-*.md is the new allowlist surface in this change. Check
+    // its stable prefix separately so literal globs and directory-walk roots are
+    // not lost merely because the generic path extractor requires a real file.
+    const competitiveConsumers = execFileSync(
+      'git',
+      ['grep', '-lF', 'docs/competitive-', '--', 'tests', 'scripts'],
+      { cwd: repoRoot, encoding: 'utf8' },
+    )
+      .split('\n')
+      .filter(Boolean)
+      .filter((path) => path !== selfPath);
+    expect(competitiveConsumers).toEqual([]);
   });
 
   it('runs PR smoke and main full UI without exposing AI-triage secrets', () => {
