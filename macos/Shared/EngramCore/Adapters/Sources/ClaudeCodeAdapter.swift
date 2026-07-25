@@ -202,7 +202,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         source: SourceName,
         modifiedSince: Date? = nil,
         fileManager: FileManager = .default
-    ) async throws -> [String] {
+    ) async throws -> (locators: [String], enumerationRoots: [String]) {
         let profiles = refreshProfilesForListing()
         let defaultProfiles = profiles.filter { $0.available && $0.origin == .default }
         var locators: [String] = []
@@ -227,7 +227,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             }
         }
         await sourceHintCache.flush()
-        return locators
+        return (locators, Self.enumerationRoots(from: defaultProfiles))
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
@@ -1109,13 +1109,6 @@ extension ClaudeCodeAdapter {
         }
         return roots
     }
-
-    /// Roots for the profiles a derived-source listing walked (default origin
-    /// only), read from the snapshot that listing already refreshed — not a
-    /// second resolver pass.
-    fileprivate func defaultProfileEnumerationRoots() -> [String] {
-        Self.enumerationRoots(from: currentProfiles().filter { $0.available && $0.origin == .default })
-    }
 }
 
 final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
@@ -1160,19 +1153,20 @@ final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, ModificationFiltered
 
     func listSessionLocators() async throws -> [String] {
         lastListingRoots.replace(with: [])
-        let locators = try await base.listDerivedSessionLocators(source: source)
-        lastListingRoots.replace(with: base.defaultProfileEnumerationRoots())
-        return locators
+        let listing = try await base.listDerivedSessionLocators(source: source)
+        lastListingRoots.replace(with: listing.enumerationRoots)
+        return listing.locators
     }
 
     func listSessionLocators(modifiedSince: Date, fileManager: FileManager) async throws -> [String] {
         // Recency-filtered: a subset, so no domain (see the base's equivalent).
         lastListingRoots.replace(with: [])
-        return try await base.listDerivedSessionLocators(
+        let listing = try await base.listDerivedSessionLocators(
             source: source,
             modifiedSince: modifiedSince,
             fileManager: fileManager
         )
+        return listing.locators
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {

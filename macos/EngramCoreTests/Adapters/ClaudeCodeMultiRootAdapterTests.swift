@@ -126,6 +126,17 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
         )
         let base = ClaudeCodeAdapter(profileResolver: makeResolver())
 
+        let listing = try await base.listDerivedSessionLocators(source: .minimax)
+        XCTAssertEqual(
+            listing.locators,
+            [defaultMiniMax.resolvingSymlinksInPath().standardizedFileURL.path]
+        )
+        XCTAssertEqual(
+            Set(listing.enumerationRoots),
+            [defaultRoot.resolvingSymlinksInPath().standardizedFileURL.path],
+            "derived locators and roots must come from the same captured profile list"
+        )
+
         let minimax = try await ClaudeCodeDerivedSourceAdapter(source: .minimax, base: base)
             .listSessionLocators()
         let lobster = try await ClaudeCodeDerivedSourceAdapter(source: .lobsterai, base: base)
