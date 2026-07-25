@@ -261,6 +261,14 @@ public protocol IndexingWriteSink {
     func knownFileIndexStates(source: SourceName, locators: [String]) throws -> [String: FileIndexState]
     func knownTailMergeSnapshots(source: SourceName, locators: [String]) throws -> [String: AuthoritativeSessionSnapshot]
     func upsertFileIndexState(_ state: FileIndexState) throws
+    /// Delete `file_index_state` rows for `source` whose locator is not in
+    /// `locators` and falls under at least one of `roots`. Empty keep-set or
+    /// empty roots: no-op (return 0).
+    func pruneOrphanFileIndexStates(
+        source: SourceName,
+        keeping locators: [String],
+        under roots: [String]
+    ) throws -> Int
 }
 
 public extension IndexingWriteSink {
@@ -277,4 +285,12 @@ public extension IndexingWriteSink {
     }
 
     func upsertFileIndexState(_ state: FileIndexState) throws {}
+
+    func pruneOrphanFileIndexStates(
+        source: SourceName,
+        keeping locators: [String],
+        under roots: [String]
+    ) throws -> Int {
+        0
+    }
 }

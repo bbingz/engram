@@ -5,12 +5,20 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
 
     private let profileResolutionProvider: (@Sendable () -> [ClaudeCodeProfile])?
     private let profileSnapshot: ClaudeCodeProfileSnapshot
+    /// Roots from the same profile list that produced the latest keep-set.
+    /// Empty until the first successful `listSessionLocators` so a reorder of
+    /// the scan cannot prune against a stale or second profile read.
+    private let lastListingRoots = ClaudeCodeEnumerationRoots()
     private let limits: ParserLimits
     private let sourceHintCache: ClaudeCodeSourceHintCache
     private static let sourceHintScanByteLimit = 1024 * 1024
     private static let sourceHintMaxLineBytes = 512 * 1024
     private static let sourceHintLineLimit = 64
     private static let sourceHintChunkSize = 64 * 1024
+
+    /// Same profile snapshot as the keep-set from the last list call — not a
+    /// second resolver pass (autoDiscover off must shrink roots with the list).
+    var enumerationRoots: [String] { lastListingRoots.read() }
 
     /// - Parameter sourceHintCacheDirectory: When non-nil, the derived-source
     ///   signature cache is persisted here (keyed on path + mtime + size) so a
@@ -77,7 +85,10 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     }
 
     func listSessionLocators() async throws -> [String] {
-        try await listSessionLocators(profiles: refreshProfilesForListing())
+        // One profile refresh feeds both the keep-set and enumerationRoots.
+        let profiles = refreshProfilesForListing()
+        lastListingRoots.replace(with: Self.canonicalProjectsRoots(from: profiles))
+        return try await listSessionLocators(profiles: profiles)
     }
 
     private func listSessionLocators(profiles: [ClaudeCodeProfile]) async throws -> [String] {
@@ -1049,6 +1060,37 @@ private final class ClaudeCodeProfileSnapshot: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         self.profiles = profiles
+    }
+}
+
+/// Thread-safe last-list enumeration roots for `ClaudeCodeAdapter`.
+private final class ClaudeCodeEnumerationRoots: @unchecked Sendable {
+    private let lock = NSLock()
+    private var roots: [String] = []
+
+    func read() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return roots
+    }
+
+    func replace(with roots: [String]) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.roots = roots
+    }
+}
+
+extension ClaudeCodeAdapter {
+    fileprivate static func canonicalProjectsRoots(from profiles: [ClaudeCodeProfile]) -> [String] {
+        var seen = Set<String>()
+        var roots: [String] = []
+        for profile in profiles {
+            let root = canonicalURL(path: profile.projectsRoot).path
+            guard seen.insert(root).inserted else { continue }
+            roots.append(root)
+        }
+        return roots
     }
 }
 

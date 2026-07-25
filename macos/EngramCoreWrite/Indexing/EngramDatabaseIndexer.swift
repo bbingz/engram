@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import EngramCoreRead
+import os
 
 public struct EngramDatabaseIndexStatus: Sendable, Equatable {
     public let total: Int
@@ -72,6 +73,14 @@ private final class EngramDatabaseIndexingSink: IndexingWriteSink {
 
     func upsertFileIndexState(_ state: FileIndexState) throws {
         try writer.upsertFileIndexState(state)
+    }
+
+    func pruneOrphanFileIndexStates(
+        source: SourceName,
+        keeping locators: [String],
+        under roots: [String]
+    ) throws -> Int {
+        try writer.pruneOrphanFileIndexStates(source: source, keeping: locators, under: roots)
     }
 
     private static func knownIndexedFileStates(
@@ -367,6 +376,81 @@ public extension EngramDatabaseWriter {
             )
         }
     }
+
+    /// Delete orphan `file_index_state` rows for `source` under `roots` whose
+    /// locator is not in `locators`. Scope is dual: keep-set membership **and**
+    /// root prefix — so a second writer under the same `SourceName` over a
+    /// disjoint root cannot be deleted. Empty keep-set or empty roots refuse.
+    func pruneOrphanFileIndexStates(
+        source: SourceName,
+        keeping locators: [String],
+        under roots: [String]
+    ) throws -> Int {
+        let normalizedRoots = Self.normalizedEnumerationRoots(roots)
+        guard !locators.isEmpty, !normalizedRoots.isEmpty else { return 0 }
+
+        let deleted = try write { db -> Int in
+            try db.execute(sql: """
+                CREATE TEMP TABLE IF NOT EXISTS _prune_keep(locator TEXT PRIMARY KEY)
+                """)
+            try db.execute(sql: "DELETE FROM _prune_keep")
+            for batch in stride(from: 0, to: locators.count, by: 500) {
+                let slice = Array(locators[batch..<Swift.min(batch + 500, locators.count)])
+                let placeholders = Array(repeating: "(?)", count: slice.count).joined(separator: ",")
+                var arguments = StatementArguments()
+                for locator in slice {
+                    arguments += [locator]
+                }
+                try db.execute(
+                    sql: "INSERT OR IGNORE INTO _prune_keep(locator) VALUES \(placeholders)",
+                    arguments: arguments
+                )
+            }
+
+            // `= root OR LIKE root || '/%'` avoids `/foo` matching `/foobar`.
+            let rootClauses = Array(
+                repeating: "(locator = ? OR locator LIKE ? || '/%')",
+                count: normalizedRoots.count
+            ).joined(separator: " OR ")
+            var deleteArgs = StatementArguments([source.rawValue])
+            for root in normalizedRoots {
+                deleteArgs += [root]
+                deleteArgs += [root]
+            }
+            try db.execute(
+                sql: """
+                DELETE FROM file_index_state
+                 WHERE source = ?
+                   AND locator NOT IN (SELECT locator FROM _prune_keep)
+                   AND (\(rootClauses))
+                """,
+                arguments: deleteArgs
+            )
+            return db.changesCount
+        }
+        if deleted > 0 {
+            Self.fileIndexLog.info(
+                "pruned orphan file_index_state rows: source=\(source.rawValue, privacy: .public) deleted=\(deleted, privacy: .public)"
+            )
+        }
+        return deleted
+    }
+
+    private static func normalizedEnumerationRoots(_ roots: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for root in roots {
+            var path = root
+            while path.count > 1, path.hasSuffix("/") {
+                path.removeLast()
+            }
+            guard !path.isEmpty, seen.insert(path).inserted else { continue }
+            result.append(path)
+        }
+        return result
+    }
+
+    private static let fileIndexLog = Logger(subsystem: "com.engram.service", category: "indexer")
 
     private static func fileIndexState(from row: Row) -> FileIndexState? {
         guard let sourceRaw = row["source"] as String?,
