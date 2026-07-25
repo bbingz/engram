@@ -328,11 +328,13 @@ The table below carries no status column, which made it read as fully open long
 after most of it had shipped. Each row was re-checked against `origin/main`
 (`138a3740`) by opening the cited anchor. **What was checked is anchor presence,
 not the full acceptance criteria** — a row marked landed may still have gaps that
-only its own acceptance list would catch. 20 landed + 1 partial + 14 open = 35;
-row 0 is an owner decision, not engineering work.
+only its own acceptance list would catch. **Row 32 is the worked example of that
+caveat biting**: it was first listed here as landed and is corrected to partial
+below. 19 landed + 2 partial + 14 open = 35; row 0 is an owner decision, not
+engineering work.
 
-**Landed (20):** 1, 2, 3, 4, 5, 6, 7, 8, 10, 13, 16, 17, 18, 19, 22, 23, 24, 29,
-30, 32.
+**Landed (19):** 1, 2, 3, 4, 5, 6, 7, 8, 10, 13, 16, 17, 18, 19, 22, 23, 24, 29,
+30.
 
 Anchors worth naming because they are not obvious from the table: row 7's Windsurf
 path fix is pinned by `MCPActivationOnboardingTests.swift:137`
@@ -340,11 +342,26 @@ path fix is pinned by `MCPActivationOnboardingTests.swift:137`
 through `case .user, .assistant, .code: return true`
 (`ColorBarMessageView.swift:165`); row 10 is `hiddenMatchBuckets`
 (`SessionDetailView.swift:73`); row 24 carries a literal `Row 24:` comment
-(`HomeView.swift:31`); **row 32 shipped in `08fb7837` on 2026-07-25** — the
-adapter descends into `subagents/workflows/wf_*/` and collects `agent-*.jsonl`
-while excluding `journal.jsonl`.
+(`HomeView.swift:31`).
 
-**Partial (1):** row **31** (Dynamic Type). `SidebarView.swift:12` has the only
+**Partial (2):** rows **31** and **32**.
+
+Row **32** (workflow subagents). Slices A/B shipped in `08fb7837` on 2026-07-25 —
+the adapter descends into `subagents/workflows/wf_*/` and collects `agent-*.jsonl`
+while excluding `journal.jsonl`. **Slice C did not.**
+`docs/claude-workflow-subagents-design-2026-07.md:212` specifies widening the
+`backfillParentLinks` regex; `StartupBackfills.swift:1278` still reads
+`#"/([^/]+)/subagents/[^/]+\.jsonl$"#`, which cannot match a workflow path. The
+primary path is unaffected — the adapter sets `parentSessionId` at parse time
+(`ClaudeCodeAdapter.swift:384`, `:947-952`) — but **185 workflow rows sit with
+`parent_session_id IS NULL`, all sharing one parent directory whose session is
+indexed, premium-tier and not hidden** (read-only measurement of
+`~/.engram/index.sqlite`, `2026-07-25 16:04:59` UTC). The link is derivable and
+was not made, so slice C is a measured gap rather than the "defense-in-depth" its
+own spec calls it. Root cause of the 185 is not established. Detail in
+`docs/resume-suppression-subagents-design-2026-07.md`.
+
+Row **31** (Dynamic Type). `SidebarView.swift:12` has the only
 `@ScaledMetric` in the app, and it scales a *width*. The transcript body threads a
 numeric `effectiveFontSize` (`ContentSegmentViews.swift:84`) rather than following
 Dynamic Type, and 141 `.font(.system(size: N))` call sites remain against 237
@@ -355,13 +372,26 @@ semantic-font uses. The row's "transcript body" half is not done.
 `docs/file-index-state-orphan-prune-design-2026-07.md`; after that prune the
 predicate would still count ~1,001 rows of residue.
 
+**"Open" here means unimplemented, not unspecified.** Of the 14: rows 9, 12, 14,
+15, 25, 26, 27 and 28 already carry an accepted spec on `main` (the nine-bundle
+commit `7ed3d2a6`, mapped in the bundle table above); rows 20 and 21 are in
+flight as PRs; rows 33, 34 and 35 are hard-gated on the row-0 publish decision
+and should not be started before it. Row **11** was the only one with no spec, no
+PR and no gate, and now has one
+(`docs/resume-suppression-subagents-design-2026-07.md`, PR #269) — which found
+the mirror's proposed `agent_role == "subagent"` gate misses 952 rows on the live
+corpus. So the backlog's remaining work is implementation and an owner decision,
+not further specification.
+
 **Method limits, stated so the next reader can discount accordingly.** These are
-single-anchor greps. Two errors surfaced while making this pass, both mine: row 19
-was first called open because the table cites `MessageTypeChip.swift` without a
-directory and the file is under `Views/Transcript/`, not `Components/` (it does
-carry `accessibilityLabel`, `:55`, `:63`); and row 32 was carried as open for a
-full session because no commit message names it. A row here is "the anchor
-exists", nothing stronger.
+single-anchor greps. Three errors surfaced while making this pass, all mine:
+row 19 was first called open because the table cites `MessageTypeChip.swift`
+without a directory and the file is under `Views/Transcript/`, not `Components/`
+(it does carry `accessibilityLabel`, `:55`, `:63`); row 32 was carried as open for
+a full session because no commit message names it; and row 32 was then called
+landed on the strength of the adapter anchor alone, when its own spec has a third
+slice that did not ship. A row here is "the anchor exists", nothing stronger —
+**a row with slices needs every slice checked, not one**.
 
 | 0 | **Decide whether to publish.** Owner decision, not engineering — the report names it as the root cause of the whole distribution section but never gave it a row. Rows 33, 34, 35 are hard-gated on it; rows 6 (CTA half), 17 and 18 derive most of their value from it | — | Highest | `docs/TODO.md:8-33` (authorization boundary), `docs/roadmap.md:65-68` | UX-11 |
 | 1 | `get_context`/`search`: filter `superseded_by IS NULL`, emit insight ids | S | High | `MCPDatabase.swift:1959-1998,:1070-1080` | F1 |
