@@ -7,6 +7,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### PR #263 row-12 prerequisite reconciliation (2026-07-26)
+
+PR #264 squash-merged as `33887fc4`, so the row-12 design may no longer state
+that `file_index_state` has no pruning path. The measured 528-row result remains
+useful as a dated pre-prune snapshot, but it is not evidence of the database
+state after the new code runs. PR #263 now records that boundary explicitly:
+domain-scoped pruning is implemented, while the runtime count remains
+`UNVERIFIED` until one complete post-#264 indexing pass is followed by the same
+read-only numerator and denominator queries. The Source Pulse anchors were also
+refreshed to the post-#262 layout; the MCP schema/query anchors were rechecked
+unchanged at `main@33887fc4`.
+
+The #264 merge was verified against exact main SHA
+`33887fc4ecb1d42dde4bad70e227cbf42cf9cf6b`. Tests run `30177028003` passed,
+including all 31 full-UI screenshots; `sourcePulse_statusGrid` measured SSIM
+`1`, pHash distance `0`, and pixel diff `0%`. CodeQL run `30177028012` passed
+both Swift targets and its gate. No failed workflow was rerun and nothing was
+deployed.
+
 ### Source Pulse screenshot baseline drift after PR #262 (2026-07-26)
 
 The post-merge Tests run `30170009516` failed only in

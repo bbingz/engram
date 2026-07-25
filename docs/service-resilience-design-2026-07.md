@@ -521,10 +521,11 @@ exact count is not measured here and the earlier draft's "0 in steady state" cla
 is dropped — a persistently-unparseable file SHOULD surface. Guard with
 `tableExists("file_index_state")`.
 
-> **Measured, 2026-07-25 (before implementing).** The paragraph above left the
-> count unmeasured; it has now been run against a real `~/.engram/index.sqlite`
-> (42,421 `ok` / 529 `retry` / 756 `terminal`). The follow-up below overturns
-> several of its assumptions.
+> **Measured, 2026-07-25 (before implementing and before orphan pruning
+> landed).** The paragraph above left the count unmeasured; it has now been run
+> against a real `~/.engram/index.sqlite` (42,421 `ok` / 529 `retry` / 756
+> `terminal`). The follow-up below overturns several of its assumptions. These
+> are pre-prune snapshot counts, not a claim about the database after PR #264.
 >
 > **1. The `retry_count >= 3` floor filters nothing.** Identical counts with and
 > without it:
@@ -534,10 +535,19 @@ is dropped — a persistently-unparseable file SHOULD surface. Guard with
 > | format-breakage kinds, `retry_count >= 1` | 528 |
 > | format-breakage kinds, `retry_count >= 3` | **528** |
 >
-> `MIN(retry_count)` over the matching rows is **3** (max 58). The single
-> `retry_count = 1` row in the table is an environmental kind the IN-list already
-> excludes. So the floor does not "exclude files that failed once and self-healed"
-> — no such row is ever in the counted set. **Keep the floor as a defensive lower
+> `MIN(retry_count)` over the matching rows is **3** (max 58). The one-row delta
+> between all 529 `retry` rows and the 528-row format-breakage set had
+> `retry_count = 1` and was outside the IN-list. Its exact `source` and
+> `failure_kind` were not preserved with the snapshot; the isolating query was:
+>
+> ```sql
+> SELECT source, failure_kind, retry_count
+> FROM file_index_state
+> WHERE parse_status = 'retry' AND retry_count = 1
+> ```
+>
+> So the floor does not "exclude files that failed once and self-healed" from the
+> counted set — no matching row is below 3. **Keep the floor as a defensive lower
 > bound (another corpus may differ), but do not write a comment claiming a
 > flap-protection it does not currently provide.** A comment that describes a
 > guard the data shows is inert is the same class of defect as the rest of this
@@ -594,21 +604,26 @@ is dropped — a persistently-unparseable file SHOULD surface. Guard with
 >
 > The table was live at measurement time; these rows had not been touched since
 > 2026-07-04, so nothing was retrying them. Nor could it:
-> `ClaudeCodeProfileService`
-> counts only direct `.jsonl` children one level under `subagents/`.
+> `ClaudeCodeProfileService` counts only direct `.jsonl` children one level under
+> `subagents/` (`macos/EngramService/Core/ClaudeCodeProfileService.swift:286-319`).
 > `ClaudeCodeAdapter` also enumerates direct children and now descends into
 > `subagents/workflows/wf_*`, but accepts only `agent-*.jsonl` there — explicitly
-> never `journal.jsonl`. Neither current path can produce a
+> never `journal.jsonl`
+> (`macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift:112-156`).
+> Neither current path can produce a
 > `subagents/workflows/<wf>/journal.jsonl` locator. **1,166** such files exist
 > under `~/.claude` alone against only **262** rows persisted as `claude-code`;
 > that partial, frozen coverage is consistent with a removed historical discovery
 > path, not evidence that a current live scan would enumerate the journals.
 >
-> They persist because **nothing ever prunes `file_index_state`**. Product code
-> only creates the table (`EngramMigrations.swift:163`), inserts
-> (`EngramDatabaseIndexer.swift:330`), and reads it; the sole `DELETE FROM
-> file_index_state` in the tree is `EngramCoreTests/IndexerParityTests.swift:658`.
-> A row written by a discovery path that no longer exists is counted forever.
+> At measurement time, **nothing pruned `file_index_state`**. Product code only
+> created, inserted, and read the table, so a row written by a discovery path
+> that no longer existed was counted forever. That statement is historical, not
+> current: PR #264 (`33887fc4`, 2026-07-26) added domain-scoped pruning after a
+> complete, non-empty adapter enumeration. Empty or failed enumeration publishes
+> no prune domain; prune failures are logged and isolated. The pre-prune snapshot
+> above still explains why the 528 rows existed, but it does not establish their
+> post-#264 count.
 >
 > All **262** claude-code hits are journal rows. Globally, the 514 journal rows
 > are **~97%** of the 528-hit set and span nine persisted source values. Shipping
@@ -628,8 +643,11 @@ is dropped — a persistently-unparseable file SHOULD surface. Guard with
 >    and say so in the help text. Cosmetic — it leaves the orphans in the table
 >    and only hides this one shape.
 >
-> Option 1 is out of row 12's scope. Row 12 should not be implemented until orphan
-> rows are pruned or excluded, or its chip will report a fault that does not exist.
+> Option 1 was out of row 12's scope and has since landed independently in PR
+> #264. Before implementing row 12, run one complete post-#264 indexing pass on
+> the measured corpus and re-run the exact predicate. If the old rows remain,
+> stop and adjudicate the declared domain rather than treating code presence as
+> proof that the stored state was repaired.
 >
 > **5. The other 14 rows are orphans too. Nothing in the counted set is a current
 > failure.** The earlier draft left these unopened and called them "real session
@@ -648,20 +666,25 @@ is dropped — a persistently-unparseable file SHOULD surface. Guard with
 > Every one is residue: an orphan row for a file that is gone, or one written by a
 > discovery path no longer in the tree. A chip reading `262` on claude-code would
 > be reporting corpus damage of which none exists. Option 1 (prune) remains the
-> preferred repair because it fixes the stored state. Option 2 can still produce
-> an honest live-domain reading (`0 / N` on this corpus) without deleting the
-> residue. Only option 3 leaves unrelated orphan shapes in the measured set and is
-> merely cosmetic.
+> preferred repair because it fixes the stored state; PR #264 now implements that
+> repair for adapters that declare a complete domain. Option 2 can still produce
+> an honest live-domain reading (`0 / N` on this pre-prune corpus) without
+> deleting the residue. Only option 3 leaves unrelated orphan shapes in the
+> measured set and is merely cosmetic.
 >
-> **Not established:** which code wrote these rows during 2026-06-21..07-04. It is
-> not in `main` — the July window coincides with the `codex/perf-integration-review`
-> merges, but that was not traced to a specific commit and is not claimed here.
+> **Not established:** which code wrote these rows during 2026-06-21..07-04. No
+> specific commit was traced, so no source branch or change is attributed here.
 
-**Prerequisite for every C slice below.** Do not execute C1-C3 against the raw
-table predicate above. First land option 1, or implement option 2 so every count
-is scoped to the current enumeration domain. The DTO, chip, MCP field, and
-acceptance criteria below describe the post-prerequisite surface; a denominator
-alone does not make the stale numerator honest.
+**Prerequisite status for every C slice below: implemented in code, runtime
+remeasurement still required.** PR #264 landed option 1 in `33887fc4`: opted-in
+adapters publish roots only after a complete listing, and pruning deletes only
+rows under that declared domain that are absent from the same keep-set. The 528
+rows above came from a pre-prune snapshot. Do not execute C1-C3 against that
+stale result: first complete a post-#264 indexing pass on the target corpus and
+re-run the exact numerator and denominator queries. Until that read-only
+remeasurement exists, the runtime count is **UNVERIFIED**. The DTO, chip, MCP
+field, and acceptance criteria below describe the post-prerequisite surface; a
+denominator alone does not make a stale numerator honest.
 
 **DTO.** Add `parseFailureCount: Int` (default 0) to `EngramServiceSourceInfo` at
 all five edit points, after `healthReason`. Named `parseFailureCount`, **not**
@@ -670,9 +693,9 @@ existing `session_index_jobs` counter. It does **not** feed the health ladder
 (row 2 is rewriting it concurrently; a ladder branch invites a merge conflict and
 re-opens a decision row 2 owns).
 
-**Chip.** In `SourcePulseView.swift` (re-anchored 2026-07-25: chip `HStack` at
-`:298-323`, `failedIndexJobCount` pill at `:304-307`; PR #262 shifts these again),
-mirror the `failedIndexJobCount` pill. Per the measurement above the label must
+**Chip.** In `SourcePulseView.swift` (re-anchored after PR #262: chip `HStack` at
+`:330-356`, `failedIndexJobCount` pill at `:336-339`), mirror the
+`failedIndexJobCount` pill. Per the measurement above the label must
 carry its denominator rather than a bare count — `"\(n)/\(total) unparsed"`, or a
 bare count only if the share is stated in `.help`. Neutral gray, informational —
 not an error state. `n` and `total` must come from the same repaired/scoped
@@ -682,7 +705,8 @@ denominator. Help text: "Files this source could not parse (excludes empty,
 oversized, and virtual sessions). A sudden rise can signal a vendor format change."
 
 **MCP `stats`.** After the prerequisite above, add one top-level `parseFailures`
-integer = the global sum of the repaired/scoped predicate. Edit the schema string
+integer = the global sum of the repaired/scoped predicate. The following MCP
+anchors were rechecked unchanged at `main@33887fc4`. Edit the schema string
 (`MCPOutputSchemas.swift:31-33`: add
 `parseFailures` to `properties`; leave it out of `required` so a missing
 `file_index_state` table is valid) **and** the emitter
