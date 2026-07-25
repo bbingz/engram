@@ -6,6 +6,25 @@
 > shipped Swift product and `docs/roadmap.md`. Verdicts below survived a pass
 > whose only job was to kill already-shipped or ungrounded recommendations.
 
+## Update (2026-07-25)
+
+Two facts below have drifted since this report was generated on 2026-06-26. The
+body is left as written — it is a dated snapshot — and corrected here.
+
+- **The MCP surface exposes 27 tools, not 28** (comparison table above).
+  `lint_config` was deleted in `8b4ab02a` (2026-07-06). Both
+  `docs/mcp-tools.md:5` and `macos/EngramMCPTests/EngramMCPExecutableTests.swift:73`
+  (`XCTAssertEqual(tools.count, 27)`) pin the current count.
+- **P0 item 1 (Engram Claude Code plugin) shipped in part**, in `cb6bffc3`
+  (PR #240, 2026-07-24). `integrations/claude-code/engram/` now carries a
+  `SessionStart` hook that injects bounded project context, `.mcp.json`, and
+  three skills (`catch-up`, `handoff`, `remember`). "No hooks/plugin exist today"
+  above is superseded. **Still outstanding from that item:** the `Stop` /
+  `SessionEnd` hook that auto-calls `save_insight` — `hooks/hooks.json` wires
+  `SessionStart` only, so the PULL→PUSH conversion is one-directional. P0 item 2
+  (Homebrew cask + Sparkle auto-update) is untouched; row 35 of
+  `docs/competitive-mirror-2026-07.md` still carries the updater.
+
 ## TL;DR
 
 Engram is not in the same category as its two nearest neighbors, and that is the
