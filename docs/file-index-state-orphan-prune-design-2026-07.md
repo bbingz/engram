@@ -247,6 +247,77 @@ which is acceptable because a deleted row costs a re-parse and nothing else.
 Row 12 (Part C of `docs/service-resilience-design-2026-07.md`) unblocks once the
 corpus check above is recorded.
 
+## BLOCKING CORRECTION (2026-07-25, after the first implementation attempt)
+
+**The completeness gate above is necessary but not sufficient, and the design as
+written would delete thousands of live rows on every scan.** The first
+implementation (`c3991bdb` on `feat/file-index-state-orphan-prune`, local only,
+**must not be pushed as-is**) follows this doc faithfully and inherits the defect.
+
+The gate asks "is this adapter's list complete?" The question that actually
+matters is "is this adapter's list complete **for this `source`**". It is not,
+because `file_index_state.source` is written as `adapter.source` at every write
+site (`SwiftIndexer.swift:230`, `:267`, `:279`, `:311`, `:326`, `:387`) and
+**several `SourceName`s have more than one writer, each covering a disjoint
+root**:
+
+| `source` | the adapter's own root | rows under a *different* root | measured deletion |
+|---|---|---|---|
+| `codex` | `~/.codex` 2,777 | `~/.claude-openai` **3,237** | **54% of the source** |
+| `kimi` | `~/.kimi` 575 | `~/.claude-kimi` **2,090** | **78%** |
+| `qwen` | `~/.qwen` 830 | `~/.claude-qwen` **654** | **44%** |
+
+`CodexAdapter.source` is `.codex` (`CodexAdapter.swift:463`) and its
+`sessionRoots` are exactly `~/.codex/sessions` plus `~/.codex/archived_sessions`
+(`expandSessionRoots`, `:764-770`), filtered to `rollout-*.jsonl` (`:490`). It
+never walks `~/.claude-openai`. So `CodexAdapter` would report a complete
+enumeration, and the prune — keyed on `source` alone — would delete all 3,237
+`~/.claude-openai` rows. The other writer recreates them; the next scan deletes
+them again. **5,981 rows across three sources thrash every cycle, and their files
+are re-parsed from offset 0 forever** — precisely the failure mode the recency
+section of this doc exists to prevent, arrived at by a different route.
+
+### Corrected direction
+
+Replace the Bool with the adapter's **enumeration domain**, so scope is declared
+rather than assumed:
+
+```swift
+/// Absolute path prefixes this adapter enumerates exhaustively. A prune may
+/// delete a row only when its locator falls under one of these. Empty — the
+/// default — means the adapter declares no domain and is never pruned.
+var enumerationRoots: [String] { get }
+```
+
+- Default `[]`, so **every adapter is safe until it opts in**, one at a time,
+  each with its own measurement. This inverts the current risk: the present
+  design's default (`true`) makes every adapter dangerous until someone thinks to
+  exclude it, which is how both the subset wrappers and this defect got through.
+- The delete gains `AND (locator LIKE ? || '/%' OR …)`, one clause per declared
+  root, so a second writer's rows under the same `source` can never be in scope.
+- Narrowing wrappers return `[]` — the same override sites, one concept instead
+  of two.
+- `ClaudeCodeAdapter` is the first and only opt-in for this change: it owns the
+  514 orphan journal rows, and it can declare its roots from
+  `refreshProfilesForListing()` (`ClaudeCodeAdapter.swift:510-517`).
+
+### Required additional test
+
+`testForeignRootRowsUnderSameSourceSurvivePrune_repro` — two writers under one
+`SourceName` with disjoint roots; pruning on one must leave the other's rows and
+their `parsed_offset` untouched. This is now **the** load-bearing test, ahead of
+the partial-enumeration one.
+
+### What the first attempt got right
+
+The implementation report flagged a real gap in this doc independently: the
+"exactly two places" claim was wrong — `ExactLocatorSubsetSessionAdapter`
+(`SessionAdapterFactory.swift:311`) and `CapturedLocatorIndexAdapter` (`:380`)
+also narrow the list and were left at the dangerous default. Under the corrected
+direction both simply declare `[]` like every other non-opted-in adapter, and the
+enumeration of narrowing wrappers stops being something a future reader has to
+get exhaustively right.
+
 ## Risks and open questions
 
 - **A discovery regression now deletes state instead of merely missing files.**
