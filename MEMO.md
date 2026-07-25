@@ -15,6 +15,8 @@
 - [源健康] 可索引（非 skip）分母 + `healthReason` 提示；橙色徽章 18→8 量级。
 - [Codex 原生父子] 启动回填读 line-1 `thread_spawn`/`parent_thread_id`；无条件 `session_meta` 门；多字节头边界/全拒排水/游标三次不重读测试；格式文档与 ledger #2 同步。
 - [格式漂移] 本地 fingerprinter + 200 文件 baseline；desync/schemaVersion 纯函数；accept 折叠在 check 脚本（`baseline:adapter-format`）；Swift drift 测试 failure→XCTFail。
+- [转录查找] 用户/助手/代码消息在 ⌘F 激活时仍走分段渲染，高亮落在渲染后文本上，不再把 markdown 压成 raw source；隐藏类型的匹配会计数并一键正确翻闸（type 与 systemPrompt/agentComm 分桶）。
+- [验证] `TranscriptLabelAndCopyTests` / `TranscriptFindTests` 含 `_repro` 用例；相对 `origin/main` 仅功能提交。
 
 ### 2026-07-24
 
