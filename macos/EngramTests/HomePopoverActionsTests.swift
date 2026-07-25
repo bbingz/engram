@@ -285,4 +285,83 @@ final class HomePopoverActionsTests: XCTestCase {
             "LiveSessionCard interactivity must be guarded on a non-nil sessionId"
         )
     }
+
+    // MARK: - Reachable service restart (mirror row 5)
+
+    /// App.swift registered a .restartService observer for months under a comment
+    /// naming two posters that did not exist, so the recovery was unreachable.
+    /// Assert the posters are present *and gated*: an ungated Restart Service
+    /// control would offer a restart during .starting, fighting the launch in
+    /// flight, and every file-level `contains` would still pass.
+    func testHomeServiceStatePostsRestartOnlyWhileFailed() throws {
+        let s = try homeView()
+        let sectionStart = try XCTUnwrap(s.range(of: "private var serviceStateSection: some View {"))
+        let sectionEnd = try XCTUnwrap(
+            s.range(of: ".accessibilityIdentifier(\"home_serviceState\")", range: sectionStart.upperBound..<s.endIndex)
+        )
+        let section = String(s[sectionStart.upperBound..<sectionEnd.lowerBound])
+
+        let gateStart = try XCTUnwrap(section.range(of: "if serviceStatusStore.isFailed {"))
+        let gated = String(section[gateStart.upperBound...])
+        XCTAssertTrue(
+            gated.contains("post(name: .restartService"),
+            "the Restart Service poster must sit inside the isFailed branch"
+        )
+        XCTAssertEqual(
+            section.components(separatedBy: "post(name: .restartService").count - 1,
+            1,
+            "exactly one restart poster in the Service State section, and it is the gated one"
+        )
+    }
+
+    func testMenuBarRestartItemIsGatedAndOrderedBeforeQuit() throws {
+        let s = try menuBarController()
+        let menuStart = try XCTUnwrap(s.range(of: "private func showContextMenu() {"))
+        let menuEnd = try XCTUnwrap(
+            s.range(of: "statusItem.button?.performClick(nil)", range: menuStart.upperBound..<s.endIndex)
+        )
+        let menu = String(s[menuStart.upperBound..<menuEnd.lowerBound])
+
+        let separator = try XCTUnwrap(menu.range(of: "menu.addItem(.separator())"))
+        let restart = try XCTUnwrap(menu.range(of: "if serviceStatusStore.isFailed {"))
+        let quit = try XCTUnwrap(menu.range(of: "Quit Engram"))
+        XCTAssertTrue(separator.upperBound < restart.lowerBound, "Restart Service belongs after the separator")
+        XCTAssertTrue(restart.upperBound < quit.lowerBound, "Restart Service belongs before Quit")
+
+        // #252 put the Help items in this same rebuilt menu; neither may drop the other.
+        XCTAssertTrue(menu.contains("Report an Issue…"))
+        XCTAssertTrue(menu.contains("Show Onboarding"))
+
+        XCTAssertTrue(
+            s.contains("@objc func restartService() {"),
+            "the menu item needs an @objc target on the controller"
+        )
+    }
+
+    func testPopoverDoesNotPostRestartService() throws {
+        XCTAssertFalse(
+            try popoverView().contains("restartService"),
+            "the popover is session content only; restart controls belong to HomeView and the menu bar"
+        )
+    }
+
+    func testAppNoLongerClaimsPostersThatDoNotExist() throws {
+        let s = try source("macos/Engram/App.swift")
+        // Comment prose wraps; compare on the joined text so a rewrap cannot
+        // silently disarm either half of this guard.
+        let prose = s
+            .replacingOccurrences(of: "//", with: " ")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+
+        XCTAssertFalse(
+            prose.contains("WP09's menu-bar item / Service-State banner post"),
+            "the comment named posters that did not exist for months"
+        )
+        XCTAssertTrue(
+            prose.contains("Gated on autoStartService so headless test runs never spawn the helper"),
+            "the accurate half of that comment describes real gating and must stay"
+        )
+    }
 }

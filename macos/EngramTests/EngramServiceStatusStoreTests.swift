@@ -83,6 +83,31 @@ final class EngramServiceStatusStoreTests: XCTestCase {
         XCTAssertEqual(store.todayParentSessions, 8)
     }
 
+    /// isFailed gates the two Restart Service posters. It must cover both failure
+    /// cases and neither of the two transient ones — a restart offered during
+    /// .starting would fight the launch already in flight.
+    func testIsFailedCoversDegradedAndErrorOnly() {
+        let store = EngramServiceStatusStore()
+
+        XCTAssertFalse(store.isFailed, "stopped is not a failure the user can restart out of")
+
+        store.status = .starting
+        XCTAssertFalse(store.isFailed)
+
+        store.status = .running(total: 3, todayParents: 1)
+        XCTAssertFalse(store.isFailed)
+
+        store.status = .degraded(message: "restart budget spent")
+        XCTAssertTrue(store.isFailed)
+
+        store.status = .error(message: "socket refused")
+        XCTAssertTrue(store.isFailed)
+
+        // A degraded helper that recovers on a later probe must retract the offer.
+        store.apply(EngramServiceStatus.running(total: 3, todayParents: 1))
+        XCTAssertFalse(store.isFailed)
+    }
+
     func testAppliesReadyIndexedAndSummaryEvents() throws {
         let store = EngramServiceStatusStore()
 

@@ -62,6 +62,16 @@ final class EngramServiceStatusStore {
         return false
     }
 
+    /// 服务处于用户可见的失败态，需要提供一键重启入口。
+    /// `.degraded` 不是永久闩：监视器仍在退避重探，一次成功的探测会清掉它。
+    /// 这里要救的是探测也救不回来的卡死实例。
+    var isFailed: Bool {
+        switch status {
+        case .degraded, .error: return true
+        default: return false
+        }
+    }
+
     var usagePressureSummary: UsagePressureSummary? {
         usageData.compactMap(Self.pressureSummaryCandidate).max(by: Self.isLowerPriorityUsage)?.summary
     }

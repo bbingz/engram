@@ -205,6 +205,17 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         menu.addItem(.separator())
 
+        // 菜单每次右键都重建，所以条件加入无需任何观察接线。
+        if serviceStatusStore.isFailed {
+            let restartItem = NSMenuItem(
+                title: String(localized: "Restart Service"),
+                action: #selector(restartService),
+                keyEquivalent: ""
+            )
+            restartItem.target = self
+            menu.addItem(restartItem)
+        }
+
         let quitItem = NSMenuItem(title: String(localized: "Quit Engram"),
                                    action: #selector(NSApplication.terminate(_:)),
                                    keyEquivalent: "q")
@@ -223,6 +234,10 @@ class MenuBarController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
     @objc func showOnboardingFromMenu() {
         NotificationCenter.default.post(name: .showOnboarding, object: nil)
+    }
+
+    @objc func restartService() {
+        NotificationCenter.default.post(name: .restartService, object: nil)
     }
 
     // Remove the menu after it closes so left-click still triggers the popover
