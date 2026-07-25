@@ -6,7 +6,7 @@
 
 - [裁决] #262 合入后的 Tests `30170009516` 不是 runner 抖动：近四次绿 run 的 Source Pulse 指标稳定，而 exact merge artifact 因新增的 `Live sessions unavailable` 过期态确定性越过阈值；归类为预期 UI 变化导致的 baseline drift。
 - [修复] 只用 `main@a598ed59` 的 CI 原图刷新 `sourcePulse_statusGrid.png`；同一 artifact 对旧基线复现 `SSIM 0.8945 / diff 7.9513%`。新 LFS 对象与原图 SHA-256 同为 `39fd9021…`；`SSIM 1 / diff 0%` 只作同一性校验，不作产品正确性证明。UI test 现先等 `sourcePulse_liveUnavailable`，消除 live poll 完成前抢拍。
-- [未验证] 本机 macOS 27 UI runner 在启用 automation mode 时超时、测试体未执行；该限制不作为产品失败证据。修复 push 后仍须 fresh full-UI CI，期间 #264 不得合并。详细证据见 `CHANGELOG.md`。
+- [验证] #270 已 squash merge 为 `351c339a`；fresh main Tests `30173625010` 的 full UI 31/31（Source Pulse `SSIM 1 / diff 0%`），CodeQL `30173625009` 亦绿。旧失败 workflow 未 rerun，baseline drift 已关闭。
 - [修复] #262 exact-head 对抗 review 抓到连续失败轮询不一定触发 SwiftUI freshness 重算；`LiveSessionsHold.failed(at:)` 现只更新尝试时间，不覆盖 last-good 或成功时钟，三处消费者均接线。Popover stale badge 同时保留 active count 与 as-of。
 - [验证] 两个复现先红（缺失失败状态成员；stale badge 丢 count），修复后定向 `EngramTests` 39/39；`xcodeproj drift ok`。完整证据见 `CHANGELOG.md`。
 - [验证] #262 已 squash merge 为 `a598ed59`；合入后唯一红项按上方 baseline drift 记录继续收口。
@@ -17,7 +17,9 @@
 - [复核] Qwen 在 `8b40f3ea` 找到 derived listing 与 roots 间的 shared-snapshot 漂移；`f3b2e8fb` 改为一次返回同源 locators/roots（run `run_5d146ddba574469089e0`）。
 - [验证] 上述结构性回归先在旧 array-only 契约上编译失败，修复后 1/1；两个相关测试类 22/22，全量 EngramCoreTests 再次 1,011 项 / 0 失败 / 1 环境 skip，xcodeproj drift 与 diff check 均通过。
 - [复核] Qwen 在 `7250e7d7` 确认修复并撤回疑似 shared-root bug；仅要求说明 canonical 去重与防御性 symlink 解析，现已补注释、无行为变更（run `run_ff75ff8140954c178b17`）。
-- [未验证] #264 仍未 push；需让包含上述注释与本记录的最终 exact head 取得异家明确批准，再等待推送后 PR CI。
+- [变更] #264@`8e6a96df` 的 16 checks 全绿；#270 推进 main 后因同改 durable docs 变为 DIRTY，现已 rebase 到 `main@351c339a`。`range-diff` 证明代码/设计 patch-equivalent，冲突仅保留双方记录。
+- [验证] 新 base 上 orphan-prune 13/13、完整 EngramCoreTests 1,011 项 / 1 环境 skip / 0 失败；`build-for-testing`、xcodeproj drift、diff check 通过。本机 `xcodebuild test` 的一次 IDE-session 启动卡死在测试体前，已终止且不计结论。
+- [未验证] #264 的 rebased exact head 仍须异家明确批准、force-with-lease push 与 fresh PR CI，方可合并。
 
 ### 2026-07-25
 

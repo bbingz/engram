@@ -36,10 +36,12 @@ race. The focused UI test bundle passes `build-for-testing`, and a focused
 the test body because the macOS 27 runner timed out while enabling automation
 mode, so it is not treated as product evidence. A second result-bundle unit
 test attempt hung waiting for Xcode workers and was terminated; no test count
-is claimed from it. The failed workflow was not rerun; the corrective push
-must earn a fresh full-UI result.
+is claimed from it. The failed workflow was not rerun. PR #270 squash-merged
+the fix as `351c339a`; fresh main Tests `30173625010` passed all 31 screenshots
+with `sourcePulse_statusGrid` at SSIM `1`, pHash distance `0`, and pixel diff
+`0%`, and CodeQL `30173625009` also passed.
 
-### PR #264 partial-enumeration safety remediation (local only, 2026-07-26)
+### PR #264 partial-enumeration safety remediation (2026-07-26)
 
 The first adversarial review of PR #264 found a destructive edge case in its
 domain-scoped `file_index_state` prune. `ClaudeCodeAdapter` published roots
@@ -93,8 +95,18 @@ bug. Its remaining request was limited to comments explaining canonical-root
 deduplication and defensive symlink resolution; both are now explicit with no
 behavior change. Evidence: run `run_ff75ff8140954c178b17`.
 
-This branch remains local-only until a new exact-head adversarial review
-approves; the pushed head must then pass the final PR CI.
+Head `8e6a96df` passed all 16 PR checks. After PR #270 advanced `main`, GitHub
+correctly reported PR #264 as conflicting because both branches updated the
+durable records. Rebasing onto `main@351c339a` kept every code/design patch
+equivalent by `git range-diff`; conflict resolution preserved both incident
+records. On the new base, direct `xcrun xctest` passed the complete
+`FileIndexStateOrphanPruneTests` class 13/13 and all 1,011
+`EngramCoreTests` with one environment skip and zero failures.
+`build-for-testing`, xcodeproj drift, and diff checks also pass. A direct
+`xcodebuild test` attempt on local Xcode beta 27 was terminated after its
+XCTest driver stalled before loading the test bundle and is not counted as a
+test result. The rebased exact head still requires an independent
+adversarial approval and fresh PR CI before merge.
 
 ### PR #262 adversarial-review remediation (2026-07-26)
 
