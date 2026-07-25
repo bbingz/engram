@@ -137,9 +137,25 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).toContain('"$RUNNER_TEMP/actionlint"');
   });
 
+  // A PR based on a feature branch used to trigger only Dependency Review and
+  // report all-green, so "no Swift test ran" was indistinguishable from "every
+  // Swift test passed". Dropping the base filter here is what makes a stacked
+  // PR actually verified; codeql.yml keeps its filter on purpose.
+  it('runs tests for pull requests against any base branch', () => {
+    const on = parsedTestWorkflow.on;
+    expect(on).toBeDefined();
+    expect(on?.push).toEqual({ branches: ['main'] });
+    expect(on).toHaveProperty('pull_request');
+    expect(on?.pull_request ?? null).toBeNull();
+
+    const parsedCodeql = parseDocument(codeqlWorkflow).toJS() as {
+      on: { pull_request?: { branches?: string[] } };
+    };
+    expect(parsedCodeql.on.pull_request).toEqual({ branches: ['main'] });
+  });
+
   it('keeps npm audit advisory handling identical on pull requests and pushes', () => {
     expect(parsedTestWorkflow.on).toMatchObject({
-      pull_request: { branches: ['main'] },
       push: { branches: ['main'] },
     });
     const auditStep = parsedTestWorkflow.jobs?.typescript?.steps?.find(

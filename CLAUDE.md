@@ -237,6 +237,23 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
   already present. "17 sources" is the adapter count, not the default-on source
   count or a live-gRPC source count.
 
+## Local Dev Environment
+
+- **npm 12+ blocks package install scripts by default.** `package.json` declares
+  an `allowScripts` field so `better-sqlite3` builds its native addon. Without
+  it `npm ci` silently leaves no `better_sqlite3.node` and ~500 vitest tests
+  fail with `Could not locate the bindings file` — which reads like a Node ABI
+  mismatch and is not. CI pins Node 24 with an older npm and never sees this.
+  The `package.json` field **replaces** any `allow-scripts` list in `~/.npmrc`
+  for this repo. `sharp`, `esbuild`, `protobufjs` and `fsevents` are left
+  blocked and verified working from their prebuilt platform packages; add a name
+  only after checking that the package actually needs its script.
+- **`.memory` is a single git-tracked markdown file**, not a per-fact directory.
+  `~/.claude/projects/<cwd>/memory` is a symlink to it, so the default
+  auto-memory layout (one file per fact plus a separate `MEMORY.md` index) does
+  not apply here. Append a dated `##` section and update the `## Index` block at
+  the top of the file instead.
+
 ## What NOT To Do
 
 - Don't modify generated `Engram.xcodeproj` directly — edit `project.yml` and run `xcodegen generate`
