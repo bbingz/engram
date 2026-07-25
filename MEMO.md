@@ -4,6 +4,8 @@
 
 ### 2026-07-26
 
+- [验证] #264 已 squash merge 为 main `33887fc4`；fresh Tests `30177028003` 与 CodeQL `30177028012` 全绿，full UI 31/31，Source Pulse 为 `SSIM 1 / pHash 0 / diff 0%`。未 rerun、未 deploy。
+- [变更] #263 已基于新 main 校正 row 12 前提：528 行只作 2026-07-25 的 pre-prune 快照；#264 已落地域限定裁剪，但完整索引后的真实计数仍标记 `UNVERIFIED`，须同一 corpus 只读重测后再实现 C1-C3。
 - [裁决] #262 合入后的 Tests `30170009516` 不是 runner 抖动：近四次绿 run 的 Source Pulse 指标稳定，而 exact merge artifact 因新增的 `Live sessions unavailable` 过期态确定性越过阈值；归类为预期 UI 变化导致的 baseline drift。
 - [修复] 只用 `main@a598ed59` 的 CI 原图刷新 `sourcePulse_statusGrid.png`；同一 artifact 对旧基线复现 `SSIM 0.8945 / diff 7.9513%`。新 LFS 对象与原图 SHA-256 同为 `39fd9021…`；`SSIM 1 / diff 0%` 只作同一性校验，不作产品正确性证明。UI test 现先等 `sourcePulse_liveUnavailable`，消除 live poll 完成前抢拍。
 - [验证] #270 已 squash merge 为 `351c339a`；fresh main Tests `30173625010` 的 full UI 31/31（Source Pulse `SSIM 1 / diff 0%`），CodeQL `30173625009` 亦绿。旧失败 workflow 未 rerun，baseline drift 已关闭。

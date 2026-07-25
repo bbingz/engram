@@ -521,6 +521,171 @@ exact count is not measured here and the earlier draft's "0 in steady state" cla
 is dropped — a persistently-unparseable file SHOULD surface. Guard with
 `tableExists("file_index_state")`.
 
+> **Measured, 2026-07-25 (before implementing and before orphan pruning
+> landed).** The paragraph above left the count unmeasured; it has now been run
+> against a real `~/.engram/index.sqlite` (42,421 `ok` / 529 `retry` / 756
+> `terminal`). The follow-up below overturns several of its assumptions. These
+> are pre-prune snapshot counts, not a claim about the database after PR #264.
+>
+> **1. The `retry_count >= 3` floor filters nothing.** Identical counts with and
+> without it:
+>
+> | predicate | rows |
+> |---|---|
+> | format-breakage kinds, `retry_count >= 1` | 528 |
+> | format-breakage kinds, `retry_count >= 3` | **528** |
+>
+> `MIN(retry_count)` over the matching rows is **3** (max 58). The one-row delta
+> between all 529 `retry` rows and the 528-row format-breakage set had
+> `retry_count = 1` and was outside the IN-list. Its exact `source` and
+> `failure_kind` were not preserved with the snapshot; the isolating query was:
+>
+> ```sql
+> SELECT source, failure_kind, retry_count
+> FROM file_index_state
+> WHERE parse_status = 'retry' AND retry_count = 1
+> ```
+>
+> So the floor does not "exclude files that failed once and self-healed" from the
+> counted set — no matching row is below 3. **Keep the floor as a defensive lower
+> bound (another corpus may differ), but do not write a comment claiming a
+> flap-protection it does not currently provide.** A comment that describes a
+> guard the data shows is inert is the same class of defect as the rest of this
+> backlog.
+>
+> **2. The chip is not a rare badge.** Per-source hits and their denominators:
+>
+> | source | rows | hits | share |
+> |---|---|---|---|
+> | claude-code | 28,724 | 262 | 0.91% |
+> | codex | 6,014 | 169 | 2.81% |
+> | glm | 2,359 | 44 | 1.87% |
+> | deepseek | 569 | 16 | 2.81% |
+> | kimi | 2,665 | 14 | 0.53% |
+> | mimo | 272 | 9 | 3.31% |
+> | qwen | 1,484 | 8 | 0.54% |
+> | minimax | 414 | 4 | 0.97% |
+> | doubao | 30 | 2 | 6.67% |
+>
+> These nine rows are the complete 528-hit set. `file_index_state.source` is raw
+> persisted text from the adapter that wrote the row, so the workflow-journal
+> residue is distributed across derived and legacy source values; it is not all
+> recorded as `claude-code`.
+>
+> `"\(n) unparsed"` therefore renders a permanent three-digit number on the two
+> main sources. A bare `262` reads as an alarm; `0.9%` reads as negligible — same
+> fact, opposite impression. **The chip must carry its denominator** (e.g.
+> `262 / 28,724 unparsed`, or the share in the `.help` text), for the same reason
+> row 13 stopped drawing a limitless share as a filled quota meter.
+>
+> **3. 97% of the counted rows are not parse failures.** The note above ("all 528
+> are `malformedJSON`; sample before trusting it") was followed up. Sampling the
+> locators:
+>
+> | subset | rows |
+> |---|---|
+> | `…/subagents/workflows/*/journal.jsonl` | **514** |
+> | everything else (see finding 5) | 14 |
+>
+> A sampled workflow journal parses as **94 valid JSON lines, 0 invalid**, with
+> top-level keys `agentId` / `key` / `result` / `type` — a workflow-journal
+> schema, not a chat transcript. The file is not malformed.
+>
+> **4. Those 514 rows are stale orphans, not live failures.** This corrects the
+> first draft of finding 3 above, which read them as an adapter that "meets a
+> record type it does not model" and as "514 rows retrying forever". Both are
+> wrong. The timestamps say the retries stopped three weeks ago:
+>
+> | field, over the 514 journal rows | value |
+> |---|---|
+> | `updated_at` range | 2026-07-02 09:10 → **2026-07-04 07:44** |
+> | `retry_after` max | **2026-07-04 08:44** (long past) |
+> | newest `updated_at` anywhere in the table | 2026-07-25 17:39 (at measurement) |
+>
+> The table was live at measurement time; these rows had not been touched since
+> 2026-07-04, so nothing was retrying them. Nor could it:
+> `ClaudeCodeProfileService` counts only direct `.jsonl` children one level under
+> `subagents/` (`macos/EngramService/Core/ClaudeCodeProfileService.swift:286-319`).
+> `ClaudeCodeAdapter` also enumerates direct children and now descends into
+> `subagents/workflows/wf_*`, but accepts only `agent-*.jsonl` there — explicitly
+> never `journal.jsonl`
+> (`macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift:112-156`).
+> Neither current path can produce a
+> `subagents/workflows/<wf>/journal.jsonl` locator. **1,166** such files exist
+> under `~/.claude` alone against only **262** rows persisted as `claude-code`;
+> that partial, frozen coverage is consistent with a removed historical discovery
+> path, not evidence that a current live scan would enumerate the journals.
+>
+> At measurement time, **nothing pruned `file_index_state`**. Product code only
+> created, inserted, and read the table, so a row written by a discovery path
+> that no longer existed was counted forever. That statement is historical, not
+> current: PR #264 (`33887fc4`, 2026-07-26) added domain-scoped pruning after a
+> complete, non-empty adapter enumeration. Empty or failed enumeration publishes
+> no prune domain; prune failures are logged and isolated. The pre-prune snapshot
+> above still explains why the 528 rows existed, but it does not establish their
+> post-#264 count.
+>
+> All **262** claude-code hits are journal rows. Globally, the 514 journal rows
+> are **~97%** of the 528-hit set and span nine persisted source values. Shipping
+> a permanent `262` claude-code chip would therefore be a new false claim in a
+> backlog whose whole subject is false claims.
+>
+> **Row 12 cannot ship on this predicate.** Options, in the order they should be
+> considered:
+> 1. Prune orphan `file_index_state` rows — delete rows whose locator the current
+>    scan no longer enumerates. This is the actual defect; the chip is only the
+>    first surface that would have exposed it.
+> 2. Failing that, scope every count derived from this predicate — the service
+>    DTO, chip, MCP aggregate, and acceptance checks — to locators the current
+>    scan still enumerates, so orphans cannot inflate any surface regardless of
+>    how they got there.
+> 3. Weakest: exclude `…/subagents/workflows/%journal.jsonl` from the predicate
+>    and say so in the help text. Cosmetic — it leaves the orphans in the table
+>    and only hides this one shape.
+>
+> Option 1 was out of row 12's scope and has since landed independently in PR
+> #264. Before implementing row 12, run one complete post-#264 indexing pass on
+> the measured corpus and re-run the exact predicate. If the old rows remain,
+> stop and adjudicate the declared domain rather than treating code presence as
+> proof that the stored state was repaired.
+>
+> **5. The other 14 rows are orphans too. Nothing in the counted set is a current
+> failure.** The earlier draft left these unopened and called them "real session
+> transcripts". Opened now — every one was read and JSON-validated line by line:
+>
+> | subset of the 14 | rows | finding |
+> |---|---|---|
+> | file no longer exists on disk | **10** | deleted sessions; 4 of them had `size_bytes = 0` |
+> | file exists, **every line valid JSON** | 4 | 7–8 control-only records, 2.4–2.6 KB |
+> | file exists and is actually malformed | **0** | — |
+>
+> Their `updated_at` is 2026-06-21 (the 10 missing), 2026-07-02 (3), 2026-07-04
+> (1) — the same frozen pattern as the journals.
+>
+> **Across all 528 counted rows, zero are a file that currently fails to parse.**
+> Every one is residue: an orphan row for a file that is gone, or one written by a
+> discovery path no longer in the tree. A chip reading `262` on claude-code would
+> be reporting corpus damage of which none exists. Option 1 (prune) remains the
+> preferred repair because it fixes the stored state; PR #264 now implements that
+> repair for adapters that declare a complete domain. Option 2 can still produce
+> an honest live-domain reading (`0 / N` on this pre-prune corpus) without
+> deleting the residue. Only option 3 leaves unrelated orphan shapes in the
+> measured set and is merely cosmetic.
+>
+> **Not established:** which code wrote these rows during 2026-06-21..07-04. No
+> specific commit was traced, so no source branch or change is attributed here.
+
+**Prerequisite status for every C slice below: implemented in code, runtime
+remeasurement still required.** PR #264 landed option 1 in `33887fc4`: opted-in
+adapters publish roots only after a complete listing, and pruning deletes only
+rows under that declared domain that are absent from the same keep-set. The 528
+rows above came from a pre-prune snapshot. Do not execute C1-C3 against that
+stale result: first complete a post-#264 indexing pass on the target corpus and
+re-run the exact numerator and denominator queries. Until that read-only
+remeasurement exists, the runtime count is **UNVERIFIED**. The DTO, chip, MCP
+field, and acceptance criteria below describe the post-prerequisite surface; a
+denominator alone does not make a stale numerator honest.
+
 **DTO.** Add `parseFailureCount: Int` (default 0) to `EngramServiceSourceInfo` at
 all five edit points, after `healthReason`. Named `parseFailureCount`, **not**
 `drifted`/`failedIndexJobCount`, so it does not read as row 2's ladder input or the
@@ -528,14 +693,21 @@ existing `session_index_jobs` counter. It does **not** feed the health ladder
 (row 2 is rewriting it concurrently; a ladder branch invites a merge conflict and
 re-opens a decision row 2 owns).
 
-**Chip.** In `SourcePulseView.swift:291-304`, mirror the `failedIndexJobCount` pill
-(`:297-299`): `if source.parseFailureCount > 0 { factPill("\(n) unparsed", color:
-Theme.gray).help("Files this source could not parse (excludes empty, oversized,
-and virtual sessions). A sudden rise can signal a vendor format change.") }`.
-Neutral gray, informational — not an error state.
+**Chip.** In `SourcePulseView.swift` (re-anchored after PR #262: chip `HStack` at
+`:330-356`, `failedIndexJobCount` pill at `:336-339`), mirror the
+`failedIndexJobCount` pill. Per the measurement above the label must
+carry its denominator rather than a bare count — `"\(n)/\(total) unparsed"`, or a
+bare count only if the share is stated in `.help`. Neutral gray, informational —
+not an error state. `n` and `total` must come from the same repaired/scoped
+locator domain: the declared domain after prune, or the currently enumerated
+locators under option 2. Never pair a scoped numerator with a table-wide
+denominator. Help text: "Files this source could not parse (excludes empty,
+oversized, and virtual sessions). A sudden rise can signal a vendor format change."
 
-**MCP `stats`.** Add one top-level `parseFailures` integer = the global sum of the
-same predicate. Edit the schema string (`MCPOutputSchemas.swift:31-33`: add
+**MCP `stats`.** After the prerequisite above, add one top-level `parseFailures`
+integer = the global sum of the repaired/scoped predicate. The following MCP
+anchors were rechecked unchanged at `main@33887fc4`. Edit the schema string
+(`MCPOutputSchemas.swift:31-33`: add
 `parseFailures` to `properties`; leave it out of `required` so a missing
 `file_index_state` table is valid) **and** the emitter
 (`MCPDatabase.swift:123-146`: append `("parseFailures", .int(count))`) in the same
