@@ -117,6 +117,27 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
                     try Task.checkCancellation()
                     locators.append(subagentURL.path)
                 }
+
+                // Row 32: Claude Code workflow runs nest agents under
+                // subagents/workflows/wf_*/agent-*.jsonl. Direct children of
+                // subagents/ are already collected above; only agent-*.jsonl
+                // under wf_* dirs (never journal.jsonl or session-level
+                // workflows/ siblings).
+                let workflowsURL = subagentsURL.appendingPathComponent("workflows")
+                guard JSONLAdapterSupport.isDirectory(workflowsURL) else { continue }
+                for runURL in JSONLAdapterSupport.directChildren(of: workflowsURL)
+                    where JSONLAdapterSupport.isDirectory(runURL)
+                    && runURL.lastPathComponent.hasPrefix("wf_")
+                {
+                    try Task.checkCancellation()
+                    for agentURL in JSONLAdapterSupport.directChildren(of: runURL)
+                        where agentURL.pathExtension == "jsonl"
+                        && agentURL.deletingPathExtension().lastPathComponent.hasPrefix("agent-")
+                    {
+                        try Task.checkCancellation()
+                        locators.append(agentURL.path)
+                    }
+                }
             }
         }
         return locators

@@ -136,6 +136,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Instrument `parseWindow`, `rebuildIndexed`, `loadData`, and `loadMoreIfNeeded`.
 - Vitest source guard asserts DEBUG/Release structure and env gate name.
 - Bundle provenance (row 15 / ledger 16) is intentionally deferred.
+### Added: Claude Code workflow-nested subagent discovery (row 32) (2026-07-25)
+
+- `ClaudeCodeAdapter.listSessionLocators` descends `subagents/workflows/wf_*/`
+  and indexes `agent-*.jsonl` as skip-tier sessions with path-derived parents.
+- Excludes `journal.jsonl` control files and session-level `workflows/*.json`
+  orchestration state.
+- Covered by `testClaudeWorkflowSubagentsAreDiscovered_repro` and a
+  `SessionTier` skip guard for the workflow path shape.
+- Optional backfill-regex widen (slice C) is deferred until row 22 / ledger #9.
 
 
 ### Added: Claude Code plugin MVP (2026-07-24)

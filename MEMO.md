@@ -24,6 +24,9 @@
 
 - [性能观测] DEBUG 下为转录/列表分页路径加 `os_signpost` 与可选主线程 stall 监视；Release 为空操作。行 15 构建溯源仍延后。
 
+- [Claude 工作流] 适配器下沉发现 `subagents/workflows/wf_*/agent-*.jsonl`，按 path 挂父会话并保持 skip；不读 journal、不碰 session 级 workflows/。
+- [路线裁决] 相对 row 22：工作流文件从未入库，只能走适配器发现；backfill 无法插入未发现行，slice C 正则加宽延后。
+
 ### 2026-07-24
 
 - [插件] 新增独立的 Claude Code 插件 MVP：复用已安装的 `EngramCLI` / `EngramMCP`，提供 SessionStart 上下文注入与手动 `catch-up`、`remember`、`handoff` 技能，不捆绑第二套 Swift 二进制。
