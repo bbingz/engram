@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 const repoRoot = resolve(import.meta.dirname, '../..');
 const script = resolve(repoRoot, 'scripts/check-xcodeproj-drift.sh');
+const releaseScript = resolve(repoRoot, 'macos/scripts/build-release.sh');
 const pbxproj = resolve(repoRoot, 'macos/Engram.xcodeproj/project.pbxproj');
 
 function runScript(env: Record<string, string>): {
@@ -92,4 +93,43 @@ describe('xcodeproj drift gate', () => {
       }
     },
   );
+});
+
+describe('release build xcodegen pin', () => {
+  // Deploying 1.0.5 (1382) took three attempts: a bare `xcodegen generate` at
+  // step 2 ran Homebrew's newer xcodegen, which rewrote project.pbxproj after
+  // step 0 had already resolved the build number, so the archive would have
+  // carried a drifted project. The release path must abort at the gate rather
+  // than archive whatever the locally installed xcodegen happens to emit.
+  it('aborts before archiving when the pinned xcodegen is unavailable', () => {
+    // A fake HOME keeps step 1's DerivedData rm -rf inside the sandbox, and an
+    // unusable XCODEGEN_BIN fails the gate regardless of what is installed.
+    const home = mkdtempSync(resolve(tmpdir(), 'engram-relhome-'));
+    let status = 0;
+    let stdout = '';
+    let stderr = '';
+    try {
+      stdout = execFileSync('bash', [releaseScript], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          HOME: home,
+          XCODEGEN_BIN: '/nonexistent/xcodegen',
+          XDG_CACHE_HOME: mkdtempSync(resolve(tmpdir(), 'engram-xg-')),
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      const e = error as { status: number; stdout: string; stderr: string };
+      status = e.status;
+      stdout = e.stdout;
+      stderr = e.stderr;
+    }
+
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('needs xcodegen');
+    expect(stdout).toContain('[2/5]');
+    expect(stdout).not.toContain('[3/5] Archiving');
+  });
 });
