@@ -8,7 +8,15 @@ public struct ClaudeCodeProfile: Equatable, Sendable {
 
     public let id: String
     public let displayName: String
+    /// Symlink-resolved path. Enumeration and locator canonicalisation use this.
     public let projectsRoot: String
+    /// Every path that resolved to `projectsRoot`, before symlink resolution.
+    /// On machines where `~/.claude-<x>/projects` symlinks to
+    /// `~/.claude/projects`, all those spellings collapse into one profile, and
+    /// these are the only handle on historical `file_index_state` rows written
+    /// under them — `projectsRoot` alone cannot reach those rows. Contains just
+    /// `projectsRoot` when the path is a real directory.
+    public let declaredProjectsRoots: [String]
     public let origin: Origin
     public let available: Bool
     public let sourceReclamationAllowed: Bool
@@ -17,6 +25,7 @@ public struct ClaudeCodeProfile: Equatable, Sendable {
         id: String,
         displayName: String,
         projectsRoot: String,
+        declaredProjectsRoots: [String] = [],
         origin: Origin,
         available: Bool,
         sourceReclamationAllowed: Bool
@@ -24,6 +33,7 @@ public struct ClaudeCodeProfile: Equatable, Sendable {
         self.id = id
         self.displayName = displayName
         self.projectsRoot = projectsRoot
+        self.declaredProjectsRoots = declaredProjectsRoots.isEmpty ? [projectsRoot] : declaredProjectsRoots
         self.origin = origin
         self.available = available
         self.sourceReclamationAllowed = sourceReclamationAllowed
@@ -179,10 +189,20 @@ public struct ClaudeCodeProfileResolver: Sendable {
             )
         })
 
+        // Candidates that resolve to the same canonical root collapse into one
+        // profile — but every spelling that got us there is kept. Where
+        // `~/.claude-<x>/projects` symlinks to `~/.claude/projects`, dropping the
+        // `~/.claude-<x>` spellings loses the only handle on historical
+        // `file_index_state` rows written under them.
         var profilesByRoot: [String: ClaudeCodeProfile] = [:]
+        var declaredByRoot: [String: [String]] = [:]
         for candidate in candidates {
             let canonicalURL = canonicalURL(candidate.url)
             let canonicalPath = canonicalURL.path
+            let declared = candidate.url.standardizedFileURL.path
+            if !declaredByRoot[canonicalPath, default: []].contains(declared) {
+                declaredByRoot[canonicalPath, default: []].append(declared)
+            }
             guard profilesByRoot[canonicalPath] == nil else { continue }
             profilesByRoot[canonicalPath] = ClaudeCodeProfile(
                 id: profileID(origin: candidate.origin, canonicalPath: canonicalPath),
@@ -197,7 +217,18 @@ public struct ClaudeCodeProfileResolver: Sendable {
             )
         }
 
-        return profilesByRoot.values.sorted { $0.projectsRoot < $1.projectsRoot }
+        return profilesByRoot.map { canonicalPath, profile in
+            ClaudeCodeProfile(
+                id: profile.id,
+                displayName: profile.displayName,
+                projectsRoot: profile.projectsRoot,
+                declaredProjectsRoots: declaredByRoot[canonicalPath] ?? [],
+                origin: profile.origin,
+                available: profile.available,
+                sourceReclamationAllowed: profile.sourceReclamationAllowed
+            )
+        }
+        .sorted { $0.projectsRoot < $1.projectsRoot }
     }
 
     private func sourceReclamationAllowed(

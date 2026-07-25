@@ -122,8 +122,8 @@ final class FileIndexStateOrphanPruneTests: XCTestCase {
         let primaryOrphan = primaryProject.appendingPathComponent("orphan.jsonl").path
         try seedState(source: .claudeCode, locator: primaryOrphan, parsedOffset: 33)
 
-        let lock = NSLock()
-        var liveProfiles: [ClaudeCodeProfile] = [
+        // A sync-only box: locking from the async test body is a Swift 6 error.
+        let box = ProfileBox(profiles: [
             ClaudeCodeProfile(
                 id: "primary",
                 displayName: "Primary",
@@ -140,12 +140,8 @@ final class FileIndexStateOrphanPruneTests: XCTestCase {
                 available: true,
                 sourceReclamationAllowed: true
             ),
-        ]
-        let adapter = ClaudeCodeAdapter(profileResolutionProvider: {
-            lock.lock()
-            defer { lock.unlock() }
-            return liveProfiles
-        })
+        ])
+        let adapter = ClaudeCodeAdapter(profileResolutionProvider: { box.read() })
 
         // Full profile set: both roots declared, both files kept; orphan under primary deleted.
         var keep = try await adapter.listSessionLocators()
@@ -162,9 +158,7 @@ final class FileIndexStateOrphanPruneTests: XCTestCase {
         XCTAssertEqual(try parsedOffset(source: .claudeCode, locator: secondaryFile.path), 22)
 
         // Shrink to primary only (autoDiscover off). Same list call stamps roots.
-        lock.lock()
-        liveProfiles = [liveProfiles[0]]
-        lock.unlock()
+        box.keepFirstOnly()
         keep = try await adapter.listSessionLocators()
         XCTAssertEqual(adapter.enumerationRoots, [primary.path])
         XCTAssertEqual(keep, [primaryFile.path])
@@ -181,6 +175,119 @@ final class FileIndexStateOrphanPruneTests: XCTestCase {
         )
         XCTAssertEqual(try parsedOffset(source: .claudeCode, locator: secondaryFile.path), 22)
         XCTAssertTrue(try hasState(source: .claudeCode, locator: primaryFile.path))
+    }
+
+    // MARK: - Symlinked profile spellings and the derived-source opt-in
+
+    /// `~/.claude-<x>/projects` symlinked to `~/.claude/projects` collapses to one
+    /// profile. Enumeration emits only the resolved spelling, so a row written
+    /// under the symlink spelling is never in the keep-set; unless that spelling is
+    /// also in the domain it can never be pruned and accumulates forever.
+    func testSymlinkedProfileSpellingIsInsideTheDomain_repro() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-symlink-\(UUID().uuidString)", isDirectory: true)
+        let real = home.appendingPathComponent(".claude/projects", isDirectory: true)
+        let project = real.appendingPathComponent("-Users-test", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let aliasHome = home.appendingPathComponent(".claude-alias", isDirectory: true)
+        try FileManager.default.createDirectory(at: aliasHome, withIntermediateDirectories: true)
+        let aliasRoot = aliasHome.appendingPathComponent("projects", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: aliasRoot, withDestinationURL: real)
+
+        let kept = project.appendingPathComponent("kept.jsonl")
+        try "x\n".write(to: kept, atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeAdapter(
+            profileResolver: ClaudeCodeProfileResolver(
+                homeDirectory: home,
+                settingsURL: home.appendingPathComponent("absent-settings.json")
+            )
+        )
+        let keep = try await adapter.listSessionLocators()
+        let roots = adapter.enumerationRoots
+
+        // A row spelled through the symlink — what historical rows look like.
+        let aliasSpelled = aliasRoot.appendingPathComponent("-Users-test/stale.jsonl").path
+        try seedState(source: .claudeCode, locator: aliasSpelled, parsedOffset: 77)
+        XCTAssertFalse(keep.contains(aliasSpelled), "enumeration emits resolved spellings only")
+        XCTAssertTrue(
+            roots.contains { aliasSpelled.hasPrefix($0 + "/") },
+            "the symlink spelling must be inside the declared domain; roots=\(roots)"
+        )
+
+        let deleted = try writer.pruneOrphanFileIndexStates(
+            source: .claudeCode,
+            keeping: keep,
+            under: roots
+        )
+        XCTAssertEqual(deleted, 1)
+        XCTAssertFalse(try hasState(source: .claudeCode, locator: aliasSpelled))
+    }
+
+    /// A recency-filtered listing returns a strict subset. Leaving the full
+    /// listing's domain stamped would let a caller prune everything outside the
+    /// window, so the object must drop its domain itself.
+    func testRecencyFilteredListingClearsEnumerationRoots_repro() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-recency-\(UUID().uuidString)", isDirectory: true)
+        let project = home.appendingPathComponent(".claude/projects/-Users-test", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try "x\n".write(to: project.appendingPathComponent("a.jsonl"), atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeAdapter(
+            profileResolver: ClaudeCodeProfileResolver(
+                homeDirectory: home,
+                settingsURL: home.appendingPathComponent("absent-settings.json")
+            )
+        )
+        _ = try await adapter.listSessionLocators()
+        XCTAssertFalse(adapter.enumerationRoots.isEmpty, "a full listing declares a domain")
+
+        _ = try await adapter.listSessionLocators(
+            modifiedSince: Date().addingTimeInterval(3_600),
+            fileManager: .default
+        )
+        XCTAssertEqual(adapter.enumerationRoots, [], "a filtered listing must declare no domain")
+    }
+
+    /// The derived-source adapters (minimax/lobsterai) walk default-origin
+    /// profiles only, so their domain must be narrower than the base's — three
+    /// adapters share one base instance in `defaultAdapters()`.
+    func testDerivedSourceAdapterDeclaresOnlyDefaultProfileRoots_repro() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-derived-\(UUID().uuidString)", isDirectory: true)
+        let primary = home.appendingPathComponent(".claude/projects/-Users-test", isDirectory: true)
+        let extra = home.appendingPathComponent(".claude-extra/projects/-Users-test", isDirectory: true)
+        try FileManager.default.createDirectory(at: primary, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: extra, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try "x\n".write(to: primary.appendingPathComponent("a.jsonl"), atomically: true, encoding: .utf8)
+        try "y\n".write(to: extra.appendingPathComponent("b.jsonl"), atomically: true, encoding: .utf8)
+
+        let resolver = ClaudeCodeProfileResolver(
+            homeDirectory: home,
+            settingsURL: home.appendingPathComponent("absent-settings.json")
+        )
+        let base = ClaudeCodeAdapter(profileResolver: resolver)
+        let derived = ClaudeCodeDerivedSourceAdapter(source: .minimax, base: base)
+
+        _ = try await base.listSessionLocators()
+        let baseRoots = Set(base.enumerationRoots)
+        _ = try await derived.listSessionLocators()
+        let derivedRoots = Set(derived.enumerationRoots)
+
+        XCTAssertFalse(derivedRoots.isEmpty, "a derived listing declares its own domain")
+        XCTAssertTrue(
+            derivedRoots.isSubset(of: baseRoots),
+            "derived domain must not exceed the base's; derived=\(derivedRoots) base=\(baseRoots)"
+        )
+        XCTAssertFalse(
+            derivedRoots.contains { $0.contains(".claude-extra") },
+            "a derived listing walks default-origin profiles only; derived=\(derivedRoots)"
+        )
     }
 
     // MARK: - Remaining plan cases
@@ -352,4 +459,25 @@ private final class FixedDefaultRootsAdapter: SessionAdapter {
         AsyncThrowingStream { $0.finish() }
     }
     func isAccessible(locator: String) async -> Bool { false }
+}
+
+/// Mutable profile list for the shrinking-profile test, guarded so the async test
+/// body never locks (`NSLock.lock` from an async context is a Swift 6 error).
+private final class ProfileBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var profiles: [ClaudeCodeProfile]
+
+    init(profiles: [ClaudeCodeProfile]) { self.profiles = profiles }
+
+    func read() -> [ClaudeCodeProfile] {
+        lock.lock()
+        defer { lock.unlock() }
+        return profiles
+    }
+
+    func keepFirstOnly() {
+        lock.lock()
+        defer { lock.unlock() }
+        profiles = Array(profiles.prefix(1))
+    }
 }

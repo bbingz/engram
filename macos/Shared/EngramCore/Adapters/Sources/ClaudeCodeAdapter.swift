@@ -87,7 +87,7 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     func listSessionLocators() async throws -> [String] {
         // One profile refresh feeds both the keep-set and enumerationRoots.
         let profiles = refreshProfilesForListing()
-        lastListingRoots.replace(with: Self.canonicalProjectsRoots(from: profiles))
+        lastListingRoots.replace(with: Self.enumerationRoots(from: profiles))
         return try await listSessionLocators(profiles: profiles)
     }
 
@@ -183,10 +183,17 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
     }
 
     func listSessionLocators(modifiedSince: Date, fileManager: FileManager) async throws -> [String] {
-        try await listSessionLocators().filter {
+        let filtered = try await listSessionLocators().filter {
             guard let modifiedAt = try? Self.modifiedAt(locator: $0, fileManager: fileManager) else { return false }
             return modifiedAt >= modifiedSince
         }
+        // The full listing above stamped a domain; this result is a strict subset
+        // of it. Leaving the domain stamped would let a caller prune everything
+        // outside the recency window. Today the only caller is a wrapper that
+        // reports no domain of its own, so this keeps the invariant on the object
+        // rather than on the caller's discretion.
+        lastListingRoots.replace(with: [])
+        return filtered
     }
 
     func listDerivedSessionLocators(
@@ -1082,21 +1089,39 @@ private final class ClaudeCodeEnumerationRoots: @unchecked Sendable {
 }
 
 extension ClaudeCodeAdapter {
-    fileprivate static func canonicalProjectsRoots(from profiles: [ClaudeCodeProfile]) -> [String] {
+    /// Prune domain for a set of profiles: the resolved root **and** every
+    /// spelling that resolved to it. Enumeration emits canonical locators only,
+    /// so a symlink-spelled row is never in the keep-set; without its spelling in
+    /// the domain it can never be pruned either, and it accumulates forever.
+    /// On a layout of real directories the two coincide and dedupe to one.
+    fileprivate static func enumerationRoots(from profiles: [ClaudeCodeProfile]) -> [String] {
         var seen = Set<String>()
         var roots: [String] = []
         for profile in profiles {
-            let root = canonicalURL(path: profile.projectsRoot).path
-            guard seen.insert(root).inserted else { continue }
-            roots.append(root)
+            for candidate in [canonicalURL(path: profile.projectsRoot).path] + profile.declaredProjectsRoots {
+                var path = candidate
+                while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+                guard !path.isEmpty, seen.insert(path).inserted else { continue }
+                roots.append(path)
+            }
         }
         return roots
+    }
+
+    /// Roots for the profiles a derived-source listing walked (default origin
+    /// only), read from the snapshot that listing already refreshed — not a
+    /// second resolver pass.
+    fileprivate func defaultProfileEnumerationRoots() -> [String] {
+        Self.enumerationRoots(from: currentProfiles().filter { $0.origin == .default })
     }
 }
 
 final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
     let source: SourceName
     private let base: ClaudeCodeAdapter
+    /// Separate from the base's holder: three adapters share one base instance in
+    /// `defaultAdapters()`, and their domains differ.
+    private let lastListingRoots = ClaudeCodeEnumerationRoots()
 
     init(source: SourceName, base: ClaudeCodeAdapter) {
         precondition(source == .minimax || source == .lobsterai)
@@ -1126,12 +1151,22 @@ final class ClaudeCodeDerivedSourceAdapter: SessionAdapter, ModificationFiltered
         await base.detect()
     }
 
+    /// Own domain, not the base's: a derived listing walks only default-origin
+    /// profiles, so forwarding the base's roots would declare a domain wider than
+    /// what was enumerated.
+    var enumerationRoots: [String] { lastListingRoots.read() }
+
     func listSessionLocators() async throws -> [String] {
-        try await base.listDerivedSessionLocators(source: source)
+        lastListingRoots.replace(with: [])
+        let locators = try await base.listDerivedSessionLocators(source: source)
+        lastListingRoots.replace(with: base.defaultProfileEnumerationRoots())
+        return locators
     }
 
     func listSessionLocators(modifiedSince: Date, fileManager: FileManager) async throws -> [String] {
-        try await base.listDerivedSessionLocators(
+        // Recency-filtered: a subset, so no domain (see the base's equivalent).
+        lastListingRoots.replace(with: [])
+        return try await base.listDerivedSessionLocators(
             source: source,
             modifiedSince: modifiedSince,
             fileManager: fileManager

@@ -1,7 +1,8 @@
 # Design Doc: Prune orphan `file_index_state` rows
 
-- **Status**: Implemented, not yet merged — `7dc30436` + `b4b83b65` on
-  `feat/orphan-prune-v2`, local only. This doc describes the code as built.
+- **Status**: Implemented, not yet merged — `feat/orphan-prune-v2`, local only.
+  This doc describes the code as built, including the symlink-spelling and
+  derived-source follow-up measured below.
 - **Owner**: unassigned
 - **Date**: 2026-07-25
 - **Related**: PR #263 (`docs/rowc-predicate-measurement`) measured the corpus and
@@ -316,7 +317,16 @@ independently during review rather than taken from the implementation report.
 | root clauses replaced with an always-true predicate of the same arity (i.e. no domain scoping) — **reproduced** | exit 65, 0 Swift compile errors, 7 executed (before the wildcard test existed), **exactly 2 test methods red**, both multi-writer `_repro`s, 6 assertions: `("2") is not equal to ("1")`, `rows under a second writer's root must not be deleted`, `("nil") is not equal to ("Optional(3237)")`, and the three shrunk-profile counterparts |
 | `lastListingRoots` unions old roots instead of replacing (roots never shrink) — from the implementation report, not re-run | exit 65, 7 executed, `testShrunkProfileSetDoesNotPruneOtherProfiles_repro` red: `shrunk roots must not reach the dropped profile` |
 | `instr(…) = 1` reverted to `LIKE ? \|\| '/%'` — **reproduced** | exit 65, 0 compile errors, 8 executed, **only** `testRootWithLikeWildcardDoesNotOverMatch_repro` red (2 assertions) |
-| all restored | exit 0, 8 executed, 0 failures, 0 Swift warnings, `xcodeproj drift ok` |
+| all restored | exit 0, 8 executed, 0 failures, `xcodeproj drift ok` |
+
+**Correction to an earlier claim in this doc.** The full-suite table below first
+recorded "0 Swift warnings". That was an artefact of incremental builds not
+re-emitting diagnostics for unchanged files. A build that actually recompiled the
+touched files surfaced three warnings in
+`FileIndexStateOrphanPruneTests.swift` — `NSLock.lock`/`unlock` from an async
+context and a captured `var` in concurrent code, all Swift 6 errors. They are
+fixed (a sync-only `ProfileBox`), and warning counts here are now taken from a
+build that recompiled those files.
 
 ### Full-suite regression
 
@@ -393,13 +403,68 @@ see them.
 (2). Those adapters declare no roots, so by design they never prune. Nothing is
 wrong with the prune; the opt-in is simply one adapter wide.
 
-**Row 12 is therefore still blocked.** Its predicate would count 266 malformed /
-1,022 total rows after this change, and every one of those is still residue. This
-change removes half the target set. Unblocking row 12 needs at least one more
-step — extending the opt-in to the other Claude-profile-backed sources, and
-handling symlink-spelled locators (canonicalise on write, or match roots after
-resolving symlinks rather than by string prefix). Neither is in this change's
-scope, and neither should be bolted on without its own measurement.
+**Both gaps were then closed — see "Second pass" below.** The numbers in the table
+above are the first pass, kept because they are what motivated the follow-up.
+
+### Second pass: symlink spellings and the derived-source opt-in
+
+Two mechanisms were added after the first corpus run, each measured.
+
+**1. A profile keeps every spelling that resolved to it.**
+`ClaudeCodeProfile.declaredProjectsRoots: [String]` (default `[projectsRoot]`)
+collects each candidate path that canonicalised to the same root, instead of the
+resolver silently dropping all but the first. `enumerationRoots(from:)` emits the
+resolved root **and** every declared spelling. On a real-directory layout the two
+coincide and dedupe away; on this machine one profile now declares 13 spellings.
+
+**2. The derived-source adapters opt in, with their own narrower domain.**
+`ClaudeCodeDerivedSourceAdapter` (minimax/lobsterai) walks default-origin
+profiles only, so it holds its **own** roots slot rather than forwarding the
+base's — three adapters share one base instance in `defaultAdapters()`, and a
+forwarded domain would be wider than what was enumerated.
+
+**3. A recency-filtered listing now clears the domain.**
+`ClaudeCodeAdapter.listSessionLocators(modifiedSince:)` calls the full listing
+(which stamps a domain) and returns a strict subset. Leaving the domain stamped
+let a caller prune everything outside the window. It was harmless only because
+the sole caller is a wrapper that reports no domain of its own; the invariant now
+holds on the object rather than on the caller's discretion.
+
+Corpus effect, same method as the first pass (online `.backup` copy; the live
+database was never opened for writing). Every adapter with a declared domain was
+driven, not just `claude-code`:
+
+| | before | first pass | second pass |
+|---|---|---|---|
+| `file_index_state` rows | 53,611 | ~48,970 | **45,700** |
+| `source='claude-code'` | 38,608 | 33,967 | **30,929** |
+| `source='minimax'` | 414 | 414 | **182** |
+| `failure_kind IS NOT NULL` | 1,284 | 1,022 | **1,001** |
+| `failure_kind='malformedJSON'` | 528 | 266 | **262** |
+| workflow-journal rows | 514 | 252 | **248** |
+| symlink-spelled `claude-code` rows | 3,709 | 3,709 | **23** |
+
+Deleted 7,911 (`claude-code` 7,679 + `minimax` 232 + `lobsterai` 0). A second
+full pass deleted **0**. `opencode` was skipped with `sqliteUnreadable` — the
+harness mirrors `SwiftIndexer`, which isolates a per-adapter listing failure and
+moves on.
+
+**Row 12 is still blocked, and the remaining blockers are not fixable by this
+mechanism.** The 1,001 surviving rows are:
+
+- **248 workflow journals under seven other sources** — `codex` (156), `glm`
+  (43), `deepseek` (16), `kimi` (14), `mimo` (9), `qwen` (8), `doubao` (2).
+  `CodexAdapter`/`KimiAdapter`/`QwenAdapter` walk `~/.codex`, `~/.kimi`, `~/.qwen`
+  and nothing under `~/.claude*`, so declaring Claude roots on them would be an
+  adapter claiming a domain it does not enumerate — the precise failure this
+  design exists to prevent. **Deliberately not done.**
+- **`glm` / `deepseek` / `grok` / `mimo` / `pi` / `doubao` are not `SourceName`
+  cases at all** (3,819 rows in total across the table). `file_index_state.source`
+  is plain `TEXT`, so values from older builds persist. A prune keyed on a typed
+  `SourceName` can never reach them; that needs a separate source-value sweep.
+- **23 rows under `~/.claude-mimosg`** — that directory no longer exists, so it is
+  not a discovered profile and cannot be a declared root. Now the only
+  symlink-spelled residue left.
 
 ## Risks and open questions
 
