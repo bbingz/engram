@@ -566,7 +566,7 @@ is dropped — a persistently-unparseable file SHOULD surface. Guard with
 > | subset | rows |
 > |---|---|
 > | `…/subagents/workflows/*/journal.jsonl` | **514** |
-> | real session transcripts | 14 |
+> | everything else (see finding 5) | 14 |
 >
 > A sampled workflow journal parses as **94 valid JSON lines, 0 invalid**, with
 > top-level keys `agentId` / `key` / `result` / `type` — a workflow-journal
@@ -617,12 +617,29 @@ is dropped — a persistently-unparseable file SHOULD surface. Guard with
 > Option 1 is out of row 12's scope. Row 12 should not be implemented until orphan
 > rows are pruned or excluded, or its chip will report a fault that does not exist.
 >
-> **Not established:** which code wrote these rows during 2026-07-02..04. It is
-> not in `main` — the window coincides with the `codex/perf-integration-review`
-> merges, but that was not traced to a specific commit and is not claimed here.
+> **5. The other 14 rows are orphans too. Nothing in the counted set is a current
+> failure.** The earlier draft left these unopened and called them "real session
+> transcripts". Opened now — every one was read and JSON-validated line by line:
 >
-> **Still unverified:** whether the remaining 14 session-transcript rows are
-> genuine breakage. They were not opened.
+> | subset of the 14 | rows | finding |
+> |---|---|---|
+> | file no longer exists on disk | **10** | deleted sessions; 4 of them had `size_bytes = 0` |
+> | file exists, **every line valid JSON** | 4 | 7–8 control-only records, 2.4–2.6 KB |
+> | file exists and is actually malformed | **0** | — |
+>
+> Their `updated_at` is 2026-06-21 (the 10 missing), 2026-07-02 (3), 2026-07-04
+> (1) — the same frozen pattern as the journals.
+>
+> **Across all 528 counted rows, zero are a file that currently fails to parse.**
+> Every one is residue: an orphan row for a file that is gone, or one written by a
+> discovery path no longer in the tree. A chip reading `262` on claude-code would
+> be reporting corpus damage of which none exists. This makes option 1 (prune) not
+> merely preferable but the only option that makes the number mean anything —
+> options 2 and 3 would still be dividing by a set that is entirely stale.
+>
+> **Not established:** which code wrote these rows during 2026-06-21..07-04. It is
+> not in `main` — the July window coincides with the `codex/perf-integration-review`
+> merges, but that was not traced to a specific commit and is not claimed here.
 
 **DTO.** Add `parseFailureCount: Int` (default 0) to `EngramServiceSourceInfo` at
 all five edit points, after `healthReason`. Named `parseFailureCount`, **not**
