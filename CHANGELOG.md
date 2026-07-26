@@ -7,6 +7,34 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### PR #269 resume-suppression spec reconciliation (2026-07-26)
+
+The row-11 design is rebased onto `main@43333986` after PRs #263, #264, and
+#268. Current source still matches its load-bearing anchors:
+`EngramServiceReadProvider.resumeCommand` selects `file_path` but not
+`parent_session_id`, dispatches Claude resume commands on `source` alone, and
+the existing response consumers preserve the error/hint/context-primer refusal
+shape. The proposed pure predicate now checks both basename identity and absence
+of a `subagents` path component; basename alone contradicted the stated
+`subagents/<id>.jsonl` regression and could have emitted a broken command for a
+future nested file whose name happened to match its id. No production behavior
+changes in this PR.
+
+An exact-head adversarial review required the NULL-parent behavior to be one
+implementable contract. The spec now carries `parent_session_id`, then uses the
+adapter-equivalent component immediately before `subagents`, and only falls back
+to a generic transcript-location hint if neither source yields a parent. A
+dedicated NULL-parent test covers both the derived and generic branches. The
+predicate also uses raw `pathComponents`, matching the adapter, and records the
+deliberate safe-failure tradeoff if Claude later makes a nested `subagents`
+layout resumable.
+
+The corpus measurements remain explicitly tied to the single
+`2026-07-25 16:04:59` UTC snapshot; no fresh runtime count is claimed. The
+appendix now reflects merged reality: PR #268 corrected row 32 from landed to
+partial before merge. This reconciliation did not mutate the database, rerun an
+old workflow, or deploy anything.
+
 ### PR #263 post-merge CI adjudication and PR #268 status refresh (2026-07-26)
 
 PR #263 squash-merged as exact main `4087dc53`. Its first Tests attempt
