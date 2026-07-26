@@ -208,6 +208,13 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
   fix and passes after. Name it with a `_repro` suffix (Swift:
   `func testOrphanTierReset_repro()`; Vitest: title ending in `(repro)`),
   and reference the PR/issue in a comment above the test.
+- **Invariant back-references**: when a fix site is covered by an entry in
+  `docs/invariants.md`, name that entry in the comment — e.g.
+  "invariant 2 (subagent sessions stay skip)" — so the code points back at the
+  ledger. A comment that states a guarantee without naming its source tends to
+  drift into claiming one the code does not provide. No lint enforces this;
+  `scripts/check-invariants-ledger.sh` validates the ledger's own anchors, not
+  the comments that should cite it.
 - **Design docs**: non-trivial changes (new subsystem, schema change,
   cross-runtime parity impact, new IPC command) start from
   `docs/templates/design-doc.md`; link the doc from the PR description.

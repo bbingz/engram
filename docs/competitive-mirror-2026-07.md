@@ -324,16 +324,18 @@ One row per surviving recommendation. **The ordering is a work sequence, not a v
 
 The table below carries no status column, which made it read as fully open long
 after most of it had shipped. The original row-by-row pass opened each cited
-anchor at `origin/main@138a3740`; this refresh re-checked the status deltas from
-PRs #262, #264, and #263 at `origin/main@4087dc53`. **What was checked is anchor
-presence, not the full acceptance criteria** — a row marked landed may still
-have gaps that only its own acceptance list would catch. **Row 32 is the worked
-example of that caveat biting**: it was first listed here as landed and is
-corrected to partial below. 20 landed + 2 partial + 13 open = 35; row 0 is an
-owner decision, not engineering work.
+anchor at `origin/main@138a3740`; PR #268 re-checked the status deltas from PRs
+#262, #264, and #263 at `origin/main@4087dc53`. This branch re-checked row 21's
+single acceptance slice against `origin/main@b8024e5d` plus the CLAUDE.md
+addition below. **What was checked is anchor presence, not the full acceptance
+criteria** — a row marked landed may still have gaps that only its own
+acceptance list would catch. **Row 32 is the worked example of that caveat
+biting**: it was first listed here as landed and is corrected to partial below.
+At this branch head, 21 landed + 2 partial + 12 open = 35; row 0 is an owner
+decision, not engineering work.
 
-**Landed (20):** 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 16, 17, 18, 19, 22, 23, 24,
-29, 30.
+**Landed (21):** 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 16, 17, 18, 19, 21, 22, 23,
+24, 29, 30.
 
 Anchors worth naming because they are not obvious from the table: row 7's Windsurf
 path fix is pinned by `MCPActivationOnboardingTests.swift:137`
@@ -341,7 +343,8 @@ path fix is pinned by `MCPActivationOnboardingTests.swift:137`
 through `case .user, .assistant, .code: return true`
 (`ColorBarMessageView.swift:165`); row 10 is `hiddenMatchBuckets`
 (`SessionDetailView.swift:73`); row 24 carries a literal `Row 24:` comment
-(`HomeView.swift:31`).
+(`HomeView.swift:31`); row 21 is the `Invariant back-references` convention in
+`CLAUDE.md`.
 
 **Partial (2):** rows **31** and **32**.
 
@@ -366,8 +369,8 @@ numeric `effectiveFontSize` (`ContentSegmentViews.swift:84`) rather than followi
 Dynamic Type, and 141 `.font(.system(size: N))` call sites remain against 237
 semantic-font uses. The row's "transcript body" half is not done.
 
-**Open (13):** 11, 12, 14, 15, 20 (PR #266), 21 (PR #265), 25, 26, 27, 28, 33,
-34, 35. Row **12** is no longer blocked on a missing prune implementation:
+**Open (12):** 11, 12, 14, 15, 20 (PR #266), 25, 26, 27, 28, 33, 34, 35. Row
+**12** is no longer blocked on a missing prune implementation:
 PR #264 landed domain-scoped orphan pruning, and PR #263 reconciled the row-12
 design with that new prerequisite. The old `~1,001` post-prune residue estimate
 is retired. The real runtime count remains `UNVERIFIED` until one complete
