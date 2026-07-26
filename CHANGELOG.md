@@ -7,6 +7,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### PR #229 atomic CodeQL Action v4.37.3 update (2026-07-26)
+
+The three CodeQL `init` and three `analyze` invocations now move together from
+v4.37.0 to the immutable commit
+`e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81`. GitHub's tag API resolves the
+annotated `refs/tags/v4.37.3` tag through
+`c54b30b7df092240050e69945842bc67aee0f0f4` to that exact commit.
+
+Dependabot split the update across PRs #229 and #233. Each half is
+deterministically invalid on its own: #229 loads a v4.37.3 configuration while
+running v4.37.0 analysis, and #233 produces the inverse mismatch. On exact #229
+head `faf4a325`, the focused workflow contract reproduced 1 failure out of 30
+because the shared expected pin still named v4.37.0. This patch applies the
+#233 analyze half to #229 and updates both contract pins, keeping the CodeQL
+runtime version consistent across TypeScript, Swift product, and Swift remote
+server jobs. Push, fresh PR CI, merge, and post-merge status are not claimed by
+this local record.
+
 ### PR #231 actions/checkout v7.0.1 (2026-07-26)
 
 All 19 workflow invocations move from the immutable actions/checkout v7.0.0
