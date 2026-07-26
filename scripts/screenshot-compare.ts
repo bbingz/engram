@@ -296,6 +296,8 @@ async function compareOne(
 
   // 1. Pixelmatch
   const diffBuf = Buffer.alloc(compareWidth * compareHeight * 4);
+  // Keep pixel counts on pixelmatch v6's white-background alpha semantics.
+  // The transparent-pixel repro test fails if this comparison option is removed.
   const pixelDiffCount = pixelmatch(
     new Uint8Array(actualBuf.buffer, actualBuf.byteOffset, actualBuf.length),
     new Uint8Array(
@@ -306,7 +308,7 @@ async function compareOne(
     new Uint8Array(diffBuf.buffer, diffBuf.byteOffset, diffBuf.length),
     compareWidth,
     compareHeight,
-    { threshold: 0.1 },
+    { threshold: 0.1, checkerboard: false },
   );
   const totalPixels = compareWidth * compareHeight;
   const pixelDiffPercent = (pixelDiffCount / totalPixels) * 100;
