@@ -198,4 +198,27 @@ final class TranscriptFindTests: XCTestCase {
         )
         XCTAssertTrue(buckets.isEmpty)
     }
+
+    func testHiddenMatchSummaryRunsOutsideMainActor_repro() async {
+        let count = await Task.detached {
+            let hiddenMessage = IndexedMessage(
+                message: ChatMessage(
+                    role: "assistant",
+                    content: "needle",
+                    systemCategory: .none
+                ),
+                messageType: .tool,
+                typeIndex: 1
+            )
+            return SessionDetailView.hiddenTypeMatchSummary(
+                [hiddenMessage],
+                query: "needle",
+                typeVisibility: [.tool: false],
+                showSystemPrompts: false,
+                showAgentComm: false
+            ).count
+        }.value
+
+        XCTAssertEqual(count, 1)
+    }
 }

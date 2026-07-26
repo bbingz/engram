@@ -4,6 +4,8 @@
 
 ### 2026-07-26
 
+- [修复] Xcode 27 在转录查找 detached match scan 上报告的 actor 警告已用纯 helper `nonisolated` + 非空消息回归修复，Swift 793/793、Node 1,509 项通过。无显式 AppIntents 链接的诊断包仍复现 AppKit 注册错误，但限定日志窗口未见 CoreSpotlight donation；仓库无对应 API，Apple 也在追踪同族错误。因移除链接会重引 Xcode 构建警告、Developer ID 同签名 A/B 又被 login Keychain 阻断，已撤回未证实的修复并裁决为 macOS 27 beta 系统/构建工具集成噪声。teamless 诊断包已撤回，当前安全恢复为 1.0.5 (1403)，完整证据见 `CHANGELOG.md`。
+- [验证] clean `main@9e5ff9b8` 已重建并本机安装 Developer ID Engram 1.0.5 (1403)；App/Service/MCP 全部换成安装后的新进程，Service socket 与只读 archive status smoke 正常。旧 1382 签名包保存在 `~/Library/Application Support/Engram/rollback/engram-1.0.5-1382-GvAOSTyW/Engram.app`；未 notarize、staple、tag、release 或远端 deploy，完整哈希与启动期非致命日志见 `CHANGELOG.md`。
 - [修复] #229/#233 被 Dependabot 拆开的 CodeQL Action 升级不能单独成立：两边分别造成 v4.37.3/v4.37.0 的确定性 config/runtime 错配。现以 #229 为载体把 3 个 `init`、3 个 `analyze` 及共享测试 pin 原子更新到官方 v4.37.3 commit `e4fba868`；exact 旧 head 已本地复现 30 项中唯一 1 项失败。push、fresh CI、merge 与 post-merge 仍未验证，详见 `CHANGELOG.md`。
 - [变更] #231 updates all 19 checkout invocations to official v7.0.1 commit `3d3c42e5`; CI and exact-head local reproduction both exercised the same stale shared test pin, which is now aligned. Push, fresh CI, merge, and post-merge status remain unverified; see `CHANGELOG.md`.
 - [变更] #236 的 better-sqlite3 v13 兼容性补强已覆盖两份确定性 fixture baseline、共享本地/CI freshness 闸及无需 `allowScripts` 的干净安装；旧 CI 红未 rerun。完整二进制与测试收据见 `CHANGELOG.md`，本条不宣称远端 merge/post-merge 状态。
