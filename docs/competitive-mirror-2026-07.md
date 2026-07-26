@@ -325,17 +325,19 @@ One row per surviving recommendation. **The ordering is a work sequence, not a v
 The table below carries no status column, which made it read as fully open long
 after most of it had shipped. The original row-by-row pass opened each cited
 anchor at `origin/main@138a3740`; PR #268 re-checked the status deltas from PRs
-#262, #264, and #263 at `origin/main@4087dc53`. This branch re-checked row 21's
-single acceptance slice against `origin/main@b8024e5d` plus the CLAUDE.md
-addition below. **What was checked is anchor presence, not the full acceptance
+#262, #264, and #263 at `origin/main@4087dc53`. This branch re-checked rows 20
+and 21 against `origin/main@b8a1cb7a` plus the dated relaunch update below.
+**What was checked is anchor presence, not the full acceptance
 criteria** — a row marked landed may still have gaps that only its own
 acceptance list would catch. **Row 32 is the worked example of that caveat
 biting**: it was first listed here as landed and is corrected to partial below.
-At this branch head, 21 landed + 2 partial + 12 open = 35; row 0 is an owner
-decision, not engineering work.
+At this branch head, 22 landed + 2 partial + 11 open = 35; row 0 is an owner
+decision, not engineering work. Row 20 is narrowly a documentation-maintenance
+recommendation: landed means the dated correction exists, not that the plugin's
+separate P0 `Stop` / `SessionEnd` write-back work is complete.
 
-**Landed (21):** 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 16, 17, 18, 19, 21, 22, 23,
-24, 29, 30.
+**Landed (22):** 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 16, 17, 18, 19, 20, 21, 22,
+23, 24, 29, 30.
 
 Anchors worth naming because they are not obvious from the table: row 7's Windsurf
 path fix is pinned by `MCPActivationOnboardingTests.swift:137`
@@ -343,8 +345,11 @@ path fix is pinned by `MCPActivationOnboardingTests.swift:137`
 through `case .user, .assistant, .code: return true`
 (`ColorBarMessageView.swift:165`); row 10 is `hiddenMatchBuckets`
 (`SessionDetailView.swift:73`); row 24 carries a literal `Row 24:` comment
-(`HomeView.swift:31`); row 21 is the `Invariant back-references` convention in
-`CLAUDE.md`.
+(`HomeView.swift:31`); row 20 is the dated update in
+`docs/competitive-relaunch-2026-06.md`, grounded by the 27-tool pins in
+`docs/mcp-tools.md` / `EngramMCPExecutableTests.swift` and the current
+`integrations/claude-code/engram/` plugin tree; row 21 is the
+`Invariant back-references` convention in `CLAUDE.md`.
 
 **Partial (2):** rows **31** and **32**.
 
@@ -369,7 +374,7 @@ numeric `effectiveFontSize` (`ContentSegmentViews.swift:84`) rather than followi
 Dynamic Type, and 141 `.font(.system(size: N))` call sites remain against 237
 semantic-font uses. The row's "transcript body" half is not done.
 
-**Open (12):** 11, 12, 14, 15, 20 (PR #266), 25, 26, 27, 28, 33, 34, 35. Row
+**Open (11):** 11, 12, 14, 15, 25, 26, 27, 28, 33, 34, 35. Row
 **12** is no longer blocked on a missing prune implementation:
 PR #264 landed domain-scoped orphan pruning, and PR #263 reconciled the row-12
 design with that new prerequisite. The old `~1,001` post-prune residue estimate
@@ -378,12 +383,11 @@ post-#264 indexing pass is followed by the design's read-only numerator and
 denominator queries; the service DTO, Source Pulse chip, and MCP `stats` work
 remain unimplemented.
 
-**"Open" here means unimplemented, not unspecified.** Of the 13: rows 12, 14, 15,
+**"Open" here means unimplemented, not unspecified.** Of the 11: rows 12, 14, 15,
 25, 26, 27 and 28 already carry an accepted spec on `main` (the nine-bundle
-commit `7ed3d2a6`, mapped in the bundle table above); rows 20 and 21 are in
-flight as PRs; rows 33, 34 and 35 are hard-gated on the row-0 publish decision
-and should not be started before it. Row **11** was the only one with no spec, no
-PR and no gate, and now has one
+commit `7ed3d2a6`, mapped in the bundle table above); rows 33, 34 and 35 are
+hard-gated on the row-0 publish decision and should not be started before it.
+Row **11** was the only one with no spec, no PR and no gate, and now has one
 (`docs/resume-suppression-subagents-design-2026-07.md`, PR #269) — which found
 the mirror's proposed `agent_role == "subagent"` gate misses 952 rows on the live
 corpus. So the backlog's remaining work is implementation and an owner decision,

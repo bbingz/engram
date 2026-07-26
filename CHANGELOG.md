@@ -7,7 +7,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-### PR #269 merge verification and PR #265 backlog reconciliation (2026-07-26)
+### PR #269 merge verification (2026-07-26)
 
 PR #269 passed its exact-head review and code gates at
 `257ea82be6b7db1bc5e6776b69ea4db077bbf376`. Its first Dependency Review job
@@ -23,11 +23,24 @@ After a second exact-head gate, PR #269 squash-merged as
 full-UI screenshot comparisons; CodeQL run `30181348906` also passed. Nothing
 was deployed.
 
-PR #265's single CLAUDE.md convention commit is rebased from its stale
-`138a3740` base onto that exact main. The mirror status now treats row 21 as
-landed at this branch head and uses an explicit anchor-presence counting rule:
-21 landed + 2 partial + 12 open = 35 engineering rows. Production code is
-unchanged.
+### PR #265/#266 backlog reconciliation (2026-07-26)
+
+PR #265's single CLAUDE.md convention commit was rebased from its stale
+`138a3740` base onto that exact main, adversarially reviewed at
+`3a5aae14beef749914d9223208abcdc3f1178ac1`, and squash-merged as
+`b8a1cb7a2ff7ffc49d333b9e331a218c50a42d04`. Post-merge Tests run
+`30182150988` passed every required lane, including the full UI suite and
+screenshot comparison; CodeQL run `30182150998` also passed. No rerun or deploy
+was issued.
+
+PR #266's dated relaunch-report correction is rebased onto that exact main.
+Current source still pins the MCP tool count at 27, and the Claude Code plugin
+tree still contains `.mcp.json`, three skills, and only a `SessionStart` hook;
+the proposed `Stop` / `SessionEnd` write-back hook remains absent. The mirror
+status therefore moves the narrowly scoped documentation-maintenance row 20
+from open to landed: 22 landed + 2 partial + 11 open = 35 engineering rows.
+This does not claim that the plugin's separate P0 write-back work is complete.
+Production code is unchanged.
 
 ### PR #269 resume-suppression spec reconciliation (2026-07-26)
 
