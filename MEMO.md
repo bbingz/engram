@@ -4,6 +4,8 @@
 
 ### 2026-07-26
 
+- [裁决] #263 post-merge Tests `30178625833` 首轮仅 `swift-unit` 在大量 0-failure 测试后静默至 45 分钟被取消；exact merge tree 与 PR head 相同，其他 Tests lane、31 张 full UI 与 CodeQL 全绿。仅对 failed jobs 做一次有收据的 rerun，`swift-unit` 7m21s 全绿且 CI Gate 通过，归类为偶发 `xcodebuild`/runner hang；未二次 rerun、未 deploy。
+- [变更] #268 verified status 已重算为 20 landed + 2 partial + 13 open：row 9 随 #262 转为 landed；row 12 的 #264 prune 前提与 #263 对齐已落地，但 DTO/UI/MCP 仍未实现。旧 `~1,001` 估算作废，完整索引后的运行时计数继续标记 `UNVERIFIED`；异家 review 抓到原 status prose 隔断 Markdown 表头，现已恢复 0–35 连续表格。
 - [验证] #264 已 squash merge 为 main `33887fc4`；fresh Tests `30177028003` 与 CodeQL `30177028012` 全绿，full UI 31/31，Source Pulse 为 `SSIM 1 / pHash 0 / diff 0%`。未 rerun、未 deploy。
 - [变更] #263 已基于新 main 校正 row 12 前提：528 行只作 2026-07-25 的 pre-prune 快照；#264 已落地域限定裁剪，但完整索引后的真实计数仍标记 `UNVERIFIED`，须同一 corpus 只读重测后再实现 C1-C3。
 - [裁决] #262 合入后的 Tests `30170009516` 不是 runner 抖动：近四次绿 run 的 Source Pulse 指标稳定，而 exact merge artifact 因新增的 `Live sessions unavailable` 过期态确定性越过阈值；归类为预期 UI 变化导致的 baseline drift。
