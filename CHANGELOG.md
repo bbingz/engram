@@ -22,28 +22,19 @@ A staged TypeScript probe exercised the repository's real Husky configuration:
 lint-staged found the single matching file, ran Biome, staged Biome's formatted
 result, and completed its backup and cleanup phases. A second, partially staged
 probe made the staged version fail Biome while preserving a separate unstaged
-sentinel. It exposed a pre-existing hook defect: lint-staged failed and restored
-both states, but the following shell conditional masked its exit status.
-`.husky/pre-commit` now propagates only the lint-staged failure without changing
-the later macOS guard's shell semantics. Executable regression cases run the
-hook through its shebang and prove that a stubbed failure is propagated
-unchanged while the non-macOS success path remains zero; two more cases prove
-that the existing macOS project-drift guard also propagates its own success and
-failure statuses. The test runs from an isolated temporary directory so a stub
-failure cannot mutate the repository. The real failure probe then exited
-nonzero while preserving the staged blob, worktree hash, unstaged sentinel, and
-pre-existing stash list.
+sentinel. Directly invoking the user hook returned the following shell guard's
+status, but that is not Git's commit path: `core.hooksPath` points to
+`.husky/_`, whose Husky 9 wrapper executes the user hook with `sh -e`. The
+actual wrapper exited nonzero while preserving the staged blob, worktree hash,
+unstaged sentinel, and pre-existing stash list. No hook change was retained.
 
 Verification started with a clean `npm ci`. The no-staged path, build, test
-typecheck, lint, dead-code check, focused hook regression, and all 1,512 Node
-tests across 129 files passed. The full Node gates also cover the shared,
-hoisted `picomatch` update from 4.0.4 to 4.0.5 used by Knip, Vitest/Vite, and
-their globbing helpers; they are broader dependency-graph evidence, not a
-substitute for the two lint-staged behavior probes. The existing six npm audit
-findings do not name lint-staged or any of its required dependencies.
-This fail-closed hook behavior intentionally blocks commits when `npx`,
-lint-staged, or the Node toolchain is unavailable; restore the npm dependencies
-and Git client's Node/npm `PATH` before committing.
+typecheck, lint, dead-code check, and all 1,508 Node tests across 128 files
+passed. The full Node gates also cover the shared, hoisted `picomatch` update
+from 4.0.4 to 4.0.5 used by Knip, Vitest/Vite, and their globbing helpers; they
+are broader dependency-graph evidence, not a substitute for the two lint-staged
+behavior probes. The existing six npm audit findings do not name lint-staged or
+any of its required dependencies.
 
 ### PR #269 merge verification (2026-07-26)
 
@@ -104,17 +95,6 @@ The adapter-format drift command remains fail-closed because the local Claude
 and Codex corpus versions exceed their approved baselines; an A/B run with
 tsx 4.22.4 and 4.23.1 produced the same two blocked results and exit status.
 The existing six npm audit findings do not name `tsx` or `esbuild`.
-
-Exact head `4a0237eb3ba0b8cbdf74938ba6e67c5521829acf` received an independent
-`APPROVE / NO FINDINGS` review. Fresh PR Tests run `30183014718`, CodeQL run
-`30183014722`, and Dependency Review run `30183014726` passed before the PR
-squash-merged as `19fa698b17679d1737b298e8441514068b06369e`. Post-merge Tests
-run `30183278956` passed every required lane, including Swift unit tests and
-all 31 full-UI screenshot comparisons; CodeQL run `30183278980` also passed.
-No rerun or deploy was issued.
-
-PR #234 carries this already-completed #235 closeout as a durable-documentation
-update only; it is not part of the lint-staged behavior change.
 
 ### PR #269 resume-suppression spec reconciliation (2026-07-26)
 
