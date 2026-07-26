@@ -7,6 +7,28 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### PR #269 merge verification and PR #265 backlog reconciliation (2026-07-26)
+
+PR #269 passed its exact-head review and code gates at
+`257ea82be6b7db1bc5e6776b69ea4db077bbf376`. Its first Dependency Review job
+never acquired a runner (`runner_id = 0`, empty runner name, and zero steps) and
+was canceled after 15 minutes, making the workflow fail without executing any
+repository code. The failed run was rerun exactly once. Attempt 2 immediately
+acquired GitHub runner `1000012816`, completed the dependency scan
+successfully, and no further rerun was issued.
+
+After a second exact-head gate, PR #269 squash-merged as
+`b8024e5d4b86000e0e9bbf2f62999f122662c72b`. Post-merge Tests run
+`30181348916` passed every required lane, including Swift unit tests and all 31
+full-UI screenshot comparisons; CodeQL run `30181348906` also passed. Nothing
+was deployed.
+
+PR #265's single CLAUDE.md convention commit is rebased from its stale
+`138a3740` base onto that exact main. The mirror status now treats row 21 as
+landed at this branch head and uses an explicit anchor-presence counting rule:
+21 landed + 2 partial + 12 open = 35 engineering rows. Production code is
+unchanged.
+
 ### PR #269 resume-suppression spec reconciliation (2026-07-26)
 
 The row-11 design is rebased onto `main@43333986` after PRs #263, #264, and
