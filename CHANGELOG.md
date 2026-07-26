@@ -12,10 +12,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 The direct development dependency `lint-staged` is based on
 `main@19fa698b` and updated from 17.0.8 to 17.2.0. The registry integrity
 matches the lockfile, both releases require Node `>=22.22.1`, and the new
-runtime dependency set is limited to `picomatch`, `string-argv`, and
-`tinyexec`. The 482-line lockfile reduction is the expected result of upstream
-removing Listr2 and its terminal-output dependency tree; `picomatch` moves from
-4.0.4 to 4.0.5.
+required runtime dependency set is limited to `picomatch`, `string-argv`, and
+`tinyexec`; the optional `yaml` dependency remains unchanged. The 482-line
+lockfile reduction is the expected result of upstream removing Listr2 and its
+terminal-output dependency tree; `picomatch` moves from 4.0.4 to 4.0.5.
 
 A staged TypeScript probe exercised the repository's real Husky configuration:
 lint-staged found the single matching file, ran Biome, staged Biome's formatted
