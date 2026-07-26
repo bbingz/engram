@@ -4,6 +4,7 @@
 
 ### 2026-07-26
 
+- [变更] #231 updates all 19 checkout invocations to official v7.0.1 commit `3d3c42e5`; CI and exact-head local reproduction both exercised the same stale shared test pin, which is now aligned. Push, fresh CI, merge, and post-merge status remain unverified; see `CHANGELOG.md`.
 - [变更] #236 的 better-sqlite3 v13 兼容性补强已覆盖两份确定性 fixture baseline、共享本地/CI freshness 闸及无需 `allowScripts` 的干净安装；旧 CI 红未 rerun。完整二进制与测试收据见 `CHANGELOG.md`，本条不宣称远端 merge/post-merge 状态。
 - [变更] #234 的依赖/lockfile 内容已在 `9da69b63` 把 lint-staged 17.0.8 升到 17.2.0；真实 `git commit` 失败探针与本地 Node 全量门禁通过，未保留 hook/test 改动。fresh PR CI 仍待推送触发，多文件/特殊 glob/non-TTY 场景未单独验证；完整收据与风险见 `CHANGELOG.md`。
 - [验证] #269 已 squash merge 为 main `b8024e5d`；Dependency Review 首轮 `runner_id=0`、无 runner/steps，15 分钟后被取消，仅对 failed run 做一次有收据 rerun，attempt 2 获得 runner 后扫描成功。post-merge Tests `30181348916` 与 CodeQL `30181348906` 全绿，full UI 31/31；未 deploy。

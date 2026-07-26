@@ -68,7 +68,7 @@ const allWorkflows = [
 ];
 const actionPins = {
   'actions/cache': '55cc8345863c7cc4c66a329aec7e433d2d1c52a9',
-  'actions/checkout': '9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0',
+  'actions/checkout': '3d3c42e5aac5ba805825da76410c181273ba90b1',
   'actions/download-artifact': '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c',
   'actions/github-script': '3a2844b7e9c422d3c10d287c895573f7108da1b3',
   'actions/setup-node': '820762786026740c76f36085b0efc47a31fe5020',

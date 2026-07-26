@@ -7,6 +7,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### PR #231 actions/checkout v7.0.1 (2026-07-26)
+
+All 19 workflow invocations move from the immutable actions/checkout v7.0.0
+commit to `3d3c42e5aac5ba805825da76410c181273ba90b1`. The GitHub repository tag API
+resolves `refs/tags/v7.0.1` to that exact commit, as verified with
+`gh api repos/actions/checkout/git/ref/tags/v7.0.1`. The Dependabot-only patch
+deterministically failed 4 of 30 workflow contract tests because their single
+shared expected pin still named v7.0.0; the remaining 1,491 Node tests passed
+in CI. Local reproduction on exact PR head `30a69d6c` exercised the same stale
+constant and produced the same four failures. Updating that constant preserves
+the checks for immutable 40-character pins, Git LFS ordering, aggregate gates,
+and CodeQL classifier routing. Push, fresh PR CI, merge, and post-merge status
+are not claimed by this local verification record.
+
 ### PR #236 better-sqlite3 v13 compatibility (2026-07-26)
 
 The retained TypeScript tooling moves `better-sqlite3` from 12.11.1 to 13.0.1.
