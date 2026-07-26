@@ -1,7 +1,5 @@
 #!/usr/bin/env sh
-set -e
-
-npx lint-staged
+npx lint-staged || exit $?
 
 if git diff --cached --name-only | grep -q '^macos/'; then
   scripts/check-xcodeproj-drift.sh

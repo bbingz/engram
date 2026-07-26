@@ -24,18 +24,20 @@ result, and completed its backup and cleanup phases. A second, partially staged
 probe made the staged version fail Biome while preserving a separate unstaged
 sentinel. It exposed a pre-existing hook defect: lint-staged failed and restored
 both states, but the following shell conditional masked its exit status.
-`.husky/pre-commit` now enables fail-fast behavior, and an executable regression
-test proves that a stubbed lint-staged failure is propagated unchanged. The real
-failure probe then exited nonzero while preserving the staged blob, worktree
-hash, unstaged sentinel, and pre-existing stash list.
+`.husky/pre-commit` now propagates only the lint-staged failure without changing
+the later macOS guard's shell semantics. Executable regression cases run the
+hook through its shebang and prove that a stubbed failure is propagated
+unchanged while the success path remains zero. The real failure probe then
+exited nonzero while preserving the staged blob, worktree hash, unstaged
+sentinel, and pre-existing stash list.
 
 Verification started with a clean `npm ci`. The no-staged path, build, test
-typecheck, lint, dead-code check, focused hook regression, and all 1,509 Node
+typecheck, lint, dead-code check, focused hook regression, and all 1,510 Node
 tests across 129 files passed. The full Node gates also cover the shared,
-hoisted `picomatch` update from 4.0.4 to 4.0.5 used by other development tools;
-they are broader dependency-graph evidence, not a substitute for the two
-lint-staged behavior probes. The existing six npm audit findings do not name
-lint-staged or any of its required dependencies.
+hoisted `picomatch` update from 4.0.4 to 4.0.5 used by Knip, Vitest/Vite, and
+their globbing helpers; they are broader dependency-graph evidence, not a
+substitute for the two lint-staged behavior probes. The existing six npm audit
+findings do not name lint-staged or any of its required dependencies.
 
 ### PR #269 merge verification (2026-07-26)
 
