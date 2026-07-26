@@ -9,21 +9,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### PR #234 lint-staged dependency refresh (2026-07-26)
 
-The direct development dependency `lint-staged` is based on
-`main@19fa698b` and updated from 17.0.8 to 17.2.0. The registry integrity
-matches the lockfile, both releases require Node `>=22.22.1`, and the new
-required runtime dependency set is limited to `picomatch`, `string-argv`, and
-`tinyexec`; the optional `yaml` dependency remains unchanged. The 482-line
-lockfile reduction is the expected result of upstream removing Listr2 and its
-terminal-output dependency tree; `picomatch` moves from 4.0.4 to 4.0.5.
+The branch is based on `main@19fa698b` and updates the direct development
+dependency `lint-staged` from 17.0.8 to 17.2.0. Registry metadata confirms that
+both releases require Node `>=22.22.1`; the registry integrity matches the
+lockfile. The new required dependency set is limited to `picomatch`,
+`string-argv`, and `tinyexec`, while the optional `yaml` dependency remains
+unchanged. The lockfile's 473-line net reduction (8 insertions and 481
+deletions) is the expected result of upstream removing Listr2 and its
+terminal-output dependency tree.
 
 A staged TypeScript probe exercised the repository's real Husky configuration:
 lint-staged found the single matching file, ran Biome, staged Biome's formatted
-result, and completed its backup and cleanup phases. The probe was then
-unstaged and deleted, leaving no tracked or untracked residue. The no-staged
-path, build, test typecheck, lint, dead-code check, and all 1,508 Node tests
-across 128 files also passed. The existing six npm audit findings do not name
-lint-staged or any of its three runtime dependencies.
+result, and completed its backup and cleanup phases. A second, partially staged
+probe made the staged version fail Biome while preserving a separate unstaged
+sentinel. It exposed a pre-existing hook defect: lint-staged failed and restored
+both states, but the following shell conditional masked its exit status.
+`.husky/pre-commit` now enables fail-fast behavior, and an executable regression
+test proves that a stubbed lint-staged failure is propagated unchanged. The real
+failure probe then exited nonzero while preserving the staged blob, worktree
+hash, unstaged sentinel, and pre-existing stash list.
+
+Verification started with a clean `npm ci`. The no-staged path, build, test
+typecheck, lint, dead-code check, focused hook regression, and all 1,509 Node
+tests across 129 files passed. The full Node gates also cover the shared,
+hoisted `picomatch` update from 4.0.4 to 4.0.5 used by other development tools;
+they are broader dependency-graph evidence, not a substitute for the two
+lint-staged behavior probes. The existing six npm audit findings do not name
+lint-staged or any of its required dependencies.
 
 ### PR #269 merge verification (2026-07-26)
 
@@ -92,6 +104,9 @@ squash-merged as `19fa698b17679d1737b298e8441514068b06369e`. Post-merge Tests
 run `30183278956` passed every required lane, including Swift unit tests and
 all 31 full-UI screenshot comparisons; CodeQL run `30183278980` also passed.
 No rerun or deploy was issued.
+
+PR #234 carries this already-completed #235 closeout as a durable-documentation
+update only; it is not part of the lint-staged behavior change.
 
 ### PR #269 resume-suppression spec reconciliation (2026-07-26)
 
