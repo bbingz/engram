@@ -4,6 +4,7 @@
 
 ### 2026-07-26
 
+- [变更] #234 的依赖/lockfile 内容已在 `9da69b63` 把 lint-staged 17.0.8 升到 17.2.0；真实 `git commit` 失败探针与本地 Node 全量门禁通过，未保留 hook/test 改动。fresh PR CI 仍待推送触发，多文件/特殊 glob/non-TTY 场景未单独验证；完整收据与风险见 `CHANGELOG.md`。
 - [验证] #269 已 squash merge 为 main `b8024e5d`；Dependency Review 首轮 `runner_id=0`、无 runner/steps，15 分钟后被取消，仅对 failed run 做一次有收据 rerun，attempt 2 获得 runner 后扫描成功。post-merge Tests `30181348916` 与 CodeQL `30181348906` 全绿，full UI 31/31；未 deploy。
 - [验证] #265 已 squash merge 为 main `b8a1cb7a`；异家 exact-head review 无发现，post-merge Tests `30182150988` 与 CodeQL `30182150998` 全绿，full UI 与截图比较通过；未 rerun、未 deploy。
 - [验证] #266 已在首轮异家 review 要求澄清 row 20 窄验收后，于 exact head `11ddf467` 获 `APPROVE / NO FINDINGS`，squash merge 为 main `0cdd862c`；post-merge Tests `30182787588` 与 CodeQL `30182787590` 的 docs-only classifiers/gates 全绿，未 rerun、未 deploy。row 20 转为 Landed 只代表旧报告已补 dated correction，不代表 plugin P0 全部完成；镜像 backlog 为 22 landed + 2 partial + 11 open。

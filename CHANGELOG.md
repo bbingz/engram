@@ -7,6 +7,53 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### PR #234 lint-staged dependency refresh (2026-07-26)
+
+PR #234 remains unmerged, based on
+`main@19fa698b17679d1737b298e8441514068b06369e`; its dependency and lockfile
+content is fixed at `9da69b63fe7bf87bb9dd6540d61181be6f7c0463`, with this verification
+record layered above it. Fresh PR CI is pending. The legacy Dependabot branch
+name still ends in `17.1.0`, so a duplicate automated 17.2.0 proposal remains
+possible after this hand-advanced update.
+
+The direct development dependency `lint-staged` moves from 17.0.8 to 17.2.0
+across upstream releases
+[17.1.0](https://github.com/lint-staged/lint-staged/releases/tag/v17.1.0),
+[17.1.1](https://github.com/lint-staged/lint-staged/releases/tag/v17.1.1), and
+[17.2.0](https://github.com/lint-staged/lint-staged/releases/tag/v17.2.0).
+Registry metadata confirms that both endpoint releases require Node
+`>=22.22.1`; the 17.2.0 registry integrity matches the lockfile. Its required
+dependency set is `picomatch`, `string-argv`, and `tinyexec`, while the optional
+peer `yaml` remains unchanged. The lockfile's 473-line net reduction (8
+insertions and 481 deletions) removes Listr2 and its terminal-output closure.
+The required shared hoist moves `picomatch` from 4.0.4 to 4.0.5 for
+lint-staged, Knip, and Vitest/Vite; no nested lint-staged copy was introduced.
+
+A single-file staged TypeScript success probe made lint-staged run Biome,
+re-stage the formatted result, and finish its backup and cleanup phases. A
+second probe used an actual `git commit` in a detached worktree with an invalid
+staged blob and a distinct valid worktree sentinel. The Husky
+`.husky/_/pre-commit` path rejected the commit with exit 1; `HEAD` stayed at
+`9da69b63`, and the staged blob, worktree hash, and three pre-existing stash
+entries were unchanged. A prior direct invocation of the user hook returned 0
+because it bypassed Husky's generated `sh -e` wrapper and is not the configured
+Git commit path. No hook or test change is retained in this dependency PR.
+
+Local verification started with a clean `ONNXRUNTIME_NODE_INSTALL=skip npm ci`
+on Node 26.5.0. `lint-staged --version` reported 17.2.0; the no-staged hook
+path, `npm run build`, `npm run typecheck:test`, `npm run lint`, `npm run
+knip`, and `npm run test:coverage` all passed, with 1,508 tests across 128
+files. The post-update audit reports six findings (one moderate and five high);
+none names lint-staged, picomatch, string-argv, tinyexec, or yaml. A comparable
+base-lock audit was not rerun.
+
+Residual coverage is explicit: multi-file/chunked execution, special-character
+glob paths, and non-TTY GUI-client hook invocation were not separately probed;
+fresh PR CI, including the macOS lanes, is still pending. Failure propagation
+currently depends on Husky's generated `sh -e` wrapper, so making the tracked
+hook independently fail-fast remains a separate follow-up rather than scope for
+this dependency update.
+
 ### PR #269 merge verification (2026-07-26)
 
 PR #269 passed its exact-head review and code gates at
