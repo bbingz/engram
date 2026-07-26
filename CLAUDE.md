@@ -246,15 +246,14 @@ Parent-child session linking: agent sessions (dispatched by Claude Code to Gemin
 
 ## Local Dev Environment
 
-- **npm 12+ blocks package install scripts by default.** `package.json` declares
-  an `allowScripts` field so `better-sqlite3` builds its native addon. Without
-  it `npm ci` silently leaves no `better_sqlite3.node` and ~500 vitest tests
-  fail with `Could not locate the bindings file` — which reads like a Node ABI
-  mismatch and is not. CI pins Node 24 with an older npm and never sees this.
-  The `package.json` field **replaces** any `allow-scripts` list in `~/.npmrc`
-  for this repo. `sharp`, `esbuild`, `protobufjs` and `fsevents` are left
-  blocked and verified working from their prebuilt platform packages; add a name
-  only after checking that the package actually needs its script.
+- **`better-sqlite3` v13 does not need install-script permission on supported
+  hosts.** Its integrity-pinned npm tarball includes N-API prebuilds for macOS,
+  glibc/musl Linux, and Windows on x64 and arm64, so this repo no longer grants
+  it `allowScripts`. Other platform/architecture combinations fall back to the
+  package's `node-gyp` install path; npm 12 blocks that path by default, so
+  those hosts need an explicitly audited source build and toolchain rather than
+  a repo-wide exception. If `allowScripts` is reintroduced, remember that the
+  `package.json` field replaces any `allow-scripts` list in `~/.npmrc`.
 - **`.memory` is a single git-tracked markdown file**, not a per-fact directory.
   `~/.claude/projects/<cwd>/memory` is a symlink to it, so the default
   auto-memory layout (one file per fact plus a separate `MEMORY.md` index) does
