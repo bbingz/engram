@@ -7,6 +7,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### PR #234 lint-staged dependency refresh (2026-07-26)
+
+The direct development dependency `lint-staged` is based on
+`main@19fa698b` and updated from 17.0.8 to 17.2.0. The registry integrity
+matches the lockfile, both releases require Node `>=22.22.1`, and the new
+runtime dependency set is limited to `picomatch`, `string-argv`, and
+`tinyexec`. The 482-line lockfile reduction is the expected result of upstream
+removing Listr2 and its terminal-output dependency tree; `picomatch` moves from
+4.0.4 to 4.0.5.
+
+A staged TypeScript probe exercised the repository's real Husky configuration:
+lint-staged found the single matching file, ran Biome, staged Biome's formatted
+result, and completed its backup and cleanup phases. The probe was then
+unstaged and deleted, leaving no tracked or untracked residue. The no-staged
+path, build, test typecheck, lint, dead-code check, and all 1,508 Node tests
+across 128 files also passed. The existing six npm audit findings do not name
+lint-staged or any of its three runtime dependencies.
+
 ### PR #269 merge verification (2026-07-26)
 
 PR #269 passed its exact-head review and code gates at
@@ -66,6 +84,14 @@ The adapter-format drift command remains fail-closed because the local Claude
 and Codex corpus versions exceed their approved baselines; an A/B run with
 tsx 4.22.4 and 4.23.1 produced the same two blocked results and exit status.
 The existing six npm audit findings do not name `tsx` or `esbuild`.
+
+Exact head `4a0237eb3ba0b8cbdf74938ba6e67c5521829acf` received an independent
+`APPROVE / NO FINDINGS` review. Fresh PR Tests run `30183014718`, CodeQL run
+`30183014722`, and Dependency Review run `30183014726` passed before the PR
+squash-merged as `19fa698b17679d1737b298e8441514068b06369e`. Post-merge Tests
+run `30183278956` passed every required lane, including Swift unit tests and
+all 31 full-UI screenshot comparisons; CodeQL run `30183278980` also passed.
+No rerun or deploy was issued.
 
 ### PR #269 resume-suppression spec reconciliation (2026-07-26)
 
