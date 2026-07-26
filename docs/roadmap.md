@@ -61,20 +61,25 @@ they are not scheduled implementation work.
 
 ### Selected next direction — public macOS release baseline
 
-- **Why now:** the current source and installed product are Engram `1.0.4`,
-  while the latest public GitHub release is still `v1.0.3`. The repository has
-  no configured Actions secrets for Developer ID signing/notarization and no
-  active Homebrew or Sparkle distribution surface. A verifiable public build is
-  therefore the smallest prerequisite for credible distribution or feature
-  expansion.
-- **Target:** prepare the next SemVer release above `1.0.4` (currently expected
-  to be `v1.0.5`) from a green `main`. The final tag remains contingent on the
-  actual release diff and explicit publication authorization.
-- **Implementation scope:** align `package.json` and `macos/project.yml`,
-  regenerate the Xcode project, produce a universal Developer ID build,
-  notarize and staple it, run the full release verifier, and stage a ZIP plus
-  checksums. Exercise a clean-machine App launch, service socket, bundled MCP
-  initialize/tool-list, and archive-status smoke before publication.
+- **Why now:** current source is Engram `1.0.5` on `main@a0bcb620`, while the
+  latest public GitHub release is still `v1.0.3`. The installed universal
+  Developer ID build is `1.0.5 (1403)` from `main@9e5ff9b8`, one commit behind
+  current main. The release workflow remains identity-independent and has no
+  signing/notarization path; no active Homebrew or Sparkle distribution surface
+  exists. A verifiable public build is therefore the smallest prerequisite for
+  credible distribution or feature expansion.
+- **Target:** publish `v1.0.5` from an explicitly selected green release commit.
+  The final tag and assets remain contingent on the exact release diff and
+  explicit publication authorization.
+- **Engineering state:** source/package/Xcode version metadata, generated-project
+  drift protection, the 1.0.5 release note and tag gate, pinned XcodeGen build
+  path, and exact short/build-version candidate verification are complete. The
+  current verified evidence and exact remaining blockers are canonical in
+  `docs/TODO.md`.
+- **Remaining scope:** produce a fresh universal Developer ID artifact from the
+  exact release commit; notarize and staple it; pass the full verifier; stage the
+  asset and checksums; then exercise clean-machine App launch, service socket,
+  bundled MCP initialize/tool-list, and archive-status smoke before publication.
 - **Acceptance gate:** all required CI gates pass on the exact release commit;
   version guards agree; signing, notarization, stapling, bundle hygiene, hashes,
   and clean-machine runtime smoke are recorded; and the published tag, bundle
@@ -84,13 +89,13 @@ they are not scheduled implementation work.
   release, or changing external package channels. If Developer ID signing or
   notarization is unavailable or fails, do not tag or publish; keep `v1.0.3` as
   the public baseline and treat any ad-hoc build as verification-only.
-- **Out of scope:** Sparkle, Homebrew, a Claude Code plugin, and unrelated new
-  product features. Reconsider those only after the public baseline is proven.
+- **Out of scope:** Sparkle, Homebrew, and unrelated new product features.
+  Reconsider those only after the public baseline is proven.
 
 ### Exact-source dual-replica archive v2 — operational closeout complete
 
 - **Status:** shipped and operator-enabled. The current client runs Engram
-  `1.0.4 (1205)` with local capture, both private replicas, and opt-in automatic
+  `1.0.5 (1403)` with local capture, both private replicas, and opt-in automatic
   local reclamation enabled; fresh installs remain default OFF.
 - **Topology:** `macmini-hq` is the primary cold-read target and `macmini-m1`
   is an independently operated fallback in a different physical location with
