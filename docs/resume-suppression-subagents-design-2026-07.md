@@ -5,8 +5,8 @@
 - **Date**: 2026-07-26
 - **Related**: `docs/competitive-mirror-2026-07.md` row 11 / F10;
   `docs/claude-workflow-subagents-design-2026-07.md` (row 32, which multiplied
-  the affected population); mirror bundle table — row 11 is the only open row
-  with no spec, no PR, and no owner gate.
+  the affected population); mirror bundle table — before PR #269, row 11 was
+  the only open row with no spec, no PR, and no owner gate.
 
 ## Problem
 
@@ -71,7 +71,7 @@ rather than at its original S/medium ratio.
 
 ## Current state
 
-Anchored at `origin/main` = `138a3740`.
+Anchored at `origin/main` = `43333986`.
 
 1. **`EngramServiceReadProvider.resumeCommand`** —
    `macos/EngramService/Core/EngramServiceReadProvider.swift:1397`. The SELECT
@@ -142,15 +142,37 @@ if source == "claude-code", !Self.claudeResumeFileMatchesID(filePath: session.fi
 
 ```swift
 static func claudeResumeFileMatchesID(filePath: String, id: String) -> Bool {
-    !id.isEmpty && (filePath as NSString).lastPathComponent == "\(id).jsonl"
+    guard !id.isEmpty else { return false }
+    let components = URL(fileURLWithPath: filePath).pathComponents
+    return components.last == "\(id).jsonl"
+        && !components.dropLast().contains("subagents")
 }
 ```
 
 **The parent id needs one column.** `parent_session_id` is not in the SELECT.
 Add exactly that one column (`agent_role` is *not* needed — see Alternatives)
-and fall back to deriving from the path the same way the adapter does
-(`ClaudeCodeAdapter.swift:947-952`: the path component before `subagents`) when
-it is NULL, which is the state of 185 rows today (see *Risks*).
+and carry it in the read-block tuple. When it is NULL — the state of 185 rows
+today — derive from the path exactly as the adapter does
+(`ClaudeCodeAdapter.swift:947-952`: the path component before `subagents`).
+Only if both sources fail does the hint become generic:
+
+```swift
+static func claudeParentSessionID(filePath: String) -> String? {
+    let parts = filePath.split(separator: "/").map(String.init)
+    guard let subagentsIndex = parts.firstIndex(of: "subagents"),
+          subagentsIndex > 0
+    else {
+        return nil
+    }
+    return parts[subagentsIndex - 1]
+}
+
+let parentID = session.parentSessionId
+    ?? Self.claudeParentSessionID(filePath: session.filePath)
+let parentHint = parentID.map {
+    "It is a subagent of \($0). Resume that session instead."
+} ?? "Its transcript is not stored where claude --resume looks."
+```
 
 ### Slice B — belt and braces on the child rows (follow-up, separately landable)
 
@@ -200,7 +222,9 @@ does not have.
 - **Gate on `file_path LIKE '%/subagents/%'`.** Closest runner-up and it mirrors
   the adapter's own predicate (`ClaudeCodeAdapter.swift:378`), but it is a
   strict subset: 36,275 vs 36,279, missing the same 4 `agent-*.jsonl` rows.
-  Filename identity subsumes it and is the actual CLI contract.
+  The combined filename-and-path predicate covers both populations and follows
+  the actual CLI contract. The path clause also refuses a future
+  `subagents/<id>.jsonl` shape even though its basename alone would match.
 - **Gate in each of the ~10 client call sites.** Lost: ten diffs, ten chances to
   miss one, and the command palette and transcript toolbar are easy to forget.
   One service refusal covers every present and future caller.
@@ -229,8 +253,13 @@ Swift, `macos/EngramServiceCoreTests/`:
    non-empty `contextPrimer`, so `copyableClipboardItem` takes the
    "Context primer copied" branch rather than throwing.
 6. Pure-function table test on `claudeResumeFileMatchesID` covering: exact
-   match, `agent-<id>.jsonl` (the 4-row shape), a `subagents/` path, empty id,
+   top-level match, `agent-<id>.jsonl` (the 4-row shape), a
+   `subagents/<id>.jsonl` path whose basename would otherwise match, empty id,
    and an id that is a suffix of the filename but not the whole stem.
+7. `testClaudeWorkflowSubagentWithNullParentDerivesHintFromPath_repro` —
+   persist a workflow child with `parent_session_id = NULL`; the refusal hint
+   names the component immediately before `subagents`. A sibling case without
+   any `subagents` component gets the generic transcript-location hint.
 
 **Not tested:** the SwiftUI surfaces. Slice A is asserted at the service, which
 is the only thing all of them call; slice B, if taken, gets its own view-model
@@ -245,22 +274,28 @@ level assertion rather than a rendered-view test.
 
 ## Risks and open questions
 
-- **185 workflow rows have `parent_session_id IS NULL`** (measured 2026-07-26;
-  all 185 share one parent directory, and that parent **is** indexed, premium
-  tier, not hidden — so the link is derivable and simply was not made). For
-  those rows the hint must fall back to deriving the parent from the path, or
-  it will read "It is a subagent of (unknown)". Root cause of the 185 is
-  **not** established here; see the row-32 note below.
+- **185 workflow rows have `parent_session_id IS NULL`** (measured in the
+  document's single snapshot at `2026-07-25 16:04:59` UTC; all 185 share one
+  parent directory, and that parent **is** indexed, premium tier, not hidden —
+  so the link is derivable and simply was not made). For those rows the hint
+  first derives the parent from the path; only a malformed/non-subagent path
+  gets the generic transcript-location hint. Root cause of the 185 is **not**
+  established here; see the row-32 note below.
 - **`agent_role` provenance is not audited.** This design does not read the
-  column, so its 20 values are evidence for rejecting an alternative, not a
-  dependency. If a future change *does* depend on `agent_role`, that audit
-  becomes a prerequisite.
+  column, so its 19 non-NULL values are evidence for rejecting an alternative,
+  not a dependency. If a future change *does* depend on `agent_role`, that
+  audit becomes a prerequisite.
 - **Filename identity assumes Claude Code keeps `<id>.jsonl`.** If a future
   Claude Code release changes the resume lookup, the predicate goes stale
   silently — it would start refusing resumable sessions rather than emitting
   broken ones, which is the safer failure direction but still wrong. Row 23
   (`docs/adapter-format-drift-design-2026-07.md`) is the mechanism that would
   notice.
+- **The explicit `subagents` path guard shares that safe-failure bias.** If a
+  future Claude Code layout makes an `<id>.jsonl` under a directory literally
+  named `subagents` resumable, this design will refuse it until the row-23
+  format-drift evidence updates the contract. That false refusal is preferable
+  to emitting a command known to fail under today's layout.
 - **Open question — is the refusal the right UX for `tier = normal` rows?** 4 of
   the 36,279 are not subagents in the usual sense; one is `tier = normal` and
   browsable. Refusing is correct (its file genuinely is not resumable), but the
@@ -270,10 +305,12 @@ level assertion rather than a rendered-view test.
 
 ## Appendix — row 32 is partial, not landed
 
-`docs/competitive-mirror-2026-07.md`'s verified-status block (authored 2026-07-25,
-PR #268) lists row 32 as landed. Slices A/B shipped in `08fb7837`; **slice C did
-not.** `docs/claude-workflow-subagents-design-2026-07.md:212` specifies widening
-the `backfillParentLinks` regex, and `StartupBackfills.swift:1278` still reads
+`docs/competitive-mirror-2026-07.md`'s verified-status block now lists row 32 as
+partial on `main@43333986`. Its first PR #268 draft briefly listed the row as
+landed, but corrected that claim before merge. Slices A/B shipped in `08fb7837`;
+**slice C did not.**
+`docs/claude-workflow-subagents-design-2026-07.md:212` specifies widening the
+`backfillParentLinks` regex, and `StartupBackfills.swift:1278` still reads
 
 ```swift
 let regex = try NSRegularExpression(pattern: #"/([^/]+)/subagents/[^/]+\.jsonl$"#)
@@ -284,5 +321,5 @@ is unaffected — the adapter sets `parentSessionId` at parse time
 (`ClaudeCodeAdapter.swift:384`, `:947-952`), which is why 26,808 of 26,993
 workflow rows are linked. The 185 that are not are exactly the population slice C's
 backfill exists to catch, so slice C is a measured gap, not the
-"defense-in-depth" its own spec calls it. Corrected in the status block on the
-`docs/mirror-backlog-verified-status` branch.
+"defense-in-depth" its own spec calls it. The merged status block records the
+row as partial.

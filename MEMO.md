@@ -4,6 +4,7 @@
 
 ### 2026-07-26
 
+- [变更] #269 row 11 规格已 rebase 到 `main@43333986`：resume 生产锚仍成立；示例谓词由仅比 basename 收紧为同时拒绝 `subagents` 路径，避免误放行未来的 `subagents/<id>.jsonl`。异家 review 后又锁定 NULL-parent 契约：先用持久父 id、再按 adapter 路径推导、最后才 generic hint，并补专门测试。corpus 数字继续限定为 `2026-07-25 16:04:59 UTC` 单次快照；附录改为 #268 已在 merge 前把 row 32 校正为 Partial。仅文档，无数据库写入、rerun 或 deploy。
 - [裁决] #263 post-merge Tests `30178625833` 首轮仅 `swift-unit` 在大量 0-failure 测试后静默至 45 分钟被取消；exact merge tree 与 PR head 相同，其他 Tests lane、31 张 full UI 与 CodeQL 全绿。仅对 failed jobs 做一次有收据的 rerun，`swift-unit` 7m21s 全绿且 CI Gate 通过，归类为偶发 `xcodebuild`/runner hang；未二次 rerun、未 deploy。
 - [变更] #268 verified status 已重算为 20 landed + 2 partial + 13 open：row 9 随 #262 转为 landed；row 12 的 #264 prune 前提与 #263 对齐已落地，但 DTO/UI/MCP 仍未实现。旧 `~1,001` 估算作废，完整索引后的运行时计数继续标记 `UNVERIFIED`；异家 review 抓到原 status prose 隔断 Markdown 表头，现已恢复 0–35 连续表格。
 - [验证] #264 已 squash merge 为 main `33887fc4`；fresh Tests `30177028003` 与 CodeQL `30177028012` 全绿，full UI 31/31，Source Pulse 为 `SSIM 1 / pHash 0 / diff 0%`。未 rerun、未 deploy。
