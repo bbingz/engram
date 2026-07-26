@@ -7,6 +7,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Release candidate version-identity guard (2026-07-26)
+
+The public-baseline inventory is reconciled to current evidence: source
+`main@a0bcb620` and package/Xcode metadata are Engram 1.0.5, while the installed
+universal Developer ID build is 1.0.5 (1403) from the immediately preceding
+`main@9e5ff9b8`; the latest public GitHub Release remains `v1.0.3`. The installed
+bundle passes the existing full Developer ID verifier with exact
+`--expected-short-version 1.0.5` and `--expected-build 1403`, including bundle
+hygiene, required helpers, deep signature verification, Hardened Runtime,
+Developer ID authority, and secure timestamp. Notarization and stapling were
+not inspected.
+
+`build-release.sh` now forwards its resolved `MARKETING_VERSION` to
+`release-verify.sh` alongside the build number for the local-only candidate,
+the exported Developer ID candidate, and the printed final notarization
+verification command. The focused regression reproduced the missing
+short-version arguments before the change and passes afterward. No Keychain or
+secret state was read or changed; no signing, notarization, stapling, tag,
+GitHub Release, install, or deployment was performed. The remaining release
+acceptance gates are inventoried in `docs/TODO.md`.
+
 ### Xcode 27 transcript actor-isolation fix (2026-07-26)
 
 The pure transcript filter helpers in

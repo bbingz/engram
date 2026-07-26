@@ -310,6 +310,18 @@ describe('macOS release build script: no silent non-notarizable fallback', () =>
     expect(script).toContain('release-verify.sh');
   });
 
+  it('pins the marketing version in every candidate verification path', () => {
+    expect(script).toContain(
+      '"$SCRIPT_DIR/release-verify.sh" "$EXPORT_PATH/Engram-local-only.app" --adhoc --expected-build "$BUILD_NUMBER" --expected-short-version "$MARKETING_VERSION"',
+    );
+    expect(script).toContain(
+      '"$SCRIPT_DIR/release-verify.sh" "$EXPORT_PATH/Engram.app" --expected-build "$BUILD_NUMBER" --expected-short-version "$MARKETING_VERSION"',
+    );
+    expect(script).toContain(
+      'echo "  --expected-build \\"$BUILD_NUMBER\\" --expected-short-version \\"$MARKETING_VERSION\\" --require-notarization"',
+    );
+  });
+
   it('does not reuse the git commit count for dirty local release builds', () => {
     expect(script).toContain(
       'git -C "$MACOS_DIR" diff --quiet --ignore-submodules --',

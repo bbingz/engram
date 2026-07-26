@@ -7,19 +7,42 @@ verification and low-priority follow-ups belong in `docs/followups.md`.
 
 ### Public macOS release baseline (selected 2026-07-15)
 
-- **Goal:** close the drift between current source/installed Engram `1.0.4` and
-  the latest public GitHub release `v1.0.3` before starting another product
-  feature. The expected next version is `v1.0.5`, subject to the final release
-  diff.
+- **Goal:** publish a verifiable Engram `1.0.5` baseline above the latest public
+  GitHub release, `v1.0.3`, before starting another product feature. Current
+  `main@a0bcb620` and the source metadata are `1.0.5`; the installed Developer ID
+  build is `1.0.5 (1403)` from the immediately preceding `main@9e5ff9b8`, so it
+  is evidence for the release pipeline but not the final exact-source candidate.
 - **Known files and systems:** `package.json`, `macos/project.yml`, generated
   `macos/Engram.xcodeproj`, `macos/scripts/build-release.sh`,
   `macos/scripts/release-verify.sh`, the GitHub release workflow, Developer ID
   signing/notarization, and a clean macOS verification host.
-- **Implementation order:** merge the current archive/maintenance closeout to a
-  green `main`; align and guard version metadata; regenerate the Xcode project;
-  build a universal Developer ID artifact; notarize and staple it; stage the ZIP
-  and checksums; then run clean-machine App, service-socket, bundled-MCP, and
-  archive-status smoke checks.
+- **Verified engineering baseline (2026-07-26):**
+  - `package.json`, `macos/project.yml`, and the generated Xcode project agree on
+    `1.0.5`; the version guard and Xcode-project drift guard pass.
+  - `docs/release-notes/1.0.5.md` exists, and the `v*` release workflow requires
+    a stable SemVer tag, the matching note, release tests, and a tag-version-
+    matched ad-hoc bundle gate.
+  - Installed `1.0.5 (1403)` is universal and passes `release-verify.sh` with
+    exact expected short/build versions, bundle hygiene, required helpers, deep
+    signature verification, Hardened Runtime, Developer ID authority, and a
+    secure timestamp. Notarization and stapling were not inspected.
+  - `build-release.sh` uses the pinned XcodeGen gate and now passes both the
+    resolved marketing version and build number into every candidate verifier,
+    including the printed final notarization verifier.
+- **Remaining open items / blockers:**
+  1. Build and verify a fresh universal Developer ID candidate from the intended
+     exact release commit. The installed build predates `a0bcb620` by one commit.
+  2. Submit that exact candidate for notarization, staple it, and pass
+     `release-verify.sh --require-notarization` with exact version/build inputs.
+  3. Stage the notarized asset plus checksums and run clean-machine App,
+     service-socket, bundled-MCP, and archive-status smoke checks.
+  4. Obtain explicit publication approval before creating/pushing `v1.0.5` or
+     publishing assets. The existing `v1.0.4` tag has no GitHub Release and is
+     not reused or mutated by this plan.
+- **Implementation order:** the locally verifiable metadata and guard work is
+  complete. Resume at blocker 1 only when signing/private-key use is authorized,
+  then complete blockers 2-4 in order without treating the tag-triggered ad-hoc
+  CI bundle as distribution approval.
 - **Done when / verifier:** required CI passes on the exact release commit;
   version metadata agrees; the full release verifier passes the signed,
   notarized, stapled bundle; artifact hashes are recorded; clean-machine runtime
@@ -29,6 +52,7 @@ verification and low-priority follow-ups belong in `docs/followups.md`.
   verifier, or failed smoke blocks tagging and publication. Preserve public
   `v1.0.3`; an ad-hoc build is local verification only, never a distributable.
 - **Authorization boundary:** this TODO does not authorize adding secrets,
+  reading or changing Keychain state, signing, notarizing, stapling, installing,
   pushing a release tag, publishing a GitHub release, or creating/updating
   Homebrew or Sparkle channels.
 

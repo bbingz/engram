@@ -170,7 +170,7 @@ else
   echo ""
   echo "Local-only app: $EXPORT_PATH/Engram-local-only.app (non-distributable)"
   # Identity-independent hygiene + structure checks still apply.
-  "$SCRIPT_DIR/release-verify.sh" "$EXPORT_PATH/Engram-local-only.app" --adhoc --expected-build "$BUILD_NUMBER"
+  "$SCRIPT_DIR/release-verify.sh" "$EXPORT_PATH/Engram-local-only.app" --adhoc --expected-build "$BUILD_NUMBER" --expected-short-version "$MARKETING_VERSION"
   echo ""
   echo "build-release: local-only build complete (NOT for distribution)."
   exit 0
@@ -187,7 +187,7 @@ echo ""
 
 # 5. Verify the exported, distributable app (hygiene + Hardened Runtime + Developer ID + timestamp).
 echo "[5/5] Verifying exported app..."
-"$SCRIPT_DIR/release-verify.sh" "$EXPORT_PATH/Engram.app" --expected-build "$BUILD_NUMBER"
+"$SCRIPT_DIR/release-verify.sh" "$EXPORT_PATH/Engram.app" --expected-build "$BUILD_NUMBER" --expected-short-version "$MARKETING_VERSION"
 echo ""
 
 echo "======================================"
@@ -214,7 +214,7 @@ echo ""
 echo "# 3. Staple and verify the notarization ticket:"
 echo "xcrun stapler staple \"$EXPORT_PATH/Engram.app\""
 echo "$SCRIPT_DIR/release-verify.sh \"$EXPORT_PATH/Engram.app\" \\"
-echo "  --expected-build \"$BUILD_NUMBER\" --require-notarization"
+echo "  --expected-build \"$BUILD_NUMBER\" --expected-short-version \"$MARKETING_VERSION\" --require-notarization"
 echo ""
 echo "# 4. Install locally:"
 echo "$SCRIPT_DIR/deploy-local.sh \"$EXPORT_PATH/Engram.app\""
