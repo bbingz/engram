@@ -33,14 +33,39 @@ PR #265's single CLAUDE.md convention commit was rebased from its stale
 screenshot comparison; CodeQL run `30182150998` also passed. No rerun or deploy
 was issued.
 
-PR #266's dated relaunch-report correction is rebased onto that exact main.
+PR #266's dated relaunch-report correction was rebased onto that exact main.
 Current source still pins the MCP tool count at 27, and the Claude Code plugin
 tree still contains `.mcp.json`, three skills, and only a `SessionStart` hook;
-the proposed `Stop` / `SessionEnd` write-back hook remains absent. The mirror
-status therefore moves the narrowly scoped documentation-maintenance row 20
-from open to landed: 22 landed + 2 partial + 11 open = 35 engineering rows.
-This does not claim that the plugin's separate P0 write-back work is complete.
-Production code is unchanged.
+the proposed `Stop` / `SessionEnd` write-back hook remains absent. The first
+adversarial review required the narrow row-20 acceptance boundary to be
+explicit. After that clarification, exact head
+`11ddf467b2cd5d1e8972cccad2011cdf1b08d500` received `APPROVE / NO FINDINGS`
+and squash-merged as `0cdd862c78d100d22b217238b8f2b85558163eed`.
+Post-merge Tests run `30182787588` and CodeQL run `30182787590` passed their
+docs-only classifiers and gates. No rerun or deploy was issued.
+
+The mirror status therefore moves the narrowly scoped documentation-maintenance
+row 20 from open to landed: 22 landed + 2 partial + 11 open = 35 engineering
+rows. This does not claim that the plugin's separate P0 write-back work is
+complete. Production code is unchanged.
+
+### PR #235 tsx dependency refresh (2026-07-26)
+
+The direct development dependency `tsx` is rebased onto `main@0cdd862c` and
+updated from the lock-resolved 4.22.4 to 4.23.1. The registry integrity matches
+the lockfile, the Node requirement remains `>=18`, and both releases resolve
+the same `esbuild ~0.28.0` dependency range. The upstream delta contains module
+hook and watch-mode fixes plus startup-path performance improvements; repository
+usage is limited to TypeScript fixture, schema, drift, performance, and
+screenshot tooling.
+
+Fresh local verification passed the 4.23.1 CLI and typed-eval smoke, build,
+test typecheck, lint, dead-code gate, 15 focused executor tests, fixture
+generation/schema/parity checks, and all 1,508 Node tests across 128 files.
+The adapter-format drift command remains fail-closed because the local Claude
+and Codex corpus versions exceed their approved baselines; an A/B run with
+tsx 4.22.4 and 4.23.1 produced the same two blocked results and exit status.
+The existing six npm audit findings do not name `tsx` or `esbuild`.
 
 ### PR #269 resume-suppression spec reconciliation (2026-07-26)
 
