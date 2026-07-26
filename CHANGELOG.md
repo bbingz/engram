@@ -9,11 +9,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### PR #234 lint-staged dependency refresh (2026-07-26)
 
-PR #234 remains unmerged at exact local head
-`9da69b63fe7bf87bb9dd6540d61181be6f7c0463`, based on
-`main@19fa698b17679d1737b298e8441514068b06369e`; fresh PR CI is pending. The
-legacy Dependabot branch name still ends in `17.1.0`, so a duplicate automated
-17.2.0 proposal remains possible after this hand-advanced update.
+PR #234 remains unmerged, based on
+`main@19fa698b17679d1737b298e8441514068b06369e`; its dependency and lockfile
+content is fixed at `9da69b63fe7bf87bb9dd6540d61181be6f7c0463`, with this verification
+record layered above it. Fresh PR CI is pending. The legacy Dependabot branch
+name still ends in `17.1.0`, so a duplicate automated 17.2.0 proposal remains
+possible after this hand-advanced update.
 
 The direct development dependency `lint-staged` moves from 17.0.8 to 17.2.0
 across upstream releases
