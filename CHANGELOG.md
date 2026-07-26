@@ -27,17 +27,23 @@ both states, but the following shell conditional masked its exit status.
 `.husky/pre-commit` now propagates only the lint-staged failure without changing
 the later macOS guard's shell semantics. Executable regression cases run the
 hook through its shebang and prove that a stubbed failure is propagated
-unchanged while the success path remains zero. The real failure probe then
-exited nonzero while preserving the staged blob, worktree hash, unstaged
-sentinel, and pre-existing stash list.
+unchanged while the non-macOS success path remains zero; two more cases prove
+that the existing macOS project-drift guard also propagates its own success and
+failure statuses. The test runs from an isolated temporary directory so a stub
+failure cannot mutate the repository. The real failure probe then exited
+nonzero while preserving the staged blob, worktree hash, unstaged sentinel, and
+pre-existing stash list.
 
 Verification started with a clean `npm ci`. The no-staged path, build, test
-typecheck, lint, dead-code check, focused hook regression, and all 1,510 Node
+typecheck, lint, dead-code check, focused hook regression, and all 1,512 Node
 tests across 129 files passed. The full Node gates also cover the shared,
 hoisted `picomatch` update from 4.0.4 to 4.0.5 used by Knip, Vitest/Vite, and
 their globbing helpers; they are broader dependency-graph evidence, not a
 substitute for the two lint-staged behavior probes. The existing six npm audit
 findings do not name lint-staged or any of its required dependencies.
+This fail-closed hook behavior intentionally blocks commits when `npx`,
+lint-staged, or the Node toolchain is unavailable; restore the npm dependencies
+and Git client's Node/npm `PATH` before committing.
 
 ### PR #269 merge verification (2026-07-26)
 

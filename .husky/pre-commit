@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# Later guards can mask this status, so propagate lint-staged failures here.
 npx lint-staged || exit $?
 
 if git diff --cached --name-only | grep -q '^macos/'; then
