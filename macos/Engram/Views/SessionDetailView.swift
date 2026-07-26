@@ -129,7 +129,7 @@ struct SessionDetailView: View {
     /// `.system` / `.toolCall` / `.toolResult`, and `.system` has no chip and
     /// defaults to hidden — so running the `typeVisibility` gate first made the
     /// "Show System Prompts" toggle a no-op. Gate on `systemCategory` first.
-    static func isMessageVisible(
+    nonisolated static func isMessageVisible(
         _ idx: IndexedMessage,
         typeVisibility: [MessageType: Bool],
         showSystemPrompts: Bool,
@@ -163,7 +163,7 @@ struct SessionDetailView: View {
     /// Counts query matches that the current filters hide, partitioned by the
     /// gate that must flip to reveal them (row 10). Scans the loaded prefix
     /// (`indexedMessages`) — same scope as the partial-load search hint.
-    static func hiddenTypeMatchSummary(
+    nonisolated static func hiddenTypeMatchSummary(
         _ all: [IndexedMessage],
         query: String,
         typeVisibility: [MessageType: Bool],
@@ -207,7 +207,7 @@ struct SessionDetailView: View {
         }
     }
 
-    static func label(for kind: RevealKind) -> String {
+    nonisolated static func label(for kind: RevealKind) -> String {
         switch kind {
         case .systemPrompt: return "System Prompts"
         case .agentComm: return "Agent Comm"

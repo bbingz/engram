@@ -7,6 +7,92 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Xcode 27 transcript actor-isolation fix (2026-07-26)
+
+The pure transcript filter helpers in
+`macos/Engram/Views/SessionDetailView.swift` are now explicitly
+`nonisolated`, so the existing `Task.detached` match scan no longer crosses
+the view's inferred main-actor boundary. The regression test calls
+`hiddenTypeMatchSummary` from a detached task. Before the fix, an isolated
+`swiftc -typecheck -warnings-as-errors` probe reproduced the Xcode 27 actor
+warning; the focused `TranscriptFindTests` and the complete `EngramTests`
+suite then passed with 793 tests after the change. A post-fix App-module-only
+`swiftc -typecheck -warnings-as-errors` pass also completed cleanly. Applying
+the same override globally through `xcodebuild` is not a valid gate because
+GRDB and ArgumentParser deliberately pass `-suppress-warnings`, which the
+compiler rejects as conflicting before it reaches Engram.
+
+The complete Node suite passed 1,509 tests in 128 files. Test typecheck
+passed, and lint completed with only the pre-existing optional-chain warning
+at `src/adapters/grpc/cascade-client.ts:194`.
+
+### macOS 27 startup-noise adjudication and signed-app rollback (2026-07-26)
+
+The startup AppKit/App Intents/Core Spotlight messages are not reachable from
+Engram source: the macOS tree contains no `CoreSpotlight`,
+`CSSearchableIndex`, or App Intents API call. A controlled build without the
+explicit AppIntents link still entered the macOS 27 AppKit/App Intents
+registration path and logged the same registration failure, while
+reintroducing Xcode's metadata-extraction warning. The bounded no-link run did
+not reproduce the Core Spotlight donation message, so it is not evidence that
+the donation path persists without the link. Git history confirms that the
+framework link was originally added in `a7d92f83` specifically to clear that
+build warning. The attempted removal and release guard were therefore
+withdrawn rather than retained as an unverified trade of one warning for
+another. Apple Developer Forums show the same `CSIndexErrorDomain -1000` /
+`com.apple.SetStoreUpdateService` failure in an Apple sample and an Apple
+engineer requests Feedback for the same donation-family failure
+(FB23186946). With the App and Service otherwise healthy, the observed logs
+are adjudicated as macOS 27 beta system/build-tool integration noise rather
+than a reachable Engram product regression; suppressing unified logging or
+using undocumented opt-out keys was rejected.
+
+Developer ID signing of a local archive later failed on the nested CLI with
+`errSecInternalComponent`. The login Keychain remains visible to identity
+discovery but unavailable for private-key interaction
+(`security show-keychain-info` returns `User interaction is not allowed`).
+That prevents the same-signature Developer ID A/B needed to determine whether
+removing the explicit link also removes the donation message in a production
+identity.
+
+The teamless ad-hoc diagnostic build was not accepted as a production
+signature and was removed from `/Applications`; the verified Developer ID
+1.0.5 (1403) rollback was restored from
+`~/Library/Application Support/Engram/rollback/engram-1.0.5-1403-hse6pY/Engram.app`.
+The restored App and Service are running, the Service owns
+`~/.engram/run/engram-service.sock`, and `EngramCLI archive status` succeeds.
+
+No notarization, stapling, tag, GitHub release, or remote deploy was performed
+as part of this investigation.
+
+### Local Developer ID installation verification (2026-07-26)
+
+Clean `main@9e5ff9b88fd9aacf038d3571836a3cf6ddd48e16`, identical to
+`origin/main`, was rebuilt with `macos/scripts/build-release.sh` using the
+repository-pinned XcodeGen 2.45.4 and Xcode 27.0. The universal Developer ID
+export is Engram 1.0.5 (1403). `release-verify.sh --expected-build 1403`
+passed both before and after installation, including bundle hygiene, required
+helpers, deep strict code-sign verification, Hardened Runtime, Developer ID
+authority, and secure timestamp. The installed App, Service, MCP, and CLI
+binaries are byte-identical to the export; their SHA-256 values are
+`2353214368a0c21c17fc0fb78004fc66f2b3ded358838309f2d03beee2464b04`,
+`002a4c29ff0f21b1d42e60d9df1f4e3c1d4ea007e74f5701df85b55bf283ad06`,
+`2c41bc340665184e8811849cc4ecf74f0f8d7cb67e73e638ad604fd7fd6c979b`,
+and `9cf2017ff2ecaa89d38f1de248f763e4af0bcf3112199d8f9728227c01279383`.
+
+The previous signed 1.0.5 (1382) bundle is preserved at
+`~/Library/Application Support/Engram/rollback/engram-1.0.5-1382-GvAOSTyW/Engram.app`.
+The old App, Service, and MCP processes were terminated before
+`macos/scripts/deploy-local.sh` replaced `/Applications/Engram.app`; the new
+App, Service, and MCP processes then started from that installed bundle. The
+Service owns `~/.engram/run/engram-service.sock`, and a read-only
+`EngramCLI archive status --json` request completed successfully. The build
+still emits the existing Swift 6 actor-isolation warning in
+`SessionDetailView.swift`, and startup logging includes non-fatal AppKit and
+Core Spotlight donation errors; the App remained running and the Service read
+smoke passed. No notarization, stapling, tag, GitHub release, or remote deploy
+was performed.
+
 ### PR #229 atomic CodeQL Action v4.37.3 update (2026-07-26)
 
 The three CodeQL `init` and three `analyze` invocations now move together from
