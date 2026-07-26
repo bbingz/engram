@@ -21,7 +21,7 @@
     "baseline:adapter-format": "tsx scripts/check-adapter-format-drift.ts --accept",
     "generate:parent-detection-fixtures": "tsx scripts/gen-parent-detection-fixtures.ts",
     "generate:indexer-parity-fixtures": "tsx scripts/gen-indexer-parity-fixtures.ts",
-    "check:fixtures": "tsx scripts/check-fixture-schema.ts",
+    "check:fixtures": "tsx scripts/check-fixture-schema.ts && npm run generate:fixtures && git diff --exit-code test-fixtures/test-index.sqlite",
     "screenshots:compare": "tsx scripts/screenshot-compare.ts",
     "baselines:generate": "tsx scripts/baselines-generate.ts",
     "baselines:update": "tsx scripts/baselines-update.ts",
@@ -61,8 +61,5 @@
     "*.{ts,tsx,js,jsx}": [
       "biome check --write --no-errors-on-unmatched"
     ]
-  },
-  "allowScripts": {
-    "better-sqlite3": true
   }
 }

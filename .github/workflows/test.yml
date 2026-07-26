@@ -140,17 +140,12 @@ jobs:
       # Pure-rg text gates (swift-conventions, product-boundary-scripts) already run on
       # ubuntu via `npm run test:coverage`; keep macos-vitest for macOS-only scripts.
       - run: npm test -- tests/scripts/build-release-script.test.ts tests/scripts/remote-server-package.test.ts tests/scripts/swift-boundary-scripts.test.ts tests/scripts/archive-v2-safety-gate.test.ts tests/scripts/plist-gate.test.ts tests/scripts/invariants-ledger.test.ts tests/scripts/version-guard.test.ts
-      - name: Check fixture schema version
-        run: npm exec -- tsx scripts/check-fixture-schema.ts
+      - name: Check test fixture schema and freshness
+        run: npm run check:fixtures
       - name: Check MCP contract fixture freshness
         run: npm run check:mcp-contract-fixtures
       - name: Check adapter parity fixture freshness
         run: npm run check:adapter-parity-fixtures
-      - name: Verify fixture determinism
-        run: |
-          test -f test-fixtures/test-index.sqlite || (echo "ERROR: fixture not committed" && exit 1)
-          npm run generate:fixtures
-          git diff --exit-code test-fixtures/test-index.sqlite
 
   swift-unit:
     needs: changes

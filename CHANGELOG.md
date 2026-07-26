@@ -7,6 +7,61 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### PR #236 better-sqlite3 v13 compatibility (2026-07-26)
+
+The retained TypeScript tooling moves `better-sqlite3` from 12.11.1 to 13.0.1.
+Version 13 replaces the `bindings` and `prebuild-install` closure with N-API
+and eight platform binaries stored directly in the integrity-pinned npm
+tarball. Its Node requirement changes from an enumerated range through 26.x to
+`>=22`; Engram's own `>=24 <27` contract and Node 24 CI pin retain the upper
+bound. A clean npm 12 install with install scripts blocked loaded the bundled
+SQLite 3.53.3 binary successfully, so the obsolete repo-wide `allowScripts`
+exception is removed. The local-development note now distinguishes supported
+in-tarball prebuilds from the explicitly audited `node-gyp` fallback required
+on other platform/architecture combinations.
+
+The MCP contract fixture freshness gate initially failed. Regeneration kept
+the database at 684,032 bytes with `PRAGMA integrity_check = ok` and an
+identical logical `.dump` SHA-256
+`4c162b48430182f3ea23a59c99bb6fb6ebe2a1ba8880aa1be6630aaa50981fcc`.
+A byte comparison found exactly byte 100 changing from `0xca` to `0xcb`, the
+low byte of SQLite's source-version header moving from 3.53.2 to 3.53.3. Two
+consecutive generator processes changed the raw SHA-256 from
+`8aca58da6bb95333f72326b99b6c77c8adda1a58b88b0f9f577a52f84e837f77`
+to the stable
+`92bf728a0abb4d196008527b4be46067fe430a63a2382b12c234ab8aa9542610`.
+The committed fixture refresh is therefore a deterministic binary baseline
+update, not a schema or row-content change.
+
+Fresh PR Tests run `30188509203` then exposed the same source-version drift in
+the separately committed `test-fixtures/test-index.sqlite` baseline: the
+freshness checks passed, but the workflow's final `generate:fixtures` plus
+`git diff --exit-code` gate failed. Local reproduction again found exactly byte
+100 changing from `0xca` to `0xcb`, with the file remaining 421,888 bytes,
+`PRAGMA integrity_check = ok`, and the old/new logical `.dump` SHA-256 both
+`397655b912d50a5fff9eb883c3c0154b1079864df72f35bdf3dafff9636c97a9`.
+Two consecutive generator processes changed the raw SHA-256 from
+`23f769d285229e2caa236f66cdbdec479f2696ed2f0ec971534f1ebece2f20c1`
+to the stable
+`8c238094f8f7538091791e1a483818078c29a4f2f4d699c8163f48f56bd4aaeb`.
+That second deterministic baseline is included rather than rerunning the known
+code-caused failure. `npm run check:fixtures` now combines the schema check
+with the same generation plus byte-diff gate used by CI, and the workflow calls
+that shared command. The raw-byte baselines intentionally pin the lockfile's
+SQLite writer version; a future locked SQLite bump may require another reviewed
+refresh, while `npm ci` keeps CI generation deterministic.
+
+Existing production-path sqlite-vec tests load the extension and exercise KNN,
+transactions, `Database.raw` integration, and persisted embeddings across a
+database restart. An artificial `safeIntegers()` assertion was removed because
+retained Engram production code does not call that API. Local verification
+passed a clean install with the better-sqlite3 install script blocked, shared
+fixture freshness, build, test typecheck, lint, and Knip. The workflow contract
+test first failed because it pinned the removed CI step name; after re-anchoring
+it to the shared command, the focused file passed 30/30 and the complete Node
+suite passed 1,509 tests across 128 files. Remote merge and post-merge status
+are not claimed by this pre-push verification record.
+
 ### PR #234 lint-staged dependency refresh (2026-07-26)
 
 PR #234 remains unmerged, based on

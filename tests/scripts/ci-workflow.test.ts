@@ -244,7 +244,8 @@ describe('CI workflow hardening', () => {
       'tests/scripts/swift-conventions.test.ts',
     );
     expect(testWorkflow).toContain('tests/scripts/version-guard.test.ts');
-    expect(testWorkflow).toContain('Verify fixture determinism');
+    expect(testWorkflow).toContain('Check test fixture schema and freshness');
+    expect(testWorkflow).toContain('run: npm run check:fixtures');
   });
 
   it('fails CI when generated MCP contract fixtures are stale', () => {
