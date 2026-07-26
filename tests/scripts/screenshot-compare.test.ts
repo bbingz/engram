@@ -118,6 +118,50 @@ describe('screenshot-compare gate behavior', () => {
     expect(result.code).not.toBe(0);
     expect(result.out).toContain('Size mismatches are not allowed');
   });
+
+  // PR #232: pixelmatch 7 defaults alpha comparisons to a checkerboard background.
+  it('preserves white-background comparison for transparent pixels (repro)', async () => {
+    const name = 'fully-transparent';
+    writeManifest(name);
+    const width = 64;
+    const height = 64;
+    const baseline = Buffer.alloc(width * height * 4, 255);
+    const actual = Buffer.alloc(width * height * 4, 255);
+    for (let offset = 3; offset < baseline.length; offset += 4) {
+      baseline[offset] = 0;
+    }
+    const baselinePath = join(workdir, `baselines/${name}.png`);
+    const actualPath = join(workdir, `screenshots/${name}.png`);
+
+    await sharp(baseline, {
+      raw: { width, height, channels: 4 },
+    })
+      .png()
+      .toFile(baselinePath);
+    await sharp(actual, {
+      raw: { width, height, channels: 4 },
+    })
+      .png()
+      .toFile(actualPath);
+
+    const decodedBaseline = await sharp(baselinePath).raw().toBuffer();
+    const decodedActual = await sharp(actualPath).raw().toBuffer();
+    expect([...decodedBaseline.subarray(0, 4)]).toEqual([255, 255, 255, 0]);
+    expect([...decodedActual.subarray(0, 4)]).toEqual([255, 255, 255, 255]);
+
+    const result = runCompare({
+      SCREENSHOTS_DIR: join(workdir, 'screenshots'),
+      SCREENSHOT_REQUIRE_MANIFEST: '1',
+    });
+    const report = JSON.parse(
+      readFileSync(join(workdir, 'screenshots/comparison-report.json'), 'utf8'),
+    );
+
+    expect(report.results).toHaveLength(1);
+    expect(report.results[0].name).toBe(name);
+    expect(result.code).toBe(0);
+    expect(report.results[0].metrics.pixel_diff_count).toBe(0);
+  });
 });
 
 describe('UI workflow gates', () => {
