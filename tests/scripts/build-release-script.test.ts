@@ -8,10 +8,13 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -96,7 +99,7 @@ function runVerify(
 ): { code: number; out: string } {
   try {
     const out = execFileSync(
-      'bash',
+      '/bin/bash',
       [verifyScript, app, '--adhoc', ...extraArgs],
       {
         encoding: 'utf8',
@@ -241,7 +244,7 @@ describe('release workflow gate', () => {
     const match = workflow.match(/\[\[ "\$GITHUB_REF_NAME" =~ ([^ ]+) \]\]/);
     expect(match).not.toBeNull();
     return (
-      spawnSync('bash', ['-c', '[[ "$TAG" =~ $TAG_REGEX ]]'], {
+      spawnSync('/bin/bash', ['-c', '[[ "$TAG" =~ $TAG_REGEX ]]'], {
         env: { ...process.env, TAG: tag, TAG_REGEX: match?.[1] ?? '' },
       }).status === 0
     );
@@ -295,6 +298,134 @@ describe('macOS release build script: no silent non-notarizable fallback', () =>
   const script = execFileSync('cat', [
     resolve(repoRoot, 'macos/scripts/build-release.sh'),
   ]).toString();
+
+  it('keeps the existing build paths when ENGRAM_BUILD_ROOT is unset', () => {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    delete env.ENGRAM_BUILD_ROOT;
+    const result = spawnSync('/bin/bash', [releaseScript, '--print-paths'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env,
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('BUILD_ROOT:        <unset>');
+    expect(result.stdout).toContain('DERIVED_DATA_PATH: <xcode-default>');
+    expect(result.stdout).toContain(
+      `ARCHIVE_PATH:      ${repoRoot}/macos/build/Engram.xcarchive`,
+    );
+    expect(result.stdout).toContain(
+      `EXPORT_LOG:        ${repoRoot}/macos/build/export.log`,
+    );
+    expect(result.stdout).toContain(
+      `EXPORT_PATH:       ${repoRoot}/macos/build/EngramExport`,
+    );
+    expect(script).toContain(
+      'rm -rf ~/Library/Developer/Xcode/DerivedData/Engram-*',
+    );
+  });
+
+  it('routes only rebuildable intermediates through an opt-in build root', () => {
+    const buildRoot = mkdtempSync(
+      join(tmpdir(), 'engram-external-build-root-'),
+    );
+    try {
+      const resolvedBuildRoot = realpathSync(buildRoot);
+      const result = spawnSync('/bin/bash', [releaseScript, '--print-paths'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        env: { ...process.env, ENGRAM_BUILD_ROOT: buildRoot },
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(
+        `BUILD_ROOT:        ${resolvedBuildRoot}`,
+      );
+      expect(result.stdout).toContain(
+        `DERIVED_DATA_PATH: ${resolvedBuildRoot}/DerivedData`,
+      );
+      expect(result.stdout).toContain(
+        `ARCHIVE_PATH:      ${resolvedBuildRoot}/Archives/Engram.xcarchive`,
+      );
+      expect(result.stdout).toContain(
+        `EXPORT_LOG:        ${resolvedBuildRoot}/Logs/export.log`,
+      );
+      expect(result.stdout).toContain(
+        `EXPORT_PATH:       ${repoRoot}/macos/build/EngramExport`,
+      );
+    } finally {
+      rmSync(buildRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects relative and overly broad opt-in build roots', () => {
+    for (const buildRoot of [
+      'relative/build-root',
+      '/',
+      join(tmpdir(), 'shared-build-root'),
+    ]) {
+      const result = spawnSync('/bin/bash', [releaseScript, '--print-paths'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        env: { ...process.env, ENGRAM_BUILD_ROOT: buildRoot },
+      });
+
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}${result.stderr}`).toContain(
+        'ENGRAM_BUILD_ROOT must be an absolute project-scoped path',
+      );
+    }
+  });
+
+  it('resolves an existing symlink before enforcing project scope', () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'engram-build-symlink-'));
+    const realRoot = join(sandbox, 'shared-build-root');
+    const linkedRoot = join(sandbox, 'Engram-build-root');
+    mkdirSync(realRoot);
+    symlinkSync(realRoot, linkedRoot);
+
+    try {
+      const result = spawnSync('/bin/bash', [releaseScript, '--print-paths'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        env: { ...process.env, ENGRAM_BUILD_ROOT: linkedRoot },
+      });
+
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}${result.stderr}`).toContain(
+        'ENGRAM_BUILD_ROOT must be an absolute project-scoped path',
+      );
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed instead of creating a missing volume mount', () => {
+    const missingVolume = `/Volumes/engram-missing-build-volume-${process.pid}`;
+    const result = spawnSync('/bin/bash', [releaseScript, '--print-paths'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ENGRAM_BUILD_ROOT: `${missingVolume}/XcodeBuilds/Engram`,
+      },
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      `external build volume is not mounted: ${missingVolume}`,
+    );
+  });
+
+  it('does not hard-code a developer volume into the opt-in path', () => {
+    expect(script).toContain('-derivedDataPath "$DERIVED_DATA_PATH"');
+    expect(script).not.toContain('Bing-SSD-5');
+  });
+
+  it('never expands an empty archive argument array under macOS system Bash', () => {
+    expect(script).not.toContain('XCODEBUILD_DERIVED_DATA_ARGS=()');
+    expect(script).toMatch(/XCODEBUILD_ARCHIVE_ARGS=\(\s*archive/);
+  });
 
   it('does not unconditionally ditto the archived app on export failure', () => {
     // Any ditto of the archived app must be guarded by the --local-only branch.
@@ -375,6 +506,55 @@ describe('macOS release notarization verification', () => {
 describe.skipIf(process.platform !== 'darwin')(
   'release build xcodegen pin',
   () => {
+    it('cleans only the opt-in intermediates before the xcodegen gate', () => {
+      const home = mkdtempSync(join(tmpdir(), 'engram-relhome-'));
+      const buildRoot = mkdtempSync(join(tmpdir(), 'engram-build-root-'));
+      const xcodegenCache = mkdtempSync(join(tmpdir(), 'engram-xg-'));
+      const xcodeDefaultSentinel = join(
+        home,
+        'Library/Developer/Xcode/DerivedData/Engram-keep/sentinel',
+      );
+      const derivedSentinel = join(buildRoot, 'DerivedData/stale');
+      const archiveSentinel = join(
+        buildRoot,
+        'Archives/Engram.xcarchive/stale',
+      );
+      const siblingSentinel = join(buildRoot, 'keep.txt');
+      mkdirSync(resolve(xcodeDefaultSentinel, '..'), { recursive: true });
+      mkdirSync(resolve(derivedSentinel, '..'), { recursive: true });
+      mkdirSync(resolve(archiveSentinel, '..'), { recursive: true });
+      writeFileSync(xcodeDefaultSentinel, 'keep');
+      writeFileSync(derivedSentinel, 'remove');
+      writeFileSync(archiveSentinel, 'remove');
+      writeFileSync(siblingSentinel, 'keep');
+
+      try {
+        const result = spawnSync('/bin/bash', [releaseScript], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            ENGRAM_BUILD_NUMBER: '99999',
+            ENGRAM_BUILD_ROOT: buildRoot,
+            HOME: home,
+            XCODEGEN_BIN: '/nonexistent/xcodegen',
+            XDG_CACHE_HOME: xcodegenCache,
+          },
+        });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stdout).toContain('[2/5]');
+        expect(existsSync(derivedSentinel)).toBe(false);
+        expect(existsSync(archiveSentinel)).toBe(false);
+        expect(existsSync(siblingSentinel)).toBe(true);
+        expect(existsSync(xcodeDefaultSentinel)).toBe(true);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+        rmSync(buildRoot, { recursive: true, force: true });
+        rmSync(xcodegenCache, { recursive: true, force: true });
+      }
+    });
+
     // Deploying 1.0.5 (1382) took three attempts: a bare `xcodegen generate` at
     // step 2 ran Homebrew's newer xcodegen, which rewrote project.pbxproj after
     // step 0 had already resolved the build number as "clean" — so the archive
@@ -392,7 +572,7 @@ describe.skipIf(process.platform !== 'darwin')(
       let stdout = '';
       let stderr = '';
       try {
-        stdout = execFileSync('bash', [releaseScript], {
+        stdout = execFileSync('/bin/bash', [releaseScript], {
           cwd: repoRoot,
           encoding: 'utf8',
           env: {

@@ -2,6 +2,10 @@
 
 ## Changelog Memo
 
+### 2026-07-28
+
+- [变更] Release 构建新增纯 opt-in `ENGRAM_BUILD_ROOT`：未设置时保持现有 Xcode/仓库路径，设置后仅把 DerivedData、archive 与 export log 放入指定绝对目录，最终 App 仍留在 `macos/build/EngramExport`；真实路径必须保持 Engram 项目作用域，`/Volumes` 缺失或不可写时 fail-closed，`--print-paths` 可在零写入下预检路径。异家复审后补固 macOS Bash 3.2 与 symlink 边界，聚焦测试 35/35；未签名、公证、安装或发布，详见 `CHANGELOG.md`。
+
 ### 2026-07-26
 
 - [修复] Public macOS release baseline 已对齐实况：源码 `main@a0bcb620` 与版本元数据为 1.0.5，已安装 Developer ID 1.0.5 (1403) 来自前一提交 `9e5ff9b8`，公开 Release 仍为 `v1.0.3`。`build-release.sh` 的三条候选验证路径现同时锁 short version 与 build number；剩余签名、公证/装订、clean-machine smoke、tag/release 均列为 owner/外部门禁，本轮未碰 Keychain、secret、安装或发布，详见 `CHANGELOG.md` 与 `docs/TODO.md`。
