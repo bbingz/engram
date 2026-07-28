@@ -9,6 +9,12 @@
 #                  use only (e.g. Apple Development) and CANNOT be notarized. It is
 #                  exported to "$EXPORT_PATH/Engram-local-only.app" and clearly
 #                  labeled. Without this flag, a failed Developer ID export FAILS.
+#   --print-paths  Validate and print resolved build paths without writing.
+#
+# Environment:
+#   ENGRAM_BUILD_ROOT  Optional absolute, project-scoped directory for rebuildable
+#                      DerivedData, archive, and export-log intermediates. When
+#                      unset, the existing Xcode/repository paths are unchanged.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -16,26 +22,112 @@ MACOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$MACOS_DIR/.." && pwd)"
 
 LOCAL_ONLY=0
+PRINT_PATHS=0
 for arg in "$@"; do
   case "$arg" in
     --local-only) LOCAL_ONLY=1 ;;
+    --print-paths) PRINT_PATHS=1 ;;
     *) echo "build-release: unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
 
 SCHEME="Engram"
 PROJECT="$MACOS_DIR/Engram.xcodeproj"
+BUILD_ROOT="${ENGRAM_BUILD_ROOT:-}"
+while [[ "$BUILD_ROOT" != "/" && "$BUILD_ROOT" == */ ]]; do
+  BUILD_ROOT="${BUILD_ROOT%/}"
+done
+DERIVED_DATA_PATH=""
 ARCHIVE_PATH="$MACOS_DIR/build/Engram.xcarchive"
+EXPORT_LOG="$MACOS_DIR/build/export.log"
 EXPORT_PATH="$MACOS_DIR/build/EngramExport"
+
+fail_build_root() {
+  echo "ERROR: ENGRAM_BUILD_ROOT must be an absolute project-scoped path (got '$BUILD_ROOT')." >&2
+  exit 1
+}
+
+validate_build_root() {
+  [[ -n "$BUILD_ROOT" ]] || return 0
+
+  local relative_root="${BUILD_ROOT#/}"
+  if [[ "$BUILD_ROOT" != /* \
+    || "$BUILD_ROOT" == "/" \
+    || "$relative_root" != */* \
+    || "$BUILD_ROOT/" == *"/../"* \
+    || "$BUILD_ROOT/" == *"/./"* ]]; then
+    fail_build_root
+  fi
+
+  local root_name="${BUILD_ROOT##*/}"
+  case "$root_name" in
+    *[Ee][Nn][Gg][Rr][Aa][Mm]*) ;;
+    *) fail_build_root ;;
+  esac
+
+  if [[ "$BUILD_ROOT" == /Volumes/* ]]; then
+    local volume_relative="${BUILD_ROOT#/Volumes/}"
+    [[ "$volume_relative" == */* ]] || fail_build_root
+    local volume_name="${volume_relative%%/*}"
+    local volume_mount="/Volumes/$volume_name"
+    local mounts
+    mounts="$(mount)"
+    if [[ ! -d "$volume_mount" ]] \
+      || ! grep -Fq -- " on $volume_mount (" <<< "$mounts"; then
+      echo "ERROR: external build volume is not mounted: $volume_mount" >&2
+      exit 1
+    fi
+    if [[ ! -w "$volume_mount" ]]; then
+      echo "ERROR: external build volume is not writable: $volume_mount" >&2
+      exit 1
+    fi
+  fi
+}
+
+canonicalize_existing_build_root() {
+  if [[ -d "$BUILD_ROOT" ]]; then
+    BUILD_ROOT="$(cd "$BUILD_ROOT" && pwd -P)"
+  fi
+}
+
+configure_build_paths() {
+  DERIVED_DATA_PATH="$BUILD_ROOT/DerivedData"
+  ARCHIVE_PATH="$BUILD_ROOT/Archives/Engram.xcarchive"
+  EXPORT_LOG="$BUILD_ROOT/Logs/export.log"
+}
+
+if [[ -n "$BUILD_ROOT" ]]; then
+  validate_build_root
+  canonicalize_existing_build_root
+  validate_build_root
+  configure_build_paths
+fi
+
+print_build_paths() {
+  if [[ -n "$BUILD_ROOT" ]]; then
+    echo "BUILD_ROOT:        $BUILD_ROOT"
+    echo "DERIVED_DATA_PATH: $DERIVED_DATA_PATH"
+  else
+    echo "BUILD_ROOT:        <unset>"
+    echo "DERIVED_DATA_PATH: <xcode-default>"
+  fi
+  echo "ARCHIVE_PATH:      $ARCHIVE_PATH"
+  echo "EXPORT_LOG:        $EXPORT_LOG"
+  echo "EXPORT_PATH:       $EXPORT_PATH"
+}
+
+if [[ "$PRINT_PATHS" -eq 1 ]]; then
+  print_build_paths
+  exit 0
+fi
 
 echo "======================================"
 echo " Engram Release Build"
 echo "======================================"
-echo "MACOS_DIR:    $MACOS_DIR"
-echo "PROJECT:      $PROJECT"
-echo "ARCHIVE_PATH: $ARCHIVE_PATH"
-echo "EXPORT_PATH:  $EXPORT_PATH"
-echo "LOCAL_ONLY:   $LOCAL_ONLY"
+echo "MACOS_DIR:         $MACOS_DIR"
+echo "PROJECT:           $PROJECT"
+print_build_paths
+echo "LOCAL_ONLY:        $LOCAL_ONLY"
 echo ""
 
 # Read team ID from ExportOptions.plist and validate
@@ -89,9 +181,21 @@ fi
 echo "Version: $MARKETING_VERSION ($BUILD_NUMBER)"
 echo ""
 
-# 1. Clean DerivedData for Engram
-echo "[1/5] Cleaning DerivedData..."
-rm -rf ~/Library/Developer/Xcode/DerivedData/Engram-*
+# 1. Clean only Engram's rebuildable intermediates.
+echo "[1/5] Cleaning build intermediates..."
+if [[ -n "$BUILD_ROOT" ]]; then
+  validate_build_root
+  mkdir -p "$BUILD_ROOT"
+  canonicalize_existing_build_root
+  validate_build_root
+  configure_build_paths
+  [[ -d "$BUILD_ROOT" && -w "$BUILD_ROOT" ]] \
+    || { echo "ERROR: ENGRAM_BUILD_ROOT is not a writable directory: $BUILD_ROOT" >&2; exit 1; }
+  rm -rf -- "$DERIVED_DATA_PATH" "$ARCHIVE_PATH"
+  mkdir -p "$DERIVED_DATA_PATH" "$(dirname "$ARCHIVE_PATH")" "$(dirname "$EXPORT_LOG")"
+else
+  rm -rf ~/Library/Developer/Xcode/DerivedData/Engram-*
+fi
 echo "      Done."
 echo ""
 
@@ -109,14 +213,22 @@ echo ""
 
 # 3. Archive (inject the resolved version)
 echo "[3/5] Archiving..."
-xcodebuild archive \
-  -project "$PROJECT" \
-  -scheme "$SCHEME" \
-  -configuration Release \
-  -archivePath "$ARCHIVE_PATH" \
-  CODE_SIGN_STYLE=Automatic \
-  MARKETING_VERSION="$MARKETING_VERSION" \
+XCODEBUILD_ARCHIVE_ARGS=(
+  archive
+  -project "$PROJECT"
+  -scheme "$SCHEME"
+  -configuration Release
+)
+if [[ -n "$DERIVED_DATA_PATH" ]]; then
+  XCODEBUILD_ARCHIVE_ARGS+=(-derivedDataPath "$DERIVED_DATA_PATH")
+fi
+XCODEBUILD_ARCHIVE_ARGS+=(
+  -archivePath "$ARCHIVE_PATH"
+  CODE_SIGN_STYLE=Automatic
+  MARKETING_VERSION="$MARKETING_VERSION"
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+)
+xcodebuild "${XCODEBUILD_ARCHIVE_ARGS[@]}"
 echo "      Archive created at: $ARCHIVE_PATH"
 echo ""
 
@@ -135,7 +247,6 @@ fi
 
 # 4. Export archive (Developer ID)
 echo "[4/5] Exporting archive (developer-id)..."
-EXPORT_LOG="$MACOS_DIR/build/export.log"
 mkdir -p "$(dirname "$EXPORT_LOG")"
 rm -rf "$EXPORT_PATH"
 set -o pipefail

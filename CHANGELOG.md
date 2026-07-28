@@ -7,6 +7,29 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Opt-in external release build root (2026-07-28)
+
+`macos/scripts/build-release.sh` now accepts an optional
+`ENGRAM_BUILD_ROOT` for rebuildable DerivedData, archive, and export-log
+intermediates. The default remains Xcode's DerivedData plus the existing
+repository-local archive and export paths; the final `Engram.app` export always
+stays under `macos/build/EngramExport`. The path is never hard-coded to a
+developer volume.
+
+The opt-in path must be absolute and project-scoped. Paths under `/Volumes`
+fail closed unless the named volume is mounted and writable, preventing a
+missing external disk from silently creating a same-named directory on the
+system volume. Cleanup is limited to the derived-data directory and the exact
+Engram archive below the selected root. A read-only `--print-paths` probe makes
+the resolved boundary inspectable before any build or cleanup work.
+
+The initial release-script regression failed in five assertions before the
+implementation. Adversarial review then drove three more failing regressions
+for macOS system Bash 3.2, overly broad roots, and symlinked roots before their
+fixes. The focused suite now passes 35 tests, including a behavioral check that
+opt-in cleanup preserves the default Xcode DerivedData and unrelated siblings.
+No signing, notarization, stapling, install, or deployment was performed.
+
 ### Release candidate version-identity guard (2026-07-26)
 
 The public-baseline inventory is reconciled to current evidence: source
