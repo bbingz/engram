@@ -904,10 +904,20 @@ final class ArchiveRouteTests: XCTestCase {
                     Self.mcpHeaders(method: "tools/list"),
                     try Self.mcpBody(method: "tools/list", metaVersion: "2026-01-01")
                 ),
+                // An absent `_meta` protocol version now selects the legacy era
+                // (see testMCPLegacyResultsAreUnwrapped), so this guard is only
+                // reachable when the key is present with a non-string value.
                 (
-                    "body missing _meta protocol version",
+                    "_meta protocol version is not a string",
                     Self.mcpHeaders(method: "tools/list"),
-                    try Self.mcpBody(method: "tools/list", metaVersion: nil)
+                    ByteBuffer(data: try JSONSerialization.data(withJSONObject: [
+                        "jsonrpc": "2.0",
+                        "method": "tools/list",
+                        "id": 1,
+                        "params": [
+                            "_meta": ["io.modelcontextprotocol/protocolVersion": 20_260_728],
+                        ],
+                    ]))
                 ),
                 (
                     "Mcp-Method mismatch",
@@ -991,9 +1001,12 @@ final class ArchiveRouteTests: XCTestCase {
     func testMCPUnknownMethodIs404MethodNotFound() async throws {
         let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
         try await app.test(.router) { client in
-            // `initialize`/`ping` belong to the pre-2026-07-28 handshake and
+            // These requests carry modern `_meta`, so they are dispatched in the
+            // modern era, where `initialize`/`ping` do not exist and
             // `subscriptions/listen` opts into notifications this endpoint never
-            // advertises: all are simply unknown methods here.
+            // advertises: all are unknown methods. Sent WITHOUT `_meta` they are
+            // legacy-era methods instead — see testMCPLegacyResultsAreUnwrapped
+            // and testMCPModernEraStillWrappedAlongsideLegacy.
             for method in ["initialize", "ping", "subscriptions/listen", "resources/list"] {
                 let response = try await client.execute(
                     uri: "/mcp",
@@ -1248,6 +1261,474 @@ final class ArchiveRouteTests: XCTestCase {
         }
     }
 
+    // MARK: - MCP legacy era (initialize handshake, stateless)
+
+    func testMCPLegacyInitializeHandshakeWithoutModernMetadata() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            // Shipping MCP HTTP clients are still legacy-era: Claude Code
+            // 2.1.220 POSTs exactly this — `initialize` with protocolVersion in
+            // params, no per-request `_meta`, and none of the 2026-07-28
+            // request-metadata headers. Header validation must be skipped.
+            for requested in ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"] {
+                let response = try await client.execute(
+                    uri: "/mcp",
+                    method: .post,
+                    headers: Self.mcpLegacyHeaders(),
+                    body: try Self.mcpLegacyBody(
+                        method: "initialize",
+                        id: "init-\(requested)",
+                        params: [
+                            "protocolVersion": requested,
+                            "capabilities": [String: Any](),
+                            "clientInfo": ["name": "claude-code", "version": "2.1.220"],
+                        ]
+                    )
+                )
+                XCTAssertEqual(response.status.code, 200, requested)
+                let message = try Self.mcpEnvelope(response)
+                XCTAssertEqual(message["id"] as? String, "init-\(requested)", requested)
+
+                let result = try Self.mcpResult(response)
+                XCTAssertEqual(
+                    result["protocolVersion"] as? String,
+                    requested,
+                    "a supported requested revision is echoed back"
+                )
+                let capabilities = try XCTUnwrap(result["capabilities"] as? [String: Any], requested)
+                XCTAssertNotNil(capabilities["tools"] as? [String: Any], requested)
+                XCTAssertEqual(Set(capabilities.keys), ["tools"], requested)
+                let serverInfo = try XCTUnwrap(result["serverInfo"] as? [String: Any], requested)
+                XCTAssertEqual(serverInfo["name"] as? String, "engram-remote", requested)
+                XCTAssertEqual(serverInfo["version"] as? String, "0.1.0", requested)
+                XCTAssertFalse((result["instructions"] as? String ?? "").isEmpty, requested)
+                Self.assertUnwrappedLegacyResult(result, "initialize \(requested)")
+            }
+        }
+    }
+
+    func testMCPLegacyInitializeNegotiatesUnknownVersionDown() async throws {
+        XCTAssertEqual(
+            MCPRemoteEndpoint.latestLegacyProtocolVersion,
+            "2025-11-25",
+            "the negotiated fallback is the newest legacy revision"
+        )
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let cases: [(label: String, params: [String: Any])] = [
+                ("older than every supported revision", ["protocolVersion": "2024-01-01"]),
+                ("newer than every supported revision", ["protocolVersion": "2999-01-01"]),
+                // The modern revision offered without `_meta` is still a legacy
+                // handshake, so it negotiates down rather than switching eras.
+                ("modern revision without _meta", ["protocolVersion": Self.mcpProtocolVersion]),
+                ("protocolVersion of the wrong type", ["protocolVersion": 20_251_125]),
+                ("no protocolVersion at all", [:]),
+            ]
+            for entry in cases {
+                let response = try await client.execute(
+                    uri: "/mcp",
+                    method: .post,
+                    headers: Self.mcpLegacyHeaders(),
+                    body: try Self.mcpLegacyBody(method: "initialize", params: entry.params)
+                )
+                XCTAssertEqual(response.status.code, 200, entry.label)
+                let result = try Self.mcpResult(response)
+                XCTAssertEqual(result["protocolVersion"] as? String, "2025-11-25", entry.label)
+                Self.assertUnwrappedLegacyResult(result, entry.label)
+            }
+        }
+    }
+
+    func testMCPLegacyResultsAreUnwrapped() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            var response = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpLegacyHeaders(),
+                body: try Self.mcpLegacyBody(method: "tools/list")
+            )
+            XCTAssertEqual(response.status.code, 200)
+            var result = try Self.mcpResult(response)
+            Self.assertUnwrappedLegacyResult(result, "tools/list")
+            XCTAssertEqual(Set(result.keys), ["tools"], "legacy tools/list carries only the tool list")
+            let tools = try XCTUnwrap(result["tools"] as? [[String: Any]])
+            XCTAssertEqual(
+                tools.map { $0["name"] as? String },
+                ["archive_list_machines", "archive_list_captures", "archive_get_session"]
+            )
+
+            response = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpLegacyHeaders(),
+                body: try Self.mcpLegacyBody(
+                    method: "tools/call",
+                    params: ["name": "archive_list_machines", "arguments": [String: Any]()]
+                )
+            )
+            XCTAssertEqual(response.status.code, 200)
+            result = try Self.mcpResult(response)
+            Self.assertUnwrappedLegacyResult(result, "tools/call")
+            XCTAssertEqual(Set(result.keys), ["content", "structuredContent"])
+            XCTAssertNil(result["isError"])
+            let structured = try XCTUnwrap(result["structuredContent"] as? [String: Any])
+            XCTAssertEqual(structured["machines"] as? [String], [])
+
+            response = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpLegacyHeaders(),
+                body: try Self.mcpLegacyBody(
+                    method: "tools/call",
+                    params: ["name": "archive_unknown_tool", "arguments": [String: Any]()]
+                )
+            )
+            XCTAssertEqual(response.status.code, 200, "tool failures stay JSON-RPC successes")
+            result = try Self.mcpResult(response)
+            Self.assertUnwrappedLegacyResult(result, "failed tools/call")
+            XCTAssertEqual(Set(result.keys), ["content", "isError", "structuredContent"])
+            XCTAssertEqual(result["isError"] as? Bool, true)
+            let errorStructured = try XCTUnwrap(result["structuredContent"] as? [String: Any])
+            XCTAssertEqual(errorStructured["code"] as? String, "unknownTool")
+        }
+    }
+
+    func testMCPLegacyPingAndInitializedNotification() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let notification = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpLegacyHeaders(),
+                body: try Self.mcpLegacyBody(method: "notifications/initialized", id: nil)
+            )
+            XCTAssertEqual(notification.status.code, 202)
+            XCTAssertEqual(notification.body.readableBytes, 0, "a notification gets no JSON-RPC response")
+
+            let ping = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpLegacyHeaders(),
+                body: try Self.mcpLegacyBody(method: "ping", id: 7)
+            )
+            XCTAssertEqual(ping.status.code, 200)
+            let message = try Self.mcpEnvelope(ping)
+            XCTAssertEqual(message["id"] as? Int, 7)
+            let result = try Self.mcpResult(ping)
+            XCTAssertTrue(result.isEmpty, "ping answers with an empty result object")
+        }
+    }
+
+    func testMCPLegacyUnknownMethodReturns200MethodNotFound() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            // Only the modern era maps an unknown method to 404 so clients can
+            // tell a modern server from a legacy one; a legacy client just wants
+            // an ordinary JSON-RPC error body. `server/discover` is modern-only,
+            // so without `_meta` it is unknown here too.
+            for method in [
+                "resources/list",
+                "prompts/list",
+                "server/discover",
+                "subscriptions/listen",
+                "logging/setLevel",
+            ] {
+                let response = try await client.execute(
+                    uri: "/mcp",
+                    method: .post,
+                    headers: Self.mcpLegacyHeaders(),
+                    body: try Self.mcpLegacyBody(method: method, id: "legacy-\(method)")
+                )
+                XCTAssertEqual(response.status.code, 200, method)
+                let message = try Self.mcpEnvelope(response)
+                XCTAssertEqual(message["id"] as? String, "legacy-\(method)", method)
+                let error = try Self.mcpError(response)
+                XCTAssertEqual(error["code"] as? Int, -32601, method)
+                XCTAssertEqual(error["message"] as? String, "Method not found", method)
+            }
+        }
+    }
+
+    func testMCPLegacyPathStillEnforcesAuthAndOrigin() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let rejected: [String?] = [nil, Self.legacyToken, Self.archiveToken, "not-a-token"]
+            for token in rejected {
+                let response = try await client.execute(
+                    uri: "/mcp",
+                    method: .post,
+                    headers: Self.mcpLegacyHeaders(token: token),
+                    body: try Self.mcpLegacyBody(
+                        method: "initialize",
+                        params: ["protocolVersion": "2025-11-25"]
+                    )
+                )
+                XCTAssertEqual(response.status.code, 401, "token \(token ?? "<absent>") was accepted")
+                XCTAssertEqual(response.headers[.wwwAuthenticate], "Bearer")
+            }
+
+            let origin = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpLegacyHeaders(origin: "https://example.com"),
+                body: try Self.mcpLegacyBody(
+                    method: "initialize",
+                    params: ["protocolVersion": "2025-11-25"]
+                )
+            )
+            XCTAssertEqual(origin.status.code, 403, "Origin is refused before the era branch")
+            let error = try Self.mcpError(origin)
+            XCTAssertEqual(error["code"] as? Int, -32600)
+            XCTAssertEqual(error["message"] as? String, "Origin not allowed")
+        }
+    }
+
+    func testMCPLegacyResponsesNeverMintSessionID() async throws {
+        let sessionIDHeader = HTTPField.Name("Mcp-Session-Id")!
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            // Sessions are a MAY in the legacy revisions and this endpoint opts
+            // out: every POST stands alone exactly as in the modern era.
+            let cases: [(label: String, body: ByteBuffer)] = [
+                (
+                    "initialize",
+                    try Self.mcpLegacyBody(
+                        method: "initialize",
+                        params: ["protocolVersion": "2025-11-25"]
+                    )
+                ),
+                (
+                    "notifications/initialized",
+                    try Self.mcpLegacyBody(method: "notifications/initialized", id: nil)
+                ),
+                ("ping", try Self.mcpLegacyBody(method: "ping")),
+                ("tools/list", try Self.mcpLegacyBody(method: "tools/list")),
+                (
+                    "tools/call",
+                    try Self.mcpLegacyBody(
+                        method: "tools/call",
+                        params: ["name": "archive_list_machines", "arguments": [String: Any]()]
+                    )
+                ),
+                ("unknown method", try Self.mcpLegacyBody(method: "resources/list")),
+            ]
+            for entry in cases {
+                let response = try await client.execute(
+                    uri: "/mcp",
+                    method: .post,
+                    headers: Self.mcpLegacyHeaders(),
+                    body: entry.body
+                )
+                XCTAssertNil(response.headers[sessionIDHeader], entry.label)
+            }
+
+            var withSessionHeader = Self.mcpLegacyHeaders()
+            withSessionHeader[sessionIDHeader] = "does-not-exist"
+            let ignored = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: withSessionHeader,
+                body: try Self.mcpLegacyBody(method: "tools/list")
+            )
+            XCTAssertEqual(ignored.status.code, 200, "a session id is neither required nor validated")
+            XCTAssertNil(ignored.headers[sessionIDHeader])
+
+            let modern = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpHeaders(method: "tools/list"),
+                body: try Self.mcpBody(method: "tools/list")
+            )
+            XCTAssertNil(modern.headers[sessionIDHeader], "the modern era is stateless too")
+        }
+    }
+
+    func testMCPModernEraStillWrappedAlongsideLegacy() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            // Era is decided per request by `_meta`, with no stored connection
+            // state, so one server instance serves both shapes for one method.
+            let legacy = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpLegacyHeaders(),
+                body: try Self.mcpLegacyBody(method: "tools/list")
+            )
+            XCTAssertEqual(legacy.status.code, 200)
+            let legacyResult = try Self.mcpResult(legacy)
+            Self.assertUnwrappedLegacyResult(legacyResult, "legacy tools/list")
+
+            let modern = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpHeaders(method: "tools/list"),
+                body: try Self.mcpBody(method: "tools/list")
+            )
+            XCTAssertEqual(modern.status.code, 200)
+            let modernResult = try Self.mcpResult(modern)
+            XCTAssertEqual(modernResult["resultType"] as? String, "complete")
+            XCTAssertEqual(modernResult["ttlMs"] as? Int, 3_600_000)
+            XCTAssertEqual(modernResult["cacheScope"] as? String, "private")
+            XCTAssertNotNil(modernResult["_meta"] as? [String: Any])
+            XCTAssertEqual(
+                (legacyResult["tools"] as? [[String: Any]])?.map { $0["name"] as? String },
+                (modernResult["tools"] as? [[String: Any]])?.map { $0["name"] as? String },
+                "both eras advertise the same tools"
+            )
+
+            // A modern request still has to declare a version this endpoint serves.
+            let unsupported = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpHeaders(method: "tools/list", protocolVersion: "2999-01-01"),
+                body: try Self.mcpBody(method: "tools/list", metaVersion: "2999-01-01")
+            )
+            XCTAssertEqual(unsupported.status.code, 400)
+            let unsupportedError = try Self.mcpError(unsupported)
+            XCTAssertEqual(unsupportedError["code"] as? Int, -32022)
+
+            // The same unknown method: 404 in the modern era, 200 in the legacy one.
+            let modernUnknown = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpHeaders(method: "resources/list"),
+                body: try Self.mcpBody(method: "resources/list")
+            )
+            XCTAssertEqual(modernUnknown.status.code, 404)
+            let modernUnknownError = try Self.mcpError(modernUnknown)
+            XCTAssertEqual(modernUnknownError["code"] as? Int, -32601)
+
+            let legacyUnknown = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpLegacyHeaders(),
+                body: try Self.mcpLegacyBody(method: "resources/list")
+            )
+            XCTAssertEqual(legacyUnknown.status.code, 200)
+            let legacyUnknownError = try Self.mcpError(legacyUnknown)
+            XCTAssertEqual(legacyUnknownError["code"] as? Int, -32601)
+
+            // And `initialize` stays unknown once a request opts into the modern era.
+            let modernInitialize = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpHeaders(method: "initialize"),
+                body: try Self.mcpBody(
+                    method: "initialize",
+                    params: ["protocolVersion": "2025-11-25"]
+                )
+            )
+            XCTAssertEqual(modernInitialize.status.code, 404)
+            let modernInitializeError = try Self.mcpError(modernInitialize)
+            XCTAssertEqual(modernInitializeError["code"] as? Int, -32601)
+        }
+    }
+
+    func testMCPGetSessionDuplicatesTranscriptIntoStructuredContent() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let machineID = "00000000-0000-4000-8000-000000000009"
+            let raw = Data(String(repeating: "abcdefghij", count: 8).utf8)
+            let transcript = String(decoding: raw, as: UTF8.self)
+            let rawDigest = ArchiveV2Hash.sha256(raw)
+            let (manifestBytes, manifestDigest) = try Self.manifest(
+                raw: raw,
+                machineID: machineID,
+                seed: "mcp-structured-transcript"
+            )
+
+            var response = try await client.execute(
+                uri: "/v2/archive/objects/\(rawDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/octet-stream"),
+                body: ByteBuffer(data: raw)
+            )
+            XCTAssertEqual(response.status.code, 201)
+            response = try await client.execute(
+                uri: "/v2/archive/manifests/\(manifestDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/json"),
+                body: ByteBuffer(data: manifestBytes)
+            )
+            XCTAssertEqual(response.status.code, 201)
+            response = try await client.execute(
+                uri: "/v2/archive/receipts/\(manifestDigest)",
+                method: .put,
+                headers: Self.headers()
+            )
+            XCTAssertEqual(response.status.code, 201)
+
+            // Clients that get a structured result may surface only that and drop
+            // the content block (Claude Code 2.1.220 does), so the transcript has
+            // to ride in both places.
+            response = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpHeaders(method: "tools/call", name: "archive_get_session"),
+                body: try Self.mcpToolCallBody(
+                    name: "archive_get_session",
+                    arguments: ["manifest_sha256": manifestDigest]
+                )
+            )
+            XCTAssertEqual(response.status.code, 200)
+            XCTAssertEqual(try Self.mcpContentText(response), transcript)
+            var structured = try Self.mcpStructuredContent(response)
+            XCTAssertEqual(structured["text"] as? String, transcript)
+
+            // A windowed read duplicates the window, not the whole transcript.
+            response = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpHeaders(method: "tools/call", name: "archive_get_session"),
+                body: try Self.mcpToolCallBody(
+                    name: "archive_get_session",
+                    arguments: [
+                        "manifest_sha256": manifestDigest,
+                        "offset": 10,
+                        "max_bytes": 20,
+                    ]
+                )
+            )
+            XCTAssertEqual(response.status.code, 200)
+            XCTAssertEqual(try Self.mcpContentText(response), "abcdefghijabcdefghij")
+            structured = try Self.mcpStructuredContent(response)
+            XCTAssertEqual(structured["text"] as? String, "abcdefghijabcdefghij")
+            XCTAssertEqual(structured["byteCount"] as? Int, 20)
+
+            // The legacy era carries the same duplication.
+            response = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpLegacyHeaders(),
+                body: try Self.mcpLegacyBody(
+                    method: "tools/call",
+                    params: [
+                        "name": "archive_get_session",
+                        "arguments": ["manifest_sha256": manifestDigest],
+                    ]
+                )
+            )
+            XCTAssertEqual(response.status.code, 200)
+            XCTAssertEqual(try Self.mcpContentText(response), transcript)
+            structured = try Self.mcpStructuredContent(response)
+            XCTAssertEqual(structured["text"] as? String, transcript)
+
+            // Only the transcript tool duplicates text: the list tools keep their
+            // JSON-encoded content block and a text-free structured result.
+            response = try await client.execute(
+                uri: "/mcp",
+                method: .post,
+                headers: Self.mcpHeaders(method: "tools/call", name: "archive_list_machines"),
+                body: try Self.mcpToolCallBody(name: "archive_list_machines")
+            )
+            XCTAssertEqual(response.status.code, 200)
+            structured = try Self.mcpStructuredContent(response)
+            XCTAssertEqual(structured["machines"] as? [String], [machineID])
+            XCTAssertNil(structured["text"])
+        }
+    }
+
     private func archiveObjectURL(digest: String) -> URL {
         tempDir
             .appendingPathComponent("archive/objects/sha256", isDirectory: true)
@@ -1393,6 +1874,26 @@ final class ArchiveRouteTests: XCTestCase {
         )
     }
 
+    /// Request metadata as a shipping legacy-era client sends it: bearer token
+    /// and content type only — no `MCP-Protocol-Version`, no `Mcp-Method`, no
+    /// `Mcp-Name`. Header validation must not run on this path.
+    private static func mcpLegacyHeaders(
+        token: String? = mcpToken,
+        origin: String? = nil
+    ) -> HTTPFields {
+        mcpHeaders(method: nil, token: token, protocolVersion: nil, origin: origin)
+    }
+
+    /// A legacy-era JSON-RPC body: identical to `mcpBody` minus the per-request
+    /// `_meta` protocol version, which is what selects the legacy era.
+    private static func mcpLegacyBody(
+        method: String,
+        id: Any? = 1,
+        params: [String: Any] = [:]
+    ) throws -> ByteBuffer {
+        try mcpBody(method: method, id: id, params: params, metaVersion: nil)
+    }
+
     private static func mcpEnvelope(_ response: TestResponse) throws -> [String: Any] {
         XCTAssertTrue(response.headers[.contentType]?.hasPrefix("application/json") == true)
         let object = try JSONSerialization.jsonObject(with: data(response))
@@ -1423,6 +1924,20 @@ final class ArchiveRouteTests: XCTestCase {
         let content = try XCTUnwrap(result["content"] as? [[String: Any]])
         XCTAssertEqual(content.first?["type"] as? String, "text")
         return try XCTUnwrap(content.first?["text"] as? String)
+    }
+
+    /// Legacy-era results carry the bare protocol payload: none of the
+    /// 2026-07-28 envelope fields, which legacy clients do not expect.
+    private static func assertUnwrappedLegacyResult(
+        _ result: [String: Any],
+        _ label: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertNil(result["resultType"], "\(label): no resultType", file: file, line: line)
+        XCTAssertNil(result["ttlMs"], "\(label): no ttlMs", file: file, line: line)
+        XCTAssertNil(result["cacheScope"], "\(label): no cacheScope", file: file, line: line)
+        XCTAssertNil(result["_meta"], "\(label): no _meta", file: file, line: line)
     }
 
     private static func instant(_ value: String) throws -> Date {

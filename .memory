@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-25, 2026-07-29 entries appended by hand): 107 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-25, 2026-07-29 entries appended by hand): 108 dated entries; regenerate after adding sections -->
+- [2026-07-29 - Verify the real client before choosing an MCP era policy; structuredContent hides content (Claude)](#2026-07-29---verify-the-real-client-before-choosing-an-mcp-era-policy-structuredcontent-hides-content-claude)
 - [2026-07-29 - Remote MCP endpoint is modern-era only; repo gates outrank spec SHOULDs (Claude)](#2026-07-29---remote-mcp-endpoint-is-modern-era-only-repo-gates-outrank-spec-shoulds-claude)
 - [2026-07-29 - MCP 2026-07-28 removed the initialize handshake; dual-era servers key era per request (Claude)](#2026-07-29---mcp-2026-07-28-removed-the-initialize-handshake-dual-era-servers-key-era-per-request-claude)
 - [2026-07-25 - CI blind spot closed, npm 12 blocks native builds, 14 mirror rows open (Claude)](#2026-07-25---ci-blind-spot-closed-npm-12-blocks-native-builds-14-mirror-rows-open-claude)
@@ -112,7 +113,83 @@
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
 
+## 2026-07-29 - Verify the real client before choosing an MCP era policy; structuredContent hides content (Claude)
+
+### "No legacy clients" is a claim to verify against the installed client
+
+- The remote MCP endpoint was designed modern-era only on the assertion that this
+  server had no legacy-HTTP clients. End-to-end testing on a real Mac falsified
+  it on the first POST: **the shipped Claude Code HTTP MCP client is legacy-era**
+  (as of 2.1.220). It sends `initialize` with `protocolVersion: 2025-11-25`, no
+  `MCP-Protocol-Version` header and no `_meta`, then
+  `notifications/initialized`, then `tools/list` — which does carry
+  `mcp-protocol-version: 2025-11-25` but still no `_meta` and no `Mcp-Method`.
+  A modern-only endpoint answers that with
+  `400 -32020 Header mismatch: MCP-Protocol-Version header is required`:
+  spec-correct and unusable.
+- The cheap check that was skipped: capture the actual client's bytes (one POST,
+  or point it at any HTTP endpoint that logs) **before** writing the era policy.
+  A client's advertised protocol support and what its transport actually puts on
+  the wire are different facts, and only the second one matters.
+- Generalize: "there are no X clients" about a surface you are about to
+  constrain is an empirical claim about installed software, not a design premise.
+  Verify it, and say in the doc how it was verified.
+- This supersedes the "Remote MCP is modern-era only, on purpose" section of the
+  earlier 2026-07-29 entry below. `POST /mcp` on `EngramRemoteServer` is now
+  dual-era.
+
+### Legacy Streamable HTTP does not require sessions — dual-era can stay stateless
+
+- `Mcp-Session-Id` is a **MAY** in every legacy revision (2024-11-05,
+  2025-03-26, 2025-06-18, 2025-11-25). A server that never returns one on
+  `initialize` is a server a conforming client never sends one to — and with it
+  go session validation, expiry, `DELETE` teardown, the standalone SSE `GET`
+  stream, and `Last-Event-ID` resumability. All optional, all declinable.
+- So legacy support cost about 40 lines in
+  `MCPRemoteEndpoint.legacyResponse` — `initialize` (echo a known revision, else
+  negotiate down to 2025-11-25), `notifications/initialized` (absorbed by the
+  no-`id` → 202 branch), `ping`, `tools/list`, `tools/call`, and `-32601` over
+  HTTP 200 for anything else — with zero stored state. The original doc rejected
+  dual-era as "a large stateful surface"; it had priced the optional parts as
+  mandatory and never priced the version worth building.
+- **Do not reject legacy protocol support on a statefulness argument without
+  checking which parts of the transport are MUSTs.** Read the revision's
+  requirement levels first; the answer changes the estimate by an order of
+  magnitude.
+- The era rule that makes this work is the same one the stdio helper uses:
+  decide per request on the **presence** of
+  `_meta["io.modelcontextprotocol/protocolVersion"]` (absent → legacy, present →
+  modern; an unknown *value* is `-32022`, not a demotion). Per-request detection
+  is the only option a stateless server has, and it needs no connection table.
+- Legacy results must stay unwrapped — no `resultType`, `ttlMs`, `cacheScope`, or
+  `_meta` — so wrap at emit time per era rather than inside shared result
+  builders.
+
+### Claude Code surfaces only `structuredContent` when a result has both
+
+- Verified with an isolated probe MCP server returning a distinct marker string
+  in `content[0].text` and in `structuredContent`: **only the
+  `structuredContent` marker reached the model.** The `content` block is dropped
+  when a structured result is present.
+- Consequence: **any payload that must reach the model has to be inside
+  `structuredContent`.** `archive_get_session` carried the transcript only in
+  `content[0].text`, so the transcript never reached the model and the tool was
+  effectively unusable; the fix duplicates the window into
+  `structuredContent["text"]`. The other two tools were fine only by accident —
+  their `toolSuccess` helper serializes the same JSON into both fields.
+- That accident is also why the whole modern-era test matrix passed against a
+  broken tool. Router-level tests assert the wire shape; they cannot assert what
+  a client shows the model. Drive a real client (`claude -p`, reading back a
+  marker embedded in the payload) before believing a tool works.
+- Cost of the duplication is bounded and worth noting in docs: the window is
+  counted twice in the response body (~512 KiB for the 256 KiB default, ~2 MiB
+  at the 1 MiB `max_bytes` ceiling). Outbound only — the 1 MiB cap applies to
+  request bodies.
+
 ## 2026-07-29 - Remote MCP endpoint is modern-era only; repo gates outrank spec SHOULDs (Claude)
+
+> Superseded in part on 2026-07-29 by the dual-era entry above: the endpoint is
+> no longer modern-era only. The `xcodegen`/safety-gate lessons below still hold.
 
 ### New Swift files are not addable from every environment
 
