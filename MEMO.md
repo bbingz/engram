@@ -2,6 +2,11 @@
 
 ## Changelog Memo
 
+### 2026-07-29
+
+- [性能] 远端 archive 列表：`listMachines`/`listReceipts` 增加进程内 append-only 内存索引（启动后台 warm + `createReceipt` 增量 note），配合扫描快路径让 ~25k receipt 的 MCP 列表可交互；无盘上格式变更。详见 `CHANGELOG.md`，PR #280。
+- [性能] 枚举不再走 `getReceipt` 的 fsync/链校验/manifest 交叉校验；扫描路径保留 AEAD 与路径绑定校验。生产冷列表曾 ~23–25 分钟，扫描快路径后 clone 约 18s，再由内存索引消掉 per-request 全量扫。
+
 ### 2026-07-28
 
 - [变更] Release 构建新增纯 opt-in `ENGRAM_BUILD_ROOT`：未设置时保持现有 Xcode/仓库路径，设置后仅把 DerivedData、archive 与 export log 放入指定绝对目录，最终 App 仍留在 `macos/build/EngramExport`；真实路径必须保持 Engram 项目作用域，`/Volumes` 缺失或不可写时 fail-closed，`--print-paths` 可在零写入下预检路径。异家复审后补固 macOS Bash 3.2 与 symlink 边界，聚焦测试 35/35；未签名、公证、安装或发布，详见 `CHANGELOG.md`。

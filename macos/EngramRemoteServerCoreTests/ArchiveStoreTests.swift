@@ -712,17 +712,214 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(try failing.listMachines(cursor: nil, limit: 10).machineIDs, [])
     }
 
+    func testListIndexWarmsOnceAndServesCursorPages() throws {
+        let machineA = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
+        let machineB = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
+        let store = try ArchiveStore(root: root, key: key, serverID: "hq")
+
+        var aDigests: [String] = []
+        var bDigests: [String] = []
+        for i in 0..<3 {
+            aDigests.append(try publishReceipt(
+                store: store,
+                body: "list-index-a-\(i)",
+                machineID: machineA,
+                captureSuffix: String(format: "a%02d", i)
+            ))
+        }
+        for i in 0..<2 {
+            bDigests.append(try publishReceipt(
+                store: store,
+                body: "list-index-b-\(i)",
+                machineID: machineB,
+                captureSuffix: String(format: "b%02d", i)
+            ))
+        }
+        aDigests.sort()
+        bDigests.sort()
+
+        let firstMachines = try store.listMachines(cursor: nil, limit: 1)
+        XCTAssertEqual(firstMachines.machineIDs, [machineA])
+        XCTAssertNotNil(firstMachines.nextCursor)
+        let secondMachines = try store.listMachines(
+            cursor: firstMachines.nextCursor,
+            limit: 1
+        )
+        XCTAssertEqual(secondMachines.machineIDs, [machineB])
+        XCTAssertNil(secondMachines.nextCursor)
+
+        let firstReceipts = try store.listReceipts(
+            machineID: machineA,
+            cursor: nil,
+            limit: 2
+        )
+        XCTAssertEqual(
+            firstReceipts.receipts.map(\.manifestSHA256),
+            Array(aDigests.prefix(2))
+        )
+        XCTAssertNotNil(firstReceipts.nextCursor)
+        let secondReceipts = try store.listReceipts(
+            machineID: machineA,
+            cursor: firstReceipts.nextCursor,
+            limit: 2
+        )
+        XCTAssertEqual(
+            secondReceipts.receipts.map(\.manifestSHA256),
+            [aDigests[2]]
+        )
+        XCTAssertNil(secondReceipts.nextCursor)
+        XCTAssertEqual(
+            try store.listReceipts(machineID: machineB, cursor: nil, limit: 10)
+                .receipts.map(\.manifestSHA256),
+            bDigests
+        )
+    }
+
+    func testListIndexSingleFlightBuildAndIncrementalNote() throws {
+        // Single-flight: concurrent list/warm share one disk scan; receipts
+        // published while cold still land in the index after build merges pending.
+        let machineID = "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"
+        let buildCount = ArchiveStoreEventRecorder()
+        let store = try ArchiveStore(
+            root: root,
+            key: key,
+            serverID: "hq",
+            testHooks: ArchiveStoreTestHooks(
+                afterListIndexBuild: { buildCount.append(1) }
+            )
+        )
+        let digestBefore = try publishReceipt(
+            store: store,
+            body: "list-index-before-warm",
+            machineID: machineID,
+            captureSuffix: "pre"
+        )
+
+        let group = DispatchGroup()
+        let errors = ArchiveStoreEventRecorder()
+        for _ in 0..<8 {
+            group.enter()
+            DispatchQueue.global().async {
+                do {
+                    _ = try store.listMachines(cursor: nil, limit: 10)
+                } catch {
+                    errors.append(1)
+                }
+                group.leave()
+            }
+        }
+        group.wait()
+        XCTAssertEqual(errors.values, [])
+        XCTAssertEqual(buildCount.values, [1], "warm must be single-flight")
+
+        let digestAfter = try publishReceipt(
+            store: store,
+            body: "list-index-after-warm",
+            machineID: machineID,
+            captureSuffix: "post"
+        )
+        // No second disk rebuild: createReceipt notes into the ready index.
+        XCTAssertEqual(buildCount.values, [1])
+        XCTAssertEqual(
+            try store.listReceipts(machineID: machineID, cursor: nil, limit: 10)
+                .receipts.map(\.manifestSHA256).sorted(),
+            [digestBefore, digestAfter].sorted()
+        )
+        try store.warmListIndex()
+        XCTAssertEqual(buildCount.values, [1], "ready index is not rebuilt")
+    }
+
+    func testListIndexMergesReceiptPublishedDuringColdBuild() throws {
+        let machineID = "DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD"
+        let gate = DispatchSemaphore(value: 0)
+        let buildEntered = DispatchSemaphore(value: 0)
+        let store = try ArchiveStore(
+            root: root,
+            key: key,
+            serverID: "hq",
+            testHooks: ArchiveStoreTestHooks(
+                afterListIndexBuild: {
+                    buildEntered.signal()
+                    gate.wait()
+                }
+            )
+        )
+        let digestPre = try publishReceipt(
+            store: store,
+            body: "list-index-during-pre",
+            machineID: machineID,
+            captureSuffix: "d0"
+        )
+
+        let listErrors = ArchiveStoreEventRecorder()
+        let listGroup = DispatchGroup()
+        listGroup.enter()
+        DispatchQueue.global().async {
+            do {
+                _ = try store.listMachines(cursor: nil, limit: 10)
+            } catch {
+                listErrors.append(1)
+            }
+            listGroup.leave()
+        }
+        // Wait until the builder has finished forEachReceipt and is in the
+        // afterListIndexBuild hook, then publish a receipt that must merge via pending.
+        XCTAssertEqual(buildEntered.wait(timeout: .now() + 5), .success)
+        let digestMid = try publishReceipt(
+            store: store,
+            body: "list-index-during-mid",
+            machineID: machineID,
+            captureSuffix: "d1"
+        )
+        gate.signal()
+        listGroup.wait()
+        XCTAssertEqual(listErrors.values, [])
+
+        let listed = try store.listReceipts(
+            machineID: machineID,
+            cursor: nil,
+            limit: 10
+        ).receipts.map(\.manifestSHA256).sorted()
+        XCTAssertEqual(listed, [digestPre, digestMid].sorted())
+    }
+
+    private func publishReceipt(
+        store: ArchiveStore,
+        body: String,
+        machineID: String,
+        captureSuffix: String
+    ) throws -> String {
+        let raw = Data(body.utf8)
+        let objectDigest = ArchiveV2Hash.sha256(raw)
+        // captureID must be a SHA-256 hex string; derive one from the suffix.
+        let captureID = ArchiveV2Hash.sha256(Data(captureSuffix.utf8))
+        let manifestBytes = try boundManifestBytes(
+            raw: raw,
+            objectDigest: objectDigest,
+            machineID: machineID,
+            captureID: captureID,
+            sessionID: "session-\(captureSuffix)"
+        )
+        let manifestDigest = ArchiveV2Hash.sha256(manifestBytes)
+        _ = try store.putObject(digest: objectDigest, raw: raw)
+        _ = try store.putManifest(digest: manifestDigest, canonicalBytes: manifestBytes)
+        _ = try store.createReceipt(manifestDigest: manifestDigest)
+        return manifestDigest
+    }
+
     private func boundManifestBytes(
         raw: Data,
         objectDigest: String,
-        machineID: String
+        machineID: String,
+        captureID: String = String(repeating: "e", count: 64),
+        sessionID: String = "session-1"
     ) throws -> Data {
         let manifest = try ArchiveSourceManifest(
-            captureID: String(repeating: "e", count: 64),
+            captureID: captureID,
             machineID: machineID,
             source: "codex",
             locator: "/archive/source.jsonl",
-            sessionID: "session-1",
+            sessionID: sessionID,
             capturedAt: "2026-07-11T11:00:00.000Z",
             generation: ArchiveSourceGeneration(
                 device: 1,

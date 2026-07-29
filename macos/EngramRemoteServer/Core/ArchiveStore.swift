@@ -41,6 +41,9 @@ struct ArchiveStoreTestHooks: Sendable {
     let beforeFinalPublish: (@Sendable (ArchiveEnvelopeKind, URL) throws -> Void)?
     let afterFinalPublish: (@Sendable (ArchiveEnvelopeKind, URL) -> Void)?
     let afterExistingEnvelopeVerified: (@Sendable (URL) throws -> Void)?
+    /// Invoked after a successful full disk scan that builds the list index,
+    /// once per process lifetime for a given store instance (single-flight).
+    let afterListIndexBuild: (@Sendable () -> Void)?
 
     init(
         maximumWriteBytesPerCall: Int? = nil,
@@ -50,7 +53,8 @@ struct ArchiveStoreTestHooks: Sendable {
         beforeDirectoryParentFsync: (@Sendable (URL) throws -> Void)? = nil,
         beforeFinalPublish: (@Sendable (ArchiveEnvelopeKind, URL) throws -> Void)? = nil,
         afterFinalPublish: (@Sendable (ArchiveEnvelopeKind, URL) -> Void)? = nil,
-        afterExistingEnvelopeVerified: (@Sendable (URL) throws -> Void)? = nil
+        afterExistingEnvelopeVerified: (@Sendable (URL) throws -> Void)? = nil,
+        afterListIndexBuild: (@Sendable () -> Void)? = nil
     ) {
         self.maximumWriteBytesPerCall = maximumWriteBytesPerCall
         self.afterWriteCall = afterWriteCall
@@ -60,6 +64,166 @@ struct ArchiveStoreTestHooks: Sendable {
         self.beforeFinalPublish = beforeFinalPublish
         self.afterFinalPublish = afterFinalPublish
         self.afterExistingEnvelopeVerified = afterExistingEnvelopeVerified
+        self.afterListIndexBuild = afterListIndexBuild
+    }
+}
+
+/// Process-local index of published receipts for discovery.
+///
+/// Archive v2 is append-only on the product path (zero-delete), so a receipt
+/// observed once stays. `listMachines`/`listReceipts` used to full-scan on
+/// every call; even the scan fast path is ~18s on a real ~25k-receipt archive,
+/// which makes remote MCP list tools unusable. This index is warmed once from
+/// the scan path (single-flight) and then updated on each successful
+/// `createReceipt`; subsequent lists are O(log n + page).
+private final class ArchiveReceiptListIndex: @unchecked Sendable {
+    struct Entry: Equatable, Sendable {
+        let machineID: String
+        let manifestSHA256: String
+        let receiptSHA256: String
+    }
+
+    private enum Phase {
+        case cold
+        case building
+        case ready
+    }
+
+    private let condition = NSCondition()
+    private var phase: Phase = .cold
+    private var poisoned = false
+    private var machineIDs: [String] = []
+    private var receiptsByMachine: [String: [Entry]] = [:]
+    private var pending: [Entry] = []
+
+    func note(machineID: String, manifestSHA256: String, receiptSHA256: String) {
+        let entry = Entry(
+            machineID: machineID,
+            manifestSHA256: manifestSHA256,
+            receiptSHA256: receiptSHA256
+        )
+        condition.lock()
+        defer { condition.unlock() }
+        switch phase {
+        case .ready:
+            applyLocked(entry)
+        case .cold, .building:
+            pending.append(entry)
+        }
+    }
+
+    func ensureReady(_ build: () throws -> [Entry]) throws {
+        condition.lock()
+        while phase == .building {
+            condition.wait()
+        }
+        if phase == .ready {
+            let failed = poisoned
+            condition.unlock()
+            if failed { throw ArchiveStoreError.conflict }
+            return
+        }
+        phase = .building
+        condition.unlock()
+
+        let built: [Entry]
+        do {
+            built = try build()
+        } catch {
+            condition.lock()
+            phase = .cold
+            condition.broadcast()
+            condition.unlock()
+            throw error
+        }
+
+        condition.lock()
+        for entry in built {
+            applyLocked(entry)
+        }
+        for entry in pending {
+            applyLocked(entry)
+        }
+        pending.removeAll(keepingCapacity: false)
+        phase = .ready
+        let failed = poisoned
+        condition.broadcast()
+        condition.unlock()
+        if failed { throw ArchiveStoreError.conflict }
+    }
+
+    func listMachineIDs(after cursor: String?, limit: Int) throws -> [String] {
+        condition.lock()
+        defer { condition.unlock() }
+        guard phase == .ready else {
+            throw ArchiveStoreError.io
+        }
+        if poisoned { throw ArchiveStoreError.conflict }
+        let start = lowerBound(machineIDs, after: cursor)
+        let end = min(start + limit + 1, machineIDs.count)
+        guard start < end else { return [] }
+        return Array(machineIDs[start..<end])
+    }
+
+    func listReceipts(
+        machineID: String,
+        after cursor: String?,
+        limit: Int
+    ) throws -> [ArchiveReceiptSummary] {
+        condition.lock()
+        defer { condition.unlock() }
+        guard phase == .ready else {
+            throw ArchiveStoreError.io
+        }
+        if poisoned { throw ArchiveStoreError.conflict }
+        let entries = receiptsByMachine[machineID] ?? []
+        let start = lowerBound(entries.map(\.manifestSHA256), after: cursor)
+        let end = min(start + limit + 1, entries.count)
+        guard start < end else { return [] }
+        return try entries[start..<end].map { entry in
+            try ArchiveReceiptSummary(
+                manifestSHA256: entry.manifestSHA256,
+                receiptSHA256: entry.receiptSHA256
+            )
+        }
+    }
+
+    private func applyLocked(_ entry: Entry) {
+        if poisoned { return }
+        var list = receiptsByMachine[entry.machineID] ?? []
+        if let index = list.firstIndex(where: { $0.manifestSHA256 == entry.manifestSHA256 }) {
+            if list[index].receiptSHA256 != entry.receiptSHA256 {
+                poisoned = true
+                machineIDs = []
+                receiptsByMachine = [:]
+            }
+            return
+        }
+        let insertAt = list.firstIndex(where: { $0.manifestSHA256 > entry.manifestSHA256 })
+            ?? list.endIndex
+        list.insert(entry, at: insertAt)
+        receiptsByMachine[entry.machineID] = list
+        if !machineIDs.contains(entry.machineID) {
+            let machineAt = machineIDs.firstIndex(where: { $0 > entry.machineID })
+                ?? machineIDs.endIndex
+            machineIDs.insert(entry.machineID, at: machineAt)
+        }
+    }
+
+    /// First index whose key is strictly greater than `cursor`, or 0 when no cursor.
+    private func lowerBound(_ keys: [String], after cursor: String?) -> Int {
+        guard let cursor else { return 0 }
+        var low = 0
+        var high = keys.count
+        while low < high {
+            let mid = low + (high - low) / 2
+            if keys[mid] <= cursor {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        return low
     }
 }
 
@@ -89,6 +253,9 @@ public struct ArchiveStore: Sendable {
     private let codec: ArchiveEnvelopeCodec
     private let hooks: ArchiveStoreTestHooks
     private let now: @Sendable () -> String
+    /// Shared across value copies of this store so list warm and receipt
+    /// publication see one process-local index.
+    private let listIndex: ArchiveReceiptListIndex
 
     public init(root: URL, key: SymmetricKey, serverID: String) throws {
         try self.init(
@@ -145,6 +312,7 @@ public struct ArchiveStore: Sendable {
         self.codec = ArchiveEnvelopeCodec(key: key)
         self.hooks = hooks
         self.now = now
+        self.listIndex = ArchiveReceiptListIndex()
 
         guard Self.isSafeArchiveRoot(self.root) else {
             throw ArchiveStoreError.conflict
@@ -281,6 +449,8 @@ public struct ArchiveStore: Sendable {
                 manifestDigest: manifestDigest,
                 manifest: manifest
             )
+            // Keep the list index complete if a concurrent warm is mid-scan.
+            notePublishedReceipt(bytes: existing, manifestDigest: manifestDigest)
             return ArchiveReceiptCreation(bytes: existing, result: .alreadyPresent)
         } catch ArchiveStoreError.notFound {
             // Create the first immutable receipt below.
@@ -324,6 +494,7 @@ public struct ArchiveStore: Sendable {
         )
         switch try publish(envelope, expectedDigest: manifestDigest, kind: .receipt) {
         case .published:
+            notePublishedReceipt(bytes: receiptBytes, manifestDigest: manifestDigest)
             return ArchiveReceiptCreation(bytes: receiptBytes, result: .published)
         case .alreadyPresent(let existing):
             try validateReceiptBytes(
@@ -331,6 +502,9 @@ public struct ArchiveStore: Sendable {
                 manifestDigest: manifestDigest,
                 manifest: manifest
             )
+            // Idempotent publish still contributes to the list index so a
+            // concurrent warm that missed the file race sees the receipt.
+            notePublishedReceipt(bytes: existing, manifestDigest: manifestDigest)
             return ArchiveReceiptCreation(bytes: existing, result: .alreadyPresent)
         }
     }
@@ -345,6 +519,15 @@ public struct ArchiveStore: Sendable {
         return bytes
     }
 
+    /// Build the process-local list index from disk if it is not ready yet.
+    ///
+    /// Safe to call repeatedly and from concurrent threads: the first caller
+    /// runs the scan, later callers wait and then return. Server startup
+    /// should fire this in the background so the first client list is warm.
+    public func warmListIndex() throws {
+        try ensureListIndexReady()
+    }
+
     public func listMachines(cursor: String?, limit: Int) throws -> ArchiveMachinePage {
         try Self.validateLimit(limit)
         let cursorKey = try Self.decodeCursor(cursor)
@@ -353,18 +536,8 @@ public struct ArchiveStore: Sendable {
             throw ArchiveStoreError.invalidPage
         }
 
-        var candidates: [String] = []
-        try forEachReceipt { _, _, receipt in
-            guard let canonicalMachineID = UUID(uuidString: receipt.machineID)?.uuidString else {
-                throw ArchiveStoreError.conflict
-            }
-            guard cursorKey.map({ canonicalMachineID > $0 }) ?? true else { return }
-            Self.insertBoundedUnique(
-                canonicalMachineID,
-                into: &candidates,
-                maximumCount: limit + 1
-            )
-        }
+        try ensureListIndexReady()
+        var candidates = try listIndex.listMachineIDs(after: cursorKey, limit: limit)
         let hasMore = candidates.count > limit
         if hasMore { candidates.removeLast() }
         let nextCursor = hasMore ? candidates.last.map(Self.encodeCursor) : nil
@@ -389,27 +562,12 @@ public struct ArchiveStore: Sendable {
             throw ArchiveStoreError.invalidPage
         }
 
-        var candidates: [ArchiveReceiptSummary] = []
-        try forEachReceipt { manifestDigest, receiptBytes, receipt in
-            guard UUID(uuidString: receipt.machineID)?.uuidString == canonicalMachineID else {
-                return
-            }
-            guard cursorKey.map({ manifestDigest > $0 }) ?? true else { return }
-            let summary: ArchiveReceiptSummary
-            do {
-                summary = try ArchiveReceiptSummary(
-                    manifestSHA256: manifestDigest,
-                    receiptSHA256: ArchiveV2Hash.sha256(receiptBytes)
-                )
-            } catch {
-                throw ArchiveStoreError.conflict
-            }
-            Self.insertBoundedSummary(
-                summary,
-                into: &candidates,
-                maximumCount: limit + 1
-            )
-        }
+        try ensureListIndexReady()
+        var candidates = try listIndex.listReceipts(
+            machineID: canonicalMachineID,
+            after: cursorKey,
+            limit: limit
+        )
         let hasMore = candidates.count > limit
         if hasMore { candidates.removeLast() }
         let nextCursor = hasMore
@@ -420,6 +578,38 @@ public struct ArchiveStore: Sendable {
         } catch {
             throw ArchiveStoreError.invalidPage
         }
+    }
+
+    private func ensureListIndexReady() throws {
+        try listIndex.ensureReady {
+            var entries: [ArchiveReceiptListIndex.Entry] = []
+            try forEachReceipt { manifestDigest, receiptBytes, receipt in
+                guard let canonicalMachineID = UUID(uuidString: receipt.machineID)?.uuidString else {
+                    throw ArchiveStoreError.conflict
+                }
+                entries.append(
+                    ArchiveReceiptListIndex.Entry(
+                        machineID: canonicalMachineID,
+                        manifestSHA256: manifestDigest,
+                        receiptSHA256: ArchiveV2Hash.sha256(receiptBytes)
+                    )
+                )
+            }
+            hooks.afterListIndexBuild?()
+            return entries
+        }
+    }
+
+    private func notePublishedReceipt(bytes: Data, manifestDigest: String) {
+        guard let receipt = try? Self.decodeReceiptForDiscovery(bytes),
+              let machineID = UUID(uuidString: receipt.machineID)?.uuidString else {
+            return
+        }
+        listIndex.note(
+            machineID: machineID,
+            manifestSHA256: manifestDigest,
+            receiptSHA256: ArchiveV2Hash.sha256(bytes)
+        )
     }
 
     private func validatedManifest(
@@ -1056,33 +1246,6 @@ public struct ArchiveStore: Sendable {
             throw ArchiveStoreError.conflict
         }
         return DirectoryIdentity(descriptorInfo)
-    }
-
-    private static func insertBoundedUnique(
-        _ value: String,
-        into values: inout [String],
-        maximumCount: Int
-    ) {
-        guard !values.contains(value) else { return }
-        values.append(value)
-        values.sort()
-        if values.count > maximumCount { values.removeLast() }
-    }
-
-    private static func insertBoundedSummary(
-        _ value: ArchiveReceiptSummary,
-        into values: inout [ArchiveReceiptSummary],
-        maximumCount: Int
-    ) {
-        if let existing = values.first(where: {
-            $0.manifestSHA256 == value.manifestSHA256
-        }) {
-            if existing != value { values.removeAll() }
-            return
-        }
-        values.append(value)
-        values.sort { $0.manifestSHA256 < $1.manifestSHA256 }
-        if values.count > maximumCount { values.removeLast() }
     }
 
     private static func validateDigest(_ digest: String) throws {
