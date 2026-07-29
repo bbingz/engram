@@ -195,6 +195,23 @@ public final class EngramRemoteServerApp: Sendable {
     public func run(onBound: (@Sendable (Int) -> Void)? = nil) async throws {
         var logger = Logger(label: "engram.remote")
         logger.logLevel = .notice
+        // Warm the process-local receipt list index off the accept path so the
+        // first archive_list_* / listMachines call is not a multi-second scan.
+        // Failures leave the index cold; the next list call rebuilds.
+        if let archiveStore {
+            let warmLogger = logger
+            Task.detached(priority: .utility) {
+                do {
+                    try archiveStore.warmListIndex()
+                    warmLogger.notice("archive list index warm complete")
+                } catch {
+                    warmLogger.warning(
+                        "archive list index warm failed; lists will rebuild on demand",
+                        metadata: ["error": "\(error)"]
+                    )
+                }
+            }
+        }
         let app = Application(
             router: buildRouter(),
             configuration: ApplicationConfiguration(address: .hostname(config.host, port: config.port)),

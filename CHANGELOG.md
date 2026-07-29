@@ -7,6 +7,54 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Process-local archive list index (2026-07-29)
+
+`ArchiveStore.listMachines` / `listReceipts` no longer full-scan the receipt
+tree on every call. A process-local, append-only index holds sorted machine IDs
+and per-machine receipt summaries (`manifestSHA256`, `receiptSHA256`). The first
+list (or an explicit `warmListIndex()`) builds it once via the existing scan
+fast path under a single-flight latch; concurrent waiters share that build.
+Receipts published while the build is still running go into a pending queue and
+merge before the index becomes ready. After ready, every successful
+`createReceipt` (including the already-present path) notes into the index so
+later lists stay current without another disk pass.
+
+`EngramRemoteServerApp.run` fires `warmListIndex()` on a utility `Task` as soon
+as the process starts, so the accept path is not blocked and the first client
+list is usually already warm. A failed warm leaves the index cold; the next
+list rebuilds. Cursor semantics and conflict fail-closed behavior are unchanged
+— a same-manifest receipt with a different receipt digest poisons the index and
+lists surface conflict rather than serving a split view.
+
+Why this exists: even after the scan fast path, a real ~25k-receipt archive
+still costs ~18s per list, which makes remote MCP `archive_list_*` unusable.
+The residual cost was O(total receipts) AEAD + JSON decode per request; the
+index makes pages O(log n + page size) after one warm. No on-disk format change
+and no new durable state — restart re-warms from receipts on disk. The
+zero-delete product model is the reason a pure append index is correct.
+
+### Archive enumeration scan fast path (2026-07-29)
+
+`listMachines` / `listReceipts` enumeration no longer routes through
+`getReceipt`. That path is the durable single-receipt contract: per receipt it
+walked the directory chain three times, fsynced the file and the shard
+directory, and re-read plus re-encoded the referenced manifest to cross-check
+it — roughly 50k fsyncs on a 25k-receipt archive. Production cold lists on
+`macmini-m1` measured ~23–25 minutes; a quiet clone of the same data was still
+~84–88s.
+
+`forEachReceipt` now uses a scan-scoped receipt read. The scan already validates
+each shard's directory identity before and after iterating it, so that identity
+is passed into `readEnvelope` and the per-file chain walks drop out. Durability
+barriers (meaningless for a pure read) and the receipt↔manifest cross-check are
+also dropped for enumeration only. Every substitution defence is retained:
+`O_NOFOLLOW`, regular-file/owner/link-count checks, descriptor-vs-path identity,
+envelope AEAD, path-bound header digest, and the receipt's own `serverID` /
+`manifestSHA256`. The cross-check still runs on any actual receipt or manifest
+fetch. Measured on a clone of the production archive: machines list
+~84–85s → ~18.2–18.4s with identical results. The residual ~18s is addressed by
+the process-local list index above.
+
 ### Dual-era remote MCP endpoint and transcript visibility fix (2026-07-29)
 
 The remote MCP endpoint shipped in the entry below was modern-era only, on the

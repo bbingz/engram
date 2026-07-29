@@ -2,7 +2,9 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-25, 2026-07-29 entries appended by hand): 108 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-25, 2026-07-29 entries appended by hand): 111 dated entries; regenerate after adding sections -->
+- [2026-07-29 - Process-local archive list index for interactive remote MCP lists (Claude)](#2026-07-29---process-local-archive-list-index-for-interactive-remote-mcp-lists-claude)
+- [2026-07-29 - Archive enumeration must not use getReceipt's durable contract (Claude)](#2026-07-29---archive-enumeration-must-not-use-getreceipts-durable-contract-claude)
 - [2026-07-29 - Verify the real client before choosing an MCP era policy; structuredContent hides content (Claude)](#2026-07-29---verify-the-real-client-before-choosing-an-mcp-era-policy-structuredcontent-hides-content-claude)
 - [2026-07-29 - Remote MCP endpoint is modern-era only; repo gates outrank spec SHOULDs (Claude)](#2026-07-29---remote-mcp-endpoint-is-modern-era-only-repo-gates-outrank-spec-shoulds-claude)
 - [2026-07-29 - MCP 2026-07-28 removed the initialize handshake; dual-era servers key era per request (Claude)](#2026-07-29---mcp-2026-07-28-removed-the-initialize-handshake-dual-era-servers-key-era-per-request-claude)
@@ -112,6 +114,42 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-29 - Process-local archive list index for interactive remote MCP lists (Claude)
+
+### Why a pure in-memory append index is correct here
+
+- Archive v2 product path is zero-delete / append-only for receipts. Once a
+  receipt is published under a manifest digest it stays; list discovery only
+  needs machine ID + digest pair. That makes a process-local sorted map
+  sufficient — no tombstones, no disk format, no SQLite side table.
+- Even the scan fast path is ~18s on ~25k real receipts (AEAD + JSON decode per
+  receipt). MCP `archive_list_*` cannot be interactive at that cost. Warm once
+  at process start, serve pages from memory, note new receipts on
+  `createReceipt` (including already-present).
+- Implementation lives in `ArchiveStore` as `ArchiveReceiptListIndex` (shared
+  across value copies of the store). Single-flight build via `NSCondition`;
+  pending notes during build merge before ready; conflict on same-manifest
+  different receipt digest poisons the index fail-closed. Server
+  `EngramRemoteServerApp.run` fires `warmListIndex()` on a utility Task so
+  accept is not blocked.
+- Tests: cursor paging, single-flight concurrent warm, merge of a receipt
+  published mid-build. No new Swift files — kept inside existing target sources
+  to avoid xcodegen/pbxproj drift.
+
+## 2026-07-29 - Archive enumeration must not use getReceipt's durable contract (Claude)
+
+### Scan path vs durable path
+
+- `getReceipt` is the durable single-receipt contract: fsync file + shard dir,
+  three directory-chain walks, re-read/re-encode referenced manifest. Fine for
+  one receipt; lethal for enumeration (~50k fsyncs on 25k receipts; production
+  cold list ~23–25 min).
+- `forEachReceipt` / `scanReceipt` keep substitution defences (O_NOFOLLOW,
+  identity checks, AEAD, path-bound digest, serverID/manifestSHA256) and drop
+  only durability barriers and the receipt↔manifest cross-check. Cross-check
+  still runs on real get paths. Clone measurement: ~84–85s → ~18s before the
+  memory index.
 
 ## 2026-07-29 - Verify the real client before choosing an MCP era policy; structuredContent hides content (Claude)
 
