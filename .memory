@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-25): 105 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (rebuilt 2026-07-25, 2026-07-29 entry appended by hand): 106 dated entries; regenerate after adding sections -->
+- [2026-07-29 - MCP 2026-07-28 removed the initialize handshake; dual-era servers key era per request (Claude)](#2026-07-29---mcp-2026-07-28-removed-the-initialize-handshake-dual-era-servers-key-era-per-request-claude)
 - [2026-07-25 - CI blind spot closed, npm 12 blocks native builds, 14 mirror rows open (Claude)](#2026-07-25---ci-blind-spot-closed-npm-12-blocks-native-builds-14-mirror-rows-open-claude)
 - [2026-07-25 - xcodeproj drift is a silent test-coverage hole (Claude)](#2026-07-25---xcodeproj-drift-is-a-silent-test-coverage-hole-claude)
 - [2026-07-24 - Local external build storage and disk cleanup retained off main (Codex)](#2026-07-24---local-external-build-storage-and-disk-cleanup-retained-off-main-codex)
@@ -109,6 +110,62 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-29 - MCP 2026-07-28 removed the initialize handshake; dual-era servers key era per request (Claude)
+
+### The versioning model changed shape, not just its date
+
+- MCP revision 2026-07-28 deletes the `initialize` handshake. There is no
+  connection-scoped negotiated version any more: a modern client puts
+  `_meta["io.modelcontextprotocol/protocolVersion"]` on **every** request, and
+  a mandatory `server/discover` RPC replaces the handshake as the way a client
+  learns what a server speaks. "Add 2026-07-28 to the supported-versions set"
+  is therefore the wrong change — the set that `initialize` negotiates over and
+  the set that `_meta` negotiates over are two different sets.
+- A dual-era server keys the era off the **presence** of that `_meta` key on
+  each request, not off any stored connection state. Absent → legacy path;
+  present and known → modern path; present and unknown → error. In Engram this
+  is `MCPStdioServer.era(of:)` in
+  `macos/EngramMCP/Core/MCPStdioServer.swift`, with the legacy and modern
+  version sets kept separate and only unioned for what gets *advertised*.
+- The legacy path must stay byte-stable. `tests/fixtures/mcp-golden/` pins 30+
+  executable behavior snapshots of the exact stdio responses, so any envelope
+  field leaking onto a request without `_meta` is a fixture diff, not a subtle
+  regression. Wrap results at emit time behind an explicit `modern:` flag
+  rather than changing the shared result builders.
+- Accepting `2026-07-28` through `initialize` would be nonsensical: modern
+  clients never send `initialize`, so such a code path can only be reached by a
+  confused client and would hand it a negotiated-version contract the revision
+  no longer defines. Unknown `initialize` versions still negotiate down to the
+  latest *legacy* revision (`2025-11-25`).
+
+### `server/discover` must answer unconditionally
+
+- `server/discover` doubles as the spec's stdio backward-compatibility probe:
+  it is how a modern client finds out whether an unknown stdio server is modern
+  at all. Gating it behind `_meta` (or behind a completed handshake) makes the
+  probe unanswerable and defeats its purpose. Answer it before the era check
+  runs.
+- Its result carries `supportedVersions` across both eras, capabilities,
+  instructions, `ttlMs`, `cacheScope`, and `serverInfo` under `_meta` — modern
+  clients have no `initialize` result to read server identity from, so identity
+  has to ride along in results.
+
+### Error codes: -32020..-32099 is now reserved for MCP
+
+- UnsupportedProtocolVersionError is `-32022`, message
+  `"Unsupported protocol version"`, with `data.supported` (the versions the
+  server does speak) and `data.requested` (what the client asked for) so the
+  client can retry without a second round trip. Do not invent app-specific
+  codes in `-32020..-32099`; the spec reserved that range.
+- Resource-not-found moved from `-32002` to `-32602` in this revision. Engram
+  already used `-32602` there, so this was a no-op — worth checking before
+  assuming a code change is needed.
+- `ping` is removed from the 2026-07-28 core spec. Keep answering it in both
+  eras anyway: a liveness probe can arrive era-ambiguous, and failing it kills
+  the transport for legacy clients that still depend on it.
+- Roots / Sampling / Logging are deprecated in 2026-07-28; Engram never
+  implemented them, so the deprecation is not actionable here.
 
 ## 2026-07-25 - CI blind spot closed, npm 12 blocks native builds, 14 mirror rows open (Claude)
 

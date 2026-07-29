@@ -7,6 +7,43 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### MCP 2026-07-28 dual-era protocol support (2026-07-29)
+
+`EngramMCP` now speaks MCP revision 2026-07-28 alongside every revision it
+already supported. The 2026-07-28 spec removes the `initialize` handshake, so
+the stdio server decides the era per request: a request carrying
+`_meta["io.modelcontextprotocol/protocolVersion"]` is served under modern
+semantics, and a request without it keeps the legacy path. Legacy clients
+(2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25) are unaffected — their
+`initialize` negotiation, including the negotiate-down for unknown newer
+versions, is byte-for-byte what it was.
+
+The new `server/discover` RPC is answered unconditionally, including for
+requests with no `_meta`, because the spec also uses it as the stdio
+backward-compatibility probe. It reports `supportedVersions` across both eras
+(`2026-07-28`, `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`), the
+`tools`/`resources`/`prompts` capabilities, the server instructions, a one-hour
+`ttlMs`, `cacheScope` `private`, and the server identity in `_meta`.
+
+Modern results are wrapped in the 2026-07-28 envelope: the required
+`resultType` discriminator, the server identity under
+`_meta["io.modelcontextprotocol/serverInfo"]` (stateless clients have no
+`initialize` result to read it from), and CacheableResult freshness hints on
+the methods that require them — `tools/list` 300000ms, `prompts/list`
+3600000ms, `resources/list` and `resources/read` 30000ms, all with `cacheScope`
+`private` because every payload is local per-user data. A modern request naming
+a revision this build does not speak is refused with UnsupportedProtocolVersionError:
+code `-32022`, message `Unsupported protocol version`, and
+`data.supported` / `data.requested` so the client can pick another version
+without a second round trip.
+
+Two spec deltas needed no behavior change. `ping` was dropped from the
+2026-07-28 core spec but is still answered in both eras, since an
+era-ambiguous liveness probe must not tear down the transport and legacy
+clients still depend on it. Resource-not-found already used `-32602`, which is
+exactly the code 2026-07-28 moved it to from `-32002`. Roots, Sampling, and
+Logging are deprecated in the new revision and were never implemented here.
+
 ### Opt-in external release build root (2026-07-28)
 
 `macos/scripts/build-release.sh` now accepts an optional
