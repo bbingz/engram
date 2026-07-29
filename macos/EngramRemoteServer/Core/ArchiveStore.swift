@@ -354,8 +354,7 @@ public struct ArchiveStore: Sendable {
         }
 
         var candidates: [String] = []
-        try forEachReceipt { _, receiptBytes in
-            let receipt = try Self.decodeReceiptForDiscovery(receiptBytes)
+        try forEachReceipt { _, _, receipt in
             guard let canonicalMachineID = UUID(uuidString: receipt.machineID)?.uuidString else {
                 throw ArchiveStoreError.conflict
             }
@@ -391,8 +390,7 @@ public struct ArchiveStore: Sendable {
         }
 
         var candidates: [ArchiveReceiptSummary] = []
-        try forEachReceipt { manifestDigest, receiptBytes in
-            let receipt = try Self.decodeReceiptForDiscovery(receiptBytes)
+        try forEachReceipt { manifestDigest, receiptBytes, receipt in
             guard UUID(uuidString: receipt.machineID)?.uuidString == canonicalMachineID else {
                 return
             }
@@ -674,14 +672,21 @@ public struct ArchiveStore: Sendable {
         return .alreadyPresent(existing)
     }
 
+    /// Read and authenticate one envelope.
+    ///
+    /// `knownParentIdentity` lets an enumeration supply a shard identity it has
+    /// already validated, which skips the three per-file directory-chain walks
+    /// this function otherwise performs. Callers that pass it must bracket the
+    /// whole scan with their own identity checks — see `forEachReceipt`.
     private func readEnvelope(
         at url: URL,
         expectedKind: ArchiveEnvelopeKind,
         expectedDigest: String,
         fsyncBeforeAccept: Bool = false,
+        knownParentIdentity: DirectoryIdentity? = nil,
         afterVerified: (@Sendable (URL) throws -> Void)? = nil
     ) throws -> Data {
-        let parentIdentity = try requiredParentIdentity(
+        let parentIdentity = try knownParentIdentity ?? requiredParentIdentity(
             digest: expectedDigest,
             kind: expectedKind,
             createShard: false
@@ -702,11 +707,13 @@ public struct ArchiveStore: Sendable {
             throw ArchiveStoreError.conflict
         }
         defer { _ = Darwin.close(fd) }
-        try assertParentIdentity(
-            parentIdentity,
-            digest: expectedDigest,
-            kind: expectedKind
-        )
+        if knownParentIdentity == nil {
+            try assertParentIdentity(
+                parentIdentity,
+                digest: expectedDigest,
+                kind: expectedKind
+            )
+        }
 
         var initialDescriptorInfo = stat()
         guard Darwin.fstat(fd, &initialDescriptorInfo) == 0 else {
@@ -767,11 +774,13 @@ public struct ArchiveStore: Sendable {
               Self.sameFileIdentity(finalDescriptorInfo, finalPathInfo) else {
             throw ArchiveStoreError.conflict
         }
-        try assertParentIdentity(
-            parentIdentity,
-            digest: expectedDigest,
-            kind: expectedKind
-        )
+        if knownParentIdentity == nil {
+            try assertParentIdentity(
+                parentIdentity,
+                digest: expectedDigest,
+                kind: expectedKind
+            )
+        }
         return raw
     }
 
@@ -816,8 +825,47 @@ public struct ArchiveStore: Sendable {
         return shard.appendingPathComponent(digest, isDirectory: false)
     }
 
+    /// Read one receipt for enumeration only.
+    ///
+    /// `getReceipt` is the durable single-receipt contract: it fsyncs the file
+    /// and the shard directory, re-walks the directory chain three times, and
+    /// re-reads plus re-encodes the referenced manifest to cross-check it.
+    /// None of that is needed to enumerate, and all of it is per receipt — at
+    /// ~25k receipts the fsyncs alone cost minutes, which made
+    /// `listMachines`/`listReceipts` time out on a real archive.
+    ///
+    /// Every substitution defence is retained: `O_NOFOLLOW`, the
+    /// regular-file/owner/link-count checks before and after the read, the
+    /// descriptor-vs-path identity comparison, the envelope AEAD, and the
+    /// header digest bound to the path digest. The receipt's own `serverID`
+    /// and `manifestSHA256` are still checked against this store and this
+    /// path. What is dropped is durability (meaningless for a read) and the
+    /// receipt↔manifest cross-check, which still runs whenever a caller
+    /// actually fetches a receipt or manifest.
+    private func scanReceipt(
+        manifestDigest: String,
+        shardIdentity: DirectoryIdentity
+    ) throws -> (Data, ArchiveServerReceipt) {
+        let bytes = try readEnvelope(
+            at: url(for: manifestDigest, kind: .receipt, createShard: false),
+            expectedKind: .receipt,
+            expectedDigest: manifestDigest,
+            knownParentIdentity: shardIdentity
+        )
+        guard bytes.count <= ArchiveV2ProtocolLimits.maxReceiptBytes else {
+            throw ArchiveStoreError.conflict
+        }
+        let receipt = try Self.decodeReceiptForDiscovery(bytes)
+        guard receipt.serverID == serverID,
+              receipt.manifestSHA256 == manifestDigest,
+              Self.isCanonicalTimestamp(receipt.storedAt) else {
+            throw ArchiveStoreError.conflict
+        }
+        return (bytes, receipt)
+    }
+
     private func forEachReceipt(
-        _ body: (String, Data) throws -> Void
+        _ body: (String, Data, ArchiveServerReceipt) throws -> Void
     ) throws {
         let base = root.appendingPathComponent("receipts/sha256", isDirectory: true)
         let baseIdentity = try validatedBaseDirectoryIdentity(kind: .receipt)
@@ -856,8 +904,11 @@ public struct ArchiveStore: Sendable {
                       ArchiveV2Hash.isValidSHA256(manifestDigest) else {
                     throw ArchiveStoreError.conflict
                 }
-                let receiptBytes = try getReceipt(manifestDigest: manifestDigest)
-                try body(manifestDigest, receiptBytes)
+                let (receiptBytes, receipt) = try scanReceipt(
+                    manifestDigest: manifestDigest,
+                    shardIdentity: shardIdentity
+                )
+                try body(manifestDigest, receiptBytes, receipt)
             }
             guard try Self.validatedDirectoryIdentity(shardURL) == shardIdentity else {
                 throw ArchiveStoreError.conflict
