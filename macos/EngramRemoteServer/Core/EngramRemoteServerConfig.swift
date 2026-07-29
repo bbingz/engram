@@ -21,6 +21,18 @@ public struct EngramRemoteArchiveConfig: Sendable {
     }
 }
 
+/// Configuration for the read-only MCP endpoint served over Streamable HTTP.
+/// The endpoint exposes archive v2 data, so it can only be enabled alongside
+/// archive v2 and carries its own bearer token, distinct from both existing
+/// credentials.
+public struct EngramRemoteMCPConfig: Sendable {
+    public let bearerToken: String
+
+    public init(bearerToken: String) {
+        self.bearerToken = bearerToken
+    }
+}
+
 /// Configuration for the self-hosted remote offload server. All values come from
 /// the environment (Linux/headless friendly); secrets are NEVER read from a
 /// world-readable settings file. The server holds the at-rest key (the owner's
@@ -33,6 +45,7 @@ public struct EngramRemoteServerConfig: Sendable {
     public var atRestKey: SymmetricKey
     public var maxBundleBytes: Int
     public var archiveV2: EngramRemoteArchiveConfig?
+    public var mcp: EngramRemoteMCPConfig?
     public let sourceRevision: String
 
     public init(
@@ -43,6 +56,7 @@ public struct EngramRemoteServerConfig: Sendable {
         atRestKey: SymmetricKey,
         maxBundleBytes: Int = 64 * 1024 * 1024,
         archiveV2: EngramRemoteArchiveConfig? = nil,
+        mcp: EngramRemoteMCPConfig? = nil,
         sourceRevision: String = "unknown"
     ) {
         self.host = host
@@ -52,6 +66,7 @@ public struct EngramRemoteServerConfig: Sendable {
         self.atRestKey = atRestKey
         self.maxBundleBytes = maxBundleBytes
         self.archiveV2 = archiveV2
+        self.mcp = mcp
         self.sourceRevision = Self.validatedSourceRevision(sourceRevision)
     }
 
@@ -70,6 +85,10 @@ public struct EngramRemoteServerConfig: Sendable {
         case badArchiveKey
         case archiveCredentialsMustBeDistinct
         case storeRootsMustBeDisjoint
+        case invalidMCPEnabled
+        case mcpRequiresArchive
+        case missingMCPToken
+        case mcpTokenMustBeDistinct
 
         public var description: String {
             switch self {
@@ -101,6 +120,14 @@ public struct EngramRemoteServerConfig: Sendable {
                 return "Archive v2 token and at-rest key must be distinct from legacy v1 credentials."
             case .storeRootsMustBeDisjoint:
                 return "Legacy v1 and archive v2 store roots must be disjoint."
+            case .invalidMCPEnabled:
+                return "ENGRAM_REMOTE_MCP_ENABLED must be 0 or 1."
+            case .mcpRequiresArchive:
+                return "ENGRAM_REMOTE_MCP_ENABLED=1 requires archive v2 to be enabled (the MCP endpoint serves archive data)."
+            case .missingMCPToken:
+                return "ENGRAM_REMOTE_MCP_TOKEN is required when the MCP endpoint is enabled."
+            case .mcpTokenMustBeDistinct:
+                return "ENGRAM_REMOTE_MCP_TOKEN must be distinct from the legacy v1 and archive v2 bearer tokens."
             }
         }
     }
@@ -175,6 +202,32 @@ public struct EngramRemoteServerConfig: Sendable {
             archiveV2 = nil
         }
 
+        let mcpEnabled: Bool
+        switch env["ENGRAM_REMOTE_MCP_ENABLED"] {
+        case nil, "0":
+            mcpEnabled = false
+        case "1":
+            mcpEnabled = true
+        default:
+            throw ConfigError.invalidMCPEnabled
+        }
+
+        let mcp: EngramRemoteMCPConfig?
+        if mcpEnabled {
+            guard let archiveV2 else {
+                throw ConfigError.mcpRequiresArchive
+            }
+            guard let mcpToken = env["ENGRAM_REMOTE_MCP_TOKEN"], !mcpToken.isEmpty else {
+                throw ConfigError.missingMCPToken
+            }
+            guard mcpToken != token, mcpToken != archiveV2.bearerToken else {
+                throw ConfigError.mcpTokenMustBeDistinct
+            }
+            mcp = EngramRemoteMCPConfig(bearerToken: mcpToken)
+        } else {
+            mcp = nil
+        }
+
         return EngramRemoteServerConfig(
             host: host,
             port: port,
@@ -182,6 +235,7 @@ public struct EngramRemoteServerConfig: Sendable {
             bearerToken: token,
             atRestKey: SymmetricKey(data: keyData),
             archiveV2: archiveV2,
+            mcp: mcp,
             sourceRevision: env["ENGRAM_REMOTE_SOURCE_REVISION"] ?? "unknown"
         )
     }

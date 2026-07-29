@@ -47,6 +47,15 @@ public final class EngramRemoteServerApp: Sendable {
                 throw EngramRemoteServerConfig.ConfigError.storeRootsMustBeDisjoint
             }
         }
+        if let mcp = config.mcp {
+            guard let archive = config.archiveV2 else {
+                throw EngramRemoteServerConfig.ConfigError.mcpRequiresArchive
+            }
+            guard mcp.bearerToken != config.bearerToken,
+                  mcp.bearerToken != archive.bearerToken else {
+                throw EngramRemoteServerConfig.ConfigError.mcpTokenMustBeDistinct
+            }
+        }
         self.config = config
         self.store = try BlobStore(root: config.storeRoot, key: config.atRestKey)
         if let archive = config.archiveV2 {
@@ -172,6 +181,10 @@ public final class EngramRemoteServerApp: Sendable {
                 token: archive.bearerToken,
                 telemetry: archiveTelemetry
             )
+        }
+
+        if let mcp = config.mcp, let archiveStore {
+            MCPRemoteEndpoint.mount(on: router, store: archiveStore, token: mcp.bearerToken)
         }
 
         return router
@@ -529,5 +542,625 @@ public final class EngramRemoteServerApp: Sendable {
         headers[.contentType] = "application/json; charset=utf-8"
         headers[.contentLength] = "\(data.count)"
         return Response(status: .ok, headers: headers, body: ResponseBody(byteBuffer: ByteBuffer(data: data)))
+    }
+}
+
+// MARK: - MCP Streamable HTTP endpoint
+
+/// JSON value with insertion-ordered object keys, so MCP responses are emitted
+/// deterministically. Deliberately self-contained: this target must stay free
+/// of EngramCoreRead/EngramCoreWrite (asserted by
+/// `testRemoteServerCoreIncludesOnlyPureArchiveWireSources`), so it cannot
+/// share the stdio helper's `OrderedJSONValue`.
+indirect enum MCPRemoteWireValue {
+    case null
+    case bool(Bool)
+    case int(Int)
+    case string(String)
+    case array([MCPRemoteWireValue])
+    case object([(String, MCPRemoteWireValue)])
+
+    func encoded() -> String {
+        switch self {
+        case .null:
+            return "null"
+        case .bool(let value):
+            return value ? "true" : "false"
+        case .int(let value):
+            return String(value)
+        case .string(let value):
+            return Self.quoted(value)
+        case .array(let values):
+            return "[\(values.map { $0.encoded() }.joined(separator: ","))]"
+        case .object(let entries):
+            return "{\(entries.map { "\(Self.quoted($0.0)):\($0.1.encoded())" }.joined(separator: ","))}"
+        }
+    }
+
+    private static func quoted(_ value: String) -> String {
+        var out = "\""
+        for scalar in value.unicodeScalars {
+            switch scalar {
+            case "\"":
+                out.append("\\\"")
+            case "\\":
+                out.append("\\\\")
+            case "\n":
+                out.append("\\n")
+            case "\r":
+                out.append("\\r")
+            case "\t":
+                out.append("\\t")
+            default:
+                if scalar.value < 0x20 {
+                    out.append(String(format: "\\u%04x", scalar.value))
+                } else {
+                    out.unicodeScalars.append(scalar)
+                }
+            }
+        }
+        out.append("\"")
+        return out
+    }
+}
+
+/// Read-only MCP endpoint over Streamable HTTP, MCP revision 2026-07-28 only
+/// (modern era: per-request `_meta`, no `initialize` handshake, no sessions).
+/// Serves the archive v2 store — list machines, list captures, read
+/// reassembled session transcripts — and is mounted only when
+/// `EngramRemoteMCPConfig` is present.
+///
+/// Documented deviations (see docs/remote-mcp-2026-07-28-design.md):
+/// - `DELETE /mcp` stays unrouted (404 instead of the spec's SHOULD 405):
+///   the archive v2 safety gate forbids DELETE routes in this target.
+/// - `subscriptions/listen` returns -32601: no change notifications are
+///   advertised, so there is nothing to opt in to.
+enum MCPRemoteEndpoint {
+    static let protocolVersion = "2026-07-28"
+    static let serverName = "engram-remote"
+    static let serverVersion = "0.1.0"
+    static let maxRequestBytes = 1_048_576
+    static let maxTranscriptWindowBytes = 1_048_576
+    static let defaultTranscriptWindowBytes = 262_144
+    static let discoverTTLMs = 3_600_000
+    static let toolsListTTLMs = 3_600_000
+    static let cacheScope = "private"
+    static let instructions = """
+    Engram remote archive (read-only). Tools:
+    - archive_list_machines: machines that have archived AI sessions here
+    - archive_list_captures: captures for one machine (sessionID + manifest digest)
+    - archive_get_session: read an archived transcript by manifest digest, \
+    windowed by offset/max_bytes
+    """
+
+    private static let protocolVersionHeader = HTTPField.Name("MCP-Protocol-Version")!
+    private static let mcpMethodHeader = HTTPField.Name("Mcp-Method")!
+    private static let mcpNameHeader = HTTPField.Name("Mcp-Name")!
+    private static let originHeader = HTTPField.Name("Origin")!
+    private static let protocolVersionMetaKey = "io.modelcontextprotocol/protocolVersion"
+
+    static func mount(on router: Router<BasicRequestContext>, store: ArchiveStore, token: String) {
+        router.post("/mcp") { request, _ in
+            await handle(request: request, store: store, token: token)
+        }
+        // Pre-2026-07-28 Streamable HTTP clients open a GET stream; this
+        // endpoint is modern-only, so refuse per the spec's compatibility
+        // guidance.
+        router.get("/mcp") { request, _ in
+            guard EngramRemoteServerApp.authorized(request, token: token) else {
+                return EngramRemoteServerApp.unauthorized()
+            }
+            var headers = HTTPFields()
+            headers[HTTPField.Name("Allow")!] = "POST"
+            return Response(status: .init(code: 405, reasonPhrase: "Method Not Allowed"), headers: headers)
+        }
+    }
+
+    private static func handle(request: Request, store: ArchiveStore, token: String) async -> Response {
+        guard EngramRemoteServerApp.authorized(request, token: token) else {
+            return EngramRemoteServerApp.unauthorized()
+        }
+        // DNS-rebinding hardening: this endpoint has no browser clients, so any
+        // Origin header at all is refused (spec: MUST validate Origin).
+        if request.headers[originHeader] != nil {
+            return errorResponse(status: .forbidden, id: nil, code: -32600, message: "Origin not allowed")
+        }
+
+        var request = request
+        let body: Data
+        do {
+            let buffer = try await request.collectBody(upTo: maxRequestBytes)
+            body = Data(buffer.readableBytesView)
+        } catch {
+            return errorResponse(
+                status: .init(code: 413, reasonPhrase: "Payload Too Large"),
+                id: nil,
+                code: -32600,
+                message: "Request body too large"
+            )
+        }
+        guard let parsed = try? JSONSerialization.jsonObject(with: body),
+              let message = parsed as? [String: Any] else {
+            return errorResponse(status: .badRequest, id: nil, code: -32700, message: "Parse error")
+        }
+        guard let method = message["method"] as? String else {
+            return errorResponse(status: .badRequest, id: nil, code: -32600, message: "Invalid Request: missing method")
+        }
+        // Notifications are accepted and dropped: the 2026-07-28 core protocol
+        // defines no client-to-server notifications over Streamable HTTP.
+        guard let id = wireID(of: message["id"]) else {
+            return Response(status: .init(code: 202, reasonPhrase: "Accepted"))
+        }
+
+        let params = message["params"] as? [String: Any] ?? [:]
+        let meta = params["_meta"] as? [String: Any] ?? [:]
+
+        if let mismatch = headerMismatch(request: request, method: method, params: params, meta: meta) {
+            return errorResponse(status: .badRequest, id: id, code: -32020, message: mismatch)
+        }
+        let requestedVersion = meta[protocolVersionMetaKey] as? String ?? ""
+        guard requestedVersion == protocolVersion else {
+            return errorResponse(
+                status: .badRequest,
+                id: id,
+                code: -32022,
+                message: "Unsupported protocol version",
+                data: .object([
+                    ("supported", .array([.string(protocolVersion)])),
+                    ("requested", .string(requestedVersion)),
+                ])
+            )
+        }
+
+        switch method {
+        case "server/discover":
+            return resultResponse(id: id, result: discoverResult())
+        case "tools/list":
+            return resultResponse(id: id, result: toolsListResult())
+        case "tools/call":
+            guard let name = params["name"] as? String, !name.isEmpty else {
+                return errorResponse(status: .badRequest, id: id, code: -32602, message: "Invalid params: missing tool name")
+            }
+            let arguments = params["arguments"] as? [String: Any] ?? [:]
+            let body = callTool(name: name, arguments: arguments, store: store)
+            return resultResponse(id: id, result: envelope(body))
+        default:
+            // Includes subscriptions/listen: no notification types are
+            // advertised. The spec maps unknown methods to 404 + -32601 so
+            // clients can distinguish a modern server from a legacy one.
+            return errorResponse(status: .notFound, id: id, code: -32601, message: "Method not found")
+        }
+    }
+
+    // MARK: Header validation (Streamable HTTP request metadata)
+
+    private static func headerMismatch(
+        request: Request,
+        method: String,
+        params: [String: Any],
+        meta: [String: Any]
+    ) -> String? {
+        guard let versionHeader = request.headers[protocolVersionHeader] else {
+            return "Header mismatch: MCP-Protocol-Version header is required"
+        }
+        guard let bodyVersion = meta[protocolVersionMetaKey] as? String else {
+            return "Header mismatch: request body is missing _meta[\"\(protocolVersionMetaKey)\"]"
+        }
+        guard versionHeader == bodyVersion else {
+            return "Header mismatch: MCP-Protocol-Version header value '\(versionHeader)' does not match body value '\(bodyVersion)'"
+        }
+        guard let methodHeader = request.headers[mcpMethodHeader] else {
+            return "Header mismatch: Mcp-Method header is required"
+        }
+        guard methodHeader == method else {
+            return "Header mismatch: Mcp-Method header value '\(methodHeader)' does not match body value '\(method)'"
+        }
+        if method == "tools/call" {
+            guard let rawName = request.headers[mcpNameHeader] else {
+                return "Header mismatch: Mcp-Name header is required for tools/call"
+            }
+            guard let decodedName = decodedHeaderValue(rawName) else {
+                return "Header mismatch: Mcp-Name header value is not decodable"
+            }
+            let bodyName = params["name"] as? String ?? ""
+            guard decodedName == bodyName else {
+                return "Header mismatch: Mcp-Name header value '\(decodedName)' does not match body value '\(bodyName)'"
+            }
+        }
+        return nil
+    }
+
+    /// Decode the base64 sentinel form `=?base64?...?=` used when a header
+    /// value cannot be carried as plain ASCII. Plain values pass through.
+    private static func decodedHeaderValue(_ raw: String) -> String? {
+        guard raw.hasPrefix("=?base64?"), raw.hasSuffix("?=") else { return raw }
+        let inner = String(raw.dropFirst("=?base64?".count).dropLast("?=".count))
+        guard let data = Data(base64Encoded: inner) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    // MARK: Results
+
+    private static var serverInfoMeta: MCPRemoteWireValue {
+        .object([
+            ("io.modelcontextprotocol/serverInfo", .object([
+                ("name", .string(serverName)),
+                ("version", .string(serverVersion)),
+            ])),
+        ])
+    }
+
+    /// Wrap a result body in the 2026-07-28 envelope: `resultType` first,
+    /// optional CacheableResult fields, server identity in `_meta` last.
+    private static func envelope(
+        _ body: [(String, MCPRemoteWireValue)],
+        ttlMs: Int? = nil
+    ) -> MCPRemoteWireValue {
+        var entries: [(String, MCPRemoteWireValue)] = [("resultType", .string("complete"))]
+        entries.append(contentsOf: body)
+        if let ttlMs {
+            entries.append(("ttlMs", .int(ttlMs)))
+            entries.append(("cacheScope", .string(cacheScope)))
+        }
+        entries.append(("_meta", serverInfoMeta))
+        return .object(entries)
+    }
+
+    private static func discoverResult() -> MCPRemoteWireValue {
+        envelope(
+            [
+                ("supportedVersions", .array([.string(protocolVersion)])),
+                ("capabilities", .object([("tools", .object([]))])),
+                ("instructions", .string(instructions)),
+            ],
+            ttlMs: discoverTTLMs
+        )
+    }
+
+    private static func toolsListResult() -> MCPRemoteWireValue {
+        envelope([("tools", .array(toolDefinitions))], ttlMs: toolsListTTLMs)
+    }
+
+    private static let toolDefinitions: [MCPRemoteWireValue] = [
+        toolDefinition(
+            name: "archive_list_machines",
+            title: "List Archived Machines",
+            description: "List machine IDs that have archived AI sessions on this server.",
+            properties: [
+                ("cursor", .object([("type", .string("string"))])),
+                ("limit", .object([
+                    ("type", .string("integer")),
+                    ("minimum", .int(1)),
+                    ("maximum", .int(100)),
+                ])),
+            ],
+            required: []
+        ),
+        toolDefinition(
+            name: "archive_list_captures",
+            title: "List Archived Captures",
+            description: "List archived session captures for a machine. Each entry carries the sessionID and the manifest digest used by archive_get_session.",
+            properties: [
+                ("machine_id", .object([("type", .string("string"))])),
+                ("cursor", .object([("type", .string("string"))])),
+                ("limit", .object([
+                    ("type", .string("integer")),
+                    ("minimum", .int(1)),
+                    ("maximum", .int(100)),
+                ])),
+            ],
+            required: ["machine_id"]
+        ),
+        toolDefinition(
+            name: "archive_get_session",
+            title: "Read Archived Session",
+            description: "Read an archived session transcript by manifest digest. Returns the raw source bytes decoded as UTF-8, windowed by offset/max_bytes.",
+            properties: [
+                ("manifest_sha256", .object([("type", .string("string"))])),
+                ("offset", .object([
+                    ("type", .string("integer")),
+                    ("minimum", .int(0)),
+                ])),
+                ("max_bytes", .object([
+                    ("type", .string("integer")),
+                    ("minimum", .int(1)),
+                    ("maximum", .int(maxTranscriptWindowBytes)),
+                ])),
+            ],
+            required: ["manifest_sha256"]
+        ),
+    ]
+
+    private static func toolDefinition(
+        name: String,
+        title: String,
+        description: String,
+        properties: [(String, MCPRemoteWireValue)],
+        required: [String]
+    ) -> MCPRemoteWireValue {
+        var schema: [(String, MCPRemoteWireValue)] = [
+            ("type", .string("object")),
+            ("properties", .object(properties)),
+        ]
+        if !required.isEmpty {
+            schema.append(("required", .array(required.map { .string($0) })))
+        }
+        schema.append(("additionalProperties", .bool(false)))
+        return .object([
+            ("name", .string(name)),
+            ("title", .string(title)),
+            ("description", .string(description)),
+            ("inputSchema", .object(schema)),
+            ("annotations", .object([
+                ("title", .string(title)),
+                ("readOnlyHint", .bool(true)),
+                ("openWorldHint", .bool(false)),
+            ])),
+        ])
+    }
+
+    // MARK: Tool execution
+
+    private static func callTool(
+        name: String,
+        arguments: [String: Any],
+        store: ArchiveStore
+    ) -> [(String, MCPRemoteWireValue)] {
+        do {
+            switch name {
+            case "archive_list_machines":
+                return try listMachines(arguments: arguments, store: store)
+            case "archive_list_captures":
+                return try listCaptures(arguments: arguments, store: store)
+            case "archive_get_session":
+                return try getSession(arguments: arguments, store: store)
+            default:
+                return toolError("Unknown tool: \(name)", code: "unknownTool")
+            }
+        } catch let error as MCPRemoteToolError {
+            return toolError(error.message, code: error.code)
+        } catch let error as ArchiveStoreError {
+            let code = error == .notFound ? "notFound" : "archiveStoreError"
+            return toolError("Archive store error: \(error)", code: code)
+        } catch {
+            return toolError("Internal error: \(error.localizedDescription)", code: "internal")
+        }
+    }
+
+    private struct MCPRemoteToolError: Error {
+        let message: String
+        let code: String
+    }
+
+    private static func listMachines(
+        arguments: [String: Any],
+        store: ArchiveStore
+    ) throws -> [(String, MCPRemoteWireValue)] {
+        try validateArgumentKeys(arguments, allowed: ["cursor", "limit"])
+        let page = try store.listMachines(
+            cursor: try stringArgument(arguments, "cursor"),
+            limit: try limitArgument(arguments)
+        )
+        var body: [(String, MCPRemoteWireValue)] = [
+            ("machines", .array(page.machineIDs.map { .string($0) })),
+        ]
+        if let next = page.nextCursor {
+            body.append(("nextCursor", .string(next)))
+        }
+        return toolSuccess(body)
+    }
+
+    private static func listCaptures(
+        arguments: [String: Any],
+        store: ArchiveStore
+    ) throws -> [(String, MCPRemoteWireValue)] {
+        try validateArgumentKeys(arguments, allowed: ["machine_id", "cursor", "limit"])
+        guard let machineID = try stringArgument(arguments, "machine_id"), !machineID.isEmpty else {
+            throw MCPRemoteToolError(message: "machine_id is required", code: "invalidArguments")
+        }
+        let page = try store.listReceipts(
+            machineID: machineID,
+            cursor: try stringArgument(arguments, "cursor"),
+            limit: try limitArgument(arguments)
+        )
+        let decoder = JSONDecoder()
+        let captures: [MCPRemoteWireValue] = page.receipts.map { summary in
+            var entry: [(String, MCPRemoteWireValue)] = [
+                ("manifestSHA256", .string(summary.manifestSHA256)),
+                ("receiptSHA256", .string(summary.receiptSHA256)),
+            ]
+            if let data = try? store.getReceipt(manifestDigest: summary.manifestSHA256),
+               let receipt = try? decoder.decode(ArchiveServerReceipt.self, from: data) {
+                entry.append(("sessionID", .string(receipt.sessionID)))
+                entry.append(("captureID", .string(receipt.captureID)))
+                entry.append(("rawByteCount", .int(Int(receipt.rawByteCount))))
+                entry.append(("storedAt", .string(receipt.storedAt)))
+            }
+            return .object(entry)
+        }
+        var body: [(String, MCPRemoteWireValue)] = [("captures", .array(captures))]
+        if let next = page.nextCursor {
+            body.append(("nextCursor", .string(next)))
+        }
+        return toolSuccess(body)
+    }
+
+    private static func getSession(
+        arguments: [String: Any],
+        store: ArchiveStore
+    ) throws -> [(String, MCPRemoteWireValue)] {
+        try validateArgumentKeys(arguments, allowed: ["manifest_sha256", "offset", "max_bytes"])
+        guard let digest = try stringArgument(arguments, "manifest_sha256"), !digest.isEmpty else {
+            throw MCPRemoteToolError(message: "manifest_sha256 is required", code: "invalidArguments")
+        }
+        let offset = try intArgument(arguments, "offset", minimum: 0) ?? 0
+        let maxBytes = try intArgument(
+            arguments, "max_bytes", minimum: 1, maximum: maxTranscriptWindowBytes
+        ) ?? defaultTranscriptWindowBytes
+
+        let manifestData = try store.getManifest(digest: digest)
+        let manifest = try JSONDecoder().decode(ArchiveSourceManifest.self, from: manifestData)
+
+        // Windowed reassembly: chunk byte counts let whole chunks outside the
+        // requested window be skipped without decrypting them.
+        var window = Data()
+        var position = 0
+        for chunk in manifest.chunks.sorted(by: { $0.ordinal < $1.ordinal }) {
+            let chunkLength = Int(chunk.rawByteCount)
+            let chunkStart = position
+            position += chunkLength
+            if position <= offset { continue }
+            if chunkStart >= offset + maxBytes { break }
+            let raw = try store.getObject(digest: chunk.rawSHA256)
+            let sliceStart = max(0, offset - chunkStart)
+            let sliceEnd = min(chunkLength, offset + maxBytes - chunkStart)
+            guard sliceStart < sliceEnd, sliceEnd <= raw.count else { continue }
+            window.append(raw.subdata(in: sliceStart..<sliceEnd))
+        }
+
+        let totalBytes = Int(manifest.rawByteCount)
+        let nextOffset = offset + window.count
+        var structured: [(String, MCPRemoteWireValue)] = [
+            ("sessionID", manifest.sessionID.map { .string($0) } ?? .null),
+            ("source", .string(manifest.source)),
+            ("locator", .string(manifest.locator)),
+            ("machineID", .string(manifest.machineID)),
+            ("captureID", .string(manifest.captureID)),
+            ("capturedAt", .string(manifest.capturedAt)),
+            ("totalBytes", .int(totalBytes)),
+            ("offset", .int(offset)),
+            ("byteCount", .int(window.count)),
+        ]
+        if nextOffset < totalBytes, !window.isEmpty {
+            structured.append(("nextOffset", .int(nextOffset)))
+        }
+        let text = String(decoding: window, as: UTF8.self)
+        return [
+            ("content", .array([
+                .object([("type", .string("text")), ("text", .string(text))]),
+            ])),
+            ("structuredContent", .object(structured)),
+        ]
+    }
+
+    // MARK: Tool argument validation
+
+    private static func validateArgumentKeys(_ arguments: [String: Any], allowed: Set<String>) throws {
+        let unknown = Set(arguments.keys).subtracting(allowed)
+        guard unknown.isEmpty else {
+            throw MCPRemoteToolError(
+                message: "Unknown arguments: \(unknown.sorted().joined(separator: ", "))",
+                code: "invalidArguments"
+            )
+        }
+    }
+
+    private static func stringArgument(_ arguments: [String: Any], _ key: String) throws -> String? {
+        guard let raw = arguments[key] else { return nil }
+        guard let value = raw as? String else {
+            throw MCPRemoteToolError(message: "\(key) must be a string", code: "invalidArguments")
+        }
+        return value
+    }
+
+    private static func intArgument(
+        _ arguments: [String: Any],
+        _ key: String,
+        minimum: Int,
+        maximum: Int = Int.max
+    ) throws -> Int? {
+        guard let raw = arguments[key] else { return nil }
+        guard let number = raw as? NSNumber,
+              number.intValue >= minimum, number.intValue <= maximum else {
+            throw MCPRemoteToolError(
+                message: "\(key) must be an integer in [\(minimum), \(maximum == Int.max ? "max" : String(maximum))]",
+                code: "invalidArguments"
+            )
+        }
+        return number.intValue
+    }
+
+    private static func limitArgument(_ arguments: [String: Any]) throws -> Int {
+        try intArgument(arguments, "limit", minimum: 1, maximum: 100) ?? 100
+    }
+
+    // MARK: Tool result builders
+
+    private static func toolSuccess(
+        _ structured: [(String, MCPRemoteWireValue)]
+    ) -> [(String, MCPRemoteWireValue)] {
+        let structuredValue = MCPRemoteWireValue.object(structured)
+        return [
+            ("content", .array([
+                .object([("type", .string("text")), ("text", .string(structuredValue.encoded()))]),
+            ])),
+            ("structuredContent", structuredValue),
+        ]
+    }
+
+    private static func toolError(_ message: String, code: String) -> [(String, MCPRemoteWireValue)] {
+        [
+            ("content", .array([
+                .object([("type", .string("text")), ("text", .string(message))]),
+            ])),
+            ("isError", .bool(true)),
+            ("structuredContent", .object([
+                ("code", .string(code)),
+                ("message", .string(message)),
+            ])),
+        ]
+    }
+
+    // MARK: JSON-RPC plumbing
+
+    private static func wireID(of raw: Any?) -> MCPRemoteWireValue? {
+        // NSNumber's Swift bridging makes `is Bool` unreliable on
+        // JSONSerialization output, so numeric ids are accepted as-is; JSON-RPC
+        // forbids boolean ids and a client sending one gets it echoed as 1/0.
+        switch raw {
+        case let value as String:
+            return .string(value)
+        case let value as NSNumber:
+            return .int(value.intValue)
+        default:
+            return nil
+        }
+    }
+
+    private static func resultResponse(id: MCPRemoteWireValue, result: MCPRemoteWireValue) -> Response {
+        let payload = MCPRemoteWireValue.object([
+            ("jsonrpc", .string("2.0")),
+            ("id", id),
+            ("result", result),
+        ])
+        return EngramRemoteServerApp.json(Data(payload.encoded().utf8))
+    }
+
+    private static func errorResponse(
+        status: HTTPResponse.Status,
+        id: MCPRemoteWireValue?,
+        code: Int,
+        message: String,
+        data: MCPRemoteWireValue? = nil
+    ) -> Response {
+        var errorEntries: [(String, MCPRemoteWireValue)] = [
+            ("code", .int(code)),
+            ("message", .string(message)),
+        ]
+        if let data {
+            errorEntries.append(("data", data))
+        }
+        var entries: [(String, MCPRemoteWireValue)] = [("jsonrpc", .string("2.0"))]
+        entries.append(("id", id ?? .null))
+        entries.append(("error", .object(errorEntries)))
+        let body = Data(MCPRemoteWireValue.object(entries).encoded().utf8)
+        var headers = HTTPFields()
+        headers[.contentType] = "application/json; charset=utf-8"
+        headers[.contentLength] = "\(body.count)"
+        return Response(
+            status: status,
+            headers: headers,
+            body: ResponseBody(byteBuffer: ByteBuffer(data: body))
+        )
     }
 }
