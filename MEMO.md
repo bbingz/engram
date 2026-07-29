@@ -4,6 +4,7 @@
 
 ### 2026-07-29
 
+- [验证] #279 dual-era remote MCP 与 #280 扫描快路径+进程内列表索引均已 squash merge 入 main（`5cfcdb48` / `2cec2354`）。`macmini-m1` 已部署 `releases/dcc048ce`（含 dual-era + index），`ENGRAM_REMOTE_MCP_ENABLED=1`；生产冷 warm ~13 分钟后 `listMachines`/`listReceipts` ~3–5ms；Claude Code HTTP 客户端 `✔ Connected`，`archive_list_machines` 体感瞬时返回 3 台机器；`archive_get_session` 可读 transcript（`structuredContent.text`）。回滚：`current` 指回 `releases/38326d62` 或关掉 MCP 变量后 kickstart。
 - [性能] 远端 archive 列表：`listMachines`/`listReceipts` 增加进程内 append-only 内存索引（启动后台 warm + `createReceipt` 增量 note），配合扫描快路径让 ~25k receipt 的 MCP 列表可交互；无盘上格式变更。详见 `CHANGELOG.md`，PR #280。
 - [性能] 枚举不再走 `getReceipt` 的 fsync/链校验/manifest 交叉校验；扫描路径保留 AEAD 与路径绑定校验。生产冷列表曾 ~23–25 分钟，扫描快路径后 clone 约 18s，再由内存索引消掉 per-request 全量扫。
 
