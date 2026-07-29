@@ -472,6 +472,11 @@ writeFileSync(
 );
 
 writeFileSync(
+  resolve(goldenDir, 'discover.result.json'),
+  `${JSON.stringify(extractDiscoverResultFromSwiftServer(), null, 2)}\n`,
+);
+
+writeFileSync(
   resolve(goldenDir, 'tools.json'),
   `${JSON.stringify(extractToolNamesFromSwiftRegistry(), null, 2)}\n`,
 );
@@ -481,7 +486,7 @@ writeFileSync(
   [
     '# MCP Golden Fixtures',
     '',
-    '`initialize.result.json` and `tools.json` are generated from the native Swift MCP source by `npm run generate:mcp-contract-fixtures`.',
+    '`initialize.result.json`, `discover.result.json`, and `tools.json` are generated from the native Swift MCP source by `npm run generate:mcp-contract-fixtures`.',
     'All other JSON files are executable behavior snapshots owned by `EngramMCPExecutableTests`; the retired TypeScript handlers must not overwrite them.',
     '',
     'Normalization rules:',
@@ -517,6 +522,60 @@ function extractToolNamesFromSwiftRegistry(): string[] {
 
 function extractInitializeResultFromSwiftServer(): Record<string, unknown> {
   const serverSource = readFileSync(swiftStdioServerPath, 'utf8');
+
+  return {
+    protocolVersion: '2025-03-26',
+    capabilities: { tools: {}, resources: {}, prompts: {} },
+    serverInfo: { name: 'engram', version: '0.1.0' },
+    instructions: extractInstructionsFromSwiftServer(serverSource),
+  };
+}
+
+// `server/discover` (MCP 2026-07-28) always answers with this result object;
+// key order here must match `MCPStdioServer.emitDiscoverResult` because the
+// Swift executable test string-compares its pretty-printed live response.
+function extractDiscoverResultFromSwiftServer(): Record<string, unknown> {
+  const serverSource = readFileSync(swiftStdioServerPath, 'utf8');
+
+  return {
+    resultType: 'complete',
+    supportedVersions:
+      extractAdvertisedProtocolVersionsFromSwiftServer(serverSource),
+    capabilities: { tools: {}, resources: {}, prompts: {} },
+    instructions: extractInstructionsFromSwiftServer(serverSource),
+    ttlMs: 3_600_000,
+    cacheScope: 'private',
+    _meta: {
+      'io.modelcontextprotocol/serverInfo': {
+        name: 'engram',
+        version: '0.1.0',
+      },
+    },
+  };
+}
+
+// Union of the legacy (`initialize`-negotiated) and modern (`_meta`-negotiated)
+// revision sets, newest first — date-stamped MCP versions sort chronologically
+// as strings, matching `MCPStdioServer.advertisedProtocolVersions`.
+function extractAdvertisedProtocolVersionsFromSwiftServer(
+  serverSource: string,
+): string[] {
+  const legacyVersions = extractSwiftStringSet(
+    serverSource,
+    'supportedProtocolVersions',
+    { requiredIn: swiftStdioServerPath },
+  );
+  const modernVersions = extractSwiftStringSet(
+    serverSource,
+    'modernProtocolVersions',
+    { requiredIn: swiftStdioServerPath },
+  );
+  return [...new Set([...modernVersions, ...legacyVersions])].sort((a, b) =>
+    b.localeCompare(a),
+  );
+}
+
+function extractInstructionsFromSwiftServer(serverSource: string): string {
   const instructionsMatch = serverSource.match(
     /private static let instructions = """\n([\s\S]*?)\n {4}"""/,
   );
@@ -527,22 +586,28 @@ function extractInitializeResultFromSwiftServer(): Record<string, unknown> {
     );
   }
 
-  return {
-    protocolVersion: '2025-03-26',
-    capabilities: { tools: {}, resources: {}, prompts: {} },
-    serverInfo: { name: 'engram', version: '0.1.0' },
-    instructions: normalizeSwiftMultilineString(instructionsMatch[1]),
-  };
+  return normalizeSwiftMultilineString(instructionsMatch[1]);
 }
 
-function extractSwiftStringSet(source: string, name: string): Set<string> {
+function extractSwiftStringSet(
+  source: string,
+  name: string,
+  options: { requiredIn?: string } = {},
+): Set<string> {
   const match = source.match(
     new RegExp(
       String.raw`private static let ${name}:\s*Set<String>\s*=\s*\[([\s\S]*?)\]`,
     ),
   );
-  if (!match) return new Set();
-  return new Set([...match[1].matchAll(/"([^"]+)"/g)].map((item) => item[1]));
+  const values = new Set(
+    match ? [...match[1].matchAll(/"([^"]+)"/g)].map((item) => item[1]) : [],
+  );
+  if (options.requiredIn && values.size === 0) {
+    throw new Error(
+      `Unable to locate non-empty Set<String> \`${name}\` in ${options.requiredIn}`,
+    );
+  }
+  return values;
 }
 
 function normalizeSwiftMultilineString(value: string): string {
