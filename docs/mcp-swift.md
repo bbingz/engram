@@ -160,3 +160,43 @@ Tool contract behaviour is covered by `macos/EngramMCPTests/`.
 
 Logs: helper stderr flows to the client; service logs are in Console.app
 subsystem `com.engram.app`.
+
+## Remote MCP endpoint (Mac mini)
+
+Separate from the stdio helper above, `EngramRemoteServer` — the offload server
+running on the Mac mini — can serve an opt-in, **read-only** MCP endpoint over
+Streamable HTTP at `POST /mcp`. It exposes archived session data from the
+archive v2 store, not the local index: three tools,
+`archive_list_machines`, `archive_list_captures` (each entry carries the
+sessionID and the manifest digest), and `archive_get_session` (windowed
+transcript read by manifest digest, `offset`, and `max_bytes`).
+
+Differences from the stdio helper: it is **modern-era only**. There is no
+`initialize` handshake — clients must be on MCP revision `2026-07-28`, put
+`_meta["io.modelcontextprotocol/protocolVersion"]` on every request, and send
+the `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers matching the
+body. `GET /mcp` returns 405, and any `Origin` header is refused (there are no
+browser clients).
+
+Enable it on the mini by adding two variables to the secrets env file the
+launchd wrapper already sources (`secrets/archive-v2.env`), then restarting the
+job:
+
+```sh
+ENGRAM_REMOTE_MCP_ENABLED=1
+ENGRAM_REMOTE_MCP_TOKEN=<fresh random token>
+```
+
+It is off by default. Archive v2 must already be enabled, and the token must be
+distinct from both `ENGRAM_REMOTE_TOKEN` and `ENGRAM_REMOTE_ARCHIVE_TOKEN` —
+the server refuses to start otherwise.
+
+Point a client at it over the tailnet:
+
+```bash
+claude mcp add --transport http engram-remote http://<tailscale-ip>:8787/mcp \
+  --header "Authorization: Bearer <ENGRAM_REMOTE_MCP_TOKEN>"
+```
+
+Treat that token as "read every archived session on this mini". Design and
+rationale: `docs/remote-mcp-2026-07-28-design.md`.
