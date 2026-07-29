@@ -7,6 +7,67 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Remote read-only MCP endpoint over Streamable HTTP (2026-07-29)
+
+`EngramRemoteServer` — the offload server running on the Mac mini — can now
+serve an opt-in, read-only MCP endpoint at `POST /mcp`, backed by the archive v2
+store. Until now Engram's MCP surface was bound to the workstation: the stdio
+helper needs the app, the service socket, and the local index on the same Mac.
+MCP revision 2026-07-28 removed the `initialize` handshake and with it every
+piece of per-connection state, which is what makes a stateless HTTP MCP server
+small enough to justify. The mini already holds the archived captures, so the
+endpoint serves the data that is already there rather than standing up a second
+Engram somewhere.
+
+Three tools, all read-only. `archive_list_machines` and `archive_list_captures`
+page through the store with `nextCursor`, and each capture entry carries its
+sessionID alongside the manifest digest. `archive_get_session` reads a
+transcript by manifest digest, windowed by `offset` and `max_bytes` (1 MiB
+ceiling, 256 KiB default) and returning `nextOffset` while bytes remain. Because
+the manifest records each chunk's byte count, chunks that fall entirely outside
+the requested window are skipped without being fetched or decrypted.
+
+The endpoint is modern-era only. There is no handshake and no session
+identifier: every request carries
+`_meta["io.modelcontextprotocol/protocolVersion"]`, and the only accepted value
+is `2026-07-28`. `MCP-Protocol-Version` and `Mcp-Method` are required on every
+request and `Mcp-Name` on `tools/call`, each validated against the corresponding
+body value rather than merely required to be present — a disagreement or an
+absence is HeaderMismatch, code `-32020`. `Mcp-Name` accepts the
+`=?base64?...?=` sentinel form. Another revision in `_meta` gets `-32022` with
+`data.supported` and `data.requested`. `server/discover` and `tools/list` carry
+one-hour freshness hints with `cacheScope` `private`. Unknown methods, including
+`subscriptions/listen`, get `404` and `-32601`; no change notifications are
+advertised. SSE is never used — every response is a single JSON object.
+
+It is off by default and gated three ways. `ENGRAM_REMOTE_MCP_ENABLED=1`
+requires archive v2 to be enabled, requires `ENGRAM_REMOTE_MCP_TOKEN`, and
+refuses to start if that token matches either `ENGRAM_REMOTE_TOKEN` or
+`ENGRAM_REMOTE_ARCHIVE_TOKEN`. Auth is the existing constant-time bearer
+comparison, request bodies are capped at 1 MiB, and any `Origin` header at all
+is refused with `403` — the endpoint has no browser clients, so the strictest
+DNS-rebinding policy is also the simplest correct one. Operators enable it by
+adding the two variables to the secrets env file the launchd wrapper already
+sources; the packaging templates are unchanged.
+
+The at-rest key posture is unchanged: the server already holds the archive key,
+as documented, so serving decrypted reads adds no new key exposure. What does
+change is the read audience — anyone holding the MCP token can read any archived
+transcript on that server through a single tool call, which is the intended
+capability but should be treated as one.
+
+`DELETE /mcp` is deliberately left unrouted and answers `404` rather than the
+`405` the spec SHOULDs. The archive v2 safety gate fails the build on any DELETE
+route registered in this target, including one that only returns `405`, because
+it matches on registration; widening a gate whose narrowness is its entire
+purpose was the worse trade, and DELETE is meaningful only for session teardown
+that this endpoint does not have. There is no telemetry integration yet: the
+archive telemetry allowlists cover neither `POST` nor an `mcp` endpoint, so
+extending them is follow-up work.
+
+Design and rationale: `docs/remote-mcp-2026-07-28-design.md`. Client setup:
+`docs/mcp-swift.md`.
+
 ### MCP 2026-07-28 dual-era protocol support (2026-07-29)
 
 `EngramMCP` now speaks MCP revision 2026-07-28 alongside every revision it
