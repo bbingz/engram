@@ -169,14 +169,22 @@ Streamable HTTP at `POST /mcp`. It exposes archived session data from the
 archive v2 store, not the local index: three tools,
 `archive_list_machines`, `archive_list_captures` (each entry carries the
 sessionID and the manifest digest), and `archive_get_session` (windowed
-transcript read by manifest digest, `offset`, and `max_bytes`).
+transcript read by manifest digest, `offset`, and `max_bytes`). Every result puts
+its payload in `structuredContent` as well as in the text `content` block —
+including the transcript window, as `structuredContent.text` — because Claude Code
+surfaces only `structuredContent` when a result has both.
 
-Differences from the stdio helper: it is **modern-era only**. There is no
-`initialize` handshake — clients must be on MCP revision `2026-07-28`, put
-`_meta["io.modelcontextprotocol/protocolVersion"]` on every request, and send
-the `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers matching the
-body. `GET /mcp` returns 405, and any `Origin` header is refused (there are no
-browser clients).
+It is **dual-era and stateless**, like the stdio helper: it works with today's
+Claude Code out of the box (`initialize` handshake, MCP revisions `2024-11-05`
+through `2025-11-25`), and a client on revision `2026-07-28` gets the modern
+per-request path instead. The era is decided per request on whether the body
+carries `_meta["io.modelcontextprotocol/protocolVersion"]` — present is modern
+(and then the `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers are
+required and must match the body), absent is legacy. No `Mcp-Session-Id` is ever
+issued or required in either era, so there is no session to expire and a server
+restart costs a client nothing. `GET /mcp` returns 405 (the endpoint never pushes
+server-initiated messages, so it declines the legacy standalone stream), and any
+`Origin` header is refused (there are no browser clients).
 
 Enable it on the mini by adding two variables to the secrets env file the
 launchd wrapper already sources (`secrets/archive-v2.env`), then restarting the

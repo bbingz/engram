@@ -604,11 +604,14 @@ indirect enum MCPRemoteWireValue {
     }
 }
 
-/// Read-only MCP endpoint over Streamable HTTP, MCP revision 2026-07-28 only
-/// (modern era: per-request `_meta`, no `initialize` handshake, no sessions).
-/// Serves the archive v2 store — list machines, list captures, read
-/// reassembled session transcripts — and is mounted only when
-/// `EngramRemoteMCPConfig` is present.
+/// Read-only MCP endpoint over Streamable HTTP, dual-era and stateless in both
+/// eras. A request carrying `_meta["io.modelcontextprotocol/protocolVersion"]`
+/// is served under MCP revision 2026-07-28 (wrapped results, header
+/// validation); a request without it is served under the legacy
+/// `initialize`-handshake revisions that shipping HTTP clients still use. No
+/// session is ever minted on either path. Serves the archive v2 store — list
+/// machines, list captures, read reassembled session transcripts — and is
+/// mounted only when `EngramRemoteMCPConfig` is present.
 ///
 /// Documented deviations (see docs/remote-mcp-2026-07-28-design.md):
 /// - `DELETE /mcp` stays unrouted (404 instead of the spec's SHOULD 405):
@@ -617,6 +620,19 @@ indirect enum MCPRemoteWireValue {
 ///   advertised, so there is nothing to opt in to.
 enum MCPRemoteEndpoint {
     static let protocolVersion = "2026-07-28"
+    /// Legacy (`initialize`-handshake) revisions this endpoint also serves.
+    /// Kept because shipping MCP HTTP clients are still legacy-era: Claude Code
+    /// 2.1.220 POSTs `initialize` with `protocolVersion: 2025-11-25`, no
+    /// per-request `_meta`, and no `Mcp-Method` header. Sessions are a MAY in
+    /// those revisions, so the legacy path stays stateless — no
+    /// `Mcp-Session-Id` is minted, echoed, or required.
+    static let legacyProtocolVersions: Set<String> = [
+        "2024-11-05",
+        "2025-03-26",
+        "2025-06-18",
+        "2025-11-25",
+    ]
+    static let latestLegacyProtocolVersion = legacyProtocolVersions.max() ?? "2025-11-25"
     static let serverName = "engram-remote"
     static let serverVersion = "0.1.0"
     static let maxRequestBytes = 1_048_576
@@ -643,9 +659,11 @@ enum MCPRemoteEndpoint {
         router.post("/mcp") { request, _ in
             await handle(request: request, store: store, token: token)
         }
-        // Pre-2026-07-28 Streamable HTTP clients open a GET stream; this
-        // endpoint is modern-only, so refuse per the spec's compatibility
-        // guidance.
+        // Pre-2026-07-28 clients may open a standalone GET stream for
+        // server-initiated messages. This endpoint never initiates any (no
+        // sampling, elicitation, or roots), so refuse the stream; legacy
+        // clients treat that as "no server-initiated channel" and continue
+        // over POST.
         router.get("/mcp") { request, _ in
             guard EngramRemoteServerApp.authorized(request, token: token) else {
                 return EngramRemoteServerApp.unauthorized()
@@ -695,6 +713,14 @@ enum MCPRemoteEndpoint {
         let params = message["params"] as? [String: Any] ?? [:]
         let meta = params["_meta"] as? [String: Any] ?? [:]
 
+        // Era is decided per request, with no stored connection state: a
+        // request carrying `_meta[protocolVersion]` is modern, anything else
+        // is served under the legacy handshake semantics that shipping HTTP
+        // clients still use.
+        guard meta[protocolVersionMetaKey] != nil else {
+            return legacyResponse(method: method, id: id, params: params, store: store)
+        }
+
         if let mismatch = headerMismatch(request: request, method: method, params: params, meta: meta) {
             return errorResponse(status: .badRequest, id: id, code: -32020, message: mismatch)
         }
@@ -729,6 +755,55 @@ enum MCPRemoteEndpoint {
             // advertised. The spec maps unknown methods to 404 + -32601 so
             // clients can distinguish a modern server from a legacy one.
             return errorResponse(status: .notFound, id: id, code: -32601, message: "Method not found")
+        }
+    }
+
+    // MARK: Legacy era (initialize handshake, stateless)
+
+    /// Serve a request that arrived without modern per-request `_meta`.
+    /// No session is minted: `Mcp-Session-Id` is never issued or required, so
+    /// each POST stands alone exactly as in the modern era. Results carry no
+    /// `resultType`/`ttlMs`/`_meta` envelope — legacy clients do not expect it.
+    private static func legacyResponse(
+        method: String,
+        id: MCPRemoteWireValue,
+        params: [String: Any],
+        store: ArchiveStore
+    ) -> Response {
+        switch method {
+        case "initialize":
+            // Echo a supported requested version, else negotiate down to the
+            // latest legacy revision rather than failing the connection.
+            let requested = params["protocolVersion"] as? String ?? ""
+            let negotiated = legacyProtocolVersions.contains(requested)
+                ? requested
+                : latestLegacyProtocolVersion
+            return resultResponse(id: id, result: .object([
+                ("protocolVersion", .string(negotiated)),
+                ("capabilities", .object([("tools", .object([]))])),
+                ("serverInfo", .object([
+                    ("name", .string(serverName)),
+                    ("version", .string(serverVersion)),
+                ])),
+                ("instructions", .string(instructions)),
+            ]))
+        case "ping":
+            return resultResponse(id: id, result: .object([]))
+        case "tools/list":
+            return resultResponse(id: id, result: .object([("tools", .array(toolDefinitions))]))
+        case "tools/call":
+            guard let name = params["name"] as? String, !name.isEmpty else {
+                return errorResponse(status: .badRequest, id: id, code: -32602, message: "Invalid params: missing tool name")
+            }
+            let arguments = params["arguments"] as? [String: Any] ?? [:]
+            return resultResponse(
+                id: id,
+                result: .object(callTool(name: name, arguments: arguments, store: store))
+            )
+        default:
+            // Legacy clients expect an ordinary JSON-RPC error body; the
+            // modern era's 404-for-unknown-method rule does not apply here.
+            return errorResponse(status: .ok, id: id, code: -32601, message: "Method not found")
         }
     }
 
@@ -1035,6 +1110,11 @@ enum MCPRemoteEndpoint {
             structured.append(("nextOffset", .int(nextOffset)))
         }
         let text = String(decoding: window, as: UTF8.self)
+        // The transcript goes in BOTH the content block and `structuredContent`.
+        // Clients that receive a structured result may surface only that and
+        // drop the content block (Claude Code 2.1.220 does), so a transcript
+        // carried solely in `content` would never reach the model.
+        structured.append(("text", .string(text)))
         return [
             ("content", .array([
                 .object([("type", .string("text")), ("text", .string(text))]),

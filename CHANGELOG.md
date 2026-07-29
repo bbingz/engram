@@ -7,6 +7,66 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Dual-era remote MCP endpoint and transcript visibility fix (2026-07-29)
+
+The remote MCP endpoint shipped in the entry below was modern-era only, on the
+premise that this server had no legacy-HTTP clients. Testing it end to end on a
+real Mac falsified that premise immediately: Claude Code 2.1.220 — the client the
+endpoint exists to serve — is legacy-era over HTTP. It POSTs `initialize` with
+`protocolVersion: 2025-11-25`, no `MCP-Protocol-Version` header and no `_meta`,
+then `notifications/initialized`, then `tools/list` (which carries
+`mcp-protocol-version: 2025-11-25` but still no `_meta` and no `Mcp-Method`).
+Against a modern-only endpoint the first POST got `400` with
+`-32020 Header mismatch: MCP-Protocol-Version header is required` — spec-correct
+for a 2026-07-28 server and completely unusable.
+
+`POST /mcp` is now dual-era and stateless in both eras. The era is decided per
+request on the presence of `_meta["io.modelcontextprotocol/protocolVersion"]`:
+present means modern (2026-07-28, wrapped envelope, header trio validated against
+the body, `404` on an unknown method), absent means legacy. The legacy path serves
+`initialize`, `notifications/initialized`, `ping`, `tools/list`, and `tools/call`
+over revisions 2024-11-05, 2025-03-26, 2025-06-18, and 2025-11-25, returns
+unwrapped results — no `resultType`, `ttlMs`, `cacheScope`, or `_meta` — answers
+an unknown method with HTTP `200` and `-32601` rather than the modern era's `404`,
+and negotiates an unknown `initialize` version down to 2025-11-25. Both eras share
+the same three tools and the same implementations.
+
+No `Mcp-Session-Id` is minted, echoed, or required anywhere. That is what makes
+the legacy path small: sessions are a MAY in every legacy revision, and declining
+to issue one removes session validation, expiry, `DELETE` teardown, the SSE `GET`
+stream, and `Last-Event-ID` resumability along with it. The original design
+rejected dual-era support as "a huge stateful surface", which was an
+overestimate — it priced the optional parts as mandatory. Legacy support as built
+is about 40 lines of dispatch and zero bytes of state. Auth, the `403` on any
+`Origin` header, the 1 MiB body limit, `GET` → `405`, and the unrouted `DELETE` →
+`404` all apply to both eras unchanged; `GET`'s rationale is now that this
+endpoint never initiates server-to-client messages, so it declines the legacy
+standalone stream, rather than that it is modern-only.
+
+Second finding from the same session: Claude Code drops the `content` block when
+a tool result also carries `structuredContent`. Verified with an isolated probe
+MCP server returning a distinct marker in each field — only the
+`structuredContent` marker reached the model. `archive_get_session` carried the
+transcript solely in `content[0].text`, so the transcript never reached the model
+and the tool was effectively unusable, while the other two tools were fine
+because they serialize the same JSON into both fields. The transcript window is
+now duplicated into `structuredContent.text`. The cost is that the window is
+counted twice in the response body — ~512 KiB for the 256 KiB default, ~2 MiB at
+the 1 MiB ceiling — which is the right trade against a tool whose output cannot
+reach the model at all.
+
+Verified on a real Mac against the built binary over a real socket: 60/60
+modern-era checks and 16/16 legacy-era checks, plus a `claude -p` run that drove
+all three tools and read back marker strings embedded in an archived transcript —
+the check that would have caught the `structuredContent` bug, which the whole
+router-level modern-era matrix missed. Nine new cases in
+`ArchiveRouteTests.swift` cover the legacy handshake, negotiate-down, unwrapped
+results, `ping`/`notifications/initialized`, unknown-method status divergence
+between eras, legacy auth and `Origin` refusal, the never-minted
+`Mcp-Session-Id`, both eras on one server instance, and the transcript
+duplication. Design and rationale, including the corrected alternatives analysis:
+`docs/remote-mcp-2026-07-28-design.md`. Client setup: `docs/mcp-swift.md`.
+
 ### Remote read-only MCP endpoint over Streamable HTTP (2026-07-29)
 
 `EngramRemoteServer` — the offload server running on the Mac mini — can now
