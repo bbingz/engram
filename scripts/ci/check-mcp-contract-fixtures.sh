@@ -7,6 +7,7 @@ fixture_paths=(
   tests/fixtures/mcp-runtime
   tests/fixtures/mcp-golden/README.md
   tests/fixtures/mcp-golden/initialize.result.json
+  tests/fixtures/mcp-golden/discover.result.json
   tests/fixtures/mcp-golden/tools.json
 )
 

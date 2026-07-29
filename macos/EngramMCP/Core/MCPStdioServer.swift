@@ -4,17 +4,51 @@ final class MCPStdioServer {
     private let config = MCPConfig.load()
     private let inFlight = MCPInFlightRequests()
     private let outputLock = NSLock()
+    // Legacy (initialize-handshake) protocol revisions this build speaks.
+    // MCP 2026-07-28 and later are "modern" revisions negotiated per request
+    // via `_meta` (see `modernProtocolVersions`), not through `initialize`.
     private static let supportedProtocolVersions: Set<String> = [
         "2024-11-05",
         "2025-03-26",
         "2025-06-18",
         "2025-11-25",
     ]
-    // Latest protocol version this build speaks. Date-stamped MCP versions
-    // sort chronologically as strings, so `max()` is the newest. Used to
-    // negotiate down when a client requests a version we don't recognize.
+    // Latest legacy protocol version this build speaks. Date-stamped MCP
+    // versions sort chronologically as strings, so `max()` is the newest.
+    // Used to negotiate down when a client requests a version we don't
+    // recognize over the `initialize` handshake.
     private static let latestSupportedProtocolVersion =
         supportedProtocolVersions.max() ?? "2025-11-25"
+    // Modern (stateless, per-request `_meta`) protocol revisions this build
+    // speaks. Requests that carry
+    // `_meta["io.modelcontextprotocol/protocolVersion"]` are served under
+    // modern semantics; requests without it keep legacy behavior, making this
+    // a dual-era server per MCP 2026-07-28 versioning guidance.
+    private static let modernProtocolVersions: Set<String> = [
+        "2026-07-28",
+    ]
+    // Every revision this build supports across both eras, newest first.
+    // Advertised by `server/discover` and in UnsupportedProtocolVersionError.
+    private static let advertisedProtocolVersions: [String] =
+        modernProtocolVersions.union(supportedProtocolVersions).sorted(by: >)
+    private static let serverInfoJSON: OrderedJSONValue = .object([
+        ("name", .string("engram")),
+        ("version", .string("0.1.0")),
+    ])
+    private static let capabilitiesJSON: OrderedJSONValue = .object([
+        ("tools", .object([])),
+        ("resources", .object([])),
+        ("prompts", .object([])),
+    ])
+    // CacheableResult freshness hints (MCP 2026-07-28). Everything this
+    // server returns is local per-user data, so `cacheScope` is always
+    // "private". `tools/list` can change when semantic search availability
+    // flips; resource surfaces churn as sessions index.
+    private static let cacheScope = "private"
+    private static let discoverTTLMs = 3_600_000
+    private static let toolsListTTLMs = 300_000
+    private static let promptsListTTLMs = 3_600_000
+    private static let resourceTTLMs = 30_000
     private static let instructions = """
     Engram is a cross-tool AI session aggregator. Key tools:
     - search: Full-text keyword search across AI coding sessions; semantic/hybrid when session embeddings are usable
@@ -52,11 +86,28 @@ final class MCPStdioServer {
                 guard request.id != nil else {
                     continue
                 }
-                if request.method == "tools/call", request.id != nil {
-                    await handleToolCallAsync(request)
+                if request.method == "server/discover" {
+                    // stdio backward-compatibility probe (MCP 2026-07-28):
+                    // always answer, even without `_meta`, so modern clients
+                    // can detect this server's era and pick a version.
+                    emitDiscoverResult(id: request.id)
                     continue
                 }
-                await handle(request)
+                let modern: Bool
+                switch Self.era(of: request) {
+                case .legacy:
+                    modern = false
+                case .modern:
+                    modern = true
+                case .unsupportedModern(let requested):
+                    emitUnsupportedProtocolVersion(id: request.id, requested: requested)
+                    continue
+                }
+                if request.method == "tools/call" {
+                    await handleToolCallAsync(request, modern: modern)
+                    continue
+                }
+                await handle(request, modern: modern)
             }
         } catch {
             // stdin closed or unreadable; exit the loop quietly.
@@ -71,10 +122,25 @@ final class MCPStdioServer {
         await inFlight.cancel(key)
     }
 
-    private func handleToolCallAsync(_ request: JSONRPCRequest) async {
+    private enum RequestEra {
+        case legacy
+        case modern
+        case unsupportedModern(requested: String)
+    }
+
+    private static func era(of request: JSONRPCRequest) -> RequestEra {
+        guard let requested = request.params?["_meta"]?["io.modelcontextprotocol/protocolVersion"]?.stringValue else {
+            return .legacy
+        }
+        return modernProtocolVersions.contains(requested)
+            ? .modern
+            : .unsupportedModern(requested: requested)
+    }
+
+    private func handleToolCallAsync(_ request: JSONRPCRequest, modern: Bool) async {
         guard let id = request.id,
               let key = Self.cancellationKey(from: id) else {
-            await handleToolCall(request)
+            await handleToolCall(request, modern: modern)
             return
         }
         guard let params = request.params?.objectValue,
@@ -87,18 +153,14 @@ final class MCPStdioServer {
             guard let self else { return }
             let response = await handleToolCall(name: name, arguments: arguments)
             guard !Task.isCancelled else { return }
-            emit(
-                jsonrpc: "2.0",
-                id: id,
-                result: response
-            )
+            emitResult(id: id, response, modern: modern)
         }
         if !didStart {
             emitError(id: id, code: -32600, message: "Duplicate request id")
         }
     }
 
-    private func handle(_ request: JSONRPCRequest) async {
+    private func handle(_ request: JSONRPCRequest, modern: Bool) async {
         switch request.method {
         case "initialize":
             guard let requestedVersion = request.params?["protocolVersion"]?.stringValue else {
@@ -110,6 +172,9 @@ final class MCPStdioServer {
             // (the latest). Hard-erroring on an unknown version broke every
             // connection whenever a client adopted a newer protocol version
             // than this build knew about (e.g. Claude Code's 2025-11-25).
+            // Modern revisions (2026-07-28+) never negotiate through
+            // `initialize`, so an unknown-version request here still lands on
+            // the latest legacy revision.
             let negotiatedVersion = Self.supportedProtocolVersions.contains(requestedVersion)
                 ? requestedVersion
                 : Self.latestSupportedProtocolVersion
@@ -118,36 +183,33 @@ final class MCPStdioServer {
                 id: request.id,
                 result: .object([
                     ("protocolVersion", .string(negotiatedVersion)),
-                    ("capabilities", .object([
-                        ("tools", .object([])),
-                        ("resources", .object([])),
-                        ("prompts", .object([])),
-                    ])),
-                    ("serverInfo", .object([
-                        ("name", .string("engram")),
-                        ("version", .string("0.1.0")),
-                    ])),
+                    ("capabilities", Self.capabilitiesJSON),
+                    ("serverInfo", Self.serverInfoJSON),
                     ("instructions", .string(Self.instructions)),
                 ])
             )
         case "notifications/initialized":
             return
         case "ping":
-            emit(jsonrpc: "2.0", id: request.id, result: .object([]))
+            // Removed from the 2026-07-28 core spec, but kept answering in
+            // both eras: era-ambiguous liveness probes must not kill the
+            // transport, and legacy clients still depend on it.
+            emitResult(id: request.id, .object([]), modern: modern)
         case "tools/list":
             // Search mode enum is gated by SessionVectorSearchAvailability on
             // the configured MCP database (semantic/hybrid only when usable).
-            emit(
-                jsonrpc: "2.0",
+            emitResult(
                 id: request.id,
-                result: .object([
+                .object([
                     ("tools", .array(MCPToolRegistry.tools(dbPath: config.dbPath).map(\.orderedJSONValue))),
-                ])
+                ]),
+                modern: modern,
+                cacheTTLMs: Self.toolsListTTLMs
             )
         case "tools/call":
-            await handleToolCall(request)
+            await handleToolCall(request, modern: modern)
         case "resources/list":
-            await emitRegistryResult(id: request.id) {
+            await emitRegistryResult(id: request.id, modern: modern, cacheTTLMs: Self.resourceTTLMs) {
                 try await MCPToolRegistry.resourcesList(config: config)
             }
         case "resources/read":
@@ -155,18 +217,23 @@ final class MCPStdioServer {
                 emitError(id: request.id, code: -32602, message: "Missing uri")
                 return
             }
-            await emitRegistryResult(id: request.id) {
+            await emitRegistryResult(id: request.id, modern: modern, cacheTTLMs: Self.resourceTTLMs) {
                 try await MCPToolRegistry.resourceRead(uri: uri, config: config)
             }
         case "prompts/list":
-            emit(jsonrpc: "2.0", id: request.id, result: MCPToolRegistry.promptsList())
+            emitResult(
+                id: request.id,
+                MCPToolRegistry.promptsList(),
+                modern: modern,
+                cacheTTLMs: Self.promptsListTTLMs
+            )
         case "prompts/get":
             guard let name = request.params?["name"]?.stringValue, !name.isEmpty else {
                 emitError(id: request.id, code: -32602, message: "Missing prompt name")
                 return
             }
             let arguments = request.params?["arguments"]?.objectValue ?? [:]
-            await emitRegistryResult(id: request.id) {
+            await emitRegistryResult(id: request.id, modern: modern) {
                 try await MCPToolRegistry.promptGet(name: name, arguments: arguments, config: config)
             }
         default:
@@ -178,11 +245,13 @@ final class MCPStdioServer {
     /// JSON-RPC result or a JSON-RPC error (invalid params for `MCPToolError`).
     private func emitRegistryResult(
         id: JSONRPCId?,
+        modern: Bool,
+        cacheTTLMs: Int? = nil,
         _ operation: () async throws -> OrderedJSONValue
     ) async {
         do {
             let result = try await operation()
-            emit(jsonrpc: "2.0", id: id, result: result)
+            emitResult(id: id, result, modern: modern, cacheTTLMs: cacheTTLMs)
         } catch let error as MCPToolError {
             emitError(id: id, code: -32602, message: error.localizedDescription)
         } catch {
@@ -190,7 +259,7 @@ final class MCPStdioServer {
         }
     }
 
-    private func handleToolCall(_ request: JSONRPCRequest) async {
+    private func handleToolCall(_ request: JSONRPCRequest, modern: Bool) async {
         guard let params = request.params?.objectValue,
               let name = params["name"]?.stringValue else {
             emitError(id: request.id, code: -32602, message: "Invalid params")
@@ -198,11 +267,7 @@ final class MCPStdioServer {
         }
         let arguments = params["arguments"]?.objectValue ?? [:]
         let response = await handleToolCall(name: name, arguments: arguments)
-        emit(
-            jsonrpc: "2.0",
-            id: request.id,
-            result: response
-        )
+        emitResult(id: request.id, response, modern: modern)
     }
 
     private func handleToolCall(
@@ -254,6 +319,72 @@ final class MCPStdioServer {
         }
     }
 
+    /// Emit a JSON-RPC result, wrapping it in the MCP 2026-07-28 result
+    /// envelope when the request was made under a modern protocol revision.
+    private func emitResult(
+        id: JSONRPCId?,
+        _ result: OrderedJSONValue,
+        modern: Bool,
+        cacheTTLMs: Int? = nil
+    ) {
+        emit(
+            jsonrpc: "2.0",
+            id: id,
+            result: modern ? Self.modernResult(result, cacheTTLMs: cacheTTLMs) : result
+        )
+    }
+
+    /// Wrap a legacy result body per MCP 2026-07-28: the required
+    /// `resultType` discriminator first, CacheableResult fields for the
+    /// list/read methods that require them, and the server identity in
+    /// `_meta` (stateless clients have no initialize result to read it from).
+    private static func modernResult(
+        _ result: OrderedJSONValue,
+        cacheTTLMs: Int?
+    ) -> OrderedJSONValue {
+        guard case .object(let entries) = result else { return result }
+        var wrapped: [(String, OrderedJSONValue)] = [("resultType", .string("complete"))]
+        wrapped.append(contentsOf: entries)
+        if let cacheTTLMs {
+            wrapped.append(("ttlMs", .int(cacheTTLMs)))
+            wrapped.append(("cacheScope", .string(cacheScope)))
+        }
+        wrapped.append(("_meta", .object([
+            ("io.modelcontextprotocol/serverInfo", serverInfoJSON),
+        ])))
+        return .object(wrapped)
+    }
+
+    private func emitDiscoverResult(id: JSONRPCId?) {
+        emit(
+            jsonrpc: "2.0",
+            id: id,
+            result: .object([
+                ("resultType", .string("complete")),
+                ("supportedVersions", .array(Self.advertisedProtocolVersions.map { .string($0) })),
+                ("capabilities", Self.capabilitiesJSON),
+                ("instructions", .string(Self.instructions)),
+                ("ttlMs", .int(Self.discoverTTLMs)),
+                ("cacheScope", .string(Self.cacheScope)),
+                ("_meta", .object([
+                    ("io.modelcontextprotocol/serverInfo", Self.serverInfoJSON),
+                ])),
+            ])
+        )
+    }
+
+    private func emitUnsupportedProtocolVersion(id: JSONRPCId?, requested: String) {
+        emitError(
+            id: id,
+            code: -32022,
+            message: "Unsupported protocol version",
+            data: .object([
+                ("supported", .array(Self.advertisedProtocolVersions.map { .string($0) })),
+                ("requested", .string(requested)),
+            ])
+        )
+    }
+
     private func emit(jsonrpc: String, id: JSONRPCId?, result: OrderedJSONValue) {
         var entries: [(String, OrderedJSONValue)] = [("jsonrpc", .string(jsonrpc))]
         if let id {
@@ -270,6 +401,7 @@ final class MCPStdioServer {
         id: JSONRPCId?,
         code: Int,
         message: String,
+        data: OrderedJSONValue? = nil,
         includeNullID: Bool = false
     ) {
         var entries: [(String, OrderedJSONValue)] = [("jsonrpc", .string("2.0"))]
@@ -278,13 +410,14 @@ final class MCPStdioServer {
         } else if includeNullID {
             entries.append(("id", .null))
         }
-        entries.append((
-            "error",
-            .object([
-                ("code", .int(code)),
-                ("message", .string(message)),
-            ])
-        ))
+        var errorEntries: [(String, OrderedJSONValue)] = [
+            ("code", .int(code)),
+            ("message", .string(message)),
+        ]
+        if let data {
+            errorEntries.append(("data", data))
+        }
+        entries.append(("error", .object(errorEntries)))
         outputLock.lock()
         defer { outputLock.unlock() }
         print(OrderedJSONValue.object(entries).compactJSONString())
