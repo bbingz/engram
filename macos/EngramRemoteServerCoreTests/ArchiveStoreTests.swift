@@ -820,6 +820,99 @@ final class ArchiveStoreTests: XCTestCase {
         }
     }
 
+    // MCP retro F11: a receipt replacement that disagrees with a pending entry poisons lists.
+    func testListIndexFailsClosedAfterReceiptDigestConflictDuringWarm() throws {
+        let machineID = "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"
+        let raw = Data("list-index-poison".utf8)
+        let objectDigest = ArchiveV2Hash.sha256(raw)
+        let manifestBytes = try boundManifestBytes(
+            raw: raw,
+            objectDigest: objectDigest,
+            machineID: machineID,
+            captureID: ArchiveV2Hash.sha256(Data("list-index-poison".utf8)),
+            sessionID: "session-list-index-poison"
+        )
+        let manifestDigest = ArchiveV2Hash.sha256(manifestBytes)
+        let store = try ArchiveStore(
+            root: root,
+            key: key,
+            serverID: "hq",
+            now: { "2026-07-11T11:00:00.000Z" }
+        )
+        _ = try store.putObject(digest: objectDigest, raw: raw)
+        _ = try store.putManifest(digest: manifestDigest, canonicalBytes: manifestBytes)
+        let publishedReceipt = try store.createReceipt(manifestDigest: manifestDigest)
+
+        let alternateRoot = root.deletingLastPathComponent()
+            .appendingPathComponent("archive-store-alternate-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: alternateRoot) }
+        let alternate = try ArchiveStore(
+            root: alternateRoot,
+            key: key,
+            serverID: "hq",
+            now: { "2026-07-11T12:00:00.000Z" }
+        )
+        _ = try alternate.putObject(digest: objectDigest, raw: raw)
+        _ = try alternate.putManifest(digest: manifestDigest, canonicalBytes: manifestBytes)
+        let replacementReceipt = try alternate.createReceipt(manifestDigest: manifestDigest)
+        XCTAssertNotEqual(
+            ArchiveV2Hash.sha256(publishedReceipt),
+            ArchiveV2Hash.sha256(replacementReceipt)
+        )
+
+        let replacementURL = alternateRoot.appendingPathComponent(
+            "receipts/sha256/\(manifestDigest.prefix(2))/\(manifestDigest)"
+        )
+        try FileManager.default.removeItem(at: receiptURL(manifestDigest))
+        try FileManager.default.copyItem(at: replacementURL, to: receiptURL(manifestDigest))
+
+        XCTAssertThrowsError(try store.warmListIndex()) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+        XCTAssertThrowsError(try store.listMachines(cursor: nil, limit: 10)) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+        XCTAssertThrowsError(
+            try store.listReceipts(machineID: machineID, cursor: nil, limit: 10)
+        ) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+    }
+
+    // MCP retro F11: a failed warm resets to cold so a repaired archive can rebuild.
+    func testListIndexWarmFailureRecoversAfterArchiveRepair() throws {
+        let machineID = "12121212-1212-1212-1212-121212121212"
+        let store = try ArchiveStore(root: root, key: key, serverID: "hq")
+        let manifestDigest = try publishReceipt(
+            store: store,
+            body: "list-index-recovery",
+            machineID: machineID,
+            captureSuffix: "list-index-recovery"
+        )
+        let invalidShard = root.appendingPathComponent("receipts/sha256/not-a-shard")
+        try FileManager.default.createDirectory(
+            at: invalidShard,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+
+        XCTAssertThrowsError(try store.warmListIndex()) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+        try FileManager.default.removeItem(at: invalidShard)
+
+        XCTAssertNoThrow(try store.warmListIndex())
+        XCTAssertEqual(
+            try store.listMachines(cursor: nil, limit: 10).machineIDs,
+            [machineID]
+        )
+        XCTAssertEqual(
+            try store.listReceipts(machineID: machineID, cursor: nil, limit: 10)
+                .receipts.map(\.manifestSHA256),
+            [manifestDigest]
+        )
+    }
+
     func testListIndexWarmsOnceAndServesCursorPages() throws {
         let machineA = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
         let machineB = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
