@@ -1803,6 +1803,77 @@ final class ArchiveRouteTests: XCTestCase {
         }
     }
 
+    // MCP retro F18, retro PR-2: a multibyte character straddling a page
+    // boundary used to be repaired to U+FFFD in both pages, so concatenating
+    // pages could not reproduce the source. Windows now snap to UTF-8 scalar
+    // boundaries and `nextOffset` advances from the snapped end.
+    func testMCPGetSessionPagesUTF8ScalarBoundariesExactly_repro() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let machineID = "00000000-0000-4000-8000-000000000011"
+            // 11 bytes per repetition, so every window size lands mid-scalar.
+            let transcript = String(repeating: "a汉é😀\n", count: 12)
+            let raw = Data(transcript.utf8)
+            let rawDigest = ArchiveV2Hash.sha256(raw)
+            let (manifestBytes, manifestDigest) = try Self.manifest(
+                raw: raw,
+                machineID: machineID,
+                seed: "mcp-utf8-paging"
+            )
+
+            var response = try await client.execute(
+                uri: "/v2/archive/objects/\(rawDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/octet-stream"),
+                body: ByteBuffer(data: raw)
+            )
+            XCTAssertEqual(response.status.code, 201)
+            response = try await client.execute(
+                uri: "/v2/archive/manifests/\(manifestDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/json"),
+                body: ByteBuffer(data: manifestBytes)
+            )
+            XCTAssertEqual(response.status.code, 201)
+
+            var pages: [String] = []
+            var offset = 0
+            while pages.count < 200 {
+                response = try await client.execute(
+                    uri: "/mcp",
+                    method: .post,
+                    headers: Self.mcpHeaders(method: "tools/call", name: "archive_get_session"),
+                    body: try Self.mcpToolCallBody(
+                        name: "archive_get_session",
+                        arguments: [
+                            "manifest_sha256": manifestDigest,
+                            "offset": offset,
+                            "max_bytes": 7,
+                        ]
+                    )
+                )
+                XCTAssertEqual(response.status.code, 200)
+                let structured = try Self.mcpStructuredContent(response)
+                let page = try XCTUnwrap(structured["text"] as? String)
+                XCTAssertFalse(
+                    page.unicodeScalars.contains("\u{FFFD}"),
+                    "page at offset \(offset) split a scalar"
+                )
+                XCTAssertEqual(structured["offset"] as? Int, offset)
+                XCTAssertEqual(structured["byteCount"] as? Int, page.utf8.count)
+                XCTAssertEqual(try Self.mcpContentText(response), page)
+                pages.append(page)
+                guard let next = structured["nextOffset"] as? Int else { break }
+                XCTAssertEqual(next, offset + page.utf8.count)
+                offset = next
+            }
+
+            XCTAssertEqual(pages.joined(), transcript)
+            XCTAssertEqual(offset + (pages.last?.utf8.count ?? 0), raw.count)
+            XCTAssertGreaterThan(pages.count, 10, "the read must actually page")
+        }
+    }
+
     private func archiveObjectURL(digest: String) -> URL {
         tempDir
             .appendingPathComponent("archive/objects/sha256", isDirectory: true)

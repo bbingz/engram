@@ -1084,6 +1084,143 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(listed, [digestPre, digestMid].sorted())
     }
 
+    // MCP retro F01, retro PR-2: a windowed read must only fetch the chunks it
+    // serves. Chunk 0's object is deleted before the read, so a window inside
+    // chunk 1 can only succeed if non-overlapping chunks are never fetched.
+    func testWindowedSourceReadSkipsNonOverlappingChunks_repro() throws {
+        let store = try ArchiveStore(root: root, key: key, serverID: "hq")
+        let head = Data(
+            repeating: UInt8(ascii: "a"),
+            count: Int(ArchiveSourceManifest.rawChunkSize)
+        )
+        let tail = Data("second-chunk-payload".utf8)
+        let manifestDigest = try publishTwoChunkSource(store: store, head: head, tail: tail)
+        try FileManager.default.removeItem(at: objectURL(ArchiveV2Hash.sha256(head)))
+
+        let window = try store.readSourceWindow(
+            manifestDigest: manifestDigest,
+            offset: head.count + 7,
+            maxBytes: 5
+        )
+        XCTAssertEqual(window.bytes, Data("chunk".utf8))
+        XCTAssertEqual(window.totalBytes, Int64(head.count + tail.count))
+        XCTAssertEqual(window.manifest.sessionID, "window-session")
+
+        // The full-validation path still reads every chunk, so it fails here.
+        XCTAssertThrowsError(try store.getManifest(digest: manifestDigest)) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .missingReference)
+        }
+    }
+
+    // MCP retro F01, retro PR-2: skipping chunks outside the window must not
+    // skip integrity for the chunk actually served.
+    func testWindowedSourceReadRejectsCorruptOverlappingChunk_repro() throws {
+        let store = try ArchiveStore(root: root, key: key, serverID: "hq")
+        let head = Data(
+            repeating: UInt8(ascii: "a"),
+            count: Int(ArchiveSourceManifest.rawChunkSize)
+        )
+        let tail = Data("second-chunk-payload".utf8)
+        let manifestDigest = try publishTwoChunkSource(store: store, head: head, tail: tail)
+
+        // Flip one ciphertext byte in place so the file keeps its identity.
+        let tailURL = objectURL(ArchiveV2Hash.sha256(tail))
+        let stored = try Data(contentsOf: tailURL)
+        let handle = try FileHandle(forUpdating: tailURL)
+        try handle.seek(toOffset: UInt64(stored.count - 1))
+        try handle.write(contentsOf: Data([stored[stored.count - 1] ^ 0xff]))
+        try handle.close()
+
+        XCTAssertThrowsError(
+            try store.readSourceWindow(
+                manifestDigest: manifestDigest,
+                offset: head.count,
+                maxBytes: 8
+            )
+        ) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+
+        let clean = try store.readSourceWindow(
+            manifestDigest: manifestDigest,
+            offset: 0,
+            maxBytes: 4
+        )
+        XCTAssertEqual(clean.bytes, Data(repeating: UInt8(ascii: "a"), count: 4))
+    }
+
+    // retro PR-2 keeps full validation on the getManifest path: every chunk is
+    // fetched and verified even when no window asks for it.
+    func testGetManifestStillValidatesEveryChunkObject() throws {
+        let store = try ArchiveStore(root: root, key: key, serverID: "hq")
+        let machineID = "00000000-0000-4000-8000-0000000000f2"
+        let raw = Data("whole-source validation stays".utf8)
+        let objectDigest = ArchiveV2Hash.sha256(raw)
+        let manifestBytes = try boundManifestBytes(
+            raw: raw,
+            objectDigest: objectDigest,
+            machineID: machineID
+        )
+        let manifestDigest = ArchiveV2Hash.sha256(manifestBytes)
+        _ = try store.putObject(digest: objectDigest, raw: raw)
+        _ = try store.putManifest(digest: manifestDigest, canonicalBytes: manifestBytes)
+        XCTAssertEqual(try store.getManifest(digest: manifestDigest), manifestBytes)
+
+        try FileManager.default.removeItem(at: objectURL(objectDigest))
+        XCTAssertThrowsError(try store.getManifest(digest: manifestDigest)) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .missingReference)
+        }
+    }
+
+    private func publishTwoChunkSource(
+        store: ArchiveStore,
+        head: Data,
+        tail: Data
+    ) throws -> String {
+        let headDigest = ArchiveV2Hash.sha256(head)
+        let tailDigest = ArchiveV2Hash.sha256(tail)
+        let manifest = try ArchiveSourceManifest(
+            captureID: ArchiveV2Hash.sha256(Data("window-capture".utf8)),
+            machineID: "00000000-0000-4000-8000-0000000000f1",
+            source: "codex",
+            locator: "/archive/window.jsonl",
+            sessionID: "window-session",
+            capturedAt: "2026-07-31T00:00:00.000Z",
+            generation: ArchiveSourceGeneration(
+                device: 1,
+                inode: 2,
+                size: Int64(head.count + tail.count),
+                mtimeNs: 3,
+                ctimeNs: 4,
+                mode: Int64(S_IFREG | S_IRUSR | S_IWUSR)
+            ),
+            wholeSourceSHA256: ArchiveV2Hash.sha256(head + tail),
+            rawByteCount: Int64(head.count + tail.count),
+            chunks: [
+                ArchiveChunkReference(
+                    ordinal: 0,
+                    rawSHA256: headDigest,
+                    rawByteCount: Int64(head.count)
+                ),
+                ArchiveChunkReference(
+                    ordinal: 1,
+                    rawSHA256: tailDigest,
+                    rawByteCount: Int64(tail.count)
+                ),
+            ],
+            replayLayout: ArchiveReplayLayout(
+                strategy: .singleFile,
+                relativePaths: ["window.jsonl"]
+            )
+        )
+        let bytes = try ArchiveCanonicalJSON.encode(manifest)
+        let digest = ArchiveV2Hash.sha256(bytes)
+        _ = try store.putObject(digest: headDigest, raw: head)
+        _ = try store.putObject(digest: tailDigest, raw: tail)
+        _ = try store.putManifest(digest: digest, canonicalBytes: bytes)
+        return digest
+    }
+
     private func publishReceipt(
         store: ArchiveStore,
         body: String,
