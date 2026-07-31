@@ -8,6 +8,7 @@
 - [修复] `archive_get_session` 窗口读从 O(整源解密) 降为 O(窗口),UTF-8 分页字节精确;列表索引锁外构建 + 失败退避(显式 warm 绕过)+ 毒化日志;`archive_list_captures` 全部由索引服务,去掉逐条 durable 读。
 - [变更] 双端时代判定统一(`_meta` 版本键存在即 modern 意图,非字符串值 → -32022);远端 legacy 版本集收缩为 {2025-06-18, 2025-11-25},被移除修订走协商降级而非拒绝。
 - [验证] 五个 PR 已按 #282→#283→#285→#284→#286 顺序全绿 squash 落地,最终 main `0e891215` 与预验证的 `retro/integration` 树逐字节一致;落地后本地复验 RemoteServerCore 142/142、MCPTests 192/192、fixture 门禁与 lint 通过,post-merge Tests/CodeQL success。
+- [验证] `macmini-m1` 已部署 `releases/a33fc3b8`(回滚指针 `releases/dcc048ce`)。生产 ~25k receipt 归档 A/B:`archive_list_captures`(100 条页)7.5–14.3s → **13–17ms**;`archive_get_session`(14.8MB 源,4KiB 窗口)0.12–0.78s → **~50–70ms**;`archive_list_machines` 对照组不变(~3–5ms);重启后一次性冷预热 ~343s。协议抽检:2025-11-25 握手回显、2025-03-26 协商降级、非字符串 `_meta` 版本 → -32022,Claude Code 客户端路径 401/11ms 可达。
 
 ### 2026-07-29
 

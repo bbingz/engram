@@ -58,6 +58,16 @@ tests demonstrated to fail against the pre-fix code (documented per commit).
 Finding inventory and verdicts live in `scratchpad/mcp-retro-findings.md` /
 `scratchpad/mcp-retro-codex-verdicts.md` (untracked, session-local).
 
+Production deployment (2026-07-31): `macmini-m1` now runs `releases/a33fc3b8`
+(rollback pointer: `releases/dcc048ce`). Verified A/B on the production
+~25k-receipt archive, same responses byte-for-byte-sized on both releases:
+`archive_list_captures` (100-entry page) 7.5–14.3 s → 13–17 ms;
+`archive_get_session` (14.8 MB source, 4 KiB window) 0.12–0.78 s → ~50–70 ms;
+`archive_list_machines` unchanged at ~3–5 ms (control). One-time post-restart
+cold warm was ~343 s (previous production cold warm ~13 min). Protocol probes
+on the new release: 2025-11-25 initialize echoes (Claude Code compat),
+2025-03-26 negotiates down to 2025-11-25, non-string `_meta` version → -32022.
+
 Known open items (documented, deliberate): remote `server/discover` still
 advertises the modern set only while the served union is
 {2026-07-28, 2025-11-25, 2025-06-18}; the pending-overflow rescan path is

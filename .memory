@@ -143,6 +143,13 @@
   downgraded a finding Codex kept, Codex refuted one finding and recalibrated
   four severities. Commit-message verification claims ("60/60 e2e") that are
   not in-tree tests must be treated as unpinned until someone pins them.
+- Deployed to macmini-m1 as `releases/a33fc3b8` (rollback:
+  `releases/dcc048ce`). Production A/B: `archive_list_captures` 7.5-14.3s →
+  13-17ms; `archive_get_session` (14.8MB, 4KiB window) 0.12-0.78s → ~50-70ms;
+  one-time post-restart warm ~343s. NOTE: the server binds the Tailscale IP
+  (`ENGRAM_REMOTE_HOST=100.108.19.20` in secrets/archive-v2.env), NOT
+  loopback — probes against 127.0.0.1:8787 fail instantly and look like
+  sub-ms successes if you only read time_total.
 
 ## 2026-07-29 - Remote MCP production enablement on macmini-m1
 
