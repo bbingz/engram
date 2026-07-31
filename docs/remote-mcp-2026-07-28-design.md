@@ -1,7 +1,9 @@
 # Design Doc: Remote Read-Only MCP Endpoint (Dual-Era Streamable HTTP)
 
 - **Status**: Implemented (#278), revised 2026-07-29 after real-client testing —
-  see Revision below.
+  see Revision below. Era detection and the legacy revision set were revised
+  again on 2026-07-31 by retro PR-4
+  (`docs/mcp-protocol-alignment-design.md`).
 - **Owner**: unassigned
 - **Date**: 2026-07-29
 - **Filename**: kept as `remote-mcp-2026-07-28-design.md` because other docs and
@@ -203,17 +205,25 @@ per-connection state on either path:
 
 #### Era detection
 
-One rule, evaluated per request, with nothing remembered between requests:
+One rule, evaluated per request, with nothing remembered between requests
+(unified across both MCP surfaces in retro PR-4 — see
+`docs/mcp-protocol-alignment-design.md`):
 
-> `params._meta["io.modelcontextprotocol/protocolVersion"]` **present** →
-> modern era. **Absent** → legacy era.
+> The key `io.modelcontextprotocol/protocolVersion` **present** in an
+> object-valued `params._meta` → modern era. **Anything else** — key absent,
+> `_meta` not an object, `params` not an object → legacy era.
 
-Presence of the key, not its value: an unknown value is a modern-era `-32022`,
-not a demotion to legacy. This is the same rule the stdio helper uses
-(`MCPStdioServer.era(of:)`), which keeps one mental model across both MCP
-surfaces. It is also the only rule available without state — the era of the
-current POST cannot depend on an earlier one, because the server does not know
-which connection an earlier one was on.
+Presence of the key, not its value, and not its value's *type*: a string naming
+an unknown revision and a non-string value (null, number, bool, array, object)
+are both a modern-era `-32022`, never a demotion to legacy. For a non-string
+value, `data.requested` names the JSON type that arrived (`<null>`,
+`<number>`, `<bool>`, `<array>`, `<object>`) because there is no revision string
+to echo. `MCPStdioServer.era(of:)` implements the identical predicate; before
+retro PR-4 the two disagreed (stdio demoted non-string values to legacy, and
+this endpoint reported them as a `-32020` "body key missing" — for a key the
+request did carry). Presence is also the only rule available without state: the
+era of the current POST cannot depend on an earlier one, because the server does
+not know which connection an earlier one was on.
 
 Consequences worth stating: a legacy client is never asked for `_meta` or for
 the modern header trio, and a modern client is never offered `initialize`. A
@@ -223,8 +233,24 @@ supported configuration.
 
 #### Legacy era
 
-Revisions served: `2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25` — the
-same legacy set as the stdio helper. Methods:
+Revisions served: `2025-06-18` and `2025-11-25` (narrowed in retro PR-4 from the
+four the stdio helper speaks). Two revisions were dropped because echoing them
+promised a contract this endpoint does not implement:
+
+- `2025-03-26` requires receivers to support JSON-RPC batches; this endpoint
+  accepts only a top-level JSON object and answers a batch array with `-32700`.
+- `2024-11-05` predates Streamable HTTP; its transport is HTTP+SSE, whose
+  standalone GET stream this endpoint refuses with `405`.
+
+Nothing is refused as a result: a client asking for either is negotiated down to
+`2025-11-25`, exactly like any other unknown revision. **This asymmetry with the
+stdio helper is deliberate.** `EngramMCP` keeps all four legacy revisions: it has
+no batch contradiction (stdio framing is one JSON object per line and no local
+client sends batches) and no transport mismatch, its version-set literals are the
+source the golden-fixture generator extracts from, and local clients on old
+revisions still connect to it.
+
+Methods:
 
 - `initialize` — returns `protocolVersion` (the requested value if it is in the
   legacy set, otherwise negotiated down to `2025-11-25`), a `tools` capability,
@@ -282,17 +308,20 @@ Steps 1–4 are era-independent; the era split happens at step 5.
 4. **Parse** — non-JSON → `400` with `-32700`; missing `method` → `400` with
    `-32600`; missing `id` → `202` (notification, dropped).
 5. **Era split** — `_meta["io.modelcontextprotocol/protocolVersion"]` absent →
-   the legacy dispatch above, and steps 6–8 do not apply. Present → continue.
-6. **Header/body agreement** (modern only) — `MCP-Protocol-Version` and
+   the legacy dispatch above, and steps 6–9 do not apply. Present → continue.
+6. **Version type** (modern only, added in retro PR-4) — a non-string value →
+   `400` with `-32022` and `data.requested` naming the JSON type. This runs
+   before header validation, which would otherwise report the key as missing.
+7. **Header/body agreement** (modern only) — `MCP-Protocol-Version` and
    `Mcp-Method` are required on every request, and `Mcp-Name` on `tools/call`.
    Each is compared against the corresponding body value; any disagreement or
    absence → `400` with `-32020` and a message naming the field. `Mcp-Name`
    accepts the `=?base64?...?=` sentinel form for values that are not plain
    ASCII.
-7. **Version** (modern only) — a `_meta` version other than `2026-07-28` → `400`
+8. **Version** (modern only) — a `_meta` version other than `2026-07-28` → `400`
    with `-32022`, `data.supported = ["2026-07-28"]`, `data.requested = <value>`,
    so the client can react without a second round trip.
-8. **Dispatch** (modern only) — `server/discover`, `tools/list`, `tools/call`.
+9. **Dispatch** (modern only) — `server/discover`, `tools/list`, `tools/call`.
    Anything else, including `subscriptions/listen`, → `404` with `-32601`.
 
 Validating the headers *against the body* rather than merely requiring them is
@@ -557,7 +586,9 @@ New cases, added to the existing files so the Xcode project stays unregenerated:
     `Mcp-Name`, and the base64-sentinel `Mcp-Name` accepted → `-32020` for each
     failure, success for the sentinel.
   - `_meta` naming another revision → `-32022` with `data.supported` /
-    `data.requested`; missing `_meta` → `-32020`.
+    `data.requested`; a non-string `_meta` version → `-32022` naming the JSON
+    type; a non-object `_meta` or `params`, and an absent `_meta`, → the legacy
+    era (both revised in retro PR-4; the second and third used to be `-32020`).
   - Unknown method and `subscriptions/listen` → `404` with `-32601`.
   - Notification (no `id`) → `202` with an empty body.
   - Over-size body → `413`; malformed JSON → `400` with `-32700`.
@@ -593,12 +624,13 @@ Same file, same router harness, driven through `mcpLegacyHeaders()` /
 2026-07-28 request-metadata headers — the shape Claude Code actually sends:
 
 - `testMCPLegacyInitializeHandshakeWithoutModernMetadata` — the captured Claude
-  Code 2.1.220 handshake, once per served revision (`2024-11-05`, `2025-03-26`,
-  `2025-06-18`, `2025-11-25`): each is echoed back, with a `tools`-only
-  capability object, `serverInfo`, and non-empty `instructions`, and header
-  validation is skipped.
+  Code 2.1.220 handshake, once per served revision (`2025-06-18`,
+  `2025-11-25`): each is echoed back, with a `tools`-only capability object,
+  `serverInfo`, and non-empty `instructions`, and header validation is skipped.
+  It also pins `legacyProtocolVersions` to exactly those two (retro PR-4).
 - `testMCPLegacyInitializeNegotiatesUnknownVersionDown` — older, newer,
-  wrong-typed, absent, and `2026-07-28`-without-`_meta` all negotiate to
+  wrong-typed, absent, `2026-07-28`-without-`_meta`, and the two revisions
+  dropped in retro PR-4 (`2025-03-26`, `2024-11-05`) all negotiate to
   `2025-11-25` instead of failing. The modern revision offered through
   `initialize` is still a legacy handshake, which pins the era rule from the
   other side.
@@ -636,6 +668,21 @@ The pre-existing modern-era unknown-method case keeps `initialize` and `ping` in
 its list and still passes, because it sends `_meta`: in the modern era those names
 are genuinely unknown methods. The era split is what makes both assertions true at
 once, so both must stay.
+
+### Era-predicate cases (added 2026-07-31, retro PR-4)
+
+- `testMCPModernMetaWithNonStringVersionIsUnsupportedProtocolVersion_repro` —
+  number, null, bool, array, and object values under the `_meta` version key all
+  get `-32022` with `data.requested` naming the JSON type and
+  `data.supported == ["2026-07-28"]`. It fails against the pre-retro endpoint,
+  which answered `-32020` "request body is missing `_meta[...]`".
+- `testMCPNonObjectMetaOrParamsSelectsLegacyEra` — `_meta` as a string, array, or
+  null, and `params` as a string or array, all take the legacy path with an
+  unwrapped result. This pins the half of the predicate that stays legacy, so the
+  fix above cannot widen into it.
+- The header-matrix case for a numeric `_meta` version moved out of
+  `testMCPHeaderMismatchRejections`: header validation now only ever sees a
+  well-formed modern request.
 
 ### Real-client verification (done 2026-07-29)
 

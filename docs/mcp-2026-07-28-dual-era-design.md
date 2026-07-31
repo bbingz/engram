@@ -75,7 +75,10 @@ its own era.
   `_meta["io.modelcontextprotocol/protocolVersion"]`, `.modern` when the value
   is in `modernProtocolVersions`, and `.unsupportedModern(requested:)`
   otherwise. The resulting `modern` flag is threaded through `handle`,
-  `handleToolCall`, and `emitRegistryResult`.
+  `handleToolCall`, and `emitRegistryResult`. (Revised in retro PR-4: the key's
+  *presence* decides the era, so a present-but-non-string value is
+  `.unsupportedModern` rather than a silent demotion to legacy. See
+  `docs/mcp-protocol-alignment-design.md`.)
 - **Result envelope.** `emitResult(id:_:modern:cacheTTLMs:)` passes legacy
   results through untouched. For modern results, `modernResult(_:cacheTTLMs:)`
   prepends the required `resultType: "complete"` discriminator, appends the
@@ -95,12 +98,18 @@ its own era.
   `instructions`, `ttlMs` 3600000, `cacheScope`, and `serverInfo` in `_meta`.
 - **Unsupported modern version.** `emitUnsupportedProtocolVersion` emits code
   `-32022` ("Unsupported protocol version") with
-  `data: {supported: advertisedProtocolVersions, requested: <value>}` so the
+  `data: {supported: modernProtocolVersions, requested: <value>}` so the
   client can pick a version without another round trip. The
   `-32020..-32099` range is reserved by the spec; no app-specific codes there.
-- **`initialize`.** Unchanged, including the negotiate-down for unknown
-  versions — which now lands on the latest *legacy* revision, since modern
-  revisions never negotiate through the handshake.
+  (Revised in retro PR-4: this used to report `advertisedProtocolVersions`, the
+  cross-era union, which advertised legacy revisions that cannot be selected
+  through `_meta` at all. `server/discover` still reports the union.)
+- **`initialize`.** Unchanged in the legacy era, including the negotiate-down
+  for unknown versions — which now lands on the latest *legacy* revision, since
+  modern revisions never negotiate through the handshake. A request that tags
+  `initialize` with modern `_meta` gets `-32601`: the modern era defines no
+  handshake, so there is no negotiated version to return (revised in retro
+  PR-4; it used to answer with an un-enveloped legacy handshake result).
 - **`ping`.** Removed from the 2026-07-28 core spec but still answered in both
   eras: an era-ambiguous liveness probe must not kill the transport, and legacy
   clients depend on it. Under `_meta` it gets the modern envelope like any
@@ -148,7 +157,10 @@ ledger entry.
   - The same request without `_meta` is byte-identical to the pre-change
     response.
   - `_meta` naming an unknown version yields `-32022` with `data.supported`
-    and `data.requested`.
+    (the modern set only) and `data.requested`; a non-string version yields the
+    same error with `data.requested` naming the JSON type, and a non-object
+    `_meta`/`params` stays legacy (added in retro PR-4).
+  - `initialize` under modern `_meta` is `-32601` (added in retro PR-4).
   - `ping` answers in both eras; the existing `initialize` version cases
     (including negotiate-down from `2999-01-01`) keep passing unchanged.
 - `tests/fixtures/mcp-golden/discover.result.json`, generated from the Swift
