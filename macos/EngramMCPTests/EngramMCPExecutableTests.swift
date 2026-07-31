@@ -1604,7 +1604,90 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertEqual(capture.ordered["error"]?["data"]?["requested"]?.stringValue, "2999-01-01")
         let supported = try XCTUnwrap(capture.ordered["error"]?["data"]?["supported"]?.arrayValue)
             .compactMap(\.stringValue)
-        XCTAssertTrue(supported.contains("2026-07-28"), "\(supported)")
+        // MCP retro F02, retro PR-4: the modern set only. A legacy revision
+        // cannot be selected through `_meta`, so advertising one here told the
+        // client to retry straight into the identical rejection. The cross-era
+        // union stays in `server/discover`, where falling back to the
+        // handshake is a real option (testServerDiscoverAnswersWithoutMeta).
+        XCTAssertEqual(supported, ["2026-07-28"], "\(supported)")
+    }
+
+    // MCP retro F13, retro PR-4: a present-but-non-string `_meta` version used
+    // to fall through to the legacy branch, so a client that had asserted
+    // modern semantics silently got an un-enveloped legacy result and no
+    // diagnostic. The key's presence is what selects the era; its value only
+    // picks the revision.
+    func testModernMetaWithNonStringVersionIsUnsupportedProtocolVersion_repro() throws {
+        let cases: [(label: String, value: String, requested: String)] = [
+            ("number", "20260728", "<number>"),
+            ("null", "null", "<null>"),
+            ("bool", "true", "<bool>"),
+            ("array", #"["2026-07-28"]"#, "<array>"),
+            ("object", #"{"value":"2026-07-28"}"#, "<object>"),
+        ]
+        for entry in cases {
+            let capture = try rpc(
+                """
+                {"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":\(entry.value)}}}
+                """
+            )
+
+            XCTAssertNil(capture.response.result, entry.label)
+            XCTAssertEqual(capture.response.error?.code, -32022, entry.label)
+            XCTAssertEqual(
+                capture.ordered["error"]?["data"]?["requested"]?.stringValue,
+                entry.requested,
+                entry.label
+            )
+            let supported = try XCTUnwrap(
+                capture.ordered["error"]?["data"]?["supported"]?.arrayValue,
+                entry.label
+            ).compactMap(\.stringValue)
+            XCTAssertEqual(supported, ["2026-07-28"], entry.label)
+        }
+    }
+
+    // MCP retro F29, retro PR-4: the other half of the era predicate. The
+    // version key can only be present inside an object-valued `_meta` under
+    // object-valued `params`; every other shape cannot carry it and therefore
+    // stays legacy. Pinned so the F13 fix cannot widen into these shapes.
+    func testNonObjectMetaOrParamsSelectsLegacyEra() throws {
+        let cases: [(label: String, params: String)] = [
+            ("_meta is a string", #""params":{"_meta":"garbage"}"#),
+            ("_meta is an array", #""params":{"_meta":[]}"#),
+            ("_meta is null", #""params":{"_meta":null}"#),
+            ("params is a string", #""params":"garbage""#),
+            ("params is an array", #""params":[]"#),
+        ]
+        for entry in cases {
+            let capture = try rpc(
+                """
+                {"jsonrpc":"2.0","id":1,"method":"tools/list",\(entry.params)}
+                """
+            )
+
+            XCTAssertNil(capture.response.error, entry.label)
+            let result = try XCTUnwrap(capture.ordered["result"], entry.label)
+            XCTAssertNotNil(result["tools"]?.arrayValue, entry.label)
+            XCTAssertNil(result["resultType"], entry.label)
+            XCTAssertNil(result["_meta"], entry.label)
+        }
+    }
+
+    // MCP retro F14, retro PR-4: modern revisions removed the handshake, yet a
+    // modern-tagged `initialize` used to answer with the legacy handshake
+    // result — the one modern result that escaped the 2026-07-28 envelope. The
+    // remote endpoint already refuses it (404/-32601); stdio now agrees.
+    func testModernInitializeIsMethodNotFound_repro() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+            """
+        )
+
+        XCTAssertNil(capture.response.result)
+        XCTAssertEqual(capture.response.error?.code, -32601)
+        XCTAssertEqual(capture.response.error?.message, "Method not found")
     }
 
     func testModernToolsListCarriesResultEnvelopeAndCacheFields() throws {
