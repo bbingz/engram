@@ -838,6 +838,20 @@ final class ArchiveRouteTests: XCTestCase {
         }
     }
 
+    // MCP retro F03: design doc lines 526-527 require the MCP token to be rejected on `/v2/...`.
+    func testMCPBearerTokenCannotAccessArchiveV2() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let response = try await client.execute(
+                uri: "/v2/archive/machines",
+                method: .get,
+                headers: Self.headers(token: Self.mcpToken)
+            )
+            XCTAssertEqual(response.status.code, 401)
+            XCTAssertEqual(response.headers[.wwwAuthenticate], "Bearer")
+        }
+    }
+
     func testMCPGetRefusedWithMethodNotAllowed() async throws {
         let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
         try await app.test(.router) { client in
@@ -852,6 +866,19 @@ final class ArchiveRouteTests: XCTestCase {
             )
             XCTAssertEqual(response.status.code, 405, "the legacy GET stream is not served")
             XCTAssertEqual(response.headers[Self.allowHeader], "POST")
+        }
+    }
+
+    // MCP retro F03: design doc lines 529-530 preserve the documented DELETE 404 deviation.
+    func testMCPDeleteRemainsUnrouted() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let response = try await client.execute(
+                uri: "/mcp",
+                method: .delete,
+                headers: Self.headers(token: Self.mcpToken)
+            )
+            XCTAssertEqual(response.status.code, 404)
         }
     }
 
@@ -873,6 +900,53 @@ final class ArchiveRouteTests: XCTestCase {
             XCTAssertTrue(id is NSNull, "a refused request echoes a null id")
             let error = try XCTUnwrap(message["error"] as? [String: Any])
             XCTAssertEqual(error["code"] as? Int, -32600)
+        }
+    }
+
+    // MCP retro F09: design doc line 281 requires a 1 MiB body limit before the era split.
+    func testMCPOversizedBodyIsRejectedForBothEras() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        let oversized = Data(repeating: 0x78, count: 1_048_577)
+        try await app.test(.router) { client in
+            let cases: [(label: String, headers: HTTPFields)] = [
+                ("modern", Self.mcpHeaders(method: "tools/list")),
+                ("legacy", Self.mcpLegacyHeaders()),
+            ]
+            for entry in cases {
+                let response = try await client.execute(
+                    uri: "/mcp",
+                    method: .post,
+                    headers: entry.headers,
+                    body: ByteBuffer(data: oversized)
+                )
+                XCTAssertEqual(response.status.code, 413, entry.label)
+                let error = try Self.mcpError(response)
+                XCTAssertEqual(error["code"] as? Int, -32600, entry.label)
+            }
+        }
+    }
+
+    // MCP retro F09: design doc line 282 requires malformed JSON to return JSON-RPC -32700.
+    func testMCPMalformedJSONIsParseErrorForBothEras() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let cases: [(label: String, headers: HTTPFields, body: Data)] = [
+                ("modern malformed JSON", Self.mcpHeaders(method: "tools/list"), Data("{\"jsonrpc\":".utf8)),
+                ("legacy malformed JSON", Self.mcpLegacyHeaders(), Data("{\"jsonrpc\":".utf8)),
+                ("modern top-level array", Self.mcpHeaders(method: "tools/list"), Data("[]".utf8)),
+                ("legacy top-level array", Self.mcpLegacyHeaders(), Data("[]".utf8)),
+            ]
+            for entry in cases {
+                let response = try await client.execute(
+                    uri: "/mcp",
+                    method: .post,
+                    headers: entry.headers,
+                    body: ByteBuffer(data: entry.body)
+                )
+                XCTAssertEqual(response.status.code, 400, entry.label)
+                let error = try Self.mcpError(response)
+                XCTAssertEqual(error["code"] as? Int, -32700, entry.label)
+            }
         }
     }
 
