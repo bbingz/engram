@@ -1676,6 +1676,149 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertNil(result["_meta"])
     }
 
+    // MCP retro F10: modern prompts/list responses must carry the cacheable result envelope.
+    func testModernPromptsListCarriesResultEnvelopeAndCacheFields() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"prompts/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+            """
+        )
+
+        XCTAssertNil(capture.response.error)
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["resultType"]?.stringValue, "complete")
+        XCTAssertNotNil(result["prompts"]?.arrayValue)
+        XCTAssertEqual(result["ttlMs"]?.intValue, 3_600_000)
+        XCTAssertEqual(result["cacheScope"]?.stringValue, "private")
+        XCTAssertEqual(
+            result["_meta"]?["io.modelcontextprotocol/serverInfo"]?["name"]?.stringValue,
+            "engram"
+        )
+    }
+
+    // MCP retro F26: modern resources/list responses must carry the cacheable result envelope.
+    func testModernResourcesListCarriesResultEnvelopeAndCacheFields() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"resources/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["resultType"]?.stringValue, "complete")
+        XCTAssertNotNil(result["resources"]?.arrayValue)
+        XCTAssertEqual(result["ttlMs"]?.intValue, 30_000)
+        XCTAssertEqual(result["cacheScope"]?.stringValue, "private")
+        XCTAssertEqual(
+            result["_meta"]?["io.modelcontextprotocol/serverInfo"]?["name"]?.stringValue,
+            "engram"
+        )
+    }
+
+    // MCP retro F26: modern resources/read responses must carry the cacheable result envelope.
+    func testModernResourceReadCarriesResultEnvelopeAndCacheFields() throws {
+        let environment = ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        let listed = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"resources/list"}
+            """,
+            environment: environment
+        )
+        let uri = try XCTUnwrap(
+            listed.ordered["result"]?["resources"]?.arrayValue?
+                .compactMap { $0["uri"]?.stringValue }
+                .first { $0.hasPrefix("engram://insight/") },
+            "fixture should contain at least one saved insight"
+        )
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"\(uri)","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+            """,
+            environment: environment
+        )
+
+        XCTAssertNil(capture.response.error)
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["resultType"]?.stringValue, "complete")
+        XCTAssertNotNil(result["contents"]?.arrayValue)
+        XCTAssertEqual(result["ttlMs"]?.intValue, 30_000)
+        XCTAssertEqual(result["cacheScope"]?.stringValue, "private")
+        XCTAssertEqual(
+            result["_meta"]?["io.modelcontextprotocol/serverInfo"]?["name"]?.stringValue,
+            "engram"
+        )
+    }
+
+    // MCP retro F10: legacy prompts/list responses must remain free of modern envelope fields.
+    func testLegacyPromptsListOmitsModernEnvelope() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"prompts/list"}
+            """
+        )
+
+        XCTAssertNil(capture.response.error)
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertNotNil(result["prompts"]?.arrayValue)
+        XCTAssertNil(result["resultType"])
+        XCTAssertNil(result["ttlMs"])
+        XCTAssertNil(result["cacheScope"])
+        XCTAssertNil(result["_meta"])
+    }
+
+    // MCP retro F26: legacy resources/list responses must remain free of modern envelope fields.
+    func testLegacyResourcesListOmitsModernEnvelope() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"resources/list"}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertNotNil(result["resources"]?.arrayValue)
+        XCTAssertNil(result["resultType"])
+        XCTAssertNil(result["ttlMs"])
+        XCTAssertNil(result["cacheScope"])
+        XCTAssertNil(result["_meta"])
+    }
+
+    // MCP retro F26: legacy resources/read responses must remain free of modern envelope fields.
+    func testLegacyResourceReadOmitsModernEnvelope() throws {
+        let environment = ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        let listed = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"resources/list"}
+            """,
+            environment: environment
+        )
+        let uri = try XCTUnwrap(
+            listed.ordered["result"]?["resources"]?.arrayValue?
+                .compactMap { $0["uri"]?.stringValue }
+                .first { $0.hasPrefix("engram://insight/") },
+            "fixture should contain at least one saved insight"
+        )
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"\(uri)"}}
+            """,
+            environment: environment
+        )
+
+        XCTAssertNil(capture.response.error)
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertNotNil(result["contents"]?.arrayValue)
+        XCTAssertNil(result["resultType"])
+        XCTAssertNil(result["ttlMs"])
+        XCTAssertNil(result["cacheScope"])
+        XCTAssertNil(result["_meta"])
+    }
+
     func testModernPingAnswersWithEnvelope() throws {
         // `ping` was removed from the 2026-07-28 core spec, but this server
         // keeps answering it in both eras as a liveness probe — same reasoning

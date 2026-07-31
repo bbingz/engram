@@ -712,6 +712,207 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(try failing.listMachines(cursor: nil, limit: 10).machineIDs, [])
     }
 
+    // MCP retro F08: cold LIST scan rejects receipt authority issued by another server.
+    func testColdListRejectsReceiptWithForeignServerID() throws {
+        let foreign = try ArchiveStore(root: root, key: key, serverID: "m1")
+        _ = try publishReceipt(
+            store: foreign,
+            body: "foreign-server-receipt",
+            machineID: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA",
+            captureSuffix: "foreign-server"
+        )
+        let cold = try ArchiveStore(root: root, key: key, serverID: "hq")
+
+        XCTAssertThrowsError(try cold.listMachines(cursor: nil, limit: 10)) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+    }
+
+    // MCP retro F08: cold LIST scan rejects a receipt outside its digest shard.
+    func testColdListRejectsReceiptInMismatchedDigestShard() throws {
+        let setup = try ArchiveStore(root: root, key: key, serverID: "hq")
+        let manifestDigest = try publishReceipt(
+            store: setup,
+            body: "mismatched-shard-receipt",
+            machineID: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB",
+            captureSuffix: "mismatched-shard"
+        )
+        let wrongShard = manifestDigest.hasPrefix("00") ? "ff" : "00"
+        let misplaced = root.appendingPathComponent(
+            "receipts/sha256/\(wrongShard)/\(manifestDigest)"
+        )
+        try createParent(for: misplaced)
+        try FileManager.default.moveItem(at: receiptURL(manifestDigest), to: misplaced)
+        let cold = try ArchiveStore(root: root, key: key, serverID: "hq")
+
+        XCTAssertThrowsError(try cold.listMachines(cursor: nil, limit: 10)) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+    }
+
+    // MCP retro F08: cold LIST scan rejects a symlink substituted for a receipt file.
+    func testColdListRejectsSymlinkedReceiptFile() throws {
+        let setup = try ArchiveStore(root: root, key: key, serverID: "hq")
+        let manifestDigest = try publishReceipt(
+            store: setup,
+            body: "symlinked-receipt",
+            machineID: "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC",
+            captureSuffix: "symlinked-receipt"
+        )
+        let receipt = receiptURL(manifestDigest)
+        let outside = root.deletingLastPathComponent()
+            .appendingPathComponent("archive-store-symlinked-receipt-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try FileManager.default.moveItem(at: receipt, to: outside)
+        try FileManager.default.createSymbolicLink(
+            atPath: receipt.path,
+            withDestinationPath: outside.path
+        )
+        let cold = try ArchiveStore(root: root, key: key, serverID: "hq")
+
+        XCTAssertThrowsError(try cold.listMachines(cursor: nil, limit: 10)) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+    }
+
+    // MCP retro F08: cold LIST scan rejects a hard-linked receipt file.
+    func testColdListRejectsHardLinkedReceiptFile() throws {
+        let setup = try ArchiveStore(root: root, key: key, serverID: "hq")
+        let manifestDigest = try publishReceipt(
+            store: setup,
+            body: "hard-linked-receipt",
+            machineID: "DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD",
+            captureSuffix: "hard-linked-receipt"
+        )
+        let outside = root.deletingLastPathComponent()
+            .appendingPathComponent("archive-store-hard-linked-receipt-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outside) }
+        XCTAssertEqual(link(receiptURL(manifestDigest).path, outside.path), 0)
+        let cold = try ArchiveStore(root: root, key: key, serverID: "hq")
+
+        XCTAssertThrowsError(try cold.listMachines(cursor: nil, limit: 10)) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+    }
+
+    // MCP retro F08: cold LIST scan rejects a setup-time shard identity/symlink substitution.
+    func testColdListRejectsSetupTimeShardIdentitySubstitution() throws {
+        let setup = try ArchiveStore(root: root, key: key, serverID: "hq")
+        let manifestDigest = try publishReceipt(
+            store: setup,
+            body: "swapped-shard-receipt",
+            machineID: "EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE",
+            captureSuffix: "swapped-shard"
+        )
+        let shard = receiptURL(manifestDigest).deletingLastPathComponent()
+        let outside = root.deletingLastPathComponent()
+            .appendingPathComponent("archive-store-swapped-shard-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try FileManager.default.moveItem(at: shard, to: outside)
+        try FileManager.default.createSymbolicLink(
+            atPath: shard.path,
+            withDestinationPath: outside.path
+        )
+        let cold = try ArchiveStore(root: root, key: key, serverID: "hq")
+
+        XCTAssertThrowsError(try cold.listMachines(cursor: nil, limit: 10)) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+    }
+
+    // MCP retro F11: a receipt replacement that disagrees with a pending entry poisons lists.
+    func testListIndexFailsClosedAfterReceiptDigestConflictDuringWarm() throws {
+        let machineID = "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"
+        let raw = Data("list-index-poison".utf8)
+        let objectDigest = ArchiveV2Hash.sha256(raw)
+        let manifestBytes = try boundManifestBytes(
+            raw: raw,
+            objectDigest: objectDigest,
+            machineID: machineID,
+            captureID: ArchiveV2Hash.sha256(Data("list-index-poison".utf8)),
+            sessionID: "session-list-index-poison"
+        )
+        let manifestDigest = ArchiveV2Hash.sha256(manifestBytes)
+        let store = try ArchiveStore(
+            root: root,
+            key: key,
+            serverID: "hq",
+            now: { "2026-07-11T11:00:00.000Z" }
+        )
+        _ = try store.putObject(digest: objectDigest, raw: raw)
+        _ = try store.putManifest(digest: manifestDigest, canonicalBytes: manifestBytes)
+        let publishedReceipt = try store.createReceipt(manifestDigest: manifestDigest)
+
+        let alternateRoot = root.deletingLastPathComponent()
+            .appendingPathComponent("archive-store-alternate-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: alternateRoot) }
+        let alternate = try ArchiveStore(
+            root: alternateRoot,
+            key: key,
+            serverID: "hq",
+            now: { "2026-07-11T12:00:00.000Z" }
+        )
+        _ = try alternate.putObject(digest: objectDigest, raw: raw)
+        _ = try alternate.putManifest(digest: manifestDigest, canonicalBytes: manifestBytes)
+        let replacementReceipt = try alternate.createReceipt(manifestDigest: manifestDigest)
+        XCTAssertNotEqual(
+            ArchiveV2Hash.sha256(publishedReceipt),
+            ArchiveV2Hash.sha256(replacementReceipt)
+        )
+
+        let replacementURL = alternateRoot.appendingPathComponent(
+            "receipts/sha256/\(manifestDigest.prefix(2))/\(manifestDigest)"
+        )
+        try FileManager.default.removeItem(at: receiptURL(manifestDigest))
+        try FileManager.default.copyItem(at: replacementURL, to: receiptURL(manifestDigest))
+
+        XCTAssertThrowsError(try store.warmListIndex()) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+        XCTAssertThrowsError(try store.listMachines(cursor: nil, limit: 10)) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+        XCTAssertThrowsError(
+            try store.listReceipts(machineID: machineID, cursor: nil, limit: 10)
+        ) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+    }
+
+    // MCP retro F11: a failed warm resets to cold so a repaired archive can rebuild.
+    func testListIndexWarmFailureRecoversAfterArchiveRepair() throws {
+        let machineID = "12121212-1212-1212-1212-121212121212"
+        let store = try ArchiveStore(root: root, key: key, serverID: "hq")
+        let manifestDigest = try publishReceipt(
+            store: store,
+            body: "list-index-recovery",
+            machineID: machineID,
+            captureSuffix: "list-index-recovery"
+        )
+        let invalidShard = root.appendingPathComponent("receipts/sha256/not-a-shard")
+        try FileManager.default.createDirectory(
+            at: invalidShard,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+
+        XCTAssertThrowsError(try store.warmListIndex()) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+        try FileManager.default.removeItem(at: invalidShard)
+
+        XCTAssertNoThrow(try store.warmListIndex())
+        XCTAssertEqual(
+            try store.listMachines(cursor: nil, limit: 10).machineIDs,
+            [machineID]
+        )
+        XCTAssertEqual(
+            try store.listReceipts(machineID: machineID, cursor: nil, limit: 10)
+                .receipts.map(\.manifestSHA256),
+            [manifestDigest]
+        )
+    }
+
     func testListIndexWarmsOnceAndServesCursorPages() throws {
         let machineA = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
         let machineB = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
