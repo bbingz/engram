@@ -164,13 +164,16 @@ ledger entry.
   - `ping` answers in both eras; the existing `initialize` version cases
     (including negotiate-down from `2999-01-01`) keep passing unchanged.
 - `tests/fixtures/mcp-golden/discover.result.json`, generated from the Swift
-  source by `scripts/gen-mcp-contract-fixtures.ts` — its
-  `supportedVersions` is derived from the two Swift version sets, so adding a
-  revision in Swift without regenerating fails the gate.
+  source by `scripts/gen-mcp-contract-fixtures.ts`. The generator extracts only
+  `supportedVersions` and `instructions` from Swift; the other five discover
+  fields are TypeScript literals.
 - `npm run check:mcp-contract-fixtures`
   (`scripts/ci/check-mcp-contract-fixtures.sh`, run by `.github/workflows/test.yml`)
-  regenerates and diffs the golden fixtures, catching any drift between the
-  Swift constants and the documented contract.
+  regenerates and diffs the golden fixtures, so this cheap gate catches source
+  drift in those two extracted fields, not the complete discover result.
+- `EngramMCPExecutableTests.testServerDiscoverMatchesGolden` drives the real
+  Swift executable and compares the complete discover result with the golden;
+  it is the guard that catches drift in any of the seven fields.
 - Not tested: transports other than stdio (none exist), and streaming
   `resultType` values (not implemented).
 
