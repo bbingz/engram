@@ -22,15 +22,19 @@ later lists stay current without another disk pass.
 `EngramRemoteServerApp.run` fires `warmListIndex()` on a utility `Task` as soon
 as the process starts, so the accept path is not blocked and the first client
 list is usually already warm. A failed warm leaves the index cold; the next
-list rebuilds. Cursor semantics and conflict fail-closed behavior are unchanged
-— a same-manifest receipt with a different receipt digest poisons the index and
-lists surface conflict rather than serving a split view.
+list rebuilds. Cursor semantics are unchanged. Conflict handling is stricter
+than before #280: a same-manifest receipt with a different receipt digest now
+permanently poisons the process-wide index until restart, logs the conflict,
+and makes lists fail closed rather than serving a split view. Before #280, that
+conflict only emptied the request-local candidate array.
 
 Why this exists: even after the scan fast path, a real ~25k-receipt archive
 still costs ~18s per list, which makes remote MCP `archive_list_*` unusable.
 The residual cost was O(total receipts) AEAD + JSON decode per request; the
-index makes pages O(log n + page size) after one warm. No on-disk format change
-and no new durable state — restart re-warms from receipts on disk. The
+initial #280 index still allocated the full receipt-digest array for each
+receipt page, so those pages remained O(n). Retro PR-3 removed that allocation;
+current receipt pages are O(log n + page size) after one warm. No on-disk format
+change and no new durable state — restart re-warms from receipts on disk. The
 zero-delete product model is the reason a pure append index is correct.
 
 ### Archive enumeration scan fast path (2026-07-29)
@@ -114,6 +118,10 @@ between eras, legacy auth and `Origin` refusal, the never-minted
 `Mcp-Session-Id`, both eras on one server instance, and the transcript
 duplication. Design and rationale, including the corrected alternatives analysis:
 `docs/remote-mcp-2026-07-28-design.md`. Client setup: `docs/mcp-swift.md`.
+
+Production enablement: `macmini-m1` runs `releases/dcc048ce` with
+`ENGRAM_REMOTE_MCP_ENABLED=1`, and the Claude Code HTTP MCP client is connected.
+Rollback release pointer: `releases/38326d62`.
 
 ### Remote read-only MCP endpoint over Streamable HTTP (2026-07-29)
 

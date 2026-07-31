@@ -1861,6 +1861,8 @@ final class ArchiveRouteTests: XCTestCase {
         }
     }
 
+    // PR #279 / MCP retro F27 repro: both result fields must carry the
+    // transcript window because clients may discard `content`.
     func testMCPGetSessionDuplicatesTranscriptIntoStructuredContent() async throws {
         let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
         try await app.test(.router) { client in

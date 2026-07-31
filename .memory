@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-25, 2026-07-29 entries appended by hand): 111 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (recounted 2026-07-31): 111 dated entries; regenerate after adding sections -->
+- [2026-07-29 - Remote MCP production enablement on macmini-m1](#2026-07-29---remote-mcp-production-enablement-on-macmini-m1)
 - [2026-07-29 - Process-local archive list index for interactive remote MCP lists (Claude)](#2026-07-29---process-local-archive-list-index-for-interactive-remote-mcp-lists-claude)
 - [2026-07-29 - Archive enumeration must not use getReceipt's durable contract (Claude)](#2026-07-29---archive-enumeration-must-not-use-getreceipts-durable-contract-claude)
 - [2026-07-29 - Verify the real client before choosing an MCP era policy; structuredContent hides content (Claude)](#2026-07-29---verify-the-real-client-before-choosing-an-mcp-era-policy-structuredcontent-hides-content-claude)
@@ -114,6 +115,12 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-29 - Remote MCP production enablement on macmini-m1
+
+- `macmini-m1` runs `releases/dcc048ce` with
+  `ENGRAM_REMOTE_MCP_ENABLED=1`; the Claude Code HTTP MCP client is connected.
+- Rollback release pointer: `releases/38326d62`.
 
 ## 2026-07-29 - Process-local archive list index for interactive remote MCP lists (Claude)
 
