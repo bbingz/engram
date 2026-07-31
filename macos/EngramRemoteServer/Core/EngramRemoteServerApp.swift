@@ -1050,25 +1050,27 @@ enum MCPRemoteEndpoint {
         guard let machineID = try stringArgument(arguments, "machine_id"), !machineID.isEmpty else {
             throw MCPRemoteToolError(message: "machine_id is required", code: "invalidArguments")
         }
-        let page = try store.listReceipts(
+        // Every field comes from the process-local index, captured when the
+        // receipt was scanned or published (retro PR-3, F07). The page used to
+        // call the durable `getReceipt` once per entry — two fsyncs plus a
+        // manifest cross-check each — which re-added the per-receipt cost the
+        // index exists to remove. A receipt that cannot be read or decoded now
+        // fails the whole warm scan closed instead of silently degrading one
+        // entry to its two digest fields.
+        let page = try store.listCaptures(
             machineID: machineID,
             cursor: try stringArgument(arguments, "cursor"),
             limit: try limitArgument(arguments)
         )
-        let decoder = JSONDecoder()
-        let captures: [MCPRemoteWireValue] = page.receipts.map { summary in
-            var entry: [(String, MCPRemoteWireValue)] = [
-                ("manifestSHA256", .string(summary.manifestSHA256)),
-                ("receiptSHA256", .string(summary.receiptSHA256)),
-            ]
-            if let data = try? store.getReceipt(manifestDigest: summary.manifestSHA256),
-               let receipt = try? decoder.decode(ArchiveServerReceipt.self, from: data) {
-                entry.append(("sessionID", .string(receipt.sessionID)))
-                entry.append(("captureID", .string(receipt.captureID)))
-                entry.append(("rawByteCount", .int(Int(receipt.rawByteCount))))
-                entry.append(("storedAt", .string(receipt.storedAt)))
-            }
-            return .object(entry)
+        let captures: [MCPRemoteWireValue] = page.captures.map { capture in
+            .object([
+                ("manifestSHA256", .string(capture.manifestSHA256)),
+                ("receiptSHA256", .string(capture.receiptSHA256)),
+                ("sessionID", .string(capture.sessionID)),
+                ("captureID", .string(capture.captureID)),
+                ("rawByteCount", .int(Int(capture.rawByteCount))),
+                ("storedAt", .string(capture.storedAt)),
+            ])
         }
         var body: [(String, MCPRemoteWireValue)] = [("captures", .array(captures))]
         if let next = page.nextCursor {
