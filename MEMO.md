@@ -7,7 +7,7 @@
 - [复盘] MCP 两轮升级(#277–#281)双重验证复盘:5 路并行审查 + 对抗验证 + Codex 独立复核 29 项发现(1 高、约 10 中);敌意文件系统测试证实 #280 扫描替换防御真实有效,只是此前无测试钉住。详见 `CHANGELOG.md`。
 - [修复] `archive_get_session` 窗口读从 O(整源解密) 降为 O(窗口),UTF-8 分页字节精确;列表索引锁外构建 + 失败退避(显式 warm 绕过)+ 毒化日志;`archive_list_captures` 全部由索引服务,去掉逐条 durable 读。
 - [变更] 双端时代判定统一(`_meta` 版本键存在即 modern 意图,非字符串值 → -32022);远端 legacy 版本集收缩为 {2025-06-18, 2025-11-25},被移除修订走协商降级而非拒绝。
-- [验证] 五个本地 PR 合入 `retro/integration`(28 提交):RemoteServerCore 142/142、MCPTests 192/192、fixture 门禁通过。**未 push**,待人工验收后推送。
+- [验证] 五个 PR 已按 #282→#283→#285→#284→#286 顺序全绿 squash 落地,最终 main `0e891215` 与预验证的 `retro/integration` 树逐字节一致;落地后本地复验 RemoteServerCore 142/142、MCPTests 192/192、fixture 门禁与 lint 通过,post-merge Tests/CodeQL success。
 
 ### 2026-07-29
 

@@ -125,8 +125,9 @@
   high-severity production defect: `archive_get_session` did whole-source
   AEAD + hash per windowed call. Hostile-filesystem tests written afterwards
   proved the #280 scan substitution defences actually held.
-- Fixes: five local PRs merged to `retro/integration` (28 commits, NOT
-  pushed). Details in `CHANGELOG.md` (2026-07-31 entry) and the three new
+- Fixes: landed as five squash-merged PRs #282/#283/#285/#284/#286; final
+  main `0e891215`, tree byte-identical to the pre-verified `retro/integration`
+  merge. Details in `CHANGELOG.md` (2026-07-31 entry) and the three new
   design docs (`archive-windowed-read`, `archive-list-index-robustness`,
   `mcp-protocol-alignment`).
 - Durable protocol contract after the campaign: `_meta` protocolVersion KEY
