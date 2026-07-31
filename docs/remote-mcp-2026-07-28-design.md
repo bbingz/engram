@@ -333,15 +333,32 @@ Three, all annotated `readOnlyHint: true`, `openWorldHint: false`, with
   receipt decodes. The `sessionID` + manifest digest pair is what makes the
   result actionable: the digest is the handle `archive_get_session` takes.
 - **`archive_get_session`** (`manifest_sha256` required, `offset` ≥ 0,
-  `max_bytes` ≤ 1 MiB, default 256 KiB) — reads the manifest, walks its chunks in
-  ordinal order, and reassembles only the requested byte window. Each chunk's
-  `rawByteCount` is known from the manifest, so chunks entirely before `offset`
-  or entirely after `offset + max_bytes` are skipped **without being fetched or
-  decrypted**. The result carries `structuredContent` with `sessionID`, `source`,
+  `max_bytes` ≤ 1 MiB, default 256 KiB) — calls
+  `ArchiveStore.readSourceWindow(manifestDigest:offset:maxBytes:)`, which
+  authenticates the manifest envelope, walks its chunks in ordinal order
+  accumulating `rawByteCount`, and reassembles only the requested byte window.
+  Chunks entirely before `offset` or entirely after `offset + max_bytes` are
+  skipped **without being fetched or decrypted**; the chunks that are fetched are
+  verified against the manifest's `rawByteCount` and `rawSHA256`. Corrected
+  2026-07-31 (retro PR-2, F01): this guarantee was false until then, because the
+  tool went through `getManifest`, whose `wholeSourceSHA256` fold reads every
+  chunk. That fold is deliberately **not** on the windowed path — it is only
+  computable by reading the whole source — so the served bytes are covered by
+  envelope AEAD plus per-chunk digests rather than by a whole-source digest. See
+  `docs/archive-windowed-read-design.md`. `GET /v2/archive/manifests/{digest}`
+  keeps the full check.
+  The result carries `structuredContent` with `sessionID`, `source`,
   `locator`, `machineID`, `captureID`, `capturedAt`, `totalBytes`, `offset`,
   `byteCount`, and `nextOffset` when more remains — so an agent can page a large
   transcript deterministically instead of guessing — plus `text`, the transcript
-  window itself (see below).
+  window itself (see below). The window is snapped to UTF-8 scalar boundaries
+  before it is decoded (retro PR-2, F18), so a multibyte character is never split
+  across pages: `offset` is the **effective** start of the returned text (equal to
+  the requested offset unless the caller aimed inside a character), and
+  `nextOffset` advances from the snapped end, so concatenated pages reproduce the
+  source byte-for-byte. A window too small to hold one whole scalar is returned
+  unsnapped so paging still advances, and genuinely invalid stored bytes still
+  repair to U+FFFD.
 
 Tool-level failures return `isError: true` with a machine-readable
 `structuredContent.code` (`invalidArguments`, `notFound`, `unknownTool`,
@@ -369,13 +386,17 @@ serializes the same structured object into both fields, so their payload was
 always reachable — which is precisely why every modern-era test passed while the
 one tool that mattered most did not work.
 
-The cost is real and bounded: the window bytes are counted twice in the response
-body. With the 256 KiB default that is ~512 KiB on the wire, and with the 1 MiB
-`max_bytes` ceiling ~2 MiB. Both are outbound-only (the 1 MiB cap is on request
-bodies), and paging through `nextOffset` is unaffected. Dropping the `content`
-block instead would halve it, but would break any client that reads `content`
-and ignores structured results — a strictly worse trade than paying for the
-duplicate.
+The cost is real: the window bytes are counted twice in the response body. With
+the 256 KiB default that is ~512 KiB of transcript on the wire, and with the 1 MiB
+`max_bytes` ceiling ~2 MiB. Corrected 2026-07-31 (retro PR-2, F18): those are
+*estimates of the duplication*, not hard bounds on the response — JSON string
+escaping of `"`, `\` and control characters expands both copies, and bytes that
+are not valid UTF-8 repair to U+FFFD (3 bytes out per bad byte). Size against the
+duplication factor of 2, not against a byte ceiling. Both copies are outbound-only
+(the 1 MiB cap is on request bodies), and paging through `nextOffset` is
+unaffected. Dropping the `content` block instead would halve it, but would break
+any client that reads `content` and ignores structured results — a strictly worse
+trade than paying for the duplicate.
 
 No schema change, no migration, no backfill, no service IPC change, no UI change.
 
@@ -383,7 +404,7 @@ No schema change, no migration, no backfill, no service IPC change, no UI change
 
 - **1. Single-Writer Discipline** — preserved trivially. The endpoint performs
   no writes: it only calls `ArchiveStore.listMachines`, `listReceipts`,
-  `getReceipt`, `getManifest`, and `getObject`.
+  `getReceipt`, and `readSourceWindow` (which reads manifest and chunk objects).
 - **8. Service Socket Security** — untouched. This is a separate process on a
   separate machine with its own transport; the local Unix socket is not
   involved.
@@ -548,6 +569,13 @@ New cases, added to the existing files so the Xcode project stays unregenerated:
     `structuredContent.code == "notFound"`.
   - Unknown argument keys and out-of-range `limit`/`max_bytes` → `isError` with
     `invalidArguments`.
+  - Added 2026-07-31 (retro PR-2): paging a mixed-width UTF-8 transcript
+    reassembles byte-exactly with no U+FFFD
+    (`testMCPGetSessionPagesUTF8ScalarBoundariesExactly_repro`). The
+    skip-without-fetch guarantee is pinned store-side in `ArchiveStoreTests`
+    (`testWindowedSourceReadSkipsNonOverlappingChunks_repro`,
+    `testWindowedSourceReadRejectsCorruptOverlappingChunk_repro`,
+    `testGetManifestStillValidatesEveryChunkObject`).
 - Gates that must keep passing unchanged: `scripts/check-archive-v2-safety.sh`
   (no new DELETE registration) and
   `testRemoteServerCoreIncludesOnlyPureArchiveWireSources` (no new target
@@ -668,7 +696,8 @@ revision fixes were invisible to a conformant-but-synthetic test matrix.
   an unknown `initialize` version negotiates down.
 - **Risk (medium/low): `archive_get_session` sends the window twice.** The
   transcript is in `content[0].text` and in `structuredContent.text`, so a
-  256 KiB default window is ~512 KiB on the wire and a 1 MiB window ~2 MiB. This
+  256 KiB default window is ~512 KiB on the wire and a 1 MiB window ~2 MiB —
+  before JSON escaping and U+FFFD expansion, which apply to both copies. This
   is deliberate (see Tools) and the driver is client behavior that could change:
   if a future Claude Code surfaces `content` alongside structured results, the
   duplication becomes pure waste and should be dropped — but only after
