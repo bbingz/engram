@@ -12,8 +12,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 A two-pass retrospective of the MCP upgrade rounds #277-#281 — five parallel
 reviewers with adversarial verification, then an independent re-check of all
 29 findings by Codex — confirmed one high, ~10 medium, and a tail of low
-findings. Everything actionable landed as five local PRs merged to
-`retro/integration` (28 commits over main, NOT yet pushed):
+findings. Everything actionable landed as five squash-merged PRs — #282
+(tests), #283 (windowed read), #285 (index robustness), #284 (protocol
+alignment), #286 (bookkeeping + this record); final main `0e891215`, tree
+verified byte-identical to the pre-verified `retro/integration` merge:
 
 - `retro/pr1-tests` — 19 tests-only additions pinning previously untested
   load-bearing claims: hostile-filesystem substitution defences on the scan
