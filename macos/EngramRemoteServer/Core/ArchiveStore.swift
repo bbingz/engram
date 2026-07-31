@@ -17,6 +17,21 @@ public struct ArchiveReceiptCreation: Equatable, Sendable {
     }
 }
 
+/// A byte window of an archived source plus the manifest describing it.
+public struct ArchiveSourceWindow: Sendable {
+    public let manifest: ArchiveSourceManifest
+    /// Window bytes, clamped to the end of the source.
+    public let bytes: Data
+    /// Raw byte count of the whole source, not of the window.
+    public let totalBytes: Int64
+
+    public init(manifest: ArchiveSourceManifest, bytes: Data, totalBytes: Int64) {
+        self.manifest = manifest
+        self.bytes = bytes
+        self.totalBytes = totalBytes
+    }
+}
+
 public enum ArchiveStoreError: Error, Equatable, Sendable {
     case invalidDigest
     case digestMismatch
@@ -418,6 +433,54 @@ public struct ArchiveStore: Sendable {
         return bytes
     }
 
+    /// Read one byte window of an archived source.
+    ///
+    /// Only chunks overlapping `[offset, offset + maxBytes)` are fetched and
+    /// decrypted, so the cost tracks the window instead of the whole source
+    /// (retro PR-2, F01). Integrity of the served bytes rests on the manifest
+    /// envelope AEAD plus each fetched chunk's `rawByteCount`/`rawSHA256`; the
+    /// `wholeSourceSHA256` fold that `getManifest` performs is deliberately not
+    /// done here, because it can only be computed by reading every chunk —
+    /// exactly the cost this path exists to avoid. Callers that need the
+    /// whole-source guarantee keep using `getManifest`.
+    public func readSourceWindow(
+        manifestDigest: String,
+        offset: Int,
+        maxBytes: Int
+    ) throws -> ArchiveSourceWindow {
+        try Self.validateDigest(manifestDigest)
+        guard offset >= 0, maxBytes > 0 else {
+            throw ArchiveStoreError.invalidPage
+        }
+        let bytes = try readEnvelope(
+            at: url(for: manifestDigest, kind: .manifest, createShard: false),
+            expectedKind: .manifest,
+            expectedDigest: manifestDigest
+        )
+        let manifest = try decodedManifest(bytes, expectedDigest: manifestDigest)
+
+        let windowEnd = offset > Int.max - maxBytes ? Int.max : offset + maxBytes
+        var window = Data()
+        var position = 0
+        for chunk in manifest.chunks.sorted(by: { $0.ordinal < $1.ordinal }) {
+            let chunkLength = Int(chunk.rawByteCount)
+            let chunkStart = position
+            position += chunkLength
+            if position <= offset { continue }
+            if chunkStart >= windowEnd { break }
+            let object = try chunkObject(chunk, durableReferences: false)
+            let sliceStart = max(0, offset - chunkStart)
+            let sliceEnd = min(chunkLength, windowEnd - chunkStart)
+            guard sliceStart < sliceEnd else { continue }
+            window.append(object.subdata(in: sliceStart..<sliceEnd))
+        }
+        return ArchiveSourceWindow(
+            manifest: manifest,
+            bytes: window,
+            totalBytes: manifest.rawByteCount
+        )
+    }
+
     public func createReceipt(manifestDigest: String) throws -> Data {
         try createReceiptWithResult(manifestDigest: manifestDigest).bytes
     }
@@ -612,39 +675,57 @@ public struct ArchiveStore: Sendable {
         )
     }
 
+    /// Manifest envelope checks only: digest match plus canonical decode.
+    /// Chunk verification is the caller's choice, so a windowed read does not
+    /// pay for chunks it never serves (retro PR-2, F01).
+    private func decodedManifest(
+        _ bytes: Data,
+        expectedDigest: String
+    ) throws -> ArchiveSourceManifest {
+        guard ArchiveV2Hash.sha256(bytes) == expectedDigest else {
+            throw ArchiveStoreError.digestMismatch
+        }
+        do {
+            return try ArchiveCanonicalJSON.decode(ArchiveSourceManifest.self, from: bytes)
+        } catch {
+            throw ArchiveStoreError.invalidManifest
+        }
+    }
+
+    /// Fetch one chunk object and verify it against its manifest reference.
+    private func chunkObject(
+        _ chunk: ArchiveChunkReference,
+        durableReferences: Bool
+    ) throws -> Data {
+        let object: Data
+        do {
+            object = durableReferences
+                ? try readDurableEnvelope(digest: chunk.rawSHA256, kind: .object)
+                : try getObject(digest: chunk.rawSHA256)
+        } catch ArchiveStoreError.notFound {
+            throw ArchiveStoreError.missingReference
+        } catch ArchiveStoreError.io {
+            throw ArchiveStoreError.io
+        } catch {
+            throw ArchiveStoreError.conflict
+        }
+        guard object.count == chunk.rawByteCount,
+              ArchiveV2Hash.sha256(object) == chunk.rawSHA256 else {
+            throw ArchiveStoreError.conflict
+        }
+        return object
+    }
+
     private func validatedManifest(
         _ bytes: Data,
         expectedDigest: String,
         durableReferences: Bool
     ) throws -> ArchiveSourceManifest {
-        guard ArchiveV2Hash.sha256(bytes) == expectedDigest else {
-            throw ArchiveStoreError.digestMismatch
-        }
-        let manifest: ArchiveSourceManifest
-        do {
-            manifest = try ArchiveCanonicalJSON.decode(ArchiveSourceManifest.self, from: bytes)
-        } catch {
-            throw ArchiveStoreError.invalidManifest
-        }
+        let manifest = try decodedManifest(bytes, expectedDigest: expectedDigest)
 
         var wholeHasher = SHA256()
         for chunk in manifest.chunks {
-            let object: Data
-            do {
-                object = durableReferences
-                    ? try readDurableEnvelope(digest: chunk.rawSHA256, kind: .object)
-                    : try getObject(digest: chunk.rawSHA256)
-            } catch ArchiveStoreError.notFound {
-                throw ArchiveStoreError.missingReference
-            } catch ArchiveStoreError.io {
-                throw ArchiveStoreError.io
-            } catch {
-                throw ArchiveStoreError.conflict
-            }
-            guard object.count == chunk.rawByteCount,
-                  ArchiveV2Hash.sha256(object) == chunk.rawSHA256 else {
-                throw ArchiveStoreError.conflict
-            }
+            let object = try chunkObject(chunk, durableReferences: durableReferences)
             wholeHasher.update(data: object)
         }
         let wholeDigest = Data(wholeHasher.finalize())

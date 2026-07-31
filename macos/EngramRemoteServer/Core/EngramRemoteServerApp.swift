@@ -1090,28 +1090,29 @@ enum MCPRemoteEndpoint {
             arguments, "max_bytes", minimum: 1, maximum: maxTranscriptWindowBytes
         ) ?? defaultTranscriptWindowBytes
 
-        let manifestData = try store.getManifest(digest: digest)
-        let manifest = try JSONDecoder().decode(ArchiveSourceManifest.self, from: manifestData)
+        // Windowed reassembly lives in the store: only chunks overlapping the
+        // requested window are fetched and decrypted (retro PR-2, F01).
+        let source = try store.readSourceWindow(
+            manifestDigest: digest,
+            offset: offset,
+            maxBytes: maxBytes
+        )
+        let manifest = source.manifest
+        let totalBytes = Int(source.totalBytes)
 
-        // Windowed reassembly: chunk byte counts let whole chunks outside the
-        // requested window be skipped without decrypting them.
-        var window = Data()
-        var position = 0
-        for chunk in manifest.chunks.sorted(by: { $0.ordinal < $1.ordinal }) {
-            let chunkLength = Int(chunk.rawByteCount)
-            let chunkStart = position
-            position += chunkLength
-            if position <= offset { continue }
-            if chunkStart >= offset + maxBytes { break }
-            let raw = try store.getObject(digest: chunk.rawSHA256)
-            let sliceStart = max(0, offset - chunkStart)
-            let sliceEnd = min(chunkLength, offset + maxBytes - chunkStart)
-            guard sliceStart < sliceEnd, sliceEnd <= raw.count else { continue }
-            window.append(raw.subdata(in: sliceStart..<sliceEnd))
-        }
-
-        let totalBytes = Int(manifest.rawByteCount)
-        let nextOffset = offset + window.count
+        // A page boundary must not split a multibyte character: the repairing
+        // UTF-8 decode below would turn the split scalar into U+FFFD in both
+        // pages, and no client could reassemble it (retro PR-2, F18). Snapping
+        // the window to scalar boundaries and deriving `nextOffset` from the
+        // snapped end keeps paging byte-exact.
+        let bounds = utf8ScalarBounds(
+            of: source.bytes,
+            snapStart: offset > 0,
+            snapEnd: offset + source.bytes.count < totalBytes
+        )
+        let window = source.bytes.subdata(in: bounds)
+        let windowOffset = offset + (bounds.lowerBound - source.bytes.startIndex)
+        let nextOffset = offset + (bounds.upperBound - source.bytes.startIndex)
         var structured: [(String, MCPRemoteWireValue)] = [
             ("sessionID", manifest.sessionID.map { .string($0) } ?? .null),
             ("source", .string(manifest.source)),
@@ -1120,7 +1121,9 @@ enum MCPRemoteEndpoint {
             ("captureID", .string(manifest.captureID)),
             ("capturedAt", .string(manifest.capturedAt)),
             ("totalBytes", .int(totalBytes)),
-            ("offset", .int(offset)),
+            // Effective start of the returned text: equal to the requested
+            // offset unless that offset landed inside a multibyte character.
+            ("offset", .int(windowOffset)),
             ("byteCount", .int(window.count)),
         ]
         if nextOffset < totalBytes, !window.isEmpty {
@@ -1138,6 +1141,62 @@ enum MCPRemoteEndpoint {
             ])),
             ("structuredContent", .object(structured)),
         ]
+    }
+
+    /// Byte range of `window` that holds only whole UTF-8 scalars.
+    ///
+    /// `snapStart` skips the continuation bytes of a scalar the window begins
+    /// inside; `snapEnd` drops a trailing scalar the window cuts short so the
+    /// next page starts on its first byte. A window too small to hold one whole
+    /// scalar is returned unchanged, so paging still advances — that page keeps
+    /// the pre-fix behavior and repairs to U+FFFD, as do genuinely invalid
+    /// stored bytes.
+    private static func utf8ScalarBounds(
+        of window: Data,
+        snapStart: Bool,
+        snapEnd: Bool
+    ) -> Range<Int> {
+        let full = window.startIndex..<window.endIndex
+        guard !window.isEmpty else { return full }
+        var start = window.startIndex
+        if snapStart {
+            while start < window.endIndex,
+                  isUTF8Continuation(window[start]),
+                  start - window.startIndex < 3 {
+                start += 1
+            }
+        }
+        var end = window.endIndex
+        if snapEnd {
+            // A valid scalar carries at most three continuation bytes, so a
+            // lead byte further back than that means the bytes are invalid.
+            var probe = end - 1
+            while probe >= start, end - probe <= 4 {
+                let byte = window[probe]
+                if !isUTF8Continuation(byte) {
+                    if let length = utf8ScalarLength(lead: byte), probe + length > end {
+                        end = probe
+                    }
+                    break
+                }
+                probe -= 1
+            }
+        }
+        return start < end ? start..<end : full
+    }
+
+    private static func isUTF8Continuation(_ byte: UInt8) -> Bool {
+        byte & 0xC0 == 0x80
+    }
+
+    private static func utf8ScalarLength(lead byte: UInt8) -> Int? {
+        switch byte {
+        case 0x00...0x7F: return 1
+        case 0xC2...0xDF: return 2
+        case 0xE0...0xEF: return 3
+        case 0xF0...0xF4: return 4
+        default: return nil
+        }
     }
 
     // MARK: Tool argument validation
