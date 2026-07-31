@@ -978,21 +978,11 @@ final class ArchiveRouteTests: XCTestCase {
                     Self.mcpHeaders(method: "tools/list"),
                     try Self.mcpBody(method: "tools/list", metaVersion: "2026-01-01")
                 ),
-                // An absent `_meta` protocol version now selects the legacy era
-                // (see testMCPLegacyResultsAreUnwrapped), so this guard is only
-                // reachable when the key is present with a non-string value.
-                (
-                    "_meta protocol version is not a string",
-                    Self.mcpHeaders(method: "tools/list"),
-                    ByteBuffer(data: try JSONSerialization.data(withJSONObject: [
-                        "jsonrpc": "2.0",
-                        "method": "tools/list",
-                        "id": 1,
-                        "params": [
-                            "_meta": ["io.modelcontextprotocol/protocolVersion": 20_260_728],
-                        ],
-                    ]))
-                ),
+                // An absent `_meta` protocol version selects the legacy era
+                // (see testMCPLegacyResultsAreUnwrapped) and a present-but-
+                // non-string one is now a -32022 raised before this check
+                // (see the F16/F22 repro below), so header validation only ever
+                // sees a well-formed modern request.
                 (
                     "Mcp-Method mismatch",
                     Self.mcpHeaders(method: "tools/list"),
@@ -1069,6 +1059,86 @@ final class ArchiveRouteTests: XCTestCase {
             let errorData = try XCTUnwrap(error["data"] as? [String: Any])
             XCTAssertEqual(errorData["supported"] as? [String], [Self.mcpProtocolVersion])
             XCTAssertEqual(errorData["requested"] as? String, requested)
+        }
+    }
+
+    // MCP retro F16/F22, retro PR-4: a present-but-non-string `_meta` version
+    // is modern-era intent naming no usable revision. It used to be reported as
+    // -32020 "request body is missing _meta[...]" — a message naming a key the
+    // request did carry — because header validation ran first.
+    func testMCPModernMetaWithNonStringVersionIsUnsupportedProtocolVersion_repro() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let cases: [(label: String, value: Any, requested: String)] = [
+                ("number", 20_260_728, "<number>"),
+                ("null", NSNull(), "<null>"),
+                ("bool", true, "<bool>"),
+                ("array", ["2026-07-28"], "<array>"),
+                ("object", ["value": "2026-07-28"], "<object>"),
+            ]
+            for entry in cases {
+                let response = try await client.execute(
+                    uri: "/mcp",
+                    method: .post,
+                    headers: Self.mcpHeaders(method: "tools/list"),
+                    body: ByteBuffer(data: try JSONSerialization.data(withJSONObject: [
+                        "jsonrpc": "2.0",
+                        "method": "tools/list",
+                        "id": 1,
+                        "params": [
+                            "_meta": ["io.modelcontextprotocol/protocolVersion": entry.value],
+                        ],
+                    ]))
+                )
+                XCTAssertEqual(response.status.code, 400, entry.label)
+                let error = try Self.mcpError(response)
+                XCTAssertEqual(error["code"] as? Int, -32022, entry.label)
+                XCTAssertEqual(
+                    error["message"] as? String,
+                    "Unsupported protocol version",
+                    entry.label
+                )
+                let errorData = try XCTUnwrap(error["data"] as? [String: Any], entry.label)
+                XCTAssertEqual(errorData["requested"] as? String, entry.requested, entry.label)
+                XCTAssertEqual(
+                    errorData["supported"] as? [String],
+                    [Self.mcpProtocolVersion],
+                    entry.label
+                )
+            }
+        }
+    }
+
+    // MCP retro F29, retro PR-4: `params` or `_meta` that is not an object
+    // cannot carry the version key, so the request is legacy — the same rule
+    // the stdio helper applies in testNonObjectMetaOrParamsSelectsLegacyEra.
+    func testMCPNonObjectMetaOrParamsSelectsLegacyEra() async throws {
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let cases: [(label: String, params: Any)] = [
+                ("_meta is a string", ["_meta": "garbage"]),
+                ("_meta is an array", ["_meta": [Any]()]),
+                ("_meta is null", ["_meta": NSNull()]),
+                ("params is a string", "garbage"),
+                ("params is an array", [Any]()),
+            ]
+            for entry in cases {
+                let response = try await client.execute(
+                    uri: "/mcp",
+                    method: .post,
+                    headers: Self.mcpLegacyHeaders(),
+                    body: ByteBuffer(data: try JSONSerialization.data(withJSONObject: [
+                        "jsonrpc": "2.0",
+                        "method": "tools/list",
+                        "id": 1,
+                        "params": entry.params,
+                    ]))
+                )
+                XCTAssertEqual(response.status.code, 200, entry.label)
+                let result = try Self.mcpResult(response)
+                Self.assertUnwrappedLegacyResult(result, entry.label)
+                XCTAssertEqual(Set(result.keys), ["tools"], entry.label)
+            }
         }
     }
 
@@ -1417,13 +1487,21 @@ final class ArchiveRouteTests: XCTestCase {
     // MARK: - MCP legacy era (initialize handshake, stateless)
 
     func testMCPLegacyInitializeHandshakeWithoutModernMetadata() async throws {
+        // MCP retro F17/F21, retro PR-4: the served set is exactly the two
+        // Streamable HTTP revisions that mandate no JSON-RPC batch support.
+        XCTAssertEqual(
+            MCPRemoteEndpoint.legacyProtocolVersions,
+            ["2025-06-18", "2025-11-25"],
+            "2025-03-26 requires batch receipt (rejected here as -32700) and "
+                + "2024-11-05 predates Streamable HTTP"
+        )
         let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
         try await app.test(.router) { client in
             // Shipping MCP HTTP clients are still legacy-era: Claude Code
             // 2.1.220 POSTs exactly this — `initialize` with protocolVersion in
             // params, no per-request `_meta`, and none of the 2026-07-28
             // request-metadata headers. Header validation must be skipped.
-            for requested in ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"] {
+            for requested in ["2025-06-18", "2025-11-25"] {
                 let response = try await client.execute(
                     uri: "/mcp",
                     method: .post,
@@ -1471,6 +1549,11 @@ final class ArchiveRouteTests: XCTestCase {
             let cases: [(label: String, params: [String: Any])] = [
                 ("older than every supported revision", ["protocolVersion": "2024-01-01"]),
                 ("newer than every supported revision", ["protocolVersion": "2999-01-01"]),
+                // Dropped from the served set in retro PR-4 (MCP retro
+                // F17/F21): a client asking for either is negotiated down
+                // rather than refused, so the trim costs no connection.
+                ("batch-mandating 2025-03-26", ["protocolVersion": "2025-03-26"]),
+                ("pre-Streamable-HTTP 2024-11-05", ["protocolVersion": "2024-11-05"]),
                 // The modern revision offered without `_meta` is still a legacy
                 // handshake, so it negotiates down rather than switching eras.
                 ("modern revision without _meta", ["protocolVersion": Self.mcpProtocolVersion]),

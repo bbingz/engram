@@ -28,7 +28,10 @@ final class MCPStdioServer {
         "2026-07-28",
     ]
     // Every revision this build supports across both eras, newest first.
-    // Advertised by `server/discover` and in UnsupportedProtocolVersionError.
+    // Advertised by `server/discover` alone: it answers before era detection as
+    // the backward-compatibility probe, so naming the legacy revisions there
+    // tells a client it can fall back to the `initialize` handshake.
+    // UnsupportedProtocolVersionError reports `modernProtocolVersions` instead.
     private static let advertisedProtocolVersions: [String] =
         modernProtocolVersions.union(supportedProtocolVersions).sorted(by: >)
     private static let serverInfoJSON: OrderedJSONValue = .object([
@@ -128,13 +131,44 @@ final class MCPStdioServer {
         case unsupportedModern(requested: String)
     }
 
+    // The `_meta` key whose *presence* inside an object-valued `_meta` signals
+    // modern-era intent. A non-object `params` or `_meta` cannot carry it, so
+    // those requests stay legacy.
+    private static let protocolVersionMetaKey = "io.modelcontextprotocol/protocolVersion"
+
     private static func era(of request: JSONRPCRequest) -> RequestEra {
-        guard let requested = request.params?["_meta"]?["io.modelcontextprotocol/protocolVersion"]?.stringValue else {
+        guard let requested = request.params?["_meta"]?[protocolVersionMetaKey] else {
             return .legacy
         }
-        return modernProtocolVersions.contains(requested)
+        guard let version = requested.stringValue else {
+            // The key is present, so the client asserted modern semantics; a
+            // non-string value simply names no revision. Report it instead of
+            // demoting the request to legacy, which answered a modern client
+            // with an un-enveloped result (MCP retro F13, retro PR-4).
+            return .unsupportedModern(requested: invalidVersionDescription(requested))
+        }
+        return modernProtocolVersions.contains(version)
             ? .modern
-            : .unsupportedModern(requested: requested)
+            : .unsupportedModern(requested: version)
+    }
+
+    /// Name the JSON type of a `_meta` protocol version that is not a string,
+    /// so the -32022 payload describes what arrived rather than nothing.
+    private static func invalidVersionDescription(_ value: JSONValue) -> String {
+        switch value {
+        case .null:
+            return "<null>"
+        case .bool:
+            return "<bool>"
+        case .int, .double:
+            return "<number>"
+        case .array:
+            return "<array>"
+        case .object:
+            return "<object>"
+        case .string(let version):
+            return version
+        }
     }
 
     private func handleToolCallAsync(_ request: JSONRPCRequest, modern: Bool) async {
@@ -163,6 +197,15 @@ final class MCPStdioServer {
     private func handle(_ request: JSONRPCRequest, modern: Bool) async {
         switch request.method {
         case "initialize":
+            if modern {
+                // Modern revisions removed the handshake, so there is no
+                // negotiated connection version to hand back and `initialize`
+                // is simply not a method this era defines. Answering it also
+                // escaped the modern result envelope (MCP retro F14, retro
+                // PR-4); the remote endpoint refuses it the same way.
+                emitError(id: request.id, code: -32601, message: "Method not found")
+                return
+            }
             guard let requestedVersion = request.params?["protocolVersion"]?.stringValue else {
                 emitError(id: request.id, code: -32602, message: "Missing protocolVersion")
                 return
@@ -379,7 +422,14 @@ final class MCPStdioServer {
             code: -32022,
             message: "Unsupported protocol version",
             data: .object([
-                ("supported", .array(Self.advertisedProtocolVersions.map { .string($0) })),
+                // Modern revisions only. This error fires on the per-request
+                // `_meta` channel, and a legacy revision can never be selected
+                // through it — advertising the cross-era union told clients to
+                // retry with a revision that gets the identical rejection
+                // (MCP retro F02, retro PR-4). `server/discover` still reports
+                // the union: there it is the backward-compatibility probe's
+                // answer, and falling back to the handshake is a real option.
+                ("supported", .array(Self.modernProtocolVersions.sorted(by: >).map { .string($0) })),
                 ("requested", .string(requested)),
             ])
         )

@@ -643,9 +643,19 @@ enum MCPRemoteEndpoint {
     /// per-request `_meta`, and no `Mcp-Method` header. Sessions are a MAY in
     /// those revisions, so the legacy path stays stateless — no
     /// `Mcp-Session-Id` is minted, echoed, or required.
+    ///
+    /// Narrowed to the two revisions this endpoint can honestly serve over
+    /// Streamable HTTP (MCP retro F17/F21, retro PR-4): `2025-03-26` requires
+    /// receivers to accept JSON-RPC batches, which this endpoint rejects as
+    /// `-32700`, and `2024-11-05` predates Streamable HTTP entirely (it defines
+    /// the HTTP+SSE transport, whose GET stream this endpoint refuses). Echoing
+    /// either back promised a contract the endpoint does not implement. An
+    /// unknown revision still negotiates down instead of failing the
+    /// connection, so a client that asks for one is served, not refused. The
+    /// stdio helper's version sets are deliberately left broad: it has no batch
+    /// or transport contradiction, and local clients on old revisions still use
+    /// it.
     static let legacyProtocolVersions: Set<String> = [
-        "2024-11-05",
-        "2025-03-26",
         "2025-06-18",
         "2025-11-25",
     ]
@@ -734,25 +744,27 @@ enum MCPRemoteEndpoint {
         // request carrying `_meta[protocolVersion]` is modern, anything else
         // is served under the legacy handshake semantics that shipping HTTP
         // clients still use.
-        guard meta[protocolVersionMetaKey] != nil else {
+        guard let rawVersion = meta[protocolVersionMetaKey] else {
             return legacyResponse(method: method, id: id, params: params, store: store)
         }
+        // The key is present, so this is a modern-era request whatever its
+        // value type. A non-string value names no revision: answer -32022
+        // before header validation, which used to mislabel it as a missing
+        // body key (MCP retro F16/F22, retro PR-4).
+        guard let requestedVersion = rawVersion as? String else {
+            return unsupportedProtocolVersion(id: id, requested: invalidVersionDescription(rawVersion))
+        }
 
-        if let mismatch = headerMismatch(request: request, method: method, params: params, meta: meta) {
+        if let mismatch = headerMismatch(
+            request: request,
+            method: method,
+            params: params,
+            bodyVersion: requestedVersion
+        ) {
             return errorResponse(status: .badRequest, id: id, code: -32020, message: mismatch)
         }
-        let requestedVersion = meta[protocolVersionMetaKey] as? String ?? ""
         guard requestedVersion == protocolVersion else {
-            return errorResponse(
-                status: .badRequest,
-                id: id,
-                code: -32022,
-                message: "Unsupported protocol version",
-                data: .object([
-                    ("supported", .array([.string(protocolVersion)])),
-                    ("requested", .string(requestedVersion)),
-                ])
-            )
+            return unsupportedProtocolVersion(id: id, requested: requestedVersion)
         }
 
         switch method {
@@ -773,6 +785,46 @@ enum MCPRemoteEndpoint {
             // clients can distinguish a modern server from a legacy one.
             return errorResponse(status: .notFound, id: id, code: -32601, message: "Method not found")
         }
+    }
+
+    /// The modern-era version rejection. `supported` is the modern set alone:
+    /// this fires on the per-request `_meta` channel, through which a legacy
+    /// revision can never be selected.
+    private static func unsupportedProtocolVersion(
+        id: MCPRemoteWireValue,
+        requested: String
+    ) -> Response {
+        errorResponse(
+            status: .badRequest,
+            id: id,
+            code: -32022,
+            message: "Unsupported protocol version",
+            data: .object([
+                ("supported", .array([.string(protocolVersion)])),
+                ("requested", .string(requested)),
+            ])
+        )
+    }
+
+    /// Name the JSON type of a `_meta` protocol version that is not a string,
+    /// so the -32022 payload describes what arrived rather than an empty
+    /// string. Matches `MCPStdioServer.invalidVersionDescription`.
+    private static func invalidVersionDescription(_ value: Any) -> String {
+        if value is NSNull {
+            return "<null>"
+        }
+        if let number = value as? NSNumber {
+            // `is Bool` is unreliable on JSONSerialization output (see
+            // `wireID`), so the CoreFoundation type is what separates them.
+            return CFGetTypeID(number) == CFBooleanGetTypeID() ? "<bool>" : "<number>"
+        }
+        if value is [Any] {
+            return "<array>"
+        }
+        if value is [String: Any] {
+            return "<object>"
+        }
+        return "<invalid>"
     }
 
     // MARK: Legacy era (initialize handshake, stateless)
@@ -830,13 +882,10 @@ enum MCPRemoteEndpoint {
         request: Request,
         method: String,
         params: [String: Any],
-        meta: [String: Any]
+        bodyVersion: String
     ) -> String? {
         guard let versionHeader = request.headers[protocolVersionHeader] else {
             return "Header mismatch: MCP-Protocol-Version header is required"
-        }
-        guard let bodyVersion = meta[protocolVersionMetaKey] as? String else {
-            return "Header mismatch: request body is missing _meta[\"\(protocolVersionMetaKey)\"]"
         }
         guard versionHeader == bodyVersion else {
             return "Header mismatch: MCP-Protocol-Version header value '\(versionHeader)' does not match body value '\(bodyVersion)'"

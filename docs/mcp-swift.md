@@ -138,7 +138,16 @@ introduced by MCP 2026-07-28.
 - **Unsupported modern version** — a request whose `_meta` names a revision
   this build does not speak gets JSON-RPC error code `-32022`
   ("Unsupported protocol version") with
-  `data: {supported: [...], requested: "..."}`.
+  `data: {supported: ["2026-07-28"], requested: "..."}`. `supported` is the
+  modern set alone: a legacy revision cannot be selected through `_meta`, so
+  listing one would send the client back into the same rejection. The cross-era
+  union stays in `server/discover`, where falling back to the `initialize`
+  handshake is a real option. A `_meta` version that is present but not a
+  string gets the same error, with `requested` naming the JSON type
+  (`<null>`/`<number>`/`<bool>`/`<array>`/`<object>`); a non-object `_meta` or
+  `params` cannot carry the key at all and is legacy.
+- **`initialize` in the modern era** — `-32601`. The 2026-07-28 revision has no
+  handshake, so there is no negotiated version to return.
 - **`ping`** — removed from the 2026-07-28 core spec, but still answered in
   both eras so an era-ambiguous liveness probe cannot kill the transport.
 - **Resource not found** — already returned `-32602`, which is what
@@ -175,9 +184,11 @@ including the transcript window, as `structuredContent.text` — because Claude 
 surfaces only `structuredContent` when a result has both.
 
 It is **dual-era and stateless**, like the stdio helper: it works with today's
-Claude Code out of the box (`initialize` handshake, MCP revisions `2024-11-05`
-through `2025-11-25`), and a client on revision `2026-07-28` gets the modern
-per-request path instead. The era is decided per request on whether the body
+Claude Code out of the box (`initialize` handshake, MCP revisions `2025-06-18`
+and `2025-11-25` — the endpoint serves a narrower legacy set than the stdio
+helper, see `docs/mcp-protocol-alignment-design.md`, and negotiates any other
+requested revision down to `2025-11-25`), and a client on revision `2026-07-28`
+gets the modern per-request path instead. The era is decided per request on whether the body
 carries `_meta["io.modelcontextprotocol/protocolVersion"]` — present is modern
 (and then the `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers are
 required and must match the body), absent is legacy. No `Mcp-Session-Id` is ever
