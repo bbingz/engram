@@ -7,6 +7,63 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### MCP retrospective and five-PR fix campaign (2026-07-31)
+
+A two-pass retrospective of the MCP upgrade rounds #277-#281 — five parallel
+reviewers with adversarial verification, then an independent re-check of all
+29 findings by Codex — confirmed one high, ~10 medium, and a tail of low
+findings. Everything actionable landed as five local PRs merged to
+`retro/integration` (28 commits over main, NOT yet pushed):
+
+- `retro/pr1-tests` — 19 tests-only additions pinning previously untested
+  load-bearing claims: hostile-filesystem substitution defences on the scan
+  path (they held — no production bug found), the design-doc test-plan cases
+  (cross-token isolation, `DELETE /mcp` 404, oversize body 413, malformed
+  JSON -32700), poison fail-closed, the modern CacheableResult envelope on
+  prompts/resources methods, and a live-socket `/mcp` smoke.
+- `retro/pr2-window-read` — F01 (high): `archive_get_session` no longer
+  decrypts the whole source per windowed call; `ArchiveStore.readSourceWindow`
+  fetches only chunks overlapping the window (integrity = manifest envelope
+  AEAD + per-chunk `rawByteCount`/`rawSHA256`; the whole-source fold is a
+  documented, deliberate relaxation — `docs/archive-windowed-read-design.md`).
+  F18: window ends snap to UTF-8 scalar boundaries, so paging is byte-exact
+  and `offset + byteCount == nextOffset` always holds.
+- `retro/pr3-index-robustness` — off-lock O(n log n) index build (the lock
+  now covers only the pending merge and swap); failure memo + retry backoff
+  (explicit `warmListIndex()` bypasses it); pending queue capped at 4096 with
+  rescan-on-overflow; poison transition logged; `listReceipts` binary-searches
+  entries without the per-page digest-array allocation; `archive_list_captures`
+  is served entirely from the index (the per-entry durable `getReceipt` loop
+  is removed) — `docs/archive-list-index-robustness-design.md`.
+- `retro/pr4-protocol` — era predicate unified across stdio and remote
+  (`_meta` protocolVersion KEY presence = modern intent; a present-but-
+  non-string value gets -32022 with a `<type>` sentinel in `requested`);
+  -32022 `supported` = modern set only on both servers (stdio
+  `server/discover` keeps the cross-era union as the compatibility probe);
+  stdio modern-era `initialize` now -32601; remote legacy set trimmed to
+  {2025-06-18, 2025-11-25} (2025-03-26 mandates JSON-RPC batch receipt which
+  this endpoint rejects, 2024-11-05 predates Streamable HTTP; removed
+  revisions negotiate down, they are not refused) —
+  `docs/mcp-protocol-alignment-design.md`.
+- `retro/pr5-docs` — bookkeeping corrections in this file (#279/#280
+  entries), `.memory` count, the fixture-gate claim in the dual-era design
+  doc, and F27 repro citations.
+
+Verification on the merged tree: `EngramRemoteServerCore` 142/142,
+`EngramMCPTests` 192/192, `scripts/ci/check-mcp-contract-fixtures.sh` clean,
+golden fixtures byte-identical. Each behavior-changing PR carries `_repro`
+tests demonstrated to fail against the pre-fix code (documented per commit).
+Finding inventory and verdicts live in `scratchpad/mcp-retro-findings.md` /
+`scratchpad/mcp-retro-codex-verdicts.md` (untracked, session-local).
+
+Known open items (documented, deliberate): remote `server/discover` still
+advertises the modern set only while the served union is
+{2026-07-28, 2025-11-25, 2025-06-18}; the pending-overflow rescan path is
+untested (reaching it needs 4096 publications mid-scan); the `run()`-scheduled
+background warm has no direct completion assertion; the era predicate exists
+twice because the EngramRemoteServerCore purity gate forbids sharing — the two
+suites plus `docs/mcp-protocol-alignment-design.md` keep them in step.
+
 ### Process-local archive list index (2026-07-29)
 
 `ArchiveStore.listMachines` / `listReceipts` no longer full-scan the receipt

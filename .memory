@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (recounted 2026-07-31): 111 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (recounted 2026-07-31): 112 dated entries; regenerate after adding sections -->
+- [2026-07-31 - MCP retrospective fix campaign: verified claims need pinned tests (Fable/Claude)](#2026-07-31---mcp-retrospective-fix-campaign-verified-claims-need-pinned-tests-fableclaude)
 - [2026-07-29 - Remote MCP production enablement on macmini-m1](#2026-07-29---remote-mcp-production-enablement-on-macmini-m1)
 - [2026-07-29 - Process-local archive list index for interactive remote MCP lists (Claude)](#2026-07-29---process-local-archive-list-index-for-interactive-remote-mcp-lists-claude)
 - [2026-07-29 - Archive enumeration must not use getReceipt's durable contract (Claude)](#2026-07-29---archive-enumeration-must-not-use-getreceipts-durable-contract-claude)
@@ -115,6 +116,32 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-31 - MCP retrospective fix campaign: verified claims need pinned tests (Fable/Claude)
+
+- Two-pass retro of #277-#281 (five parallel reviewers + adversarial verify,
+  then an independent Codex re-check of all 29 findings) found the code mostly
+  matched its claims but the claims were largely unpinned by tests. The one
+  high-severity production defect: `archive_get_session` did whole-source
+  AEAD + hash per windowed call. Hostile-filesystem tests written afterwards
+  proved the #280 scan substitution defences actually held.
+- Fixes: five local PRs merged to `retro/integration` (28 commits, NOT
+  pushed). Details in `CHANGELOG.md` (2026-07-31 entry) and the three new
+  design docs (`archive-windowed-read`, `archive-list-index-robustness`,
+  `mcp-protocol-alignment`).
+- Durable protocol contract after the campaign: `_meta` protocolVersion KEY
+  presence = modern intent on both servers; present-but-non-string value →
+  -32022 with a `<type>` sentinel; -32022 `supported` = modern set only;
+  stdio `server/discover` keeps the cross-era union as the compat probe;
+  remote legacy set is {2025-06-18, 2025-11-25} with negotiate-down for
+  older revisions; stdio keeps broad legacy sets deliberately.
+- Index contract: failure memo + backoff on implicit rebuilds, explicit
+  `warmListIndex()` forces; pending cap 4096 with rescan-on-overflow; poison
+  is a logged, latched ready-state, recoverable only by restart.
+- Process lesson: cross-checking verifiers catch each other — sonnet
+  downgraded a finding Codex kept, Codex refuted one finding and recalibrated
+  four severities. Commit-message verification claims ("60/60 e2e") that are
+  not in-tree tests must be treated as unpinned until someone pins them.
 
 ## 2026-07-29 - Remote MCP production enablement on macmini-m1
 
