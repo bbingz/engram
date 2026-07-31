@@ -1335,6 +1335,85 @@ final class ArchiveRouteTests: XCTestCase {
         }
     }
 
+    // MCP retro F07, retro PR-3: archive_list_captures enriched every page entry
+    // through the durable store.getReceipt path (two fsyncs plus a manifest
+    // cross-check per entry), re-adding the per-receipt cost the list index
+    // exists to remove. The page is now served from the warm index alone, so
+    // removing the receipt file after warm must not change the reported fields.
+    func testMCPListCapturesServesEnrichedFieldsFromWarmIndex_repro() async throws {
+        let archiveRoot = tempDir.appendingPathComponent("archive", isDirectory: true)
+        let app = Application(router: try makeRemoteApp(mcpToken: Self.mcpToken).buildRouter())
+        try await app.test(.router) { client in
+            let machineID = "00000000-0000-4000-8000-00000000000c"
+            let raw = Data("captures-from-index".utf8)
+            let rawDigest = ArchiveV2Hash.sha256(raw)
+            let (manifestBytes, manifestDigest) = try Self.manifest(
+                raw: raw,
+                machineID: machineID,
+                seed: "mcp-captures-index"
+            )
+            var response = try await client.execute(
+                uri: "/v2/archive/objects/\(rawDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/octet-stream"),
+                body: ByteBuffer(data: raw)
+            )
+            XCTAssertEqual(response.status.code, 201)
+            response = try await client.execute(
+                uri: "/v2/archive/manifests/\(manifestDigest)",
+                method: .put,
+                headers: Self.headers(contentType: "application/json"),
+                body: ByteBuffer(data: manifestBytes)
+            )
+            XCTAssertEqual(response.status.code, 201)
+            response = try await client.execute(
+                uri: "/v2/archive/receipts/\(manifestDigest)",
+                method: .put,
+                headers: Self.headers()
+            )
+            XCTAssertEqual(response.status.code, 201)
+
+            func listCaptures() async throws -> [String: Any] {
+                let response = try await client.execute(
+                    uri: "/mcp",
+                    method: .post,
+                    headers: Self.mcpHeaders(method: "tools/call", name: "archive_list_captures"),
+                    body: try Self.mcpToolCallBody(
+                        name: "archive_list_captures",
+                        arguments: ["machine_id": machineID]
+                    )
+                )
+                XCTAssertEqual(response.status.code, 200)
+                let structured = try Self.mcpStructuredContent(response)
+                let captures = try XCTUnwrap(structured["captures"] as? [[String: Any]])
+                XCTAssertEqual(captures.count, 1)
+                return captures[0]
+            }
+
+            let warm = try await listCaptures()
+            XCTAssertEqual(warm["manifestSHA256"] as? String, manifestDigest)
+            XCTAssertEqual(warm["sessionID"] as? String, "route-session")
+
+            // Durable receipt reads would now fail; index-served fields cannot.
+            try FileManager.default.removeItem(
+                at: archiveRoot.appendingPathComponent(
+                    "receipts/sha256/\(manifestDigest.prefix(2))/\(manifestDigest)"
+                )
+            )
+            let served = try await listCaptures()
+            XCTAssertEqual(served["manifestSHA256"] as? String, manifestDigest)
+            XCTAssertEqual(served["receiptSHA256"] as? String, warm["receiptSHA256"] as? String)
+            XCTAssertEqual(served["sessionID"] as? String, "route-session")
+            XCTAssertEqual(
+                served["captureID"] as? String,
+                ArchiveV2Hash.sha256(Data("capture-mcp-captures-index".utf8))
+            )
+            XCTAssertEqual(served["rawByteCount"] as? Int, raw.count)
+            XCTAssertEqual(served["storedAt"] as? String, warm["storedAt"] as? String)
+            XCTAssertFalse((served["storedAt"] as? String ?? "").isEmpty)
+        }
+    }
+
     // MARK: - MCP legacy era (initialize handshake, stateless)
 
     func testMCPLegacyInitializeHandshakeWithoutModernMetadata() async throws {

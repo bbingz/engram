@@ -1084,6 +1084,339 @@ final class ArchiveStoreTests: XCTestCase {
         XCTAssertEqual(listed, [digestPre, digestMid].sorted())
     }
 
+    // MCP retro F05/F28, retro PR-3: a failed warm is memoized for the backoff
+    // window, so waiting listers throw it instead of each re-running the full
+    // scan. An explicit warm is forced and rebuilds even inside the window.
+    func testListIndexFailedWarmIsMemoizedUntilForcedWarm_repro() throws {
+        let machineID = "EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE"
+        let store = try ArchiveStore(
+            root: root,
+            key: key,
+            serverID: "hq",
+            testHooks: ArchiveStoreTestHooks(),
+            listIndexRetryBackoff: 600
+        )
+        let digest = try publishReceipt(
+            store: store,
+            body: "list-index-memoized-failure",
+            machineID: machineID,
+            captureSuffix: "e0"
+        )
+
+        // A stray non-hex shard makes the receipt scan fail closed.
+        let stray = root.appendingPathComponent("receipts/sha256/zz", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: stray,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        XCTAssertThrowsError(try store.warmListIndex()) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+
+        // The cause is gone, but an implicit list must not pay for a rescan
+        // while the backoff window is open: it replays the memoized error.
+        try FileManager.default.removeItem(at: stray)
+        XCTAssertThrowsError(try store.listMachines(cursor: nil, limit: 10)) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+
+        // The forced path ignores the memo and rebuilds; the receipt queued
+        // while cold is merged exactly once alongside the scanned copy.
+        try store.warmListIndex()
+        XCTAssertEqual(try store.listMachines(cursor: nil, limit: 10).machineIDs, [machineID])
+        XCTAssertEqual(
+            try store.listReceipts(machineID: machineID, cursor: nil, limit: 10)
+                .receipts.map(\.manifestSHA256),
+            [digest]
+        )
+    }
+
+    // MCP retro F05, retro PR-3: once the backoff has expired the next list
+    // rebuilds on its own, with no explicit warm.
+    func testListIndexRebuildsOnListWhenFailureBackoffExpired() throws {
+        let machineID = "12121212-1212-4121-8121-121212121212"
+        let store = try ArchiveStore(
+            root: root,
+            key: key,
+            serverID: "hq",
+            testHooks: ArchiveStoreTestHooks(),
+            listIndexRetryBackoff: 0
+        )
+        let digest = try publishReceipt(
+            store: store,
+            body: "list-index-expired-backoff",
+            machineID: machineID,
+            captureSuffix: "e1"
+        )
+        let stray = root.appendingPathComponent("receipts/sha256/zz", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: stray,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        XCTAssertThrowsError(try store.warmListIndex()) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+
+        try FileManager.default.removeItem(at: stray)
+        XCTAssertEqual(
+            try store.listReceipts(machineID: machineID, cursor: nil, limit: 10)
+                .receipts.map(\.manifestSHA256),
+            [digest]
+        )
+    }
+
+    // MCP retro F06/F28, retro PR-3: two receipt digests for one manifest fail
+    // every list closed for the process lifetime, forced warm included.
+    func testListIndexPoisonFailsEveryListClosedAcrossForcedWarm() throws {
+        let machineID = "13131313-1313-4131-8131-131313131313"
+        let store = try ArchiveStore(
+            root: root,
+            key: key,
+            serverID: "hq",
+            now: { "2026-07-11T12:00:00.000Z" }
+        )
+        let digest = try publishReceipt(
+            store: store,
+            body: "list-index-poison",
+            machineID: machineID,
+            captureSuffix: "f0"
+        )
+        XCTAssertEqual(try store.listMachines(cursor: nil, limit: 10).machineIDs, [machineID])
+
+        // Republish the receipt for the same manifest with a different
+        // storedAt: same manifest digest, different receipt bytes.
+        try FileManager.default.removeItem(at: receiptURL(digest))
+        let rewriter = try ArchiveStore(
+            root: root,
+            key: key,
+            serverID: "hq",
+            now: { "2026-07-11T13:00:00.000Z" }
+        )
+        _ = try rewriter.createReceipt(manifestDigest: digest)
+
+        // The next publish on the warm store observes the divergence.
+        _ = try store.createReceipt(manifestDigest: digest)
+        XCTAssertThrowsError(try store.listMachines(cursor: nil, limit: 10)) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+        XCTAssertThrowsError(
+            try store.listReceipts(machineID: machineID, cursor: nil, limit: 10)
+        ) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+        XCTAssertThrowsError(try store.warmListIndex()) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+    }
+
+    // MCP retro F06, retro PR-3: the off-lock merge must still detect a
+    // conflict that only appears when the pending queue meets the scan result.
+    func testListIndexPoisonDetectedWhenPendingContradictsScan() throws {
+        let machineID = "14141414-1414-4141-8141-141414141414"
+        let gate = DispatchSemaphore(value: 0)
+        let buildEntered = DispatchSemaphore(value: 0)
+        let store = try ArchiveStore(
+            root: root,
+            key: key,
+            serverID: "hq",
+            testHooks: ArchiveStoreTestHooks(
+                afterListIndexBuild: {
+                    buildEntered.signal()
+                    gate.wait()
+                }
+            )
+        )
+        let digest = try publishReceipt(
+            store: store,
+            body: "list-index-poison-pending",
+            machineID: machineID,
+            captureSuffix: "f1"
+        )
+
+        let listErrors = ArchiveStoreEventRecorder()
+        let listGroup = DispatchGroup()
+        listGroup.enter()
+        DispatchQueue.global().async {
+            do {
+                _ = try store.listMachines(cursor: nil, limit: 10)
+            } catch {
+                listErrors.append(1)
+            }
+            listGroup.leave()
+        }
+        // The scan has read the original receipt and is parked in the hook.
+        XCTAssertEqual(buildEntered.wait(timeout: .now() + 5), .success)
+        try FileManager.default.removeItem(at: receiptURL(digest))
+        let rewriter = try ArchiveStore(
+            root: root,
+            key: key,
+            serverID: "hq",
+            now: { "2026-07-11T13:00:00.000Z" }
+        )
+        _ = try rewriter.createReceipt(manifestDigest: digest)
+        // Queues the diverging receipt digest into pending.
+        _ = try store.createReceipt(manifestDigest: digest)
+        gate.signal()
+        listGroup.wait()
+
+        XCTAssertEqual(listErrors.values, [1], "the merge that poisons must fail its caller")
+        XCTAssertThrowsError(try store.listMachines(cursor: nil, limit: 10)) { error in
+            XCTAssertEqual(error as? ArchiveStoreError, .conflict)
+        }
+    }
+
+    // MCP retro F04/F19, retro PR-3: pages come from a binary search over the
+    // index entries, and a cursor keeps its meaning when receipts are inserted
+    // before and after it between two page requests.
+    func testListIndexCursorPagesSurviveInsertionsBetweenPages() throws {
+        let machineID = "15151515-1515-4151-8151-151515151515"
+        var candidates: [(digest: String, body: String, suffix: String)] = []
+        for index in 0..<8 {
+            let body = "list-index-cursor-\(index)"
+            let suffix = "g\(index)"
+            candidates.append((
+                try receiptManifestDigest(body: body, machineID: machineID, captureSuffix: suffix),
+                body,
+                suffix
+            ))
+        }
+        candidates.sort { $0.digest < $1.digest }
+        let lowest = candidates[0]
+        let low = candidates[1]
+        let mid = candidates[2]
+        let high = candidates[3]
+
+        let store = try ArchiveStore(root: root, key: key, serverID: "hq")
+        for candidate in [low, high] {
+            _ = try publishReceipt(
+                store: store,
+                body: candidate.body,
+                machineID: machineID,
+                captureSuffix: candidate.suffix
+            )
+        }
+        let firstPage = try store.listReceipts(machineID: machineID, cursor: nil, limit: 1)
+        XCTAssertEqual(firstPage.receipts.map(\.manifestSHA256), [low.digest])
+        let cursor = try XCTUnwrap(firstPage.nextCursor)
+
+        // Both insertions land in the ready index, one before the cursor and
+        // one after it.
+        for candidate in [lowest, mid] {
+            _ = try publishReceipt(
+                store: store,
+                body: candidate.body,
+                machineID: machineID,
+                captureSuffix: candidate.suffix
+            )
+        }
+        let secondPage = try store.listReceipts(machineID: machineID, cursor: cursor, limit: 10)
+        XCTAssertEqual(
+            secondPage.receipts.map(\.manifestSHA256),
+            [mid.digest, high.digest],
+            "a cursor page must skip everything at or before the cursor"
+        )
+        XCTAssertNil(secondPage.nextCursor)
+        XCTAssertEqual(
+            try store.listReceipts(machineID: machineID, cursor: nil, limit: 10)
+                .receipts.map(\.manifestSHA256),
+            [lowest.digest, low.digest, mid.digest, high.digest]
+        )
+        let tailCursor = try store.listReceipts(machineID: machineID, cursor: nil, limit: 3).nextCursor
+        XCTAssertEqual(
+            try store.listReceipts(machineID: machineID, cursor: tailCursor, limit: 10)
+                .receipts.map(\.manifestSHA256),
+            [high.digest]
+        )
+    }
+
+    // MCP retro F04, retro PR-3: the pending queue merges into the swapped-in
+    // structure exactly once, so a receipt noted twice while cold, again during
+    // the build, and again after ready is listed once.
+    func testListIndexAppliesRepeatedNotesExactlyOnce() throws {
+        let machineID = "16161616-1616-4161-8161-161616161616"
+        let gate = DispatchSemaphore(value: 0)
+        let buildEntered = DispatchSemaphore(value: 0)
+        let store = try ArchiveStore(
+            root: root,
+            key: key,
+            serverID: "hq",
+            testHooks: ArchiveStoreTestHooks(
+                afterListIndexBuild: {
+                    buildEntered.signal()
+                    gate.wait()
+                }
+            )
+        )
+        let digest = try publishReceipt(
+            store: store,
+            body: "list-index-exactly-once",
+            machineID: machineID,
+            captureSuffix: "h0"
+        )
+        // Idempotent republish while still cold: a second pending entry.
+        _ = try store.createReceipt(manifestDigest: digest)
+
+        let listGroup = DispatchGroup()
+        listGroup.enter()
+        DispatchQueue.global().async {
+            _ = try? store.listMachines(cursor: nil, limit: 10)
+            listGroup.leave()
+        }
+        XCTAssertEqual(buildEntered.wait(timeout: .now() + 5), .success)
+        _ = try store.createReceipt(manifestDigest: digest)
+        gate.signal()
+        listGroup.wait()
+
+        // And once more against the ready index.
+        _ = try store.createReceipt(manifestDigest: digest)
+        XCTAssertEqual(
+            try store.listReceipts(machineID: machineID, cursor: nil, limit: 10)
+                .receipts.map(\.manifestSHA256),
+            [digest]
+        )
+        XCTAssertEqual(try store.listMachines(cursor: nil, limit: 10).machineIDs, [machineID])
+    }
+
+    // MCP retro F07, retro PR-3: the capture page carries the receipt fields
+    // from the index. Removing the receipt file after warm proves no durable
+    // read is involved.
+    func testListCapturesServesReceiptFieldsFromIndexWithoutDurableRead() throws {
+        let machineID = "17171717-1717-4171-8171-171717171717"
+        let body = "list-index-capture-fields"
+        let store = try ArchiveStore(
+            root: root,
+            key: key,
+            serverID: "hq",
+            now: { "2026-07-11T12:00:00.000Z" }
+        )
+        let digest = try publishReceipt(
+            store: store,
+            body: body,
+            machineID: machineID,
+            captureSuffix: "i0"
+        )
+        let warm = try store.listCaptures(machineID: machineID, cursor: nil, limit: 10)
+        XCTAssertEqual(warm.captures.count, 1)
+        try FileManager.default.removeItem(at: receiptURL(digest))
+
+        let page = try store.listCaptures(machineID: machineID, cursor: nil, limit: 10)
+        XCTAssertEqual(page.captures, warm.captures)
+        XCTAssertNil(page.nextCursor)
+        let capture = try XCTUnwrap(page.captures.first)
+        XCTAssertEqual(capture.manifestSHA256, digest)
+        XCTAssertEqual(capture.sessionID, "session-i0")
+        XCTAssertEqual(capture.captureID, ArchiveV2Hash.sha256(Data("i0".utf8)))
+        XCTAssertEqual(capture.rawByteCount, Int64(body.utf8.count))
+        XCTAssertEqual(capture.storedAt, "2026-07-11T12:00:00.000Z")
+        XCTAssertEqual(
+            capture.receiptSHA256,
+            try store.listReceipts(machineID: machineID, cursor: nil, limit: 10)
+                .receipts.first?.receiptSHA256
+        )
+    }
+
     // MCP retro F01, retro PR-2: a windowed read must only fetch the chunks it
     // serves. Chunk 0's object is deleted before the read, so a window inside
     // chunk 1 can only succeed if non-overlapping chunks are never fetched.
@@ -1219,6 +1552,23 @@ final class ArchiveStoreTests: XCTestCase {
         _ = try store.putObject(digest: tailDigest, raw: tail)
         _ = try store.putManifest(digest: digest, canonicalBytes: bytes)
         return digest
+    }
+
+    /// Manifest digest `publishReceipt` would produce, without publishing:
+    /// lets a test choose receipts by where their digest sorts.
+    private func receiptManifestDigest(
+        body: String,
+        machineID: String,
+        captureSuffix: String
+    ) throws -> String {
+        let raw = Data(body.utf8)
+        return ArchiveV2Hash.sha256(try boundManifestBytes(
+            raw: raw,
+            objectDigest: ArchiveV2Hash.sha256(raw),
+            machineID: machineID,
+            captureID: ArchiveV2Hash.sha256(Data(captureSuffix.utf8)),
+            sessionID: "session-\(captureSuffix)"
+        ))
     }
 
     private func publishReceipt(
