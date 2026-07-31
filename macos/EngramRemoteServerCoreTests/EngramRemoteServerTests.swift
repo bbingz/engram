@@ -164,6 +164,111 @@ final class EngramRemoteServerTests: XCTestCase {
         XCTAssertFalse(present)
     }
 
+    // MCP retro F12: validates the legacy initialize handshake over a real bound socket.
+    func testLegacyMCPInitializeAgainstLiveServer() async throws {
+        let config = EngramRemoteServerConfig(
+            host: "127.0.0.1",
+            port: 0,
+            storeRoot: tempDir.appendingPathComponent("legacy"),
+            bearerToken: "legacy-token",
+            atRestKey: SymmetricKey(size: .bits256),
+            archiveV2: EngramRemoteArchiveConfig(
+                serverID: "hq",
+                root: tempDir.appendingPathComponent("archive"),
+                bearerToken: "archive-token",
+                atRestKey: SymmetricKey(size: .bits256)
+            ),
+            mcp: EngramRemoteMCPConfig(bearerToken: "mcp-token")
+        )
+        let app = try EngramRemoteServerApp(config: config)
+        let waiter = PortWaiter()
+        let serverTask = Task { try? await app.run(onBound: { waiter.set($0) }) }
+        defer { serverTask.cancel() }
+        let port = await waiter.wait()
+
+        var request = URLRequest(url: try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/mcp")))
+        request.httpMethod = "POST"
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "jsonrpc": "2.0",
+            "id": "live-initialize",
+            "method": "initialize",
+            "params": [
+                "protocolVersion": "2025-11-25",
+                "capabilities": [String: Any](),
+                "clientInfo": ["name": "live-socket", "version": "1.0"],
+            ],
+        ])
+        request.setValue("Bearer mcp-token", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let message = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(message["jsonrpc"] as? String, "2.0")
+        XCTAssertEqual(message["id"] as? String, "live-initialize")
+        let result = try XCTUnwrap(message["result"] as? [String: Any])
+        XCTAssertEqual(Set(result.keys), ["protocolVersion", "capabilities", "serverInfo", "instructions"])
+        XCTAssertEqual(result["protocolVersion"] as? String, "2025-11-25")
+        XCTAssertNotNil((result["capabilities"] as? [String: Any])?["tools"] as? [String: Any])
+        XCTAssertEqual((result["serverInfo"] as? [String: Any])?["name"] as? String, "engram-remote")
+        XCTAssertEqual((result["serverInfo"] as? [String: Any])?["version"] as? String, "0.1.0")
+        XCTAssertFalse((result["instructions"] as? String ?? "").isEmpty)
+        XCTAssertNil(result["resultType"])
+        XCTAssertNil(result["ttlMs"])
+        XCTAssertNil(result["cacheScope"])
+        XCTAssertNil(result["_meta"])
+    }
+
+    // MCP retro F12: validates the legacy tools/list response over a real bound socket.
+    func testLegacyMCPToolsListAgainstLiveServer() async throws {
+        let config = EngramRemoteServerConfig(
+            host: "127.0.0.1",
+            port: 0,
+            storeRoot: tempDir.appendingPathComponent("legacy"),
+            bearerToken: "legacy-token",
+            atRestKey: SymmetricKey(size: .bits256),
+            archiveV2: EngramRemoteArchiveConfig(
+                serverID: "hq",
+                root: tempDir.appendingPathComponent("archive"),
+                bearerToken: "archive-token",
+                atRestKey: SymmetricKey(size: .bits256)
+            ),
+            mcp: EngramRemoteMCPConfig(bearerToken: "mcp-token")
+        )
+        let app = try EngramRemoteServerApp(config: config)
+        let waiter = PortWaiter()
+        let serverTask = Task { try? await app.run(onBound: { waiter.set($0) }) }
+        defer { serverTask.cancel() }
+        let port = await waiter.wait()
+
+        var request = URLRequest(url: try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/mcp")))
+        request.httpMethod = "POST"
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "jsonrpc": "2.0",
+            "id": "live-tools-list",
+            "method": "tools/list",
+        ])
+        request.setValue("Bearer mcp-token", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let message = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(message["jsonrpc"] as? String, "2.0")
+        XCTAssertEqual(message["id"] as? String, "live-tools-list")
+        let result = try XCTUnwrap(message["result"] as? [String: Any])
+        XCTAssertEqual(Set(result.keys), ["tools"])
+        let tools = try XCTUnwrap(result["tools"] as? [[String: Any]])
+        XCTAssertEqual(
+            tools.map { $0["name"] as? String },
+            ["archive_list_machines", "archive_list_captures", "archive_get_session"]
+        )
+        XCTAssertNil(result["resultType"])
+        XCTAssertNil(result["ttlMs"])
+        XCTAssertNil(result["cacheScope"])
+        XCTAssertNil(result["_meta"])
+    }
+
     func testLegacyRoundTripWithArchiveEnabledDoesNotTouchArchiveFinalBytes() async throws {
         let legacyRoot = tempDir.appendingPathComponent("legacy", isDirectory: true)
         let archiveRoot = tempDir.appendingPathComponent("archive", isDirectory: true)
