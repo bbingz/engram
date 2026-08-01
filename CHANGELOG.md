@@ -7,6 +7,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed: stdio discovery protocol-version validation (2026-08-01)
+
+A follow-up review of #284 found that the stdio `server/discover` fast path
+returned a successful discovery result before classifying the request era. A
+request that explicitly named an unsupported modern protocol revision therefore
+bypassed the shared `-32022 Unsupported protocol version` path, unlike every
+other stdio method and the remote HTTP endpoint. Discovery now runs after era
+classification: supported modern requests and the metadata-free compatibility
+probe still succeed, while explicitly unsupported versions fail consistently.
+
+`testServerDiscoverRejectsUnsupportedModernVersion_repro` demonstrated the
+failure before the production change and passed afterward. The full
+`EngramMCPTests` scheme passed 193/193 tests. No Docker, deploy, release,
+service restart, or application install was performed.
+
 ### Repository synchronization and dependency maintenance (2026-08-01)
 
 Merged the three remaining Dependabot PRs only after rebasing each effective

@@ -1589,6 +1589,20 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertTrue(supported.contains("2025-11-25"), "\(supported)")
     }
 
+    func testServerDiscoverRejectsUnsupportedModernVersion_repro() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2999-01-01"}}}
+            """
+        )
+
+        XCTAssertEqual(capture.response.error?.code, -32022)
+        XCTAssertEqual(capture.ordered["error"]?["data"]?["requested"]?.stringValue, "2999-01-01")
+        let supported = try XCTUnwrap(capture.ordered["error"]?["data"]?["supported"]?.arrayValue)
+            .compactMap(\.stringValue)
+        XCTAssertEqual(supported, ["2026-07-28"])
+    }
+
     func testModernRequestWithUnsupportedVersionReturnsUnsupportedProtocolVersionError() throws {
         // A request that pins an unknown modern revision through `_meta` is
         // rejected with UnsupportedProtocolVersionError (-32022) instead of
