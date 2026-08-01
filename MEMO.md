@@ -4,7 +4,7 @@
 
 ### 2026-08-01
 
-- [变更] 依次把 #274(`@types/node` 26.1.2)、#276(Biome 2.5.6)、#275(OpenAI 7.1.0)更新到当时最新 `main`，每次以 fresh CI 全绿后 squash 合入；最终 `main` 为 `d5498872`，本地与 GitHub 已对齐且无开放 PR。详见 `CHANGELOG.md`。
+- [变更] 依次把 #274(`@types/node` 26.1.2)、#276(Biome 2.5.6)、#275(OpenAI 7.1.0)更新到当时最新 `main`，每次以 fresh CI 全绿后 squash 合入；依赖组合基线为 `d5498872`，收尾文档经 #289 落地。详见 `CHANGELOG.md`。
 - [清理] 删除 8 个已关闭且提交已在 `main` 的 audit 远端分支；保留含唯一提交且无 PR 的 `evidence/ax5-pr248-2026-07-25`。仅剩主 worktree。
 - [空间] 验证后直接删除可再生成/会话临时目录 `macos/build`、`node_modules`、`dist`、`coverage`、`scratchpad`，回收约 1.33GB，仓库降至 301MB；临时文件不可从废纸篓恢复。
 - [验证] Node 26.5.1 下 clean install、build、测试 typecheck、lint、knip、Vitest coverage 128 files / 1,518 tests 全过；最终组合态 PR Tests/CodeQL/Dependency Review 全绿。

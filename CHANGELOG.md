@@ -15,8 +15,8 @@ checks: #274 (`@types/node` 26.1.2) as `6897c4a0`, #276 (`@biomejs/biome`
 2.5.6) as `39d29ec1`, then #275 (`openai` 7.1.0) as `d5498872`. The final
 #275 run covered the combined dependency tree and passed Tests
 `30677164070`, CodeQL `30677164077`, and Dependency Review `30677164110`.
-Local `main` was fast-forwarded to `d5498872`; GitHub had no open PRs after
-the merges.
+Local `main` was fast-forwarded to dependency baseline `d5498872`; the durable
+closeout records subsequently landed through #289.
 
 Repository hygiene removed eight closed audit branches whose tips were already
 ancestors of `main` (`fix/audit-2026-07-17-batch-{a..h}-*`) and pruned stale
