@@ -100,14 +100,62 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 Expected: single JSON line with `"serverInfo":{"name":"engram",...}`.
 
+To probe the modern (2026-07-28) era, which has no `initialize` handshake:
+
+```bash
+echo '{"jsonrpc":"2.0","id":1,"method":"server/discover"}' \
+  | /Applications/Engram.app/Contents/Helpers/EngramMCP
+```
+
+Expected: single JSON line containing
+`"supportedVersions":["2026-07-28","2025-11-25","2025-06-18","2025-03-26","2024-11-05"]`.
+
 ## Known limitations (MVP)
 
 No MCP stdio-loop limitation is currently tracked here.
 
-Protocol version handling supports `"2024-11-05"`, `"2025-03-26"`,
-`"2025-06-18"`, and `"2025-11-25"`. Unknown newer initialize versions
-negotiate down to the latest supported version instead of failing closed. Tool
-contract behaviour is covered by `macos/EngramMCPTests/`.
+The helper is a dual-era server: it speaks both the legacy
+`initialize`-handshake revisions and the modern per-request revisions
+introduced by MCP 2026-07-28.
+
+- **Legacy era** — `"2024-11-05"`, `"2025-03-26"`, `"2025-06-18"`, and
+  `"2025-11-25"` negotiate through `initialize` exactly as before. An unknown
+  newer `initialize` version negotiates down to `"2025-11-25"` instead of
+  failing closed, and the legacy response bytes are unchanged.
+- **Modern era** — `"2026-07-28"` clients skip the handshake entirely and put
+  `_meta["io.modelcontextprotocol/protocolVersion"]` on every request. The era
+  is decided per request from the presence of that key. Modern results carry a
+  `"resultType":"complete"` discriminator, the server identity under result
+  `_meta["io.modelcontextprotocol/serverInfo"]` (there is no `initialize`
+  result to read it from), and CacheableResult freshness hints
+  `ttlMs` + `"cacheScope":"private"` on `tools/list` (300000),
+  `prompts/list` (3600000), `resources/list` and `resources/read` (30000).
+- **`server/discover`** — MUST-implement in 2026-07-28 and always answered,
+  including without `_meta`, because it doubles as the spec's stdio
+  backward-compatibility probe. It returns `supportedVersions` across both
+  eras, `capabilities` (`tools`/`resources`/`prompts`), `instructions`,
+  `ttlMs` 3600000, `"cacheScope":"private"`, and `serverInfo` in `_meta`.
+- **Unsupported modern version** — a request whose `_meta` names a revision
+  this build does not speak gets JSON-RPC error code `-32022`
+  ("Unsupported protocol version") with
+  `data: {supported: ["2026-07-28"], requested: "..."}`. `supported` is the
+  modern set alone: a legacy revision cannot be selected through `_meta`, so
+  listing one would send the client back into the same rejection. The cross-era
+  union stays in `server/discover`, where falling back to the `initialize`
+  handshake is a real option. A `_meta` version that is present but not a
+  string gets the same error, with `requested` naming the JSON type
+  (`<null>`/`<number>`/`<bool>`/`<array>`/`<object>`); a non-object `_meta` or
+  `params` cannot carry the key at all and is legacy.
+- **`initialize` in the modern era** — `-32601`. The 2026-07-28 revision has no
+  handshake, so there is no negotiated version to return.
+- **`ping`** — removed from the 2026-07-28 core spec, but still answered in
+  both eras so an era-ambiguous liveness probe cannot kill the transport.
+- **Resource not found** — already returned `-32602`, which is what
+  2026-07-28 changed to (from `-32002`), so no behavior changed there.
+- **Roots / Sampling / Logging** — deprecated in 2026-07-28 and never
+  implemented by this helper, so nothing is affected.
+
+Tool contract behaviour is covered by `macos/EngramMCPTests/`.
 
 ## Troubleshooting
 
@@ -121,3 +169,53 @@ contract behaviour is covered by `macos/EngramMCPTests/`.
 
 Logs: helper stderr flows to the client; service logs are in Console.app
 subsystem `com.engram.app`.
+
+## Remote MCP endpoint (Mac mini)
+
+Separate from the stdio helper above, `EngramRemoteServer` — the offload server
+running on the Mac mini — can serve an opt-in, **read-only** MCP endpoint over
+Streamable HTTP at `POST /mcp`. It exposes archived session data from the
+archive v2 store, not the local index: three tools,
+`archive_list_machines`, `archive_list_captures` (each entry carries the
+sessionID and the manifest digest), and `archive_get_session` (windowed
+transcript read by manifest digest, `offset`, and `max_bytes`). Every result puts
+its payload in `structuredContent` as well as in the text `content` block —
+including the transcript window, as `structuredContent.text` — because Claude Code
+surfaces only `structuredContent` when a result has both.
+
+It is **dual-era and stateless**, like the stdio helper: it works with today's
+Claude Code out of the box (`initialize` handshake, MCP revisions `2025-06-18`
+and `2025-11-25` — the endpoint serves a narrower legacy set than the stdio
+helper, see `docs/mcp-protocol-alignment-design.md`, and negotiates any other
+requested revision down to `2025-11-25`), and a client on revision `2026-07-28`
+gets the modern per-request path instead. The era is decided per request on whether the body
+carries `_meta["io.modelcontextprotocol/protocolVersion"]` — present is modern
+(and then the `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers are
+required and must match the body), absent is legacy. No `Mcp-Session-Id` is ever
+issued or required in either era, so there is no session to expire and a server
+restart costs a client nothing. `GET /mcp` returns 405 (the endpoint never pushes
+server-initiated messages, so it declines the legacy standalone stream), and any
+`Origin` header is refused (there are no browser clients).
+
+Enable it on the mini by adding two variables to the secrets env file the
+launchd wrapper already sources (`secrets/archive-v2.env`), then restarting the
+job:
+
+```sh
+ENGRAM_REMOTE_MCP_ENABLED=1
+ENGRAM_REMOTE_MCP_TOKEN=<fresh random token>
+```
+
+It is off by default. Archive v2 must already be enabled, and the token must be
+distinct from both `ENGRAM_REMOTE_TOKEN` and `ENGRAM_REMOTE_ARCHIVE_TOKEN` —
+the server refuses to start otherwise.
+
+Point a client at it over the tailnet:
+
+```bash
+claude mcp add --transport http engram-remote http://<tailscale-ip>:8787/mcp \
+  --header "Authorization: Bearer <ENGRAM_REMOTE_MCP_TOKEN>"
+```
+
+Treat that token as "read every archived session on this mini". Design and
+rationale: `docs/remote-mcp-2026-07-28-design.md`.

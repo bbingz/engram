@@ -1556,6 +1556,372 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertNotNil(capture.response.result)
     }
 
+    func testServerDiscoverMatchesGolden() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+            """
+        )
+
+        XCTAssertNil(capture.response.error)
+        XCTAssertEqual(
+            try prettyJSONString(from: XCTUnwrap(capture.ordered["result"])),
+            try String(contentsOfFile: fixturePath("mcp-golden/discover.result.json"), encoding: .utf8)
+        )
+    }
+
+    func testServerDiscoverAnswersWithoutMeta() throws {
+        // MCP 2026-07-28 stdio backward-compatibility probe: `server/discover`
+        // must answer even without `_meta`, because a client that has not yet
+        // picked a revision has nothing to put in `_meta` — the probe is how it
+        // learns which revisions this server speaks.
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":"probe-1","method":"server/discover"}
+            """
+        )
+
+        XCTAssertNil(capture.response.error)
+        XCTAssertEqual(capture.ordered["result"]?["resultType"]?.stringValue, "complete")
+        let supported = try XCTUnwrap(capture.ordered["result"]?["supportedVersions"]?.arrayValue)
+            .compactMap(\.stringValue)
+        XCTAssertTrue(supported.contains("2026-07-28"), "\(supported)")
+        XCTAssertTrue(supported.contains("2025-11-25"), "\(supported)")
+    }
+
+    func testModernRequestWithUnsupportedVersionReturnsUnsupportedProtocolVersionError() throws {
+        // A request that pins an unknown modern revision through `_meta` is
+        // rejected with UnsupportedProtocolVersionError (-32022) instead of
+        // being silently served under a revision the client did not ask for.
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2999-01-01"}}}
+            """
+        )
+
+        XCTAssertEqual(capture.response.error?.code, -32022)
+        XCTAssertEqual(capture.response.error?.message, "Unsupported protocol version")
+        XCTAssertEqual(capture.ordered["error"]?["data"]?["requested"]?.stringValue, "2999-01-01")
+        let supported = try XCTUnwrap(capture.ordered["error"]?["data"]?["supported"]?.arrayValue)
+            .compactMap(\.stringValue)
+        // MCP retro F02, retro PR-4: the modern set only. A legacy revision
+        // cannot be selected through `_meta`, so advertising one here told the
+        // client to retry straight into the identical rejection. The cross-era
+        // union stays in `server/discover`, where falling back to the
+        // handshake is a real option (testServerDiscoverAnswersWithoutMeta).
+        XCTAssertEqual(supported, ["2026-07-28"], "\(supported)")
+    }
+
+    // MCP retro F13, retro PR-4: a present-but-non-string `_meta` version used
+    // to fall through to the legacy branch, so a client that had asserted
+    // modern semantics silently got an un-enveloped legacy result and no
+    // diagnostic. The key's presence is what selects the era; its value only
+    // picks the revision.
+    func testModernMetaWithNonStringVersionIsUnsupportedProtocolVersion_repro() throws {
+        let cases: [(label: String, value: String, requested: String)] = [
+            ("number", "20260728", "<number>"),
+            ("null", "null", "<null>"),
+            ("bool", "true", "<bool>"),
+            ("array", #"["2026-07-28"]"#, "<array>"),
+            ("object", #"{"value":"2026-07-28"}"#, "<object>"),
+        ]
+        for entry in cases {
+            let capture = try rpc(
+                """
+                {"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":\(entry.value)}}}
+                """
+            )
+
+            XCTAssertNil(capture.response.result, entry.label)
+            XCTAssertEqual(capture.response.error?.code, -32022, entry.label)
+            XCTAssertEqual(
+                capture.ordered["error"]?["data"]?["requested"]?.stringValue,
+                entry.requested,
+                entry.label
+            )
+            let supported = try XCTUnwrap(
+                capture.ordered["error"]?["data"]?["supported"]?.arrayValue,
+                entry.label
+            ).compactMap(\.stringValue)
+            XCTAssertEqual(supported, ["2026-07-28"], entry.label)
+        }
+    }
+
+    // MCP retro F29, retro PR-4: the other half of the era predicate. The
+    // version key can only be present inside an object-valued `_meta` under
+    // object-valued `params`; every other shape cannot carry it and therefore
+    // stays legacy. Pinned so the F13 fix cannot widen into these shapes.
+    func testNonObjectMetaOrParamsSelectsLegacyEra() throws {
+        let cases: [(label: String, params: String)] = [
+            ("_meta is a string", #""params":{"_meta":"garbage"}"#),
+            ("_meta is an array", #""params":{"_meta":[]}"#),
+            ("_meta is null", #""params":{"_meta":null}"#),
+            ("params is a string", #""params":"garbage""#),
+            ("params is an array", #""params":[]"#),
+        ]
+        for entry in cases {
+            let capture = try rpc(
+                """
+                {"jsonrpc":"2.0","id":1,"method":"tools/list",\(entry.params)}
+                """
+            )
+
+            XCTAssertNil(capture.response.error, entry.label)
+            let result = try XCTUnwrap(capture.ordered["result"], entry.label)
+            XCTAssertNotNil(result["tools"]?.arrayValue, entry.label)
+            XCTAssertNil(result["resultType"], entry.label)
+            XCTAssertNil(result["_meta"], entry.label)
+        }
+    }
+
+    // MCP retro F14, retro PR-4: modern revisions removed the handshake, yet a
+    // modern-tagged `initialize` used to answer with the legacy handshake
+    // result — the one modern result that escaped the 2026-07-28 envelope. The
+    // remote endpoint already refuses it (404/-32601); stdio now agrees.
+    func testModernInitializeIsMethodNotFound_repro() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+            """
+        )
+
+        XCTAssertNil(capture.response.result)
+        XCTAssertEqual(capture.response.error?.code, -32601)
+        XCTAssertEqual(capture.response.error?.message, "Method not found")
+    }
+
+    func testModernToolsListCarriesResultEnvelopeAndCacheFields() throws {
+        // Modern (2026-07-28) results are wrapped: `resultType` discriminator
+        // first, CacheableResult hints for list methods, server identity in
+        // `_meta` (a stateless client has no initialize result to read it from).
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+            """
+        )
+
+        XCTAssertNil(capture.response.error)
+        guard case .object(let entries)? = capture.ordered["result"] else {
+            return XCTFail("Expected tools/list result object")
+        }
+        XCTAssertEqual(entries.first?.0, "resultType", "resultType must be the first result key")
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["resultType"]?.stringValue, "complete")
+        XCTAssertNotNil(result["tools"]?.arrayValue)
+        XCTAssertEqual(result["ttlMs"]?.intValue, 300_000)
+        XCTAssertEqual(result["cacheScope"]?.stringValue, "private")
+        XCTAssertEqual(
+            result["_meta"]?["io.modelcontextprotocol/serverInfo"]?["name"]?.stringValue,
+            "engram"
+        )
+    }
+
+    func testModernToolCallCarriesResultEnvelopeWithoutCacheFields() throws {
+        // tools/call results are not CacheableResult: they get the envelope
+        // (`resultType` + `_meta`) but must never advertise freshness hints.
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_sessions","arguments":{"limit":1,"offset":0},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite"),
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["resultType"]?.stringValue, "complete")
+        XCTAssertNotNil(result["structuredContent"]?["sessions"]?.arrayValue)
+        XCTAssertEqual(
+            result["_meta"]?["io.modelcontextprotocol/serverInfo"]?["name"]?.stringValue,
+            "engram"
+        )
+        XCTAssertNil(result["ttlMs"], "tools/call is not a CacheableResult")
+        XCTAssertNil(result["cacheScope"], "tools/call is not a CacheableResult")
+    }
+
+    func testLegacyResultsOmitModernEnvelope() throws {
+        // A request without modern `_meta` stays on the legacy wire format:
+        // byte-stable for pre-2026-07-28 clients and for the golden behavior
+        // fixtures, which record the unwrapped result bodies.
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+            """
+        )
+
+        XCTAssertNil(capture.response.error)
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertNotNil(result["tools"]?.arrayValue)
+        XCTAssertNil(result["resultType"])
+        XCTAssertNil(result["ttlMs"])
+        XCTAssertNil(result["cacheScope"])
+        XCTAssertNil(result["_meta"])
+    }
+
+    // MCP retro F10: modern prompts/list responses must carry the cacheable result envelope.
+    func testModernPromptsListCarriesResultEnvelopeAndCacheFields() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"prompts/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+            """
+        )
+
+        XCTAssertNil(capture.response.error)
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["resultType"]?.stringValue, "complete")
+        XCTAssertNotNil(result["prompts"]?.arrayValue)
+        XCTAssertEqual(result["ttlMs"]?.intValue, 3_600_000)
+        XCTAssertEqual(result["cacheScope"]?.stringValue, "private")
+        XCTAssertEqual(
+            result["_meta"]?["io.modelcontextprotocol/serverInfo"]?["name"]?.stringValue,
+            "engram"
+        )
+    }
+
+    // MCP retro F26: modern resources/list responses must carry the cacheable result envelope.
+    func testModernResourcesListCarriesResultEnvelopeAndCacheFields() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"resources/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["resultType"]?.stringValue, "complete")
+        XCTAssertNotNil(result["resources"]?.arrayValue)
+        XCTAssertEqual(result["ttlMs"]?.intValue, 30_000)
+        XCTAssertEqual(result["cacheScope"]?.stringValue, "private")
+        XCTAssertEqual(
+            result["_meta"]?["io.modelcontextprotocol/serverInfo"]?["name"]?.stringValue,
+            "engram"
+        )
+    }
+
+    // MCP retro F26: modern resources/read responses must carry the cacheable result envelope.
+    func testModernResourceReadCarriesResultEnvelopeAndCacheFields() throws {
+        let environment = ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        let listed = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"resources/list"}
+            """,
+            environment: environment
+        )
+        let uri = try XCTUnwrap(
+            listed.ordered["result"]?["resources"]?.arrayValue?
+                .compactMap { $0["uri"]?.stringValue }
+                .first { $0.hasPrefix("engram://insight/") },
+            "fixture should contain at least one saved insight"
+        )
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"\(uri)","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+            """,
+            environment: environment
+        )
+
+        XCTAssertNil(capture.response.error)
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["resultType"]?.stringValue, "complete")
+        XCTAssertNotNil(result["contents"]?.arrayValue)
+        XCTAssertEqual(result["ttlMs"]?.intValue, 30_000)
+        XCTAssertEqual(result["cacheScope"]?.stringValue, "private")
+        XCTAssertEqual(
+            result["_meta"]?["io.modelcontextprotocol/serverInfo"]?["name"]?.stringValue,
+            "engram"
+        )
+    }
+
+    // MCP retro F10: legacy prompts/list responses must remain free of modern envelope fields.
+    func testLegacyPromptsListOmitsModernEnvelope() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"prompts/list"}
+            """
+        )
+
+        XCTAssertNil(capture.response.error)
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertNotNil(result["prompts"]?.arrayValue)
+        XCTAssertNil(result["resultType"])
+        XCTAssertNil(result["ttlMs"])
+        XCTAssertNil(result["cacheScope"])
+        XCTAssertNil(result["_meta"])
+    }
+
+    // MCP retro F26: legacy resources/list responses must remain free of modern envelope fields.
+    func testLegacyResourcesListOmitsModernEnvelope() throws {
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"resources/list"}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertNotNil(result["resources"]?.arrayValue)
+        XCTAssertNil(result["resultType"])
+        XCTAssertNil(result["ttlMs"])
+        XCTAssertNil(result["cacheScope"])
+        XCTAssertNil(result["_meta"])
+    }
+
+    // MCP retro F26: legacy resources/read responses must remain free of modern envelope fields.
+    func testLegacyResourceReadOmitsModernEnvelope() throws {
+        let environment = ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+        let listed = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"resources/list"}
+            """,
+            environment: environment
+        )
+        let uri = try XCTUnwrap(
+            listed.ordered["result"]?["resources"]?.arrayValue?
+                .compactMap { $0["uri"]?.stringValue }
+                .first { $0.hasPrefix("engram://insight/") },
+            "fixture should contain at least one saved insight"
+        )
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"\(uri)"}}
+            """,
+            environment: environment
+        )
+
+        XCTAssertNil(capture.response.error)
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertNotNil(result["contents"]?.arrayValue)
+        XCTAssertNil(result["resultType"])
+        XCTAssertNil(result["ttlMs"])
+        XCTAssertNil(result["cacheScope"])
+        XCTAssertNil(result["_meta"])
+    }
+
+    func testModernPingAnswersWithEnvelope() throws {
+        // `ping` was removed from the 2026-07-28 core spec, but this server
+        // keeps answering it in both eras as a liveness probe — same reasoning
+        // as the M24 audit fix (answering -32601 to a spec-mandated request
+        // broke clients), now applied to the modern era as well.
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+            """
+        )
+
+        XCTAssertNil(capture.response.error)
+        let result = try XCTUnwrap(capture.ordered["result"])
+        XCTAssertEqual(result["resultType"]?.stringValue, "complete")
+        XCTAssertEqual(
+            result["_meta"]?["io.modelcontextprotocol/serverInfo"]?["name"]?.stringValue,
+            "engram"
+        )
+    }
+
     func testStatsMatchesGolden() throws {
         try assertToolCallMatchesGolden(
             tool: "stats",

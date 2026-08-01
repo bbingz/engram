@@ -2,7 +2,14 @@
 
 ## Index
 
-<!-- AUTO-INDEX (rebuilt 2026-07-25): 105 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (recounted 2026-07-31): 112 dated entries; regenerate after adding sections -->
+- [2026-07-31 - MCP retrospective fix campaign: verified claims need pinned tests (Fable/Claude)](#2026-07-31---mcp-retrospective-fix-campaign-verified-claims-need-pinned-tests-fableclaude)
+- [2026-07-29 - Remote MCP production enablement on macmini-m1](#2026-07-29---remote-mcp-production-enablement-on-macmini-m1)
+- [2026-07-29 - Process-local archive list index for interactive remote MCP lists (Claude)](#2026-07-29---process-local-archive-list-index-for-interactive-remote-mcp-lists-claude)
+- [2026-07-29 - Archive enumeration must not use getReceipt's durable contract (Claude)](#2026-07-29---archive-enumeration-must-not-use-getreceipts-durable-contract-claude)
+- [2026-07-29 - Verify the real client before choosing an MCP era policy; structuredContent hides content (Claude)](#2026-07-29---verify-the-real-client-before-choosing-an-mcp-era-policy-structuredcontent-hides-content-claude)
+- [2026-07-29 - Remote MCP endpoint is modern-era only; repo gates outrank spec SHOULDs (Claude)](#2026-07-29---remote-mcp-endpoint-is-modern-era-only-repo-gates-outrank-spec-shoulds-claude)
+- [2026-07-29 - MCP 2026-07-28 removed the initialize handshake; dual-era servers key era per request (Claude)](#2026-07-29---mcp-2026-07-28-removed-the-initialize-handshake-dual-era-servers-key-era-per-request-claude)
 - [2026-07-25 - CI blind spot closed, npm 12 blocks native builds, 14 mirror rows open (Claude)](#2026-07-25---ci-blind-spot-closed-npm-12-blocks-native-builds-14-mirror-rows-open-claude)
 - [2026-07-25 - xcodeproj drift is a silent test-coverage hole (Claude)](#2026-07-25---xcodeproj-drift-is-a-silent-test-coverage-hole-claude)
 - [2026-07-24 - Local external build storage and disk cleanup retained off main (Codex)](#2026-07-24---local-external-build-storage-and-disk-cleanup-retained-off-main-codex)
@@ -109,6 +116,275 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-07-31 - MCP retrospective fix campaign: verified claims need pinned tests (Fable/Claude)
+
+- Two-pass retro of #277-#281 (five parallel reviewers + adversarial verify,
+  then an independent Codex re-check of all 29 findings) found the code mostly
+  matched its claims but the claims were largely unpinned by tests. The one
+  high-severity production defect: `archive_get_session` did whole-source
+  AEAD + hash per windowed call. Hostile-filesystem tests written afterwards
+  proved the #280 scan substitution defences actually held.
+- Fixes: landed as five squash-merged PRs #282/#283/#285/#284/#286; final
+  main `0e891215`, tree byte-identical to the pre-verified `retro/integration`
+  merge. Details in `CHANGELOG.md` (2026-07-31 entry) and the three new
+  design docs (`archive-windowed-read`, `archive-list-index-robustness`,
+  `mcp-protocol-alignment`).
+- Durable protocol contract after the campaign: `_meta` protocolVersion KEY
+  presence = modern intent on both servers; present-but-non-string value →
+  -32022 with a `<type>` sentinel; -32022 `supported` = modern set only;
+  stdio `server/discover` keeps the cross-era union as the compat probe;
+  remote legacy set is {2025-06-18, 2025-11-25} with negotiate-down for
+  older revisions; stdio keeps broad legacy sets deliberately.
+- Index contract: failure memo + backoff on implicit rebuilds, explicit
+  `warmListIndex()` forces; pending cap 4096 with rescan-on-overflow; poison
+  is a logged, latched ready-state, recoverable only by restart.
+- Process lesson: cross-checking verifiers catch each other — sonnet
+  downgraded a finding Codex kept, Codex refuted one finding and recalibrated
+  four severities. Commit-message verification claims ("60/60 e2e") that are
+  not in-tree tests must be treated as unpinned until someone pins them.
+- Deployed to macmini-m1 as `releases/a33fc3b8` (rollback:
+  `releases/dcc048ce`). Production A/B: `archive_list_captures` 7.5-14.3s →
+  13-17ms; `archive_get_session` (14.8MB, 4KiB window) 0.12-0.78s → ~50-70ms;
+  one-time post-restart warm ~343s. NOTE: the server binds the Tailscale IP
+  (`ENGRAM_REMOTE_HOST=100.108.19.20` in secrets/archive-v2.env), NOT
+  loopback — probes against 127.0.0.1:8787 fail instantly and look like
+  sub-ms successes if you only read time_total.
+
+## 2026-07-29 - Remote MCP production enablement on macmini-m1
+
+- `macmini-m1` runs `releases/dcc048ce` with
+  `ENGRAM_REMOTE_MCP_ENABLED=1`; the Claude Code HTTP MCP client is connected.
+- Rollback release pointer: `releases/38326d62`.
+
+## 2026-07-29 - Process-local archive list index for interactive remote MCP lists (Claude)
+
+### Why a pure in-memory append index is correct here
+
+- Archive v2 product path is zero-delete / append-only for receipts. Once a
+  receipt is published under a manifest digest it stays; list discovery only
+  needs machine ID + digest pair. That makes a process-local sorted map
+  sufficient — no tombstones, no disk format, no SQLite side table.
+- Even the scan fast path is ~18s on ~25k real receipts (AEAD + JSON decode per
+  receipt). MCP `archive_list_*` cannot be interactive at that cost. Warm once
+  at process start, serve pages from memory, note new receipts on
+  `createReceipt` (including already-present).
+- Implementation lives in `ArchiveStore` as `ArchiveReceiptListIndex` (shared
+  across value copies of the store). Single-flight build via `NSCondition`;
+  pending notes during build merge before ready; conflict on same-manifest
+  different receipt digest poisons the index fail-closed. Server
+  `EngramRemoteServerApp.run` fires `warmListIndex()` on a utility Task so
+  accept is not blocked.
+- Tests: cursor paging, single-flight concurrent warm, merge of a receipt
+  published mid-build. No new Swift files — kept inside existing target sources
+  to avoid xcodegen/pbxproj drift.
+
+## 2026-07-29 - Archive enumeration must not use getReceipt's durable contract (Claude)
+
+### Scan path vs durable path
+
+- `getReceipt` is the durable single-receipt contract: fsync file + shard dir,
+  three directory-chain walks, re-read/re-encode referenced manifest. Fine for
+  one receipt; lethal for enumeration (~50k fsyncs on 25k receipts; production
+  cold list ~23–25 min).
+- `forEachReceipt` / `scanReceipt` keep substitution defences (O_NOFOLLOW,
+  identity checks, AEAD, path-bound digest, serverID/manifestSHA256) and drop
+  only durability barriers and the receipt↔manifest cross-check. Cross-check
+  still runs on real get paths. Clone measurement: ~84–85s → ~18s before the
+  memory index.
+
+## 2026-07-29 - Verify the real client before choosing an MCP era policy; structuredContent hides content (Claude)
+
+### "No legacy clients" is a claim to verify against the installed client
+
+- The remote MCP endpoint was designed modern-era only on the assertion that this
+  server had no legacy-HTTP clients. End-to-end testing on a real Mac falsified
+  it on the first POST: **the shipped Claude Code HTTP MCP client is legacy-era**
+  (as of 2.1.220). It sends `initialize` with `protocolVersion: 2025-11-25`, no
+  `MCP-Protocol-Version` header and no `_meta`, then
+  `notifications/initialized`, then `tools/list` — which does carry
+  `mcp-protocol-version: 2025-11-25` but still no `_meta` and no `Mcp-Method`.
+  A modern-only endpoint answers that with
+  `400 -32020 Header mismatch: MCP-Protocol-Version header is required`:
+  spec-correct and unusable.
+- The cheap check that was skipped: capture the actual client's bytes (one POST,
+  or point it at any HTTP endpoint that logs) **before** writing the era policy.
+  A client's advertised protocol support and what its transport actually puts on
+  the wire are different facts, and only the second one matters.
+- Generalize: "there are no X clients" about a surface you are about to
+  constrain is an empirical claim about installed software, not a design premise.
+  Verify it, and say in the doc how it was verified.
+- This supersedes the "Remote MCP is modern-era only, on purpose" section of the
+  earlier 2026-07-29 entry below. `POST /mcp` on `EngramRemoteServer` is now
+  dual-era.
+
+### Legacy Streamable HTTP does not require sessions — dual-era can stay stateless
+
+- `Mcp-Session-Id` is a **MAY** in every legacy revision (2024-11-05,
+  2025-03-26, 2025-06-18, 2025-11-25). A server that never returns one on
+  `initialize` is a server a conforming client never sends one to — and with it
+  go session validation, expiry, `DELETE` teardown, the standalone SSE `GET`
+  stream, and `Last-Event-ID` resumability. All optional, all declinable.
+- So legacy support cost about 40 lines in
+  `MCPRemoteEndpoint.legacyResponse` — `initialize` (echo a known revision, else
+  negotiate down to 2025-11-25), `notifications/initialized` (absorbed by the
+  no-`id` → 202 branch), `ping`, `tools/list`, `tools/call`, and `-32601` over
+  HTTP 200 for anything else — with zero stored state. The original doc rejected
+  dual-era as "a large stateful surface"; it had priced the optional parts as
+  mandatory and never priced the version worth building.
+- **Do not reject legacy protocol support on a statefulness argument without
+  checking which parts of the transport are MUSTs.** Read the revision's
+  requirement levels first; the answer changes the estimate by an order of
+  magnitude.
+- The era rule that makes this work is the same one the stdio helper uses:
+  decide per request on the **presence** of
+  `_meta["io.modelcontextprotocol/protocolVersion"]` (absent → legacy, present →
+  modern; an unknown *value* is `-32022`, not a demotion). Per-request detection
+  is the only option a stateless server has, and it needs no connection table.
+- Legacy results must stay unwrapped — no `resultType`, `ttlMs`, `cacheScope`, or
+  `_meta` — so wrap at emit time per era rather than inside shared result
+  builders.
+
+### Claude Code surfaces only `structuredContent` when a result has both
+
+- Verified with an isolated probe MCP server returning a distinct marker string
+  in `content[0].text` and in `structuredContent`: **only the
+  `structuredContent` marker reached the model.** The `content` block is dropped
+  when a structured result is present.
+- Consequence: **any payload that must reach the model has to be inside
+  `structuredContent`.** `archive_get_session` carried the transcript only in
+  `content[0].text`, so the transcript never reached the model and the tool was
+  effectively unusable; the fix duplicates the window into
+  `structuredContent["text"]`. The other two tools were fine only by accident —
+  their `toolSuccess` helper serializes the same JSON into both fields.
+- That accident is also why the whole modern-era test matrix passed against a
+  broken tool. Router-level tests assert the wire shape; they cannot assert what
+  a client shows the model. Drive a real client (`claude -p`, reading back a
+  marker embedded in the payload) before believing a tool works.
+- Cost of the duplication is bounded and worth noting in docs: the window is
+  counted twice in the response body (~512 KiB for the 256 KiB default, ~2 MiB
+  at the 1 MiB `max_bytes` ceiling). Outbound only — the 1 MiB cap applies to
+  request bodies.
+
+## 2026-07-29 - Remote MCP endpoint is modern-era only; repo gates outrank spec SHOULDs (Claude)
+
+> Superseded in part on 2026-07-29 by the dual-era entry above: the endpoint is
+> no longer modern-era only. The `xcodegen`/safety-gate lessons below still hold.
+
+### New Swift files are not addable from every environment
+
+- `Engram.xcodeproj` is generated by `xcodegen` from `macos/project.yml`, and
+  `xcodegen` cannot run in every implementation environment. A new `.swift`
+  file added there is either absent from the compiled target or forces
+  hand-editing generated project state — both are pbxproj drift, which is
+  already a known silent test-coverage hole (see the 2026-07-25 entry).
+- The workable move is to **extend an existing file in the target**. The remote
+  MCP endpoint (`MCPRemoteEndpoint`, `MCPRemoteWireValue`) went to the bottom of
+  `macos/EngramRemoteServer/Core/EngramRemoteServerApp.swift` and the config to
+  `EngramRemoteServerConfig.swift`, so `project.yml` and the generated project
+  were untouched. Same for tests: new cases go into the existing
+  `ArchiveRouteTests.swift` / `ArchiveConfigTests.swift`, not new test files.
+- The cost is file length (that app file is now 1,100+ lines). Note the split as
+  future work rather than doing it blind; it is safe in an environment that can
+  run `xcodegen generate`.
+
+### Check the repo's own gates before matching a spec SHOULD
+
+- The MCP Streamable HTTP spec SHOULDs a `405` for unsupported methods on the
+  MCP endpoint. `scripts/check-archive-v2-safety.sh` fails the build on **any**
+  `router.delete` registration in the remote-server target outside its exact
+  allowlist — including one whose handler does nothing but return `405`, because
+  the gate matches on *registration*, not on behavior.
+- So `DELETE /mcp` is deliberately left unrouted and falls through to `404`. A
+  local safety gate whose narrowness is its entire point outranks a spec SHOULD,
+  especially when the deviation costs a client nothing (DELETE is only
+  meaningful for session teardown, which a stateless endpoint does not have).
+- The general lesson: when a spec says SHOULD, grep the repo's gates before
+  writing the code. Then *document* the deviation and pin it with a test
+  (`DELETE /mcp` → 404), so the next person does not "fix" it back into a gate
+  failure.
+- Same shape one layer down: `testRemoteServerCoreIncludesOnlyPureArchiveWireSources`
+  forbids `EngramCoreRead`/`EngramCoreWrite` in `EngramRemoteServerCore`, which
+  is why the endpoint duplicates the stdio helper's ordered-JSON type instead of
+  sharing it, and why its tools are archive-shaped rather than the stdio
+  helper's 27. Duplication that a gate demands is not accidental duplication.
+
+### Remote MCP is modern-era only, on purpose
+
+- The stdio helper is dual-era because it has real legacy clients. The remote
+  HTTP endpoint has none — it never had an MCP client of any era — so serving
+  the legacy era would be pure cost.
+- And the cost is large, not cosmetic: pre-2026-07-28 Streamable HTTP requires
+  `Mcp-Session-Id` issuance/validation/expiry, `DELETE` for teardown (which the
+  safety gate forbids anyway), an SSE `GET` stream, and `Last-Event-ID`
+  resumability. 2026-07-28 deleted all of that statefulness, which is precisely
+  what made a remote HTTP MCP server cheap enough to build here.
+- Modern-only also means the header trio (`MCP-Protocol-Version`, `Mcp-Method`,
+  `Mcp-Name`) is validated **against the body**, not merely required. Those
+  headers exist so proxies can route and audit without parsing bodies, which is
+  only sound if the two agree; disagreement is `-32020`, and an unsupported
+  `_meta` version is `-32022` with `data.supported`/`data.requested`.
+- Credential separation is the other non-negotiable: `ENGRAM_REMOTE_MCP_TOKEN`
+  must differ from the v1 and archive tokens, and the endpoint requires archive
+  v2 and stays off by default. The server already holds the at-rest key, so
+  decrypted reads add no new key exposure — but the *read audience* widens, and
+  that is worth saying out loud in the docs rather than leaving implied.
+
+## 2026-07-29 - MCP 2026-07-28 removed the initialize handshake; dual-era servers key era per request (Claude)
+
+### The versioning model changed shape, not just its date
+
+- MCP revision 2026-07-28 deletes the `initialize` handshake. There is no
+  connection-scoped negotiated version any more: a modern client puts
+  `_meta["io.modelcontextprotocol/protocolVersion"]` on **every** request, and
+  a mandatory `server/discover` RPC replaces the handshake as the way a client
+  learns what a server speaks. "Add 2026-07-28 to the supported-versions set"
+  is therefore the wrong change — the set that `initialize` negotiates over and
+  the set that `_meta` negotiates over are two different sets.
+- A dual-era server keys the era off the **presence** of that `_meta` key on
+  each request, not off any stored connection state. Absent → legacy path;
+  present and known → modern path; present and unknown → error. In Engram this
+  is `MCPStdioServer.era(of:)` in
+  `macos/EngramMCP/Core/MCPStdioServer.swift`, with the legacy and modern
+  version sets kept separate and only unioned for what gets *advertised*.
+- The legacy path must stay byte-stable. `tests/fixtures/mcp-golden/` pins 30+
+  executable behavior snapshots of the exact stdio responses, so any envelope
+  field leaking onto a request without `_meta` is a fixture diff, not a subtle
+  regression. Wrap results at emit time behind an explicit `modern:` flag
+  rather than changing the shared result builders.
+- Accepting `2026-07-28` through `initialize` would be nonsensical: modern
+  clients never send `initialize`, so such a code path can only be reached by a
+  confused client and would hand it a negotiated-version contract the revision
+  no longer defines. Unknown `initialize` versions still negotiate down to the
+  latest *legacy* revision (`2025-11-25`).
+
+### `server/discover` must answer unconditionally
+
+- `server/discover` doubles as the spec's stdio backward-compatibility probe:
+  it is how a modern client finds out whether an unknown stdio server is modern
+  at all. Gating it behind `_meta` (or behind a completed handshake) makes the
+  probe unanswerable and defeats its purpose. Answer it before the era check
+  runs.
+- Its result carries `supportedVersions` across both eras, capabilities,
+  instructions, `ttlMs`, `cacheScope`, and `serverInfo` under `_meta` — modern
+  clients have no `initialize` result to read server identity from, so identity
+  has to ride along in results.
+
+### Error codes: -32020..-32099 is now reserved for MCP
+
+- UnsupportedProtocolVersionError is `-32022`, message
+  `"Unsupported protocol version"`, with `data.supported` (the versions the
+  server does speak) and `data.requested` (what the client asked for) so the
+  client can retry without a second round trip. Do not invent app-specific
+  codes in `-32020..-32099`; the spec reserved that range.
+- Resource-not-found moved from `-32002` to `-32602` in this revision. Engram
+  already used `-32602` there, so this was a no-op — worth checking before
+  assuming a code change is needed.
+- `ping` is removed from the 2026-07-28 core spec. Keep answering it in both
+  eras anyway: a liveness probe can arrive era-ambiguous, and failing it kills
+  the transport for legacy clients that still depend on it.
+- Roots / Sampling / Logging are deprecated in 2026-07-28; Engram never
+  implemented them, so the deprecation is not actionable here.
 
 ## 2026-07-25 - CI blind spot closed, npm 12 blocks native builds, 14 mirror rows open (Claude)
 
