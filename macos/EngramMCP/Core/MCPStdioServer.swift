@@ -89,13 +89,6 @@ final class MCPStdioServer {
                 guard request.id != nil else {
                     continue
                 }
-                if request.method == "server/discover" {
-                    // stdio backward-compatibility probe (MCP 2026-07-28):
-                    // always answer, even without `_meta`, so modern clients
-                    // can detect this server's era and pick a version.
-                    emitDiscoverResult(id: request.id)
-                    continue
-                }
                 let modern: Bool
                 switch Self.era(of: request) {
                 case .legacy:
@@ -104,6 +97,13 @@ final class MCPStdioServer {
                     modern = true
                 case .unsupportedModern(let requested):
                     emitUnsupportedProtocolVersion(id: request.id, requested: requested)
+                    continue
+                }
+                if request.method == "server/discover" {
+                    // stdio backward-compatibility probe (MCP 2026-07-28):
+                    // answer with or without supported `_meta`, after rejecting
+                    // any explicitly unsupported modern protocol version.
+                    emitDiscoverResult(id: request.id)
                     continue
                 }
                 if request.method == "tools/call" {

@@ -4,6 +4,7 @@
 
 ### 2026-08-01
 
+- [修复] #284 协议复审确认 stdio `server/discover` 会绕过不支持版本校验；现先统一判定时代再响应，未知 modern 版本返回 `-32022`，无 `_meta` 探测保持兼容，MCP 全套 193/193 通过。详见 `CHANGELOG.md`。
 - [变更] 依次把 #274(`@types/node` 26.1.2)、#276(Biome 2.5.6)、#275(OpenAI 7.1.0)更新到当时最新 `main`，每次以 fresh CI 全绿后 squash 合入；依赖组合基线为 `d5498872`，收尾文档经 #289 落地。详见 `CHANGELOG.md`。
 - [清理] 删除 8 个已关闭且提交已在 `main` 的 audit 远端分支；保留含唯一提交且无 PR 的 `evidence/ax5-pr248-2026-07-25`。仅剩主 worktree。
 - [空间] 验证后直接删除可再生成/会话临时目录 `macos/build`、`node_modules`、`dist`、`coverage`、`scratchpad`，回收约 1.33GB，仓库降至 301MB；临时文件不可从废纸篓恢复。
