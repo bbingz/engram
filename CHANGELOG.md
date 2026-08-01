@@ -7,6 +7,41 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Repository synchronization and dependency maintenance (2026-08-01)
+
+Merged the three remaining Dependabot PRs only after rebasing each effective
+head onto the then-current protected `main` and observing fresh green required
+checks: #274 (`@types/node` 26.1.2) as `6897c4a0`, #276 (`@biomejs/biome`
+2.5.6) as `39d29ec1`, then #275 (`openai` 7.1.0) as `d5498872`. The final
+#275 run covered the combined dependency tree and passed Tests
+`30677164070`, CodeQL `30677164077`, and Dependency Review `30677164110`.
+Local `main` was fast-forwarded to `d5498872`; GitHub had no open PRs after
+the merges.
+
+Repository hygiene removed eight closed audit branches whose tips were already
+ancestors of `main` (`fix/audit-2026-07-17-batch-{a..h}-*`) and pruned stale
+worktree metadata. The only remaining non-main remote branch,
+`evidence/ax5-pr248-2026-07-25`, was retained because it has no PR and contains
+one commit not reachable from `main`. The only registered worktree is the main
+checkout.
+
+After verification, regenerated/local-only state was deleted directly:
+`macos/build/` (704 MB), `node_modules/` (618 MB), `dist/` (2.7 MB),
+`coverage/` (4.1 MB), and the completed campaign's `scratchpad/` (96 KB,
+including a temporary token file). This reclaimed about 1.33 GB and reduced
+the checkout to 301 MB; the deleted local-only files are not recoverable from
+Trash, while dependencies and build outputs can be regenerated normally.
+
+Final local verification on Node 26.5.1: `npm ci`, `npm run build`,
+`npm run typecheck:test`, `npm run lint`, `npm run knip`, and
+`npm run test:coverage` all exited successfully; Vitest reported 128 files and
+1,518 tests passed. Non-blocking residuals remain: Biome 2.5.6 reports the
+2.5.4 schema URL plus one optional-chain warning, coverage excludes
+`src/AGENTS.md` after attempting to parse Markdown as source, local npm install
+policy blocked three install scripts, and GitHub reports four open Dependabot
+alerts (three high, one moderate). No Docker, deploy, release, service restart,
+or application install was performed.
+
 ### MCP retrospective and five-PR fix campaign (2026-07-31)
 
 A two-pass retrospective of the MCP upgrade rounds #277-#281 — five parallel
@@ -55,8 +90,9 @@ Verification on the merged tree: `EngramRemoteServerCore` 142/142,
 `EngramMCPTests` 192/192, `scripts/ci/check-mcp-contract-fixtures.sh` clean,
 golden fixtures byte-identical. Each behavior-changing PR carries `_repro`
 tests demonstrated to fail against the pre-fix code (documented per commit).
-Finding inventory and verdicts live in `scratchpad/mcp-retro-findings.md` /
-`scratchpad/mcp-retro-codex-verdicts.md` (untracked, session-local).
+The untracked, session-local finding inventory was removed during the
+2026-08-01 repository hygiene pass after its durable conclusions were captured
+in this section.
 
 Production deployment (2026-07-31): `macmini-m1` now runs `releases/a33fc3b8`
 (rollback pointer: `releases/dcc048ce`). Verified A/B on the production
