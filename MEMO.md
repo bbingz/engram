@@ -2,6 +2,20 @@
 
 ## Changelog Memo
 
+### 2026-07-31
+
+- [复盘] MCP 两轮升级(#277–#281)双重验证复盘:5 路并行审查 + 对抗验证 + Codex 独立复核 29 项发现(1 高、约 10 中);敌意文件系统测试证实 #280 扫描替换防御真实有效,只是此前无测试钉住。详见 `CHANGELOG.md`。
+- [修复] `archive_get_session` 窗口读从 O(整源解密) 降为 O(窗口),UTF-8 分页字节精确;列表索引锁外构建 + 失败退避(显式 warm 绕过)+ 毒化日志;`archive_list_captures` 全部由索引服务,去掉逐条 durable 读。
+- [变更] 双端时代判定统一(`_meta` 版本键存在即 modern 意图,非字符串值 → -32022);远端 legacy 版本集收缩为 {2025-06-18, 2025-11-25},被移除修订走协商降级而非拒绝。
+- [验证] 五个 PR 已按 #282→#283→#285→#284→#286 顺序全绿 squash 落地,最终 main `0e891215` 与预验证的 `retro/integration` 树逐字节一致;落地后本地复验 RemoteServerCore 142/142、MCPTests 192/192、fixture 门禁与 lint 通过,post-merge Tests/CodeQL success。
+- [验证] `macmini-m1` 已部署 `releases/a33fc3b8`(回滚指针 `releases/dcc048ce`)。生产 ~25k receipt 归档 A/B:`archive_list_captures`(100 条页)7.5–14.3s → **13–17ms**;`archive_get_session`(14.8MB 源,4KiB 窗口)0.12–0.78s → **~50–70ms**;`archive_list_machines` 对照组不变(~3–5ms);重启后一次性冷预热 ~343s。协议抽检:2025-11-25 握手回显、2025-03-26 协商降级、非字符串 `_meta` 版本 → -32022,Claude Code 客户端路径 401/11ms 可达。
+
+### 2026-07-29
+
+- [验证] #279 dual-era remote MCP 与 #280 扫描快路径+进程内列表索引均已 squash merge 入 main（`5cfcdb48` / `2cec2354`）。`macmini-m1` 已部署 `releases/dcc048ce`（含 dual-era + index），`ENGRAM_REMOTE_MCP_ENABLED=1`；生产冷 warm ~13 分钟后 `listMachines`/`listReceipts` ~3–5ms；Claude Code HTTP 客户端 `✔ Connected`，`archive_list_machines` 体感瞬时返回 3 台机器；`archive_get_session` 可读 transcript（`structuredContent.text`）。回滚：`current` 指回 `releases/38326d62` 或关掉 MCP 变量后 kickstart。
+- [性能] 远端 archive 列表：`listMachines`/`listReceipts` 增加进程内 append-only 内存索引（启动后台 warm + `createReceipt` 增量 note），配合扫描快路径让 ~25k receipt 的 MCP 列表可交互；无盘上格式变更。详见 `CHANGELOG.md`，PR #280。
+- [性能] 枚举不再走 `getReceipt` 的 fsync/链校验/manifest 交叉校验；扫描路径保留 AEAD 与路径绑定校验。生产冷列表曾 ~23–25 分钟，扫描快路径后 clone 约 18s，再由内存索引消掉 per-request 全量扫。
+
 ### 2026-07-28
 
 - [变更] Release 构建新增纯 opt-in `ENGRAM_BUILD_ROOT`：未设置时保持现有 Xcode/仓库路径，设置后仅把 DerivedData、archive 与 export log 放入指定绝对目录，最终 App 仍留在 `macos/build/EngramExport`；真实路径必须保持 Engram 项目作用域，`/Volumes` 缺失或不可写时 fail-closed，`--print-paths` 可在零写入下预检路径。异家复审后补固 macOS Bash 3.2 与 symlink 边界，聚焦测试 35/35；未签名、公证、安装或发布，详见 `CHANGELOG.md`。

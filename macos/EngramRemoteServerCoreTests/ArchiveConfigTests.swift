@@ -690,6 +690,130 @@ final class ArchiveConfigTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: archiveRoot.path))
     }
 
+    func testMCPConfigParsing() throws {
+        var enabled = enabledEnvironment(host: "127.0.0.1")
+        enabled["ENGRAM_REMOTE_MCP_ENABLED"] = "1"
+        enabled["ENGRAM_REMOTE_MCP_TOKEN"] = "mcp-token"
+        let config = try EngramRemoteServerConfig.fromEnvironment(enabled)
+        let mcp = try XCTUnwrap(config.mcp)
+        XCTAssertEqual(mcp.bearerToken, "mcp-token")
+        XCTAssertNotNil(config.archiveV2)
+
+        XCTAssertNil(
+            try EngramRemoteServerConfig.fromEnvironment(
+                enabledEnvironment(host: "127.0.0.1")
+            ).mcp,
+            "an absent ENGRAM_REMOTE_MCP_ENABLED keeps the endpoint unmounted"
+        )
+
+        var explicitlyDisabled = enabled
+        explicitlyDisabled["ENGRAM_REMOTE_MCP_ENABLED"] = "0"
+        XCTAssertNil(try EngramRemoteServerConfig.fromEnvironment(explicitlyDisabled).mcp)
+
+        for invalidFlag in ["2", "true", "yes", " 1"] {
+            var invalid = enabled
+            invalid["ENGRAM_REMOTE_MCP_ENABLED"] = invalidFlag
+            XCTAssertThrowsError(
+                try EngramRemoteServerConfig.fromEnvironment(invalid),
+                "expected \(invalidFlag) to be rejected"
+            ) { error in
+                guard case EngramRemoteServerConfig.ConfigError.invalidMCPEnabled = error else {
+                    return XCTFail("unexpected error for \(invalidFlag): \(error)")
+                }
+                XCTAssertEqual(
+                    String(describing: error),
+                    "ENGRAM_REMOTE_MCP_ENABLED must be 0 or 1."
+                )
+            }
+        }
+
+        var withoutArchive = environment(host: "127.0.0.1")
+        withoutArchive["ENGRAM_REMOTE_MCP_ENABLED"] = "1"
+        withoutArchive["ENGRAM_REMOTE_MCP_TOKEN"] = "mcp-token"
+        XCTAssertThrowsError(
+            try EngramRemoteServerConfig.fromEnvironment(withoutArchive)
+        ) { error in
+            guard case EngramRemoteServerConfig.ConfigError.mcpRequiresArchive = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(
+                String(describing: error),
+                "ENGRAM_REMOTE_MCP_ENABLED=1 requires archive v2 to be enabled (the MCP endpoint serves archive data)."
+            )
+        }
+
+        var missingToken = enabled
+        missingToken.removeValue(forKey: "ENGRAM_REMOTE_MCP_TOKEN")
+        var emptyToken = enabled
+        emptyToken["ENGRAM_REMOTE_MCP_TOKEN"] = ""
+        for env in [missingToken, emptyToken] {
+            XCTAssertThrowsError(try EngramRemoteServerConfig.fromEnvironment(env)) { error in
+                guard case EngramRemoteServerConfig.ConfigError.missingMCPToken = error else {
+                    return XCTFail("unexpected error: \(error)")
+                }
+                XCTAssertEqual(
+                    String(describing: error),
+                    "ENGRAM_REMOTE_MCP_TOKEN is required when the MCP endpoint is enabled."
+                )
+            }
+        }
+
+        var reusedLegacyToken = enabled
+        reusedLegacyToken["ENGRAM_REMOTE_MCP_TOKEN"] = reusedLegacyToken["ENGRAM_REMOTE_TOKEN"]
+        var reusedArchiveToken = enabled
+        reusedArchiveToken["ENGRAM_REMOTE_MCP_TOKEN"] =
+            reusedArchiveToken["ENGRAM_REMOTE_ARCHIVE_TOKEN"]
+        for env in [reusedLegacyToken, reusedArchiveToken] {
+            XCTAssertThrowsError(try EngramRemoteServerConfig.fromEnvironment(env)) { error in
+                guard case EngramRemoteServerConfig.ConfigError.mcpTokenMustBeDistinct = error else {
+                    return XCTFail("unexpected error: \(error)")
+                }
+                XCTAssertEqual(
+                    String(describing: error),
+                    "ENGRAM_REMOTE_MCP_TOKEN must be distinct from the legacy v1 and archive v2 bearer tokens."
+                )
+            }
+        }
+    }
+
+    func testProgrammaticAppRejectsInvalidMCPConfiguration() throws {
+        let base = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let legacyRoot = base.appendingPathComponent("legacy", isDirectory: true)
+        let withoutArchive = EngramRemoteServerConfig(
+            host: "127.0.0.1",
+            port: 0,
+            storeRoot: legacyRoot,
+            bearerToken: "legacy-token",
+            atRestKey: SymmetricKey(data: keyData),
+            mcp: EngramRemoteMCPConfig(bearerToken: "mcp-token")
+        )
+        XCTAssertThrowsError(try EngramRemoteServerApp(config: withoutArchive)) { error in
+            guard case EngramRemoteServerConfig.ConfigError.mcpRequiresArchive = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyRoot.path))
+
+        for sharedToken in ["legacy-token", "archive-token"] {
+            var shared = programmaticConfig(base: base)
+            shared.mcp = EngramRemoteMCPConfig(bearerToken: sharedToken)
+            XCTAssertThrowsError(
+                try EngramRemoteServerApp(config: shared),
+                "expected \(sharedToken) to be rejected as an MCP token"
+            ) { error in
+                guard case EngramRemoteServerConfig.ConfigError.mcpTokenMustBeDistinct = error else {
+                    return XCTFail("unexpected error for \(sharedToken): \(error)")
+                }
+                XCTAssertEqual(
+                    String(describing: error),
+                    "ENGRAM_REMOTE_MCP_TOKEN must be distinct from the legacy v1 and archive v2 bearer tokens."
+                )
+            }
+        }
+    }
+
     func testRemoteServerCoreIncludesOnlyPureArchiveWireSources() throws {
         let project = try String(contentsOf: projectYML(), encoding: .utf8)
         let coreStart = try XCTUnwrap(project.range(of: "  EngramRemoteServerCore:\n"))
