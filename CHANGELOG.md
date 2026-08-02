@@ -7,6 +7,93 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### GitHub README release synchronization (2026-08-02)
+
+Synchronized the public root README with the published Engram 1.0.5 baseline.
+The landing section now links the latest stable Release and 1.0.5 notes, states
+the verified macOS 14+ universal Developer ID/notarized distribution, and drops
+the obsolete 2026-07-15 plan to publish above v1.0.3. The install path now leads
+with the public Release and distinguishes the Developer ID `Engram.app` output
+from the non-distributable `Engram-local-only.app` fallback instead of deploying
+a bundle that may not exist.
+
+Added the repository Claude Code plugin entry, documented its SessionStart
+fail-open boundary and manual skills, exposed the shipped `get_memory` type
+filter, and aligned embedding settings with the Swift runtime defaults
+(`text-embedding-3-small`, dimension 1536, and the four supported environment
+overrides). The plugin README now correctly states that Engram 1.0.5 includes
+`EngramCLI context`. Replaced provider links that redirected to unrelated,
+parked, TLS-failing, or for-sale destinations with the current Antigravity,
+Devin Desktop, iFlow CLI, MiniMax, and LobsterAI pages.
+
+Verification checked the live GitHub latest Release, tag, asset, and macOS 14
+deployment target; traced the plugin command, memory enum, and embedding
+defaults to current Swift source; confirmed all changed external destinations
+return HTTP 200; and passed README relative-link, table-of-contents anchor, and
+`git diff --check` validation. The initial PR gate also caught that the archive
+safety test consumes the literal `operator-enabled` and
+`3 conditional archive-v2 boundaries` wording; those current boundaries now
+remain in the dedicated archive-v2 section, and the focused invariant predicate
+passes again. No product code, build, installation, deployment, channel, or
+Docker operation was involved.
+
+### Engram 1.0.5 notarization, clean-host validation, and release (2026-08-02)
+
+Built a release candidate from exact source
+`ea2f1817c14ba9b1171fefe0a16f02dc5f01ae01` as Engram 1.0.5 (1424), without
+changing source or project signing settings. The standard release script first
+failed closed because automatic archive signing requested a Mac Development
+identity whose private key is not available in the login Keychain. A scoped
+manual archive selected the existing Developer ID Application identity, and
+the normal `ExportOptions.plist` export then succeeded. The exported App passed
+bundle-hygiene, version, universal `x86_64 arm64` main/helper, deep strict
+signature, Hardened Runtime, Developer ID authority, and secure-timestamp
+checks.
+
+Historical Claude sessions recovered the existing Keychain profile name
+`EngramNotary`; the similarly named `engram-notary` and the old template name
+`AC_PASSWORD` do not exist. Apple accepted submission
+`1de4c3e5-2a49-4fc7-b306-d2909168b417`; its log reports `statusCode: 0`,
+`Ready for distribution`, and no issues. After stapling, the full
+`release-verify.sh --require-notarization` gate passed both on the exported App
+and on an App freshly extracted from the final ZIP. The submitted pre-staple
+ZIP SHA-256 is
+`0e6126eb609ef12caf8381b08135e6e523c482483d8dd61652f5e37e5736aefd`.
+The final post-staple artifact is
+`/Users/bing/-Code-/engram-release-build-ea2f1817/Artifacts/Engram-1.0.5-1424-ea2f1817-notarized.zip`
+(22,969,908 bytes), SHA-256
+`8174193159c15c9e9a6a5215bf0d32f6200694c567379835a0f26b9d921e699a`.
+
+The final ZIP was staged read-only on the initially clean arm64 verification
+host `admin@10.230.0.10` (`Mac-mini.local`, macOS 26.5.2 / 25F84); its remote
+hash matched. The extracted App reported 1.0.5 (1424), passed deep strict
+codesign and Gatekeeper assessment as `Notarized Developer ID`, and all four
+executables remained universal. A quarantine marker did not change the
+Gatekeeper result. The App and Service binaries remained running with no new
+crash report; the Service created its Unix socket; read-only
+`EngramCLI archive status --json` succeeded; and live MCP smokes covered
+metadata-free and modern discovery, 27-tool listing, legacy initialization,
+service-backed `list_sessions`, plus the #291 regression cases where unknown
+and null modern versions both return `-32022`.
+
+The host had no logged-in GUI session (`/dev/console` owner `root`, no
+`gui/501` launchd domain), so LaunchServices `open` returned `Operation not
+permitted`; direct App execution supplied the process-level smoke instead.
+Remote `stapler validate` could not reach Apple's CloudKit ticket endpoint
+(`NSURLErrorDomain -1004`), while local validation before packaging and after
+extracting the exact final ZIP both passed. Verification processes were
+stopped, the newly generated `~/.engram` smoke data was deleted, and the
+candidate plus runtime logs remain under
+`/Users/admin/EngramVerification/ea2f1817`. After the tag-triggered Release
+Gate run `30729409734` passed all four jobs against the exact source commit,
+annotated tag `v1.0.5` was published and GitHub Release
+`https://github.com/bbingz/engram/releases/tag/v1.0.5` was created as the latest
+stable release. GitHub reports the uploaded asset as 22,969,908 bytes with the
+same SHA-256; a fresh download reproduced that digest and passed the full
+Developer ID, notarization-ticket, and Gatekeeper verifier. Nothing was
+installed in `/Applications`; no channel change, deployment, or Docker
+operation was performed.
+
 ### Fixed: stdio discovery protocol-version validation (2026-08-01)
 
 A follow-up review of #284 found that the stdio `server/discover` fast path

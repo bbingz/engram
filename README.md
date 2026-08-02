@@ -1,23 +1,22 @@
 # Engram
 
+[![Latest Release](https://img.shields.io/github/v/release/bbingz/engram?display_name=tag&sort=semver)](https://github.com/bbingz/engram/releases/latest)
+
 > Native Swift MCP helper + macOS App：聚合 14 个默认启用来源 + 3 个归档默认关闭来源的 AI 编程助手历史会话，实现跨工具上下文共享、关键词搜索和项目迁移。
+
+[Download the latest release](https://github.com/bbingz/engram/releases/latest) ·
+[v1.0.5 release notes](docs/release-notes/1.0.5.md) · macOS 14+ · Universal
+Apple Silicon / Intel
 
 在 Codex 里做了半天，切到 Claude Code 继续时，AI 不需要你手动解释之前做了什么——它可以直接调用 `get_context` 查询你的历史。
 
-**Current product state (2026-07-15):** shipped runtime is the native Swift
-macOS app + bundled Swift MCP helper. The active MCP surface has 27 tools. The
-App UI is intentionally keyword-only; service and MCP expose availability-gated
-semantic/hybrid search when compatible embeddings exist. Session ingestion
-defaults to 14 active sources plus 3 archived default-off sources.
-`docs/TODO.md` now carries one selected implementation-ready delivery: establish
-a public macOS release baseline above the current public `v1.0.3` before new
-feature work. `docs/followups.md` has no open implementation-ready engineering
-follow-ups, and `docs/roadmap.md` keeps 12 other product decisions visible rather
-than reporting them as implemented. Exact-source
-dual-replica archive v2 remains default-off for fresh installs but is
-operator-enabled on the current deployment; its finite eligible backlog and
-two-site recovery closeout completed on 2026-07-15; 3 conditional archive-v2 boundaries
-remain outside implementation-ready work.
+**Current release (2026-08-02):** `v1.0.5` is the latest public stable release.
+It ships a Developer ID-signed and notarized universal macOS app with the
+bundled Swift service, CLI, and MCP helper. The active MCP surface has 27 tools;
+the App UI is intentionally keyword-only, while the service and MCP expose
+availability-gated semantic/hybrid search when compatible embeddings exist.
+Session ingestion defaults to 14 active sources plus 3 archived default-off
+sources.
 
 ```
 ┌─────────┐ ┌───────────┐ ┌──────────┐ ┌──────────┐ ┌─────────┐
@@ -42,8 +41,9 @@ remain outside implementation-ready work.
 
 - [支持的工具](#支持的工具)
 - [适配器与显示一致性](#适配器与显示一致性)
-- [快速上手](#快速上手)
+- [安装与快速上手](#安装与快速上手)
 - [注册为 MCP Server](#注册为-mcp-server)
+- [Claude Code 插件](#claude-code-插件可选)
 - [macOS App](#macos-app)
 - [MCP Tools 参考](#mcp-tools-参考)
 - [搜索现状](#搜索现状)
@@ -60,18 +60,18 @@ remain outside implementation-ready work.
 | [Codex CLI](https://github.com/openai/codex) | `~/.codex/sessions/` | ✅ 完整支持 |
 | [Claude Code](https://claude.ai/code) | `~/.claude/projects/` | ✅ 完整支持 |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `~/.gemini/tmp/` | ✅ 完整支持 |
-| [Antigravity](https://idx.google.com) | CLI brain `~/.gemini/antigravity-cli/brain/` + legacy cache when present | ✅ 完整支持 |
-| [Windsurf](https://codeium.com/windsurf) | `~/.engram/cache/windsurf` cache only; live gRPC sync is disabled | ⚠️ cache-only |
+| [Antigravity](https://antigravity.google/) | CLI brain `~/.gemini/antigravity-cli/brain/` + legacy cache when present | ✅ 完整支持 |
+| [Devin Desktop（原 Windsurf）](https://devin.ai/desktop) | legacy `~/.engram/cache/windsurf` cache only; live gRPC sync is disabled | ⚠️ cache-only |
 | [Cursor](https://cursor.sh) | `~/Library/Application Support/Cursor/…/state.vscdb` | ✅ 完整支持 |
 | [VS Code Copilot](https://code.visualstudio.com) | `~/Library/Application Support/Code/…/chatSessions/` | ✅ 完整支持 |
 | [GitHub Copilot](https://github.com/features/copilot) | `~/.copilot/session-state/<uuid>/events.jsonl` | ✅ 完整支持 |
-| [iflow](https://iflow.ai) | `~/.iflow/projects/` | 归档默认关闭，可在 Sources > Archived 启用 |
+| [iFlow CLI](https://cli.iflow.cn/) | `~/.iflow/projects/` | 归档默认关闭，可在 Sources > Archived 启用 |
 | [Qwen Code](https://qwen.ai) | `~/.qwen/projects/` | ✅ 完整支持 |
 | Qoder | `~/.qoder/projects/` | ✅ 完整支持 |
 | [OpenCode](https://opencode.ai) | `~/.local/share/opencode/opencode.db` | ✅ 完整支持 |
 | [Kimi](https://kimi.moonshot.cn) | `~/.kimi/sessions/` | ✅ 完整支持 |
-| [MiniMax](https://minimax.chat) | Claude Code-derived sessions under `~/.claude/projects/` | ✅ 完整支持 |
-| [Lobster AI](https://lobster.ai) | Claude Code-derived sessions under `~/.claude/projects/` | 归档默认关闭，可在 Sources > Archived 启用 |
+| [MiniMax](https://www.minimax.io/) | Claude Code-derived sessions under `~/.claude/projects/` | ✅ 完整支持 |
+| [Lobster AI](https://github.com/netease-youdao/LobsterAI) | Claude Code-derived sessions under `~/.claude/projects/` | 归档默认关闭，可在 Sources > Archived 启用 |
 | Command Code | `~/.commandcode/projects/` | ✅ 完整支持 |
 | [Cline](https://github.com/cline/cline) | `~/.cline/data/tasks/` | 归档默认关闭，可在 Sources > Archived 启用 |
 
@@ -94,31 +94,52 @@ xcodebuild test -project macos/Engram.xcodeproj -scheme Engram -destination 'pla
 
 最近一次完整 provider/parser ship 记录见 [`docs/verification/provider-parser-parity-2026-05-20.md`](docs/verification/provider-parser-parity-2026-05-20.md)，其中包含两轮 Polycli review 与最终验证命令。
 
-## 快速上手
+## 安装与快速上手
 
-**前置要求：** 已安装 `Engram.app`，或从源码构建 macOS App。
+**系统要求：** macOS 14 或更高版本。
+
+### 下载正式版本（推荐）
+
+从 [Latest Release](https://github.com/bbingz/engram/releases/latest) 下载已签名、
+公证的 ZIP，解压后把 `Engram.app` 移入 `/Applications`，并至少启动一次。
+
+### 从源码构建
 
 ```bash
-# 源码构建
 git clone https://github.com/bbingz/engram
 cd engram
 macos/scripts/build-release.sh --local-only
 
-# 2. 安装到 /Applications
+# Developer ID export 成功时：
 macos/scripts/deploy-local.sh macos/build/EngramExport/Engram.app
 
-#    如果没有 Developer ID 证书，--local-only 会生成
-#    macos/build/EngramExport/Engram-local-only.app，只能本机安装，不能分发/公证。
+# 没有 Developer ID 证书、脚本生成 local-only bundle 时改用：
+macos/scripts/deploy-local.sh macos/build/EngramExport/Engram-local-only.app
 
-# 3. 重启 AI 工具，在对话中调用：
+# 注册下方 MCP 或 plugin 后，重启 AI 工具并在对话中调用：
 # get_context cwd=/your/project/path
 ```
+
+`Engram-local-only.app` 仅用于本机开发安装，不能分发或公证。
 
 首次启动 `Engram.app` 时，`EngramService` 会自动扫描所有会话文件并建立索引（存储在 `~/.engram/index.sqlite`）。之后由后台调度器周期性重扫增量更新，间隔随空闲程度在 15 分钟到 1 小时之间自适应，无需手动维护。刚结束的会话最长可能要等一个周期才出现在索引里。
 
 ## 注册为 MCP Server
 
-### Claude Code
+### Claude Code 插件（可选）
+
+仓库内的 [Engram Claude Code plugin](integrations/claude-code/engram/README.md)
+会注册 bundled MCP helper，并通过 `EngramCLI context` 在 `SessionStart` 尝试注入
+有界项目上下文；失败时不阻塞 Claude Code。`catch-up`、`remember` 和 `handoff`
+skills 仍需手动调用。Engram v1.0.5 已包含该 CLI command。
+
+从仓库根目录以本地 plugin 启动：
+
+```bash
+claude --plugin-dir "$PWD/integrations/claude-code/engram"
+```
+
+### Claude Code（仅注册 MCP）
 
 ```bash
 claude mcp add --scope user engram /Applications/Engram.app/Contents/Helpers/EngramMCP
@@ -205,7 +226,7 @@ Engram 的产品 UI 是原生 macOS App。`Engram.app` 启动后会管理 `Engra
 - **用量与成本**：按来源/项目/天/周分组的用量统计、模型成本、工具调用、文件活动，以及费用洞察建议
 - **今日父会话 badge**：菜单栏徽标显示今天的顶层父会话数量，而不是全部子任务总数
 
-历史 TypeScript Web/API 入口已删除；当前 macOS 产品路径通过 Swift App、Swift Service 和 Swift MCP 提供功能。TypeScript 搜索代码仅作为 retained tooling/reference，不代表 Swift App/MCP 当前已启用语义搜索。
+历史 TypeScript Web/API 入口已删除；当前 macOS 产品路径通过 Swift App、Swift Service 和 Swift MCP 提供功能。TypeScript 搜索代码仅作为 retained tooling/reference；Swift service/MCP 的 semantic/hybrid 能力以运行时 embedding 可用性门控为准，App UI 保持 keyword-only。
 
 ## MCP Tools 参考
 
@@ -219,7 +240,7 @@ Engram 的 Swift MCP runtime 当前暴露 27 个工具，覆盖上下文获取�
 | `get_session` | 读取单个会话完整对话，支持分页 |
 | `save_insight` | 保存重要知识片段，跨会话持久化 |
 | `delete_insight` | 删除已保存的 insight |
-| `get_memory` | 检索已保存的记忆和知识 |
+| `get_memory` | 检索已保存的记忆和知识，可按 `episodic` / `semantic` / `procedural` 类型过滤 |
 | `project_timeline` | 查看项目跨工具的操作时间线 |
 | `stats` | 用量统计（按来源/项目/天/周分组） |
 | `get_costs` | Token 用量和费用统计 |
@@ -329,8 +350,10 @@ Engram 的 Swift MCP runtime 当前暴露 27 个工具，覆盖上下文获取�
 Claude Code / Codex 已证明可重放的单文件原始字节，并直接复制到
 `macmini-hq` 和异地 `macmini-m1`。新安装仍为 default-off、Tailscale-only；
 当前产品另有显式 opt-in 的本地源文件与 CAS reclamation，只有双副本回执和两站
-current recovery drill 同时满足时才会执行。当前 operator deployment 已启用该能力，
-且已完成首轮 eligible backlog 与两站 recovery closeout；远端删除与 GC 仍不存在。
+current recovery drill 同时满足时才会执行。该能力在当前 deployment 仍为
+operator-enabled，且已完成首轮 eligible backlog 与两站 recovery closeout；
+3 conditional archive-v2 boundaries 继续记录在
+[`docs/followups.md`](docs/followups.md)，远端删除与 GC 仍不存在。
 完整边界、配置、恢复和回滚前提见
 [`docs/remote-archive-v2.md`](docs/remote-archive-v2.md)。
 
@@ -343,6 +366,10 @@ current recovery drill 同时满足时才会执行。当前 operator deployment 
   "aiProtocol": "openai",
   "aiApiKey": "@keychain",
   "aiModel": "gpt-4o-mini",
+  "embeddingApiKey": "@keychain",
+  "embeddingBaseURL": "https://api.openai.com/v1",
+  "embeddingModel": "text-embedding-3-small",
+  "embeddingDimension": 1536,
   "titleProvider": "ollama",
   "titleModel": "qwen2.5:3b"
 }
@@ -353,14 +380,21 @@ current recovery drill 同时满足时才会执行。当前 operator deployment 
 | `aiProtocol` | string | `"openai"` | AI 摘要协议；当前 Swift service 支持 OpenAI-compatible chat completions |
 | `aiApiKey` | string | — | AI 摘要 API Key；签名产品优先存于 macOS Keychain，JSON 通常为 `@keychain`；旧配置或 Keychain 不可用的 ad-hoc build 可能仍含可恢复明文 |
 | `aiModel` | string | `"gpt-4o-mini"` | AI 摘要模型 |
+| `embeddingApiKey` | string | — | 可选 embedding API Key；未单独配置时可复用 `aiApiKey`，签名产品优先存于 Keychain |
+| `embeddingBaseURL` | string | `"https://api.openai.com/v1"` | OpenAI-compatible embeddings endpoint base URL |
+| `embeddingModel` | string | `"text-embedding-3-small"` | 写入与查询必须一致的 embedding model |
+| `embeddingDimension` | number | `1536` | 写入与查询必须一致的向量维度 |
 | `titleProvider` | string | `"ollama"` | 标题生成 provider：`ollama`、`openai` 或 `custom` |
 | `titleApiKey` | string | — | 标题生成 API Key；非 Ollama provider 使用，优先存在 macOS Keychain |
 | `titleModel` | string | `"qwen2.5:3b"` | 标题生成模型 |
 | `ollamaUrl` | string | `"http://localhost:11434"` | 旧版 embedding 兼容字段；Swift service 当前不使用 |
 | `ollamaModel` | string | `"nomic-embed-text"` | 旧版 embedding 兼容字段；Swift service 当前不使用 |
-| `embeddingDimension` | number | `768` | 旧版 embedding 兼容字段；Swift service 当前不使用 |
 
 旧版 peer-sync settings keys (`syncNodeName`, `syncEnabled`, `syncIntervalMinutes`, `syncPeers`) 可能仍存在于旧配置中；Swift service 兼容保留但不会读取、启用或触发 peer sync。
+
+对应环境变量覆盖为 `ENGRAM_EMBEDDING_API_KEY`、
+`ENGRAM_EMBEDDING_BASE_URL`、`ENGRAM_EMBEDDING_MODEL` 和
+`ENGRAM_EMBEDDING_DIM`。
 
 ## 添加新适配器
 

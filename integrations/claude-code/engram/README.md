@@ -4,8 +4,8 @@ Thin Claude Code plugin that connects to the **installed Engram app helpers**.
 It does **not** ship a second Swift binary.
 
 The SessionStart bridge requires an Engram build that includes
-`EngramCLI context`. Engram v1.0.5 and earlier do not provide that command;
-on those versions the hook fails open and injects no context.
+`EngramCLI context`. Engram v1.0.5 includes that command; on builds where it is
+unavailable, the hook fails open and injects no context.
 
 ## Layout
 
