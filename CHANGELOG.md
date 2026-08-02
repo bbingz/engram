@@ -7,6 +7,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### GitHub README release synchronization (2026-08-02)
+
+Synchronized the public root README with the published Engram 1.0.5 baseline.
+The landing section now links the latest stable Release and 1.0.5 notes, states
+the verified macOS 14+ universal Developer ID/notarized distribution, and drops
+the obsolete 2026-07-15 plan to publish above v1.0.3. The install path now leads
+with the public Release and distinguishes the Developer ID `Engram.app` output
+from the non-distributable `Engram-local-only.app` fallback instead of deploying
+a bundle that may not exist.
+
+Added the repository Claude Code plugin entry, documented its SessionStart
+fail-open boundary and manual skills, exposed the shipped `get_memory` type
+filter, and aligned embedding settings with the Swift runtime defaults
+(`text-embedding-3-small`, dimension 1536, and the four supported environment
+overrides). The plugin README now correctly states that Engram 1.0.5 includes
+`EngramCLI context`. Replaced provider links that redirected to unrelated,
+parked, TLS-failing, or for-sale destinations with the current Antigravity,
+Devin Desktop, iFlow CLI, MiniMax, and LobsterAI pages.
+
+Verification checked the live GitHub latest Release, tag, asset, and macOS 14
+deployment target; traced the plugin command, memory enum, and embedding
+defaults to current Swift source; confirmed all changed external destinations
+return HTTP 200; and passed README relative-link, table-of-contents anchor, and
+`git diff --check` validation. No product code, build, installation, deployment,
+channel, or Docker operation was involved.
+
 ### Engram 1.0.5 notarization, clean-host validation, and release (2026-08-02)
 
 Built a release candidate from exact source
