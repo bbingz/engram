@@ -2,6 +2,13 @@
 
 ## Changelog Memo
 
+### 2026-08-02
+
+- [验证] 精确源码 `ea2f1817` 已制成 Engram 1.0.5 (1424) Developer ID 候选；从历史会话找回有效 Keychain profile `EngramNotary`，Apple 公证 `1de4c3e5-2a49-4fc7-b306-d2909168b417` Accepted、无 issues，staple 后完整 verifier 与最终 ZIP 解包复验均通过。最终 SHA-256 为 `8174193159c15c9e9a6a5215bf0d32f6200694c567379835a0f26b9d921e699a`，详见 `CHANGELOG.md`。
+- [验证] `10.230.0.10` 隔离 staging 的哈希、版本、深层签名、Gatekeeper `Notarized Developer ID`、四个 universal binary、App/Service 进程、socket、只读 archive status、MCP 27-tool 与 #291 的未知/空版本 `-32022` smoke 均通过；进程已停，新增 `~/.engram` 测试数据已清。
+- [发布] 注解标签 `v1.0.5` 精确指向 `ea2f1817`；tag Release Gate `30729409734` 全绿后，GitHub Release 已作为 latest stable 发布。线上 ZIP 的 GitHub digest 与回下载 SHA-256 均匹配最终候选，回下载 App 的完整签名、公证票据和 Gatekeeper verifier 再次通过。
+- [未验证] 验证机无人登录 GUI，故 LaunchServices `open` 不能执行；远端到 Apple CloudKit 不通导致 `stapler validate` 返回 `-1004`，但本机对最终 ZIP 解包件验证 ticket 成功。候选留在远端 `~/EngramVerification/ea2f1817`；未安装、未改渠道、未部署、未用 Docker。
+
 ### 2026-08-01
 
 - [修复] #284 协议复审确认 stdio `server/discover` 会绕过不支持版本校验；现先统一判定时代再响应，未知 modern 版本返回 `-32022`，无 `_meta` 探测保持兼容，MCP 全套 193/193 通过。详见 `CHANGELOG.md`。
