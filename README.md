@@ -350,8 +350,10 @@ Engram 的 Swift MCP runtime 当前暴露 27 个工具，覆盖上下文获取�
 Claude Code / Codex 已证明可重放的单文件原始字节，并直接复制到
 `macmini-hq` 和异地 `macmini-m1`。新安装仍为 default-off、Tailscale-only；
 当前产品另有显式 opt-in 的本地源文件与 CAS reclamation，只有双副本回执和两站
-current recovery drill 同时满足时才会执行。当前 operator deployment 已启用该能力，
-且已完成首轮 eligible backlog 与两站 recovery closeout；远端删除与 GC 仍不存在。
+current recovery drill 同时满足时才会执行。该能力在当前 deployment 仍为
+operator-enabled，且已完成首轮 eligible backlog 与两站 recovery closeout；
+3 conditional archive-v2 boundaries 继续记录在
+[`docs/followups.md`](docs/followups.md)，远端删除与 GC 仍不存在。
 完整边界、配置、恢复和回滚前提见
 [`docs/remote-archive-v2.md`](docs/remote-archive-v2.md)。
 

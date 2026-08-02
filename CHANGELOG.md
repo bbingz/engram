@@ -30,8 +30,12 @@ Verification checked the live GitHub latest Release, tag, asset, and macOS 14
 deployment target; traced the plugin command, memory enum, and embedding
 defaults to current Swift source; confirmed all changed external destinations
 return HTTP 200; and passed README relative-link, table-of-contents anchor, and
-`git diff --check` validation. No product code, build, installation, deployment,
-channel, or Docker operation was involved.
+`git diff --check` validation. The initial PR gate also caught that the archive
+safety test consumes the literal `operator-enabled` and
+`3 conditional archive-v2 boundaries` wording; those current boundaries now
+remain in the dedicated archive-v2 section, and the focused invariant predicate
+passes again. No product code, build, installation, deployment, channel, or
+Docker operation was involved.
 
 ### Engram 1.0.5 notarization, clean-host validation, and release (2026-08-02)
 
