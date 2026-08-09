@@ -7,6 +7,37 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Atomic CodeQL Action updates and fail-fast CI preflight (2026-08-09)
+
+Closed the configuration gap that let Dependabot split the coupled
+`github/codeql-action/init` and `github/codeql-action/analyze` revisions into
+independent pull requests. The GitHub Actions ecosystem now groups
+`github/codeql-action/*`, and all three `init` plus all three `analyze` uses
+were atomically updated from v4.37.3 to v4.37.4 commit
+`f205ea1c3313d32999d8d6a48b4f6530d4437b38`. The checked action-pin contract
+was updated to the same immutable revision.
+
+Both Tests and CodeQL now run the focused workflow contract test in their
+existing Ubuntu change-classifier job before any dependent macOS job can
+start. The preflight is conditional, so durable-docs-only Tests changes and
+CodeQL changes that select no analysis target remain light. A future grouped
+Dependabot update can therefore fail cheaply if its checked pin is not yet
+approved, while a mismatched or ungrouped CodeQL revision cannot fan out into
+the expensive Swift product, remote-server, and UI lanes.
+
+The regression was captured test-first: the new Dependabot grouping and
+preflight assertions failed 2 of 32 focused tests on the old configuration,
+then the implementation passed the combined workflow/classifier suite (40/40).
+`actionlint 1.7.12`, `npm run build`, `npm run typecheck:test`, `npm run lint`,
+`npm run knip`, `npm run test:coverage`, and `git diff --check` also passed
+under Node 24. Lint retained the pre-existing Biome schema-version info and
+Cascade optional-chain warning. `npm ci` still reports the existing dependency
+baseline of one moderate and six high advisories; dependency remediation was
+outside this CI configuration change. Push, replacement PR creation, fresh
+GitHub checks, closure of superseded PRs #297/#298, merge, and resulting-main
+CI remain pending at this local checkpoint. No Docker, deployment, release,
+service, runner, cache, artifact, or authentication state was changed.
+
 ### GitHub README release synchronization (2026-08-02)
 
 Synchronized the public root README with the published Engram 1.0.5 baseline.

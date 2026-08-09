@@ -71,6 +71,17 @@ jobs:
           fi
           echo "heavy=$heavy" >> "$GITHUB_OUTPUT"
 
+      - if: steps.classify.outputs.heavy == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - if: steps.classify.outputs.heavy == 'true'
+        run: ONNXRUNTIME_NODE_INSTALL=skip npm ci
+      - if: steps.classify.outputs.heavy == 'true'
+        name: Verify workflow pin contract
+        run: npm test -- tests/scripts/ci-workflow.test.ts
+
   typescript:
     name: Node quality and tests
     needs: changes

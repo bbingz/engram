@@ -35,6 +35,14 @@ const dependencyReviewPath = resolve(
 const dependencyReviewWorkflow = existsSync(dependencyReviewPath)
   ? readFileSync(dependencyReviewPath, 'utf8')
   : '';
+const dependabotConfig = parseDocument(
+  readFileSync(resolve(repoRoot, '.github/dependabot.yml'), 'utf8'),
+).toJS() as {
+  updates?: Array<{
+    'package-ecosystem'?: string;
+    groups?: Record<string, { patterns?: string[] }>;
+  }>;
+};
 const macosProject = readFileSync(
   resolve(repoRoot, 'macos/project.yml'),
   'utf8',
@@ -75,8 +83,8 @@ const actionPins = {
   'actions/upload-artifact': '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
   'actions/dependency-review-action':
     'a1d282b36b6f3519aa1f3fc636f609c47dddb294',
-  'github/codeql-action/analyze': 'e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81',
-  'github/codeql-action/init': 'e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81',
+  'github/codeql-action/analyze': 'f205ea1c3313d32999d8d6a48b4f6530d4437b38',
+  'github/codeql-action/init': 'f205ea1c3313d32999d8d6a48b4f6530d4437b38',
 } as const;
 const packageJSON = JSON.parse(
   readFileSync(resolve(repoRoot, 'package.json'), 'utf8'),
@@ -125,6 +133,42 @@ describe('CI workflow hardening', () => {
     }
     for (const [action, sha] of Object.entries(actionPins)) {
       expect(combined).toContain(`${action}@${sha}`);
+    }
+  });
+
+  it('groups CodeQL action updates into one atomic Dependabot pull request', () => {
+    const githubActions = dependabotConfig.updates?.find(
+      (update) => update['package-ecosystem'] === 'github-actions',
+    );
+
+    expect(githubActions?.groups?.['codeql-action']?.patterns).toEqual([
+      'github/codeql-action/*',
+    ]);
+  });
+
+  it('blocks expensive jobs behind the workflow pin contract', () => {
+    for (const workflow of [testWorkflow, codeqlWorkflow]) {
+      const parsed = parseDocument(workflow).toJS() as {
+        jobs?: Record<
+          string,
+          {
+            steps?: Array<{ name?: string; run?: string }>;
+          }
+        >;
+      };
+      const steps = parsed.jobs?.changes?.steps ?? [];
+      const classifyIndex = steps.findIndex((step) =>
+        step.name?.startsWith('Detect '),
+      );
+      const preflightIndex = steps.findIndex(
+        (step) => step.name === 'Verify workflow pin contract',
+      );
+
+      expect(classifyIndex).toBeGreaterThan(-1);
+      expect(preflightIndex).toBeGreaterThan(classifyIndex);
+      expect(steps[preflightIndex]?.run).toContain(
+        'npm test -- tests/scripts/ci-workflow.test.ts',
+      );
     }
   });
 
