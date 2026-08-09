@@ -2,6 +2,12 @@
 
 ## Changelog Memo
 
+### 2026-08-09
+
+- [修复] CodeQL Action 更新已改为原子路径：Dependabot 对 `github/codeql-action/*` 分组，3 个 `init` 与 3 个 `analyze` 同步到 v4.37.4 `f205ea1c`，共享 pin 测试一并更新；Tests/CodeQL 的 Ubuntu classifier 现先跑 workflow contract，失败会在 macOS jobs 启动前截断，durable-docs-only/无 CodeQL target 场景仍保持轻量。详见 `CHANGELOG.md`。
+- [验证] 新回归在旧配置先红 2/32，修复后 workflow/classifier 40/40；Node 24 下 actionlint、build、test typecheck、lint、knip、coverage 与 diff check 通过。Lint 仍有既有 1 warning/1 schema info，`npm ci` 仍报告既有 1 moderate + 6 high advisories；未使用 Docker。
+- [未验证] 当前仅为隔离 worktree 本地收据；push、替代 PR、fresh GitHub checks、关闭 #297/#298、merge 与 resulting-main CI 尚未执行。
+
 ### 2026-08-02
 
 - [变更] GitHub 根 README 已同步公开 v1.0.5：补 latest 下载、macOS 14+ 安装路径与 Claude Code plugin 入口，修正 local-only bundle 路径、`get_memory` 类型过滤、embedding 默认值及 5 个失效/错向产品链接；plugin README 也已改正 v1.0.5 的 `EngramCLI context` 兼容说明。详见 `CHANGELOG.md`。
