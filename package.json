@@ -34,7 +34,7 @@
   "dependencies": {
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.1",
-    "better-sqlite3": "^13.0.1",
+    "better-sqlite3": "^13.0.3",
     "openai": "^7.1.0",
     "sqlite-vec": "0.1.9",
     "yaml": "^2.8.3"
