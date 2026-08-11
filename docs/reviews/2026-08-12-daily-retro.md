@@ -34,9 +34,10 @@ Lead: Grok (stewardship goal) · Implementation: Grok + Herdr Codex `retro-handl
 
 ## PR / evidence
 - Branch: `feat/retro-p1-2026-08-12`
-- PR: (filled after `gh pr create`)
+- PR: https://github.com/bbingz/engram/pull/305
+- Commit: `37702d59`
 - Verify logs (scratch): `verify-popover-repro.log`, `verify-source-enable-repro.log`, `verify-agentid-repro.log`, `verify-summary.txt`
-- Codex pane: `retro-handler` / `w5:p1`
+- Codex pane: `retro-handler` / `w5:p1` (continued residual P1 work after PR open)
 
 ## Next queue head
 1. **RETRO-P1-PARENT-VALIDATE** — path parent existence/depth/skip + startup reconcile  
