@@ -4303,6 +4303,67 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(preservedAfterEnable[ArchivedDefaultOffSources.settingsMigrationKey] as? Bool, true)
     }
 
+    /// R2.P1.source-enable-hide-clobber — re-enable must not clear user manual hides.
+    func testSetSourceEnabledPreservesManualHideOnEnable_repro() async throws {
+        let settingsDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-source-manual-hide-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
+        let settingsURL = settingsDirectory.appendingPathComponent("settings.json")
+        let seed: [String: Any] = [
+            "customSetting": true,
+            "disabledSources": [] as [String],
+            ArchivedDefaultOffSources.settingsMigrationKey: true,
+        ]
+        let seedData = try JSONSerialization.data(withJSONObject: seed)
+        try seedData.write(to: settingsURL)
+        setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
+        defer {
+            unsetenv("ENGRAM_SETTINGS_PATH")
+            try? FileManager.default.removeItem(at: settingsDirectory)
+        }
+
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+
+        // Manually hide one seeded session (writes sessions + session_local_state).
+        let manualId = try await queue.read { db in
+            try String.fetchOne(db, sql: "SELECT id FROM sessions WHERE source = 'codex' ORDER BY id LIMIT 1")
+        }
+        XCTAssertNotNil(manualId)
+        try await client.setSessionHidden(sessionId: manualId!, hidden: true)
+
+        try await client.setSourceEnabled(source: "codex", enabled: false)
+        try await client.setSourceEnabled(source: "codex", enabled: true)
+
+        let manualStillHidden = try await queue.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT hidden_at FROM sessions WHERE id = ?",
+                arguments: [manualId!]
+            )
+        }
+        XCTAssertNotNil(manualStillHidden, "manual hide must survive source disable/enable cycle")
+
+        let localHidden = try await queue.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT hidden_at FROM session_local_state WHERE session_id = ?",
+                arguments: [manualId!]
+            )
+        }
+        XCTAssertNotNil(localHidden, "session_local_state.hidden_at must remain set for manual hide")
+    }
+
     func testReadDisabledSourcesFiltersAdapterListWithoutAffectingOthers() {
         // ENGRAM_DISABLED_SOURCES env override drives readDisabledSources; the
         // filtered adapter list drops only the disabled source.

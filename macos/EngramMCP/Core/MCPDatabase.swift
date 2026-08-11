@@ -591,7 +591,10 @@ final class MCPDatabase {
                     extra: [("warning", .string(warning))]
                 )
             }
-            return Self.emptyMemoryResult(type: insightType)
+            // R1.P1.empty_result_suppresses_degrade: empty hits still surface the
+            // degrade/keyword warning so clients can distinguish "no matches"
+            // from "semantic path failed closed".
+            return Self.emptyMemoryResult(type: insightType, warning: warning)
         }
 
         if let matches = try? searchInsightsFTS(query: query, limit: 10), !matches.isEmpty {
@@ -615,7 +618,7 @@ final class MCPDatabase {
             )
         }
 
-        return Self.emptyMemoryResult(type: insightType)
+        return Self.emptyMemoryResult(type: insightType, warning: warning)
     }
 
     /// Build a get_memory structured payload with returned memory `type` fields
@@ -657,13 +660,16 @@ final class MCPDatabase {
         return rows.filter { (stringValue($0["insight_type"]) ?? "semantic") == type }
     }
 
-    private static func emptyMemoryResult(type: String? = nil) -> OrderedJSONValue {
+    private static func emptyMemoryResult(type: String? = nil, warning: String? = nil) -> OrderedJSONValue {
         var entries: [(String, OrderedJSONValue)] = [
             ("memories", .array([])),
             ("message", .string("No memories found. Use save_insight to add knowledge that persists across sessions.")),
         ]
         if let type {
             entries.insert(("type", .string(type)), at: 1)
+        }
+        if let warning, !warning.isEmpty {
+            entries.append(("warning", .string(warning)))
         }
         return .object(entries)
     }

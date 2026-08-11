@@ -1230,9 +1230,23 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         }
         try updateDisabledSourcesSetting(source: source, enabled: request.enabled, settingsURL: settingsURL)
         try writer.write { db in
+            try ensureSessionLocalStateTable(db)
             if request.enabled {
+                // R2.P1.source-enable-hide-clobber / RETRO-P1-SOURCE-ENABLE-UNHIDE:
+                // unhide only sessions this source-disable path hid. Manual hide
+                // via setSessionHidden writes session_local_state.hidden_at; those
+                // rows must stay hidden when the source is re-enabled.
                 try db.execute(
-                    sql: "UPDATE sessions SET hidden_at = NULL WHERE source = ?",
+                    sql: """
+                        UPDATE sessions
+                        SET hidden_at = NULL
+                        WHERE source = ?
+                          AND hidden_at IS NOT NULL
+                          AND id NOT IN (
+                              SELECT session_id FROM session_local_state
+                              WHERE hidden_at IS NOT NULL
+                          )
+                        """,
                     arguments: [source]
                 )
             } else {
