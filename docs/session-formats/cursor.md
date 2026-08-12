@@ -83,7 +83,7 @@ never append.
                 │  └─────────────────────────────────────────────────────────┘   │
                 └──────────────────────────────────────────────────────────────┘
 
-   workspaceStorage/<32-hex>/state.vscdb   (per-workspace pointer index, IGNORED by CursorAdapter)
+   workspaceStorage/<32-hex>/state.vscdb   (per-workspace pointer index, OWNERSHIP ONLY)
 ```
 
 **Layering (4 nesting layers, do not conflate):**

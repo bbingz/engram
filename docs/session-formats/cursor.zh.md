@@ -80,7 +80,7 @@ VS Code 的表里 —— 它在*全局*存储 DB 内新增了一张 Cursor 专�
                 │  └─────────────────────────────────────────────────────────┘   │
                 └──────────────────────────────────────────────────────────────┘
 
-   workspaceStorage/<32-hex>/state.vscdb   (per-workspace pointer index, IGNORED by CursorAdapter)
+   workspaceStorage/<32-hex>/state.vscdb   (按 workspace 的指针索引,仅用于所有权)
 ```
 
 **分层(4 个嵌套层,不要混为一谈):**
@@ -124,9 +124,9 @@ VS Code 的表里 —— 它在*全局*存储 DB 内新增了一张 Cursor 专�
 | 文件 / DB 类型 | 位置 | 角色 | Engram 是否读取? |
 |---|---|---|---|
 | `globalStorage/state.vscdb` | 全局 | 会话数据(`cursorDiskKV`)+ 全局目录(`ItemTable`)的**唯一来源** | YES(仅此一项) |
-| `workspaceStorage/<hash>/state.vscdb` | 按 workspace | UI 面板状态 + `composer.composerData` 指针列表(仅 composerId,无内容) | NO |
+| `workspaceStorage/<hash>/state.vscdb` | 按 workspace | UI 面板状态 + `composer.composerData` 指针列表(仅 composerId,无内容) | **YES,仅所有权** |
 | `workspaceStorage/<hash>/state.vscdb.backup` | 按 workspace | workspace DB 的备份快照 | NO |
-| `workspaceStorage/<hash>/workspace.json` | 按 workspace | 把 32-hex hash 映射到项目文件夹 URI(唯一可靠的 composer→folder 映射) | NO |
+| `workspaceStorage/<hash>/workspace.json` | 按 workspace | 把 32-hex hash 映射到项目文件夹 URI(唯一可靠的 composer→folder 映射) | **YES,仅所有权** |
 | `History/` | 全局 | VS Code 按文件的编辑历史(时间戳 + 内容快照)—— 与聊天无关 | NO |
 
 **命名语法 —— `cursorDiskKV` 键命名空间**(`prefix:id[:id]`),实时计数:
@@ -146,9 +146,9 @@ VS Code 的表里 —— 它在*全局*存储 DB 内新增了一张 Cursor 专�
 按 workspace 的 `state.vscdb` 存储 `composer.composerData`,
 其 `allComposers[]` 只是指向全局存储的指针列表(`composerId`、`createdAt`、
 `unifiedMode`、`forceMode`)—— 没有消息正文。单个 composer 可被某个 workspace
-索引引用,但其数据是全局的。Engram 有意忽略 `workspaceStorage/`,并从这一个
-全局 DB 读取所有内容。(注意:单独的 `VsCodeAdapter` 才是抓取
-`Code/User/workspaceStorage/` 的那个;`CursorAdapter` 从不这样做。)
+索引引用,但其数据是全局的。Swift 仍只从全局 DB 读取会话内容,同时读取
+`workspaceStorage/` 的指针索引解析所有权;只有唯一单目录映射才生效。
+(单独的 `VsCodeAdapter` 则从 `Code/User/workspaceStorage/` 读取会话内容。)
 
 **遗留警告(已修正)。** 此"仅全局"设计对 MODERN Cursor 是正确的。
 然而,LEGACY 时代的 Cursor 把聊天存在按 workspace 的 `ItemTable` 键
