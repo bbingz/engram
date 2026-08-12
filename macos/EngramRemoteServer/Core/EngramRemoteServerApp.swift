@@ -15,6 +15,11 @@ import Logging
 /// a TLS-terminating reverse proxy or on a private/VPN network — the standard
 /// self-hosting pattern. The client refuses non-HTTPS, non-loopback URLs.
 public final class EngramRemoteServerApp: Sendable {
+    /// Matches the shipped client's catalog response ceiling. The peer bound
+    /// independently limits JSON object fan-out for very small manifests.
+    static let maximumCatalogBytes = 4 * 1024 * 1024
+    static let maximumCatalogPeers = 1_024
+
     private let config: EngramRemoteServerConfig
     private let store: BlobStore
     private let archiveStore: ArchiveStore?
@@ -98,16 +103,39 @@ public final class EngramRemoteServerApp: Sendable {
             // Manifests are keyed `catalog.<peer>.manifest`; require the suffix too so
             // this selects the same blobs as LocalDirectoryBackend.catalog() (a stray
             // `catalog.*` non-manifest blob is selected by neither producer).
-            let keys = ((try? store.listKeys(prefix: "catalog.")) ?? [])
-                .filter { $0.hasSuffix(".manifest") }
+            let keys: [String]
+            do {
+                keys = try store.listKeys(
+                    prefix: "catalog.",
+                    suffix: ".manifest",
+                    maximumCount: Self.maximumCatalogPeers
+                )
+            } catch BlobStoreError.limitExceeded {
+                return Self.payloadTooLarge()
+            } catch {
+                // Preserve the legacy empty-catalog fallback for directory I/O errors.
+                keys = []
+            }
+            var remainingDecodedBytes = Self.maximumCatalogBytes
             for k in keys {
-                guard let data = try? store.get(k),
-                      let obj = try? JSONSerialization.jsonObject(with: data) else { continue }
+                let data: Data
+                do {
+                    data = try store.get(k, maximumPlaintextBytes: remainingDecodedBytes)
+                } catch BlobStoreError.limitExceeded {
+                    return Self.payloadTooLarge()
+                } catch {
+                    continue
+                }
+                remainingDecodedBytes -= data.count
+                guard let obj = try? JSONSerialization.jsonObject(with: data) else { continue }
                 manifests.append(obj)
             }
             let payload: [String: Any] = ["schemaVersion": 1, "manifests": manifests]
             guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
                 return Response(status: .internalServerError)
+            }
+            guard body.count <= Self.maximumCatalogBytes else {
+                return Self.payloadTooLarge()
             }
             return Self.json(body)
         }
@@ -537,6 +565,10 @@ public final class EngramRemoteServerApp: Sendable {
 
     static func badRequest(_ message: String) -> Response {
         text("400 Bad Request: \(message)\n", status: .badRequest)
+    }
+
+    static func payloadTooLarge() -> Response {
+        Response(status: .init(code: 413, reasonPhrase: "Payload Too Large"))
     }
 
     static func text(_ body: String, status: HTTPResponse.Status = .ok) -> Response {
