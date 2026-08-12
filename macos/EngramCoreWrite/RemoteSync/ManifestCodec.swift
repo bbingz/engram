@@ -62,6 +62,10 @@ public struct SyncManifest: Codable, Sendable, Equatable {
 }
 
 public enum ManifestCodec {
+    private struct CatalogEnvelopeHeader: Decodable {
+        let schemaVersion: Int
+    }
+
     /// Storage key for a peer's manifest blob. Sanitized to the BlobStore key
     /// charset so a hostname with odd characters can't produce an invalid key.
     public static func manifestKey(peer: String) -> String {
@@ -88,13 +92,20 @@ public enum ManifestCodec {
     }
 
     public static func decode(_ data: Data) throws -> SyncManifest {
-        try JSONDecoder().decode(SyncManifest.self, from: data)
+        let manifest = try JSONDecoder().decode(SyncManifest.self, from: data)
+        guard manifest.schemaVersion == SyncManifest.currentSchemaVersion else {
+            throw RemoteSyncError.schemaVersionUnsupported(manifest.schemaVersion)
+        }
+        return manifest
     }
 
     /// Parse the aggregated `GET /v1/catalog` document `{schemaVersion, manifests:[...]}`
-    /// into manifests, tolerating entries that fail to decode (skipped, not fatal).
+    /// into manifests. An unsupported envelope fails closed; individual manifests
+    /// that fail to decode remain isolated from compatible peers.
     public static func decodeCatalog(_ data: Data) -> [SyncManifest] {
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard let header = try? JSONDecoder().decode(CatalogEnvelopeHeader.self, from: data),
+              header.schemaVersion == SyncManifest.currentSchemaVersion,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let raw = obj["manifests"] as? [[String: Any]] else { return [] }
         return raw.compactMap { entry in
             guard let bytes = try? JSONSerialization.data(withJSONObject: entry) else { return nil }

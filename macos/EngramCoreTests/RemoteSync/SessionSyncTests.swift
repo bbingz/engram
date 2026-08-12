@@ -382,6 +382,78 @@ final class SessionSyncTests: XCTestCase {
         XCTAssertEqual(decoded, manifest)
     }
 
+    func testManifestCodecRejectsUnsupportedSchemaVersion_repro() throws {
+        let (entry, _) = makeEntryAndBundle(sessionId: "rs1", peer: "macB", hash: "ih1", fts: ["x"])
+        let manifest = SyncManifest(peer: "macB", updatedAt: "2024-02-02T00:00:00Z", entries: [entry])
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: ManifestCodec.encode(manifest)) as? [String: Any]
+        )
+        let futureVersion = SyncManifest.currentSchemaVersion + 1
+        object["schemaVersion"] = futureVersion
+        let data = try JSONSerialization.data(withJSONObject: object)
+
+        XCTAssertThrowsError(try ManifestCodec.decode(data)) { error in
+            XCTAssertEqual(
+                error as? RemoteSyncError,
+                .schemaVersionUnsupported(futureVersion)
+            )
+        }
+    }
+
+    func testDecodeCatalogRejectsUnsupportedEnvelopeSchemaVersion_repro() throws {
+        let (entry, _) = makeEntryAndBundle(sessionId: "rs1", peer: "macB", hash: "ih1", fts: ["x"])
+        let manifest = SyncManifest(peer: "macB", updatedAt: "2024-02-02T00:00:00Z", entries: [entry])
+        let manifestObject = try JSONSerialization.jsonObject(with: ManifestCodec.encode(manifest))
+        let catalog: [String: Any] = [
+            "schemaVersion": SyncManifest.currentSchemaVersion + 1,
+            "manifests": [manifestObject],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: catalog)
+
+        XCTAssertTrue(
+            ManifestCodec.decodeCatalog(data).isEmpty,
+            "an unsupported catalog envelope must fail closed"
+        )
+    }
+
+    func testDecodeCatalogRejectsBooleanEnvelopeSchemaVersion_repro() throws {
+        let (entry, _) = makeEntryAndBundle(sessionId: "rs1", peer: "macB", hash: "ih1", fts: ["x"])
+        let manifest = SyncManifest(peer: "macB", updatedAt: "2024-02-02T00:00:00Z", entries: [entry])
+        let manifestObject = try JSONSerialization.jsonObject(with: ManifestCodec.encode(manifest))
+        let catalog: [String: Any] = [
+            "schemaVersion": true,
+            "manifests": [manifestObject],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: catalog)
+
+        XCTAssertTrue(
+            ManifestCodec.decodeCatalog(data).isEmpty,
+            "a boolean schema version must not bridge to the numeric current version"
+        )
+    }
+
+    func testDecodeCatalogSkipsUnsupportedPeerSchemaVersionButKeepsValidPeer_repro() throws {
+        let (entry, _) = makeEntryAndBundle(sessionId: "rs1", peer: "macB", hash: "ih1", fts: ["x"])
+        let good = SyncManifest(peer: "macB", updatedAt: "2024-02-02T00:00:00Z", entries: [entry])
+        let goodObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: ManifestCodec.encode(good)) as? [String: Any]
+        )
+        var futureObject = goodObject
+        futureObject["schemaVersion"] = SyncManifest.currentSchemaVersion + 1
+        futureObject["peer"] = "future-peer"
+        let catalog: [String: Any] = [
+            "schemaVersion": SyncManifest.currentSchemaVersion,
+            "manifests": [futureObject, goodObject],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: catalog)
+
+        XCTAssertEqual(
+            ManifestCodec.decodeCatalog(data),
+            [good],
+            "one future peer must not suppress compatible peers"
+        )
+    }
+
     func testDecodeCatalogSkipsCorruptManifests() throws {
         let (entry, _) = makeEntryAndBundle(sessionId: "rs1", peer: "macB", hash: "ih1", fts: ["x"])
         let good = SyncManifest(peer: "macB", updatedAt: "2024-02-02T00:00:00Z", entries: [entry])
