@@ -62,6 +62,22 @@ enum ServiceCapabilityToken {
         protectedCommands.contains(command)
     }
 
+    /// Constant-time UTF-8 equality for capability tokens (R1.nit).
+    /// Length mismatches still walk `max(count)` bytes so comparison time is not
+    /// dominated by an early `count` reject alone.
+    static func constantTimeEquals(_ lhs: String?, _ rhs: String) -> Bool {
+        let left = Array((lhs ?? "").utf8)
+        let right = Array(rhs.utf8)
+        let count = max(left.count, right.count)
+        var result: UInt8 = left.count == right.count ? 0 : 1
+        for index in 0..<count {
+            let l = index < left.count ? left[index] : 0
+            let r = index < right.count ? right[index] : 0
+            result |= l ^ r
+        }
+        return result == 0
+    }
+
     /// Default location of the capability token file.
     static func defaultPath(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser

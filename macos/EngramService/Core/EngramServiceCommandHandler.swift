@@ -1605,10 +1605,15 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
 
         let parent = try Row.fetchOne(
             db,
-            sql: "SELECT id, parent_session_id FROM sessions WHERE id = ?",
+            sql: "SELECT id, parent_session_id, tier FROM sessions WHERE id = ?",
             arguments: [parentId]
         )
         guard let parent else { return "parent-not-found" }
+        // R2.P2.skip-parent-link-allowed: skip-tier sessions are noise/subagent
+        // rows and must not become parent roots over IPC.
+        if let tier = parent["tier"] as String?, tier == "skip" {
+            return "parent-skip"
+        }
         if let existingParent = parent["parent_session_id"] as String?, !existingParent.isEmpty {
             return "depth-exceeded"
         }

@@ -11,6 +11,16 @@ import Foundation
 /// - IPC-H2 oversized frame / snippet bounding
 /// - IPC-M1 real request id on error
 final class ServiceSecurityHardeningTests: XCTestCase {
+    /// R1.nit non-constant-time-token-compare — equality helper must reject
+    /// mismatches and accept exact matches without early string `==`.
+    func testCapabilityTokenConstantTimeEquals_repro() {
+        XCTAssertTrue(ServiceCapabilityToken.constantTimeEquals("abc", "abc"))
+        XCTAssertFalse(ServiceCapabilityToken.constantTimeEquals("abc", "abd"))
+        XCTAssertFalse(ServiceCapabilityToken.constantTimeEquals(nil, "abc"))
+        XCTAssertFalse(ServiceCapabilityToken.constantTimeEquals("ab", "abc"))
+        XCTAssertFalse(ServiceCapabilityToken.constantTimeEquals("abcd", "abc"))
+    }
+
     // MARK: - Helpers
 
     private func withTemporaryHome<T>(_ body: (URL) async throws -> T) async rethrows -> T {
