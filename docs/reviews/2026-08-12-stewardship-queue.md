@@ -69,8 +69,9 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 35 | REMOTE-TELEMETRY-001 | P2 | Archive storage failures are mislabeled as internal telemetry errors | implementer | Archive 503 and 507 responses map to `storage_unavailable`, unrelated 5xx remain `internal_error`, and a named unit regression plus the telemetry-store test class pass | **DONE** 2026-08-12 — PR #318 merged at `main@2ddaa7a2`. |
 | 36 | HOME-BADGE-001 | low | Home Changed Repos badge advertises full count while rendering prefix(5) | implementer | Badge clamps with todayPanelRowLimit; See-all/prefix use same limit; named _repro | **DONE** 2026-08-12 — PR #319 merged at `main@7c158cdc`. |
 | 37 | LOGSTREAM-MODULES-001 | low | LogStream module picker frozen after first load | implementer | Merge observed modules every reload; late modules stay listed; named _repro | **DONE** 2026-08-12 — PR #320 merged at `main@ba7ffc8f`. |
-| 38 | MCP-HYBRID-ZIP-001 | low | MCP hybrid fusion zip mislabels when session drops mid-search | implementer | Index semantic results by session.id; named _repro | **IMPLEMENTED / VERIFIED — PR #321 OPEN** 2026-08-12 — L30 `MCPDatabase.swift` hybrid path. |
-| 39 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
+| 38 | MCP-HYBRID-ZIP-001 | low | MCP hybrid fusion zip mislabels when session drops mid-search | implementer | Index semantic results by session.id; named _repro | **DONE** 2026-08-12 — PR #321 merged at `main@4e243afd`. |
+| 39 | REMOTE-STATUS-PERSIST-001 | low | /v2/archive/status force-persists telemetry every poll | implementer | status uses forcePersist:false; consecutive polls within flush window do not rewrite status-v1.json; named _repro | **IMPLEMENTED / VERIFIED — PR #322 OPEN** 2026-08-12 — L27 `ArchiveRoutes.swift` status path. |
+| 40 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
 
@@ -176,3 +177,10 @@ so zip shifts labels. Service uses `semanticItems.map { ($0.id, $0) }`
 (`EngramServiceReadProvider.swift:821`). Audit L30 in
 `docs/reviews/2026-07-17-engram-full-audit.md`.
 
+
+
+Evidence for REMOTE-STATUS-PERSIST-001: GET `/v2/archive/status` called
+`telemetry.status(forcePersist: true)` (`ArchiveRoutes.swift`), and
+`observed()` records the status request after the response, so the next poll
+always found dirty state and rewrote `status-v1.json`. Audit L27 in
+`docs/reviews/2026-07-17-engram-full-audit.md`.

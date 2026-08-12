@@ -203,15 +203,8 @@ final class ArchiveRouteTests: XCTestCase {
                 XCTAssertFalse(text.contains(forbidden), "telemetry exposed \(forbidden)")
             }
 
-            let persistedURL = tempDir
-                .appendingPathComponent("archive", isDirectory: true)
-                .appendingPathComponent(".telemetry", isDirectory: true)
-                .appendingPathComponent("status-v1.json")
-            let persisted = try ArchiveCanonicalJSON.decode(
-                ArchiveRemoteTelemetrySnapshot.self,
-                from: Data(contentsOf: persistedURL)
-            )
-            XCTAssertEqual(persisted.requestCount, 2, "status must force-flush prior traffic")
+            // Live response already includes prior traffic; disk flush is throttled (L27).
+            // Do not require status to force-persist status-v1.json on every poll.
 
             response = try await client.execute(
                 uri: "/v2/archive/status",
@@ -223,6 +216,67 @@ final class ArchiveRouteTests: XCTestCase {
                 from: Self.data(response)
             )
             XCTAssertEqual(next.requestCount, 3, "a status response records itself only afterward")
+        }
+    }
+
+    /// L27 / REMOTE-STATUS-PERSIST-001: polling /v2/archive/status must not rewrite
+    /// the on-disk telemetry snapshot on every request (read-triggered write amp).
+    func testStatusPollingDoesNotForcePersistEveryRequest_repro() async throws {
+        let now = try Self.instant("2026-07-12T10:00:00.000Z")
+        let writeCounter = StatusSnapshotWriteCounter()
+        let raw = Data("observed archive bytes".utf8)
+        let digest = ArchiveV2Hash.sha256(raw)
+        let app = Application(
+            router: try makeRemoteApp(
+                sourceRevision: Self.sourceRevision,
+                telemetryNow: { now },
+                telemetrySnapshotWriter: { data, url in
+                    writeCounter.increment()
+                    try ArchiveRemoteTelemetryStore.defaultSnapshotWriter(data, url)
+                }
+            ).buildRouter()
+        )
+
+        try await app.test(.router) { client in
+            var response = try await client.execute(
+                uri: "/v2/archive/objects/\(digest)",
+                method: .put,
+                headers: Self.headers(
+                    contentType: "application/octet-stream",
+                    contentLength: raw.count
+                ),
+                body: ByteBuffer(data: raw)
+            )
+            XCTAssertEqual(response.status.code, 201)
+
+            var lastCount: Int64 = 0
+            for _ in 0..<4 {
+                response = try await client.execute(
+                    uri: "/v2/archive/status",
+                    method: .get,
+                    headers: Self.headers()
+                )
+                XCTAssertEqual(response.status.code, 200)
+                let snapshot = try ArchiveCanonicalJSON.decode(
+                    ArchiveRemoteTelemetrySnapshot.self,
+                    from: Self.data(response)
+                )
+                // Live counters still advance even without force-persist.
+                // Snapshot is taken before observed() records this status call.
+                XCTAssertGreaterThanOrEqual(snapshot.requestCount, 1)
+                lastCount = snapshot.requestCount
+            }
+            XCTAssertGreaterThanOrEqual(
+                lastCount,
+                4,
+                "four status polls must accumulate prior PUT + previous status observations"
+            )
+
+            XCTAssertEqual(
+                writeCounter.count,
+                0,
+                "status polling within the flush window must not rewrite status-v1.json"
+            )
         }
     }
 
@@ -291,11 +345,12 @@ final class ArchiveRouteTests: XCTestCase {
     }
 
     func testTelemetryPersistenceFailureDoesNotChangeSuccessfulArchivePut() async throws {
-        let now = try Self.instant("2026-07-12T10:00:00.000Z")
+        let start = try Self.instant("2026-07-12T10:00:00.000Z")
+        let clock = StatusTelemetryClock(now: start)
         let app = Application(
             router: try makeRemoteApp(
                 sourceRevision: Self.sourceRevision,
-                telemetryNow: { now },
+                telemetryNow: { clock.now },
                 telemetrySnapshotWriter: { _, _ in
                     throw CocoaError(.fileWriteNoPermission)
                 }
@@ -313,6 +368,17 @@ final class ArchiveRouteTests: XCTestCase {
             )
             XCTAssertEqual(response.status.code, 201)
 
+            // Status no longer force-flushes. Advance past the 60s throttle so the
+            // next observation's record() path attempts persistence and records the
+            // sanitized write failure without affecting the prior PUT success.
+            clock.set(try Self.instant("2026-07-12T10:01:00.000Z"))
+            response = try await client.execute(
+                uri: "/v2/archive/status",
+                method: .get,
+                headers: Self.headers()
+            )
+            // First status after the jump still snapshots before record(); error is
+            // set when that status observation is recorded.
             response = try await client.execute(
                 uri: "/v2/archive/status",
                 method: .get,
@@ -322,7 +388,6 @@ final class ArchiveRouteTests: XCTestCase {
                 ArchiveRemoteTelemetrySnapshot.self,
                 from: Self.data(response)
             )
-            XCTAssertEqual(snapshot.requestCount, 1)
             XCTAssertEqual(snapshot.lastArchiveMutationAt, "2026-07-12T10:00:00.000Z")
             XCTAssertEqual(snapshot.persistenceError, "snapshot_write_failed")
         }
@@ -2303,5 +2368,46 @@ final class ArchiveRouteTests: XCTestCase {
         )
         let bytes = try ArchiveCanonicalJSON.encode(manifest)
         return (bytes, ArchiveV2Hash.sha256(bytes))
+    }
+}
+
+
+/// Counts telemetry snapshot disk writes for status-poll amplification repros.
+private final class StatusSnapshotWriteCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func increment() {
+        lock.lock()
+        value += 1
+        lock.unlock()
+    }
+}
+
+/// Mutable clock for route-level telemetry flush timing.
+private final class StatusTelemetryClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+
+    init(now: Date) {
+        value = now
+    }
+
+    var now: Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set(_ value: Date) {
+        lock.lock()
+        self.value = value
+        lock.unlock()
     }
 }
