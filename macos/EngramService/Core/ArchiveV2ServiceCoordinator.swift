@@ -598,11 +598,15 @@ actor ArchiveV2ServiceCoordinator {
     func runBacklogPass(
         adapters: [any SessionAdapter]
     ) async throws -> ArchiveV2DrainPassSummary {
-        try await runBacklogPass(adapterProvider: { adapters })
+        try await runBacklogPass(
+            adapterProvider: { adapters },
+            excludedSnapshotSourcesProvider: { [] }
+        )
     }
 
     func runBacklogPass(
-        adapterProvider: @escaping @Sendable () -> [any SessionAdapter]
+        adapterProvider: @escaping @Sendable () -> [any SessionAdapter],
+        excludedSnapshotSourcesProvider: @escaping @Sendable () -> Set<SourceName> = { [] }
     ) async throws -> ArchiveV2DrainPassSummary {
         guard localCaptureReady, let operations else {
             return ArchiveV2DrainPassSummary(
@@ -698,6 +702,11 @@ actor ArchiveV2ServiceCoordinator {
                 let indexed = try await writerGate.performWriteCommand(
                     name: "indexArchiveBacklog"
                 ) { writer in
+                    // Read after acquiring ServiceWriterGate. The exact capture
+                    // adapter list contains only physical sources (for example
+                    // Claude) and is not an allowlist for derived parser output
+                    // such as minimax/lobsterai.
+                    let excludedSnapshotSources = excludedSnapshotSourcesProvider()
                     var evaluatedLocators: [SourceName: [String]] = [:]
                     var failedLocators: [SourceName: [String]] = [:]
                     var recaptureLocators: [SourceName: [String]] = [:]
@@ -730,7 +739,8 @@ actor ArchiveV2ServiceCoordinator {
                             }
                             do {
                                 _ = try await writer.indexCapturedSessions(
-                                    adapters: parserAdapters
+                                    adapters: parserAdapters,
+                                    excludedSnapshotSources: excludedSnapshotSources
                                 )
                                 evaluatedLocators[source, default: []].append(locator)
                                 if let state = try writer.knownFileIndexStates(

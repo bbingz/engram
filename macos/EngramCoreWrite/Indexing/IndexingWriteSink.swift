@@ -257,6 +257,11 @@ public protocol IndexingWriteSink {
         reason: IndexingWriteReason
     ) throws -> SessionBatchUpsertResult
 
+    /// Reclassify and hide any existing rows whose latest parsed snapshot
+    /// belongs to a disabled output source. This intentionally does not mark
+    /// the backing file as indexed, so re-enabling the source reparses it.
+    func suppressExcludedSnapshots(_ snapshots: [AuthoritativeSessionSnapshot]) throws
+
     func knownIndexedFileStates(source: SourceName, locators: [String]) throws -> [String: KnownIndexedFileState]
     func knownFileIndexStates(source: SourceName, locators: [String]) throws -> [String: FileIndexState]
     func knownTailMergeSnapshots(source: SourceName, locators: [String]) throws -> [String: AuthoritativeSessionSnapshot]
@@ -272,6 +277,8 @@ public protocol IndexingWriteSink {
 }
 
 public extension IndexingWriteSink {
+    func suppressExcludedSnapshots(_ snapshots: [AuthoritativeSessionSnapshot]) throws {}
+
     func knownIndexedFileStates(source: SourceName, locators: [String]) throws -> [String: KnownIndexedFileState] {
         [:]
     }

@@ -52,15 +52,24 @@ public final class OSLogStartupBackfillLogging: StartupBackfillLogging {
 public final class WriterStartupIndexing: StartupIndexing {
     private let writer: EngramDatabaseWriter
     private let adapters: [any SessionAdapter]
+    private let excludedSnapshotSources: Set<SourceName>
     public let usesInlineCountAndCostBackfills = true
 
-    public init(writer: EngramDatabaseWriter, adapters: [any SessionAdapter]) {
+    public init(
+        writer: EngramDatabaseWriter,
+        adapters: [any SessionAdapter],
+        excludedSnapshotSources: Set<SourceName> = []
+    ) {
         self.writer = writer
         self.adapters = adapters
+        self.excludedSnapshotSources = excludedSnapshotSources
     }
 
     public func indexAll() async throws -> Int {
-        let result = try await writer.indexAllSessions(adapters: adapters)
+        let result = try await writer.indexAllSessions(
+            adapters: adapters,
+            excludedSnapshotSources: excludedSnapshotSources
+        )
         return result.indexed
     }
 

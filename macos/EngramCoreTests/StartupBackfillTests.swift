@@ -122,6 +122,122 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    /// R1/R2 P1 path-parent-unvalidated-no-reconcile: legacy non-manual path
+    /// links may already be self-referential, dangling, depth>1, or point at a
+    /// skip-tier parent. Startup must clear those links while preserving manual
+    /// decisions and valid one-level links.
+    func testBackfillParentLinksReconcilesIllegalPersistedPathParents_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "root", source: "codex", tier: "normal")
+            try insertSession(db, id: "skip-parent", source: "codex", tier: "skip")
+            try insertSession(
+                db,
+                id: "nested-parent",
+                source: "codex",
+                tier: "normal",
+                linkSource: "path",
+                parentSessionId: "root"
+            )
+            try insertSession(
+                db,
+                id: "valid-child",
+                source: "codex",
+                filePath: "/tmp/root/subagents/valid.jsonl",
+                agentRole: "subagent",
+                tier: "skip",
+                linkSource: "path",
+                parentSessionId: "root"
+            )
+            try insertSession(
+                db,
+                id: "manual-dangling",
+                source: "codex",
+                filePath: "/tmp/missing-parent/subagents/manual.jsonl",
+                agentRole: "subagent",
+                tier: "skip",
+                linkSource: "manual",
+                parentSessionId: "missing-parent"
+            )
+            try insertSession(
+                db,
+                id: "path-parent-with-manual-child",
+                source: "codex",
+                tier: "normal",
+                linkSource: "path",
+                parentSessionId: "root"
+            )
+            try insertSession(
+                db,
+                id: "manual-child-under-path-parent",
+                source: "codex",
+                tier: "skip",
+                linkSource: "manual",
+                parentSessionId: "path-parent-with-manual-child"
+            )
+            for (child, parent) in [
+                ("self-child", "self-child"),
+                ("dangling-child", "missing-parent"),
+                ("nested-child", "nested-parent"),
+                ("skip-child", "skip-parent"),
+            ] {
+                try insertSession(
+                    db,
+                    id: child,
+                    source: "codex",
+                    filePath: "/tmp/\(parent)/subagents/worker.jsonl",
+                    agentRole: "subagent",
+                    tier: "skip",
+                    linkSource: "path",
+                    parentSessionId: parent
+                )
+            }
+
+            _ = try StartupBackfills.backfillParentLinks(db)
+
+            for child in ["self-child", "dangling-child", "nested-child", "skip-child"] {
+                XCTAssertNil(
+                    try String.fetchOne(
+                        db,
+                        sql: "SELECT parent_session_id FROM sessions WHERE id = ?",
+                        arguments: [child]
+                    ),
+                    "\(child) must be restored to a visible top-level row"
+                )
+                XCTAssertNil(
+                    try String.fetchOne(
+                        db,
+                        sql: "SELECT link_source FROM sessions WHERE id = ?",
+                        arguments: [child]
+                    )
+                )
+            }
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'valid-child'"),
+                "root"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'manual-dangling'"),
+                "missing-parent",
+                "startup reconcile must not override an explicit manual decision"
+            )
+            XCTAssertNil(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT parent_session_id FROM sessions WHERE id = 'path-parent-with-manual-child'"
+                ),
+                "the path edge must yield to a manual child so the graph stays one level deep"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT parent_session_id FROM sessions WHERE id = 'manual-child-under-path-parent'"
+                ),
+                "path-parent-with-manual-child",
+                "startup reconcile must preserve the manual edge"
+            )
+        }
+    }
+
     // Audit PARENT-BACKFILL-STARVE-001: a single LIMIT 500 batch of unparseable
     // legacy subagent rows must not starve a later valid child in the same call.
     func testBackfillParentLinksDoesNotStarveValidChildBehindInvalidBatch_repro() throws {

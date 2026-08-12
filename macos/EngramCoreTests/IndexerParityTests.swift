@@ -1391,6 +1391,12 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertNil(initial?["parent_session_id"] as String?)
         XCTAssertNil(initial?["agent_role"] as String?)
 
+        try writer.write { db in
+            _ = try SessionSnapshotWriter(db: db).writeAuthoritativeSnapshot(
+                makeSnapshot(id: "cc-parent", sourceLocator: "/tmp/cc-parent.jsonl")
+            )
+        }
+
         let sidecar = chatsDir.appendingPathComponent("gemini-session-reindex.engram.json")
         try """
         {"originator":"claude-code","parentSessionId":"cc-parent"}

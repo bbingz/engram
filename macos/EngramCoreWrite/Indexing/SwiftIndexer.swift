@@ -15,6 +15,7 @@ public final class SwiftIndexer {
     private let authoritativeNode: String
     private let skipUnchangedFileLocators: Bool
     private let skipKnownFileLocators: Bool
+    private let excludedSnapshotSources: Set<SourceName>
     private let didFinishAdapter: @Sendable (SourceName) -> Void
 
     public init(
@@ -23,6 +24,7 @@ public final class SwiftIndexer {
         authoritativeNode: String = "local",
         skipUnchangedFileLocators: Bool = false,
         skipKnownFileLocators: Bool = false,
+        excludedSnapshotSources: Set<SourceName> = [],
         didFinishAdapter: @escaping @Sendable (SourceName) -> Void = { _ in }
     ) {
         self.sink = sink
@@ -30,6 +32,7 @@ public final class SwiftIndexer {
         self.authoritativeNode = authoritativeNode
         self.skipUnchangedFileLocators = skipUnchangedFileLocators
         self.skipKnownFileLocators = skipKnownFileLocators
+        self.excludedSnapshotSources = excludedSnapshotSources
         self.didFinishAdapter = didFinishAdapter
     }
 
@@ -37,7 +40,12 @@ public final class SwiftIndexer {
         _ snapshots: [AuthoritativeSessionSnapshot],
         reason: IndexingWriteReason = .initialScan
     ) throws -> SessionBatchUpsertResult {
-        try sink.upsertBatch(snapshots, reason: reason)
+        let excluded = snapshots.filter { excludedSnapshotSources.contains($0.source) }
+        try sink.suppressExcludedSnapshots(excluded)
+        return try sink.upsertBatch(
+            snapshots.filter { !excludedSnapshotSources.contains($0.source) },
+            reason: reason
+        )
     }
 
     /// Returns the number of snapshots that changed durable session state.
@@ -234,7 +242,11 @@ public final class SwiftIndexer {
                         currentSnapshot: tailMergeSnapshots?[locator]
                     ) {
                     case .yield(let snapshot, let fileState):
-                        yield(snapshot, fileState)
+                        if excludedSnapshotSources.contains(snapshot.source) {
+                            try suppressExcludedSnapshot(snapshot)
+                        } else {
+                            yield(snapshot, fileState)
+                        }
                         continue
                     case .recordOnly(let fileState):
                         try upsertFileIndexStateIsolated(fileState, source: fileState.source, locator: fileState.locator)
@@ -334,10 +346,17 @@ public final class SwiftIndexer {
                                 boundaryHash: scan.checkpointBoundaryHash
                             )
                         }
-                        yield(buildSnapshot(info: info, locator: locator, stats: stats), fileState)
+                        let snapshot = buildSnapshot(info: info, locator: locator, stats: stats)
+                        if excludedSnapshotSources.contains(snapshot.source) {
+                            try suppressExcludedSnapshot(snapshot)
+                        } else {
+                            yield(snapshot, fileState)
+                        }
                     }
                 } catch is CancellationError {
                     throw CancellationError()
+                } catch let error as ExcludedSnapshotSuppressionError {
+                    throw error.underlying
                 } catch {
                     if let failure = error as? ParserFailure {
                         try recordFileIndexFailure(
@@ -356,6 +375,20 @@ public final class SwiftIndexer {
                     continue
                 }
             }
+        }
+    }
+
+    private struct ExcludedSnapshotSuppressionError: Error {
+        let underlying: any Error
+    }
+
+    private func suppressExcludedSnapshot(_ snapshot: AuthoritativeSessionSnapshot) throws {
+        do {
+            try sink.suppressExcludedSnapshots([snapshot])
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw ExcludedSnapshotSuppressionError(underlying: error)
         }
     }
 

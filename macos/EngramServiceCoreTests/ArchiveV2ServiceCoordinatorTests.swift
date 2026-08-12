@@ -351,6 +351,131 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         )
     }
 
+    /// R2.P1 source-disable-bypass: the exact capture adapter is Claude, but
+    /// parsing may classify the snapshot as an enabled derived source. The
+    /// exact-adapter list is not an enabled-output-source allowlist.
+    func testBacklogPassKeepsEnabledReclassifiedOutput_repro() async throws {
+        let harness = try makeHarness(remoteReady: false, batchSize: 3)
+        _ = try await emptyIndexResult(gate: harness.gate)
+        let events = EventLog()
+        let sourceURL = temporaryRoot("backlog-derived-enabled")
+            .appendingPathComponent("session.jsonl")
+        try FileManager.default.createDirectory(
+            at: sourceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("{}\n".utf8).write(to: sourceURL)
+        let adapter = BacklogIndexingAdapter(
+            locator: sourceURL.path,
+            events: events,
+            outputSource: .lobsterai,
+            sessionID: "backlog-derived-enabled-session"
+        )
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                processed: 1,
+                capturedSourceBytes: 3,
+                successfulLocators: [.claudeCode: [sourceURL.path]],
+                hasMore: false
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: operations
+        )
+
+        _ = try await coordinator.runBacklogPass(
+            adapterProvider: { [adapter] },
+            excludedSnapshotSourcesProvider: { [] }
+        )
+
+        let indexedSource = try await DatabaseQueue(path: harness.database.path).read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT source FROM sessions WHERE id = ?",
+                arguments: ["backlog-derived-enabled-session"]
+            )
+        }
+        XCTAssertEqual(indexedSource, SourceName.lobsterai.rawValue)
+    }
+
+    /// R2.P1 source-disable linearization: a toggle that becomes durable while
+    /// a backlog pass waits for ServiceWriterGate must win over the stale scan.
+    func testBacklogPassReadsDisabledOutputsAfterWriterGateAcquisition_repro() async throws {
+        let harness = try makeHarness(remoteReady: false, batchSize: 3)
+        _ = try await emptyIndexResult(gate: harness.gate)
+        let events = EventLog()
+        let sourceURL = temporaryRoot("backlog-derived-race")
+            .appendingPathComponent("session.jsonl")
+        try FileManager.default.createDirectory(
+            at: sourceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("{}\n".utf8).write(to: sourceURL)
+        let adapter = BacklogIndexingAdapter(
+            locator: sourceURL.path,
+            events: events,
+            outputSource: .lobsterai,
+            sessionID: "backlog-derived-race-session"
+        )
+        let captureGate = CoordinatorCaptureGate()
+        let writerBlocker = CoordinatorCaptureGate()
+        let excludedSources = CoordinatorSourceSetBox([])
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            await captureGate.enterAndWait()
+            return ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                processed: 1,
+                capturedSourceBytes: 3,
+                successfulLocators: [.claudeCode: [sourceURL.path]],
+                hasMore: false
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: operations
+        )
+        let blockerTask = Task {
+            try await harness.gate.performWriteCommand(name: "holdBacklogWriterGate") { _ in
+                await writerBlocker.enterAndWait()
+            }.value
+        }
+        await writerBlocker.waitUntilEntered()
+        let passTask = Task {
+            try await coordinator.runBacklogPass(
+                adapterProvider: { [adapter] },
+                excludedSnapshotSourcesProvider: { excludedSources.value() }
+            )
+        }
+        await captureGate.waitUntilEntered()
+
+        excludedSources.set([.lobsterai])
+        await captureGate.release()
+        await writerBlocker.release()
+        _ = try await blockerTask.value
+        _ = try await passTask.value
+
+        let rowCount = try await DatabaseQueue(path: harness.database.path).read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM sessions WHERE id = ?",
+                arguments: ["backlog-derived-race-session"]
+            ) ?? 0
+        }
+        XCTAssertEqual(rowCount, 0)
+    }
+
     func testBacklogPassDefersCapturedIndexingWhenResourcesChange() async throws {
         let harness = try makeHarness(remoteReady: false, batchSize: 3)
         _ = try await emptyIndexResult(gate: harness.gate)
@@ -3247,10 +3372,19 @@ private final class BacklogIndexingAdapter: ExactArchiveSourceAdapter, @unchecke
     let source: SourceName = .claudeCode
     private let locator: String
     private let events: EventLog
+    private let outputSource: SourceName
+    private let sessionID: String
 
-    init(locator: String, events: EventLog) {
+    init(
+        locator: String,
+        events: EventLog,
+        outputSource: SourceName = .claudeCode,
+        sessionID: String = BacklogIndexingAdapter.sessionID
+    ) {
         self.locator = locator
         self.events = events
+        self.outputSource = outputSource
+        self.sessionID = sessionID
     }
 
     func detect() async -> Bool { true }
@@ -3294,8 +3428,8 @@ private final class BacklogIndexingAdapter: ExactArchiveSourceAdapter, @unchecke
 
     private func info(locator: String) -> NormalizedSessionInfo {
         NormalizedSessionInfo(
-            id: Self.sessionID,
-            source: .claudeCode,
+            id: sessionID,
+            source: outputSource,
             startTime: "2026-07-13T00:00:00Z",
             cwd: "/tmp/project",
             messageCount: 1,
@@ -3584,6 +3718,23 @@ private final class CoordinatorAdapterProviderProbe: @unchecked Sendable {
 
     func values() -> [Int] {
         lock.withLock { recordedValues }
+    }
+}
+
+private final class CoordinatorSourceSetBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sources: Set<SourceName>
+
+    init(_ sources: Set<SourceName>) {
+        self.sources = sources
+    }
+
+    func value() -> Set<SourceName> {
+        lock.withLock { sources }
+    }
+
+    func set(_ value: Set<SourceName>) {
+        lock.withLock { sources = value }
     }
 }
 
