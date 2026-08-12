@@ -199,6 +199,12 @@ public enum GeminiProjectsJSON {
                 message: "create temp file failed"
             )
         }
+        do {
+            try fsyncFile(at: tmp)
+        } catch {
+            _ = try? FileManager.default.removeItem(atPath: tmp)
+            throw error
+        }
         if Darwin.rename(tmp, filePath) != 0 {
             let code = errno
             _ = try? FileManager.default.removeItem(atPath: tmp)
@@ -206,6 +212,34 @@ public enum GeminiProjectsJSON {
                 path: filePath,
                 errno: code,
                 message: String(cString: strerror(code))
+            )
+        }
+        fsyncDirectory(for: filePath)
+    }
+
+    private static func fsyncDirectory(for filePath: String) {
+        let directory = (filePath as NSString).deletingLastPathComponent
+        let fd = Darwin.open(directory, O_RDONLY)
+        guard fd >= 0 else { return }
+        _ = Darwin.fsync(fd)
+        Darwin.close(fd)
+    }
+
+    private static func fsyncFile(at path: String) throws {
+        let fd = Darwin.open(path, O_RDONLY)
+        if fd < 0 {
+            throw GeminiProjectsJSONError.writeFailed(
+                path: path,
+                errno: errno,
+                message: String(cString: strerror(errno))
+            )
+        }
+        defer { Darwin.close(fd) }
+        if Darwin.fsync(fd) != 0 {
+            throw GeminiProjectsJSONError.writeFailed(
+                path: path,
+                errno: errno,
+                message: String(cString: strerror(errno))
             )
         }
     }
