@@ -207,6 +207,214 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
         }
     }
 
+    // L5 / RECLAMATION-ABORT-001: one generation-changed recovery must not
+    // prevent later recoveries, new candidates, or the cycle's CAS snapshot.
+    func testSingleRecoverFailureDoesNotAbortLaterReclaimAndEvict_repro() async throws {
+        let projectsRoot = try makeProjectsRoot(
+            parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
+        )
+        let protectedRoot = try makeProjectsRoot(
+            parent: root.appendingPathComponent("protected-profile", isDirectory: true)
+        )
+        try writeSettings(customProjectsRoots: [protectedRoot.path])
+
+        let healthyRecovery = try addEligibleBinding(
+            seed: "l5-healthy-a",
+            source: "claude-code",
+            projectsRoot: projectsRoot,
+            boundAt: "2026-05-01T00:00:00.000Z"
+        )
+        let failedRecovery = try addEligibleBinding(
+            seed: "l5-failed-c",
+            source: "claude-code",
+            projectsRoot: projectsRoot,
+            boundAt: "2026-05-01T00:01:00.000Z"
+        )
+        let healthyCandidate = try addEligibleBinding(
+            seed: "l5-healthy-b",
+            source: "claude-code",
+            projectsRoot: projectsRoot,
+            boundAt: "2026-05-01T00:02:00.000Z"
+        )
+        let casFixture = try addEligibleBinding(
+            seed: "l5-cas-d",
+            source: "claude-code",
+            projectsRoot: protectedRoot,
+            boundAt: "2026-05-01T00:03:00.000Z"
+        )
+        let fixtures = [healthyRecovery, failedRecovery, healthyCandidate, casFixture]
+        try await replicate(fixtures)
+        try recordCurrentRecoveryLeases(
+            manifestSHA256: healthyRecovery.binding.manifestSHA256
+        )
+
+        // Recovery intents are ordered by updatedAt: the corrupt C is visited
+        // first, then healthy A. C is also bound before healthy B.
+        try markQuarantinePlanned(
+            failedRecovery,
+            updatedAt: "2026-07-12T23:57:00.000Z"
+        )
+        try markQuarantinePlanned(
+            healthyRecovery,
+            updatedAt: "2026-07-12T23:58:00.000Z"
+        )
+        try markSourceDeleted(casFixture)
+        try Data(repeating: 0x78, count: failedRecovery.bytes.count)
+            .write(to: failedRecovery.sourceURL)
+
+        let coordinator = try makeCoordinator()
+        let run = await coordinator.runNow(now: now)
+
+        XCTAssertTrue(run.accepted)
+        XCTAssertNil(run.error)
+        XCTAssertEqual(run.sourceFilesReclaimed, 2)
+        XCTAssertEqual(run.casObjectsEvicted, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: healthyRecovery.sourceURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: healthyCandidate.sourceURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: failedRecovery.sourceURL.path))
+        XCTAssertEqual(
+            try catalog.reclamationIntent(
+                manifestSHA256: failedRecovery.binding.manifestSHA256
+            )?.phase,
+            .paused
+        )
+        XCTAssertEqual(
+            try catalog.reclamationIntent(
+                manifestSHA256: failedRecovery.binding.manifestSHA256
+            )?.lastError,
+            "generation_changed"
+        )
+        XCTAssertEqual(
+            try catalog.localObject(objectSHA256: casFixture.objectSHA256)?.residency,
+            .evicted
+        )
+        XCTAssertEqual(
+            try catalog.reclamationIntent(
+                manifestSHA256: casFixture.binding.manifestSHA256
+            )?.phase,
+            .localContentEvicted
+        )
+        let status = await coordinator.status(now: now)
+        XCTAssertEqual(status.lastError, "reclamation_item_failure")
+    }
+
+    // A later successful candidate must not move the durable cursor beyond an
+    // eligible row whose planAndReclaim operation failed.
+    func testFailedEligiblePlanDoesNotAdvanceCursorPastLaterSuccess_repro() async throws {
+        try writeSettings(customProjectsRoots: [])
+        let projectsRoot = try makeProjectsRoot(
+            parent: homeDirectory.appendingPathComponent(".claude", isDirectory: true)
+        )
+        let failed = try addEligibleBinding(
+            seed: "l5-cursor-failed",
+            source: "claude-code",
+            projectsRoot: projectsRoot,
+            boundAt: "2026-05-01T00:01:00.000Z"
+        )
+        let later = try addEligibleBinding(
+            seed: "l5-cursor-later",
+            source: "claude-code",
+            projectsRoot: projectsRoot,
+            boundAt: "2026-05-01T00:02:00.000Z"
+        )
+        try await replicate([failed, later])
+        try recordCurrentRecoveryLeases(manifestSHA256: failed.binding.manifestSHA256)
+        let failedIntent = try catalog.upsertReclamationIntent(
+            manifestSHA256: failed.binding.manifestSHA256,
+            captureID: failed.capture.captureID,
+            sessionID: failed.binding.sessionID,
+            locator: failed.capture.locator,
+            updatedAt: "2026-07-12T23:59:00.000Z"
+        )
+        XCTAssertTrue(try catalog.transitionReclamationIntent(
+            manifestSHA256: failedIntent.manifestSHA256,
+            from: .eligible,
+            to: .paused,
+            expectedClaimGeneration: failedIntent.claimGeneration,
+            quarantinePath: nil,
+            updatedAt: nowString,
+            lastError: "injected_failure"
+        ))
+
+        let coordinator = try makeCoordinator()
+        let run = await coordinator.runNow(now: now)
+
+        XCTAssertTrue(run.accepted)
+        XCTAssertNil(run.error)
+        XCTAssertEqual(run.sourceFilesReclaimed, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: failed.sourceURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: later.sourceURL.path))
+        XCTAssertNil(
+            try catalog.archiveCursorCheckpoint(for: .reclamationCycle),
+            "later success must not advance the cursor past the failed eligible row"
+        )
+        let status = await coordinator.status(now: now)
+        XCTAssertEqual(status.lastError, "reclamation_item_failure")
+    }
+
+    // A corrupt CAS object for one source-deleted intent must not prevent a
+    // later source-deleted intent from evicting its healthy object.
+    func testSingleCASEvictFailureDoesNotAbortLaterEviction_repro() async throws {
+        let protectedRoot = try makeProjectsRoot(
+            parent: root.appendingPathComponent("cas-protected-profile", isDirectory: true)
+        )
+        try writeSettings(customProjectsRoots: [protectedRoot.path])
+        let first = try addEligibleBinding(
+            seed: "l5-cas-first",
+            source: "claude-code",
+            projectsRoot: protectedRoot
+        )
+        let second = try addEligibleBinding(
+            seed: "l5-cas-second",
+            source: "claude-code",
+            projectsRoot: protectedRoot
+        )
+        try await replicate([first, second])
+        try recordCurrentRecoveryLeases(manifestSHA256: first.binding.manifestSHA256)
+        try markSourceDeleted(first)
+        try markSourceDeleted(second)
+
+        let ordered = [first, second].sorted {
+            $0.binding.manifestSHA256 < $1.binding.manifestSHA256
+        }
+        let failed = ordered[0]
+        let later = ordered[1]
+        let failedObjectURL = archiveRoot
+            .appendingPathComponent("objects/sha256", isDirectory: true)
+            .appendingPathComponent(String(failed.objectSHA256.prefix(2)), isDirectory: true)
+            .appendingPathComponent(failed.objectSHA256)
+        try Data("corrupt cas object".utf8).write(to: failedObjectURL)
+
+        let coordinator = try makeCoordinator()
+        let run = await coordinator.runNow(now: now)
+
+        XCTAssertTrue(run.accepted)
+        XCTAssertNil(run.error)
+        XCTAssertEqual(run.casObjectsEvicted, 1)
+        XCTAssertEqual(
+            try catalog.localObject(objectSHA256: failed.objectSHA256)?.residency,
+            .resident
+        )
+        XCTAssertEqual(
+            try catalog.reclamationIntent(
+                manifestSHA256: failed.binding.manifestSHA256
+            )?.phase,
+            .sourceDeleted
+        )
+        XCTAssertEqual(
+            try catalog.localObject(objectSHA256: later.objectSHA256)?.residency,
+            .evicted
+        )
+        XCTAssertEqual(
+            try catalog.reclamationIntent(
+                manifestSHA256: later.binding.manifestSHA256
+            )?.phase,
+            .localContentEvicted
+        )
+        let status = await coordinator.status(now: now)
+        XCTAssertEqual(status.lastError, "reclamation_item_failure")
+    }
+
     /// R5: when the source-byte budget binds, cursor must not advance past the
     /// eligible row that was skipped (same fairness as M4 count-cap stop).
     func testReclamationCursorDoesNotSkipBudgetBoundEligibles_repro() async throws {
@@ -910,6 +1118,32 @@ final class ArchiveReclamationCoordinatorTests: XCTestCase {
                 catalog.reclamationIntent(manifestSHA256: intent.manifestSHA256)
             )
         }
+    }
+
+    private func markQuarantinePlanned(
+        _ fixture: BindingFixture,
+        updatedAt: String
+    ) throws {
+        let intent = try catalog.upsertReclamationIntent(
+            manifestSHA256: fixture.binding.manifestSHA256,
+            captureID: fixture.capture.captureID,
+            sessionID: fixture.binding.sessionID,
+            locator: fixture.capture.locator,
+            updatedAt: updatedAt
+        )
+        let quarantinePath = fixture.sourceURL.deletingLastPathComponent()
+            .appendingPathComponent(
+                ".engram-reclaim-l5-\(fixture.binding.manifestSHA256.prefix(16))"
+            )
+            .path
+        XCTAssertTrue(try catalog.transitionReclamationIntent(
+            manifestSHA256: intent.manifestSHA256,
+            from: .eligible,
+            to: .quarantinePlanned,
+            expectedClaimGeneration: intent.claimGeneration,
+            quarantinePath: quarantinePath,
+            updatedAt: updatedAt
+        ))
     }
 
     private func nanoseconds(_ value: timespec) -> Int64 {
