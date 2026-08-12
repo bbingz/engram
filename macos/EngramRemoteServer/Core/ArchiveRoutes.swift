@@ -283,7 +283,10 @@ enum ArchiveRoutes {
             router.get("/v2/archive/status") { request, _ in
                 await observed(request, endpoint: "status", telemetry: telemetry) {
                     guard authorized(request, token: token) else { return unauthorized() }
-                    let snapshot = await telemetry.status(forcePersist: true)
+                    // L27: return the live in-memory snapshot; disk flush stays on the
+                    // normal 60s throttle. forcePersist:true rewrote status-v1.json on
+                    // every poll because observed() dirties after each response.
+                    let snapshot = await telemetry.status(forcePersist: false)
                     do {
                         let bytes = try ArchiveCanonicalJSON.encode(snapshot)
                         guard bytes.count <= ArchiveRemoteTelemetrySnapshot.maximumEncodedBytes else {
