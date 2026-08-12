@@ -718,6 +718,12 @@ describe('CI workflow hardening', () => {
 });
 
 describe('Perf workflow', () => {
+  it('documents nightly on-demand perf as non-gating_repro', () => {
+    expect(perfWorkflow).toMatch(
+      /^# Policy: nightly\/workflow_dispatch only; this workflow is not a pull-request or merge gate\.\nname: Perf/,
+    );
+  });
+
   it('runs budgeted indexer measurements on macOS nightly and on demand', () => {
     expect(perfWorkflow).toContain('name: Perf');
     expect(perfWorkflow).toContain('cron: "30 19 * * *"');
