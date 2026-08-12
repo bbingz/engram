@@ -47,8 +47,10 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
                 return .failure(.malformedJSON)
             }
             guard !requests.isEmpty else { return .failure(.noVisibleMessages) }
+            // VS Code may persist a stable non-object entry beside valid
+            // requests. Match buildMessages' per-entry tolerance so one bad
+            // sibling does not poison the unchanged locator's retry state.
             let requestObjects = requests.compactMap { JSONLAdapterSupport.object($0) }
-            guard requestObjects.count == requests.count else { return .failure(.malformedJSON) }
             let userTexts = requestObjects.map(Self.extractUserText).filter { !$0.isEmpty }
             let assistantTexts = requestObjects.map(Self.extractAssistantText).filter { !$0.isEmpty }
             guard !userTexts.isEmpty || !assistantTexts.isEmpty else {

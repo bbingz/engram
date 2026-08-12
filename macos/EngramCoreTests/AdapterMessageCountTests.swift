@@ -78,6 +78,48 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .noVisibleMessages)
     }
 
+    // Audit L24: one stable corrupt request must not poison the valid requests
+    // and leave the unchanged locator on the malformed-JSON retry schedule.
+    func testVsCodePartiallyCorruptRequestsDoNotEnterRetryLoop_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatDir = root.appendingPathComponent("ws-partial/chatSessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatDir, withIntermediateDirectories: true)
+
+        let validRequest: [String: Any] = [
+            "timestamp": 1_700_000_005_000,
+            "message": ["text": "keep this request"],
+            "response": [
+                ["value": ["kind": "markdownContent", "content": ["value": "keep this answer"]]],
+            ],
+        ]
+        let session: [String: Any] = [
+            "kind": 0,
+            "v": [
+                "sessionId": "vs-partial-corruption",
+                "creationDate": 1_700_000_000_000,
+                "requests": ["stable-corrupt-record", validRequest],
+            ],
+        ]
+        let file = chatDir.appendingPathComponent("partial.jsonl")
+        try (try jsonLine(session) + "\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = VsCodeAdapter(workspaceStorageDir: root.path)
+        switch try await adapter.parseSessionInfo(locator: file.path) {
+        case .success(let info):
+            let streamed = try await drain(adapter, locator: file.path)
+            XCTAssertEqual(info.userMessageCount, 1)
+            XCTAssertEqual(info.assistantMessageCount, 1)
+            XCTAssertEqual(info.summary, "keep this request")
+            XCTAssertEqual(streamed.map(\.content), [
+                "keep this request",
+                "keep this answer",
+            ])
+        case .failure(let failure):
+            XCTFail("valid VS Code requests must survive corrupt siblings; got \(failure)")
+        }
+    }
+
     func testVsCodeCountsOnlyNonEmptyTurns() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
