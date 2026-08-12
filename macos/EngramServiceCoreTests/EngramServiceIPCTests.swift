@@ -1620,6 +1620,70 @@ final class EngramServiceIPCTests: XCTestCase {
         )
     }
 
+    // Audit L18: shutdown must await a cancellation-insensitive periodic WAL
+    // checkpoint before starting the final TRUNCATE checkpoint.
+    func testRunnerAwaitsCancelledCheckpointTaskBeforeShutdownContinues_repro() async {
+        let checkpointEntered = CheckpointTestSignal()
+        let cancellationObserved = CheckpointTestSignal()
+        let checkpointRelease = CheckpointTestSignal()
+        let shutdownFinished = CheckpointTestSignal()
+        let checkpointTask = Task<Void, Never> {
+            await withTaskCancellationHandler {
+                await checkpointEntered.signal()
+                await checkpointRelease.wait()
+            } onCancel: {
+                Task { await cancellationObserved.signal() }
+            }
+        }
+        await checkpointEntered.wait()
+
+        let shutdownTask = Task {
+            await EngramServiceRunner.cancelAndAwaitCheckpointTask(checkpointTask)
+            await shutdownFinished.signal()
+        }
+        await cancellationObserved.wait()
+
+        let finishedBeforeCheckpointReturned = await shutdownFinished.isSignaled()
+        XCTAssertFalse(
+            finishedBeforeCheckpointReturned,
+            "shutdown must not continue while the cancelled checkpoint is still in flight"
+        )
+
+        await checkpointRelease.signal()
+        await shutdownTask.value
+
+        let finishedAfterCheckpointReturned = await shutdownFinished.isSignaled()
+        XCTAssertTrue(finishedAfterCheckpointReturned)
+    }
+
+    // A runner is already cancelled when its orderly shutdown path begins. The
+    // final best-effort TRUNCATE still needs a fresh cancellation context.
+    func testRunnerFinalCheckpointRunsAfterParentCancellation_repro() async throws {
+        let callerBlocked = CheckpointTestSignal()
+        let callerRelease = CheckpointTestSignal()
+        let checkpointRan = CheckpointTestSignal()
+        let shutdownTask = Task {
+            await callerBlocked.signal()
+            await callerRelease.wait()
+            return try await EngramServiceRunner.runShutdownCheckpoint {
+                try Task.checkCancellation()
+                await checkpointRan.signal()
+                return (busy: 0, logFrames: 4, checkpointed: 4)
+            }
+        }
+        await callerBlocked.wait()
+
+        shutdownTask.cancel()
+        await callerRelease.signal()
+
+        let result = try await shutdownTask.value
+        XCTAssertEqual(result.busy, 0)
+        XCTAssertEqual(result.logFrames, 4)
+        XCTAssertEqual(result.checkpointed, 4)
+        let didRunCheckpoint = await checkpointRan.isSignaled()
+        XCTAssertTrue(didRunCheckpoint)
+    }
+
     func testReadOnlyAppFacingCommandsDoNotReturnUnsupportedCommand() async throws {
         let paths = try makeServiceIPCPaths()
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
@@ -6380,6 +6444,30 @@ private actor TitleConcurrencyProbe {
 
     func maximum() -> Int {
         peak
+    }
+}
+
+private actor CheckpointTestSignal {
+    private var signaled = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func signal() {
+        guard !signaled else { return }
+        signaled = true
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
+    }
+
+    func wait() async {
+        guard !signaled else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func isSignaled() -> Bool {
+        signaled
     }
 }
 
