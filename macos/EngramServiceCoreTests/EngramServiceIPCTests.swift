@@ -1892,6 +1892,76 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(reason.contains("subagent or noise"), reason)
     }
 
+    /// ARCH-001B: source KPI helpers must not count work attached only to skip-tier sessions.
+    func testSourceKPIsExcludeSkipTierRows_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE session_index_jobs (
+                  id TEXT PRIMARY KEY,
+                  session_id TEXT NOT NULL,
+                  job_kind TEXT NOT NULL,
+                  target_sync_version INTEGER NOT NULL,
+                  status TEXT NOT NULL,
+                  retry_count INTEGER NOT NULL DEFAULT 0,
+                  last_error TEXT,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE session_costs (
+                  session_id TEXT PRIMARY KEY,
+                  model TEXT,
+                  input_tokens INTEGER DEFAULT 0,
+                  output_tokens INTEGER DEFAULT 0,
+                  cache_read_tokens INTEGER DEFAULT 0,
+                  cache_creation_tokens INTEGER DEFAULT 0,
+                  cost_usd REAL DEFAULT 0,
+                  computed_at TEXT
+                );
+                INSERT INTO sessions (
+                  id, source, start_time, cwd, project, model, message_count,
+                  user_message_count, assistant_message_count, file_path, size_bytes,
+                  indexed_at, tier
+                ) VALUES
+                  (
+                    'visible-kpi', 'glm', '2026-04-23T02:00:00Z', '/tmp/engram', 'engram',
+                    'glm', 2, 1, 1, '/tmp/visible-kpi.jsonl', 44, '2026-04-23T02:00:00Z', 'normal'
+                  ),
+                  (
+                    'skip-kpi', 'glm', '2026-04-23T03:00:00Z', '/tmp/engram', 'engram',
+                    'glm', 2, 1, 1, '/tmp/skip-kpi.jsonl', 44, '2026-04-23T03:00:00Z', 'skip'
+                  );
+                INSERT INTO session_index_jobs(
+                  id, session_id, job_kind, target_sync_version, status, retry_count, last_error
+                ) VALUES (
+                  'skip-kpi:1:hash:fts', 'skip-kpi', 'fts', 1, 'failed_permanent', 3, 'noise'
+                );
+                INSERT INTO session_costs(
+                  session_id, model, input_tokens, output_tokens,
+                  cache_read_tokens, cache_creation_tokens, cost_usd, computed_at
+                ) VALUES
+                  (
+                    'visible-kpi', 'glm', 120, 30, 0, 0, 0.12, '2026-04-23T02:10:00Z'
+                  ),
+                  (
+                    'skip-kpi', 'glm', 1200, 300, 0, 0, 1.20, '2026-04-23T03:10:00Z'
+                  );
+                """)
+        }
+
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        let sources = try await provider.sources()
+        let glm = try XCTUnwrap(sources.first { $0.name == "glm" })
+
+        XCTAssertEqual(glm.sessionCount, 2, "raw source inventory remains diagnostic")
+        XCTAssertEqual(glm.failedIndexJobCount, 0)
+        XCTAssertEqual(glm.tokenSessionCount, 1)
+        XCTAssertEqual(glm.tokenCoveragePercent, 100)
+        XCTAssertEqual(glm.costedSessionCount, 1)
+    }
+
     func testSourceHealthSurvivesMissingFTSTable() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)

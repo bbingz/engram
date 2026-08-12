@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import EngramCoreRead
 
 /// All offload/rehydrate database mutations. Every function operates on a raw
 /// `Database` so callers run them inside the single-writer gate
@@ -438,7 +439,7 @@ public enum OffloadRepo {
             FROM sessions
             WHERE \(projectScopeSQL)
               AND (origin IS NULL OR origin = 'local')
-              AND (tier IS NULL OR tier != 'skip')
+              AND \(SessionVisibilityFilter.nonSkipTierSQL)
               AND (agent_role IS NULL OR agent_role != 'subagent')
               AND COALESCE(offload_state, 'local') = 'local'
               AND parent_session_id IS NULL

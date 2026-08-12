@@ -1032,8 +1032,11 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 let coverage = indexEligible > 0
                     ? min(100, max(0, Int((Double(searchable) / Double(indexEligible) * 100).rounded())))
                     : 0
-                let tokenCoverage = sessionCount > 0
-                    ? min(100, max(0, Int((Double(tokenized) / Double(sessionCount) * 100).rounded())))
+                // Denominator matches searchCoverage: list-visible/index-eligible
+                // sessions only. Skip noise must not dilute token KPI percent while
+                // raw sessionCount remains diagnostic (includes skip).
+                let tokenCoverage = indexEligible > 0
+                    ? min(100, max(0, Int((Double(tokenized) / Double(indexEligible) * 100).rounded())))
                     : 0
                 let usage = latestUsage[source]
                 let health = sourceHealth(
@@ -1736,7 +1739,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         let rows = try Row.fetchAll(db, sql: """
             SELECT source AS source, COUNT(*) AS count
             FROM sessions
-            WHERE hidden_at IS NULL AND \(SessionVisibilityFilter.nonSkipTierSQL)
+            WHERE \(SessionVisibilityFilter.listVisibleSQL)
             GROUP BY source
         """)
         return sourceCountDictionary(rows)
@@ -1748,8 +1751,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             SELECT s.source AS source, COUNT(DISTINCT f.session_id) AS count
             FROM sessions_fts f
             JOIN sessions s ON s.id = f.session_id
-            WHERE s.hidden_at IS NULL
-              AND \(SessionVisibilityFilter.nonSkipTierSQL(alias: "s"))
+            WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
             GROUP BY s.source
         """)
         return sourceCountDictionary(rows)
@@ -1768,7 +1770,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             SELECT s.source AS source, COUNT(*) AS count
             FROM session_index_jobs j
             JOIN sessions s ON s.id = j.session_id
-            WHERE s.hidden_at IS NULL
+            WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
               AND j.status IN (\(placeholders))
             GROUP BY s.source
         """, arguments: StatementArguments(failedStatuses))
@@ -1781,7 +1783,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             SELECT s.source AS source, COUNT(DISTINCT c.session_id) AS count
             FROM session_costs c
             JOIN sessions s ON s.id = c.session_id
-            WHERE s.hidden_at IS NULL
+            WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
               AND (
                 COALESCE(c.input_tokens, 0)
                 + COALESCE(c.output_tokens, 0)
@@ -1799,7 +1801,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
             SELECT s.source AS source, COUNT(DISTINCT c.session_id) AS count
             FROM session_costs c
             JOIN sessions s ON s.id = c.session_id
-            WHERE s.hidden_at IS NULL
+            WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
               AND COALESCE(c.cost_usd, 0) > 0
             GROUP BY s.source
         """)

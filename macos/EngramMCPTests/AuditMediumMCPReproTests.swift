@@ -164,11 +164,11 @@ final class AuditMediumMCPReproTests: XCTestCase {
 
     // MARK: - M19
 
-    func testGetCostsExcludesHiddenSessions_repro() throws {
+    func testGetCostsExcludesHiddenAndSkipSessions_repro() throws {
         let dbPath = try temporaryFixtureCopy("mcp-contract.sqlite", prefix: "engram-mcp-m19")
         defer { try? FileManager.default.removeItem(atPath: dbPath) }
         try wipeSessionsAndCosts(at: dbPath)
-        try seedCostHiddenFixture(at: dbPath)
+        try seedCostVisibilityFixture(at: dbPath)
 
         let structured = try rpc(
             """
@@ -180,8 +180,9 @@ final class AuditMediumMCPReproTests: XCTestCase {
             structured["totalCostUsd"] as? Double ?? (structured["totalCostUsd"] as? NSNumber)?.doubleValue,
             "missing totalCostUsd in \(structured)"
         )
-        // Visible $1.0; hidden $99 excluded.
+        // Visible $1.0; hidden $99 and skip-tier cost rows are excluded.
         XCTAssertEqual(totalCost, 1.0, accuracy: 0.001, "M19 structured=\(structured)")
+        XCTAssertEqual(structured["unpricedNoPriceSessions"] as? Int, 0, "ARCH-001B structured=\(structured)")
     }
 
     // MARK: - M24
@@ -651,7 +652,7 @@ final class AuditMediumMCPReproTests: XCTestCase {
         }
     }
 
-    private func seedCostHiddenFixture(at dbPath: String) throws {
+    private func seedCostVisibilityFixture(at dbPath: String) throws {
         let queue = try DatabaseQueue(path: dbPath)
         try queue.write { db in
             try db.execute(sql: """
@@ -661,14 +662,20 @@ final class AuditMediumMCPReproTests: XCTestCase {
                   ('mcp-cost-visible', 'codex', '2026-02-10T10:00:00.000Z',
                    '/Users/test/v', 'v', '/tmp/v.jsonl', 1, 'normal', NULL),
                   ('mcp-cost-hidden', 'codex', '2026-02-10T11:00:00.000Z',
-                   '/Users/test/h', 'h', '/tmp/h.jsonl', 1, 'normal', '2026-02-10T12:00:00.000Z')
+                   '/Users/test/h', 'h', '/tmp/h.jsonl', 1, 'normal', '2026-02-10T12:00:00.000Z'),
+                  ('mcp-cost-skip-priced', 'codex', '2026-02-10T12:00:00.000Z',
+                   '/Users/test/s', 's', '/tmp/s-priced.jsonl', 1, 'skip', NULL),
+                  ('mcp-cost-skip-unpriced', 'codex', '2026-02-10T13:00:00.000Z',
+                   '/Users/test/s', 's', '/tmp/s-unpriced.jsonl', 1, 'skip', NULL)
                 """)
             try db.execute(sql: """
                 INSERT INTO session_costs (
                   session_id, model, input_tokens, output_tokens, cost_usd, computed_at
                 ) VALUES
                   ('mcp-cost-visible', 'gpt-test', 10, 10, 1.0, '2026-02-10T10:00:00.000Z'),
-                  ('mcp-cost-hidden', 'gpt-test', 100, 100, 99.0, '2026-02-10T11:00:00.000Z')
+                  ('mcp-cost-hidden', 'gpt-test', 100, 100, 99.0, '2026-02-10T11:00:00.000Z'),
+                  ('mcp-cost-skip-priced', 'gpt-test', 1000, 1000, 100.0, '2026-02-10T12:00:00.000Z'),
+                  ('mcp-cost-skip-unpriced', 'gpt-missing', 500, 500, 0.0, '2026-02-10T13:00:00.000Z')
                 """)
         }
     }

@@ -154,7 +154,7 @@ final class MCPDatabase {
         offset: Int,
         includeAll: Bool = false
     ) throws -> OrderedJSONValue {
-        var conditions = ["hidden_at IS NULL", "orphan_status IS NULL"]
+        var conditions = [SessionVisibilityFilter.notHiddenSQL, "orphan_status IS NULL"]
         if !includeAll {
             conditions = defaultSessionVisibilityConditions() + ["orphan_status IS NULL"]
         }
@@ -238,7 +238,7 @@ final class MCPDatabase {
                COUNT(*) AS sessionCount
         FROM session_costs c
         JOIN sessions s ON c.session_id = s.id
-        WHERE s.hidden_at IS NULL
+        WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
         """
         var arguments: [String: DatabaseValueConvertible?] = [:]
         if let since {
@@ -276,7 +276,7 @@ final class MCPDatabase {
               ELSE 0 END) AS unpricedNoPriceTokens
         FROM session_costs c
         JOIN sessions s ON c.session_id = s.id
-        WHERE s.hidden_at IS NULL
+        WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
         """
         if since != nil {
             unpricedSQL += " AND s.start_time >= :since"
