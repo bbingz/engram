@@ -89,11 +89,12 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **REMOTE-STATUS-PERSIST-001** / L27 | closed (#322) | `/v2/archive/status` returns the live snapshot with `forcePersist: false` so polling no longer rewrites `status-v1.json` every request; disk flush stays on the 60s throttle. Shipped at `main@dcb2b3d9`. |
 | **SERVICE-CHECKPOINT-SHUTDOWN-001** / L18 | closed (#323) | Graceful service shutdown cancels and awaits the periodic PASSIVE checkpoint before either remaining TRUNCATE operation. Final TRUNCATE runs in an awaited fresh cancellation context; shipped at `main@dc5a5128`. |
 | **REMOTE-CATALOG-MEM-001** / L29 | closed (#325) | Legacy `/v1/catalog` stops after 1,024 matching peer manifests and limits both cumulative decoded input and the serialized response to 4 MiB; fail-closed 413 when over budget. Shipped at `main@c9c6c7f9`. |
-| **SUGGESTED-PARENT-RESCORE-001** / L11 | in review (#331) | detection version bump clears stale non-manual suggested parents and rescores. |
-| **POLYCLI-LINKED-DEAD-001** / L12 | closed (#326) | Removed dead polycli linked accounting; shipped at `main@15eea454`. |
+| **TIMELINE-RECOMPUTE-001** / L14 | in review (#329) | TimelinePageView materializes derived collections once per body evaluation. |
+| **SUGGESTED-PARENT-RESCORE-001** / L11 | closed (#331) | detection version bump clears stale suggested parents; shipped at `main@5ed938e4`. |
+| **POLYCLI-LINKED-DEAD-001** / L12 | closed (#326) | dead polycli linked accounting removed; shipped at `main@15eea454`. |
 | **WORKGRAPH-FORMATTER-001** / L15 | closed (#324) | WorkGraph uses EngramTimestampParser; shipped at `main@53c171d1`. |
 | **INDEXER-BACKPRESSURE-001** / L17 | closed (#330) | indexAll awaits full 100-snapshot writes; shipped at `main@53bd4cc4`. |
-| **POLYCLI-LINKED-DEAD-001** / L12 | closed (#326) | Removed dead polycli linked accounting; shipped at `main@15eea454`. |
+| **POLYCLI-LINKED-DEAD-001** / L12 | closed (#326) | dead polycli linked accounting removed; shipped at `main@15eea454`. |
 | **ANTIGRAVITY-CWD-REREAD-001** / L34 | closed (#327) | Antigravity CWD inference reads at most 50KB; shipped at `main@ddf2070a`. |
 | **VSCODE-STRICT-REQUESTS-001** / L24 | closed (#328) | VS Code ignores stable non-object request entries; shipped at `main@5c5e916b`. |
 | **READ-001/002/003** | closed (post-audit follow-up) | MCP multi-term session-scoped AND, activity-time `since`, and exact project-or-alias filtering are covered by executable `_repro` tests; this does not close ARCH-001 |

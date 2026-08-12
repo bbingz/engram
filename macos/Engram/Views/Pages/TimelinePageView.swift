@@ -166,11 +166,6 @@ struct TimelinePageView: View {
         }
     }
 
-    // Per-day session counts for the chart band (timeline-1).
-    private var chartData: [(date: String, count: Int)] {
-        filteredTimeline.reversed().map { (date: $0.date, count: $0.sessions.count) }
-    }
-
     private var workChartData: [(date: String, count: Int)] {
         let grouped = Dictionary(grouping: workTimeline, by: \.startDate)
         return grouped
@@ -178,15 +173,16 @@ struct TimelinePageView: View {
             .sorted { $0.date < $1.date }
     }
 
-    private var visibleChartData: [(date: String, count: Int)] {
-        timelineMode == .work ? workChartData : chartData
-    }
-
-    private var hasVisibleContent: Bool {
-        timelineMode == .work ? !workTimeline.isEmpty : !filteredTimeline.isEmpty
-    }
-
     var body: some View {
+        let projectOptionsSnapshot = projectOptions
+        let filteredTimelineSnapshot = filteredTimeline
+        let visibleChartDataSnapshot = timelineMode == .work
+            ? workChartData
+            : filteredTimelineSnapshot.reversed().map { (date: $0.date, count: $0.sessions.count) }
+        let hasVisibleContentSnapshot = timelineMode == .work
+            ? !workTimeline.isEmpty
+            : !filteredTimelineSnapshot.isEmpty
+
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .center, spacing: 12) {
@@ -218,9 +214,9 @@ struct TimelinePageView: View {
                     .disabled(timelineMode == .work)
                     .accessibilityIdentifier("timeline_sortPicker")
                 }
-                if projectOptions.count > 1 {
+                if projectOptionsSnapshot.count > 1 {
                     Picker("Project", selection: $selectedProject) {
-                        ForEach(projectOptions, id: \.self) { name in
+                        ForEach(projectOptionsSnapshot, id: \.self) { name in
                             Text(name).tag(name)
                         }
                     }
@@ -238,17 +234,17 @@ struct TimelinePageView: View {
                 }
                 SessionExportStatusBanner(state: exportState)
                     .accessibilityIdentifier("timeline_exportStatus")
-                if !visibleChartData.isEmpty {
-                    ActivityChart(data: visibleChartData)
+                if !visibleChartDataSnapshot.isEmpty {
+                    ActivityChart(data: visibleChartDataSnapshot)
                         .frame(height: 120)
                         .accessibilityIdentifier("timeline_chart")
                 }
-                if isLoading && !hasVisibleContent {
+                if isLoading && !hasVisibleContentSnapshot {
                     ProgressView()
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 40)
                         .accessibilityIdentifier("timeline_loading")
-                } else if !hasVisibleContent && loadError == nil && !isLoading {
+                } else if !hasVisibleContentSnapshot && loadError == nil && !isLoading {
                     EmptyState(icon: "calendar", title: "No activity", message: emptyMessage)
                         .accessibilityIdentifier("timeline_emptyState")
                 } else if timelineMode == .work {
@@ -263,7 +259,7 @@ struct TimelinePageView: View {
                     }
                 } else {
                     LazyVStack(alignment: .leading, spacing: 16) {
-                        ForEach(filteredTimeline, id: \.date) { group in
+                        ForEach(filteredTimelineSnapshot, id: \.date) { group in
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack {
                                     Text(formatDateLabel(group.date))
