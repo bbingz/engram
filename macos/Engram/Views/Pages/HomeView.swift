@@ -1,8 +1,9 @@
 // macos/Engram/Views/Pages/HomeView.swift
 import SwiftUI
 
-/// How many rows the Continue / Follow-ups panels actually render. The badge
-/// must report the same number so it never advertises rows that aren't shown.
+/// How many rows the Continue / Follow-ups / Changed Repos panels actually
+/// render. The badge must report the same number so it never advertises rows
+/// that aren't shown.
 /// Not `private` so the panel-badge contract is unit-testable via @testable.
 let todayPanelRowLimit = 5
 
@@ -272,10 +273,10 @@ struct HomeView: View {
         WorkbenchPanel(
             icon: "arrow.triangle.branch",
             title: "Changed Repos",
-            trailingAction: projectGroups.count > 5
+            trailingAction: projectGroups.count > todayPanelRowLimit
                 ? (label: String(localized: "See all"), action: { navigate(to: .projects) })
                 : nil,
-            badge: projectGroups.isEmpty ? nil : "\(projectGroups.count)"
+            badge: projectGroups.isEmpty ? nil : "\(min(projectGroups.count, todayPanelRowLimit))"
         ) {
             if projectGroups.isEmpty && isIndexing {
                 indexingState
@@ -288,7 +289,7 @@ struct HomeView: View {
                 .frame(height: 120)
             } else {
                 VStack(spacing: 8) {
-                    ForEach(Array(projectGroups.prefix(5).enumerated()), id: \.element.id) { index, group in
+                    ForEach(Array(projectGroups.prefix(todayPanelRowLimit).enumerated()), id: \.element.id) { index, group in
                         ChangedRepoRow(
                             group: group,
                             warning: projectWarnings[group.id],

@@ -132,7 +132,7 @@ final class TodayWorkbenchScopeTests: XCTestCase {
     // MARK: - Panel badge matches render (finding #2)
 
     func testTodayPanelRowLimitMatchesRenderedRows() {
-        // Badge clamps to this; ranking can return up to 8.
+        // Badge clamps to this for Continue / Follow-ups / Changed Repos.
         XCTAssertEqual(todayPanelRowLimit, 5)
         XCTAssertEqual(min(8, todayPanelRowLimit), 5)
         XCTAssertEqual(min(3, todayPanelRowLimit), 3)

@@ -53,8 +53,26 @@ final class HomePopoverActionsTests: XCTestCase {
             "Continue See-all must be gated on count > limit"
         )
         XCTAssertTrue(
-            s.contains("projectGroups.count > 5"),
-            "Changed Repos See-all must be gated on count > 5"
+            s.contains("projectGroups.count > todayPanelRowLimit"),
+            "Changed Repos See-all must be gated on count > todayPanelRowLimit"
+        )
+    }
+
+    /// L16 / HOME-BADGE-001: Changed Repos badge must not advertise more rows
+    /// than the panel renders (Continue/Follow-ups already clamp).
+    func testHomeChangedReposBadgeMatchesRenderedRows_repro() throws {
+        let s = try homeView()
+        XCTAssertTrue(
+            s.contains("projectGroups.prefix(todayPanelRowLimit)"),
+            "Changed Repos must render at most todayPanelRowLimit rows"
+        )
+        XCTAssertTrue(
+            s.contains("min(projectGroups.count, todayPanelRowLimit)"),
+            "Changed Repos badge must clamp to rendered row count"
+        )
+        XCTAssertFalse(
+            s.contains("badge: projectGroups.isEmpty ? nil : \"\\(projectGroups.count)\""),
+            "Changed Repos badge must not advertise the unclamped project group count"
         )
     }
 
