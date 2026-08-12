@@ -224,6 +224,33 @@ describe('Database', () => {
     ).toEqual(['hello rebuild', 'answer rebuild']);
   });
 
+  // Audit L20 / FTS-H01-TS-001: terminal jobs are not replayed, so their
+  // searchable live rows must survive a version-3 shadow-table swap.
+  it('preserves live FTS rows for permanent failures before version-3 swap_repro', () => {
+    db.upsertSession(mockSession);
+    db.replaceFtsContent('session-001', ['permanent live keyword']);
+    db.setMetadata('fts_version', '2');
+    db.setMetadata('fts_rebuild_version', '3');
+    db.raw.exec(`
+      CREATE VIRTUAL TABLE sessions_fts_rebuild USING fts5(
+        session_id UNINDEXED,
+        content,
+        tokenize='trigram case_sensitive 0'
+      )
+    `);
+    db.insertIndexJobs('session-001', 0, ['fts']);
+    db.raw
+      .prepare(
+        "UPDATE session_index_jobs SET status = 'failed_permanent' WHERE session_id = ? AND job_kind = 'fts'",
+      )
+      .run('session-001');
+
+    expect(db.finalizeFtsRebuildIfReady()).toBe(true);
+    expect(db.getMetadata('fts_version')).toBe('3');
+    expect(db.getMetadata('fts_rebuild_version')).toBeNull();
+    expect(db.getFtsContent('session-001')).toEqual(['permanent live keyword']);
+  });
+
   it('deletes index artifacts from active and rebuild FTS tables', () => {
     db.upsertSession(mockSession);
     db.setMetadata('fts_rebuild_version', '3');

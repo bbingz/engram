@@ -76,7 +76,8 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 43 | INDEXER-BACKPRESSURE-001 | low | SwiftIndexer producer can outrun its 100-row consumer batch through an unbounded AsyncThrowingStream | implementer | Await each full 100-row write before scanning more snapshots; preserve collection; named producer-backpressure and write-failure regressions pass | **DONE** 2026-08-12 — PR #330 merged at `main@53bd4cc4`; audit L17. |
 | 45 | GEMINI-JSON-FSYNC-001 | low | Gemini projects.json writeAtomic skips temp-file and parent-dir fsync (L26) | implementer | Fsync temp before rename and parent dir after, matching JsonlPatch; `testAtomicWriterFsyncsTempAndParentDirectory_repro` | **IMPLEMENTED / VERIFIED — PR #332 OPEN** 2026-08-13 — `GeminiProjectsJSON.swift:181`. |
 | 44 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
-| 47 | SESSION-DETAIL-FILTER-001 | low | SessionDetailView full type-visibility filtering scans 100k+ loaded rows synchronously on the main actor | implementer | Full-prefix visibility loop runs in cancellable detached work; newer toggles/session resets cannot publish stale results; append A3 and hidden-match rescans remain intact; named `_repro` passes | **IMPLEMENTED / VERIFIED — PR #334 OPEN** 2026-08-13 — audit L32; `SessionDetailView.swift:102-166`, `TodayWorkbenchScopeTests.swift:230-293`. |
+| 47 | SESSION-DETAIL-FILTER-001 | low | SessionDetailView full type-visibility filtering scans 100k+ loaded rows synchronously on the main actor | implementer | Full-prefix visibility loop runs in cancellable detached work; newer toggles/session resets cannot publish stale results; append A3 and hidden-match rescans remain intact; named `_repro` passes | **DONE** 2026-08-13 — PR #334 merged at `main@54d0fce4`; audit L32. |
+| 50 | FTS-H01-TS-001 | low | Retained TypeScript FTS rebuild version 3 can swap away eligible live rows for terminal or never-replayed jobs (L20) | implementer | Copy missing eligible live rows into the rebuild table, refuse an incomplete swap, keep `FTS_VERSION='3'`, and pass the named `_repro` plus existing FTS suites | **IMPLEMENTED / VERIFIED — PR pending** 2026-08-13 — `src/core/db/fts-rebuild-policy.ts:63-89,194-250`; `tests/core/db.test.ts:229`. |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
 
@@ -218,5 +219,7 @@ Shipped in PR #323 at `main@dc5a5128`.
 | 41 | REMOTE-CATALOG-MEM-001 | low | `/v1/catalog` unbounded in-memory peer manifests (L29) | **DONE** PR #325 `main@c9c6c7f9` |
 | 43 | INDEXER-BACKPRESSURE-001 | low | Unbounded AsyncThrowingStream between scan and 100-row write batches (L17) | **DONE** PR #330 `main@53bd4cc4` |
 | 45 | GEMINI-JSON-FSYNC-001 | low | Gemini projects.json writeAtomic skips temp/parent fsync (L26) | **IMPLEMENTED / VERIFIED — PR pending** |
+| 47 | SESSION-DETAIL-FILTER-001 | low | Full loaded-prefix visibility filtering ran on the main actor (L32) | **DONE** PR #334 `main@54d0fce4` |
+| 50 | FTS-H01-TS-001 | low | TS version-3 FTS finalize lacked the Swift H01 live-row copy/coverage guard (L20) | **IMPLEMENTED / VERIFIED — PR pending** |
 | 44 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | **BLOCKED** |
 `docs/reviews/2026-07-17-engram-full-audit.md`.
