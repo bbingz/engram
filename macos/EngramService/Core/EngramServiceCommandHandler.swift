@@ -2635,7 +2635,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     }
 
     private static func containsSensitivePathComponent(_ path: String, home: String) -> Bool {
-        let relative = path.dropFirst(home.count).split(separator: "/").map(String.init)
+        // Fold case so APFS case-variant paths (e.g. `.SSH`, `library/keychains`)
+        // cannot bypass the denylist. Compare folded components only.
+        let relative = path.dropFirst(home.count)
+            .split(separator: "/")
+            .map { String($0).lowercased() }
         // Single-component sensitive directories anywhere under $HOME.
         let sensitiveSingle: Set<String> = [".ssh", ".aws", ".gnupg", ".kube", ".docker", ".1password"]
         if relative.contains(where: { sensitiveSingle.contains($0) }) {
@@ -2645,7 +2649,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         // previous code matched single components against the compound string
         // "Library/Keychains", which never matched and left keychains exposed.
         let sensitiveSequences: [[String]] = [
-            ["Library", "Keychains"],
+            ["library", "keychains"],
         ]
         for sequence in sensitiveSequences where relative.count >= sequence.count {
             for start in 0...(relative.count - sequence.count) {

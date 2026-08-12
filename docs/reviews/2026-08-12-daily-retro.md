@@ -57,3 +57,12 @@ Lead: Grok (stewardship goal) · Implementation: Grok + Herdr Codex `retro-handl
 - Landed P2/nit: skip-parent IPC reject, constant-time capability token compare, todayParents zero until first successful scan, get_memory empty warning MCP `_repro`.
 - CI: Tests / CodeQL / Dependency Review kicked off on `feat/retro-p1-2026-08-12`.
 - Codex `retro-handler` still working ArchiveV2 disabled-locator churn + residual docs.
+
+## Follow-on (loop 10:11–10:15)
+
+- **CI firefight on PR #305**: Node quality + macOS script gates failed because invariant §15 backticked `_repro` as a path anchor. Fixed in `b5c70b00` (path-safe verified-by list + `MCPStdioServer.swift`).
+- **RETRO-P2-DENYLIST-CASE**: `containsSensitivePathComponent` now lowercases path components before denylist compare; `_repro` covers `.SSH` and `library/keychains` / `LIBRARY/KEYCHAINS`. Focused `EngramServiceCore` tests green.
+- Swift unit / ui-smoke / remote-server already green on prior run; re-CI in flight after ledger push.
+- Codex `retro-handler` was **working** this fire — not interrupted.
+- Release 1.0.5 still **BLOCKED** on human auth.
+

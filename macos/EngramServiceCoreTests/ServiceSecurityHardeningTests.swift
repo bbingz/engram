@@ -487,6 +487,57 @@ final class ServiceSecurityHardeningTests: XCTestCase {
         }
     }
 
+    /// invariant: sensitive-path denylist is case-folded (RETRO-P2-DENYLIST-CASE).
+    /// APFS default volumes are case-insensitive; exact-case denylist matching let
+    /// `.SSH` / `library/keychains` spellings bypass the guard on non-existent dst paths.
+    func testSensitivePathBlocksCaseVariants_repro() async throws {
+        try await withTemporaryHome { home in
+            let paths = try makePaths()
+            try seedProjectFixture(at: paths.database.path, src: home.path)
+            let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+            let handler = EngramServiceCommandHandler(writerGate: gate)
+            let dst = home.appendingPathComponent(".claude/projects/x").path
+
+            func assertProtected(_ src: String, label: String) async {
+                let request = EngramServiceRequestEnvelope(
+                    command: "projectMove",
+                    payload: try! JSONEncoder().encode(EngramServiceProjectMoveRequest(
+                        src: src,
+                        dst: dst,
+                        dryRun: true,
+                        force: true,
+                        auditNote: nil,
+                        actor: "test"
+                    ))
+                )
+                let response = await handler.handle(request)
+                guard case .failure(_, let error) = response else {
+                    return XCTFail("\(label) must be rejected as protected location")
+                }
+                XCTAssertEqual(error.name, "InvalidRequest", label)
+                XCTAssertTrue(
+                    error.message.contains("protected location"),
+                    "\(label): \(error.message)"
+                )
+            }
+
+            // Case-folded single-component denylist (.ssh family).
+            await assertProtected(
+                home.appendingPathComponent(".SSH/id_rsa").path,
+                label: ".SSH"
+            )
+            // Case-folded multi-component sequence (Library/Keychains).
+            await assertProtected(
+                home.appendingPathComponent("library/keychains/login.keychain-db").path,
+                label: "library/keychains"
+            )
+            await assertProtected(
+                home.appendingPathComponent("LIBRARY/KEYCHAINS/login.keychain-db").path,
+                label: "LIBRARY/KEYCHAINS"
+            )
+        }
+    }
+
     func testProjectPathConfinementRejectsSymlinkEscapingHome() async throws {
         try await withTemporaryHome { home in
             let outside = FileManager.default.temporaryDirectory
