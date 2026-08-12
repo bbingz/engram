@@ -64,8 +64,9 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 30 | CURSOR-CWD-001 | P2 | Cursor workspace ownership must not use unrelated file selection as authoritative CWD | implementer | Accepted design + unique pointer-index ownership + named regression tests for wrong selection/ambiguity | **DONE** 2026-08-12 |
 | 31 | ARCH-001 | debt | Triple Read SQL stacks / shared CoreRead predicates | implementer | Shared predicate module + cross-surface parity suite | **PARTIAL — A/B/C DONE**: ARCH-001A shared search predicates (#311), ARCH-001B list/aggregate convergence (#312), and ARCH-001C residual list visibility (#313) shipped. Full CoreRead pool/DTO migration and an executable cross-surface parity suite remain deferred structural work; ARCH-001 stays open. |
 | 32 | MCP-001-REVERIFY | P2 | Post-#215 MCP object-root contract residual audit | verifier | Re-grep every shipped MCP success-result constructor; either prove object-root coverage or capture an actionable residual with a named unit regression before changing production code | **DONE / PASS** 2026-08-12 — #215's object-root fix remains present; shipped Swift routes, executable contracts, and golden fixtures expose no actionable residual. |
-| 33 | ARCHIVE-DISCOVERY-001 | debt | Restart-stable bounded exact-source locator discovery | design-first implementer | Durable locator inventory/work queue makes the discovery phase itself bounded across restart; explicit bootstrap and FSEvents/restart regressions prove the capture budget applies before O(N) materialization | **OPEN / NEXT DESIGN** — current Claude Code/Codex discovery still materializes and sorts the full locator set before the capture budget loop. |
-| 34 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
+| 33 | ARCHIVE-DISCOVERY-001 | debt | Restart-stable bounded steady-state exact-source locator discovery | design-first implementer | After an explicit O(N) bootstrap, a durable locator inventory + FSEvents cursor makes normal discovery/capture bounded across restart; event-loss and capture-before-parse regressions pass | **DESIGN-READY / IMPLEMENTATION DEFERRED** — residual confirmed on `main@5114507f`; no safe prefix/limit patch. Scope and Done-when: `docs/reviews/2026-08-12-archive-discovery-001-design-scope.md`. |
+| 34 | REMOTE-MANIFEST-SCHEMA-001 | P2 | Remote Sync manifests accept unsupported schema versions | implementer | `ManifestCodec.decode` rejects unsupported manifest versions, aggregate catalog version is validated, valid peers still survive a malformed peer; named unit regressions cover direct decode and catalog paths | **OPEN / NEXT SMALL SLICE** — promoted from residual L36; pure Swift unit-repro path in `SessionSyncTests`. |
+| 35 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
 
@@ -102,6 +103,18 @@ Codex recursively materializes and sorts every rollout locator
 after `ArchiveCaptureCoordinator` has awaited and snapshotted those full lists
 does its locator-budget loop begin
 (`macos/EngramCoreWrite/ArchiveV2/ArchiveCaptureCoordinator.swift:430-506`).
+The design adjudication confirms that truncating the existing array would
+starve later locators and that the durable checkpoint does not contain the
+full inventory; see
+`docs/reviews/2026-08-12-archive-discovery-001-design-scope.md`.
+
+Evidence for REMOTE-MANIFEST-SCHEMA-001: direct and aggregate manifest decode
+perform no version guard
+(`macos/EngramCoreWrite/RemoteSync/ManifestCodec.swift:90-102`), while bundle
+decode already fails unsupported versions explicitly
+(`macos/EngramCoreWrite/RemoteSync/BundleCodec.swift:100-106`). Add named tests
+beside `macos/EngramCoreTests/RemoteSync/SessionSyncTests.swift:375-396` before
+changing production code.
 
 ### ARCH-001 A/B/C residual audit (`main@394269c9`)
 

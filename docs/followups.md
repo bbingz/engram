@@ -81,6 +81,7 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 |----|--------|------------------|
 | **R1** / ARCH-001 | open (structural investment; A/B/C shipped) | ARCH-001A shared search predicates (#311), ARCH-001B list/aggregate visibility convergence (#312), and ARCH-001C residual list visibility (#313) are on main. The remaining work is the full CoreRead pool/DTO migration plus an executable cross-surface parity suite; those deferred structural items keep ARCH-001 open. The post-C literal residual classification is recorded in `docs/reviews/2026-08-12-stewardship-queue.md`. |
 | **MCP-001** | closed (#215; reverified 2026-08-12) | The shipped alias-list producer returns an object root (`macos/EngramMCP/Core/MCPDatabase.swift:1591-1607`), its route uses the shared success wrapper (`macos/EngramMCP/Core/MCPToolRegistry.swift:1153-1170`), and executable catalog/alias contracts plus the golden assert the object shape (`macos/EngramMCPTests/EngramMCPExecutableTests.swift:381-496,5095-5148`; `tests/fixtures/mcp-golden/manage_project_alias.list.json:8-23`). All 27 current Swift success-wrapper call sites were inspected; no non-object structured root remains. |
+| **REMOTE-MANIFEST-SCHEMA-001** / L36 | open / next small slice | `ManifestCodec.decode` and `decodeCatalog` accept unsupported direct/aggregate schema versions (`macos/EngramCoreWrite/RemoteSync/ManifestCodec.swift:90-102`), unlike the fail-loud bundle decoder (`macos/EngramCoreWrite/RemoteSync/BundleCodec.swift:100-106`). Add direct-decode and mixed-catalog named regressions in `macos/EngramCoreTests/RemoteSync/SessionSyncTests.swift:375-396`, then apply the minimal version guards. |
 | **READ-001/002/003** | closed (post-audit follow-up) | MCP multi-term session-scoped AND, activity-time `since`, and exact project-or-alias filtering are covered by executable `_repro` tests; this does not close ARCH-001 |
 | **R4-dual-tx / EMB-009** | closed (#223) | Shipped insight backfill writes success vectors and item-failure accounting in one `writer.write`; successful rows set `insights.has_embedding=1`; the shipped-runner `_repro` forces failure accounting to throw and proves vector/flag rollback without changing R4 terminal taxonomy |
 | **MCP-002** | closed (#225) | `get_context`, `tool_analytics`, and `file_activity` now reuse shared list-visible and top-level predicates; shipped-binary `_repro` coverage includes `listContextSessions`, `topToolsSince`, and `fileHotspotsSince`. Existing READ-005 `orphan_status` behavior is unchanged. |
@@ -113,7 +114,12 @@ are not implementation-ready blockers for its operational closeout:
   and `macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift:503-514`,
   while `macos/EngramCoreWrite/ArchiveV2/ArchiveCaptureCoordinator.swift:430-506`
   applies its locator budget only after both full-list enumeration and
-  snapshotting.
+  snapshotting. Current-main adjudication found no safe prefix/limit patch:
+  restart correctness requires a durable inventory plus an event-loss contract.
+  The implementation boundary, rejected shortcuts, and executable Done-when are
+  recorded in
+  `docs/reviews/2026-08-12-archive-discovery-001-design-scope.md`; stewardship
+  rank 33 is design-ready but implementation-deferred.
 - **Canonical exporters for additional adapters.** Keep virtual, composite,
   adjacent-shard, path-sensitive, and database-backed locators unsupported
   until each adapter declares a complete canonical source set and passes a
