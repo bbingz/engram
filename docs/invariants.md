@@ -100,6 +100,13 @@ Invariants are properties that must survive every change; each entry names where
 - **Verified by** - `macos/EngramMCPTests/AuditMediumMCPReproTests.swift` (testGetContextExcludesSupersededInsights_repro, testSearchExcludesSupersededInsights_repro, testGetContextExcludesSupersededInsightsForCJKQuery_repro, testResourceCatalogExcludesSupersededInsights_repro, testGetMemoryRecencyFillsActiveMemoriesPastOverfetchWindow_repro).
 - **Gate** - `none`.
 
+## 15. MCP Dual-Era Protocol Honesty
+
+- **Statement** - Stdio `EngramMCP` and any remote MCP surface negotiate the same dual-era protocol set, share the same tool registry era rules, and refuse unsupported protocol versions with honest errors rather than silently demoting or advertising a version they cannot serve.
+- **Enforced by** - `macos/EngramMCP/Core/MCPToolRegistry.swift`, `docs/mcp-protocol-alignment-design.md`, `docs/remote-mcp-2026-07-28-design.md`.
+- **Verified by** - `macos/EngramMCPTests/EngramMCPExecutableTests.swift` (dual-era / protocol negotiation `_repro` cases from retro PR-4), `macos/EngramMCPTests` protocol version fixtures.
+- **Gate** - `none`.
+
 ## Unverified Anchors
 
 None.
