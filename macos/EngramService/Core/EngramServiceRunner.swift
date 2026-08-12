@@ -429,6 +429,11 @@ public enum EngramServiceRunner {
         await archiveDrainStartTask.value
         await archiveV2Drainer?.stop()
 
+        // PASSIVE checkpoint calls do not observe Swift task cancellation while
+        // SQLite is executing. Await the task result so a periodic checkpoint
+        // cannot overlap either remaining TRUNCATE operation below.
+        await cancelAndAwaitCheckpointTask(checkpointTask)
+
         // Wait for the startup truncate to finish before tearing down the gate.
         // SQLite's PRAGMA call doesn't observe Task cancellation, so the value
         // wait is what guarantees we don't drop the writer mid-checkpoint.
@@ -443,7 +448,9 @@ public enum EngramServiceRunner {
         // (busy != 0) is a normal best-effort outcome. SQLite's PRAGMA does not
         // observe Task cancellation; it is bounded by busy_timeout (30s).
         do {
-            let result = try await gate.checkpointTruncate()
+            let result = try await runShutdownCheckpoint {
+                try await gate.checkpointTruncate()
+            }
             ServiceLogger.notice(
                 "shutdown wal truncate: busy=\(result.busy) log=\(result.logFrames) checkpointed=\(result.checkpointed)",
                 category: .checkpoint
@@ -454,6 +461,25 @@ public enum EngramServiceRunner {
                 category: .checkpoint
             )
         }
+    }
+
+    static func cancelAndAwaitCheckpointTask<Success, Failure: Error>(
+        _ task: Task<Success, Failure>
+    ) async {
+        task.cancel()
+        _ = await task.result
+    }
+
+    static func runShutdownCheckpoint(
+        _ checkpoint: @escaping @Sendable () async throws -> (
+            busy: Int64,
+            logFrames: Int64,
+            checkpointed: Int64
+        )
+    ) async throws -> (busy: Int64, logFrames: Int64, checkpointed: Int64) {
+        try await Task {
+            try await checkpoint()
+        }.value
     }
 
     /// Builds the single Archive V2 composition-root actor. Internal so focused
