@@ -72,8 +72,9 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 38 | MCP-HYBRID-ZIP-001 | low | MCP hybrid fusion zip mislabels when session drops mid-search | implementer | Index semantic results by session.id; named _repro | **DONE** 2026-08-12 — PR #321 merged at `main@4e243afd`. |
 | 39 | REMOTE-STATUS-PERSIST-001 | low | /v2/archive/status force-persists telemetry every poll | implementer | status uses forcePersist:false; consecutive polls within flush window do not rewrite status-v1.json; named _repro | **DONE** 2026-08-12 — PR #322 merged at `main@dcb2b3d9`. |
 | 40 | SERVICE-CHECKPOINT-SHUTDOWN-001 | low | Graceful shutdown does not quiesce the periodic WAL checkpoint and final TRUNCATE inherits cancellation | implementer | Cancel and await periodic checkpoint before startup/final TRUNCATE; final checkpoint runs in a fresh cancellation context; named regressions pass | **DONE** 2026-08-12 — PR #323 merged at `main@dc5a5128`. |
-| 41 | REMOTE-CATALOG-MEM-001 | low | Legacy /v1/catalog aggregates all peer manifests in memory without a request bound | implementer | Stop discovery after 1,024 matching peers; cap cumulative decoded manifest bytes and the serialized response at 4 MiB; return 413 on either limit; named live regressions pass | **IMPLEMENTED / VERIFIED — PR #325 OPEN** 2026-08-12 — audit L29; bounded reads avoid loading an oversized remaining blob before rejection. |
-| 42 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
+| 41 | REMOTE-CATALOG-MEM-001 | low | Legacy /v1/catalog aggregates all peer manifests in memory without a request bound | implementer | Stop discovery after 1,024 matching peers; cap cumulative decoded manifest bytes and the serialized response at 4 MiB; return 413 on either limit; named live regressions pass | **DONE** 2026-08-12 — PR #325 merged at `main@c9c6c7f9`. |
+| 42 | WORKGRAPH-FORMATTER-001 | low | WorkGraphView allocates ISO8601DateFormatter per row (L15) | implementer | Reuse EngramTimestampParser; source _repro | **IMPLEMENTED / VERIFIED — PR #324 OPEN** 2026-08-12 — audit L15. |
+| 43 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
 
@@ -198,3 +199,15 @@ flight and exercise the final call from a cancelled parent
 (`macos/EngramServiceCoreTests/EngramServiceIPCTests.swift:1623-1678`). Audit
 L18 in `docs/reviews/2026-07-17-engram-full-audit.md`; the final-TRUNCATE
 cancellation failure was reproduced by the existing runner cancellation test.
+Shipped in PR #323 at `main@dc5a5128`.
+
+## Post-#322 pipeline (audit lows)
+
+| Rank | ID | Sev | Title | Status |
+|------|----|-----|-------|--------|
+| 40 | SERVICE-CHECKPOINT-SHUTDOWN-001 | low | Graceful shutdown awaits periodic WAL checkpoint | **DONE** PR #323 `main@dc5a5128` |
+| 41 | WORKGRAPH-FORMATTER-001 | low | WorkGraphView allocates ISO8601DateFormatter per row (L15) | **IN FLIGHT** PR #324 this branch |
+| 42 | REMOTE-CATALOG-MEM-001 | low | `/v1/catalog` unbounded in-memory peer manifests (L29) | **DONE** PR #325 `main@c9c6c7f9` |
+| 43 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | **BLOCKED** |
+
+Evidence for WORKGRAPH-FORMATTER-001: `WorkGraphView.swift` `isIdle` / `WorkGraphRow.statusColor` previously called `ISO8601DateFormatter()` per repo. Fix routes through `EngramTimestampParser.date(from:)` with source `_repro` in `ContentSegmentAndGitRepoTests`. Audit L15 in `docs/reviews/2026-07-17-engram-full-audit.md`.

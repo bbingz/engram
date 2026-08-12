@@ -98,4 +98,25 @@ final class ContentSegmentAndGitRepoTests: XCTestCase {
         XCTAssertFalse(repo(lastCommitAt: nil).isActive)
         XCTAssertFalse(repo(lastCommitAt: "not-a-date").isActive)
     }
+
+    // Audit L15: WorkGraphView must not allocate ISO8601DateFormatter per repo
+    // render; idle/status coloring goes through EngramTimestampParser.
+    func testWorkGraphViewDoesNotAllocateISO8601DateFormatterPerRow_repro() throws {
+        var directory = URL(fileURLWithPath: #filePath)
+        while directory.lastPathComponent != "macos" {
+            directory.deleteLastPathComponent()
+            XCTAssertNotEqual(directory.path, "/", "could not locate macos/ from test path")
+        }
+        let sourceURL = directory
+            .appendingPathComponent("Engram/Views/Workspace/WorkGraphView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertFalse(
+            source.contains("ISO8601DateFormatter()"),
+            "WorkGraphView must reuse EngramTimestampParser, not allocate ISO8601DateFormatter per row"
+        )
+        XCTAssertTrue(
+            source.contains("EngramTimestampParser.date(from:"),
+            "WorkGraphView idle/status paths must parse timestamps via EngramTimestampParser"
+        )
+    }
 }

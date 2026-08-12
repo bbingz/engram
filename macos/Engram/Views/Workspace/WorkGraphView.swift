@@ -75,8 +75,8 @@ struct WorkGraphView: View {
 
     private func isIdle(_ repo: GitRepo) -> Bool {
         guard !repo.isActive else { return false }
-        guard let ts = repo.lastCommitAt,
-              let date = ISO8601DateFormatter().date(from: ts) else { return false }
+        // L15: reuse the shared parser; do not allocate ISO8601DateFormatter per row.
+        guard let date = EngramTimestampParser.date(from: repo.lastCommitAt) else { return false }
         return date.timeIntervalSinceNow > -7 * 86400
     }
 
@@ -112,8 +112,8 @@ private struct WorkGraphRow: View {
 
     private var statusColor: Color {
         if repo.isActive { return .green }
-        guard let ts = repo.lastCommitAt,
-              let date = ISO8601DateFormatter().date(from: ts) else { return .gray }
+        // L15: shared parser instead of per-row ISO8601DateFormatter allocation.
+        guard let date = EngramTimestampParser.date(from: repo.lastCommitAt) else { return .gray }
         if date.timeIntervalSinceNow > -7 * 86400 { return .yellow }
         return .gray
     }
