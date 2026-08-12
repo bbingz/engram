@@ -1591,6 +1591,221 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    // Round 2 / P1 multi-phase-commit-split: once Phase B durably records
+    // fs_done and the destination is the only surviving project path, startup
+    // must finish the idempotent DB rewrite instead of waiting 24h and failing
+    // the durable recovery intent.
+    func testCleanupStaleMigrationsRecoversProvableFsDoneMove_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-project-move-recovery-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldPath = root.appendingPathComponent("old-project", isDirectory: true).path
+        let newPath = root.appendingPathComponent("new-project", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: newPath, withIntermediateDirectories: true)
+
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "recover-fs-done",
+                source: "codex",
+                cwd: "\(oldPath)/workspace",
+                filePath: "\(oldPath)/session.jsonl",
+                sourceLocator: "\(oldPath)/session.jsonl"
+            )
+            try db.execute(
+                sql: "INSERT INTO session_local_state(session_id, local_readable_path) VALUES (?, ?)",
+                arguments: ["recover-fs-done", "\(oldPath)/session.jsonl"]
+            )
+            try MigrationLogStore.startMigration(
+                db,
+                input: StartMigrationInput(
+                    id: "recover-fs-done",
+                    oldPath: oldPath,
+                    newPath: newPath,
+                    oldBasename: "old-project",
+                    newBasename: "new-project"
+                )
+            )
+            try MigrationLogStore.markFsDone(
+                db,
+                input: MarkFsDoneInput(
+                    id: "recover-fs-done",
+                    filesPatched: 1,
+                    occurrences: 3,
+                    ccDirRenamed: false,
+                    detail: ["startup_recovery": .string("ready")]
+                )
+            )
+
+            XCTAssertEqual(try StartupBackfills.cleanupStaleMigrations(db), 0)
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT state FROM migration_log WHERE id = 'recover-fs-done'"
+                ),
+                "committed"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT cwd FROM sessions WHERE id = 'recover-fs-done'"),
+                "\(newPath)/workspace"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT local_readable_path FROM session_local_state WHERE session_id = 'recover-fs-done'"
+                ),
+                "\(newPath)/session.jsonl"
+            )
+        }
+    }
+
+    // Rows written before the durable recovery disposition existed are
+    // ambiguous: an old process may have started compensation but failed to
+    // persist state='failed'. Do not auto-commit those legacy rows.
+    func testCleanupStaleMigrationsDoesNotRecoverUnmarkedFsDoneMove_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-project-move-legacy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldPath = root.appendingPathComponent("old-project", isDirectory: true).path
+        let newPath = root.appendingPathComponent("new-project", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: newPath, withIntermediateDirectories: true)
+
+        try writer.write { db in
+            try insertSession(db, id: "legacy-fs-done", source: "codex", cwd: "\(oldPath)/workspace")
+            try MigrationLogStore.startMigration(
+                db,
+                input: StartMigrationInput(
+                    id: "legacy-fs-done",
+                    oldPath: oldPath,
+                    newPath: newPath,
+                    oldBasename: "old-project",
+                    newBasename: "new-project"
+                )
+            )
+            try MigrationLogStore.markFsDone(
+                db,
+                input: MarkFsDoneInput(
+                    id: "legacy-fs-done",
+                    filesPatched: 1,
+                    occurrences: 1,
+                    ccDirRenamed: false
+                )
+            )
+
+            XCTAssertEqual(try StartupBackfills.cleanupStaleMigrations(db), 0)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT state FROM migration_log WHERE id = 'legacy-fs-done'"),
+                "fs_done"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT cwd FROM sessions WHERE id = 'legacy-fs-done'"),
+                "\(oldPath)/workspace"
+            )
+        }
+    }
+
+    // A second crash can happen after an error path durably announces that it
+    // is about to compensate Phase B. Even if old/new currently resembles a
+    // completed move, startup must leave that interrupted compensation alone.
+    func testCleanupStaleMigrationsDoesNotRecoverCompensatingFsDoneMove_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-project-move-compensating-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldPath = root.appendingPathComponent("old-project", isDirectory: true).path
+        let newPath = root.appendingPathComponent("new-project", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: newPath, withIntermediateDirectories: true)
+
+        try writer.write { db in
+            try insertSession(db, id: "compensating-fs-done", source: "codex", cwd: "\(oldPath)/workspace")
+            try MigrationLogStore.startMigration(
+                db,
+                input: StartMigrationInput(
+                    id: "compensating-fs-done",
+                    oldPath: oldPath,
+                    newPath: newPath,
+                    oldBasename: "old-project",
+                    newBasename: "new-project"
+                )
+            )
+            try MigrationLogStore.markFsDone(
+                db,
+                input: MarkFsDoneInput(
+                    id: "compensating-fs-done",
+                    filesPatched: 1,
+                    occurrences: 1,
+                    ccDirRenamed: false,
+                    detail: ["startup_recovery": .string("compensating")]
+                )
+            )
+
+            XCTAssertEqual(try StartupBackfills.cleanupStaleMigrations(db), 0)
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT state FROM migration_log WHERE id = 'compensating-fs-done'"
+                ),
+                "fs_done"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT cwd FROM sessions WHERE id = 'compensating-fs-done'"),
+                "\(oldPath)/workspace"
+            )
+        }
+    }
+
+    // A failed Phase C can compensate the filesystem before its best-effort
+    // failMigration write succeeds. Preserve that fs_done row for diagnosis
+    // when disk state proves the move was rolled back.
+    func testCleanupStaleMigrationsDoesNotRecoverCompensatedFsDoneMove_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-project-move-compensated-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldPath = root.appendingPathComponent("old-project", isDirectory: true).path
+        let newPath = root.appendingPathComponent("new-project", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: oldPath, withIntermediateDirectories: true)
+
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "compensated-fs-done",
+                source: "codex",
+                cwd: "\(oldPath)/workspace"
+            )
+            try MigrationLogStore.startMigration(
+                db,
+                input: StartMigrationInput(
+                    id: "compensated-fs-done",
+                    oldPath: oldPath,
+                    newPath: newPath,
+                    oldBasename: "old-project",
+                    newBasename: "new-project"
+                )
+            )
+            try MigrationLogStore.markFsDone(
+                db,
+                input: MarkFsDoneInput(
+                    id: "compensated-fs-done",
+                    filesPatched: 1,
+                    occurrences: 1,
+                    ccDirRenamed: false
+                )
+            )
+
+            XCTAssertEqual(try StartupBackfills.cleanupStaleMigrations(db), 0)
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT state FROM migration_log WHERE id = 'compensated-fs-done'"
+                ),
+                "fs_done"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT cwd FROM sessions WHERE id = 'compensated-fs-done'"),
+                "\(oldPath)/workspace"
+            )
+        }
+    }
+
     func testOrphanScanAppliesTransitionsWithoutHoldingWriteGateAcrossProbe() async throws {
         // Recovered: previously flagged but the file is accessible again.
         // Newly flagged: unflagged + inaccessible.

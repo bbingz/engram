@@ -121,10 +121,14 @@ public enum MigrationLogStoreError: Error, Equatable {
     case sameOldNewPath(String)
     case notFound(id: String, op: String)
     case wrongState(id: String, current: String, expected: String, op: String)
+    case wrongRecoveryDisposition(id: String, current: String?, expected: String)
 }
 
 public enum MigrationLogStore {
     public static let maxAuditNoteLength = 2_000
+    static let startupRecoveryDetailKey = "startup_recovery"
+    static let startupRecoveryReady = "ready"
+    static let startupRecoveryCompensating = "compensating"
 
     /// Phase A. Inserts an `fs_pending` row.
     public static func startMigration(_ db: GRDB.Database, input: StartMigrationInput) throws {
@@ -181,6 +185,52 @@ public enum MigrationLogStore {
         )
         if db.changesCount != 1 {
             try assertTransition(db, id: input.id, expected: ["fs_pending"], op: "markFsDone")
+        }
+    }
+
+    /// Durably fence startup recovery before the live error path starts
+    /// compensating filesystem work. If this write fails, the caller must not
+    /// compensate: leaving the Phase-B state intact is what makes a later
+    /// startup replay safe.
+    public static func markFsDoneCompensationStarted(_ db: GRDB.Database, id: String) throws {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: "SELECT state, detail FROM migration_log WHERE id = ?",
+            arguments: [id]
+        ) else {
+            throw MigrationLogStoreError.notFound(id: id, op: "markFsDoneCompensationStarted")
+        }
+        let state = row["state"] as String? ?? ""
+        guard state == MigrationLogState.fsDone.rawValue else {
+            throw MigrationLogStoreError.wrongState(
+                id: id,
+                current: state,
+                expected: MigrationLogState.fsDone.rawValue,
+                op: "markFsDoneCompensationStarted"
+            )
+        }
+        let detailString = row["detail"] as String?
+        var detail = parseDetailObject(detailString)
+        let current = detail[startupRecoveryDetailKey] as? String
+        guard current == startupRecoveryReady else {
+            throw MigrationLogStoreError.wrongRecoveryDisposition(
+                id: id,
+                current: current,
+                expected: startupRecoveryReady
+            )
+        }
+        detail[startupRecoveryDetailKey] = startupRecoveryCompensating
+        try db.execute(
+            sql: "UPDATE migration_log SET detail = ? WHERE id = ? AND state = 'fs_done'",
+            arguments: [try jsonString(from: detail), id]
+        )
+        if db.changesCount != 1 {
+            try assertTransition(
+                db,
+                id: id,
+                expected: [MigrationLogState.fsDone.rawValue],
+                op: "markFsDoneCompensationStarted"
+            )
         }
     }
 
@@ -361,14 +411,59 @@ public enum MigrationLogStore {
         )
     }
 
-    /// Convert migrations stuck in fs_pending/fs_done beyond the stale threshold
-    /// to `failed`. Runs at daemon/MCP startup so crashed-process remnants
-    /// don't accumulate. Returns the number of rows updated.
+    /// Complete Phase C for `fs_done` rows whose filesystem state proves Phase B
+    /// finished (old absent, new present). This closes the crash window between
+    /// the durable Phase-B marker and the DB rewrite without replaying a move
+    /// whose filesystem compensation already restored the old path.
+    @discardableResult
+    public static func recoverProvableFsDoneMigrations(
+        _ db: GRDB.Database,
+        probePath: (String) -> PathProbe = RecoverMigrations.defaultProbePath
+    ) throws -> Int {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT id, old_path, new_path, old_basename, new_basename, detail
+              FROM migration_log
+             WHERE state = 'fs_done'
+             ORDER BY started_at, rowid
+            """
+        )
+        var recovered = 0
+        for row in rows {
+            let oldPath: String = row["old_path"]
+            let newPath: String = row["new_path"]
+            let detail = parseDetailObject(row["detail"] as String?)
+            guard detail[startupRecoveryDetailKey] as? String == startupRecoveryReady,
+                  probePath(oldPath) == .absent,
+                  probePath(newPath) == .exists
+            else { continue }
+
+            _ = try applyMigrationDb(
+                db,
+                input: ApplyMigrationInput(
+                    migrationId: row["id"],
+                    oldPath: oldPath,
+                    newPath: newPath,
+                    oldBasename: row["old_basename"],
+                    newBasename: row["new_basename"]
+                )
+            )
+            recovered += 1
+        }
+        return recovered
+    }
+
+    /// Resume provable `fs_done` rows, then convert migrations still stuck in
+    /// fs_pending/fs_done beyond the stale threshold to `failed`. Runs at
+    /// daemon/MCP startup so crashed-process remnants don't accumulate. Returns
+    /// the number of stale rows updated (not the number recovered).
     @discardableResult
     public static func cleanupStaleMigrations(
         _ db: GRDB.Database,
         thresholdSeconds: Int = 24 * 60 * 60
     ) throws -> Int {
+        try recoverProvableFsDoneMigrations(db)
         let cutoff = "-\(thresholdSeconds) seconds"
         let hours = thresholdSeconds / 3600
         try db.execute(
@@ -477,6 +572,14 @@ public enum MigrationLogStore {
             options: [.sortedKeys]
         )
         return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    private static func parseDetailObject(_ detailString: String?) -> [String: Any] {
+        guard let detailString,
+              let data = detailString.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [:] }
+        return object
     }
 
     private static func jsonString(from value: JSONValue) throws -> String {

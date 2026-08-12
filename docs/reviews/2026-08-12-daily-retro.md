@@ -66,3 +66,10 @@ Lead: Grok (stewardship goal) · Implementation: Grok + Herdr Codex `retro-handl
 - Codex `retro-handler` was **working** this fire — not interrupted.
 - Release 1.0.5 still **BLOCKED** on human auth.
 
+## Follow-on (loop 10:26–10:28)
+
+- **CI on tip `4897aa8f`**: Tests + CI Gate + Dependency Review + Node/macOS gates all **green**. CodeQL Swift product still pending → mergeStateStatus BLOCKED until CodeQL finishes.
+- **Codex uncommitted RETRO-P1-PROJECT-MOVE-SPLIT landed**: startup recovers `fs_done` only when detail has `startup_recovery=ready` and old-absent/new-present; compensation path durably marks `compensating` first; recommendation text updated. Focused EngramCoreTests Orchestrator+Recover (51) + four StartupBackfill `_repro`s **green**.
+- Queue: project-move split marked DONE.
+- Codex `retro-handler` still reported working; steward committed verified WIP so it is not lost.
+

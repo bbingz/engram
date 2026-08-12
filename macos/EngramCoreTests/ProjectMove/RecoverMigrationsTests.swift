@@ -49,8 +49,9 @@ final class RecoverMigrationsTests: XCTestCase {
 
     func testFsDoneRecommendationsByPathState() {
         let onlyNew = recommendation(state: "fs_done", old: false, new: true)
-        XCTAssertTrue(onlyNew.contains("DB commit failed"))
-        XCTAssertTrue(onlyNew.contains("WILL NOT work"))
+        XCTAssertTrue(onlyNew.contains("startup recovery"))
+        XCTAssertTrue(onlyNew.contains("DB path rewrite"))
+        XCTAssertTrue(onlyNew.contains("Do not mark only the migration state committed"))
 
         XCTAssertTrue(recommendation(state: "fs_done", old: true, new: true)
             .contains("partially undone"))
@@ -240,7 +241,7 @@ final class RecoverMigrationsTests: XCTestCase {
         XCTAssertEqual(diagnoses.count, 1)
         XCTAssertEqual(diagnoses[0].oldPathProbe, .absent)
         XCTAssertEqual(diagnoses[0].newPathProbe, .exists)
-        XCTAssertTrue(diagnoses[0].recommendation.contains("DB commit failed"))
+        XCTAssertTrue(diagnoses[0].recommendation.contains("startup recovery"))
     }
 
     // MARK: - helpers

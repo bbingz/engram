@@ -257,6 +257,12 @@ final class OrchestratorTests: XCTestCase {
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM project_aliases WHERE alias='proj' AND canonical='renamed'"),
                 1
             )
+            let detail = try String.fetchOne(
+                db,
+                sql: "SELECT detail FROM migration_log WHERE id=?",
+                arguments: [result.migrationId]
+            ) ?? ""
+            XCTAssertTrue(detail.contains("\"startup_recovery\":\"ready\""), detail)
         }
 
         // Lock is released
@@ -906,6 +912,51 @@ final class OrchestratorTests: XCTestCase {
     }
 
     // MARK: - compensation
+
+    // Round 2 / P1 multi-phase-commit-split: before compensating a durable
+    // Phase-B row, persist a disposition that prevents startup from mistaking
+    // a second crash during compensation for an untouched B/C crash window.
+    func testPhaseCFailureMarksFsDoneCompensatingBeforeRollback_repro() async throws {
+        let (src, ccDir) = try makeProjectFixture(name: "phase-c-failure")
+        let sessionFile = ccDir.appendingPathComponent("s1.jsonl")
+        try writeJsonlSession(at: sessionFile, cwd: src)
+        try seedSessionRow(id: "phase-c-session", cwd: src, filePath: sessionFile.path)
+        let dst = tempRoot.appendingPathComponent("phase-c-renamed").path
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                CREATE TRIGGER fail_project_move_phase_c
+                BEFORE UPDATE OF cwd ON sessions
+                WHEN OLD.id = 'phase-c-session'
+                BEGIN
+                  SELECT RAISE(ABORT, 'synthetic phase-c failure');
+                END
+                """
+            )
+        }
+
+        do {
+            _ = try await ProjectMoveOrchestrator.run(
+                writer: writer,
+                options: makeOptions(src: src, dst: dst)
+            )
+            XCTFail("expected Phase C failure")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("synthetic phase-c failure"), "\(error)")
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: src))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dst))
+        try writer.read { db in
+            let row = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: "SELECT state, detail FROM migration_log ORDER BY started_at DESC, rowid DESC LIMIT 1"
+            ))
+            XCTAssertEqual(row["state"] as String?, "failed")
+            let detail = row["detail"] as String? ?? ""
+            XCTAssertTrue(detail.contains("\"startup_recovery\":\"compensating\""), detail)
+        }
+    }
 
     func testCompensationRevertsPhysicalMoveWhenDirRenameFails() async throws {
         let (src, ccDir) = try makeProjectFixture(name: "proj")

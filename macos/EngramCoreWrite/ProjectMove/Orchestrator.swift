@@ -449,6 +449,7 @@ public enum ProjectMoveOrchestrator {
         var skippedDirs: [SkippedDirEntry] = []
         var moveStrategy: MoveResult.Strategy = .rename
         var physicalMoveApplied = false
+        var phaseBDurable = false
         /// Dirfd-pinned archive parent provision (mkdirat-owned segments only).
         var destinationParentToken: DestinationParentToken?
         var geminiProjectsPlan: GeminiProjectsJsonUpdatePlan?
@@ -670,6 +671,7 @@ public enum ProjectMoveOrchestrator {
                     )
                 )
             }
+            phaseBDurable = true
 
             // Phase C: commit DB (sessions + local_state + alias + log).
             let dbResult: ApplyMigrationResult = try writer.write { db in
@@ -718,12 +720,30 @@ public enum ProjectMoveOrchestrator {
                 error: nil
             )
         } catch {
+            let primaryError = error
+            if phaseBDurable {
+                do {
+                    try writer.write { db in
+                        try MigrationLogStore.markFsDoneCompensationStarted(
+                            db,
+                            id: migrationId
+                        )
+                    }
+                } catch {
+                    // Do not mutate the Phase-B filesystem unless the durable
+                    // row first fences startup replay. Keeping the destination
+                    // intact lets the next startup safely finish Phase C.
+                    destinationParentToken?.release()
+                    destinationParentToken = nil
+                    throw primaryError
+                }
+            }
             // Compensation: pre-flight failures haven't touched the FS.
             // Cancel-before-FS also has nothing to reverse when physicalMoveApplied
             // is still false; cancel-after-FS runs full compensation.
-            let wasCancel = error is ProjectMoveCancelledError
-            let preflightFailure = error is DirCollisionError
-                || error is SharedEncodingCollisionError
+            let wasCancel = primaryError is ProjectMoveCancelledError
+            let preflightFailure = primaryError is DirCollisionError
+                || primaryError is SharedEncodingCollisionError
                 || (wasCancel && !physicalMoveApplied && manifest.isEmpty)
             let report: CompensationReport
             if preflightFailure {
@@ -763,7 +783,7 @@ public enum ProjectMoveOrchestrator {
             }
 
             let combined = formatFailureWithCompensation(
-                primary: errorMessage(error),
+                primary: errorMessage(primaryError),
                 report: report
             )
             // Best-effort: failMigration may itself fail (DB outage, race).
@@ -772,7 +792,7 @@ public enum ProjectMoveOrchestrator {
             try? writer.write { db in
                 try? MigrationLogStore.failMigration(db, id: migrationId, error: combined)
             }
-            throw error
+            throw primaryError
         }
     }
 
@@ -1389,6 +1409,7 @@ private func buildFsDoneDetail(
         ])
     }
     return [
+        MigrationLogStore.startupRecoveryDetailKey: .string(MigrationLogStore.startupRecoveryReady),
         "move_strategy": .string(moveStrategy.rawValue),
         "per_source": .array(perSourceJson),
         "renamed_dirs": .array(renamedJson),
