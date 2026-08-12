@@ -708,6 +708,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     )
                 )
             case "test.write_intent":
+                // R2.P2.prod-test-mutator-surface: only for Debug/test builds.
+                #if DEBUG
                 let result = try await writerGate.performWriteCommand(name: request.command) { _ in
                     WriteIntentAck(ok: true)
                 }
@@ -716,6 +718,16 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
+                #else
+                return .failure(
+                    requestId: request.requestId,
+                    error: EngramServiceErrorEnvelope(
+                        name: "UnknownCommand",
+                        message: "unknown-command",
+                        retryPolicy: "never"
+                    )
+                )
+                #endif
             case "remoteOffload":
                 let result = try await Self.remoteOffloadNow(writerGate: writerGate)
                 return .success(requestId: request.requestId, result: try Self.encode(result))
