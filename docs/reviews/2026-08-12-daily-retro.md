@@ -50,3 +50,10 @@ Lead: Grok (stewardship goal) · Implementation: Grok + Herdr Codex `retro-handl
 - CURSOR-CWD-001 ownership contract  
 - Competitive “resume in original tool” deep-link  
 - Archive V2 bounded discovery exporters (followups)
+
+## Follow-on (same day, continued development)
+
+- Re-enabled GitHub Actions on the repo (`actions/permissions.enabled=true`) so PR CI could run.
+- Landed P2/nit: skip-parent IPC reject, constant-time capability token compare, todayParents zero until first successful scan, get_memory empty warning MCP `_repro`.
+- CI: Tests / CodeQL / Dependency Review kicked off on `feat/retro-p1-2026-08-12`.
+- Codex `retro-handler` still working ArchiveV2 disabled-locator churn + residual docs.
