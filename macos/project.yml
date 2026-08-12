@@ -78,27 +78,6 @@ targets:
       CODE_SIGNING_ALLOWED: NO
       CODE_SIGN_IDENTITY: "-"
 
-  EngramCoreSchemaTool:
-    type: tool
-    platform: macOS
-    deploymentTarget: "14.0"
-    sources:
-      - path: EngramCoreSchemaTool
-    dependencies:
-      - target: EngramCoreWrite
-      - package: GRDB
-        product: GRDB-dynamic
-    settings:
-      PRODUCT_BUNDLE_IDENTIFIER: com.engram.core-schema-tool
-      SWIFT_VERSION: "5.9"
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
-      CODE_SIGNING_ALLOWED: NO
-      CODE_SIGN_IDENTITY: "-"
-      # Finds the shared GRDB-dynamic framework next to the built executable.
-      LD_RUNPATH_SEARCH_PATHS:
-        - "@executable_path"
-        - "@executable_path/../Frameworks"
-
   EngramServiceCore:
     type: framework
     platform: macOS
@@ -476,12 +455,6 @@ schemes:
         - EngramCoreTests
       environmentVariables:
         ENGRAM_PERF: "$(TEST_RUNNER_ENGRAM_PERF)"
-  EngramCoreSchemaTool:
-    build:
-      targets:
-        EngramCoreSchemaTool: all
-    run:
-      config: Debug
   EngramRemoteServer:
     build:
       targets:

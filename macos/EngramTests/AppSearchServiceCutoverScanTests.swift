@@ -967,6 +967,36 @@ final class AppSearchServiceCutoverScanTests: XCTestCase {
         )
     }
 
+    // L35 / SCHEMA-TOOL-DEAD-001: keep the unused schema CLI out of both the
+    // XcodeGen source of truth and its generated project artifacts.
+    func testDeadSchemaToolTargetIsRemovedFromGeneratedProject_repro() throws {
+        let projectSpec = try source("macos/project.yml")
+        XCTAssertFalse(
+            projectSpec.contains("EngramCoreSchemaTool"),
+            "project.yml must not retain the unused schema-tool target or scheme"
+        )
+
+        let schemaToolDirectory = repoRoot.appendingPathComponent("macos/EngramCoreSchemaTool")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: schemaToolDirectory.path),
+            "the unused EngramCoreSchemaTool sources must be removed"
+        )
+
+        let generatedProject = try source("macos/Engram.xcodeproj/project.pbxproj")
+        XCTAssertFalse(
+            generatedProject.contains("EngramCoreSchemaTool"),
+            "xcodegen generate must remove the schema-tool target from project.pbxproj"
+        )
+
+        let generatedScheme = repoRoot.appendingPathComponent(
+            "macos/Engram.xcodeproj/xcshareddata/xcschemes/EngramCoreSchemaTool.xcscheme"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: generatedScheme.path),
+            "xcodegen generate must remove the schema-tool scheme"
+        )
+    }
+
     func testGeneralSettingsDoesNotExposeLegacyNodeRollbackControls() throws {
         let generalSettings = try source("macos/Engram/Views/Settings/GeneralSettingsSection.swift")
 
