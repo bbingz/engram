@@ -172,7 +172,7 @@ actor ArchiveRemoteTelemetryStore {
                 "payload_too_large"
             case 415, 422:
                 "invalid_content"
-            case 507:
+            case 503, 507:
                 "storage_unavailable"
             case 400..<500:
                 "malformed_request"
