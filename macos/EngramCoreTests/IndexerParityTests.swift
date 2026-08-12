@@ -515,6 +515,60 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(sink.batchSizes, [100, 100, 5])
     }
 
+    // L17 / INDEXER-BACKPRESSURE-001: a slow writer must bound producer lead,
+    // not merely the consumer-side array passed to each upsert.
+    func testIndexAllBackpressuresBeforeThirdBatch_repro() async throws {
+        let firstWriteEntered = expectation(description: "first write batch entered")
+        let scanCounter = LockedScanCounter()
+        let sink = BlockingFirstBatchSink(firstWriteEntered: firstWriteEntered)
+        let indexer = SwiftIndexer(
+            sink: sink,
+            adapters: [
+                SyntheticSessionAdapter(
+                    count: 305,
+                    didParseSession: { scanCounter.increment() }
+                )
+            ]
+        )
+        let indexingTask = Task { try await indexer.indexAll() }
+        defer { sink.releaseFirstBatch() }
+
+        await fulfillment(of: [firstWriteEntered], timeout: 2)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while scanCounter.value < 201, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let scannedBeforeRelease = scanCounter.value
+        sink.releaseFirstBatch()
+
+        let indexed = try await indexingTask.value
+
+        XCTAssertLessThan(
+            scannedBeforeRelease,
+            201,
+            "producer entered the third 100-item batch while the first write was blocked"
+        )
+        XCTAssertEqual(indexed, 305)
+        XCTAssertEqual(sink.batchSizes, [100, 100, 100, 5])
+    }
+
+    func testIndexAllPropagatesWriteFailureWithoutContinuingScan_repro() async throws {
+        let sink = ThrowOnceBatchSink()
+        let indexer = SwiftIndexer(
+            sink: sink,
+            adapters: [SyntheticSessionAdapter(count: 101)]
+        )
+
+        do {
+            _ = try await indexer.indexAll()
+            XCTFail("indexAll must stop at the first batch write failure")
+        } catch let error as IndexerBackpressureTestError {
+            XCTAssertEqual(error, .writeFailed)
+        }
+
+        XCTAssertEqual(sink.callCount, 1)
+    }
+
     func testStartupIndexAllSkipsUnchangedFileLocatorsOnSecondRun() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("startup-index-skip-\(UUID().uuidString)", isDirectory: true)
@@ -1729,23 +1783,6 @@ final class IndexerParityTests: XCTestCase {
         )
     }
 
-    func testStreamSnapshotsExposesBoundedConsumerPath() async throws {
-        let indexer = SwiftIndexer(
-            sink: NoopIndexingWriteSink(),
-            adapters: [SyntheticSessionAdapter(count: 3)]
-        )
-        var ids: [String] = []
-
-        for try await snapshot in indexer.streamSnapshots() {
-            ids.append(snapshot.id)
-            if ids.count == 2 {
-                break
-            }
-        }
-
-        XCTAssertEqual(ids, ["synthetic-0", "synthetic-1"])
-    }
-
     func testPingHealthProbeSessionsAreSkipped() async throws {
         let indexer = SwiftIndexer(
             sink: NoopIndexingWriteSink(),
@@ -2496,20 +2533,106 @@ private final class RecordingBatchSink: IndexingWriteSink {
     }
 }
 
+private final class LockedScanCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue = 0
+
+    var value: Int {
+        lock.withLock { storedValue }
+    }
+
+    func increment() {
+        lock.withLock { storedValue += 1 }
+    }
+}
+
+private final class BlockingFirstBatchSink: IndexingWriteSink {
+    private let firstWriteEntered: XCTestExpectation
+    private let releaseSemaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var didEnterFirstBatch = false
+    private var didReleaseFirstBatch = false
+    private(set) var batchSizes: [Int] = []
+
+    init(firstWriteEntered: XCTestExpectation) {
+        self.firstWriteEntered = firstWriteEntered
+    }
+
+    func upsertBatch(
+        _ snapshots: [AuthoritativeSessionSnapshot],
+        reason: IndexingWriteReason
+    ) throws -> SessionBatchUpsertResult {
+        let shouldBlock = lock.withLock {
+            batchSizes.append(snapshots.count)
+            guard !didEnterFirstBatch else { return false }
+            didEnterFirstBatch = true
+            return true
+        }
+        if shouldBlock {
+            firstWriteEntered.fulfill()
+            releaseSemaphore.wait()
+        }
+        return SessionBatchUpsertResult(
+            reason: reason,
+            results: snapshots.map {
+                SessionBatchItemResult(sessionId: $0.id, action: .merge, enqueuedJobs: [])
+            }
+        )
+    }
+
+    func releaseFirstBatch() {
+        let shouldSignal = lock.withLock {
+            guard !didReleaseFirstBatch else { return false }
+            didReleaseFirstBatch = true
+            return true
+        }
+        if shouldSignal {
+            releaseSemaphore.signal()
+        }
+    }
+}
+
+private enum IndexerBackpressureTestError: Error, Equatable {
+    case writeFailed
+}
+
+private final class ThrowOnceBatchSink: IndexingWriteSink {
+    private(set) var callCount = 0
+
+    func upsertBatch(
+        _ snapshots: [AuthoritativeSessionSnapshot],
+        reason: IndexingWriteReason
+    ) throws -> SessionBatchUpsertResult {
+        callCount += 1
+        if callCount == 1 {
+            throw IndexerBackpressureTestError.writeFailed
+        }
+        return SessionBatchUpsertResult(
+            reason: reason,
+            results: snapshots.map {
+                SessionBatchItemResult(sessionId: $0.id, action: .merge, enqueuedJobs: [])
+            }
+        )
+    }
+}
+
 private final class SyntheticSessionAdapter: SessionAdapter {
     let source: SourceName = .codex
     private let count: Int
     private let userContent: String
     private let assistantContent: String
+    private let didParseSession: (() -> Void)?
 
     init(
         count: Int,
         userContent: String = "hello",
-        assistantContent: String = "done"
+        assistantContent: String = "done",
+        didParseSession: (() -> Void)? = nil
     ) {
         self.count = count
         self.userContent = userContent
         self.assistantContent = assistantContent
+        self.didParseSession = didParseSession
     }
 
     func detect() async -> Bool {
@@ -2521,6 +2644,7 @@ private final class SyntheticSessionAdapter: SessionAdapter {
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        didParseSession?()
         let id = locator.replacingOccurrences(of: "synthetic://", with: "synthetic-")
         return .success(
             NormalizedSessionInfo(

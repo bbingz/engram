@@ -68,8 +68,8 @@ public final class SwiftIndexer {
         var batch: [ScannedSnapshot] = []
         var indexed = 0
 
-        for try await scanned in streamScannedSnapshots(sources: sources) {
-            batch.append(scanned)
+        try await scanSnapshots(sources: sources) { snapshot, fileState in
+            batch.append(ScannedSnapshot(snapshot: snapshot, fileState: fileState))
             if batch.count >= Self.writeBatchSize {
                 indexed += try writeBatchCountingSuccesses(batch)
                 batch.removeAll(keepingCapacity: true)
@@ -82,7 +82,7 @@ public final class SwiftIndexer {
 
         // Parent-link / suggested-parent backfills run in the writer's own
         // `write { db in ... }` scope (see EngramDatabaseWriter.indexSessions),
-        // never against a Database handle held across the await loop above.
+        // never against a Database handle held across the async scan above.
         return indexed
     }
 
@@ -114,30 +114,10 @@ public final class SwiftIndexer {
 
     public func collectSnapshots(sources: Set<SourceName>? = nil) async throws -> [AuthoritativeSessionSnapshot] {
         var snapshots: [AuthoritativeSessionSnapshot] = []
-        for try await snapshot in streamSnapshots(sources: sources) {
+        try await scanSnapshots(sources: sources) { snapshot, _ in
             snapshots.append(snapshot)
         }
         return snapshots
-    }
-
-    public func streamSnapshots(
-        sources: Set<SourceName>? = nil
-    ) -> AsyncThrowingStream<AuthoritativeSessionSnapshot, Error> {
-        AsyncThrowingStream { continuation in
-            let scanTask = Task {
-                do {
-                    for try await scanned in streamScannedSnapshots(sources: sources) {
-                        continuation.yield(scanned.snapshot)
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in
-                scanTask.cancel()
-            }
-        }
     }
 
     private struct ScannedSnapshot {
@@ -145,29 +125,9 @@ public final class SwiftIndexer {
         var fileState: FileIndexState?
     }
 
-    private func streamScannedSnapshots(
-        sources: Set<SourceName>? = nil
-    ) -> AsyncThrowingStream<ScannedSnapshot, Error> {
-        AsyncThrowingStream { continuation in
-            let scanTask = Task {
-                do {
-                    try await scanSnapshots(sources: sources) { snapshot, fileState in
-                        continuation.yield(ScannedSnapshot(snapshot: snapshot, fileState: fileState))
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in
-                scanTask.cancel()
-            }
-        }
-    }
-
     private func scanSnapshots(
         sources: Set<SourceName>? = nil,
-        yield: (AuthoritativeSessionSnapshot, FileIndexState?) -> Void
+        yield: (AuthoritativeSessionSnapshot, FileIndexState?) async throws -> Void
     ) async throws {
         for adapter in adapters {
             try Task.checkCancellation()
@@ -264,7 +224,7 @@ public final class SwiftIndexer {
                                 )
                             )
                         } else {
-                            yield(snapshot, fileState)
+                            try await yield(snapshot, fileState)
                         }
                         continue
                     case .recordOnly(let fileState):
@@ -376,11 +336,19 @@ public final class SwiftIndexer {
                                 )
                             )
                         } else {
-                            yield(snapshot, fileState)
+                            do {
+                                try await yield(snapshot, fileState)
+                            } catch is CancellationError {
+                                throw CancellationError()
+                            } catch {
+                                throw SnapshotConsumerError(underlying: error)
+                            }
                         }
                     }
                 } catch is CancellationError {
                     throw CancellationError()
+                } catch let error as SnapshotConsumerError {
+                    throw error.underlying
                 } catch let error as ExcludedSnapshotSuppressionError {
                     throw error.underlying
                 } catch {
@@ -405,6 +373,10 @@ public final class SwiftIndexer {
     }
 
     private struct ExcludedSnapshotSuppressionError: Error {
+        let underlying: any Error
+    }
+
+    private struct SnapshotConsumerError: Error {
         let underlying: any Error
     }
 
