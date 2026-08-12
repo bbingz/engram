@@ -65,8 +65,9 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 31 | ARCH-001 | debt | Triple Read SQL stacks / shared CoreRead predicates | implementer | Shared predicate module + cross-surface parity suite | **PARTIAL — A/B/C DONE**: ARCH-001A shared search predicates (#311), ARCH-001B list/aggregate convergence (#312), and ARCH-001C residual list visibility (#313) shipped. Full CoreRead pool/DTO migration and an executable cross-surface parity suite remain deferred structural work; ARCH-001 stays open. |
 | 32 | MCP-001-REVERIFY | P2 | Post-#215 MCP object-root contract residual audit | verifier | Re-grep every shipped MCP success-result constructor; either prove object-root coverage or capture an actionable residual with a named unit regression before changing production code | **DONE / PASS** 2026-08-12 — #215's object-root fix remains present; shipped Swift routes, executable contracts, and golden fixtures expose no actionable residual. |
 | 33 | ARCHIVE-DISCOVERY-001 | debt | Restart-stable bounded steady-state exact-source locator discovery | design-first implementer | After an explicit O(N) bootstrap, a durable locator inventory + FSEvents cursor makes normal discovery/capture bounded across restart; event-loss and capture-before-parse regressions pass | **DESIGN-READY / IMPLEMENTATION DEFERRED** — residual confirmed on `main@5114507f`; no safe prefix/limit patch. Scope and Done-when: `docs/reviews/2026-08-12-archive-discovery-001-design-scope.md`. |
-| 34 | REMOTE-MANIFEST-SCHEMA-001 | P2 | Remote Sync manifests accept unsupported schema versions | implementer | `ManifestCodec.decode` rejects unsupported manifest versions, aggregate catalog version is validated, valid peers still survive a malformed peer; named unit regressions cover direct decode and catalog paths | **IMPLEMENTED / VERIFIED — PR #317 OPEN** 2026-08-12 — direct manifests and catalog envelopes now reject unsupported versions and types; a future-version peer is skipped without suppressing compatible peers. Four named schema-version regression tests and the full `SessionSyncTests` class pass on `feat/remote-manifest-schema-001`; merge remains pending. |
-| 35 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
+| 34 | REMOTE-MANIFEST-SCHEMA-001 | P2 | Remote Sync manifests accept unsupported schema versions | implementer | `ManifestCodec.decode` rejects unsupported manifest versions, aggregate catalog version is validated, valid peers still survive a malformed peer; named unit regressions cover direct decode and catalog paths | **DONE** 2026-08-12 — PR #317 merged at `main@ecd13db0`. |
+| 35 | REMOTE-TELEMETRY-001 | P2 | Archive storage failures are mislabeled as internal telemetry errors | implementer | Archive 503 and 507 responses map to `storage_unavailable`, unrelated 5xx remain `internal_error`, and a named unit regression plus the telemetry-store test class pass | **IMPLEMENTED / VERIFIED — PR PENDING** 2026-08-12 — promoted from audit residual L28; focused `ArchiveRemoteTelemetryStoreTests` pass 16/16 on `feat/remote-telemetry-001`. |
+| 36 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
 
@@ -118,6 +119,14 @@ the named schema-version regression tests in
 `macos/EngramCoreTests/RemoteSync/SessionSyncTests.swift`; the implementation
 matches the fail-closed model already used by
 `macos/EngramCoreWrite/RemoteSync/BundleCodec.swift:100-106`.
+
+Evidence for REMOTE-TELEMETRY-001: every Archive V2 503 response represents
+`storage_unavailable` (`macos/EngramRemoteServer/Core/ArchiveRoutes.swift:43,124,201,453`),
+but the telemetry classifier recognizes only 507 and otherwise records a 5xx as
+`internal_error`
+(`macos/EngramRemoteServer/Core/ArchiveRemoteTelemetryStore.swift:161-180`).
+The named service-unavailable regression lives in
+`macos/EngramRemoteServerCoreTests/ArchiveRemoteTelemetryStoreTests.swift`.
 
 ### ARCH-001 A/B/C residual audit (`main@394269c9`)
 

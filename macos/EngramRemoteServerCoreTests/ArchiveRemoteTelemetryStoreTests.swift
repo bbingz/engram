@@ -96,6 +96,26 @@ final class ArchiveRemoteTelemetryStoreTests: XCTestCase {
         XCTAssertEqual(snapshot.recentErrors.map(\.statusCode), cases.map(\.0))
     }
 
+    func testRecordMapsServiceUnavailableToStorageUnavailable_repro() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clock = MutableArchiveTelemetryClock(now: instant("2026-07-12T10:00:00.000Z"))
+        let store = try makeStore(root: root, clock: clock)
+
+        await store.record(.init(
+            endpoint: "object",
+            method: "PUT",
+            statusCode: 503,
+            durationMs: 1,
+            requestBytes: 0,
+            responseBytes: 0,
+            archiveMutation: false
+        ))
+
+        let snapshot = await store.status(forcePersist: false)
+        XCTAssertEqual(snapshot.recentErrors.map(\.category), ["storage_unavailable"])
+    }
+
     func testRecordRetainsOnlyNewestHundredSanitizedErrors() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
