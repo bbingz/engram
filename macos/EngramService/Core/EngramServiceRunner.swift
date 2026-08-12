@@ -125,6 +125,7 @@ public enum EngramServiceRunner {
                 .appendingPathComponent(".engram", isDirectory: true)
                 .appendingPathComponent("index.sqlite")
                 .path
+        let settingsURL = engramSettingsURL(environment: environment)
 
         let defaultSocketPath = UnixSocketEngramServiceTransport.defaultSocketPath()
         let runtimeDirectory: URL
@@ -169,6 +170,13 @@ public enum EngramServiceRunner {
             _ = try await gate.performWriteCommand(name: "migrate") { writer in
                 try writer.migrate()
                 try writer.verifySchemaPresent() // throws .missingSchema if schema absent
+                // R1/R2 P1 settings-db-split: finish any source visibility
+                // intent left durable by a process exit between the settings
+                // rename and SQLite commit before the service starts serving.
+                try EngramServiceCommandHandler.reconcilePendingSourceVisibilityIntent(
+                    writer: writer,
+                    settingsURL: settingsURL
+                )
             }
             ServiceLogger.notice("schema migration complete", category: .runner)
         } catch {
@@ -180,7 +188,6 @@ public enum EngramServiceRunner {
         // Archive V2 has one process-wide coordinator. Its default-off factory
         // only reads settings and returns a dormant actor: it does not create
         // archive storage, read Keychain credentials, or construct backends.
-        let settingsURL = engramSettingsURL(environment: environment)
         let archiveV2Settings = ArchiveV2Settings.load(
             settingsURL: settingsURL,
             environment: environment
@@ -204,6 +211,12 @@ public enum EngramServiceRunner {
                 return try await archiveV2Coordinator.runBacklogPass(
                     adapterProvider: {
                         Self.exactArchiveAdaptersForBacklogPass(environment: environment)
+                    },
+                    excludedSnapshotSourcesProvider: {
+                        Set(
+                            Self.readDisabledSources(environment: environment)
+                                .compactMap(SourceName.init(rawValue:))
+                        )
                     }
                 )
             }
@@ -774,7 +787,14 @@ public enum EngramServiceRunner {
                 cursorScope: captureInputs.cursorScope
             ) { parserAdapters in
                 try await gate.performWriteCommand(name: "indexRecent") { writer in
-                    try await writer.indexRecentSessions(adapters: parserAdapters)
+                    let excludedSnapshotSources = Set(
+                        readDisabledSources(environment: environment)
+                            .compactMap(SourceName.init(rawValue:))
+                    )
+                    return try await writer.indexRecentSessions(
+                        adapters: parserAdapters,
+                        excludedSnapshotSources: excludedSnapshotSources
+                    )
                 }.value
             }
             let scan = archiveCycle.indexResult
@@ -965,6 +985,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         telemetry: ServiceTelemetryCollector?,
         archiveV2Coordinator: ArchiveV2ServiceCoordinator?,
         startupAdapters: [any SessionAdapter],
+        environment: [String: String],
         testHooks: InitialScanTestHooks
     ) async -> InitialScanPhaseOutcome<ArchiveV2ServiceCycleResult> {
         let archiveAdapters = exactArchiveAdapters(from: startupAdapters)
@@ -981,8 +1002,13 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                 cursorScope: .full
             ) { parserAdapters in
                 try await gate.performWriteCommand(name: "initialScanIndex") { writer in
-                    try await writer.indexAllSessions(
+                    let excludedSnapshotSources = Set(
+                        readDisabledSources(environment: environment)
+                            .compactMap(SourceName.init(rawValue:))
+                    )
+                    return try await writer.indexAllSessions(
                         adapters: parserAdapters,
+                        excludedSnapshotSources: excludedSnapshotSources,
                         didFinishAdapter: { source in
                             let releasedBytes = Int(malloc_zone_pressure_relief(nil, 0))
                             ServiceLogger.notice(
@@ -1014,8 +1040,9 @@ private final class IndexingScheduleBox: @unchecked Sendable {
         let scanStarted = scanClock.now
         // Feature #2 slice B — per-source ingest opt-out. Drop disabled sources
         // from the indexing adapter list so the service stops ingesting them.
-        // Read once at scan time, so toggling a source resumes/stops ingest on
-        // the next scan. Their existing sessions are hidden by setSourceEnabled.
+        // Read once to choose physical adapters for this scan. Each write phase
+        // separately rereads the set after acquiring ServiceWriterGate so a
+        // post-parse reclassification cannot race a source toggle.
         let disabled = readDisabledSources(environment: environment)
         let enabledAdapters = adaptersExcludingDisabled(
             SessionAdapterFactory.defaultAdapters(),
@@ -1058,6 +1085,7 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                 telemetry: telemetry,
                 archiveV2Coordinator: archiveV2Coordinator,
                 startupAdapters: startupAdapters,
+                environment: environment,
                 testHooks: testHooks
             )
             if indexedPhase.cancelled { return }
@@ -1128,8 +1156,16 @@ private final class IndexingScheduleBox: @unchecked Sendable {
                 testHooks: testHooks
             ) {
                 try await gate.performWriteCommand(name: "initialScanIndex") { writer in
-                    try await StartupBackfills.runStartupIndex(
-                        indexer: WriterStartupIndexing(writer: writer, adapters: parserAdapters)
+                    let excludedSnapshotSources = Set(
+                        readDisabledSources(environment: environment)
+                            .compactMap(SourceName.init(rawValue:))
+                    )
+                    return try await StartupBackfills.runStartupIndex(
+                        indexer: WriterStartupIndexing(
+                            writer: writer,
+                            adapters: parserAdapters,
+                            excludedSnapshotSources: excludedSnapshotSources
+                        )
                     )
                 }.value
             }
@@ -1151,11 +1187,19 @@ private final class IndexingScheduleBox: @unchecked Sendable {
             testHooks: testHooks
         ) {
             try await gate.performWriteCommand(name: "initialScanBackfills") { writer in
+                let excludedSnapshotSources = Set(
+                    readDisabledSources(environment: environment)
+                        .compactMap(SourceName.init(rawValue:))
+                )
                 try await StartupBackfills.runStartupMaintenanceAndParents(
                     indexed: indexed,
                     emit: emitBackfill,
                     log: OSLogStartupBackfillLogging(),
-                    indexer: WriterStartupIndexing(writer: writer, adapters: parserAdapters),
+                    indexer: WriterStartupIndexing(
+                        writer: writer,
+                        adapters: parserAdapters,
+                        excludedSnapshotSources: excludedSnapshotSources
+                    ),
                     database: WriterStartupBackfillDatabase(writer: writer)
                 )
             }

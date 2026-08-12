@@ -2895,6 +2895,41 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertTrue(afterIds.contains("mem-cold"), "\(afterIds)")
     }
 
+    /// R1.P1.empty_result_suppresses_degrade — empty get_memory must still
+    /// surface a degrade/keyword warning when no embedding provider is configured.
+    func testGetMemoryEmptyResultIncludesDegradeWarning_repro() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-memory-empty-warn"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try DatabaseQueue(path: dbPath).write { db in
+            try? db.execute(sql: "DELETE FROM insight_embeddings")
+            try? db.execute(sql: "DELETE FROM insights")
+            try? db.execute(sql: "DELETE FROM insights_fts")
+        }
+
+        let isolatedHome = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: isolatedHome) }
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_memory","arguments":{"query":"no-such-memory-zzzz"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+                "HOME": isolatedHome.path,
+                "ENGRAM_SETTINGS_PATH": isolatedHome.appendingPathComponent("missing-settings.json").path,
+            ]
+        )
+        XCTAssertNil(capture.response.error)
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        let memories = try XCTUnwrap(structured["memories"]?.arrayValue)
+        XCTAssertTrue(memories.isEmpty, "fixture must have no memories for empty-path coverage")
+        let warning = structured["warning"]?.stringValue
+        XCTAssertNotNil(warning, "empty get_memory must include a warning field")
+        XCTAssertFalse(warning?.isEmpty ?? true, "warning must not be blank")
+    }
+
     func testSearchHybridNoEmbeddingMatchesGolden() throws {
         try assertToolCallMatchesGolden(
             tool: "search",

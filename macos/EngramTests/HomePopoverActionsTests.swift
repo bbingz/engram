@@ -101,6 +101,25 @@ final class HomePopoverActionsTests: XCTestCase {
         )
     }
 
+    /// R1.P1.parent_filter_surface_drift — menu-bar recent list must share the
+    /// same top-level + list-visible predicates as Home/Sessions/Timeline.
+    func testPopoverRecentSessionsUsesTopLevelVisibilityFilter_repro() throws {
+        let s = try popoverView()
+        XCTAssertTrue(
+            s.contains("SessionVisibilityFilter.topLevelSQL"),
+            "Popover recent sessions must exclude parent/suggested children via topLevelSQL"
+        )
+        XCTAssertTrue(
+            s.contains("SessionVisibilityFilter.listVisibleSQL"),
+            "Popover recent sessions must use shared listVisibleSQL (not ad-hoc hidden/tier only)"
+        )
+        // Pre-fix ad-hoc clause used bare columns without the shared filter type.
+        XCTAssertFalse(
+            s.contains("hidden_at IS NULL \\") && s.contains("AND (tier IS NULL OR tier != 'skip')"),
+            "Popover must not keep the pre-fix ad-hoc hidden/tier whereClause"
+        )
+    }
+
     func testPopoverStaleLiveBadgeKeepsActiveCount() throws {
         let s = try popoverView()
         XCTAssertTrue(

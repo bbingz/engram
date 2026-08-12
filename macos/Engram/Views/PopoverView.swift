@@ -262,9 +262,12 @@ struct PopoverView: View {
             // human-driven filter (per HumanDrivenFilter's contract) regardless
             // of the app's browse noise setting, so freshly-indexed untiered
             // agent/probe sessions can't flood the list with "Untitled" rows.
+            // R1.P1.parent_filter_surface_drift / RETRO-P1-POPOVER: also require
+            // top-level roots so confirmed/suggested children cannot appear as
+            // top rows (matches Home/Sessions/Timeline via SessionVisibilityFilter).
             let whereClause = """
-                hidden_at IS NULL \
-                AND (tier IS NULL OR tier != 'skip') \
+                \(SessionVisibilityFilter.listVisibleSQL) \
+                AND \(SessionVisibilityFilter.topLevelSQL) \
                 AND (\(HumanDrivenFilter.sqlPredicate))
                 """
 

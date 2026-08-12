@@ -1271,6 +1271,41 @@ public enum StartupBackfills {
     }
 
     public static func backfillParentLinks(_ db: Database) throws -> ParentLinkResult {
+        // Reconcile legacy/path-derived links before attempting new inference.
+        // Validate the whole pre-mutation graph first so cleanup order cannot
+        // turn a depth>1 chain into a different, accidentally valid link.
+        let existingPathLinks = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT id, parent_session_id FROM sessions
+            WHERE link_source = 'path'
+              AND parent_session_id IS NOT NULL
+            """
+        )
+        var invalidPathSessionIds: [String] = []
+        for row in existingPathLinks {
+            let sessionId: String = row["id"]
+            let parentId: String = row["parent_session_id"]
+            if try !validateExistingPathParent(db, sessionId: sessionId, parentId: parentId) {
+                invalidPathSessionIds.append(sessionId)
+            }
+        }
+        for sessionId in invalidPathSessionIds {
+            try db.execute(
+                sql: """
+                UPDATE sessions
+                SET parent_session_id = NULL,
+                    link_source = NULL,
+                    link_checked_at = NULL,
+                    suggested_parent_id = NULL,
+                    suggestion_status = NULL,
+                    suggestion_candidates = NULL
+                WHERE id = ? AND link_source = 'path'
+                """,
+                arguments: [sessionId]
+            )
+        }
+
         // Paginate with a stable rowid cursor so a full page of unparseable or
         // invalid legacy candidates cannot starve later valid children in the
         // same backfill call (PARENT-BACKFILL-STARVE-001).
@@ -1857,19 +1892,53 @@ public enum StartupBackfills {
         if sessionId == parentId { return false }
         guard let row = try Row.fetchOne(
             db,
-            sql: "SELECT id, parent_session_id FROM sessions WHERE id = ?",
+            sql: "SELECT id, parent_session_id, tier FROM sessions WHERE id = ?",
             arguments: [parentId]
         ) else {
             return false
         }
         let parentSessionId: String? = row["parent_session_id"]
-        guard parentSessionId == nil else { return false }
+        let parentTier: String? = row["tier"]
+        guard parentSessionId == nil, parentTier != SessionTier.skip.rawValue else { return false }
         let childCount = try Int.fetchOne(
             db,
             sql: "SELECT COUNT(*) FROM sessions WHERE parent_session_id = ? LIMIT 1",
             arguments: [sessionId]
         ) ?? 0
         return childCount == 0
+    }
+
+    /// Existing path links yield to non-path children (especially manual
+    /// decisions). Path/path chains are still reconciled from the top down:
+    /// the lower path edge is rejected because its parent is already nested.
+    private static func validateExistingPathParent(
+        _ db: Database,
+        sessionId: String,
+        parentId: String
+    ) throws -> Bool {
+        if sessionId == parentId { return false }
+        guard let row = try Row.fetchOne(
+            db,
+            sql: "SELECT parent_session_id, tier FROM sessions WHERE id = ?",
+            arguments: [parentId]
+        ) else {
+            return false
+        }
+        let parentSessionId: String? = row["parent_session_id"]
+        let parentTier: String? = row["tier"]
+        guard parentSessionId == nil, parentTier != SessionTier.skip.rawValue else {
+            return false
+        }
+        let preservedChildCount = try Int.fetchOne(
+            db,
+            sql: """
+                SELECT COUNT(*) FROM sessions
+                WHERE parent_session_id = ?
+                  AND (link_source IS NULL OR link_source != 'path')
+                """,
+            arguments: [sessionId]
+        ) ?? 0
+        return preservedChildCount == 0
     }
 
     private static func isConcurrentProviderChild(

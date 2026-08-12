@@ -409,7 +409,16 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         func id(locator: String) -> String? {
             guard !sessionId.isEmpty else { return nil }
             let isSubagent = locator.contains("/subagents/")
-            return isSubagent && !agentId.isEmpty ? agentId : sessionId
+            // R1.P1.identity-key-collision: empty agentId must not fall back to
+            // parent sessionId (ON CONFLICT(id) would clobber the parent row).
+            if isSubagent {
+                if !agentId.isEmpty { return agentId }
+                return ClaudeCodeAdapter.stableSubagentFallbackId(
+                    parentSessionId: sessionId,
+                    locator: locator
+                )
+            }
+            return sessionId
         }
 
         func source(locator: String) -> SourceName? {
@@ -570,6 +579,16 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
         let trimmed = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return URL(fileURLWithPath: trimmed).lastPathComponent
+    }
+
+    /// Stable primary key for `/subagents/` transcripts that never recorded an
+    /// `agentId`. Must never equal `parentSessionId` so `ON CONFLICT(id)` cannot
+    /// overwrite the parent session row (R1.P1.identity-key-collision).
+    static func stableSubagentFallbackId(parentSessionId: String, locator: String) -> String {
+        let pathKey = URL(fileURLWithPath: locator).lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let leaf = pathKey.isEmpty ? "unknown" : pathKey
+        return "sub:\(parentSessionId):\(leaf)"
     }
 
     static func detectSource(model: String, filePath: String? = nil) -> SourceName {

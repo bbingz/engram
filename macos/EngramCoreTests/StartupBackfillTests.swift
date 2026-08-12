@@ -122,6 +122,122 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    /// R1/R2 P1 path-parent-unvalidated-no-reconcile: legacy non-manual path
+    /// links may already be self-referential, dangling, depth>1, or point at a
+    /// skip-tier parent. Startup must clear those links while preserving manual
+    /// decisions and valid one-level links.
+    func testBackfillParentLinksReconcilesIllegalPersistedPathParents_repro() throws {
+        try writer.write { db in
+            try insertSession(db, id: "root", source: "codex", tier: "normal")
+            try insertSession(db, id: "skip-parent", source: "codex", tier: "skip")
+            try insertSession(
+                db,
+                id: "nested-parent",
+                source: "codex",
+                tier: "normal",
+                linkSource: "path",
+                parentSessionId: "root"
+            )
+            try insertSession(
+                db,
+                id: "valid-child",
+                source: "codex",
+                filePath: "/tmp/root/subagents/valid.jsonl",
+                agentRole: "subagent",
+                tier: "skip",
+                linkSource: "path",
+                parentSessionId: "root"
+            )
+            try insertSession(
+                db,
+                id: "manual-dangling",
+                source: "codex",
+                filePath: "/tmp/missing-parent/subagents/manual.jsonl",
+                agentRole: "subagent",
+                tier: "skip",
+                linkSource: "manual",
+                parentSessionId: "missing-parent"
+            )
+            try insertSession(
+                db,
+                id: "path-parent-with-manual-child",
+                source: "codex",
+                tier: "normal",
+                linkSource: "path",
+                parentSessionId: "root"
+            )
+            try insertSession(
+                db,
+                id: "manual-child-under-path-parent",
+                source: "codex",
+                tier: "skip",
+                linkSource: "manual",
+                parentSessionId: "path-parent-with-manual-child"
+            )
+            for (child, parent) in [
+                ("self-child", "self-child"),
+                ("dangling-child", "missing-parent"),
+                ("nested-child", "nested-parent"),
+                ("skip-child", "skip-parent"),
+            ] {
+                try insertSession(
+                    db,
+                    id: child,
+                    source: "codex",
+                    filePath: "/tmp/\(parent)/subagents/worker.jsonl",
+                    agentRole: "subagent",
+                    tier: "skip",
+                    linkSource: "path",
+                    parentSessionId: parent
+                )
+            }
+
+            _ = try StartupBackfills.backfillParentLinks(db)
+
+            for child in ["self-child", "dangling-child", "nested-child", "skip-child"] {
+                XCTAssertNil(
+                    try String.fetchOne(
+                        db,
+                        sql: "SELECT parent_session_id FROM sessions WHERE id = ?",
+                        arguments: [child]
+                    ),
+                    "\(child) must be restored to a visible top-level row"
+                )
+                XCTAssertNil(
+                    try String.fetchOne(
+                        db,
+                        sql: "SELECT link_source FROM sessions WHERE id = ?",
+                        arguments: [child]
+                    )
+                )
+            }
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'valid-child'"),
+                "root"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'manual-dangling'"),
+                "missing-parent",
+                "startup reconcile must not override an explicit manual decision"
+            )
+            XCTAssertNil(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT parent_session_id FROM sessions WHERE id = 'path-parent-with-manual-child'"
+                ),
+                "the path edge must yield to a manual child so the graph stays one level deep"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT parent_session_id FROM sessions WHERE id = 'manual-child-under-path-parent'"
+                ),
+                "path-parent-with-manual-child",
+                "startup reconcile must preserve the manual edge"
+            )
+        }
+    }
+
     // Audit PARENT-BACKFILL-STARVE-001: a single LIMIT 500 batch of unparseable
     // legacy subagent rows must not starve a later valid child in the same call.
     func testBackfillParentLinksDoesNotStarveValidChildBehindInvalidBatch_repro() throws {
@@ -1472,6 +1588,221 @@ final class StartupBackfillTests: XCTestCase {
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT state FROM migration_log WHERE id = 'stale'"), "failed")
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT state FROM migration_log WHERE id = 'fresh'"), "fs_done")
             XCTAssertEqual(try String.fetchOne(db, sql: "SELECT state FROM migration_log WHERE id = 'done'"), "committed")
+        }
+    }
+
+    // Round 2 / P1 multi-phase-commit-split: once Phase B durably records
+    // fs_done and the destination is the only surviving project path, startup
+    // must finish the idempotent DB rewrite instead of waiting 24h and failing
+    // the durable recovery intent.
+    func testCleanupStaleMigrationsRecoversProvableFsDoneMove_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-project-move-recovery-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldPath = root.appendingPathComponent("old-project", isDirectory: true).path
+        let newPath = root.appendingPathComponent("new-project", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: newPath, withIntermediateDirectories: true)
+
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "recover-fs-done",
+                source: "codex",
+                cwd: "\(oldPath)/workspace",
+                filePath: "\(oldPath)/session.jsonl",
+                sourceLocator: "\(oldPath)/session.jsonl"
+            )
+            try db.execute(
+                sql: "INSERT INTO session_local_state(session_id, local_readable_path) VALUES (?, ?)",
+                arguments: ["recover-fs-done", "\(oldPath)/session.jsonl"]
+            )
+            try MigrationLogStore.startMigration(
+                db,
+                input: StartMigrationInput(
+                    id: "recover-fs-done",
+                    oldPath: oldPath,
+                    newPath: newPath,
+                    oldBasename: "old-project",
+                    newBasename: "new-project"
+                )
+            )
+            try MigrationLogStore.markFsDone(
+                db,
+                input: MarkFsDoneInput(
+                    id: "recover-fs-done",
+                    filesPatched: 1,
+                    occurrences: 3,
+                    ccDirRenamed: false,
+                    detail: ["startup_recovery": .string("ready")]
+                )
+            )
+
+            XCTAssertEqual(try StartupBackfills.cleanupStaleMigrations(db), 0)
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT state FROM migration_log WHERE id = 'recover-fs-done'"
+                ),
+                "committed"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT cwd FROM sessions WHERE id = 'recover-fs-done'"),
+                "\(newPath)/workspace"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT local_readable_path FROM session_local_state WHERE session_id = 'recover-fs-done'"
+                ),
+                "\(newPath)/session.jsonl"
+            )
+        }
+    }
+
+    // Rows written before the durable recovery disposition existed are
+    // ambiguous: an old process may have started compensation but failed to
+    // persist state='failed'. Do not auto-commit those legacy rows.
+    func testCleanupStaleMigrationsDoesNotRecoverUnmarkedFsDoneMove_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-project-move-legacy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldPath = root.appendingPathComponent("old-project", isDirectory: true).path
+        let newPath = root.appendingPathComponent("new-project", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: newPath, withIntermediateDirectories: true)
+
+        try writer.write { db in
+            try insertSession(db, id: "legacy-fs-done", source: "codex", cwd: "\(oldPath)/workspace")
+            try MigrationLogStore.startMigration(
+                db,
+                input: StartMigrationInput(
+                    id: "legacy-fs-done",
+                    oldPath: oldPath,
+                    newPath: newPath,
+                    oldBasename: "old-project",
+                    newBasename: "new-project"
+                )
+            )
+            try MigrationLogStore.markFsDone(
+                db,
+                input: MarkFsDoneInput(
+                    id: "legacy-fs-done",
+                    filesPatched: 1,
+                    occurrences: 1,
+                    ccDirRenamed: false
+                )
+            )
+
+            XCTAssertEqual(try StartupBackfills.cleanupStaleMigrations(db), 0)
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT state FROM migration_log WHERE id = 'legacy-fs-done'"),
+                "fs_done"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT cwd FROM sessions WHERE id = 'legacy-fs-done'"),
+                "\(oldPath)/workspace"
+            )
+        }
+    }
+
+    // A second crash can happen after an error path durably announces that it
+    // is about to compensate Phase B. Even if old/new currently resembles a
+    // completed move, startup must leave that interrupted compensation alone.
+    func testCleanupStaleMigrationsDoesNotRecoverCompensatingFsDoneMove_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-project-move-compensating-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldPath = root.appendingPathComponent("old-project", isDirectory: true).path
+        let newPath = root.appendingPathComponent("new-project", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: newPath, withIntermediateDirectories: true)
+
+        try writer.write { db in
+            try insertSession(db, id: "compensating-fs-done", source: "codex", cwd: "\(oldPath)/workspace")
+            try MigrationLogStore.startMigration(
+                db,
+                input: StartMigrationInput(
+                    id: "compensating-fs-done",
+                    oldPath: oldPath,
+                    newPath: newPath,
+                    oldBasename: "old-project",
+                    newBasename: "new-project"
+                )
+            )
+            try MigrationLogStore.markFsDone(
+                db,
+                input: MarkFsDoneInput(
+                    id: "compensating-fs-done",
+                    filesPatched: 1,
+                    occurrences: 1,
+                    ccDirRenamed: false,
+                    detail: ["startup_recovery": .string("compensating")]
+                )
+            )
+
+            XCTAssertEqual(try StartupBackfills.cleanupStaleMigrations(db), 0)
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT state FROM migration_log WHERE id = 'compensating-fs-done'"
+                ),
+                "fs_done"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT cwd FROM sessions WHERE id = 'compensating-fs-done'"),
+                "\(oldPath)/workspace"
+            )
+        }
+    }
+
+    // A failed Phase C can compensate the filesystem before its best-effort
+    // failMigration write succeeds. Preserve that fs_done row for diagnosis
+    // when disk state proves the move was rolled back.
+    func testCleanupStaleMigrationsDoesNotRecoverCompensatedFsDoneMove_repro() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("startup-project-move-compensated-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldPath = root.appendingPathComponent("old-project", isDirectory: true).path
+        let newPath = root.appendingPathComponent("new-project", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: oldPath, withIntermediateDirectories: true)
+
+        try writer.write { db in
+            try insertSession(
+                db,
+                id: "compensated-fs-done",
+                source: "codex",
+                cwd: "\(oldPath)/workspace"
+            )
+            try MigrationLogStore.startMigration(
+                db,
+                input: StartMigrationInput(
+                    id: "compensated-fs-done",
+                    oldPath: oldPath,
+                    newPath: newPath,
+                    oldBasename: "old-project",
+                    newBasename: "new-project"
+                )
+            )
+            try MigrationLogStore.markFsDone(
+                db,
+                input: MarkFsDoneInput(
+                    id: "compensated-fs-done",
+                    filesPatched: 1,
+                    occurrences: 1,
+                    ccDirRenamed: false
+                )
+            )
+
+            XCTAssertEqual(try StartupBackfills.cleanupStaleMigrations(db), 0)
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT state FROM migration_log WHERE id = 'compensated-fs-done'"
+                ),
+                "fs_done"
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT cwd FROM sessions WHERE id = 'compensated-fs-done'"),
+                "\(oldPath)/workspace"
+            )
         }
     }
 

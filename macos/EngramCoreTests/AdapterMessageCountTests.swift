@@ -2986,6 +2986,127 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.endTime, "2023-11-14T22:13:22.000Z")
     }
 
+    // CURSOR-CWD-001 (P2): only Cursor's composer-to-workspace index may
+    // establish ownership; an attached/selected file is never authoritative.
+    func testCursorUsesUniqueWorkspaceIndexInsteadOfUnrelatedFileSelection_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let globalStorage = root.appendingPathComponent("globalStorage", isDirectory: true)
+        let workspaceStorage = root.appendingPathComponent("workspaceStorage", isDirectory: true)
+        try FileManager.default.createDirectory(at: globalStorage, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workspaceStorage, withIntermediateDirectories: true)
+
+        let dbPath = globalStorage.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorOwnershipComposerFixture(
+            dbPath: dbPath,
+            composerId: "cmp_owned",
+            selectedFile: "/Users/test/unrelated-repo/README.md"
+        )
+        try Self.buildCursorWorkspaceIndexFixture(
+            workspaceStorage: workspaceStorage,
+            workspaceName: "workspace-owned",
+            folderURI: "file:///Users/test/owned%20project",
+            composerIds: ["cmp_owned"]
+        )
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: "\(dbPath)?composer=cmp_owned"))
+
+        XCTAssertEqual(info.cwd, "/Users/test/owned project")
+        XCTAssertEqual(info.project, "owned project")
+        XCTAssertNotEqual(info.cwd, "/Users/test/unrelated-repo")
+    }
+
+    // CURSOR-CWD-001 (P2): a selected editor file without a workspace-owned
+    // composer index must fail closed rather than invent project ownership.
+    func testCursorFileSelectionAloneDoesNotSetWorkspaceOwnership_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let globalStorage = root.appendingPathComponent("globalStorage", isDirectory: true)
+        try FileManager.default.createDirectory(at: globalStorage, withIntermediateDirectories: true)
+        let dbPath = globalStorage.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorOwnershipComposerFixture(
+            dbPath: dbPath,
+            composerId: "cmp_selection_only",
+            selectedFile: "/Users/test/unrelated-repo/Sources/App.swift"
+        )
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let info = try sessionInfo(
+            await adapter.parseSessionInfo(locator: "\(dbPath)?composer=cmp_selection_only")
+        )
+
+        XCTAssertEqual(info.cwd, "")
+        XCTAssertNil(info.project)
+    }
+
+    // CURSOR-CWD-001 (P2): stale pointer rows can reference one composer from
+    // more than one workspace. Conflicting folder ownership must remain empty.
+    func testCursorConflictingWorkspaceIndexesFailClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let globalStorage = root.appendingPathComponent("globalStorage", isDirectory: true)
+        let workspaceStorage = root.appendingPathComponent("workspaceStorage", isDirectory: true)
+        try FileManager.default.createDirectory(at: globalStorage, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workspaceStorage, withIntermediateDirectories: true)
+
+        let dbPath = globalStorage.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorOwnershipComposerFixture(
+            dbPath: dbPath,
+            composerId: "cmp_ambiguous",
+            selectedFile: "/Users/test/selection-only/file.swift"
+        )
+        try Self.buildCursorWorkspaceIndexFixture(
+            workspaceStorage: workspaceStorage,
+            workspaceName: "workspace-a",
+            folderURI: "file:///Users/test/project-a",
+            composerIds: ["cmp_ambiguous"]
+        )
+        try Self.buildCursorWorkspaceIndexFixture(
+            workspaceStorage: workspaceStorage,
+            workspaceName: "workspace-b",
+            folderURI: "file:///Users/test/project-b",
+            composerIds: ["cmp_ambiguous"]
+        )
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: "\(dbPath)?composer=cmp_ambiguous"))
+
+        XCTAssertEqual(info.cwd, "")
+        XCTAssertNil(info.project)
+    }
+
+    // CURSOR-CWD-001 (P2): multi-root .code-workspace mappings must not invent a
+    // primary folder. Presence of workspace.json `configuration` fails closed.
+    func testCursorMultiRootWorkspaceConfigurationFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let globalStorage = root.appendingPathComponent("globalStorage", isDirectory: true)
+        let workspaceStorage = root.appendingPathComponent("workspaceStorage", isDirectory: true)
+        try FileManager.default.createDirectory(at: globalStorage, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workspaceStorage, withIntermediateDirectories: true)
+
+        let dbPath = globalStorage.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorOwnershipComposerFixture(
+            dbPath: dbPath,
+            composerId: "cmp_multiroot",
+            selectedFile: "/Users/test/selection-only/file.swift"
+        )
+        try Self.buildCursorWorkspaceIndexFixture(
+            workspaceStorage: workspaceStorage,
+            workspaceName: "workspace-multi",
+            folderURI: "file:///Users/test/would-be-primary",
+            composerIds: ["cmp_multiroot"],
+            configurationURI: "file:///Users/test/owned.code-workspace"
+        )
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: "\(dbPath)?composer=cmp_multiroot"))
+
+        XCTAssertEqual(info.cwd, "")
+        XCTAssertNil(info.project)
+    }
+
     // Audit CURSOR-CONTENT-001: empty/whitespace text must not shadow non-empty rawText.
     func testCursorFallsBackToRawTextWhenTextIsEmpty_repro() async throws {
         let root = tempDir()
@@ -3189,6 +3310,119 @@ final class AdapterMessageCountTests: XCTestCase {
         try exec("INSERT INTO cursorDiskKV VALUES ('composerData:cmp_missing_created', '{\"composerId\":\"cmp_missing_created\",\"lastUpdatedAt\":1700000002000}')")
         try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_missing_created:u1', '{\"type\":1,\"text\":\"Track Cursor timestamps\",\"timingInfo\":{\"clientStartTime\":1700000001000}}')")
         try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_missing_created:a1', '{\"type\":2,\"text\":\"Cursor timestamps tracked.\",\"timingInfo\":{\"clientStartTime\":1700000002000}}')")
+    }
+
+    private static func buildCursorOwnershipComposerFixture(
+        dbPath: String,
+        composerId: String,
+        selectedFile: String
+    ) throws {
+        var database: OpaquePointer?
+        guard sqlite3_open(dbPath, &database) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        defer { sqlite3_close(database) }
+
+        guard sqlite3_exec(
+            database,
+            "CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 2)
+        }
+        let composer: [String: Any] = [
+            "composerId": composerId,
+            "createdAt": 1_700_000_000_000,
+            "context": [
+                "fileSelections": [["uri": ["fsPath": selectedFile]]],
+            ],
+        ]
+        let value = String(
+            decoding: try JSONSerialization.data(withJSONObject: composer),
+            as: UTF8.self
+        )
+        try insertSQLiteKeyValue(
+            database: database,
+            table: "cursorDiskKV",
+            key: "composerData:\(composerId)",
+            value: value
+        )
+    }
+
+    private static func buildCursorWorkspaceIndexFixture(
+        workspaceStorage: URL,
+        workspaceName: String,
+        folderURI: String,
+        composerIds: [String],
+        configurationURI: String? = nil
+    ) throws {
+        let workspace = workspaceStorage.appendingPathComponent(workspaceName, isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        var metadataObject: [String: Any] = ["folder": folderURI]
+        if let configurationURI {
+            metadataObject["configuration"] = configurationURI
+        }
+        let metadata = try JSONSerialization.data(
+            withJSONObject: metadataObject,
+            options: [.sortedKeys]
+        )
+        try metadata.write(to: workspace.appendingPathComponent("workspace.json"), options: .atomic)
+
+        let dbPath = workspace.appendingPathComponent("state.vscdb").path
+        var database: OpaquePointer?
+        guard sqlite3_open(dbPath, &database) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        defer { sqlite3_close(database) }
+        guard sqlite3_exec(
+            database,
+            "CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 2)
+        }
+        let index: [String: Any] = [
+            "allComposers": composerIds.map { ["composerId": $0] },
+        ]
+        let value = String(
+            decoding: try JSONSerialization.data(withJSONObject: index),
+            as: UTF8.self
+        )
+        try insertSQLiteKeyValue(
+            database: database,
+            table: "ItemTable",
+            key: "composer.composerData",
+            value: value
+        )
+    }
+
+    private static func insertSQLiteKeyValue(
+        database: OpaquePointer?,
+        table: String,
+        key: String,
+        value: String
+    ) throws {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "INSERT INTO \(table) (key, value) VALUES (?, ?)",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 2)
+        }
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(statement, 1, key, -1, transient)
+        sqlite3_bind_text(statement, 2, value, -1, transient)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw NSError(domain: "test", code: 3)
+        }
     }
 
     /// Bubbles with empty / whitespace `text` and non-empty `rawText` (restored).

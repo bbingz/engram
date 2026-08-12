@@ -146,6 +146,43 @@ final class IndexerParseOnceTests: XCTestCase {
         XCTAssertEqual(adapter.streamMessagesCalls, 0, "the separate message pass must not run")
     }
 
+    /// R1/R2 P1 source-disable-reclassification-bypass: filtering only the
+    /// adapter's declared source is insufficient because the Claude parser may
+    /// reclassify its output as a derived source after parsing.
+    func testIndexerHidesExistingRowWhenReclassifiedOutputSourceDisabled_repro() async throws {
+        let locator = "/tmp/reclassified.jsonl"
+        let initialAdapter = ParseCountingSessionAdapter(locators: [locator])
+        let initial = try await writer.indexRecentSessions(adapters: [initialAdapter])
+        XCTAssertEqual(initial.indexed, 1)
+        XCTAssertEqual(try sessionValue("source", id: "reclassified"), SourceName.claudeCode.rawValue)
+        XCTAssertNil(try sessionValue("hidden_at", id: "reclassified"))
+
+        let reclassifiedAdapter = ParseCountingSessionAdapter(
+            locators: [locator],
+            outputSource: .lobsterai
+        )
+        let result = try await writer.indexRecentSessions(
+            adapters: [reclassifiedAdapter],
+            excludedSnapshotSources: [.lobsterai]
+        )
+
+        XCTAssertEqual(result.indexed, 0, "disabled reclassified output must not be indexed")
+        XCTAssertEqual(
+            reclassifiedAdapter.scanForIndexingCalls,
+            1,
+            "the post-parse classification must be observed"
+        )
+        XCTAssertEqual(
+            try sessionValue("source", id: "reclassified"),
+            SourceName.lobsterai.rawValue,
+            "the stale row must move under the disabled output source"
+        )
+        XCTAssertNotNil(
+            try sessionValue("hidden_at", id: "reclassified"),
+            "a previously visible row must not bypass the disabled output source"
+        )
+    }
+
     /// Startup indexing skips every already-known locator, so it must not pay
     /// the cost of materializing full tail-merge snapshots that can never be
     /// consumed by `attemptTailIndexing` in that mode.
@@ -1046,12 +1083,14 @@ private final class CountingTailAdapter: TailIndexingSessionAdapter {
 private final class ParseCountingSessionAdapter: SessionAdapter {
     let source: SourceName = .claudeCode
     private let locators: [String]
+    private let outputSource: SourceName
     private(set) var parseSessionInfoCalls = 0
     private(set) var streamMessagesCalls = 0
     private(set) var scanForIndexingCalls = 0
 
-    init(locators: [String]) {
+    init(locators: [String], outputSource: SourceName = .claudeCode) {
         self.locators = locators
+        self.outputSource = outputSource
     }
 
     func detect() async -> Bool { true }
@@ -1061,7 +1100,7 @@ private final class ParseCountingSessionAdapter: SessionAdapter {
     private func info(for locator: String) -> NormalizedSessionInfo {
         NormalizedSessionInfo(
             id: URL(fileURLWithPath: locator).deletingPathExtension().lastPathComponent,
-            source: source,
+            source: outputSource,
             startTime: "2026-01-01T10:00:00Z",
             cwd: "/repo",
             project: "proj",

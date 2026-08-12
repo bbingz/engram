@@ -625,6 +625,12 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 let result = try await writerGate.performWriteCommand(name: request.command) { writer in
                     try Self.setSourceEnabled(payload, writer: writer)
                 }
+                if payload.enabled,
+                   let source = SourceName(
+                    rawValue: payload.source.trimmingCharacters(in: .whitespacesAndNewlines)
+                   ) {
+                    await archiveV2Coordinator?.resumePendingIndexLocators(for: source)
+                }
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),
@@ -708,6 +714,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     )
                 )
             case "test.write_intent":
+                // R2.P2.prod-test-mutator-surface: only for Debug/test builds.
+                #if DEBUG
                 let result = try await writerGate.performWriteCommand(name: request.command) { _ in
                     WriteIntentAck(ok: true)
                 }
@@ -716,6 +724,16 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                     result: try Self.encode(result.value),
                     databaseGeneration: result.databaseGeneration
                 )
+                #else
+                return .failure(
+                    requestId: request.requestId,
+                    error: EngramServiceErrorEnvelope(
+                        name: "UnknownCommand",
+                        message: "unknown-command",
+                        retryPolicy: "never"
+                    )
+                )
+                #endif
             case "remoteOffload":
                 let result = try await Self.remoteOffloadNow(writerGate: writerGate)
                 return .success(requestId: request.requestId, result: try Self.encode(result))
@@ -1208,10 +1226,9 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     /// Disabling a source (`enabled == false`) adds it to the `disabledSources`
     /// array in `~/.engram/settings.json` AND hides its already-indexed sessions.
     /// Enabling removes it from the array AND unhides its sessions. Re-ingesting
-    /// of NEW sessions resumes on the next service scan, because the adapter
-    /// filter is read at scan time (`EngramServiceRunner.readDisabledSources`),
-    /// not here. Settings are updated read-modify-write so all other keys are
-    /// preserved; the file is created with a minimal object when absent.
+    /// of NEW sessions resumes on the next service scan. Settings are updated
+    /// read-modify-write so all other keys are preserved; the file is created
+    /// with a minimal object when absent.
     private static func setSourceEnabled(
         _ request: EngramServiceSetSourceEnabledRequest,
         writer: EngramDatabaseWriter,
@@ -1228,11 +1245,90 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 details: nil
             )
         }
-        try updateDisabledSourcesSetting(source: source, enabled: request.enabled, settingsURL: settingsURL)
+        // Never overwrite a recovery record from a prior failed/crashed
+        // command. Replaying it is idempotent and restores a single authority
+        // before this toggle begins.
+        try reconcilePendingSourceVisibilityIntent(
+            writer: writer,
+            settingsURL: settingsURL
+        )
+        let wasEnabled = !EngramServiceRunner.readDisabledSources(
+            environment: [:],
+            settingsURL: settingsURL
+        ).contains(source)
+
+        // Persist the desired settings membership together with a recovery
+        // intent before SQLite. A crash on either side of COMMIT can then be
+        // completed safely on startup instead of leaving the stores split.
+        do {
+            try updateDisabledSourcesSetting(
+                source: source,
+                enabled: request.enabled,
+                settingsURL: settingsURL,
+                intentMutation: .set(source: source, enabled: request.enabled)
+            )
+        } catch {
+            try compensateSourceToggleSettings(
+                source: source,
+                wasEnabled: wasEnabled,
+                settingsURL: settingsURL,
+                originalError: error
+            )
+        }
+
+        do {
+            try applySourceVisibility(source: source, enabled: request.enabled, writer: writer)
+        } catch {
+            try compensateSourceToggleSettings(
+                source: source,
+                wasEnabled: wasEnabled,
+                settingsURL: settingsURL,
+                originalError: error
+            )
+        }
+
+        // Both stores now agree. If this final atomic write fails before its
+        // rename, the intent remains and startup/next command replays it; if it
+        // fails after rename, the stores are already fully converged.
+        try updateDisabledSourcesSetting(
+            source: source,
+            enabled: request.enabled,
+            settingsURL: settingsURL,
+            intentMutation: .clear
+        )
+        return EngramServiceLinkResponse(ok: true, error: nil)
+    }
+
+    private enum SourceVisibilityIntentMutation {
+        case preserve
+        case set(source: String, enabled: Bool)
+        case clear
+    }
+
+    private static let sourceVisibilityIntentKey = "sourceVisibilityIntent"
+
+    private static func applySourceVisibility(
+        source: String,
+        enabled: Bool,
+        writer: EngramDatabaseWriter
+    ) throws {
         try writer.write { db in
-            if request.enabled {
+            try ensureSessionLocalStateTable(db)
+            if enabled {
+                // R2.P1.source-enable-hide-clobber / RETRO-P1-SOURCE-ENABLE-UNHIDE:
+                // unhide only non-manual sessions. Manual hide writes
+                // session_local_state.hidden_at and must survive re-enable.
                 try db.execute(
-                    sql: "UPDATE sessions SET hidden_at = NULL WHERE source = ?",
+                    sql: """
+                        UPDATE sessions
+                        SET hidden_at = NULL
+                        WHERE source = ?
+                          AND hidden_at IS NOT NULL
+                          AND id NOT IN (
+                              SELECT session_id FROM session_local_state
+                              WHERE hidden_at IS NOT NULL
+                          )
+                        """,
                     arguments: [source]
                 )
             } else {
@@ -1242,14 +1338,68 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 )
             }
         }
-        return EngramServiceLinkResponse(ok: true, error: nil)
+    }
+
+    private static func compensateSourceToggleSettings(
+        source: String,
+        wasEnabled: Bool,
+        settingsURL: URL,
+        originalError: Error
+    ) throws -> Never {
+        do {
+            try updateDisabledSourcesSetting(
+                source: source,
+                enabled: wasEnabled,
+                settingsURL: settingsURL,
+                intentMutation: .clear
+            )
+        } catch let compensationError {
+            throw EngramServiceError.commandFailed(
+                name: "SourceToggleCompensationFailed",
+                message: "source-toggle-compensation-failed",
+                retryPolicy: "after-fix",
+                details: [
+                    "source": .string(source),
+                    "database_error": .string(String(describing: originalError)),
+                    "settings_error": .string(String(describing: compensationError)),
+                ]
+            )
+        }
+        throw originalError
+    }
+
+    /// Replays one durable source-toggle intent. Called before serving and
+    /// before every later toggle so an interrupted command cannot be silently
+    /// superseded. The database mutation is idempotent; clearing the intent is
+    /// deliberately last.
+    static func reconcilePendingSourceVisibilityIntent(
+        writer: EngramDatabaseWriter,
+        settingsURL: URL
+    ) throws {
+        guard let data = try? Data(contentsOf: settingsURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let intent = object[sourceVisibilityIntentKey] as? [String: Any],
+              let source = intent["source"] as? String,
+              !source.isEmpty,
+              let enabled = intent["enabled"] as? Bool
+        else {
+            return
+        }
+        try applySourceVisibility(source: source, enabled: enabled, writer: writer)
+        try updateDisabledSourcesSetting(
+            source: source,
+            enabled: enabled,
+            settingsURL: settingsURL,
+            intentMutation: .clear
+        )
     }
 
     /// Read-modify-write the `disabledSources` array, preserving every other key.
     private static func updateDisabledSourcesSetting(
         source: String,
         enabled: Bool,
-        settingsURL: URL
+        settingsURL: URL,
+        intentMutation: SourceVisibilityIntentMutation = .preserve
     ) throws {
         try SecureSettingsFileWriter.mutateJSON(at: settingsURL) { object in
             var disabled = (object["disabledSources"] as? [Any])?
@@ -1266,6 +1416,17 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
             }
             object["disabledSources"] = disabled
             object[ArchivedDefaultOffSources.settingsMigrationKey] = true
+            switch intentMutation {
+            case .preserve:
+                break
+            case let .set(intentSource, intentEnabled):
+                object[sourceVisibilityIntentKey] = [
+                    "source": intentSource,
+                    "enabled": intentEnabled,
+                ]
+            case .clear:
+                object.removeValue(forKey: sourceVisibilityIntentKey)
+            }
         }
     }
 
@@ -1462,10 +1623,15 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
 
         let parent = try Row.fetchOne(
             db,
-            sql: "SELECT id, parent_session_id FROM sessions WHERE id = ?",
+            sql: "SELECT id, parent_session_id, tier FROM sessions WHERE id = ?",
             arguments: [parentId]
         )
         guard let parent else { return "parent-not-found" }
+        // R2.P2.skip-parent-link-allowed: skip-tier sessions are noise/subagent
+        // rows and must not become parent roots over IPC.
+        if let tier = parent["tier"] as String?, tier == "skip" {
+            return "parent-skip"
+        }
         if let existingParent = parent["parent_session_id"] as String?, !existingParent.isEmpty {
             return "depth-exceeded"
         }
@@ -2469,7 +2635,11 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
     }
 
     private static func containsSensitivePathComponent(_ path: String, home: String) -> Bool {
-        let relative = path.dropFirst(home.count).split(separator: "/").map(String.init)
+        // Fold case so APFS case-variant paths (e.g. `.SSH`, `library/keychains`)
+        // cannot bypass the denylist. Compare folded components only.
+        let relative = path.dropFirst(home.count)
+            .split(separator: "/")
+            .map { String($0).lowercased() }
         // Single-component sensitive directories anywhere under $HOME.
         let sensitiveSingle: Set<String> = [".ssh", ".aws", ".gnupg", ".kube", ".docker", ".1password"]
         if relative.contains(where: { sensitiveSingle.contains($0) }) {
@@ -2479,7 +2649,7 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
         // previous code matched single components against the compound string
         // "Library/Keychains", which never matched and left keychains exposed.
         let sensitiveSequences: [[String]] = [
-            ["Library", "Keychains"],
+            ["library", "keychains"],
         ]
         for sequence in sensitiveSequences where relative.count >= sequence.count {
             for start in 0...(relative.count - sequence.count) {

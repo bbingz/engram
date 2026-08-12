@@ -773,8 +773,9 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(source.contains("let parserAdapters: [any SessionAdapter]"))
         XCTAssertTrue(source.contains("parserAdapters = startupAdapters"))
         XCTAssertTrue(source.contains("SessionAdapterFactory.indexingAdapters("))
-        XCTAssertTrue(source.contains("indexer: WriterStartupIndexing(writer: writer, adapters: parserAdapters)"))
+        XCTAssertTrue(source.contains("indexer: WriterStartupIndexing("))
         XCTAssertTrue(source.contains("adapters: parserAdapters"))
+        XCTAssertTrue(source.contains("excludedSnapshotSources: excludedSnapshotSources"))
     }
 
     func testArchiveDrainerResolvesProfileAdaptersInsideEveryPass() throws {
@@ -992,7 +993,8 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertTrue(body.contains("archiveV2Coordinator: archiveV2Coordinator"))
         XCTAssertTrue(body.contains("disabledSources: disabled"))
         XCTAssertTrue(body.contains("let captureInputs = await archiveCaptureInputsForPeriodicCycle("))
-        XCTAssertTrue(body.contains("try await writer.indexRecentSessions(adapters: parserAdapters)"))
+        XCTAssertTrue(body.contains("try await writer.indexRecentSessions("))
+        XCTAssertTrue(body.contains("excludedSnapshotSources: excludedSnapshotSources"))
         XCTAssertTrue(body.contains("let enabledAdapters = adaptersExcludingDisabled("))
         XCTAssertTrue(body.contains("periodicParserAdapters = enabledAdapters"))
         XCTAssertTrue(body.contains("IndexJobRunner(writer: writer, adapters: periodicParserAdapters)"))
@@ -1502,6 +1504,23 @@ final class EngramServiceIPCTests: XCTestCase {
         let status = await monitor.status(indexStatus: EngramDatabaseIndexStatus(total: 42, todayParents: 7))
 
         XCTAssertEqual(status, .starting)
+    }
+
+    /// R2.P2.premature_today_parents_status — socket-ready running status must not
+    /// leak pre-backfill todayParents into the menu-bar badge.
+    func testStatusMonitorZerosTodayParentsBeforeFirstSuccessfulScan_repro() async {
+        let monitor = ServiceStatusMonitor(staleAfter: 600)
+        await monitor.recordServiceReady()
+        await monitor.recordSchedule(nextScanIntervalSeconds: 300)
+
+        let status = await monitor.status(
+            indexStatus: EngramDatabaseIndexStatus(total: 42, todayParents: 7)
+        )
+
+        XCTAssertEqual(
+            status,
+            .running(total: 42, todayParents: 0, nextScanIntervalSeconds: 300)
+        )
     }
 
     func testStatusCommandReportsDegradedAfterIndexFailure() async throws {
@@ -3490,6 +3509,93 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(unlinkedState.linkSource, "manual")
     }
 
+    /// R2.P2.skip-parent-link-allowed: IPC must refuse linking under a skip parent.
+    func testSetParentSessionRejectsSkipTierParent_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE sessions
+                    SET agent_role = 'dispatched', tier = 'skip'
+                    WHERE id = 's1'
+                    """
+            )
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+        let linked = try await client.setParentSession(sessionId: "s2", parentId: "s1")
+        XCTAssertEqual(linked.ok, false)
+        XCTAssertEqual(linked.error, "parent-skip")
+
+        try await queue.read { db in
+            let parent = try String.fetchOne(
+                db,
+                sql: "SELECT parent_session_id FROM sessions WHERE id = 's2'"
+            )
+            XCTAssertNil(parent)
+        }
+    }
+
+    /// Invariant 2 / R1-R2 P1: linking a dispatched/subagent child through the
+    /// shipped IPC command must never upgrade it out of the skip tier.
+    func testSetParentSessionPreservesSkipTier_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE sessions
+                    SET agent_role = 'subagent', tier = 'skip'
+                    WHERE id = 's2'
+                    """
+            )
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(
+            writerGate: gate,
+            readProvider: try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+        )
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+        let linked = try await client.setParentSession(sessionId: "s2", parentId: "s1")
+        XCTAssertEqual(linked, EngramServiceLinkResponse(ok: true, error: nil))
+
+        try await queue.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT parent_session_id, link_source, agent_role, tier FROM sessions WHERE id = 's2'"
+            )
+            XCTAssertEqual(row?["parent_session_id"] as String?, "s1")
+            XCTAssertEqual(row?["link_source"] as String?, "manual")
+            XCTAssertEqual(row?["agent_role"] as String?, "subagent")
+            XCTAssertEqual(row?["tier"] as String?, "skip")
+        }
+    }
+
     /// Wave 7B H05 (repro): clearParent through the shipped IPC handler must keep
     /// `dispatched` children at `tier=skip` (not NULL re-eval).
     func testClearParentPreservesDispatchedSkipTier_repro() async throws {
@@ -4301,6 +4407,293 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(preservedAfterEnable["aiModel"] as? String, "gpt-4o-mini")
         XCTAssertEqual(preservedAfterEnable["disabledSources"] as? [String], [])
         XCTAssertEqual(preservedAfterEnable[ArchivedDefaultOffSources.settingsMigrationKey] as? Bool, true)
+    }
+
+    /// R2.P1.source-enable-hide-clobber — re-enable must not clear user manual hides.
+    func testSetSourceEnabledPreservesManualHideOnEnable_repro() async throws {
+        let settingsDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-source-manual-hide-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
+        let settingsURL = settingsDirectory.appendingPathComponent("settings.json")
+        let seed: [String: Any] = [
+            "customSetting": true,
+            "disabledSources": [] as [String],
+            ArchivedDefaultOffSources.settingsMigrationKey: true,
+        ]
+        let seedData = try JSONSerialization.data(withJSONObject: seed)
+        try seedData.write(to: settingsURL)
+        setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
+        defer {
+            unsetenv("ENGRAM_SETTINGS_PATH")
+            try? FileManager.default.removeItem(at: settingsDirectory)
+        }
+
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path))
+
+        // Manually hide one seeded session (writes sessions + session_local_state).
+        let manualId = try await queue.read { db in
+            try String.fetchOne(db, sql: "SELECT id FROM sessions WHERE source = 'codex' ORDER BY id LIMIT 1")
+        }
+        XCTAssertNotNil(manualId)
+        try await client.setSessionHidden(sessionId: manualId!, hidden: true)
+
+        try await client.setSourceEnabled(source: "codex", enabled: false)
+        try await client.setSourceEnabled(source: "codex", enabled: true)
+
+        let manualStillHidden = try await queue.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT hidden_at FROM sessions WHERE id = ?",
+                arguments: [manualId!]
+            )
+        }
+        XCTAssertNotNil(manualStillHidden, "manual hide must survive source disable/enable cycle")
+
+        let localHidden = try await queue.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT hidden_at FROM session_local_state WHERE session_id = ?",
+                arguments: [manualId!]
+            )
+        }
+        XCTAssertNotNil(localHidden, "session_local_state.hidden_at must remain set for manual hide")
+    }
+
+    /// R1/R2 P1 settings-db-split: a rejected SQLite mutation must not leave
+    /// settings.json claiming the source is disabled while its rows remain live.
+    func testSetSourceEnabledDatabaseFailureLeavesSettingsUnchanged_repro() async throws {
+        let settingsDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-source-atomicity-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
+        let settingsURL = settingsDirectory.appendingPathComponent("settings.json")
+        let seed: [String: Any] = [
+            "customSetting": true,
+            "disabledSources": [] as [String],
+            ArchivedDefaultOffSources.settingsMigrationKey: true,
+        ]
+        try JSONSerialization.data(withJSONObject: seed).write(to: settingsURL)
+        setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
+        defer {
+            unsetenv("ENGRAM_SETTINGS_PATH")
+            try? FileManager.default.removeItem(at: settingsDirectory)
+        }
+
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                    CREATE TRIGGER reject_source_disable
+                    BEFORE UPDATE OF hidden_at ON sessions
+                    WHEN NEW.source = 'codex' AND NEW.hidden_at IS NOT NULL
+                    BEGIN
+                        SELECT RAISE(ABORT, 'forced-source-toggle-failure');
+                    END
+                    """
+            )
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+        do {
+            try await client.setSourceEnabled(source: "codex", enabled: false)
+            XCTFail("forced SQLite failure must fail the source toggle")
+        } catch {
+            // Expected: the assertion below verifies cross-store rollback.
+        }
+
+        let persisted = try loadSettings(settingsURL)
+        XCTAssertEqual(persisted["disabledSources"] as? [String], [])
+        XCTAssertEqual(persisted["customSetting"] as? Bool, true)
+        let hiddenCount = try await queue.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM sessions WHERE source = 'codex' AND hidden_at IS NOT NULL"
+            ) ?? 0
+        }
+        XCTAssertEqual(hiddenCount, 0)
+    }
+
+    /// R1/R2 P1 settings-db-split: SQLite may reject COMMIT only after the
+    /// settings rename. The service must compensate the source membership and
+    /// let the failed database transaction roll back.
+    func testSetSourceEnabledCommitFailureCompensatesSettings_repro() async throws {
+        let settingsDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-source-commit-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
+        let settingsURL = settingsDirectory.appendingPathComponent("settings.json")
+        let seed: [String: Any] = [
+            "customSetting": true,
+            "disabledSources": [] as [String],
+            ArchivedDefaultOffSources.settingsMigrationKey: true,
+        ]
+        try JSONSerialization.data(withJSONObject: seed).write(to: settingsURL)
+        setenv("ENGRAM_SETTINGS_PATH", settingsURL.path, 1)
+        defer {
+            unsetenv("ENGRAM_SETTINGS_PATH")
+            try? FileManager.default.removeItem(at: settingsDirectory)
+        }
+
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                    CREATE TABLE source_toggle_parent (id INTEGER PRIMARY KEY);
+                    CREATE TABLE source_toggle_commit_guard (
+                        parent_id INTEGER,
+                        FOREIGN KEY (parent_id) REFERENCES source_toggle_parent(id)
+                            DEFERRABLE INITIALLY DEFERRED
+                    );
+                    CREATE TRIGGER reject_source_disable_commit
+                    AFTER UPDATE OF hidden_at ON sessions
+                    WHEN NEW.source = 'codex' AND NEW.hidden_at IS NOT NULL
+                    BEGIN
+                        INSERT INTO source_toggle_commit_guard(parent_id) VALUES (999);
+                    END;
+                    """
+            )
+        }
+
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+        let handler = EngramServiceCommandHandler(writerGate: gate)
+        let server = UnixSocketServiceServer(socketPath: paths.socket.path) { request in
+            await handler.handle(request)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let client = EngramServiceClient(
+            transport: UnixSocketEngramServiceTransport(socketPath: paths.socket.path)
+        )
+        do {
+            try await client.setSourceEnabled(source: "codex", enabled: false)
+            XCTFail("deferred foreign-key failure must reject the source toggle at commit")
+        } catch {
+            // Expected: durable state assertions below prove compensation.
+        }
+
+        let persisted = try loadSettings(settingsURL)
+        XCTAssertEqual(persisted["disabledSources"] as? [String], [])
+        XCTAssertEqual(persisted["customSetting"] as? Bool, true)
+        try await queue.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM sessions WHERE source = 'codex' AND hidden_at IS NOT NULL"
+                ),
+                0
+            )
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM source_toggle_commit_guard"), 0)
+        }
+    }
+
+    /// R1/R2 P1 settings-db-split: a crash after the atomic settings rename
+    /// but before SQLite commit leaves a durable intent. Startup must replay it
+    /// idempotently, including the enable path's manual-hide exception.
+    func testPendingSourceVisibilityIntentReconcilesAfterRestart_repro() async throws {
+        let settingsDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-source-intent-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
+        let settingsURL = settingsDirectory.appendingPathComponent("settings.json")
+        defer { try? FileManager.default.removeItem(at: settingsDirectory) }
+
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let queue = try DatabaseQueue(path: paths.database.path)
+        let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+
+        let pendingDisable: [String: Any] = [
+            "disabledSources": ["codex"],
+            ArchivedDefaultOffSources.settingsMigrationKey: true,
+            "sourceVisibilityIntent": ["source": "codex", "enabled": false],
+        ]
+        try JSONSerialization.data(withJSONObject: pendingDisable).write(to: settingsURL)
+        try await gate.performWriteCommand(name: "reconcilePendingSourceDisable") { writer in
+            try EngramServiceCommandHandler.reconcilePendingSourceVisibilityIntent(
+                writer: writer,
+                settingsURL: settingsURL
+            )
+        }.value
+
+        let sessionIDs = try await queue.read { db in
+            try String.fetchAll(db, sql: "SELECT id FROM sessions WHERE source = 'codex' ORDER BY id")
+        }
+        XCTAssertEqual(sessionIDs.count, 2)
+        try await queue.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM sessions WHERE source = 'codex' AND hidden_at IS NOT NULL"
+                ),
+                2
+            )
+        }
+        XCTAssertNil(try loadSettings(settingsURL)["sourceVisibilityIntent"])
+
+        let manualID = try XCTUnwrap(sessionIDs.first)
+        try await queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO session_local_state (session_id, hidden_at)
+                    VALUES (?, datetime('now'))
+                    ON CONFLICT(session_id) DO UPDATE SET hidden_at = excluded.hidden_at
+                    """,
+                arguments: [manualID]
+            )
+        }
+        let pendingEnable: [String: Any] = [
+            "disabledSources": [] as [String],
+            ArchivedDefaultOffSources.settingsMigrationKey: true,
+            "sourceVisibilityIntent": ["source": "codex", "enabled": true],
+        ]
+        try JSONSerialization.data(withJSONObject: pendingEnable).write(to: settingsURL)
+        try await gate.performWriteCommand(name: "reconcilePendingSourceEnable") { writer in
+            try EngramServiceCommandHandler.reconcilePendingSourceVisibilityIntent(
+                writer: writer,
+                settingsURL: settingsURL
+            )
+        }.value
+
+        try await queue.read { db in
+            XCTAssertNotNil(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT hidden_at FROM sessions WHERE id = ?",
+                    arguments: [manualID]
+                )
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM sessions WHERE source = 'codex' AND hidden_at IS NOT NULL"
+                ),
+                1
+            )
+        }
+        XCTAssertNil(try loadSettings(settingsURL)["sourceVisibilityIntent"])
     }
 
     func testReadDisabledSourcesFiltersAdapterListWithoutAffectingOthers() {

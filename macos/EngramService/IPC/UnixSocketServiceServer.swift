@@ -142,7 +142,10 @@ final class UnixSocketServiceServer: Sendable {
                         decodedRequestId = request.requestId
                         // SEC-H1: destructive commands require a matching token.
                         if ServiceCapabilityToken.requiresToken(request.command),
-                           request.capabilityToken != capabilityToken {
+                           !ServiceCapabilityToken.constantTimeEquals(
+                               request.capabilityToken,
+                               capabilityToken
+                           ) {
                             throw EngramServiceError.unauthorized(
                                 message: "Missing or invalid capability token for \(request.command)"
                             )

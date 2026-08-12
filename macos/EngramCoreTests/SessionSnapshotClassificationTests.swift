@@ -313,6 +313,7 @@ final class SessionSnapshotClassificationTests: XCTestCase {
     func testGeminiSidecarParentSessionIdPersistedAsPathLink() throws {
         try writer.write { db in
             let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "cc-parent"))
             _ = try w.writeAuthoritativeSnapshot(
                 snapshot(id: "gem-child", source: .geminiCli, parentSessionId: "cc-parent")
             )
@@ -323,6 +324,56 @@ final class SessionSnapshotClassificationTests: XCTestCase {
             XCTAssertEqual(
                 try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = 'gem-child'"),
                 "path"
+            )
+        }
+    }
+
+    /// R1/R2 P1 path-parent-unvalidated-no-reconcile: an adapter-provided
+    /// parent is only authoritative after the writer proves a one-level,
+    /// browseable relationship. Invalid candidates must leave the child top-level.
+    func testPathParentWriteRejectsSelfDanglingNestedAndSkipParents_repro() throws {
+        try writer.write { db in
+            let w = SessionSnapshotWriter(db: db)
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "root"))
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "skip-parent", tier: .skip))
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "nested-parent"))
+            try db.execute(
+                sql: "UPDATE sessions SET parent_session_id = 'root', link_source = 'path' WHERE id = 'nested-parent'"
+            )
+
+            for (child, parent) in [
+                ("self-child", "self-child"),
+                ("dangling-child", "missing-parent"),
+                ("nested-child", "nested-parent"),
+                ("skip-child", "skip-parent"),
+            ] {
+                _ = try w.writeAuthoritativeSnapshot(snapshot(id: child, parentSessionId: parent))
+            }
+            _ = try w.writeAuthoritativeSnapshot(snapshot(id: "valid-child", parentSessionId: "root"))
+
+            for child in ["self-child", "dangling-child", "nested-child", "skip-child"] {
+                let row = try Row.fetchOne(
+                    db,
+                    sql: "SELECT parent_session_id, link_source FROM sessions WHERE id = ?",
+                    arguments: [child]
+                )
+                XCTAssertNil(row?["parent_session_id"] as String?, "\(child) must remain top-level")
+                XCTAssertNil(row?["link_source"] as String?, "\(child) must not claim a path link")
+            }
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'valid-child'"),
+                "root"
+            )
+
+            _ = try w.writeAuthoritativeSnapshot(
+                snapshot(id: "valid-child", hash: "h2", parentSessionId: "missing-parent")
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'valid-child'"),
+                "an invalid replacement candidate must clear a prior non-manual path link"
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT link_source FROM sessions WHERE id = 'valid-child'")
             )
         }
     }

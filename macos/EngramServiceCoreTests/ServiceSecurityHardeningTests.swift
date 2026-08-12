@@ -11,6 +11,16 @@ import Foundation
 /// - IPC-H2 oversized frame / snippet bounding
 /// - IPC-M1 real request id on error
 final class ServiceSecurityHardeningTests: XCTestCase {
+    /// R1.nit non-constant-time-token-compare — equality helper must reject
+    /// mismatches and accept exact matches without early string `==`.
+    func testCapabilityTokenConstantTimeEquals_repro() {
+        XCTAssertTrue(ServiceCapabilityToken.constantTimeEquals("abc", "abc"))
+        XCTAssertFalse(ServiceCapabilityToken.constantTimeEquals("abc", "abd"))
+        XCTAssertFalse(ServiceCapabilityToken.constantTimeEquals(nil, "abc"))
+        XCTAssertFalse(ServiceCapabilityToken.constantTimeEquals("ab", "abc"))
+        XCTAssertFalse(ServiceCapabilityToken.constantTimeEquals("abcd", "abc"))
+    }
+
     // MARK: - Helpers
 
     private func withTemporaryHome<T>(_ body: (URL) async throws -> T) async rethrows -> T {
@@ -474,6 +484,57 @@ final class ServiceSecurityHardeningTests: XCTestCase {
             if case .failure(_, let error) = await handler.handle(okRequest) {
                 XCTAssertFalse(error.message.contains("protected location"), error.message)
             }
+        }
+    }
+
+    /// invariant: sensitive-path denylist is case-folded (RETRO-P2-DENYLIST-CASE).
+    /// APFS default volumes are case-insensitive; exact-case denylist matching let
+    /// `.SSH` / `library/keychains` spellings bypass the guard on non-existent dst paths.
+    func testSensitivePathBlocksCaseVariants_repro() async throws {
+        try await withTemporaryHome { home in
+            let paths = try makePaths()
+            try seedProjectFixture(at: paths.database.path, src: home.path)
+            let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)
+            let handler = EngramServiceCommandHandler(writerGate: gate)
+            let dst = home.appendingPathComponent(".claude/projects/x").path
+
+            func assertProtected(_ src: String, label: String) async {
+                let request = EngramServiceRequestEnvelope(
+                    command: "projectMove",
+                    payload: try! JSONEncoder().encode(EngramServiceProjectMoveRequest(
+                        src: src,
+                        dst: dst,
+                        dryRun: true,
+                        force: true,
+                        auditNote: nil,
+                        actor: "test"
+                    ))
+                )
+                let response = await handler.handle(request)
+                guard case .failure(_, let error) = response else {
+                    return XCTFail("\(label) must be rejected as protected location")
+                }
+                XCTAssertEqual(error.name, "InvalidRequest", label)
+                XCTAssertTrue(
+                    error.message.contains("protected location"),
+                    "\(label): \(error.message)"
+                )
+            }
+
+            // Case-folded single-component denylist (.ssh family).
+            await assertProtected(
+                home.appendingPathComponent(".SSH/id_rsa").path,
+                label: ".SSH"
+            )
+            // Case-folded multi-component sequence (Library/Keychains).
+            await assertProtected(
+                home.appendingPathComponent("library/keychains/login.keychain-db").path,
+                label: "library/keychains"
+            )
+            await assertProtected(
+                home.appendingPathComponent("LIBRARY/KEYCHAINS/login.keychain-db").path,
+                label: "LIBRARY/KEYCHAINS"
+            )
         }
     }
 

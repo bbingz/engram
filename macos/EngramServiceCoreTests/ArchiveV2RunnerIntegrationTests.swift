@@ -563,7 +563,9 @@ final class ArchiveV2RunnerIntegrationTests: XCTestCase {
         XCTAssertTrue(periodicBlock.contains("recentAdaptersForPeriodicCycle("))
         XCTAssertTrue(periodicBlock.contains("archiveV2Coordinator: archiveV2Coordinator"))
         XCTAssertTrue(periodicBlock.contains("archiveCaptureInputsForPeriodicCycle("))
-        XCTAssertTrue(periodicBlock.contains("indexRecentSessions(adapters: parserAdapters)"))
+        XCTAssertTrue(periodicBlock.contains("indexRecentSessions("))
+        XCTAssertTrue(periodicBlock.contains("adapters: parserAdapters"))
+        XCTAssertTrue(periodicBlock.contains("excludedSnapshotSources: excludedSnapshotSources"))
         XCTAssertTrue(periodicBlock.contains("IndexJobRunner(writer: writer, adapters: periodicParserAdapters)"))
 
         let retryHelperStart = try XCTUnwrap(source.range(of: "static func recentAdaptersForPeriodicCycle("))
@@ -585,12 +587,64 @@ final class ArchiveV2RunnerIntegrationTests: XCTestCase {
         for parserUse in [
             "indexInstructionBackfillSessions(adapters: parserAdapters)",
             "indexImplementationBeatBackfillSessions(adapters: parserAdapters)",
-            "WriterStartupIndexing(writer: writer, adapters: parserAdapters)",
+            "WriterStartupIndexing(",
             "adapters: parserAdapters",
             "IndexJobRunner(writer: writer, adapters: parserAdapters)",
         ] {
             XCTAssertTrue(initialScanBlock.contains(parserUse), "missing capture-safe startup parser path: \(parserUse)")
         }
+        XCTAssertTrue(initialScanBlock.contains("excludedSnapshotSources: excludedSnapshotSources"))
+    }
+
+    /// R2.P1 source-disable linearization: every parser write must reread the
+    /// disabled output set only after ServiceWriterGate is acquired. The scan's
+    /// adapter snapshot alone is stale-able by an interleaved source toggle.
+    func testRunnerReadsDisabledOutputsInsideEachWriterGate_repro() throws {
+        let source = try runnerSource()
+
+        let periodicStart = try XCTUnwrap(
+            source.range(of: #"performWriteCommand(name: "indexRecent")"#)
+        )
+        let periodicEnd = try XCTUnwrap(
+            source.range(of: "}.value", range: periodicStart.lowerBound ..< source.endIndex)
+        )
+        let periodicGate = String(source[periodicStart.lowerBound ..< periodicEnd.upperBound])
+        XCTAssertTrue(periodicGate.contains("readDisabledSources(environment: environment)"))
+
+        let archiveHelperStart = try XCTUnwrap(
+            source.range(of: "private static func runInitialArchiveV2IndexPhase(")
+        )
+        let initialScanStart = try XCTUnwrap(
+            source.range(of: "static func runInitialScan(", range: archiveHelperStart.lowerBound ..< source.endIndex)
+        )
+        let archiveHelper = String(source[archiveHelperStart.lowerBound ..< initialScanStart.lowerBound])
+        XCTAssertTrue(archiveHelper.contains("readDisabledSources(environment: environment)"))
+
+        let initialScanEnd = try XCTUnwrap(
+            source.range(of: "private static func elapsedMs", range: initialScanStart.lowerBound ..< source.endIndex)
+        )
+        let initialScan = String(source[initialScanStart.lowerBound ..< initialScanEnd.lowerBound])
+        let defaultIndexStart = try XCTUnwrap(
+            initialScan.range(of: #"performWriteCommand(name: "initialScanIndex")"#)
+        )
+        let defaultIndexEnd = try XCTUnwrap(
+            initialScan.range(of: "}.value", range: defaultIndexStart.lowerBound ..< initialScan.endIndex)
+        )
+        let defaultIndexGate = String(
+            initialScan[defaultIndexStart.lowerBound ..< defaultIndexEnd.upperBound]
+        )
+        XCTAssertTrue(defaultIndexGate.contains("readDisabledSources(environment: environment)"))
+
+        let maintenanceStart = try XCTUnwrap(
+            initialScan.range(of: #"performWriteCommand(name: "initialScanBackfills")"#)
+        )
+        let maintenanceEnd = try XCTUnwrap(
+            initialScan.range(of: "}", range: maintenanceStart.lowerBound ..< initialScan.endIndex)
+        )
+        let maintenanceGate = String(
+            initialScan[maintenanceStart.lowerBound ..< maintenanceEnd.upperBound]
+        )
+        XCTAssertTrue(maintenanceGate.contains("readDisabledSources(environment: environment)"))
     }
 
     private func makeHarness() throws -> RunnerHarness {

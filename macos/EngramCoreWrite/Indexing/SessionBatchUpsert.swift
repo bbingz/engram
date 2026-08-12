@@ -42,4 +42,15 @@ public final class SessionBatchUpsert: IndexingWriteSink {
         }
         return batchResult ?? SessionBatchUpsertResult(reason: reason, results: [])
     }
+
+    public func suppressExcludedSnapshots(_ snapshots: [AuthoritativeSessionSnapshot]) throws {
+        guard !snapshots.isEmpty else { return }
+        try db.inSavepoint {
+            let writer = SessionSnapshotWriter(db: db)
+            for snapshot in snapshots {
+                try writer.suppressExcludedSnapshot(snapshot)
+            }
+            return .commit
+        }
+    }
 }

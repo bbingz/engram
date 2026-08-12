@@ -5,6 +5,7 @@ final class CursorAdapter: SessionAdapter, Sendable {
     private let dbPath: String
     private let accessibilityCache = Phase4SQLiteAccessibilityCache()
     private let messageCache = ParsedTranscriptCache()
+    private let workspaceOwnership: CursorWorkspaceOwnershipResolver
 
     init(
         dbPath: String = FileManager.default.homeDirectoryForCurrentUser
@@ -12,6 +13,12 @@ final class CursorAdapter: SessionAdapter, Sendable {
             .path
     ) {
         self.dbPath = dbPath
+        let databaseURL = URL(fileURLWithPath: dbPath)
+        let globalStorageURL = databaseURL.deletingLastPathComponent()
+        let workspaceStorageURL = globalStorageURL.lastPathComponent == "globalStorage"
+            ? globalStorageURL.deletingLastPathComponent().appendingPathComponent("workspaceStorage", isDirectory: true)
+            : nil
+        workspaceOwnership = CursorWorkspaceOwnershipResolver(workspaceStorageURL: workspaceStorageURL)
     }
 
     func detect() async -> Bool {
@@ -24,7 +31,7 @@ final class CursorAdapter: SessionAdapter, Sendable {
         let rows = try database.query(
             "SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'"
         )
-        return rows.compactMap { row in
+        let locators: [String] = rows.compactMap { row in
             guard let value = row["value"] ?? nil,
                   let data = Phase4AdapterSupport.jsonObject(from: value),
                   let composerId = JSONLAdapterSupport.string(data["composerId"]),
@@ -34,6 +41,11 @@ final class CursorAdapter: SessionAdapter, Sendable {
             }
             return "\(dbPath)?composer=\(composerId)"
         }
+        // Refresh once per discovery pass so all composers in the pass share
+        // one deterministic ownership snapshot without reopening every
+        // workspace database for every session.
+        await workspaceOwnership.refresh()
+        return locators
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
@@ -70,6 +82,9 @@ final class CursorAdapter: SessionAdapter, Sendable {
             let summary = JSONLAdapterSupport.string(
                 JSONLAdapterSupport.object(composerData["latestConversationSummary"])?["summary"]
             )
+            let sessionId = JSONLAdapterSupport.string(composerData["composerId"]) ?? locatorParts.composerId
+            let cwd = await workspaceOwnership.cwd(for: sessionId)
+            let project = cwd.isEmpty ? nil : URL(fileURLWithPath: cwd).lastPathComponent
             // Per-session size = this composer's raw JSON payload plus the raw
             // JSON of any separately-stored bubble rows. state.vscdb is shared
             // by every Cursor session, so measuring the whole file (the old
@@ -79,12 +94,12 @@ final class CursorAdapter: SessionAdapter, Sendable {
 
             return .success(
                 NormalizedSessionInfo(
-                    id: JSONLAdapterSupport.string(composerData["composerId"]) ?? locatorParts.composerId,
+                    id: sessionId,
                     source: .cursor,
                     startTime: Phase4AdapterSupport.isoFromMilliseconds(createdAt),
                     endTime: lastUpdatedAt != createdAt ? Phase4AdapterSupport.isoFromMilliseconds(lastUpdatedAt) : nil,
-                    cwd: "",
-                    project: nil,
+                    cwd: cwd,
+                    project: project,
                     model: nil,
                     messageCount: userCount + assistantCount,
                     userMessageCount: userCount,
@@ -286,5 +301,85 @@ final class CursorAdapter: SessionAdapter, Sendable {
 
     private static func int(_ value: Any?) -> Int {
         Int(Phase4AdapterSupport.int64(value) ?? 0)
+    }
+}
+
+/// Resolves Cursor composer ownership from the per-workspace pointer index.
+/// Context file/folder selections are deliberately excluded: they describe
+/// attached prompt context, not the workspace that owns the composer.
+private actor CursorWorkspaceOwnershipResolver {
+    private let workspaceStorageURL: URL?
+    private var cwdByComposerId: [String: String]?
+
+    init(workspaceStorageURL: URL?) {
+        self.workspaceStorageURL = workspaceStorageURL
+    }
+
+    func refresh() {
+        cwdByComposerId = Self.loadOwnership(from: workspaceStorageURL)
+    }
+
+    func cwd(for composerId: String) -> String {
+        if cwdByComposerId == nil {
+            refresh()
+        }
+        return cwdByComposerId?[composerId] ?? ""
+    }
+
+    private static func loadOwnership(from workspaceStorageURL: URL?) -> [String: String] {
+        guard let workspaceStorageURL else { return [:] }
+
+        var pathsByComposerId: [String: Set<String>] = [:]
+        for workspaceURL in JSONLAdapterSupport.directChildren(of: workspaceStorageURL)
+            where JSONLAdapterSupport.isDirectory(workspaceURL)
+        {
+            guard let cwd = singleFolderPath(from: workspaceURL) else { continue }
+            let databaseURL = workspaceURL.appendingPathComponent("state.vscdb")
+            guard JSONLAdapterSupport.fileExists(databaseURL.path),
+                  let database = try? Phase4SQLiteDatabase(path: databaseURL.path),
+                  let row = try? database.query(
+                      "SELECT value FROM ItemTable WHERE key = ?",
+                      bindings: ["composer.composerData"]
+                  ).first,
+                  let value = row["value"] ?? nil,
+                  let index = Phase4AdapterSupport.jsonObject(from: value),
+                  let composers = JSONLAdapterSupport.array(index["allComposers"])
+            else {
+                continue
+            }
+
+            for composer in composers.compactMap({ JSONLAdapterSupport.object($0) }) {
+                guard let composerId = JSONLAdapterSupport.string(composer["composerId"]),
+                      !composerId.isEmpty
+                else {
+                    continue
+                }
+                pathsByComposerId[composerId, default: []].insert(cwd)
+            }
+        }
+
+        return pathsByComposerId.compactMapValues { paths in
+            paths.count == 1 ? paths.first : nil
+        }
+    }
+
+    private static func singleFolderPath(from workspaceURL: URL) -> String? {
+        let metadataURL = workspaceURL.appendingPathComponent("workspace.json")
+        guard let data = try? Data(contentsOf: metadataURL),
+              let metadata = try? JSONSerialization.jsonObject(with: data) as? Phase4AdapterSupport.JSONObject,
+              // A configuration points at a potentially multi-root
+              // .code-workspace. It is intentionally not assigned a primary.
+              metadata["configuration"] == nil,
+              let folderURI = JSONLAdapterSupport.string(metadata["folder"]),
+              let url = URL(string: folderURI),
+              url.isFileURL,
+              url.host == nil || url.host == "" || url.host == "localhost"
+        else {
+            return nil
+        }
+
+        let path = url.standardizedFileURL.path
+        guard path.hasPrefix("/"), path != "/" else { return nil }
+        return path
     }
 }

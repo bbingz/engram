@@ -34,10 +34,56 @@ public enum EngramDatabaseIndexStatusError: Error, CustomStringConvertible {
     }
 }
 
+public struct ExcludedSnapshotIndexEvent: Sendable, Equatable {
+    public let physicalSource: SourceName
+    public let outputSource: SourceName
+    public let locator: String
+
+    public init(
+        physicalSource: SourceName,
+        outputSource: SourceName,
+        locator: String
+    ) {
+        self.physicalSource = physicalSource
+        self.outputSource = outputSource
+        self.locator = locator
+    }
+}
+
 public struct EngramDatabaseIndexResult: Sendable, Equatable {
     public let indexed: Int
     public let total: Int
     public let todayParents: Int
+    public let excludedSnapshots: [ExcludedSnapshotIndexEvent]
+
+    public init(
+        indexed: Int,
+        total: Int,
+        todayParents: Int,
+        excludedSnapshots: [ExcludedSnapshotIndexEvent] = []
+    ) {
+        self.indexed = indexed
+        self.total = total
+        self.todayParents = todayParents
+        self.excludedSnapshots = excludedSnapshots
+    }
+}
+
+private final class ExcludedSnapshotIndexCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [ExcludedSnapshotIndexEvent] = []
+
+    func append(_ event: ExcludedSnapshotIndexEvent) {
+        lock.lock()
+        events.append(event)
+        lock.unlock()
+    }
+
+    func snapshot() -> [ExcludedSnapshotIndexEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return events
+    }
 }
 
 private final class EngramDatabaseIndexingSink: IndexingWriteSink {
@@ -53,6 +99,16 @@ private final class EngramDatabaseIndexingSink: IndexingWriteSink {
     ) throws -> SessionBatchUpsertResult {
         try writer.write { db in
             try SessionBatchUpsert(db: db).upsertBatch(snapshots, reason: reason)
+        }
+    }
+
+    func suppressExcludedSnapshots(_ snapshots: [AuthoritativeSessionSnapshot]) throws {
+        guard !snapshots.isEmpty else { return }
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            for snapshot in snapshots {
+                try snapshotWriter.suppressExcludedSnapshot(snapshot)
+            }
         }
     }
 
@@ -493,13 +549,15 @@ public extension EngramDatabaseWriter {
     }
 
     func indexRecentSessions(
-        adapters: [any SessionAdapter] = SessionAdapterFactory.recentActiveAdapters()
+        adapters: [any SessionAdapter] = SessionAdapterFactory.recentActiveAdapters(),
+        excludedSnapshotSources: Set<SourceName> = []
     ) async throws -> EngramDatabaseIndexResult {
         try await indexSessions(
             adapters: adapters,
             runParentBackfills: false,
             skipUnchangedFileLocators: true,
-            skipKnownFileLocators: false
+            skipKnownFileLocators: false,
+            excludedSnapshotSources: excludedSnapshotSources
         )
     }
 
@@ -507,18 +565,21 @@ public extension EngramDatabaseWriter {
     /// startup parent-backfill cost for every archive drain unit. The caller is
     /// responsible for constraining each adapter to captured locators only.
     func indexCapturedSessions(
-        adapters: [any SessionAdapter]
+        adapters: [any SessionAdapter],
+        excludedSnapshotSources: Set<SourceName> = []
     ) async throws -> EngramDatabaseIndexResult {
         try await indexSessions(
             adapters: adapters,
             runParentBackfills: false,
             skipUnchangedFileLocators: true,
-            skipKnownFileLocators: false
+            skipKnownFileLocators: false,
+            excludedSnapshotSources: excludedSnapshotSources
         )
     }
 
     func indexAllSessions(
         adapters: [any SessionAdapter] = SessionAdapterFactory.defaultAdapters(),
+        excludedSnapshotSources: Set<SourceName> = [],
         didFinishAdapter: @escaping @Sendable (SourceName) -> Void = { _ in }
     ) async throws -> EngramDatabaseIndexResult {
         try await indexSessions(
@@ -526,6 +587,7 @@ public extension EngramDatabaseWriter {
             runParentBackfills: true,
             skipUnchangedFileLocators: true,
             skipKnownFileLocators: true,
+            excludedSnapshotSources: excludedSnapshotSources,
             didFinishAdapter: didFinishAdapter
         )
     }
@@ -627,14 +689,20 @@ public extension EngramDatabaseWriter {
         runParentBackfills: Bool,
         skipUnchangedFileLocators: Bool,
         skipKnownFileLocators: Bool,
+        excludedSnapshotSources: Set<SourceName>,
         didFinishAdapter: @escaping @Sendable (SourceName) -> Void = { _ in }
     ) async throws -> EngramDatabaseIndexResult {
+        let excludedSnapshotCollector = ExcludedSnapshotIndexCollector()
         let indexer = SwiftIndexer(
             sink: EngramDatabaseIndexingSink(writer: self),
             adapters: adapters,
             skipUnchangedFileLocators: skipUnchangedFileLocators,
             skipKnownFileLocators: skipKnownFileLocators,
-            didFinishAdapter: didFinishAdapter
+            excludedSnapshotSources: excludedSnapshotSources,
+            didFinishAdapter: didFinishAdapter,
+            didExcludeSnapshot: { event in
+                excludedSnapshotCollector.append(event)
+            }
         )
         let indexed = try await indexer.indexAll()
 
@@ -657,7 +725,8 @@ public extension EngramDatabaseWriter {
         return EngramDatabaseIndexResult(
             indexed: indexed,
             total: status.total,
-            todayParents: status.todayParents
+            todayParents: status.todayParents,
+            excludedSnapshots: excludedSnapshotCollector.snapshot()
         )
     }
 

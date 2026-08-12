@@ -96,7 +96,19 @@ final class QoderAdapter: SessionAdapter, Sendable {
 
             guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
             let isSubagent = locator.contains("/subagents/")
-            let id = isSubagent && !agentId.isEmpty ? agentId : sessionId
+            // R1.P1.identity-key-collision: match ClaudeCode — never reuse parent
+            // sessionId when agentId is missing on a subagent transcript.
+            let id: String
+            if isSubagent {
+                if !agentId.isEmpty {
+                    id = agentId
+                } else {
+                    let leaf = URL(fileURLWithPath: locator).lastPathComponent
+                    id = "sub:\(sessionId):\(leaf.isEmpty ? "unknown" : leaf)"
+                }
+            } else {
+                id = sessionId
+            }
 
             return .success(
                 NormalizedSessionInfo(

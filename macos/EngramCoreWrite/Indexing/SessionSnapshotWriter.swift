@@ -65,6 +65,23 @@ public final class SessionSnapshotWriter {
         return SessionWriteResult(action: .merge, changeSet: merge.changeSet)
     }
 
+    /// A parser can discover a more specific source only after a session was
+    /// previously indexed under its physical adapter source. When that output
+    /// source is disabled, move the existing row under the discovered source
+    /// and hide it without advancing any file-index state. Manual local-state
+    /// metadata remains untouched and is still authoritative on re-enable.
+    func suppressExcludedSnapshot(_ snapshot: AuthoritativeSessionSnapshot) throws {
+        try db.execute(
+            sql: """
+            UPDATE sessions
+            SET source = ?,
+                hidden_at = COALESCE(hidden_at, datetime('now'))
+            WHERE id = ?
+            """,
+            arguments: [snapshot.source.rawValue, snapshot.id]
+        )
+    }
+
     public func jobKinds(for result: SessionWriteResult, snapshot: AuthoritativeSessionSnapshot) -> [IndexJobKind] {
         guard result.action == .merge else { return [] }
         return jobKinds(for: snapshot.tier ?? .normal, changeSet: result.changeSet)
@@ -255,6 +272,11 @@ public final class SessionSnapshotWriter {
 
     private func upsert(_ snapshot: AuthoritativeSessionSnapshot) throws {
         let filePath = snapshot.sourceLocator.hasPrefix("sync://") ? "" : snapshot.sourceLocator
+        let hasPathParentCandidate = snapshot.parentSessionId != nil
+        let pathParentSessionId = try validatedPathParentSessionId(
+            sessionId: snapshot.id,
+            candidate: snapshot.parentSessionId
+        )
         try db.execute(
             sql: """
             INSERT INTO sessions (
@@ -373,12 +395,15 @@ public final class SessionSnapshotWriter {
               -- user-confirmed ('manual') link.
               parent_session_id = CASE
                 WHEN sessions.link_source = 'manual' THEN sessions.parent_session_id
-                WHEN excluded.parent_session_id IS NOT NULL THEN excluded.parent_session_id
+                WHEN ? THEN excluded.parent_session_id
                 ELSE sessions.parent_session_id
               END,
               link_source = CASE
                 WHEN sessions.link_source = 'manual' THEN sessions.link_source
-                WHEN excluded.parent_session_id IS NOT NULL THEN 'path'
+                WHEN ? THEN CASE
+                  WHEN excluded.parent_session_id IS NOT NULL THEN 'path'
+                  ELSE NULL
+                END
                 ELSE sessions.link_source
               END,
               content_fingerprint = excluded.content_fingerprint
@@ -413,11 +438,44 @@ public final class SessionSnapshotWriter {
                 snapshot.agentRole,
                 computeQualityScore(snapshot),
                 generatedTitle(for: snapshot),
-                snapshot.parentSessionId,
-                snapshot.parentSessionId,
-                snapshot.contentFingerprint
+                pathParentSessionId,
+                pathParentSessionId,
+                snapshot.contentFingerprint,
+                hasPathParentCandidate,
+                hasPathParentCandidate
             ]
         )
+    }
+
+    /// Adapter/path-derived parent ids are hints, not authoritative links. Keep
+    /// the persisted graph one level deep and never hide a child behind a
+    /// missing, nested, or skip-tier parent. Manual links remain sticky in the
+    /// upsert SQL above and are intentionally outside this validator.
+    private func validatedPathParentSessionId(
+        sessionId: String,
+        candidate: String?
+    ) throws -> String? {
+        guard let candidate, !candidate.isEmpty, candidate != sessionId else {
+            return nil
+        }
+        guard let parent = try Row.fetchOne(
+            db,
+            sql: "SELECT parent_session_id, tier FROM sessions WHERE id = ?",
+            arguments: [candidate]
+        ) else {
+            return nil
+        }
+        let parentSessionId: String? = parent["parent_session_id"]
+        let parentTier: String? = parent["tier"]
+        guard parentSessionId == nil, parentTier != SessionTier.skip.rawValue else {
+            return nil
+        }
+        let childCount = try Int.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) FROM sessions WHERE parent_session_id = ?",
+            arguments: [sessionId]
+        ) ?? 0
+        return childCount == 0 ? candidate : nil
     }
 
     /// Derive a display title at index time so freshly indexed sessions are not

@@ -424,6 +424,20 @@ final class ClaudeCodeMultiRootAdapterTests: XCTestCase {
         return file
     }
 
+    /// R1.P1.identity-key-collision — subagent path with empty agentId must not
+    /// use the parent sessionId as the sessions primary key.
+    func testSubagentEmptyAgentIdDoesNotCollideWithParentSessionId_repro() throws {
+        let parent = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        let locator = "/Users/t/.claude/projects/proj/\(parent)/subagents/worker.jsonl"
+        let fallback = ClaudeCodeAdapter.stableSubagentFallbackId(
+            parentSessionId: parent,
+            locator: locator
+        )
+        XCTAssertNotEqual(fallback, parent)
+        XCTAssertTrue(fallback.hasPrefix("sub:\(parent):"))
+        XCTAssertTrue(fallback.contains("worker.jsonl"))
+    }
+
     // row 32 (claude-workflow-subagents): workflow-nested agent-*.jsonl under
     // subagents/workflows/wf_*/ must be discovered and parent-linked. Fails
     // before the listSessionLocators descent lands.

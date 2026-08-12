@@ -199,14 +199,11 @@ public enum RecoverMigrations {
 
         case MigrationLogState.fsDone.rawValue:
             if !oldExists && newExists {
-                return "FS move succeeded; DB commit failed mid-way. " +
-                    "To finish: either (a) mv the new path back to the old path and retry " +
-                    "`engram project move`, or (b) mark the migration committed " +
-                    "directly — connect to ~/.engram/index.sqlite and run " +
-                    "`UPDATE migration_log SET state='committed' WHERE id='<this>'`, " +
-                    "then run `engram project review <oldPath> <newPath>` to check " +
-                    "residual refs. Re-running `engram project move <oldPath> <newPath>` " +
-                    "as-is WILL NOT work (src gone, dst exists)."
+                return "FS move succeeded; startup recovery can finish the idempotent " +
+                    "DB path rewrite. Restart the Engram service once. If this migration " +
+                    "remains fs_done, inspect service logs and run `engram project review " +
+                    "<oldPath> <newPath>`. Do not mark only the migration state committed; " +
+                    "that would skip the sessions and local-state path rewrite."
             }
             if oldExists && newExists {
                 return "Both paths exist — FS work may have been partially undone. " +
