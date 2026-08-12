@@ -3076,6 +3076,37 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertNil(info.project)
     }
 
+    // CURSOR-CWD-001 (P2): multi-root .code-workspace mappings must not invent a
+    // primary folder. Presence of workspace.json `configuration` fails closed.
+    func testCursorMultiRootWorkspaceConfigurationFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let globalStorage = root.appendingPathComponent("globalStorage", isDirectory: true)
+        let workspaceStorage = root.appendingPathComponent("workspaceStorage", isDirectory: true)
+        try FileManager.default.createDirectory(at: globalStorage, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workspaceStorage, withIntermediateDirectories: true)
+
+        let dbPath = globalStorage.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorOwnershipComposerFixture(
+            dbPath: dbPath,
+            composerId: "cmp_multiroot",
+            selectedFile: "/Users/test/selection-only/file.swift"
+        )
+        try Self.buildCursorWorkspaceIndexFixture(
+            workspaceStorage: workspaceStorage,
+            workspaceName: "workspace-multi",
+            folderURI: "file:///Users/test/would-be-primary",
+            composerIds: ["cmp_multiroot"],
+            configurationURI: "file:///Users/test/owned.code-workspace"
+        )
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: "\(dbPath)?composer=cmp_multiroot"))
+
+        XCTAssertEqual(info.cwd, "")
+        XCTAssertNil(info.project)
+    }
+
     // Audit CURSOR-CONTENT-001: empty/whitespace text must not shadow non-empty rawText.
     func testCursorFallsBackToRawTextWhenTextIsEmpty_repro() async throws {
         let root = tempDir()
@@ -3324,12 +3355,17 @@ final class AdapterMessageCountTests: XCTestCase {
         workspaceStorage: URL,
         workspaceName: String,
         folderURI: String,
-        composerIds: [String]
+        composerIds: [String],
+        configurationURI: String? = nil
     ) throws {
         let workspace = workspaceStorage.appendingPathComponent(workspaceName, isDirectory: true)
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        var metadataObject: [String: Any] = ["folder": folderURI]
+        if let configurationURI {
+            metadataObject["configuration"] = configurationURI
+        }
         let metadata = try JSONSerialization.data(
-            withJSONObject: ["folder": folderURI],
+            withJSONObject: metadataObject,
             options: [.sortedKeys]
         )
         try metadata.write(to: workspace.appendingPathComponent("workspace.json"), options: .atomic)
