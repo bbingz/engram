@@ -243,7 +243,16 @@ public final class SwiftIndexer {
                     ) {
                     case .yield(let snapshot, let fileState):
                         if excludedSnapshotSources.contains(snapshot.source) {
+                            // Park the locator: hide any existing row under the
+                            // disabled derived source, but still record a success
+                            // file_index_state so ArchiveV2 backlog does not
+                            // re-parse every backlogIndexRetryDelay.
                             try suppressExcludedSnapshot(snapshot)
+                            try upsertFileIndexStateIsolated(
+                                fileState,
+                                source: fileState.source,
+                                locator: fileState.locator
+                            )
                         } else {
                             yield(snapshot, fileState)
                         }
@@ -348,7 +357,16 @@ public final class SwiftIndexer {
                         }
                         let snapshot = buildSnapshot(info: info, locator: locator, stats: stats)
                         if excludedSnapshotSources.contains(snapshot.source) {
+                            // Same park path as tail: suppress row + durable
+                            // success index state (no 300s re-parse churn).
                             try suppressExcludedSnapshot(snapshot)
+                            if let fileState {
+                                try upsertFileIndexStateIsolated(
+                                    fileState,
+                                    source: fileState.source,
+                                    locator: fileState.locator
+                                )
+                            }
                         } else {
                             yield(snapshot, fileState)
                         }

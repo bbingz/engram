@@ -476,6 +476,70 @@ final class ArchiveV2ServiceCoordinatorTests: XCTestCase {
         XCTAssertEqual(rowCount, 0)
     }
 
+    /// R2.P1 archive-disabled-locator-churn: a locator whose parsed output is
+    /// disabled must be parked, not reparsed every backlog retry interval.
+    func testDisabledDerivedLocatorIsParkedInsteadOfRetriedEveryFiveMinutes_repro() async throws {
+        let harness = try makeHarness(remoteReady: false, batchSize: 3)
+        _ = try await emptyIndexResult(gate: harness.gate)
+        let events = EventLog()
+        let clock = CoordinatorClock(Date(timeIntervalSince1970: 1_786_493_000))
+        let sourceURL = temporaryRoot("backlog-derived-disabled-parked")
+            .appendingPathComponent("session.jsonl")
+        try FileManager.default.createDirectory(
+            at: sourceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("{}\n".utf8).write(to: sourceURL)
+        let adapter = BacklogIndexingAdapter(
+            locator: sourceURL.path,
+            events: events,
+            outputSource: .lobsterai,
+            sessionID: "backlog-derived-disabled-parked-session"
+        )
+        var operations = makeOperations(events: events)
+        operations.backlogCapture = { _, _, _ in
+            ArchiveV2ServiceCaptureSummary(
+                unsupported: 0,
+                unsafe: 0,
+                processed: 1,
+                capturedSourceBytes: 3,
+                successfulLocators: [.claudeCode: [sourceURL.path]],
+                hasMore: false
+            )
+        }
+        let coordinator = ArchiveV2ServiceCoordinator(
+            settings: harness.settings,
+            writerGate: harness.gate,
+            remoteReady: false,
+            configurationError: nil,
+            operations: operations,
+            now: { clock.value() }
+        )
+
+        let first = try await coordinator.runBacklogPass(
+            adapterProvider: { [adapter] },
+            excludedSnapshotSourcesProvider: { [.lobsterai] }
+        )
+        let firstIndexCount = await events.count(of: "backlogIndex")
+        XCTAssertEqual(firstIndexCount, 1)
+        XCTAssertNil(first.nextRetryAt, "disabled output must not schedule a 300-second parser retry")
+
+        clock.set(clock.value().addingTimeInterval(301))
+        let second = try await coordinator.runBacklogPass(
+            adapterProvider: { [adapter] },
+            excludedSnapshotSourcesProvider: { [.lobsterai] }
+        )
+        let secondIndexCount = await events.count(of: "backlogIndex")
+
+        XCTAssertEqual(
+            secondIndexCount,
+            1,
+            "parked disabled locator must not be parsed again after the old retry delay"
+        )
+        XCTAssertNil(second.nextRetryAt)
+        XCTAssertFalse(second.hasRunnableWork)
+    }
+
     func testBacklogPassDefersCapturedIndexingWhenResourcesChange() async throws {
         let harness = try makeHarness(remoteReady: false, batchSize: 3)
         _ = try await emptyIndexResult(gate: harness.gate)
