@@ -76,6 +76,7 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 43 | INDEXER-BACKPRESSURE-001 | low | SwiftIndexer producer can outrun its 100-row consumer batch through an unbounded AsyncThrowingStream | implementer | Await each full 100-row write before scanning more snapshots; preserve collection; named producer-backpressure and write-failure regressions pass | **DONE** 2026-08-12 — PR #330 merged at `main@53bd4cc4`; audit L17. |
 | 45 | GEMINI-JSON-FSYNC-001 | low | Gemini projects.json writeAtomic skips temp-file and parent-dir fsync (L26) | implementer | Fsync temp before rename and parent dir after, matching JsonlPatch; `testAtomicWriterFsyncsTempAndParentDirectory_repro` | **IMPLEMENTED / VERIFIED — PR #332 OPEN** 2026-08-13 — `GeminiProjectsJSON.swift:181`. |
 | 44 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
+| 47 | SESSION-DETAIL-FILTER-001 | low | SessionDetailView full type-visibility filtering scans 100k+ loaded rows synchronously on the main actor | implementer | Full-prefix visibility loop runs in cancellable detached work; newer toggles/session resets cannot publish stale results; append A3 and hidden-match rescans remain intact; named `_repro` passes | **IMPLEMENTED / VERIFIED — PR pending** 2026-08-13 — audit L32; `SessionDetailView.swift:102-166`, `TodayWorkbenchScopeTests.swift:230-293`. |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
 
@@ -188,6 +189,15 @@ Evidence for REMOTE-STATUS-PERSIST-001: GET `/v2/archive/status` called
 `observed()` records the status request after the response, so the next poll
 always found dirty state and rewrote `status-v1.json`. Audit L27 in
 `docs/reviews/2026-07-17-engram-full-audit.md`.
+
+Evidence for SESSION-DETAIL-FILTER-001: on `main@8c951673`, the full branch of
+`SessionDetailView.updateDisplayIndexed` assigned
+`indexedMessages.filter { ... }` directly on the calling actor
+(`macos/Engram/Views/SessionDetailView.swift:100-123` before this change).
+Classification and find-match scans were already detached, leaving this L32
+visibility scan as the remaining 100k-row main-thread path. The implementation
+uses a cancellable detached loop, a live session token before publication, and
+keeps Load-more on the append-only slice (`SessionDetailView.swift:102-166`).
 
 Evidence for SERVICE-CHECKPOINT-SHUTDOWN-001: the periodic PASSIVE checkpoint
 task is created at `macos/EngramService/Core/EngramServiceRunner.swift:381-397`.

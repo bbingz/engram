@@ -227,6 +227,71 @@ final class TodayWorkbenchScopeTests: XCTestCase {
         )
     }
 
+    // L32 / SESSION-DETAIL-FILTER-001: a fully loaded transcript may contain
+    // 100k+ rows, so filter toggles must not scan that array on the main actor.
+    func testSessionDetailFullFilterRunsOffMain_repro() throws {
+        let s = try source("macos/Engram/Views/SessionDetailView.swift")
+        let functionStart = try XCTUnwrap(s.range(of: "private func updateDisplayIndexed"))
+        let functionEnd = try XCTUnwrap(
+            s.range(
+                of: "/// Decides whether an indexed message survives",
+                options: [],
+                range: functionStart.upperBound..<s.endIndex
+            )
+        )
+        let functionSource = String(s[functionStart.lowerBound..<functionEnd.lowerBound])
+
+        XCTAssertTrue(
+            s.contains("@State private var displayFilterTask: Task<Void, Never>?"),
+            "SessionDetailView must own and cancel the current full-filter task"
+        )
+        guard let detachedStart = functionSource.range(of: "let filterWork = Task.detached") else {
+            XCTFail("full transcript visibility filtering must run in Task.detached")
+            return
+        }
+        guard let detachedEnd = functionSource.range(
+            of: "let filtered = await withTaskCancellationHandler",
+            options: [],
+            range: detachedStart.upperBound..<functionSource.endIndex
+        ) else {
+            XCTFail("the detached filter must be awaited through a cancellation handler")
+            return
+        }
+        let detachedBody = String(functionSource[detachedStart.upperBound..<detachedEnd.lowerBound])
+        XCTAssertTrue(detachedBody.contains("for idx in snapshot"))
+        XCTAssertTrue(
+            detachedBody.contains("Self.isMessageVisible("),
+            "the O(N) visibility predicate loop must stay inside the detached task"
+        )
+        XCTAssertTrue(
+            detachedBody.contains("guard !Task.isCancelled else { return nil }"),
+            "a superseded detached scan must stop walking the loaded transcript"
+        )
+        XCTAssertFalse(
+            functionSource.contains("displayIndexed = indexedMessages.filter"),
+            "the full loaded set must not be filtered synchronously on the calling actor"
+        )
+        XCTAssertTrue(functionSource.contains("displayFilterTask?.cancel()"))
+        XCTAssertTrue(functionSource.contains("filterWork.cancel()"))
+        XCTAssertTrue(functionSource.contains("guard !Task.isCancelled"))
+        XCTAssertTrue(
+            functionSource.contains("displayFilterSessionId == sessionId"),
+            "a completed filter must not publish into a different session"
+        )
+
+        // Preserve A3: Load more still filters only its newly indexed slice.
+        XCTAssertTrue(functionSource.contains("appendedSlice.filter"))
+        XCTAssertTrue(functionSource.contains("displayIndexed.append(contentsOf: visibleNew)"))
+        XCTAssertTrue(
+            s.contains(".task(id: session.id) {\n            displayFilterTask?.cancel()"),
+            "switching sessions must cancel the prior full transcript filter"
+        )
+        XCTAssertTrue(
+            s.contains(".onDisappear {\n            displayFilterTask?.cancel(); displayFilterTask = nil"),
+            "leaving the detail view must cancel the full transcript filter"
+        )
+    }
+
     // MARK: - Transcript paging (perf/transcript-paging)
 
     func testInitialTranscriptLimitGatesOnMessageCount() {
