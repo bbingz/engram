@@ -666,7 +666,7 @@ final class StartupBackfillTests: XCTestCase {
 
             let result = try StartupBackfills.backfillPolycliProviderParents(db)
 
-            XCTAssertEqual(result, StartupBackfills.ProviderParentResult(checked: 2, classified: 2, linked: 0, suggested: 2))
+            XCTAssertEqual(result, StartupBackfills.ProviderParentResult(checked: 2, classified: 2, suggested: 2))
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'qwen-ping'"))
             XCTAssertNil(try String.fetchOne(db, sql: "SELECT parent_session_id FROM sessions WHERE id = 'opencode-ping'"))
             XCTAssertEqual(
@@ -830,7 +830,7 @@ final class StartupBackfillTests: XCTestCase {
             // Wave 7B M18: ordinary same-cwd sessions are not admitted without
             // probe/dispatch summary evidence, so only ping + review probes count.
             XCTAssertEqual(first.classified, 2)
-            XCTAssertEqual(second, StartupBackfills.ProviderParentResult(checked: 0, classified: 0, linked: 0, suggested: 0))
+            XCTAssertEqual(second, StartupBackfills.ProviderParentResult(checked: 0, classified: 0, suggested: 0))
             XCTAssertNotNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'qwen-linked'"))
             XCTAssertNotNil(try String.fetchOne(db, sql: "SELECT link_checked_at FROM sessions WHERE id = 'kimi-unlinked'"))
             // Ordinary non-probe is never a Polycli candidate under M18.
@@ -1147,7 +1147,6 @@ final class StartupBackfillTests: XCTestCase {
                         "type": .string("polycli_provider_parents"),
                         "checked": .int(26),
                         "classified": .int(27),
-                        "linked": .int(28),
                         "suggested": .int(29)
                     ]
                 ),
@@ -3199,7 +3198,7 @@ private final class RecordingStartupDatabase: StartupBackfillDatabase {
 
     func backfillPolycliProviderParents() throws -> StartupBackfills.ProviderParentResult {
         callOrder.append("backfillPolycliProviderParents")
-        return StartupBackfills.ProviderParentResult(checked: 26, classified: 27, linked: 28, suggested: 29)
+        return StartupBackfills.ProviderParentResult(checked: 26, classified: 27, suggested: 29)
     }
 
     func backfillSuggestedParents() throws -> StartupBackfills.SuggestedParentResult {
