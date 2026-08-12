@@ -425,7 +425,8 @@ public enum OffloadRepo {
     /// one-line FTS shadow and republish that as the session's content, also
     /// overwriting the rehydrate ledger key. The subagent guard is explicit on
     /// `agent_role` (not just `tier != 'skip'`) for defense-in-depth symmetry with
-    /// `OffloadPolicy.isEligible`.
+    /// `OffloadPolicy.isEligible`. Top-level matches browse roots: both
+    /// `parent_session_id` and `suggested_parent_id` must be NULL.
     public static func pushCandidates(_ db: Database, project: String, cwd: String) throws -> [PushCandidate] {
         let rows = try Row.fetchAll(
             db,
@@ -441,6 +442,7 @@ public enum OffloadRepo {
               AND (agent_role IS NULL OR agent_role != 'subagent')
               AND COALESCE(offload_state, 'local') = 'local'
               AND parent_session_id IS NULL
+              AND suggested_parent_id IS NULL
             ORDER BY start_time
             """,
             arguments: [project, cwd, cwd]
