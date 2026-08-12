@@ -17,3 +17,7 @@
 ## Human override
 - Pause: stop the scheduled task in Grok scheduler UI / delete task `019ff3bc9938`
 - Deploy/release: still requires explicit human auth per TODO
+
+## Milestone: PR #305 merged
+- Squash-merged 2026-08-12T03:14:44Z → `main@17285c43`
+- Post-merge PR: https://github.com/bbingz/engram/pull/310 (`feat/post-merge-visibility`)
