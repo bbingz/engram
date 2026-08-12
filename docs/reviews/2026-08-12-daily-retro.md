@@ -73,3 +73,6 @@ Lead: Grok (stewardship goal) · Implementation: Grok + Herdr Codex `retro-handl
 - Queue: project-move split marked DONE.
 - Codex `retro-handler` still reported working; steward committed verified WIP so it is not lost.
 
+- Enqueued next-cycle **CURSOR-CWD-001** (design first) + ARCH-001 debt; drafted `docs/cursor-cwd-ownership-design.md` (fail-closed authority order; non-authorities include selected editor file).
+- Pushed project-move recovery as `c72e18ae` on PR #305; CI re-running.
+
