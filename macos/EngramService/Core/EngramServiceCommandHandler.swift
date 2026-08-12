@@ -625,6 +625,12 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                 let result = try await writerGate.performWriteCommand(name: request.command) { writer in
                     try Self.setSourceEnabled(payload, writer: writer)
                 }
+                if payload.enabled,
+                   let source = SourceName(
+                    rawValue: payload.source.trimmingCharacters(in: .whitespacesAndNewlines)
+                   ) {
+                    await archiveV2Coordinator?.resumePendingIndexLocators(for: source)
+                }
                 return .success(
                     requestId: request.requestId,
                     result: try Self.encode(result.value),

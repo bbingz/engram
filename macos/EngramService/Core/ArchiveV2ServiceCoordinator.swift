@@ -286,6 +286,7 @@ actor ArchiveV2ServiceCoordinator {
         let failedLocators: [SourceName: [String]]
         let recaptureLocators: [SourceName: [String]]
         let statesBySource: [SourceName: [String: FileIndexState]]
+        let parkedOutputSources: [PendingIndexKey: SourceName]
     }
 
     private struct ReplicaPauseState: Sendable {
@@ -323,6 +324,7 @@ actor ArchiveV2ServiceCoordinator {
     private var pendingIndexRetryAfter: [PendingIndexKey: Date] = [:]
     private var pendingIndexGeneration: [PendingIndexKey: ArchiveSourceGeneration] = [:]
     private var pendingIndexAwaitingCapture: Set<PendingIndexKey> = []
+    private var pendingIndexParkedOutputSource: [PendingIndexKey: SourceName] = [:]
     private var fullCapturePending = true
     private var fullCaptureRefreshRequestID: UUID?
     private var lastReplicationCycle: EngramServiceArchiveV2ReplicationCycleSummary?
@@ -711,6 +713,7 @@ actor ArchiveV2ServiceCoordinator {
                     var failedLocators: [SourceName: [String]] = [:]
                     var recaptureLocators: [SourceName: [String]] = [:]
                     var statesBySource: [SourceName: [String: FileIndexState]] = [:]
+                    var parkedOutputSources: [PendingIndexKey: SourceName] = [:]
                     var stopAfterFailure = false
                     for source in dueIndexLocators.keys.sorted(
                         by: { $0.rawValue < $1.rawValue }
@@ -738,11 +741,16 @@ actor ArchiveV2ServiceCoordinator {
                                 break
                             }
                             do {
-                                _ = try await writer.indexCapturedSessions(
+                                let indexResult = try await writer.indexCapturedSessions(
                                     adapters: parserAdapters,
                                     excludedSnapshotSources: excludedSnapshotSources
                                 )
                                 evaluatedLocators[source, default: []].append(locator)
+                                for event in indexResult.excludedSnapshots
+                                where event.physicalSource == source
+                                    && event.locator == locator {
+                                    parkedOutputSources[pendingKey] = event.outputSource
+                                }
                                 if let state = try writer.knownFileIndexStates(
                                     source: source,
                                     locators: [locator]
@@ -765,7 +773,8 @@ actor ArchiveV2ServiceCoordinator {
                         evaluatedLocators: evaluatedLocators,
                         failedLocators: failedLocators,
                         recaptureLocators: recaptureLocators,
-                        statesBySource: statesBySource
+                        statesBySource: statesBySource,
+                        parkedOutputSources: parkedOutputSources
                     )
                 }.value
                 for (source, locators) in indexed.recaptureLocators {
@@ -775,9 +784,29 @@ actor ArchiveV2ServiceCoordinator {
                         )
                     }
                 }
-                if !indexed.evaluatedLocators.isEmpty {
+                // A source-enable command can acquire the writer gate after
+                // this pass releases it but resume this actor before the park
+                // state below is installed. Re-read the live setting here: an
+                // output that is already enabled stays immediately due, while
+                // still-disabled output is parked until its enable signal.
+                let liveExcludedSnapshotSources = excludedSnapshotSourcesProvider()
+                let parkedOutputSources = indexed.parkedOutputSources.filter {
+                    liveExcludedSnapshotSources.contains($0.value)
+                }
+                let immediatelyDueKeys = Set(indexed.parkedOutputSources.keys).subtracting(
+                    parkedOutputSources.keys
+                )
+                parkPendingIndexLocators(parkedOutputSources)
+                var evaluatedLocators = indexed.evaluatedLocators
+                for key in immediatelyDueKeys {
+                    evaluatedLocators[key.source]?.removeAll { $0 == key.locator }
+                    if evaluatedLocators[key.source]?.isEmpty == true {
+                        evaluatedLocators.removeValue(forKey: key.source)
+                    }
+                }
+                if !evaluatedLocators.isEmpty {
                     updatePendingIndexLocators(
-                        indexed.evaluatedLocators,
+                        evaluatedLocators,
                         statesBySource: indexed.statesBySource,
                         evaluatedAt: now()
                     )
@@ -974,6 +1003,7 @@ actor ArchiveV2ServiceCoordinator {
             pendingIndexAwaitingCapture.remove(key)
             if generationChanged {
                 pendingIndexRetryAfter.removeValue(forKey: key)
+                pendingIndexParkedOutputSource.removeValue(forKey: key)
             }
         }
     }
@@ -987,6 +1017,7 @@ actor ArchiveV2ServiceCoordinator {
         let candidates = pendingIndexLocators
             .filter { key in
                 !pendingIndexAwaitingCapture.contains(key)
+                    && pendingIndexParkedOutputSource[key] == nil
                     && (pendingIndexRetryAfter[key].map { $0 <= date } ?? true)
             }
             .sorted {
@@ -1023,11 +1054,13 @@ actor ArchiveV2ServiceCoordinator {
         for (source, locators) in evaluated {
             for locator in locators {
                 let key = PendingIndexKey(source: source, locator: locator)
+                guard pendingIndexParkedOutputSource[key] == nil else { continue }
                 guard let stat = FileIndexStat.directFileStat(locator: locator) else {
                     pendingIndexLocators.remove(key)
                     pendingIndexRetryAfter.removeValue(forKey: key)
                     pendingIndexGeneration.removeValue(forKey: key)
                     pendingIndexAwaitingCapture.remove(key)
+                    pendingIndexParkedOutputSource.removeValue(forKey: key)
                     continue
                 }
                 if let capturedGeneration = pendingIndexGeneration[key],
@@ -1050,6 +1083,7 @@ actor ArchiveV2ServiceCoordinator {
                     pendingIndexRetryAfter.removeValue(forKey: key)
                     pendingIndexGeneration.removeValue(forKey: key)
                     pendingIndexAwaitingCapture.remove(key)
+                    pendingIndexParkedOutputSource.removeValue(forKey: key)
                 case .retry:
                     let retryAt = state.retryAfterEpochSeconds.map {
                         Date(timeIntervalSince1970: TimeInterval($0))
@@ -1058,6 +1092,28 @@ actor ArchiveV2ServiceCoordinator {
                 }
             }
         }
+    }
+
+    private func parkPendingIndexLocators(
+        _ outputSourcesByKey: [PendingIndexKey: SourceName]
+    ) {
+        for (key, outputSource) in outputSourcesByKey
+        where pendingIndexLocators.contains(key) {
+            pendingIndexParkedOutputSource[key] = outputSource
+            pendingIndexRetryAfter.removeValue(forKey: key)
+        }
+    }
+
+    func resumePendingIndexLocators(for outputSource: SourceName) async {
+        let keys = pendingIndexParkedOutputSource.compactMap { entry in
+            entry.value == outputSource ? entry.key : nil
+        }
+        guard !keys.isEmpty else { return }
+        for key in keys {
+            pendingIndexParkedOutputSource.removeValue(forKey: key)
+            pendingIndexRetryAfter.removeValue(forKey: key)
+        }
+        await drainer?.signal()
     }
 
     private func deferPendingIndexLocators(
@@ -1083,6 +1139,9 @@ actor ArchiveV2ServiceCoordinator {
             if pendingIndexAwaitingCapture.contains(key) {
                 continue
             }
+            if pendingIndexParkedOutputSource[key] != nil {
+                continue
+            }
             guard let retryAt = pendingIndexRetryAfter[key] else {
                 hasDueWork = true
                 continue
@@ -1099,6 +1158,7 @@ actor ArchiveV2ServiceCoordinator {
     private func markPendingIndexAwaitingRecapture(_ key: PendingIndexKey) {
         pendingIndexAwaitingCapture.insert(key)
         pendingIndexRetryAfter.removeValue(forKey: key)
+        pendingIndexParkedOutputSource.removeValue(forKey: key)
         fullCapturePending = true
         if fullCaptureRefreshRequestID == nil {
             fullCaptureRefreshRequestID = UUID()

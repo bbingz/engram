@@ -17,6 +17,7 @@ public final class SwiftIndexer {
     private let skipKnownFileLocators: Bool
     private let excludedSnapshotSources: Set<SourceName>
     private let didFinishAdapter: @Sendable (SourceName) -> Void
+    private let didExcludeSnapshot: @Sendable (ExcludedSnapshotIndexEvent) -> Void
 
     public init(
         sink: any IndexingWriteSink,
@@ -25,7 +26,8 @@ public final class SwiftIndexer {
         skipUnchangedFileLocators: Bool = false,
         skipKnownFileLocators: Bool = false,
         excludedSnapshotSources: Set<SourceName> = [],
-        didFinishAdapter: @escaping @Sendable (SourceName) -> Void = { _ in }
+        didFinishAdapter: @escaping @Sendable (SourceName) -> Void = { _ in },
+        didExcludeSnapshot: @escaping @Sendable (ExcludedSnapshotIndexEvent) -> Void = { _ in }
     ) {
         self.sink = sink
         self.adapters = adapters
@@ -34,6 +36,7 @@ public final class SwiftIndexer {
         self.skipKnownFileLocators = skipKnownFileLocators
         self.excludedSnapshotSources = excludedSnapshotSources
         self.didFinishAdapter = didFinishAdapter
+        self.didExcludeSnapshot = didExcludeSnapshot
     }
 
     public func indexSnapshots(
@@ -42,6 +45,15 @@ public final class SwiftIndexer {
     ) throws -> SessionBatchUpsertResult {
         let excluded = snapshots.filter { excludedSnapshotSources.contains($0.source) }
         try sink.suppressExcludedSnapshots(excluded)
+        for snapshot in excluded {
+            didExcludeSnapshot(
+                ExcludedSnapshotIndexEvent(
+                    physicalSource: snapshot.source,
+                    outputSource: snapshot.source,
+                    locator: snapshot.sourceLocator
+                )
+            )
+        }
         return try sink.upsertBatch(
             snapshots.filter { !excludedSnapshotSources.contains($0.source) },
             reason: reason
@@ -243,15 +255,13 @@ public final class SwiftIndexer {
                     ) {
                     case .yield(let snapshot, let fileState):
                         if excludedSnapshotSources.contains(snapshot.source) {
-                            // Park the locator: hide any existing row under the
-                            // disabled derived source, but still record a success
-                            // file_index_state so ArchiveV2 backlog does not
-                            // re-parse every backlogIndexRetryDelay.
                             try suppressExcludedSnapshot(snapshot)
-                            try upsertFileIndexStateIsolated(
-                                fileState,
-                                source: fileState.source,
-                                locator: fileState.locator
+                            didExcludeSnapshot(
+                                ExcludedSnapshotIndexEvent(
+                                    physicalSource: adapter.source,
+                                    outputSource: snapshot.source,
+                                    locator: locator
+                                )
                             )
                         } else {
                             yield(snapshot, fileState)
@@ -357,16 +367,14 @@ public final class SwiftIndexer {
                         }
                         let snapshot = buildSnapshot(info: info, locator: locator, stats: stats)
                         if excludedSnapshotSources.contains(snapshot.source) {
-                            // Same park path as tail: suppress row + durable
-                            // success index state (no 300s re-parse churn).
                             try suppressExcludedSnapshot(snapshot)
-                            if let fileState {
-                                try upsertFileIndexStateIsolated(
-                                    fileState,
-                                    source: fileState.source,
-                                    locator: fileState.locator
+                            didExcludeSnapshot(
+                                ExcludedSnapshotIndexEvent(
+                                    physicalSource: adapter.source,
+                                    outputSource: snapshot.source,
+                                    locator: locator
                                 )
-                            }
+                            )
                         } else {
                             yield(snapshot, fileState)
                         }

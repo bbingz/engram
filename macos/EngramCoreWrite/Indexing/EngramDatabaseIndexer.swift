@@ -34,10 +34,56 @@ public enum EngramDatabaseIndexStatusError: Error, CustomStringConvertible {
     }
 }
 
+public struct ExcludedSnapshotIndexEvent: Sendable, Equatable {
+    public let physicalSource: SourceName
+    public let outputSource: SourceName
+    public let locator: String
+
+    public init(
+        physicalSource: SourceName,
+        outputSource: SourceName,
+        locator: String
+    ) {
+        self.physicalSource = physicalSource
+        self.outputSource = outputSource
+        self.locator = locator
+    }
+}
+
 public struct EngramDatabaseIndexResult: Sendable, Equatable {
     public let indexed: Int
     public let total: Int
     public let todayParents: Int
+    public let excludedSnapshots: [ExcludedSnapshotIndexEvent]
+
+    public init(
+        indexed: Int,
+        total: Int,
+        todayParents: Int,
+        excludedSnapshots: [ExcludedSnapshotIndexEvent] = []
+    ) {
+        self.indexed = indexed
+        self.total = total
+        self.todayParents = todayParents
+        self.excludedSnapshots = excludedSnapshots
+    }
+}
+
+private final class ExcludedSnapshotIndexCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [ExcludedSnapshotIndexEvent] = []
+
+    func append(_ event: ExcludedSnapshotIndexEvent) {
+        lock.lock()
+        events.append(event)
+        lock.unlock()
+    }
+
+    func snapshot() -> [ExcludedSnapshotIndexEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return events
+    }
 }
 
 private final class EngramDatabaseIndexingSink: IndexingWriteSink {
@@ -646,13 +692,17 @@ public extension EngramDatabaseWriter {
         excludedSnapshotSources: Set<SourceName>,
         didFinishAdapter: @escaping @Sendable (SourceName) -> Void = { _ in }
     ) async throws -> EngramDatabaseIndexResult {
+        let excludedSnapshotCollector = ExcludedSnapshotIndexCollector()
         let indexer = SwiftIndexer(
             sink: EngramDatabaseIndexingSink(writer: self),
             adapters: adapters,
             skipUnchangedFileLocators: skipUnchangedFileLocators,
             skipKnownFileLocators: skipKnownFileLocators,
             excludedSnapshotSources: excludedSnapshotSources,
-            didFinishAdapter: didFinishAdapter
+            didFinishAdapter: didFinishAdapter,
+            didExcludeSnapshot: { event in
+                excludedSnapshotCollector.append(event)
+            }
         )
         let indexed = try await indexer.indexAll()
 
@@ -675,7 +725,8 @@ public extension EngramDatabaseWriter {
         return EngramDatabaseIndexResult(
             indexed: indexed,
             total: status.total,
-            todayParents: status.todayParents
+            todayParents: status.todayParents,
+            excludedSnapshots: excludedSnapshotCollector.snapshot()
         )
     }
 
