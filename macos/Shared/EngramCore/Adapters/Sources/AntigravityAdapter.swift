@@ -1,6 +1,8 @@
 import Foundation
 
 final class AntigravityAdapter: SessionAdapter, Sendable {
+    private static let cwdInferenceByteLimit = 50_000
+
     let source: SourceName = .antigravity
     private let cacheDir: URL
     private let conversationsDir: URL
@@ -330,10 +332,24 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
         if let cwd = JSONLAdapterSupport.string(metadata["cwd"]), !cwd.isEmpty {
             return cwd
         }
-        guard let content = try? String(contentsOfFile: locator, encoding: .utf8) else {
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: locator)) else {
             return ""
         }
-        return Self.inferCWDFromAbsolutePaths(in: String(content.prefix(50_000)))
+        defer { try? handle.close() }
+        guard var prefix = try? handle.read(upToCount: Self.cwdInferenceByteLimit), !prefix.isEmpty else {
+            return ""
+        }
+
+        // A byte-bounded read can stop inside a multi-byte UTF-8 scalar. Drop
+        // only that incomplete tail; invalid UTF-8 inside the prefix still
+        // fails closed instead of feeding replacement text to the path regex.
+        for _ in 0..<3 where String(data: prefix, encoding: .utf8) == nil {
+            prefix.removeLast()
+        }
+        guard let content = String(data: prefix, encoding: .utf8) else {
+            return ""
+        }
+        return Self.inferCWDFromAbsolutePaths(in: content)
     }
 
     // Derive a working directory from the absolute file paths the transcript
