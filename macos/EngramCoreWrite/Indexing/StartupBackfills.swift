@@ -138,13 +138,11 @@ public enum StartupBackfills {
     public struct ProviderParentResult: Equatable, Sendable {
         public var checked: Int
         public var classified: Int
-        public var linked: Int
         public var suggested: Int
 
-        public init(checked: Int, classified: Int, linked: Int, suggested: Int = 0) {
+        public init(checked: Int, classified: Int, suggested: Int = 0) {
             self.checked = checked
             self.classified = classified
-            self.linked = linked
             self.suggested = suggested
         }
     }
@@ -360,7 +358,7 @@ public enum StartupBackfills {
                 emit(StartupBackfillEvent(event: "backfill", payload: ["type": .string("codex_originator"), "updated": .int(originatorUpdated)]))
             }
             let providerParents = try database.backfillPolycliProviderParents()
-            if providerParents.classified > 0 || providerParents.linked > 0 || providerParents.suggested > 0 {
+            if providerParents.classified > 0 || providerParents.suggested > 0 {
                 emit(
                     StartupBackfillEvent(
                         event: "backfill",
@@ -368,7 +366,6 @@ public enum StartupBackfills {
                             "type": .string("polycli_provider_parents"),
                             "checked": .int(providerParents.checked),
                             "classified": .int(providerParents.classified),
-                            "linked": .int(providerParents.linked),
                             "suggested": .int(providerParents.suggested)
                         ]
                     )
@@ -1691,7 +1688,6 @@ public enum StartupBackfills {
 
         var checked = 0
         var classified = 0
-        let linked = 0
         var suggested = 0
 
         for candidate in candidates {
@@ -1741,7 +1737,7 @@ public enum StartupBackfills {
             suggested += 1
         }
 
-        return ProviderParentResult(checked: checked, classified: classified, linked: linked, suggested: suggested)
+        return ProviderParentResult(checked: checked, classified: classified, suggested: suggested)
     }
 
     private static func scoredPolycliHosts(
@@ -1939,24 +1935,6 @@ public enum StartupBackfills {
             arguments: [sessionId]
         ) ?? 0
         return preservedChildCount == 0
-    }
-
-    private static func isConcurrentProviderChild(
-        _ db: Database,
-        childStartTime: String,
-        parentId: String
-    ) throws -> Bool {
-        guard let parentStartTime = try String.fetchOne(
-            db,
-            sql: "SELECT start_time FROM sessions WHERE id = ?",
-            arguments: [parentId]
-        ),
-              let childStart = parseDate(childStartTime),
-              let parentStart = parseDate(parentStartTime)
-        else {
-            return false
-        }
-        return abs(childStart.timeIntervalSince(parentStart)) <= 5
     }
 
     private static func setParentSession(

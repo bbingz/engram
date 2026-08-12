@@ -188,7 +188,7 @@ final class Round5RemediationTests: XCTestCase {
         XCTAssertTrue(backfill.contains("var suggested = 0"))
         XCTAssertTrue(backfill.contains("try setSuggestedParent(db, sessionId: id, suggestedParentId: best.parentId)"))
         XCTAssertTrue(backfill.contains("suggested += 1"))
-        XCTAssertTrue(backfill.contains("ProviderParentResult(checked: checked, classified: classified, linked: linked, suggested: suggested)"))
+        XCTAssertTrue(backfill.contains("ProviderParentResult(checked: checked, classified: classified, suggested: suggested)"))
         XCTAssertFalse(backfill.contains("setParentSession"))
         XCTAssertFalse(backfill.contains(#"linkSource: "path""#))
     }
@@ -200,8 +200,28 @@ final class Round5RemediationTests: XCTestCase {
         let eventBlock = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(eventBlock.contains("providerParents.suggested > 0"))
-        XCTAssertTrue(eventBlock.contains(#""linked": .int(providerParents.linked)"#))
+        XCTAssertFalse(eventBlock.contains("providerParents.linked"))
+        XCTAssertFalse(eventBlock.contains(#""linked":"#))
         XCTAssertTrue(eventBlock.contains(#""suggested": .int(providerParents.suggested)"#))
+    }
+
+    func testPolycliProviderParentsRemoveDeadLinkedAccounting_repro() throws {
+        let source = try source("EngramCoreWrite/Indexing/StartupBackfills.swift")
+
+        // L12: Polycli candidates are suggestion-only, so a permanently-zero linked
+        // result and its unused timing helper must not imply a direct-link path.
+        XCTAssertFalse(source.contains("private static func isConcurrentProviderChild("))
+
+        let backfillStart = try XCTUnwrap(source.range(of: "public static func backfillPolycliProviderParents"))
+        let backfillEnd = try XCTUnwrap(source.range(of: "private static func scoredPolycliHosts", options: [], range: backfillStart.lowerBound..<source.endIndex))
+        let backfill = String(source[backfillStart.lowerBound..<backfillEnd.lowerBound])
+        XCTAssertFalse(backfill.contains("linked"))
+
+        let eventStart = try XCTUnwrap(source.range(of: "let providerParents = try database.backfillPolycliProviderParents()"))
+        let eventEnd = try XCTUnwrap(source.range(of: "let suggestions = try database.backfillSuggestedParents()", options: [], range: eventStart.lowerBound..<source.endIndex))
+        let eventBlock = String(source[eventStart.lowerBound..<eventEnd.lowerBound])
+        XCTAssertFalse(eventBlock.contains("providerParents.linked"))
+        XCTAssertFalse(eventBlock.contains(#""linked":"#))
     }
 
     func testWriterGateSuspendsQueueTimeoutBehindProjectMigrationCommands() throws {
