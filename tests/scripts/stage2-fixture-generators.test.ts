@@ -304,7 +304,7 @@ describe('stage2 Node parity fixture generators', () => {
     const detection = JSON.parse(
       readFileSync(join(parentOut, 'detection-version.json'), 'utf8'),
     );
-    expect(detection.detectionVersion).toBe(5);
+    expect(detection.detectionVersion).toBe(6);
     expect(detection.dispatchCases).toContainEqual({
       input: 'Review this repository implementation',
       isDispatch: true,

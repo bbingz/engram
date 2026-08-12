@@ -11,6 +11,7 @@ import {
   backfillParentLinks,
   backfillSuggestedParents,
   downgradeSubagentTiers,
+  resetStaleDetections,
 } from '../../../src/core/db/maintenance.js';
 import {
   childCount,
@@ -1251,6 +1252,75 @@ describe('parent-link-repo', () => {
       expect(row.agent_role).toBeNull();
       expect(row.tier).toBeNull();
       expect(row.link_checked_at).toBeTruthy();
+    });
+  });
+
+  describe('resetStaleDetections', () => {
+    it('clears stale single suggestions without changing confirmed or skip state', () => {
+      for (const [id, source] of [
+        ['wrong-parent', 'claude-code'],
+        ['confirmed-parent', 'claude-code'],
+        ['stale-child', 'gemini-cli'],
+        ['confirmed-child', 'codex'],
+      ] as const) {
+        db.upsertSession(
+          makeSession({
+            id,
+            source,
+            filePath: `/test/${id}.jsonl`,
+          }),
+        );
+      }
+      db.raw.exec(`
+        UPDATE sessions
+        SET suggested_parent_id = 'wrong-parent',
+            link_checked_at = '2026-04-23T10:11:00.000Z',
+            suggestion_status = 'suggested-v5',
+            suggestion_candidates = '[{"id":"wrong-parent","score":1}]',
+            agent_role = 'dispatched',
+            tier = 'skip'
+        WHERE id = 'stale-child';
+        UPDATE sessions
+        SET parent_session_id = 'confirmed-parent',
+            link_source = 'manual',
+            link_checked_at = '2026-04-23T10:12:00.000Z',
+            agent_role = 'subagent',
+            tier = 'skip'
+        WHERE id = 'confirmed-child';
+      `);
+      db.setMetadata('detection_version', '5');
+
+      expect(resetStaleDetections(db.raw)).toBe(1);
+
+      const stale = db.raw
+        .prepare(
+          `SELECT suggested_parent_id, link_checked_at, suggestion_status,
+                  suggestion_candidates, agent_role, tier
+           FROM sessions WHERE id = 'stale-child'`,
+        )
+        .get() as Record<string, unknown>;
+      expect(stale).toMatchObject({
+        suggested_parent_id: null,
+        link_checked_at: null,
+        suggestion_status: null,
+        suggestion_candidates: null,
+        agent_role: 'dispatched',
+        tier: 'skip',
+      });
+      const confirmed = db.raw
+        .prepare(
+          `SELECT parent_session_id, link_source, link_checked_at, agent_role, tier
+           FROM sessions WHERE id = 'confirmed-child'`,
+        )
+        .get() as Record<string, unknown>;
+      expect(confirmed).toMatchObject({
+        parent_session_id: 'confirmed-parent',
+        link_source: 'manual',
+        link_checked_at: '2026-04-23T10:12:00.000Z',
+        agent_role: 'subagent',
+        tier: 'skip',
+      });
+      expect(db.getMetadata('detection_version')).toBe('6');
     });
   });
 
