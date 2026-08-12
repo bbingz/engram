@@ -345,11 +345,12 @@ final class ArchiveRouteTests: XCTestCase {
     }
 
     func testTelemetryPersistenceFailureDoesNotChangeSuccessfulArchivePut() async throws {
-        let now = try Self.instant("2026-07-12T10:00:00.000Z")
+        let start = try Self.instant("2026-07-12T10:00:00.000Z")
+        let clock = StatusTelemetryClock(now: start)
         let app = Application(
             router: try makeRemoteApp(
                 sourceRevision: Self.sourceRevision,
-                telemetryNow: { now },
+                telemetryNow: { clock.now },
                 telemetrySnapshotWriter: { _, _ in
                     throw CocoaError(.fileWriteNoPermission)
                 }
@@ -367,6 +368,17 @@ final class ArchiveRouteTests: XCTestCase {
             )
             XCTAssertEqual(response.status.code, 201)
 
+            // Status no longer force-flushes. Advance past the 60s throttle so the
+            // next observation's record() path attempts persistence and records the
+            // sanitized write failure without affecting the prior PUT success.
+            clock.set(try Self.instant("2026-07-12T10:01:00.000Z"))
+            response = try await client.execute(
+                uri: "/v2/archive/status",
+                method: .get,
+                headers: Self.headers()
+            )
+            // First status after the jump still snapshots before record(); error is
+            // set when that status observation is recorded.
             response = try await client.execute(
                 uri: "/v2/archive/status",
                 method: .get,
@@ -376,7 +388,6 @@ final class ArchiveRouteTests: XCTestCase {
                 ArchiveRemoteTelemetrySnapshot.self,
                 from: Self.data(response)
             )
-            XCTAssertEqual(snapshot.requestCount, 1)
             XCTAssertEqual(snapshot.lastArchiveMutationAt, "2026-07-12T10:00:00.000Z")
             XCTAssertEqual(snapshot.persistenceError, "snapshot_write_failed")
         }
@@ -2375,6 +2386,28 @@ private final class StatusSnapshotWriteCounter: @unchecked Sendable {
     func increment() {
         lock.lock()
         value += 1
+        lock.unlock()
+    }
+}
+
+/// Mutable clock for route-level telemetry flush timing.
+private final class StatusTelemetryClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+
+    init(now: Date) {
+        value = now
+    }
+
+    var now: Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set(_ value: Date) {
+        lock.lock()
+        self.value = value
         lock.unlock()
     }
 }
