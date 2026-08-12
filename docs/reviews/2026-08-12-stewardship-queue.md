@@ -47,7 +47,7 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 ## Brainstorm (if health P1s clear)
 
 1. Cursor CWD ownership contract (`CURSOR-CWD-001` followups) — design then implement.  
-2. MCP object-root residual if any post #215 still open — re-grep MCP-001.  
+2. MCP object-root residual after #215 — re-verification **PASS** at rank 32.
 3. Competitive gap: session “resume in original tool” deep-link UX (roadmap-adjacent).  
 4. Archive V2 bounded discovery exporters (followups deferred engineering).
 
@@ -63,10 +63,45 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 |------|----|-----|-------|------------|-----------|--------|
 | 30 | CURSOR-CWD-001 | P2 | Cursor workspace ownership must not use unrelated file selection as authoritative CWD | implementer | Accepted design + unique pointer-index ownership + named regression tests for wrong selection/ambiguity | **DONE** 2026-08-12 |
 | 31 | ARCH-001 | debt | Triple Read SQL stacks / shared CoreRead predicates | implementer | Shared predicate module + cross-surface parity suite | **PARTIAL — A/B/C DONE**: ARCH-001A shared search predicates (#311), ARCH-001B list/aggregate convergence (#312), and ARCH-001C residual list visibility (#313) shipped. Full CoreRead pool/DTO migration and an executable cross-surface parity suite remain deferred structural work; ARCH-001 stays open. |
-| 32 | MCP-001-REVERIFY | P2 | Post-#215 MCP object-root contract residual audit | next implementer | Re-grep every shipped MCP success-result constructor; either prove object-root coverage or capture an actionable residual with a named unit regression such as `testMCPObjectRootContract_repro` before changing production code | **OPEN / NEXT** — read-only audit first |
-| 33 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
+| 32 | MCP-001-REVERIFY | P2 | Post-#215 MCP object-root contract residual audit | verifier | Re-grep every shipped MCP success-result constructor; either prove object-root coverage or capture an actionable residual with a named unit regression before changing production code | **DONE / PASS** 2026-08-12 — #215's object-root fix remains present; shipped Swift routes, executable contracts, and golden fixtures expose no actionable residual. |
+| 33 | ARCHIVE-DISCOVERY-001 | debt | Restart-stable bounded exact-source locator discovery | design-first implementer | Durable locator inventory/work queue makes the discovery phase itself bounded across restart; explicit bootstrap and FSEvents/restart regressions prove the capture budget applies before O(N) materialization | **OPEN / NEXT DESIGN** — current Claude Code/Codex discovery still materializes and sorts the full locator set before the capture budget loop. |
+| 34 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
+
+### MCP-001 post-#215 re-verification (`main@7f053706`)
+
+The [MCP 2025-11-25 schema](https://modelcontextprotocol.io/specification/2025-11-25/schema)
+defines `CallToolResult.structuredContent` as an optional JSON object. The
+original violating producer now returns `{ "aliases": [...] }`
+(`macos/EngramMCP/Core/MCPDatabase.swift:1591-1607`), and the shipped route
+passes it through `toolSuccess`
+(`macos/EngramMCP/Core/MCPToolRegistry.swift:1153-1170`).
+
+All 27 current Swift `toolSuccess` call sites were inspected. Every shipped
+structured success producer is an explicit object, a formatter returning an
+object, or an encoded Swift response object; the two success paths without
+structured content use the allowed text-only response shape. The generic
+wrapper remains visible at
+`macos/EngramMCP/Core/MCPToolRegistry.swift:1825-1901`, but no current caller
+passes it an array or scalar root.
+
+Executable coverage checks every advertised output schema and all 15 tools
+that declare one, plus the original alias-list regression and golden route
+(`macos/EngramMCPTests/EngramMCPExecutableTests.swift:381-496,5095-5148`). The
+golden itself has an object root
+(`tests/fixtures/mcp-golden/manage_project_alias.list.json:8-23`); a static scan
+of the current object-root MCP golden files found 24 `structuredContent`
+payloads and zero non-object roots. Result: **PASS; MCP-001 is closed and no
+production change is warranted.**
+
+Evidence for ARCHIVE-DISCOVERY-001: Claude Code materializes a `Set` and sorts
+it (`macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift:96-109`);
+Codex recursively materializes and sorts every rollout locator
+(`macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift:503-514`); only
+after `ArchiveCaptureCoordinator` has awaited and snapshotted those full lists
+does its locator-budget loop begin
+(`macos/EngramCoreWrite/ArchiveV2/ArchiveCaptureCoordinator.swift:430-506`).
 
 ### ARCH-001 A/B/C residual audit (`main@394269c9`)
 
