@@ -24,13 +24,16 @@ describe('historical documentation policy', () => {
       '[stewardship queue](2026-08-12-stewardship-queue.md)',
     );
 
+    const canonicalBacklog = ['roadmap.md', 'TODO.md', 'followups.md'].map(
+      (name) => `docs/${name}`,
+    );
     for (const index of [archiveIndex, reviewIndex]) {
       expect(index).toContain('## Authority');
       expect(index).toContain('## Retention');
       expect(index).toContain('No automatic age-based deletion');
-      expect(index).toContain('docs/roadmap.md');
-      expect(index).toContain('docs/TODO.md');
-      expect(index).toContain('docs/followups.md');
+      for (const backlogPath of canonicalBacklog) {
+        expect(index).toContain(backlogPath);
+      }
     }
   });
 });

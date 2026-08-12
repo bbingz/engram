@@ -467,11 +467,17 @@ describe('CI workflow hardening', () => {
     expect(testWorkflow).not.toContain('.memory|*.md|docs/*)');
     // docs/archive/scripts/* is carved back out above the allowlist: those files
     // are scanned by tests/tooling/no-static-viking-creds.test.ts.
+    // History-index READMEs are carved out for tests/docs/history-index-policy.test.ts.
     const carveOutIndex = testWorkflow.indexOf('docs/archive/scripts/*)');
+    const indexCarveOutIndex = testWorkflow.indexOf(
+      'docs/archive/README.md|docs/reviews/README.md)',
+    );
     const allowlistIndex = testWorkflow.indexOf('.memory|.memory/*|');
     expect(carveOutIndex).toBeGreaterThan(-1);
+    expect(indexCarveOutIndex).toBeGreaterThan(-1);
     expect(allowlistIndex).toBeGreaterThan(-1);
     expect(carveOutIndex).toBeLessThan(allowlistIndex);
+    expect(indexCarveOutIndex).toBeLessThan(allowlistIndex);
   });
 
   // The allowlist is shell, and a shell `case` can be wrong in ways no string
@@ -535,6 +541,8 @@ describe('CI workflow hardening', () => {
     // The carve-out has to win over docs/archive/*, which means it has to come
     // first in the case; ordering is the whole mechanism.
     expect(classify(['docs/archive/scripts/search-audit.sh'])).toBe('true');
+    expect(classify(['docs/archive/README.md'])).toBe('true');
+    expect(classify(['docs/reviews/README.md'])).toBe('true');
     expect(classify(['docs/archive/plans/old-plan.md'])).toBe('false');
 
     // One heavy path in an otherwise-durable set still goes heavy.
@@ -562,7 +570,9 @@ describe('CI workflow hardening', () => {
       .map((line) => line.trim())
       .filter(
         (line) =>
-          line.endsWith(')') && line.startsWith('docs/archive/scripts/'),
+          line.endsWith(')') &&
+          (line.startsWith('docs/archive/') ||
+            line.startsWith('docs/reviews/README.md')),
       )
       .flatMap((line) => line.slice(0, -1).split('|'));
 
