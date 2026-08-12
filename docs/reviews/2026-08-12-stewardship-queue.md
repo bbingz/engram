@@ -73,7 +73,8 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 39 | REMOTE-STATUS-PERSIST-001 | low | /v2/archive/status force-persists telemetry every poll | implementer | status uses forcePersist:false; consecutive polls within flush window do not rewrite status-v1.json; named _repro | **DONE** 2026-08-12 — PR #322 merged at `main@dcb2b3d9`. |
 | 40 | SERVICE-CHECKPOINT-SHUTDOWN-001 | low | Graceful shutdown does not quiesce the periodic WAL checkpoint and final TRUNCATE inherits cancellation | implementer | Cancel and await periodic checkpoint before startup/final TRUNCATE; final checkpoint runs in a fresh cancellation context; named regressions pass | **DONE** 2026-08-12 — PR #323 merged at `main@dc5a5128`. |
 | 41 | REMOTE-CATALOG-MEM-001 | low | Legacy /v1/catalog aggregates all peer manifests in memory without a request bound | implementer | Stop discovery after 1,024 matching peers; cap cumulative decoded manifest bytes and the serialized response at 4 MiB; return 413 on either limit; named live regressions pass | **DONE** 2026-08-12 — PR #325 merged at `main@c9c6c7f9`; audit L29. |
-| 43 | INDEXER-BACKPRESSURE-001 | low | SwiftIndexer producer can outrun its 100-row consumer batch through an unbounded AsyncThrowingStream | implementer | Await each full 100-row write before scanning more snapshots; preserve collection; named producer-backpressure and write-failure regressions pass | **IMPLEMENTED / VERIFIED — PR #330 OPEN** 2026-08-12 — audit L17. |
+| 43 | INDEXER-BACKPRESSURE-001 | low | SwiftIndexer producer can outrun its 100-row consumer batch through an unbounded AsyncThrowingStream | implementer | Await each full 100-row write before scanning more snapshots; preserve collection; named producer-backpressure and write-failure regressions pass | **DONE** 2026-08-12 — PR #330 merged at `main@53bd4cc4`; audit L17. |
+| 45 | GEMINI-JSON-FSYNC-001 | low | Gemini projects.json writeAtomic skips temp-file and parent-dir fsync (L26) | implementer | Fsync temp before rename and parent dir after, matching JsonlPatch; `testAtomicWriterFsyncsTempAndParentDirectory_repro` | **IMPLEMENTED / VERIFIED — PR pending** 2026-08-13 — `GeminiProjectsJSON.swift:181`. |
 | 44 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
@@ -205,6 +206,7 @@ Shipped in PR #323 at `main@dc5a5128`.
 |------|----|-----|-------|--------|
 | 40 | SERVICE-CHECKPOINT-SHUTDOWN-001 | low | Graceful shutdown awaits periodic WAL checkpoint | **DONE** PR #323 `main@dc5a5128` |
 | 41 | REMOTE-CATALOG-MEM-001 | low | `/v1/catalog` unbounded in-memory peer manifests (L29) | **DONE** PR #325 `main@c9c6c7f9` |
-| 43 | INDEXER-BACKPRESSURE-001 | low | Unbounded AsyncThrowingStream between scan and 100-row write batches (L17) | **IN FLIGHT** PR #330 |
+| 43 | INDEXER-BACKPRESSURE-001 | low | Unbounded AsyncThrowingStream between scan and 100-row write batches (L17) | **DONE** PR #330 `main@53bd4cc4` |
+| 45 | GEMINI-JSON-FSYNC-001 | low | Gemini projects.json writeAtomic skips temp/parent fsync (L26) | **IMPLEMENTED / VERIFIED — PR pending** |
 | 44 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | **BLOCKED** |
 `docs/reviews/2026-07-17-engram-full-audit.md`.

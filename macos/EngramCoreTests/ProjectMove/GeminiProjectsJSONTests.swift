@@ -131,6 +131,23 @@ final class GeminiProjectsJSONTests: XCTestCase {
         XCTAssertTrue(source.contains("attributes: [.posixPermissions:"))
     }
 
+    // L26 / GEMINI-JSON-FSYNC-001: writeAtomic must fsync the temp file
+    // before rename and the parent directory after, matching JsonlPatch.
+    func testAtomicWriterFsyncsTempAndParentDirectory_repro() throws {
+        let source = try projectSource("EngramCoreWrite/ProjectMove/GeminiProjectsJSON.swift")
+        let start = try XCTUnwrap(source.range(of: "private static func writeAtomic"))
+        let writer = String(source[start.lowerBound...])
+
+        XCTAssertTrue(writer.contains("try fsyncFile(at: tmp)"))
+        XCTAssertTrue(writer.contains("fsyncDirectory(for: filePath)"))
+        XCTAssertTrue(writer.contains("private static func fsyncFile(at path: String) throws"))
+        XCTAssertTrue(writer.contains("private static func fsyncDirectory(for filePath: String)"))
+        XCTAssertFalse(
+            writer.contains("try content.write(toFile: tmp"),
+            "durable write must create+fsync the temp file, not a late content.write"
+        )
+    }
+
     func testApplyPreservesLegacyFlatLayout() throws {
         try writeJson(["/a/proj": "proj"])
         let plan = try GeminiProjectsJSON.plan(
