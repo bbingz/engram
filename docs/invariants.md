@@ -102,9 +102,9 @@ Invariants are properties that must survive every change; each entry names where
 
 ## 15. MCP Dual-Era Protocol Honesty
 
-- **Statement** - Stdio `EngramMCP` and any remote MCP surface negotiate the same dual-era protocol set, share the same tool registry era rules, and refuse unsupported protocol versions with honest errors rather than silently demoting or advertising a version they cannot serve.
-- **Enforced by** - `macos/EngramMCP/Core/MCPToolRegistry.swift`, `docs/mcp-protocol-alignment-design.md`, `docs/remote-mcp-2026-07-28-design.md`.
-- **Verified by** - `macos/EngramMCPTests/EngramMCPExecutableTests.swift` (dual-era / protocol negotiation regression cases from retro PR-4).
+- **Statement** - Stdio EngramMCP and any remote MCP surface negotiate the same dual-era protocol set, share the same tool registry era rules, and refuse unsupported protocol versions with honest errors rather than silently demoting or advertising a version they cannot serve.
+- **Enforced by** - `macos/EngramMCP/Core/MCPStdioServer.swift`, `macos/EngramMCP/Core/MCPToolRegistry.swift`, `docs/mcp-protocol-alignment-design.md`, `docs/remote-mcp-2026-07-28-design.md`.
+- **Verified by** - `macos/EngramMCPTests/EngramMCPExecutableTests.swift` (testInitializeAcceptsOlderCodexProtocolVersion, testInitializeAcceptsCurrentCodexProtocolVersion, testInitializeNegotiatesUnknownProtocolVersionToLatest, testModernRequestWithUnsupportedVersionReturnsUnsupportedProtocolVersionError, testModernMetaWithNonStringVersionIsUnsupportedProtocolVersion_repro).
 - **Gate** - `none`.
 
 ## Unverified Anchors
