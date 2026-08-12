@@ -5,6 +5,7 @@ public enum BlobStoreError: Error, Equatable {
     case invalidKey(String)
     case notFound(String)
     case sealFailed
+    case limitExceeded
 }
 
 /// File-backed content-addressed blob store with AES-GCM at-rest encryption.
@@ -61,6 +62,37 @@ public struct BlobStore: Sendable {
         return try AES.GCM.open(box, using: self.key)
     }
 
+    /// Reads at most the requested plaintext budget plus a conservative bound
+    /// for the AES-GCM combined nonce/tag envelope. This keeps callers from
+    /// allocating an entire oversized encrypted blob before rejecting it.
+    func get(_ key: String, maximumPlaintextBytes: Int) throws -> Data {
+        guard maximumPlaintextBytes >= 0 else { throw BlobStoreError.limitExceeded }
+        let target = try url(for: key)
+        guard FileManager.default.fileExists(atPath: target.path) else {
+            throw BlobStoreError.notFound(key)
+        }
+
+        let maximumSealOverheadBytes = 64
+        let (maximumCombinedBytes, combinedOverflow) = maximumPlaintextBytes
+            .addingReportingOverflow(maximumSealOverheadBytes)
+        let (readLimit, readOverflow) = maximumCombinedBytes.addingReportingOverflow(1)
+        guard !combinedOverflow, !readOverflow else { throw BlobStoreError.limitExceeded }
+
+        let handle = try FileHandle(forReadingFrom: target)
+        defer { try? handle.close() }
+        let combined = try handle.read(upToCount: readLimit) ?? Data()
+        guard combined.count <= maximumCombinedBytes else {
+            throw BlobStoreError.limitExceeded
+        }
+
+        let box = try AES.GCM.SealedBox(combined: combined)
+        let plaintext = try AES.GCM.open(box, using: self.key)
+        guard plaintext.count <= maximumPlaintextBytes else {
+            throw BlobStoreError.limitExceeded
+        }
+        return plaintext
+    }
+
     public func delete(_ key: String) throws {
         let target = try url(for: key)
         if FileManager.default.fileExists(atPath: target.path) {
@@ -77,5 +109,37 @@ public struct BlobStore: Sendable {
         return names
             .filter { $0.hasPrefix(prefix) && ((try? Self.validate(key: $0)) != nil) }
             .sorted()
+    }
+
+    /// Lazily enumerates a bounded set of flat keys. The suffix belongs here so
+    /// unrelated `catalog.*` blobs do not consume a peer slot before filtering.
+    func listKeys(prefix: String, suffix: String, maximumCount: Int) throws -> [String] {
+        guard maximumCount >= 0 else { throw BlobStoreError.limitExceeded }
+        var enumerationError: Error?
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: nil,
+            options: [.skipsSubdirectoryDescendants],
+            errorHandler: { _, error in
+                enumerationError = error
+                return false
+            }
+        ) else {
+            if let enumerationError { throw enumerationError }
+            return []
+        }
+
+        var names: [String] = []
+        for case let candidate as URL in enumerator {
+            let name = candidate.lastPathComponent
+            guard name.hasPrefix(prefix), name.hasSuffix(suffix),
+                  (try? Self.validate(key: name)) != nil else { continue }
+            guard names.count < maximumCount else {
+                throw BlobStoreError.limitExceeded
+            }
+            names.append(name)
+        }
+        if let enumerationError { throw enumerationError }
+        return names.sorted()
     }
 }

@@ -377,6 +377,93 @@ final class EngramRemoteServerTests: XCTestCase {
         XCTAssertEqual((resp as? HTTPURLResponse)?.statusCode, 401)
     }
 
+    // L29: individually valid manifests must not create an unbounded aggregate response.
+    func testCatalogRejectsAggregateDecodedBytesOverBudget_repro() async throws {
+        let config = EngramRemoteServerConfig(
+            host: "127.0.0.1", port: 0,
+            storeRoot: tempDir.appendingPathComponent("srv"),
+            bearerToken: "secret-token", atRestKey: SymmetricKey(size: .bits256)
+        )
+        let app = try EngramRemoteServerApp(config: config)
+        let waiter = PortWaiter()
+        let serverTask = Task { try? await app.run(onBound: { waiter.set($0) }) }
+        defer { serverTask.cancel() }
+        let port = await waiter.wait()
+        let backend = try EngramRemoteBackend(
+            baseURL: URL(string: "http://127.0.0.1:\(port)")!,
+            token: "secret-token"
+        )
+
+        // Each peer stays below the legacy 64 MiB bundle cap, while their
+        // combined decoded JSON exceeds the client's 4 MiB catalog contract.
+        let padding = String(repeating: "x", count: (2 * 1024 * 1024) + (128 * 1024))
+        for peer in ["macA", "macB"] {
+            let manifest = try JSONSerialization.data(withJSONObject: [
+                "peer": peer,
+                "padding": padding,
+            ])
+            try await backend.put(key: "catalog.\(peer).manifest", data: manifest)
+        }
+
+        var request = URLRequest(
+            url: try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/v1/catalog"))
+        )
+        request.setValue("Bearer secret-token", forHTTPHeaderField: "Authorization")
+        let (_, response) = try await URLSession.shared.data(for: request)
+
+        XCTAssertEqual(
+            (response as? HTTPURLResponse)?.statusCode,
+            413,
+            "catalog aggregation must fail closed before exceeding its response budget"
+        )
+    }
+
+    // L29: a large number of tiny manifests must also be bounded independently.
+    func testCatalogRejectsPeerCountOverBudget_repro() async throws {
+        let root = tempDir.appendingPathComponent("srv")
+        let atRestKey = SymmetricKey(size: .bits256)
+        let store = try BlobStore(root: root, key: atRestKey)
+        for index in 0..<1_024 {
+            try store.put(
+                "catalog.peer\(index).manifest",
+                plaintext: Data("{}".utf8)
+            )
+        }
+        let config = EngramRemoteServerConfig(
+            host: "127.0.0.1", port: 0,
+            storeRoot: root,
+            bearerToken: "secret-token", atRestKey: atRestKey
+        )
+        let app = try EngramRemoteServerApp(config: config)
+        let waiter = PortWaiter()
+        let serverTask = Task { try? await app.run(onBound: { waiter.set($0) }) }
+        defer { serverTask.cancel() }
+        let port = await waiter.wait()
+
+        var request = URLRequest(
+            url: try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/v1/catalog"))
+        )
+        request.setValue("Bearer secret-token", forHTTPHeaderField: "Authorization")
+        let (_, exactLimitResponse) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual(
+            (exactLimitResponse as? HTTPURLResponse)?.statusCode,
+            200,
+            "exactly 1,024 peer manifests remain within the catalog contract"
+        )
+
+        try store.put(
+            "catalog.peer1024.manifest",
+            plaintext: Data("{}".utf8)
+        )
+        let (_, response) = try await URLSession.shared.data(for: request)
+
+        XCTAssertEqual(
+            (response as? HTTPURLResponse)?.statusCode,
+            413,
+            "catalog aggregation must reject more than 1,024 peer manifests"
+        )
+    }
+
     func testBlobStoreListKeysFiltersByPrefix() throws {
         let store = try BlobStore(root: tempDir.appendingPathComponent("store"), key: SymmetricKey(size: .bits256))
         try store.put("catalog.macA.manifest", plaintext: Data("{}".utf8))
