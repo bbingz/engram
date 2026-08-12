@@ -82,3 +82,8 @@ Lead: Grok (stewardship goal) · Implementation: Grok + Herdr Codex `retro-handl
 - **CURSOR-CWD-001 implemented** (Codex WIP verified): `CursorWorkspaceOwnershipResolver` maps unique `workspaceStorage/*/composer.composerData` index → folder; ignores `fileSelections`; multi-index conflict fails closed. Three `_repro`s + rawText regression green.
 - Queue marks CURSOR-CWD-001 DONE; design/followups updated.
 
+## Merged
+
+- **PR #305 squash-merged** to main as `17285c43` (2026-08-12T03:14Z). Required checks: CI Gate, CodeQL Gate, Dependency Review — all green on tip `7bb01bc4`.
+- Follow-up PR: VIS-FILTER-ADHOC + OFFLOAD-TOPLEVEL (`feat/vis-filter-offload-toplevel`).
+

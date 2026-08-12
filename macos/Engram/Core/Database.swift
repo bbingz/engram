@@ -310,9 +310,12 @@ final class DatabaseManager: @unchecked Sendable {
     // MARK: - list projects
     func listProjects() throws -> [String] {
         try readInBackground { db in
+            // Match countsByProject / sourceStats: skip-tier noise must not
+            // create ghost project pickers (VIS-FILTER-ADHOC).
             try String.fetchAll(db, sql: """
                 SELECT DISTINCT project FROM sessions
-                WHERE project IS NOT NULL AND hidden_at IS NULL
+                WHERE project IS NOT NULL
+                  AND \(SessionVisibilityFilter.listVisibleSQL)
                 ORDER BY project
             """)
         }
@@ -320,8 +323,11 @@ final class DatabaseManager: @unchecked Sendable {
 
     func countsBySource() throws -> [String: Int] {
         try readInBackground { db in
+            // Align with sourceStats: list-visible only (not hidden, not skip).
             let rows = try Row.fetchAll(db, sql: """
-                SELECT source, COUNT(*) as n FROM sessions WHERE hidden_at IS NULL GROUP BY source
+                SELECT source, COUNT(*) as n FROM sessions
+                WHERE \(SessionVisibilityFilter.listVisibleSQL)
+                GROUP BY source
             """)
             return Dictionary(uniqueKeysWithValues: rows.map { ($0["source"] as String, $0["n"] as Int) })
         }

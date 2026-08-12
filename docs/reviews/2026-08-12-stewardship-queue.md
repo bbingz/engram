@@ -66,3 +66,11 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 32 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
+
+## Post-merge (after #305)
+
+| Rank | ID | Sev | Title | Status |
+|------|----|-----|-------|--------|
+| 40 | VIS-FILTER-ADHOC | P2 | listProjects/countsBySource use listVisibleSQL | **DONE** 2026-08-12 |
+| 41 | OFFLOAD-TOPLEVEL | low | pushCandidates require suggested_parent_id IS NULL | **DONE** 2026-08-12 |
+
