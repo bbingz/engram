@@ -1299,7 +1299,10 @@ final class MCPDatabase {
             .prefix(limit)
             .map(\.id)
 
-            let semanticById = Dictionary(uniqueKeysWithValues: zip(semanticSessionIds, semanticItems))
+            // L30: index by each result's session id. zip(ids, items) mislabels
+            // when searchResultItems drops a mid-search deleted session (shorter
+            // items list). Service uses the same id-keyed pattern.
+            let semanticById = MCPSearchResultIndex.bySessionId(semanticItems)
             let keywordById = Dictionary(uniqueKeysWithValues: keywordRanked.map {
                 ($0.id, searchResultObject(
                     row: $0.row,
@@ -2796,6 +2799,26 @@ private func scandirErrorDescription(path: String, error: Error) -> String {
         return "ENOENT: no such file or directory, scandir '\(path)'"
     }
     return nsError.localizedDescription
+}
+
+
+/// Indexes MCP search result objects by nested `session.id` (not positional zip).
+enum MCPSearchResultIndex {
+    static func bySessionId(_ items: [OrderedJSONValue]) -> [String: OrderedJSONValue] {
+        var map: [String: OrderedJSONValue] = [:]
+        map.reserveCapacity(items.count)
+        for item in items {
+            guard case .object(let entries) = item,
+                  let sessionValue = entries.first(where: { $0.0 == "session" })?.1,
+                  case .object(let sessionEntries) = sessionValue,
+                  let idValue = sessionEntries.first(where: { $0.0 == "id" })?.1,
+                  case .string(let id) = idValue else {
+                continue
+            }
+            map[id] = item
+        }
+        return map
+    }
 }
 
 private extension OrderedJSONValue {

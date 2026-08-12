@@ -338,6 +338,7 @@
 		753435A2E9223993D05E46A3 /* ProjectsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDE4DF61DD3A039FECFB821D /* ProjectsTests.swift */; };
 		7597C792343A58DD49C399E1 /* VectorSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED0B2B105E80E66BC38DA5F3 /* VectorSearch.swift */; };
 		75AF86E430CD9657074EE09F /* SourcePulseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1967D6CC60CCFD7C78003FF /* SourcePulseTests.swift */; };
+		760E0A066C8AC3575B13204E /* MCPSearchResultIndexTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D26AFA07F8C88A65652839E6 /* MCPSearchResultIndexTests.swift */; };
 		76F5EF80ADB3F6A366412C58 /* ArchiveCaptureCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B912698978B88FBA5612E30 /* ArchiveCaptureCoordinatorTests.swift */; };
 		77367829BEE31987036D05ED /* MockEngramServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0696453109985F63C5BE6106 /* MockEngramServiceClient.swift */; };
 		77A47F40DCF191FF53760214 /* NavigationSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10BAB0CB33EC7AA894FCC2CF /* NavigationSmokeTests.swift */; };
@@ -1389,6 +1390,7 @@
 		D1C92C3A64479C2893628E50 /* MCPToolRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPToolRegistry.swift; sourceTree = "<group>"; };
 		D1F5883851C4B40F390B6A32 /* UnixSocketEngramServiceTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnixSocketEngramServiceTransport.swift; sourceTree = "<group>"; };
 		D21E811847FF99ABDCFBB309 /* ArchiveCaptureCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveCaptureCoordinator.swift; sourceTree = "<group>"; };
+		D26AFA07F8C88A65652839E6 /* MCPSearchResultIndexTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPSearchResultIndexTests.swift; sourceTree = "<group>"; };
 		D34A044D1A8DEDDCD55C6AC6 /* ArchiveCASEvictorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveCASEvictorTests.swift; sourceTree = "<group>"; };
 		D35B7B58E9283A6849A0BD33 /* ServiceUsageEventTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceUsageEventTests.swift; sourceTree = "<group>"; };
 		D3BEA650EF933B7CB2DC8734 /* ServiceErrorPresenterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceErrorPresenterTests.swift; sourceTree = "<group>"; };
@@ -2569,6 +2571,7 @@
 			children = (
 				B496626E486D79EF71BFF231 /* AuditMediumMCPReproTests.swift */,
 				8AE97438B5ED4B533E8F2A9E /* EngramMCPExecutableTests.swift */,
+				D26AFA07F8C88A65652839E6 /* MCPSearchResultIndexTests.swift */,
 				B1F134DA4D2562A469A87144 /* ServiceUnavailableMutatingToolTests.swift */,
 			);
 			path = EngramMCPTests;
@@ -4019,6 +4022,7 @@
 			files = (
 				074366CEA1EE7FCD81892D7A /* AuditMediumMCPReproTests.swift in Sources */,
 				5C3F8FC0BA9EDF89B1CDFD85 /* EngramMCPExecutableTests.swift in Sources */,
+				760E0A066C8AC3575B13204E /* MCPSearchResultIndexTests.swift in Sources */,
 				7F3272101A42D8D186D230B4 /* ServiceUnavailableMutatingToolTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
