@@ -71,6 +71,11 @@ export function finalizeFtsRebuildIfReady(
   if (recoverableFtsJobCount(db) > 0) return false;
 
   const tx = db.transaction(() => {
+    // H01 parity: terminal or never-replayed jobs can still have searchable
+    // content in the live table. Preserve those rows before swapping shadows.
+    copyMissingLiveFtsRowsIntoRebuild(db);
+    if (eligibleSessionsMissingRebuildContent(db) > 0) return false;
+
     db.exec(`DROP TABLE IF EXISTS ${OLD_TABLE}`);
     if (tableExists(db, ACTIVE_TABLE)) {
       db.exec(`ALTER TABLE ${ACTIVE_TABLE} RENAME TO ${OLD_TABLE}`);
@@ -79,9 +84,9 @@ export function finalizeFtsRebuildIfReady(
     db.exec(`DROP TABLE IF EXISTS ${OLD_TABLE}`);
     metadata.setMetadata('fts_version', FTS_VERSION);
     deleteMetadata(db, REBUILD_VERSION_KEY);
+    return true;
   });
-  tx();
-  return true;
+  return tx();
 }
 
 export function replaceFtsContentForRebuild(
@@ -181,6 +186,63 @@ function recoverableFtsJobCount(db: BetterSqlite3.Database): number {
     .prepare(`
       SELECT COUNT(*) AS count FROM session_index_jobs
       WHERE job_kind = 'fts' AND status IN ('pending', 'failed_retryable')
+    `)
+    .get() as { count: number };
+  return row.count;
+}
+
+function eligibleSessionSqlPredicate(alias = 's'): string {
+  return `
+    COALESCE(${alias}.tier, 'normal') != 'skip'
+    AND ${alias}.hidden_at IS NULL
+    AND ${alias}.orphan_status IS NULL
+  `;
+}
+
+function copyMissingLiveFtsRowsIntoRebuild(db: BetterSqlite3.Database): void {
+  if (
+    !tableExists(db, ACTIVE_TABLE) ||
+    !tableExists(db, REBUILD_TABLE) ||
+    !tableExists(db, 'sessions')
+  ) {
+    return;
+  }
+  db.exec(`
+    INSERT INTO ${REBUILD_TABLE}(session_id, content)
+    SELECT live.session_id, live.content
+    FROM ${ACTIVE_TABLE} AS live
+    INNER JOIN sessions AS s ON s.id = live.session_id
+    WHERE ${eligibleSessionSqlPredicate()}
+      AND NOT EXISTS (
+        SELECT 1 FROM ${REBUILD_TABLE} AS shadow
+        WHERE shadow.session_id = live.session_id
+      )
+  `);
+}
+
+function eligibleSessionsMissingRebuildContent(
+  db: BetterSqlite3.Database,
+): number {
+  if (
+    !tableExists(db, 'sessions') ||
+    !tableExists(db, ACTIVE_TABLE) ||
+    !tableExists(db, REBUILD_TABLE)
+  ) {
+    return 0;
+  }
+  const row = db
+    .prepare(`
+      SELECT COUNT(*) AS count
+      FROM sessions AS s
+      WHERE ${eligibleSessionSqlPredicate()}
+        AND EXISTS (
+          SELECT 1 FROM ${ACTIVE_TABLE} AS live
+          WHERE live.session_id = s.id
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM ${REBUILD_TABLE} AS shadow
+          WHERE shadow.session_id = s.id
+        )
     `)
     .get() as { count: number };
   return row.count;
