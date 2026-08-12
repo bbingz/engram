@@ -1152,7 +1152,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                        COUNT(*) AS session_count
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
-                WHERE s.hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
                 GROUP BY s.source
                 ORDER BY cost_usd DESC
             """)
@@ -1172,7 +1172,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                        SUM(c.cost_usd) AS cost_usd
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
-                WHERE s.hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
                   AND s.start_time >= date('now', '-30 days', 'localtime')
                 GROUP BY date(s.start_time, 'localtime')
                 ORDER BY day ASC
@@ -1191,7 +1191,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 SELECT SUM(c.cost_usd)
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
-                WHERE s.hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
                   AND date(s.start_time, 'localtime') >= date('now', 'start of month', 'localtime')
             """) ?? 0
 
@@ -1199,7 +1199,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                 SELECT SUM(c.cost_usd)
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
-                WHERE s.hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
                   AND date(s.start_time, 'localtime') = date('now', 'localtime')
             """) ?? 0
 
@@ -1228,7 +1228,7 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
                       ELSE 0 END) AS unpriced_no_price_tokens
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
-                WHERE s.hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
             """)
 
             return EngramServiceCostsResponse(

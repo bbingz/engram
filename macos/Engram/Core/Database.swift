@@ -172,13 +172,13 @@ final class DatabaseManager: @unchecked Sendable {
         favoritesOnly: Bool
     ) {
         if !includeHidden {
-            parts.append("AND hidden_at IS NULL")
+            parts.append("AND \(SessionVisibilityFilter.notHiddenSQL)")
         }
         if favoritesOnly {
             parts.append("AND id IN (SELECT session_id FROM favorites)")
         }
         if topLevelOnly {
-            parts.append("AND parent_session_id IS NULL AND suggested_parent_id IS NULL")
+            parts.append("AND \(SessionVisibilityFilter.topLevelSQL)")
         }
         if humanDriven {
             parts.append("AND (\(HumanDrivenFilter.sqlPredicate))")
@@ -204,7 +204,7 @@ final class DatabaseManager: @unchecked Sendable {
         if subAgent == true {
             parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
         } else {
-            parts.append("AND (tier IS NULL OR tier != 'skip')")
+            parts.append("AND \(SessionVisibilityFilter.nonSkipTierSQL)")
         }
     }
 
@@ -684,7 +684,7 @@ final class DatabaseManager: @unchecked Sendable {
             var sql = """
                 SELECT project, COUNT(*) as session_count, MAX(start_time) as last_updated
                 FROM sessions
-                WHERE hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.listVisibleSQL)
                 """
             var args: [DatabaseValueConvertible] = []
             if let project {
@@ -717,10 +717,8 @@ final class DatabaseManager: @unchecked Sendable {
                 FROM session_work_beats b
                 JOIN sessions s ON s.id = b.session_id
                 \(titleJoin)
-                WHERE s.hidden_at IS NULL
-                  AND s.parent_session_id IS NULL
-                  AND s.suggested_parent_id IS NULL
-                  AND (s.tier IS NULL OR s.tier != 'skip')
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                  AND \(SessionVisibilityFilter.topLevelSQL(alias: "s"))
             """]
             var args: [DatabaseValueConvertible] = []
             if days < 100_000,
@@ -875,11 +873,11 @@ final class DatabaseManager: @unchecked Sendable {
         try readInBackground { db in
             let project = URL(fileURLWithPath: cwd).lastPathComponent
             var results = try Session.fetchAll(db,
-                sql: "SELECT * FROM sessions WHERE hidden_at IS NULL AND project LIKE ? ESCAPE '\\' AND message_count > 0 ORDER BY start_time DESC LIMIT ?",
+                sql: "SELECT * FROM sessions WHERE \(SessionVisibilityFilter.listVisibleSQL) AND project LIKE ? ESCAPE '\\' AND message_count > 0 ORDER BY start_time DESC LIMIT ?",
                 arguments: ["%\(CJKText.escapeLikePattern(project))%", limit])
             if results.isEmpty && !cwd.isEmpty {
                 results = try Session.fetchAll(db,
-                    sql: "SELECT * FROM sessions WHERE hidden_at IS NULL AND cwd LIKE ? ESCAPE '\\' ORDER BY start_time DESC LIMIT ?",
+                    sql: "SELECT * FROM sessions WHERE \(SessionVisibilityFilter.listVisibleSQL) AND cwd LIKE ? ESCAPE '\\' ORDER BY start_time DESC LIMIT ?",
                     arguments: ["%\(CJKText.escapeLikePattern(cwd))%", limit])
             }
             return results
@@ -887,13 +885,14 @@ final class DatabaseManager: @unchecked Sendable {
     }
 
     // MARK: - file activity (Top Files; service-owned extension table)
-    // Mirrors MCPDatabase.getFileActivity SQL for the app read path. Guarded by
-    // tableExists so older DBs without session_files return [] instead of throwing.
+    // Mirrors MCPDatabase.getFileActivity's aggregation shape for the app read
+    // path, with the shared list-visible population. Guarded by tableExists so
+    // older DBs without session_files return [] instead of throwing.
     func fileActivity(project: String?, since: String?, limit: Int)
         throws -> [(filePath: String, action: String, totalCount: Int, sessionCount: Int)] {
         try readInBackground { db in
             guard try Self.tableExists("session_files", db: db) else { return [] }
-            var conditions: [String] = []
+            var conditions = [SessionVisibilityFilter.listVisibleSQL(alias: "s")]
             var args: [DatabaseValueConvertible] = []
             if let project {
                 conditions.append("s.project = ?")
@@ -903,7 +902,7 @@ final class DatabaseManager: @unchecked Sendable {
                 conditions.append("s.start_time >= ?")
                 args.append(since)
             }
-            let whereClause = conditions.isEmpty ? "" : "WHERE \(conditions.joined(separator: " AND "))"
+            let whereClause = "WHERE \(conditions.joined(separator: " AND "))"
             args.append(limit)
             let rows = try Row.fetchAll(db, sql: """
                 SELECT sf.file_path, sf.action,
@@ -937,7 +936,7 @@ final class DatabaseManager: @unchecked Sendable {
             .replacingOccurrences(of: "_", with: "\\_")
         return try readInBackground { db in
             try Session.fetchAll(db,
-                sql: "SELECT * FROM sessions WHERE hidden_at IS NULL AND (cwd = ? OR cwd LIKE ? ESCAPE '\\') ORDER BY start_time DESC LIMIT ?",
+                sql: "SELECT * FROM sessions WHERE \(SessionVisibilityFilter.listVisibleSQL) AND (cwd = ? OR cwd LIKE ? ESCAPE '\\') ORDER BY start_time DESC LIMIT ?",
                 arguments: [path, "\(escaped)/%", limit])
         }
     }
@@ -949,7 +948,7 @@ final class DatabaseManager: @unchecked Sendable {
             return try Session.fetchAll(db, sql: """
                 SELECT s.* FROM sessions s
                 JOIN favorites f ON f.session_id = s.id
-                WHERE s.hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
                 ORDER BY f.created_at DESC
             """)
         }
@@ -1011,7 +1010,7 @@ final class DatabaseManager: @unchecked Sendable {
                        COUNT(*) as count,
                        \(aggExpr) as sort_value
                 FROM sessions
-                WHERE hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.notHiddenSQL)
                 """]
             var args: [DatabaseValueConvertible] = []
 
@@ -1029,7 +1028,7 @@ final class DatabaseManager: @unchecked Sendable {
             if subAgent == true {
                 parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
             } else {
-                parts.append("AND (tier IS NULL OR tier != 'skip')")
+                parts.append("AND \(SessionVisibilityFilter.nonSkipTierSQL)")
             }
             parts.append("GROUP BY group_key ORDER BY sort_value \(orderDir)")
 
@@ -1057,7 +1056,7 @@ final class DatabaseManager: @unchecked Sendable {
             guard hasTable else { return [] }
             return try Session.fetchAll(db, sql: """
                 SELECT * FROM sessions
-                WHERE hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.listVisibleSQL)
                   AND id IN (
                     SELECT b_id FROM session_relations WHERE a_id = ?
                     UNION

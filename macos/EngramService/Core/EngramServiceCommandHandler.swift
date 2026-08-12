@@ -2770,10 +2770,8 @@ final class EngramServiceCommandHandler: @unchecked Sendable {
                        b.kind, b.status, b.operation_events, b.confidence
                 FROM session_work_beats b
                 JOIN sessions s ON s.id = b.session_id
-                WHERE s.hidden_at IS NULL
-                  AND s.parent_session_id IS NULL
-                  AND s.suggested_parent_id IS NULL
-                  AND (s.tier IS NULL OR s.tier != 'skip')
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                  AND \(SessionVisibilityFilter.topLevelSQL(alias: "s"))
                   AND s.project = ?
                   AND \(HumanDrivenFilter.sqlPredicate(alias: "s"))
             """]

@@ -106,6 +106,55 @@ final class EngramServiceCostsTests: XCTestCase {
         XCTAssertEqual(costs.perSource.first?.sessionCount, 1)
     }
 
+    // ARCH-001C: cost KPIs must use the same list-visible population as other dashboards.
+    func testCostsExcludesSkipTierSessions_repro() async throws {
+        let todayInstant = Calendar.current.date(
+            bySettingHour: 12, minute: 0, second: 0, of: Date()
+        ) ?? Date()
+        let path = try seedCostsFixture { db in
+            try insertSession(
+                db,
+                id: "visible",
+                source: "codex",
+                startTime: isoInstant(todayInstant),
+                tier: "normal"
+            )
+            try insertSession(
+                db,
+                id: "skip-priced",
+                source: "codex",
+                startTime: isoInstant(todayInstant.addingTimeInterval(60)),
+                tier: "skip"
+            )
+            try insertSession(
+                db,
+                id: "skip-unpriced",
+                source: "codex",
+                startTime: isoInstant(todayInstant.addingTimeInterval(120)),
+                tier: "skip"
+            )
+            try insertCost(db, sessionId: "visible", costUsd: 1.0)
+            try insertCost(db, sessionId: "skip-priced", costUsd: 99.0)
+            try insertCost(
+                db,
+                sessionId: "skip-unpriced",
+                costUsd: nil,
+                inputTokens: 100
+            )
+        }
+
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: path)
+        let costs = try await provider.costs()
+
+        XCTAssertEqual(costs.totalUsd, 1.0, accuracy: 0.001)
+        XCTAssertEqual(costs.todayUsd, 1.0, accuracy: 0.001)
+        XCTAssertEqual(costs.monthToDateUsd, 1.0, accuracy: 0.001)
+        XCTAssertEqual(costs.perSource.first?.sessionCount, 1)
+        XCTAssertEqual(costs.perDay.first(where: { $0.day == localDay(todayInstant) })?.costUsd, 1.0)
+        XCTAssertEqual(costs.unpricedUnattributedSessions, 0)
+        XCTAssertEqual(costs.unpricedUnattributedTokens, 0)
+    }
+
     func testCostsEmptyWhenTableAbsent() async throws {
         // Seed sessions but NOT session_costs → the tableExists guard returns an
         // all-zero response instead of throwing "no such table".
@@ -225,7 +274,8 @@ final class EngramServiceCostsTests: XCTestCase {
                   message_count INTEGER NOT NULL DEFAULT 0,
                   size_bytes INTEGER NOT NULL DEFAULT 0,
                   indexed_at TEXT NOT NULL DEFAULT '',
-                  hidden_at TEXT
+                  hidden_at TEXT,
+                  tier TEXT
                 );
             """)
             if createCostsTable {
@@ -252,14 +302,15 @@ final class EngramServiceCostsTests: XCTestCase {
         id: String,
         source: String,
         startTime: String,
-        hiddenAt: String? = nil
+        hiddenAt: String? = nil,
+        tier: String? = "normal"
     ) throws {
         try db.execute(
             sql: """
-                INSERT INTO sessions (id, source, start_time, hidden_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO sessions (id, source, start_time, hidden_at, tier)
+                VALUES (?, ?, ?, ?, ?)
             """,
-            arguments: [id, source, startTime, hiddenAt]
+            arguments: [id, source, startTime, hiddenAt, tier]
         )
     }
 

@@ -519,6 +519,41 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertTrue(uris.contains { $0.hasPrefix("engram://session/") }, "\(uris)")
     }
 
+    // ARCH-001C: MCP resource autocomplete is a browse surface and must hide skip noise.
+    func testResourcesListExcludesSkipTierSessions_repro() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-resource-list-visible"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try DatabaseQueue(path: dbPath).write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO sessions (id, source, start_time, file_path, tier, generated_title)
+                    VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)
+                """,
+                arguments: [
+                    "resource-visible", "codex", "9999-01-01T00:00:00Z",
+                    "/tmp/resource-visible.jsonl", "normal", "Resource visible",
+                    "resource-skip", "codex", "9999-01-02T00:00:00Z",
+                    "/tmp/resource-skip.jsonl", "skip", "Resource skip",
+                ]
+            )
+        }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"resources/list"}
+            """,
+            environment: ["ENGRAM_MCP_DB_PATH": dbPath]
+        )
+        XCTAssertNil(capture.response.error)
+        let resources = try XCTUnwrap(capture.ordered["result"]?["resources"]?.arrayValue)
+        let uris = resources.compactMap { $0["uri"]?.stringValue }
+        XCTAssertTrue(uris.contains("engram://session/resource-visible"), "\(uris)")
+        XCTAssertFalse(uris.contains("engram://session/resource-skip"), "\(uris)")
+    }
+
     func testResourceReadInsightReturnsContent() throws {
         let listed = try rpc(
             """
@@ -3420,6 +3455,52 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertFalse(text.contains("Cost today: $10.24"), text)
     }
 
+    // ARCH-001C: get_context environment cost is a KPI and must exclude skip-tier spend.
+    func testGetContextEnvironmentCostExcludesSkipTier_repro() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-context-cost-list-visible.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        try DatabaseQueue(path: dbURL.path).write { db in
+            try db.execute(sql: "UPDATE session_costs SET cost_usd = 0")
+            try db.execute(
+                sql: "UPDATE sessions SET start_time = ?, hidden_at = NULL, tier = ? WHERE id = ?",
+                arguments: ["2026-01-09T02:00:00.000Z", "normal", "mcp-fixture-01"]
+            )
+            try db.execute(
+                sql: "UPDATE sessions SET start_time = ?, hidden_at = NULL, tier = ? WHERE id = ?",
+                arguments: ["2026-01-09T03:00:00.000Z", "skip", "mcp-fixture-02"]
+            )
+            try db.execute(
+                sql: "UPDATE session_costs SET cost_usd = ? WHERE session_id = ?",
+                arguments: [0.25, "mcp-fixture-01"]
+            )
+            try db.execute(
+                sql: "UPDATE session_costs SET cost_usd = ? WHERE session_id = ?",
+                arguments: [9.99, "mcp-fixture-02"]
+            )
+        }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/Users/test/work/engram","detail":"abstract","include_environment":true,"sort_by":"score"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+                "ENGRAM_MCP_NOW": "2026-01-09T12:00:00.000Z",
+                "TZ": "UTC",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let text = try XCTUnwrap(capture.ordered["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue)
+        XCTAssertTrue(text.contains("Cost today: $0.25"), text)
+        XCTAssertFalse(text.contains("Cost today: $10.24"), text)
+    }
+
     func testGetInsightsMatchesGolden() throws {
         try assertToolCallMatchesGolden(
             tool: "get_insights",
@@ -3510,6 +3591,52 @@ final class EngramMCPExecutableTests: XCTestCase {
             "must not use the old hardcoded /7.0 projection: \(text)"
         )
         XCTAssertTrue(text.contains("Projected monthly $30.00"), text)
+    }
+
+    // ARCH-001C: get_insights totals and top groups must exclude skip-tier spend.
+    func testGetInsightsExcludesSkipTierSpend_repro() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-insights-list-visible.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        try DatabaseQueue(path: dbURL.path).write { db in
+            try db.execute(sql: "UPDATE session_costs SET cost_usd = 0")
+            try db.execute(
+                sql: "UPDATE sessions SET start_time = ?, hidden_at = NULL, tier = ? WHERE id = ?",
+                arguments: ["2026-06-15T12:00:00.000Z", "normal", "mcp-fixture-01"]
+            )
+            try db.execute(
+                sql: "UPDATE sessions SET start_time = ?, hidden_at = NULL, tier = ? WHERE id = ?",
+                arguments: ["2026-06-16T12:00:00.000Z", "skip", "mcp-fixture-02"]
+            )
+            try db.execute(
+                sql: "UPDATE session_costs SET cost_usd = ?, model = ? WHERE session_id = ?",
+                arguments: [1.0, "visible-model", "mcp-fixture-01"]
+            )
+            try db.execute(
+                sql: "UPDATE session_costs SET cost_usd = ?, model = ? WHERE session_id = ?",
+                arguments: [99.0, "skip-model", "mcp-fixture-02"]
+            )
+        }
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_insights","arguments":{"since":"2026-06-01T00:00:00.000Z"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+                "ENGRAM_MCP_NOW": "2026-07-01T00:00:00.000Z",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let text = try XCTUnwrap(capture.ordered["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue)
+        XCTAssertTrue(text.contains("Spent $1.00"), text)
+        XCTAssertFalse(text.contains("Spent $100.00"), text)
+        XCTAssertFalse(text.contains("skip-model"), text)
     }
 
     func testLinkSessionsMatchesGolden() throws {

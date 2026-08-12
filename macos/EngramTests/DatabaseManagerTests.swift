@@ -160,6 +160,17 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(favorites.count, 2)
     }
 
+    // ARCH-001C: favorites are a browse surface and must hide skip-tier noise.
+    @MainActor
+    func testListFavoritesExcludesSkipTier_repro() throws {
+        try insertTestSession(at: dbPath, id: "favorite-visible", tier: "normal")
+        try insertTestSession(at: dbPath, id: "favorite-skip", tier: "skip")
+        try insertFavorite(at: dbPath, sessionId: "favorite-visible")
+        try insertFavorite(at: dbPath, sessionId: "favorite-skip")
+
+        XCTAssertEqual(try db.listFavorites().map(\.id), ["favorite-visible"])
+    }
+
     @MainActor
     func testListSessionsCanFilterFavoritesWithoutUsingFavoritesPageQuery() throws {
         try insertTestSession(at: dbPath, id: "favorite-visible", source: "claude-code")
@@ -857,6 +868,17 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(projects, ["my_repo"])
     }
 
+    // ARCH-001C: project counts are list-visible KPIs, so skip rows cannot inflate them.
+    @MainActor
+    func testProjectTimelineExcludesSkipTier_repro() throws {
+        try insertTestSession(at: dbPath, id: "timeline-visible", project: "engram", tier: "normal")
+        try insertTestSession(at: dbPath, id: "timeline-skip", project: "engram", tier: "skip")
+
+        let entry = try XCTUnwrap(try db.projectTimeline(project: "engram").first)
+        XCTAssertEqual(entry.project, "engram")
+        XCTAssertEqual(entry.sessionCount, 1)
+    }
+
     @MainActor
     func testGetContextEscapesLikeWildcards() throws {
         try insertTestSession(at: dbPath, id: "literal-context-project", project: "my_repo")
@@ -882,6 +904,82 @@ final class DatabaseManagerTests: XCTestCase {
         let cwdMatches = try db.getContext(cwd: "/Users/test/repo_1", limit: 10).map(\.id)
 
         XCTAssertEqual(cwdMatches, ["literal-context-cwd"])
+    }
+
+    // ARCH-001C: getContext's project/cwd browse fallback must not return skip rows.
+    @MainActor
+    func testGetContextExcludesSkipTier_repro() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "context-visible",
+            project: "engram",
+            startTime: "2026-03-20T10:00:00Z",
+            tier: "normal"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "context-skip",
+            project: "engram",
+            startTime: "2026-03-21T10:00:00Z",
+            tier: "skip"
+        )
+
+        XCTAssertEqual(
+            try db.getContext(cwd: "/Users/test/engram", limit: 10).map(\.id),
+            ["context-visible"]
+        )
+
+        try insertSessionWithCwd(
+            at: dbPath,
+            id: "context-cwd-visible",
+            cwd: "/Users/test/fallback-repo/sub",
+            startTime: "2026-03-20T10:00:00Z",
+            tier: "normal"
+        )
+        try insertSessionWithCwd(
+            at: dbPath,
+            id: "context-cwd-skip",
+            cwd: "/Users/test/fallback-repo/sub",
+            startTime: "2026-03-21T10:00:00Z",
+            tier: "skip"
+        )
+
+        XCTAssertEqual(
+            try db.getContext(cwd: "/Users/test/fallback-repo", limit: 10).map(\.id),
+            ["context-cwd-visible"]
+        )
+    }
+
+    // ARCH-001C: navigational relation lists use the same list-visible contract.
+    @MainActor
+    func testRelatedSessionsExcludesSkipTier_repro() throws {
+        try insertTestSession(at: dbPath, id: "relation-anchor", tier: "normal")
+        try insertTestSession(
+            at: dbPath,
+            id: "relation-visible",
+            startTime: "2026-03-20T10:00:00Z",
+            tier: "normal"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "relation-skip",
+            startTime: "2026-03-21T10:00:00Z",
+            tier: "skip"
+        )
+        try DatabaseQueue(path: dbPath).write { database in
+            try database.execute(sql: """
+                CREATE TABLE session_relations (a_id TEXT NOT NULL, b_id TEXT NOT NULL)
+            """)
+            try database.execute(
+                sql: "INSERT INTO session_relations (a_id, b_id) VALUES (?, ?), (?, ?)",
+                arguments: [
+                    "relation-anchor", "relation-visible",
+                    "relation-anchor", "relation-skip",
+                ]
+            )
+        }
+
+        XCTAssertEqual(try db.relatedSessions(sessionId: "relation-anchor").map(\.id), ["relation-visible"])
     }
 
     // Audit #25: the local offline-fallback search must drive from sessions_fts
@@ -1435,7 +1533,8 @@ final class DatabaseManagerTests: XCTestCase {
         at path: String,
         id: String,
         cwd: String,
-        startTime: String
+        startTime: String,
+        tier: String? = "normal"
     ) throws {
         let queue = try DatabaseQueue(path: path)
         try queue.write { db in
@@ -1443,8 +1542,8 @@ final class DatabaseManagerTests: XCTestCase {
                 INSERT OR REPLACE INTO sessions (
                     id, source, start_time, end_time, cwd, project,
                     message_count, file_path, size_bytes, indexed_at, tier
-                ) VALUES (?, 'claude-code', ?, NULL, ?, 'engram', 1, '/tmp/test.jsonl', 0, datetime('now'), 'normal')
-            """, arguments: [id, startTime, cwd])
+                ) VALUES (?, 'claude-code', ?, NULL, ?, 'engram', 1, '/tmp/test.jsonl', 0, datetime('now'), ?)
+            """, arguments: [id, startTime, cwd, tier])
         }
     }
 
