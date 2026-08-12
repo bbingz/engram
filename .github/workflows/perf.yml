@@ -1,3 +1,4 @@
+# Policy: nightly/workflow_dispatch only; this workflow is not a pull-request or merge gate.
 name: Perf
 
 on:
