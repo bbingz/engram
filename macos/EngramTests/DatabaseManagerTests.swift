@@ -796,6 +796,26 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(results.map(\.id), ["match"])
     }
 
+    // ARCH-001A: blank UI filter values are equivalent to omitted filters on
+    // the shared App/Service/MCP search predicate path.
+    @MainActor
+    func testSearchIgnoresBlankSourceAndProjectFilters_repro() throws {
+        try insertTestSession(at: dbPath, id: "blank-filter-match", source: "codex", project: "engram")
+        try insertFTSContent(
+            at: dbPath,
+            sessionId: "blank-filter-match",
+            content: "blank filter parity marker"
+        )
+
+        let results = try db.search(
+            query: "filter parity",
+            sources: Set([" \n"]),
+            projects: Set(["\t"])
+        )
+
+        XCTAssertEqual(results.map(\.id), ["blank-filter-match"])
+    }
+
     @MainActor
     func testSearchWhitespaceQueryBrowsesRecentVisibleSessions() throws {
         try insertTestSession(at: dbPath, id: "older", source: "codex", startTime: "2026-05-01T10:00:00Z", tier: "normal")

@@ -1319,6 +1319,34 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    // ARCH-001A: project is a free-form MCP argument, so whitespace-only values
+    // must not turn an otherwise valid search into an exact whitespace match.
+    // Source stays schema-enum validated before this SQL path is reached.
+    func testSearchIgnoresBlankProjectFilter_repro() throws {
+        func resultIDs(arguments: String) throws -> [String] {
+            let capture = try rpc(
+                """
+                {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":\(arguments)}}
+                """,
+                environment: ["ENGRAM_MCP_DB_PATH": fixturePath("mcp-contract.sqlite")]
+            )
+            let results = try XCTUnwrap(
+                capture.ordered["result"]?["structuredContent"]?["results"]?.arrayValue
+            )
+            return results.compactMap { $0["session"]?["id"]?.stringValue }
+        }
+
+        let unfiltered = try resultIDs(
+            arguments: #"{"query":"Swift MCP shim","mode":"keyword","limit":10}"#
+        )
+        let blankFiltered = try resultIDs(
+            arguments: #"{"query":"Swift MCP shim","mode":"keyword","project":"\t","limit":10}"#
+        )
+
+        XCTAssertFalse(unfiltered.isEmpty)
+        XCTAssertEqual(blankFiltered, unfiltered)
+    }
+
     func testKeywordSearchExcludesHiddenSessions() throws {
         let dbPath = try temporaryFixtureCopy(
             "mcp-contract.sqlite",

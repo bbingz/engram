@@ -2291,6 +2291,31 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(search.items.map(\.id), ["s1"])
     }
 
+    // ARCH-001A: the service already treats blank search-filter strings as
+    // absent; pin that behavior before replacing its local SQL assembly.
+    func testSQLiteReadProviderSearchIgnoresBlankFilters_repro() async throws {
+        let paths = try makeServiceIPCPaths()
+        try seedSearchFixture(at: paths.database.path)
+        let provider = try SQLiteEngramServiceReadProvider(databasePath: paths.database.path)
+
+        let unfiltered = try await provider.search(
+            EngramServiceSearchRequest(query: "hello", mode: "keyword", limit: 10)
+        )
+        let blankFiltered = try await provider.search(
+            EngramServiceSearchRequest(
+                query: "hello",
+                mode: "keyword",
+                limit: 10,
+                project: "\t",
+                source: " \n",
+                since: "  "
+            )
+        )
+
+        XCTAssertEqual(blankFiltered.items.map(\.id), unfiltered.items.map(\.id))
+        XCTAssertEqual(blankFiltered.items.map(\.id), ["s1"])
+    }
+
     func testSQLiteReadProviderReusesOpenedReaderAcrossRepeatedReads() async throws {
         let paths = try makeServiceIPCPaths()
         try seedSearchFixture(at: paths.database.path)

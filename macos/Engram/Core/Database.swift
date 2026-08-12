@@ -457,19 +457,16 @@ final class DatabaseManager: @unchecked Sendable {
         projects: Set<String>,
         since: String?
     ) {
-        if !sources.isEmpty {
-            let ph = sources.map { _ in "?" }.joined(separator: ", ")
-            parts.append("AND s.source IN (\(ph))")
-            sources.forEach { args.append($0) }
-        }
-        if !projects.isEmpty {
-            let ph = projects.map { _ in "?" }.joined(separator: ", ")
-            parts.append("AND s.project IN (\(ph))")
-            projects.forEach { args.append($0) }
-        }
-        if let since {
-            parts.append("AND COALESCE(s.end_time, s.start_time) >= ?")
-            args.append(since)
+        let clauses = SearchFilterPredicates.clauses(
+            sources: Array(sources),
+            projects: Array(projects),
+            since: since
+        )
+        for clause in clauses {
+            parts.append("AND \(clause.sql)")
+            for binding in clause.bindings {
+                args.append(binding)
+            }
         }
     }
 

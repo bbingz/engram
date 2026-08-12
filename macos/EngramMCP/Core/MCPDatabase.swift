@@ -1411,19 +1411,13 @@ final class MCPDatabase {
             ]
             var values: [DatabaseValueConvertible?] = [model, dim, afterRowID]
 
-            if let source {
-                conditions.append("s.source = ?")
-                values.append(source)
-            }
-            if !expandedProjects.isEmpty {
-                let placeholders = Array(repeating: "?", count: expandedProjects.count).joined(separator: ", ")
-                conditions.append("s.project IN (\(placeholders))")
-                values.append(contentsOf: expandedProjects)
-            }
-            if let since {
-                conditions.append("COALESCE(s.end_time, s.start_time) >= ?")
-                values.append(since)
-            }
+            Self.appendSearchFilterPredicates(
+                source: source,
+                expandedProjects: expandedProjects,
+                since: since,
+                conditions: &conditions,
+                values: &values
+            )
             values.append(batchSize)
 
             let sql = """
@@ -2240,19 +2234,13 @@ final class MCPDatabase {
                 "s.orphan_status IS NULL",
                 SessionSemanticSearchPolicy.searchableTierSQL,
             ]
-            if let source {
-                conditions.append("s.source = ?")
-                values.append(source)
-            }
-            if !expandedProjects.isEmpty {
-                let placeholders = Array(repeating: "?", count: expandedProjects.count).joined(separator: ", ")
-                conditions.append("s.project IN (\(placeholders))")
-                values.append(contentsOf: expandedProjects)
-            }
-            if let since {
-                conditions.append("COALESCE(s.end_time, s.start_time) >= ?")
-                values.append(since)
-            }
+            Self.appendSearchFilterPredicates(
+                source: source,
+                expandedProjects: expandedProjects,
+                since: since,
+                conditions: &conditions,
+                values: &values
+            )
             values.append(limit)
 
             let sql = """
@@ -2300,19 +2288,13 @@ final class MCPDatabase {
             let pattern = "%\(CJKText.escapeLikePattern(query))%"
             var values: [DatabaseValueConvertible?] = [pattern]
 
-            if let source {
-                conditions.append("s.source = ?")
-                values.append(source)
-            }
-            if !expandedProjects.isEmpty {
-                let placeholders = Array(repeating: "?", count: expandedProjects.count).joined(separator: ", ")
-                conditions.append("s.project IN (\(placeholders))")
-                values.append(contentsOf: expandedProjects)
-            }
-            if let since {
-                conditions.append("COALESCE(s.end_time, s.start_time) >= ?")
-                values.append(since)
-            }
+            Self.appendSearchFilterPredicates(
+                source: source,
+                expandedProjects: expandedProjects,
+                since: since,
+                conditions: &conditions,
+                values: &values
+            )
             values.append(limit)
 
             let sql = """
@@ -2332,6 +2314,26 @@ final class MCPDatabase {
                 let content = stringValue(row["fts_content"]) ?? ""
                 let snippet = CJKText.cjkHighlightedSnippet(content: content, query: query) ?? content
                 return (row, snippet)
+            }
+        }
+    }
+
+    private static func appendSearchFilterPredicates(
+        source: String?,
+        expandedProjects: [String],
+        since: String?,
+        conditions: inout [String],
+        values: inout [DatabaseValueConvertible?]
+    ) {
+        let clauses = SearchFilterPredicates.clauses(
+            sources: source.map { [$0] } ?? [],
+            projects: expandedProjects,
+            since: since
+        )
+        for clause in clauses {
+            conditions.append(clause.sql)
+            for binding in clause.bindings {
+                values.append(binding)
             }
         }
     }
