@@ -67,8 +67,9 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 33 | ARCHIVE-DISCOVERY-001 | debt | Restart-stable bounded steady-state exact-source locator discovery | design-first implementer | After an explicit O(N) bootstrap, a durable locator inventory + FSEvents cursor makes normal discovery/capture bounded across restart; event-loss and capture-before-parse regressions pass | **DESIGN-READY / IMPLEMENTATION DEFERRED** — residual confirmed on `main@5114507f`; no safe prefix/limit patch. Scope and Done-when: `docs/reviews/2026-08-12-archive-discovery-001-design-scope.md`. |
 | 34 | REMOTE-MANIFEST-SCHEMA-001 | P2 | Remote Sync manifests accept unsupported schema versions | implementer | `ManifestCodec.decode` rejects unsupported manifest versions, aggregate catalog version is validated, valid peers still survive a malformed peer; named unit regressions cover direct decode and catalog paths | **DONE** 2026-08-12 — PR #317 merged at `main@ecd13db0`. |
 | 35 | REMOTE-TELEMETRY-001 | P2 | Archive storage failures are mislabeled as internal telemetry errors | implementer | Archive 503 and 507 responses map to `storage_unavailable`, unrelated 5xx remain `internal_error`, and a named unit regression plus the telemetry-store test class pass | **DONE** 2026-08-12 — PR #318 merged at `main@2ddaa7a2`. |
-| 36 | HOME-BADGE-001 | low | Home Changed Repos badge advertises full count while rendering prefix(5) | implementer | Badge clamps with todayPanelRowLimit; See-all/prefix use same limit; named _repro | **IMPLEMENTED / VERIFIED — PR #319 OPEN** 2026-08-12 — promoted from audit residual L16 (`HomeView.swift` changedReposSection). |
-| 37 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
+| 36 | HOME-BADGE-001 | low | Home Changed Repos badge advertises full count while rendering prefix(5) | implementer | Badge clamps with todayPanelRowLimit; See-all/prefix use same limit; named _repro | **DONE** 2026-08-12 — PR #319 merged at `main@7c158cdc`. |
+| 37 | LOGSTREAM-MODULES-001 | low | LogStream module picker frozen after first load | implementer | Merge observed modules every reload; late modules stay listed; named _repro | **IMPLEMENTED / VERIFIED — PR #320 OPEN** 2026-08-12 — promoted from audit residual L33 (`LogStreamView.swift` availableModules fill). |
+| 38 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
 
@@ -161,3 +162,8 @@ rows (`macos/Engram/Views/Pages/HomeView.swift` continue/follow-up sections), bu
 Changed Repos still used `badge: "\(projectGroups.count)"` with
 `prefix(5)` (`changedReposSection`). Audit L16 in
 `docs/reviews/2026-07-17-engram-full-audit.md`.
+
+Evidence for LOGSTREAM-MODULES-001: `LogStreamView.reload` previously set
+`availableModules` only when empty (`macos/Engram/Views/Observability/LogStreamView.swift`
+around the first-load gate). Later OSLog/service categories never entered the
+picker. Audit L33 in `docs/reviews/2026-07-17-engram-full-audit.md`.

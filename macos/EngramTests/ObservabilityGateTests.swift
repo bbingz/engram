@@ -53,6 +53,33 @@ final class ObservabilityGateTests: XCTestCase {
                        "LevelBadge must not have a warn color branch")
     }
 
+
+    /// L33 / LOGSTREAM-MODULES-001: module picker must keep growing as new
+    /// categories appear across reloads (not only on the first empty fill).
+    func testLogStreamModulePickerKeepsLateAppearingModules_repro() throws {
+        let source = try source("macos/Engram/Views/Observability/LogStreamView.swift")
+        XCTAssertFalse(
+            source.contains("if availableModules.isEmpty"),
+            "LogStreamView must not freeze the module picker after the first load"
+        )
+        XCTAssertTrue(
+            source.contains("LogStreamModuleCatalog.merging"),
+            "LogStreamView must merge newly observed modules on every reload"
+        )
+
+        let first = LogStreamModuleCatalog.merging(existing: [], observed: ["ui"])
+        XCTAssertTrue(first.contains("ui"))
+        XCTAssertTrue(first.contains("runner"), "known service modules seed the catalog")
+
+        let second = LogStreamModuleCatalog.merging(
+            existing: first,
+            observed: ["brand-new-module"]
+        )
+        XCTAssertTrue(second.contains("ui"), "prior modules must survive later reloads")
+        XCTAssertTrue(second.contains("brand-new-module"), "late-appearing modules must be added")
+        XCTAssertEqual(second, second.sorted(), "picker modules stay sorted")
+    }
+
     func testObservabilityIsGatedDefaultOff() throws {
         let source = try source("macos/Engram/Views/Pages/ObservabilityView.swift")
         XCTAssertTrue(source.contains("@AppStorage(\"showDeveloperTools\")"),

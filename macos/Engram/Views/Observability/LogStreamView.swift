@@ -152,17 +152,31 @@ struct LogStreamView: View {
             .sorted { $0.ts > $1.ts }
             .prefix(200)
         logs = Array(merged)
-        if availableModules.isEmpty {
-            // Known service categories (mirror ServiceLogCategory, which lives in
-            // the service-only target and isn't linked into the app) plus the
-            // app modules OSLogReader observed.
-            let serviceModules = ["runner", "ipc", "checkpoint", "writer", "reader", "ai"]
-            availableModules = Array(Set(appModules + serviceModules)).sorted()
-        }
+        // L33: grow the module picker across reloads. Filling only when empty
+        // dropped categories that appeared after the first poll (or only in
+        // service ring lines).
+        let observedModules = appModules + serviceLines.map(\.module)
+        availableModules = LogStreamModuleCatalog.merging(
+            existing: availableModules,
+            observed: observedModules
+        )
         // Only banner when the app-log store is blocked AND we have no service
         // lines either, so a working service log isn't masked by an OSLog block.
         logsUnavailable = osLogUnavailable && serviceLines.isEmpty
         isLoading = false
+    }
+}
+
+
+// MARK: - Module catalog
+
+/// Pure merge used by LogStreamView so late-appearing modules stay pickable.
+enum LogStreamModuleCatalog {
+    /// Known service categories (mirror ServiceLogCategory; service-only target).
+    static let knownServiceModules = ["runner", "ipc", "checkpoint", "writer", "reader", "ai"]
+
+    static func merging(existing: [String], observed: [String], knownService: [String] = knownServiceModules) -> [String] {
+        Array(Set(existing).union(observed).union(knownService)).sorted()
     }
 }
 
