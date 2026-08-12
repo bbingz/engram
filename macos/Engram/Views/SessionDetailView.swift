@@ -80,6 +80,8 @@ struct SessionDetailView: View {
     @State private var isLoadingMore = false
     @State private var loadedProducedCount = 0
     @State private var transcriptLoadTask: Task<Void, Never>? = nil
+    @State private var displayFilterTask: Task<Void, Never>? = nil
+    @State private var displayFilterSessionId: String? = nil
     // Bumped whenever `displayIndexed` is recomputed; the match-scan task is keyed
     // on it (plus searchText) so the off-main scan re-runs after a filter change or
     // a paged rebuild, never on a stale snapshot.
@@ -108,18 +110,59 @@ struct SessionDetailView: View {
                 )
             }
             displayIndexed.append(contentsOf: visibleNew)
-        } else {
-            displayIndexed = indexedMessages.filter { idx in
-                Self.isMessageVisible(
-                    idx,
-                    typeVisibility: typeVisibility,
-                    showSystemPrompts: showSystemPrompts,
-                    showAgentComm: showAgentComm
-                )
-            }
+            // Drive the off-main match rescan (keyed on displayVersion + searchText).
+            displayVersion &+= 1
+            return
         }
-        // Drive the off-main match rescan (keyed on displayVersion + searchText).
-        displayVersion &+= 1
+
+        displayFilterTask?.cancel()
+        let snapshot = indexedMessages
+        let visibility = typeVisibility
+        let systemPrompts = showSystemPrompts
+        let agentComm = showAgentComm
+        let sessionId = session.id
+        displayFilterTask = Task { @MainActor in
+            let filterWork = Task.detached(priority: .userInitiated) { () -> [IndexedMessage]? in
+                var visible: [IndexedMessage] = []
+                visible.reserveCapacity(snapshot.count)
+                for idx in snapshot {
+                    guard !Task.isCancelled else { return nil }
+                    if Self.isMessageVisible(
+                        idx,
+                        typeVisibility: visibility,
+                        showSystemPrompts: systemPrompts,
+                        showAgentComm: agentComm
+                    ) {
+                        visible.append(idx)
+                    }
+                }
+                return visible
+            }
+            let filtered = await withTaskCancellationHandler(
+                operation: { await filterWork.value },
+                onCancel: { filterWork.cancel() }
+            )
+            guard !Task.isCancelled,
+                  displayFilterSessionId == sessionId,
+                  var filtered else { return }
+
+            // A Load-more append may finish while the full toggle filter is off-main.
+            // Merge only that new suffix under the captured gates; never re-filter
+            // the already-scanned prefix on the main actor (acceptance A3).
+            if indexedMessages.count > snapshot.count {
+                filtered.append(contentsOf: indexedMessages[snapshot.count...].filter { idx in
+                    Self.isMessageVisible(
+                        idx,
+                        typeVisibility: visibility,
+                        showSystemPrompts: systemPrompts,
+                        showAgentComm: agentComm
+                    )
+                })
+            }
+            displayIndexed = filtered
+            // Drive the off-main match rescan (keyed on displayVersion + searchText).
+            displayVersion &+= 1
+        }
     }
 
     /// Decides whether an indexed message survives the current filters.
@@ -625,6 +668,9 @@ struct SessionDetailView: View {
         // Single per-session load path (keyed by session.id) — favorite + messages +
         // parent info all run here so ordering is deterministic and re-runs on switch.
         .task(id: session.id) {
+            displayFilterTask?.cancel()
+            displayFilterTask = nil
+            displayFilterSessionId = session.id
             isLoadingMessages = true
             messages = []
             indexedMessages = []
@@ -696,6 +742,8 @@ struct SessionDetailView: View {
             )
         }
         .onDisappear {
+            displayFilterTask?.cancel(); displayFilterTask = nil
+            displayFilterSessionId = nil
             parentInfoTask?.cancel(); parentInfoTask = nil
             relatedTask?.cancel(); relatedTask = nil
             transcriptLoadTask?.cancel(); transcriptLoadTask = nil
