@@ -76,3 +76,9 @@ Lead: Grok (stewardship goal) · Implementation: Grok + Herdr Codex `retro-handl
 - Enqueued next-cycle **CURSOR-CWD-001** (design first) + ARCH-001 debt; drafted `docs/cursor-cwd-ownership-design.md` (fail-closed authority order; non-authorities include selected editor file).
 - Pushed project-move recovery as `c72e18ae` on PR #305; CI re-running.
 
+## Follow-on (loop 10:41)
+
+- **CI on `4541e914`**: Tests/CI Gate/Node/macOS/Dep Review **green**; CodeQL Swift product still in progress → merge blocked.
+- **CURSOR-CWD-001 implemented** (Codex WIP verified): `CursorWorkspaceOwnershipResolver` maps unique `workspaceStorage/*/composer.composerData` index → folder; ignores `fileSelections`; multi-index conflict fails closed. Three `_repro`s + rawText regression green.
+- Queue marks CURSOR-CWD-001 DONE; design/followups updated.
+

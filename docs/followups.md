@@ -34,12 +34,11 @@ refuted. KIMI-001 and WRITER-LOCATOR-001 retain document-scoped legacy
 references; one duplicate MCP submission maps to the existing MCP-001 row.
 MCP-001 is a confirmed MCP 2025-11-25 object-root violation.
 
-All `_repro` names from this closeout are proposed TDD entry points only; none
-was created or executed during adjudication. A source with no retained finding
-was not proven defect-free. Twenty-one findings can enter TDD; CURSOR-CWD-001
-remains design/evidence pending until a deterministic workspace-ownership
-contract is established. This readiness scope does not close the
-repository-wide audit.
+The closeout's proposed regression names were specifications at adjudication
+time, not execution evidence. A source with no retained finding was not proven
+defect-free. CURSOR-CWD-001 now has an accepted deterministic
+workspace-ownership contract and executable coverage on PR #305. This does not
+close the repository-wide audit.
 
 | Batch | Status | Confirmed IDs |
 |-------|--------|---------------|
@@ -49,7 +48,7 @@ repository-wide audit.
 | **A4 — Adapter ingestion guardrails** | stacked PR #208 | ADAPTER-CC-001, SRC-COMMANDCODE-001, VSCODE-INCR-001 |
 | **B1 — Composite-input discovery and invalidation** | stacked PR #209 | ADAPTER-GEMINI-001, COPILOT-AUX-001, COPILOT-DISCOVERY-001 |
 | **B2 — OpenCode archive and byte accounting** | stacked PR #210 | ADAPTER-OPENCODE-001, ADAPTER-OPENCODE-002 |
-| **B3 — Cursor content and ownership** | partial: content in stacked PR #211; cwd design pending | CURSOR-CONTENT-001, CURSOR-CWD-001 |
+| **B3 — Cursor content and ownership** | content in stacked PR #211; deterministic cwd ownership implemented on PR #305 | CURSOR-CONTENT-001, CURSOR-CWD-001 |
 | **C1a — Archive V2 source-toggle convergence** | stacked PR #212 | SRC-001 |
 | **C1b — Writer locator relocation** | stacked PR #213 | WRITER-LOCATOR-001 |
 | **C1c — Startup parent-backfill pagination** | stacked PR #214 | PARENT-BACKFILL-STARVE-001 |
@@ -62,10 +61,10 @@ to `MCP-001`. `AG-BYTES-001` is refuted by a 1–2 vote because Antigravity's
 retained `pbSizeBytes` is the documented historical logical size of the complete
 `.pb` session.
 
-Each implementation-ready finding requires a failing `_repro`, recorded RED,
+Each implementation-ready finding requires a failing regression, recorded RED,
 minimum production fix, focused/full GREEN, and a fresh Codex `PASS` before
-commit/push/stacked PR. CURSOR-CWD-001 must first establish a deterministic
-workspace-ownership contract and must never infer authoritative project state
+commit/push/stacked PR. CURSOR-CWD-001's accepted contract uses only a unique
+per-workspace composer pointer and never infers authoritative project state
 from an unrelated file selection. No automatic merge is authorized.
 
 ## Post-review residuals (2026-07-18 full-project review)

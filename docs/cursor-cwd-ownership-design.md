@@ -1,6 +1,6 @@
 # Design Doc: Cursor workspace ownership (CURSOR-CWD-001)
 
-- **Status**: Draft
+- **Status**: Implemented on PR #305
 - **Owner**: Grok (stewardship) + implementer
 - **Date**: 2026-08-12
 - **Related**: `docs/followups.md` B3; `CURSOR-CWD-001`; `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`; PR #211 (Cursor content only)
@@ -21,7 +21,7 @@ repo when the user has multi-root workspaces or browsed a dependency path.
 - Goals:
   - Deterministic rule for when Engram may set Cursor `cwd` / `project`.
   - Fail closed: prefer empty over wrong.
-  - Executable `_repro` that rejects unrelated file selection as authority.
+  - Executable regression coverage that rejects unrelated file selection as authority.
 - Non-goals:
   - Reconstructing full multi-root VS Code workspace graphs.
   - Inferring project from message text or tool output paths.
@@ -36,18 +36,24 @@ repo when the user has multi-root workspaces or browsed a dependency path.
 - Per-session byte accounting already avoids attributing whole `state.vscdb`
   size (content work in #211 family).
 
-## Proposed design
+## Accepted design
 
-### Authority order (first match wins)
+### Authority rule
 
-1. **Composer-bound workspace folder** — a path field on `composerData` that
-   Cursor stores as the conversation’s workspace root (exact key TBD by fixture
-   inspection of real `composerData` JSON). Must be an absolute directory path.
-2. **Explicit workspace id → folder map** — only if `composerData` names a
-   workspace id that maps 1:1 to a single folder path in Cursor storage (not a
-   multi-folder workspace unless all folders share one basename project policy
-   we already use elsewhere — default: skip multi-root).
-3. **Else leave empty** — do not guess.
+The definitive format evidence in `docs/session-formats/cursor.md` identifies
+the only composer-bound mapping Cursor persists:
+
+1. Enumerate direct children of `User/workspaceStorage`.
+2. Accept only a `workspace.json` with a local absolute `file://` `folder` URI.
+   A `configuration` workspace is potentially multi-root and is skipped.
+3. Read `ItemTable['composer.composerData'].allComposers[]` from that
+   workspace's `state.vscdb`.
+4. Aggregate folder paths by `composerId`. Set ownership only when the set has
+   exactly one unique path. Zero paths or conflicting paths leave ownership
+   empty.
+
+The mapping is refreshed once per session discovery pass and reused across all
+parses in that pass. A standalone parse lazily loads the same mapping.
 
 ### Explicit non-authorities (must never set cwd alone)
 
@@ -58,8 +64,8 @@ repo when the user has multi-root workspaces or browsed a dependency path.
 
 ### Project derivation
 
-When `cwd` is set, derive `project` with the same basename/alias rules used by
-other Swift adapters (no Cursor-only special case beyond ownership).
+When `cwd` is set, `project` is its final path component, matching the Swift
+indexer's standard cwd fallback. No Cursor-only alias rule is added.
 
 ### Persistence
 
@@ -81,24 +87,25 @@ rows remain valid.
 
 ## Test plan
 
-1. Fixture: `composerData` with a clear workspace root key → `cwd`/`project`
-   populated.
-2. `_repro`: composer with only a selected-file / open-editors style field and
-   no workspace root → remains `cwd == ""` / `project == nil`.
-3. Multi-root workspace id without single folder → empty.
-4. Existing Cursor content / byte-accounting tests stay green.
+1. `testCursorUsesUniqueWorkspaceIndexInsteadOfUnrelatedFileSelection_repro`
+   proves a unique pointer-index owner wins over an unrelated selected file.
+2. `testCursorFileSelectionAloneDoesNotSetWorkspaceOwnership_repro` proves a
+   selected file alone leaves `cwd == ""` / `project == nil`.
+3. `testCursorConflictingWorkspaceIndexesFailClosed_repro` proves two distinct
+   workspace owners leave ownership empty.
+4. Existing Cursor content / byte-accounting tests remain in the focused suite.
 
 ## Rollout
 
-- Design accept → implement in `CursorAdapter` + focused
-  `EngramCoreTests` Cursor fixtures.
+- Implemented in `CursorAdapter` with focused `EngramCoreTests` fixtures.
 - No migration; re-index updates new parses on next scan.
 - Revert: restore empty cwd assignment.
 
 ## Risks and open questions
 
-1. **Which real `composerData` keys are stable across Cursor versions?** Need
-   at least two host fixtures before coding the happy path.
-2. Multi-root policy: empty vs primary folder — default empty until product
-   pick.
-3. Do not backfill historical rows until the key is proven on live DBs.
+1. Cursor may omit or prune a per-workspace pointer. Those sessions remain
+   unowned rather than falling back to prompt context.
+2. Multi-root `configuration` workspaces intentionally remain empty until an
+   explicit primary-root product contract exists.
+3. No eager migration is added; normal re-indexing applies ownership when the
+   pointer index is available.

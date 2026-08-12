@@ -61,9 +61,8 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 
 | Rank | ID | Sev | Title | Owner path | Done-when | Status |
 |------|----|-----|-------|------------|-----------|--------|
-| 30 | CURSOR-CWD-001 | P2 | Cursor workspace ownership must not use unrelated file selection as authoritative CWD | implementer | Design note + deterministic ownership rule + `_repro` that wrong selection does not set project/cwd | **OPEN** — design first (`docs/followups.md` B3) |
+| 30 | CURSOR-CWD-001 | P2 | Cursor workspace ownership must not use unrelated file selection as authoritative CWD | implementer | Accepted design + unique pointer-index ownership + named regression tests for wrong selection/ambiguity | **DONE** 2026-08-12 |
 | 31 | ARCH-001 | debt | Triple Read SQL stacks / shared CoreRead predicates | later | Shared predicate module + cross-surface parity suite | OPEN — structural, not this PR |
 | 32 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
-
