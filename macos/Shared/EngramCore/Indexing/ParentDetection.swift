@@ -17,7 +17,7 @@ public enum ParentDetection {
         case ambiguous(candidates: [ScoredParent])
     }
 
-    public static let detectionVersion = 5
+    public static let detectionVersion = 6
 
     private static let ambiguityThresholdRatio = 0.9
     private static let maxAmbiguousCandidateCount = 3

@@ -1356,6 +1356,22 @@ public enum StartupBackfills {
             return 0
         }
 
+        // L11 / SUGGESTED-PARENT-RESCORE-001: a single suggested parent is
+        // heuristic output, not a confirmed relationship. Invalidate it on a
+        // detector-version bump so the later startup phase can score current
+        // candidates. Manual and confirmed links remain authoritative.
+        let resetSuggested = try db.executeAndCountChanges(
+            sql: """
+            UPDATE sessions
+            SET suggested_parent_id = NULL,
+                link_checked_at = NULL,
+                suggestion_status = NULL,
+                suggestion_candidates = NULL
+            WHERE suggested_parent_id IS NOT NULL
+              AND parent_session_id IS NULL
+              AND (link_source IS NULL OR link_source != 'manual')
+            """
+        )
         let resetAmbiguous = try db.executeAndCountChanges(
             sql: """
             UPDATE sessions
@@ -1401,7 +1417,7 @@ public enum StartupBackfills {
             """,
             arguments: ["\(ParentDetection.detectionVersion)"]
         )
-        return resetAmbiguous + resetUnchecked + resetDispatched
+        return resetSuggested + resetAmbiguous + resetUnchecked + resetDispatched
     }
 
     /// Link Codex children from vendor-stamped `thread_spawn` / `parent_thread_id`

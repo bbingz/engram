@@ -638,6 +638,24 @@ export function resetStaleDetections(db: BetterSqlite3.Database): number {
 
   if (storedVersion >= DETECTION_VERSION) return 0;
 
+  // Single-parent suggestions are heuristic output, not confirmed links. Clear
+  // stale suggestions so the current detector can score them again while
+  // preserving manual/confirmed parent links and the session's role/tier.
+  const rSuggested = db
+    .prepare(
+      `
+    UPDATE sessions
+    SET suggested_parent_id = NULL,
+        link_checked_at = NULL,
+        suggestion_status = NULL,
+        suggestion_candidates = NULL
+    WHERE suggested_parent_id IS NOT NULL
+      AND parent_session_id IS NULL
+      AND (link_source IS NULL OR link_source != 'manual')
+  `,
+    )
+    .run();
+
   const r0 = db
     .prepare(
       `
@@ -693,7 +711,7 @@ export function resetStaleDetections(db: BetterSqlite3.Database): number {
     "INSERT INTO metadata (key, value) VALUES ('detection_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
   ).run(String(DETECTION_VERSION));
 
-  return r0.changes + r1.changes + r2.changes;
+  return rSuggested.changes + r0.changes + r1.changes + r2.changes;
 }
 
 export interface OrphanScanAdapter {

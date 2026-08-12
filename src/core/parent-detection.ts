@@ -3,7 +3,7 @@
 // Pure functions — no DB or side effects.
 
 /** Bump this when detection logic changes to trigger re-evaluation of unlinked sessions. */
-export const DETECTION_VERSION = 5;
+export const DETECTION_VERSION = 6;
 const AMBIGUITY_THRESHOLD_RATIO = 0.9;
 const MAX_AMBIGUOUS_CANDIDATES = 3;
 

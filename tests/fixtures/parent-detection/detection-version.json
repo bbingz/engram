@@ -1,5 +1,5 @@
 {
-  "detectionVersion": 5,
+  "detectionVersion": 6,
   "dispatchCases": [
     {
       "input": "Review this repository implementation",
@@ -83,6 +83,6 @@
       "score": 0
     }
   ],
-  "sourceCommit": "cce33391",
+  "sourceCommit": "53c171d1",
   "sourceFile": "src/core/parent-detection.ts"
 }

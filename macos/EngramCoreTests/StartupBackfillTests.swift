@@ -346,6 +346,120 @@ final class StartupBackfillTests: XCTestCase {
         }
     }
 
+    // L11 / SUGGESTED-PARENT-RESCORE-001: a detection-version bump must
+    // invalidate a stale single suggestion before the same startup pass scores
+    // current candidates. Confirmed/manual links and skip classification stay put.
+    func testDetectionVersionBumpResetsSingleSuggestedParentAndRescores_repro() async throws {
+        try writer.write { db in
+            try db.execute(sql: "INSERT INTO metadata(key, value) VALUES ('detection_version', '5')")
+            try insertSession(
+                db,
+                id: "wrong-parent",
+                source: "claude-code",
+                startTime: "2026-04-20T10:00:00.000Z",
+                cwd: "/Users/bing/-Code-/old",
+                project: "old",
+                filePath: "/tmp/wrong-parent.jsonl"
+            )
+            try insertSession(
+                db,
+                id: "correct-parent",
+                source: "claude-code",
+                startTime: "2026-04-23T10:00:00.000Z",
+                endTime: "2026-04-23T11:00:00.000Z",
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram",
+                filePath: "/tmp/correct-parent.jsonl"
+            )
+            try insertSession(
+                db,
+                id: "confirmed-parent",
+                source: "claude-code",
+                startTime: "2026-04-19T10:00:00.000Z",
+                filePath: "/tmp/confirmed-parent.jsonl"
+            )
+            try insertSession(
+                db,
+                id: "stale-child",
+                source: "gemini-cli",
+                startTime: "2026-04-23T10:10:00.000Z",
+                cwd: "/Users/bing/-Code-/engram",
+                project: "engram",
+                filePath: "/tmp/stale-child.jsonl",
+                agentRole: "dispatched",
+                tier: "skip",
+                linkCheckedAt: "2026-04-23T10:11:00.000Z",
+                suggestionStatus: "suggested-v5",
+                suggestionCandidates: "[{\"id\":\"wrong-parent\",\"score\":1}]",
+                suggestedParentId: "wrong-parent"
+            )
+            try insertSession(
+                db,
+                id: "confirmed-child",
+                source: "codex",
+                filePath: "/tmp/confirmed-child.jsonl",
+                agentRole: "subagent",
+                tier: "skip",
+                linkSource: "manual",
+                linkCheckedAt: "2026-04-23T10:12:00.000Z",
+                parentSessionId: "confirmed-parent"
+            )
+        }
+
+        var events: [StartupBackfillEvent] = []
+        let logger = RecordingStartupLogger()
+        try await StartupBackfills.runStartupMaintenanceAndParents(
+            indexed: 0,
+            emit: { events.append($0) },
+            log: logger,
+            indexer: RecordingStartupIndexer(indexed: 0),
+            database: WriterStartupBackfillDatabase(writer: writer, groupedDirRoots: { [] })
+        )
+
+        XCTAssertTrue(logger.warnings.isEmpty)
+        XCTAssertTrue(
+            events.contains(
+                StartupBackfillEvent(
+                    event: "backfill",
+                    payload: ["type": .string("detection_reset"), "count": .int(1)]
+                )
+            )
+        )
+        try writer.read { db in
+            let rescored = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: """
+                SELECT suggested_parent_id, suggestion_status, suggestion_candidates,
+                       link_checked_at, agent_role, tier
+                FROM sessions WHERE id = 'stale-child'
+                """
+            ))
+            XCTAssertEqual(rescored["suggested_parent_id"] as String?, "correct-parent")
+            XCTAssertNil(rescored["suggestion_status"] as String?)
+            XCTAssertNil(rescored["suggestion_candidates"] as String?)
+            XCTAssertNotNil(rescored["link_checked_at"] as String?)
+            XCTAssertEqual(rescored["agent_role"] as String?, "dispatched")
+            XCTAssertEqual(rescored["tier"] as String?, "skip")
+
+            let confirmed = try XCTUnwrap(Row.fetchOne(
+                db,
+                sql: """
+                SELECT parent_session_id, link_source, link_checked_at, agent_role, tier
+                FROM sessions WHERE id = 'confirmed-child'
+                """
+            ))
+            XCTAssertEqual(confirmed["parent_session_id"] as String?, "confirmed-parent")
+            XCTAssertEqual(confirmed["link_source"] as String?, "manual")
+            XCTAssertEqual(confirmed["link_checked_at"] as String?, "2026-04-23T10:12:00.000Z")
+            XCTAssertEqual(confirmed["agent_role"] as String?, "subagent")
+            XCTAssertEqual(confirmed["tier"] as String?, "skip")
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT value FROM metadata WHERE key = 'detection_version'"),
+                "6"
+            )
+        }
+    }
+
     /// D01 (wave-6 task 4 / multi-expert audit 2026-06-10): phase-1
     /// `indexSessions(runParentBackfills:)` used to run suggested-parent
     /// heuristics before Layer-1b originator. The originator query excludes
