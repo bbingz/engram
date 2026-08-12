@@ -17,3 +17,7 @@
 ## Human override
 - Pause: stop the scheduled task in Grok scheduler UI / delete task `019ff3bc9938`
 - Deploy/release: still requires explicit human auth per TODO
+
+## Milestone: PR #310 merged
+- Squash-merged 2026-08-12T04:09:31Z → `main@2389e049`
+- Next PR: https://github.com/bbingz/engram/pull/311 (`feat/arch-001a-search-filters`, ARCH-001A shared search filter predicates)
