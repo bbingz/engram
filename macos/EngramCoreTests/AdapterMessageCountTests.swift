@@ -3519,4 +3519,29 @@ final class AdapterMessageCountTests: XCTestCase {
     func testAntigravityCWDInferenceReturnsEmptyWithoutPaths() {
         XCTAssertEqual(AntigravityAdapter.inferCWDFromAbsolutePaths(in: "no absolute paths in auth.ts here"), "")
     }
+
+    func testAntigravityCWDInferenceReadsOnlyBoundedPrefix_repro() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let adapterURL = macosRoot.appendingPathComponent(
+            "Shared/EngramCore/Adapters/Sources/AntigravityAdapter.swift"
+        )
+        let source = try String(contentsOf: adapterURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private func inferredCWD("))
+        let end = try XCTUnwrap(
+            source.range(
+                of: "// Derive a working directory",
+                options: [],
+                range: start.lowerBound..<source.endIndex
+            )
+        )
+        let inferredCWD = String(source[start.lowerBound..<end.lowerBound])
+
+        // L34: the second CWD pass must not materialize the full transcript.
+        XCTAssertTrue(source.contains("private static let cwdInferenceByteLimit = 50_000"))
+        XCTAssertFalse(inferredCWD.contains("String(contentsOfFile:"))
+        XCTAssertTrue(inferredCWD.contains("FileHandle(forReadingFrom:"))
+        XCTAssertTrue(inferredCWD.contains("read(upToCount: Self.cwdInferenceByteLimit)"))
+    }
 }
