@@ -1950,17 +1950,16 @@ struct SQLiteEngramServiceReadProvider: EngramServiceReadProvider {
         to parts: inout [String],
         args: inout [DatabaseValueConvertible]
     ) {
-        if let source = request.source?.trimmingCharacters(in: .whitespacesAndNewlines), !source.isEmpty {
-            parts.append("AND s.source = ?")
-            args.append(source)
-        }
-        if let project = request.project?.trimmingCharacters(in: .whitespacesAndNewlines), !project.isEmpty {
-            parts.append("AND s.project = ?")
-            args.append(project)
-        }
-        if let since = request.since?.trimmingCharacters(in: .whitespacesAndNewlines), !since.isEmpty {
-            parts.append("AND COALESCE(s.end_time, s.start_time) >= ?")
-            args.append(since)
+        let clauses = SearchFilterPredicates.clauses(
+            sources: request.source.map { [$0] } ?? [],
+            projects: request.project.map { [$0] } ?? [],
+            since: request.since
+        )
+        for clause in clauses {
+            parts.append("AND \(clause.sql)")
+            for binding in clause.bindings {
+                args.append(binding)
+            }
         }
     }
 
