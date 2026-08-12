@@ -32,7 +32,9 @@ The closeout workflow completed 15/15 discovery scopes, explicitly named all
 17 Swift sources, and adjudicated 23 canonical candidates: 22 confirmed and 1
 refuted. KIMI-001 and WRITER-LOCATOR-001 retain document-scoped legacy
 references; one duplicate MCP submission maps to the existing MCP-001 row.
-MCP-001 is a confirmed MCP 2025-11-25 object-root violation.
+MCP-001 was a confirmed MCP 2025-11-25 object-root violation at audit time; it
+was fixed by #215 and passed a shipped-Swift post-merge re-verification on
+2026-08-12.
 
 The closeout's proposed regression names were specifications at adjudication
 time, not execution evidence. A source with no retained finding was not proven
@@ -52,7 +54,7 @@ close the repository-wide audit.
 | **C1a — Archive V2 source-toggle convergence** | stacked PR #212 | SRC-001 |
 | **C1b — Writer locator relocation** | stacked PR #213 | WRITER-LOCATOR-001 |
 | **C1c — Startup parent-backfill pagination** | stacked PR #214 | PARENT-BACKFILL-STARVE-001 |
-| **D1 — MCP result contract** | stacked PR #215 | MCP-001 |
+| **D1 — MCP result contract** | merged #215; post-merge re-verification PASS 2026-08-12 | MCP-001 |
 
 Legacy references: KIMI-001 corresponds to `H08` only within
 `2026-06-10-multi-expert-audit.md`, and WRITER-LOCATOR-001 corresponds to `L3`
@@ -78,6 +80,7 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | ID | Status | Home / next step |
 |----|--------|------------------|
 | **R1** / ARCH-001 | open (structural investment; A/B/C shipped) | ARCH-001A shared search predicates (#311), ARCH-001B list/aggregate visibility convergence (#312), and ARCH-001C residual list visibility (#313) are on main. The remaining work is the full CoreRead pool/DTO migration plus an executable cross-surface parity suite; those deferred structural items keep ARCH-001 open. The post-C literal residual classification is recorded in `docs/reviews/2026-08-12-stewardship-queue.md`. |
+| **MCP-001** | closed (#215; reverified 2026-08-12) | The shipped alias-list producer returns an object root (`macos/EngramMCP/Core/MCPDatabase.swift:1591-1607`), its route uses the shared success wrapper (`macos/EngramMCP/Core/MCPToolRegistry.swift:1153-1170`), and executable catalog/alias contracts plus the golden assert the object shape (`macos/EngramMCPTests/EngramMCPExecutableTests.swift:381-496,5095-5148`; `tests/fixtures/mcp-golden/manage_project_alias.list.json:8-23`). All 27 current Swift success-wrapper call sites were inspected; no non-object structured root remains. |
 | **READ-001/002/003** | closed (post-audit follow-up) | MCP multi-term session-scoped AND, activity-time `since`, and exact project-or-alias filtering are covered by executable `_repro` tests; this does not close ARCH-001 |
 | **R4-dual-tx / EMB-009** | closed (#223) | Shipped insight backfill writes success vectors and item-failure accounting in one `writer.write`; successful rows set `insights.has_embedding=1`; the shipped-runner `_repro` forces failure accounting to throw and proves vector/flag rollback without changing R4 terminal taxonomy |
 | **MCP-002** | closed (#225) | `get_context`, `tool_analytics`, and `file_activity` now reuse shared list-visible and top-level predicates; shipped-binary `_repro` coverage includes `listContextSessions`, `topToolsSince`, and `fileHotspotsSince`. Existing READ-005 `orphan_status` behavior is unchanged. |
@@ -104,7 +107,13 @@ are not implementation-ready blockers for its operational closeout:
   current locator set before `batchSize` applies. A future design needs a
   durable locator inventory/work queue, normally bootstrapped by one explicit
   full crawl and maintained with FSEvents. Do not claim discovery itself is
-  bounded until that implementation and restart tests exist.
+  bounded until that implementation and restart tests exist. This is tracked
+  as `ARCHIVE-DISCOVERY-001` at stewardship rank 33: the current materialization
+  is at `macos/Shared/EngramCore/Adapters/Sources/ClaudeCodeAdapter.swift:96-109`
+  and `macos/Shared/EngramCore/Adapters/Sources/CodexAdapter.swift:503-514`,
+  while `macos/EngramCoreWrite/ArchiveV2/ArchiveCaptureCoordinator.swift:430-506`
+  applies its locator budget only after both full-list enumeration and
+  snapshotting.
 - **Canonical exporters for additional adapters.** Keep virtual, composite,
   adjacent-shard, path-sensitive, and database-backed locators unsupported
   until each adapter declares a complete canonical source set and passes a
