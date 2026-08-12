@@ -1506,6 +1506,23 @@ final class EngramServiceIPCTests: XCTestCase {
         XCTAssertEqual(status, .starting)
     }
 
+    /// R2.P2.premature_today_parents_status — socket-ready running status must not
+    /// leak pre-backfill todayParents into the menu-bar badge.
+    func testStatusMonitorZerosTodayParentsBeforeFirstSuccessfulScan_repro() async {
+        let monitor = ServiceStatusMonitor(staleAfter: 600)
+        await monitor.recordServiceReady()
+        await monitor.recordSchedule(nextScanIntervalSeconds: 300)
+
+        let status = await monitor.status(
+            indexStatus: EngramDatabaseIndexStatus(total: 42, todayParents: 7)
+        )
+
+        XCTAssertEqual(
+            status,
+            .running(total: 42, todayParents: 0, nextScanIntervalSeconds: 300)
+        )
+    }
+
     func testStatusCommandReportsDegradedAfterIndexFailure() async throws {
         let paths = try makeServiceIPCPaths()
         let gate = try ServiceWriterGate(databasePath: paths.database.path, runtimeDirectory: paths.runtime)

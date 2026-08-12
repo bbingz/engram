@@ -55,10 +55,12 @@ actor ServiceStatusMonitor {
 
         // After socket readiness, do not stay stuck on bare "starting" forever
         // while the initial scan is still in flight — expose schedule when known.
+        // R2.P2.premature_today_parents_status: do not publish parent KPI from a
+        // pre-backfill index snapshot; zero until the first successful scan.
         if serviceReady {
             return .running(
                 total: indexStatus.total,
-                todayParents: indexStatus.todayParents,
+                todayParents: 0,
                 nextScanIntervalSeconds: nextScanIntervalSeconds
             )
         }
