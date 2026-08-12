@@ -1125,6 +1125,40 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(kpi.sessions, 1)
         XCTAssertEqual(since, kpi.sessions, "R3: Activity counter must agree with KPI on same window seed")
         _ = byProject
+
+        // VIS-FILTER-ADHOC: compact source counts and project pickers must share
+        // listVisibleSQL with sourceStats (skip rows must not inflate them).
+        let bySource = try db.countsBySource()
+        XCTAssertEqual(bySource, ["codex": 1], "countsBySource must exclude skip-tier")
+        let projects = try db.listProjects()
+        XCTAssertEqual(projects, ["engram"], "listProjects must exclude skip-only projects")
+    }
+
+    /// VIS-FILTER-ADHOC: a project that only has skip-tier sessions must not
+    /// appear in the project picker (would surface ghost filters).
+    @MainActor
+    func testListProjectsExcludesSkipOnlyProjects_repro() throws {
+        try insertTestSession(
+            at: dbPath,
+            id: "skip-only-proj",
+            source: "codex",
+            project: "ghost-skip-project",
+            tier: "skip"
+        )
+        try insertTestSession(
+            at: dbPath,
+            id: "visible-proj",
+            source: "claude-code",
+            project: "real-project",
+            tier: "normal"
+        )
+
+        let projects = try db.listProjects()
+        XCTAssertTrue(projects.contains("real-project"))
+        XCTAssertFalse(
+            projects.contains("ghost-skip-project"),
+            "skip-only projects must not appear in listProjects"
+        )
     }
 
     @MainActor

@@ -132,6 +132,27 @@ final class SessionSyncTests: XCTestCase {
         XCTAssertEqual(candidates.first?.title, "Title")
     }
 
+    /// OFFLOAD-TOPLEVEL: suggested children are hidden from browse roots and
+    /// must not become independent push candidates either.
+    func testPushCandidatesExcludeSuggestedParentChildren_repro() throws {
+        let writer = try freshWriter("suggested-parent")
+        try writer.write { db in
+            try insertLocalSession(db, id: "root-1")
+            try insertLocalSession(db, id: "suggested-child-1")
+            try db.execute(
+                sql: "UPDATE sessions SET suggested_parent_id = 'root-1' WHERE id = 'suggested-child-1'"
+            )
+        }
+        let candidates = try writer.read { db in
+            try OffloadRepo.pushCandidates(db, project: "demo", cwd: "/Users/bing/-Code-/demo")
+        }
+        XCTAssertEqual(
+            candidates.map(\.id),
+            ["root-1"],
+            "sessions with suggested_parent_id set must not be push candidates"
+        )
+    }
+
     func testPushCandidatesScopeByCaseInsensitiveProjectOrCwd() throws {
         let writer = try freshWriter("scope")
         try writer.write { db in
