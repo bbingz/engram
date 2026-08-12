@@ -153,6 +153,64 @@ final class MigrationRunnerTests: XCTestCase {
         XCTAssertEqual(metadata, "1")
     }
 
+    // L9 / BROWSE-SORT-INDEX-001: the default updated-desc browse must not
+    // materialize a temporary sort over the full visible session set.
+    func testUpdatedDescBrowseUsesActivityTimeIndex_repro() throws {
+        let writer = try EngramDatabaseWriter(path: databasePath("activity-time-index.sqlite"))
+        try writer.migrate()
+
+        let activityIndexSQL = try writer.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_activity_time'"
+            )
+        }
+        XCTAssertNotNil(activityIndexSQL, "fresh migration must create idx_sessions_activity_time")
+
+        // Give SQLite representative browse cardinality while preserving the
+        // product's post-migration planner state (the runtime does not ANALYZE).
+        try writer.write { db in
+            try db.execute(sql: """
+                WITH RECURSIVE browse_rows(n) AS (
+                    SELECT 1
+                    UNION ALL
+                    SELECT n + 1 FROM browse_rows WHERE n < 500
+                )
+                INSERT INTO sessions(id, source, start_time, end_time, file_path, hidden_at, tier)
+                SELECT
+                    printf('browse-%04d', n),
+                    'codex',
+                    printf('2026-01-%02dT00:00:00.000Z', (n % 28) + 1),
+                    CASE WHEN n % 3 = 0
+                         THEN printf('2026-02-%02dT00:00:00.000Z', (n % 28) + 1)
+                    END,
+                    printf('/tmp/browse-%04d.jsonl', n),
+                    CASE WHEN n % 20 = 0 THEN '2026-03-01T00:00:00.000Z' END,
+                    CASE WHEN n % 25 = 0 THEN 'skip' END
+                FROM browse_rows;
+            """)
+        }
+
+        let plan = try writer.read { db in
+            try Row.fetchAll(db, sql: """
+                EXPLAIN QUERY PLAN
+                SELECT * FROM sessions
+                WHERE \(SessionVisibilityFilter.listVisibleSQL)
+                ORDER BY COALESCE(end_time, start_time) DESC
+                LIMIT 200 OFFSET 0
+            """).map { $0["detail"] as String }
+        }
+
+        XCTAssertTrue(
+            plan.contains { $0.contains("USING INDEX idx_sessions_activity_time") },
+            "updated-desc browse must use activity-time ordering index; plan=\(plan)"
+        )
+        XCTAssertFalse(
+            plan.contains { $0.contains("USE TEMP B-TREE FOR ORDER BY") },
+            "updated-desc browse must not filesort the visible session set; plan=\(plan)"
+        )
+    }
+
     func testAddsContentFingerprintColumnForTailMerges_repro() throws {
         let writer = try EngramDatabaseWriter(path: databasePath("content-fingerprint.sqlite"))
         try writer.migrate()

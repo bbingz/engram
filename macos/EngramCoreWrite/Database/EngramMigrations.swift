@@ -59,6 +59,10 @@ enum EngramMigrations {
         try db.execute(sql: """
             CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
             CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions(start_time);
+            -- Serves the default list-visible updated-desc browse without a temporary sort.
+            CREATE INDEX IF NOT EXISTS idx_sessions_activity_time
+                ON sessions(hidden_at, COALESCE(end_time, start_time) DESC)
+                WHERE hidden_at IS NULL AND (tier IS NULL OR tier != 'skip');
             CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions(cwd);
             CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
             CREATE INDEX IF NOT EXISTS idx_sessions_file_path ON sessions(file_path);
