@@ -62,7 +62,33 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | Rank | ID | Sev | Title | Owner path | Done-when | Status |
 |------|----|-----|-------|------------|-----------|--------|
 | 30 | CURSOR-CWD-001 | P2 | Cursor workspace ownership must not use unrelated file selection as authoritative CWD | implementer | Accepted design + unique pointer-index ownership + named regression tests for wrong selection/ambiguity | **DONE** 2026-08-12 |
-| 31 | ARCH-001 | debt | Triple Read SQL stacks / shared CoreRead predicates | implementer | Shared predicate module + cross-surface parity suite | **PARTIAL / ARCH-001C IN PROGRESS** — ARCH-001A shared search filters done (#311); ARCH-001B list/aggregate visibility convergence done (#312); ARCH-001C converges residual App browse, Service/MCP cost KPI, and MCP resource predicates on `feat/arch-001c-list-residuals`; full CoreRead/pool/DTO migration remains open |
-| 32 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
+| 31 | ARCH-001 | debt | Triple Read SQL stacks / shared CoreRead predicates | implementer | Shared predicate module + cross-surface parity suite | **PARTIAL — A/B/C DONE**: ARCH-001A shared search predicates (#311), ARCH-001B list/aggregate convergence (#312), and ARCH-001C residual list visibility (#313) shipped. Full CoreRead pool/DTO migration and an executable cross-surface parity suite remain deferred structural work; ARCH-001 stays open. |
+| 32 | MCP-001-REVERIFY | P2 | Post-#215 MCP object-root contract residual audit | next implementer | Re-grep every shipped MCP success-result constructor; either prove object-root coverage or capture an actionable residual with a named unit regression such as `testMCPObjectRootContract_repro` before changing production code | **OPEN / NEXT** — read-only audit first |
+| 33 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
+
+### ARCH-001 A/B/C residual audit (`main@394269c9`)
+
+Scope: literal, case-insensitive `hidden_at IS NULL` matches under the shipped
+App, Service, and MCP Swift targets. A match is actionable only when the
+surface is a default list/browse/KPI and skip-tier rows can change its product
+result. Search deliberately uses the stricter skip+lite policy; diagnostics,
+hierarchy inspection, and mutation guards do not inherit list-visible
+semantics.
+
+| File:line | Classification | Evidence / disposition |
+|-----------|----------------|------------------------|
+| `macos/Engram/Core/Database.swift:515,543,577,640` | intentional search | FTS and LIKE keyword paths also exclude both `skip` and `lite`; do not replace with the list-visible predicate, which keeps `lite`. |
+| `macos/Engram/Core/Database.swift:1200` | intentional diagnostic | `tierDistribution` must retain visible `skip` rows to report its explicit `skip` bucket. |
+| `macos/Engram/Core/Database.swift:1385,1397,1414,1431,1494,1515` | intentional includeHidden / hierarchy diagnostic | Child, suggestion, and Agents-page counts intentionally inspect skip-tier subagent rows; `includeHidden` controls manual-hidden rows, not child-tier visibility. |
+| `macos/EngramService/Core/EngramServiceReadProvider.swift:610,679,919` | intentional search | LIKE, FTS, and semantic candidates pair the hidden predicate with `SessionSemanticSearchPolicy.searchableTierSQL`. |
+| `macos/EngramService/Core/EngramServiceReadProvider.swift:1014` | intentional diagnostic | Raw per-source `sessionCount` includes skip by contract; coverage numerators and denominators separately use the list-visible/index-eligible population (`:1028-1039`). |
+| `macos/EngramMCP/Core/MCPDatabase.swift:1408,2235,2286` | intentional search | Semantic, FTS, and LIKE paths pair the predicate with `SessionSemanticSearchPolicy.searchableTierSQL` (`:1410,2237,2288`). |
+| `macos/EngramService/Core/EngramServiceCommandHandler.swift:1336,1527` | intentional mutation guard | Source-disable and hide-empty updates use the predicate only to make state changes idempotent; neither is a list/browse read. |
+| `macos/EngramService/Core/EngramServiceCommandHandler.swift:1681,1687,1692` | intentional diagnostic | Hygiene inventories all visible empty/suggestion/orphan remediation candidates, including skip-tier records. |
+| `macos/EngramService/Core/EngramServiceCommandHandler.swift:2430` | intentional filesystem inventory | `link_sessions` promises all AI session files for a project (`macos/EngramMCP/Core/MCPToolRegistry.swift:469`); hidden and orphan filters remain deliberate while skip files stay in scope. |
+
+Result: **no actionable list/browse skip-inflation residual** was found in the
+remaining literal matches. This closes the ARCH-001C residual sweep, not the
+parent ARCH-001 structural debt named at rank 31.
