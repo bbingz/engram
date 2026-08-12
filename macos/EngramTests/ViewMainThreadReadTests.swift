@@ -183,6 +183,30 @@ final class ViewMainThreadReadTests: XCTestCase {
         )
     }
 
+    // L14 / TIMELINE-RECOMPUTE-001: pin one derived snapshot per body
+    // evaluation so SwiftUI consumers do not repeatedly scan the loaded window.
+    func testTimelinePageSnapshotsDerivedCollectionsPerBodyEvaluation_repro() throws {
+        let s = try source("macos/Engram/Views/Pages/TimelinePageView.swift")
+        let start = try XCTUnwrap(s.range(of: "var body: some View"))
+        let end = try XCTUnwrap(
+            s.range(of: "private func loadData()", options: [], range: start.lowerBound..<s.endIndex)
+        )
+        let body = String(s[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains("let projectOptionsSnapshot = projectOptions"))
+        XCTAssertTrue(body.contains("let filteredTimelineSnapshot = filteredTimeline"))
+        XCTAssertTrue(body.contains("let visibleChartDataSnapshot"))
+        XCTAssertTrue(body.contains("let hasVisibleContentSnapshot"))
+        XCTAssertTrue(body.contains("ForEach(projectOptionsSnapshot, id: \\.self)"))
+        XCTAssertTrue(body.contains("ForEach(filteredTimelineSnapshot, id: \\.date)"))
+        XCTAssertFalse(body.contains("if projectOptions.count > 1"))
+        XCTAssertFalse(body.contains("ForEach(projectOptions, id: \\.self)"))
+        XCTAssertFalse(body.contains("ForEach(filteredTimeline, id: \\.date)"))
+        XCTAssertFalse(body.contains("ActivityChart(data: visibleChartData)"))
+        XCTAssertFalse(body.contains("if isLoading && !hasVisibleContent {"))
+        XCTAssertFalse(body.contains("else if !hasVisibleContent &&"))
+    }
+
     func testHeadingViewReusesCachedMarkdownParse() throws {
         let s = try source("macos/Engram/Views/ContentSegmentViews.swift")
         let start = try XCTUnwrap(s.range(of: "struct HeadingView"))
