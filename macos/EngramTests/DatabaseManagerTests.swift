@@ -475,6 +475,20 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(stats.bySource["cursor"], 1)
     }
 
+    /// ARCH-001B: dashboard totals use the same list-visible predicate as browse surfaces.
+    @MainActor
+    func testStatsExcludesSkipTier_repro() throws {
+        try insertTestSession(at: dbPath, id: "normal", source: "codex", messageCount: 10, tier: "normal")
+        try insertTestSession(at: dbPath, id: "skip", source: "codex", messageCount: 99, tier: "skip")
+        try insertTestSession(at: dbPath, id: "skip-only-source", source: "claude-code", messageCount: 50, tier: "skip")
+
+        let stats = try db.stats()
+
+        XCTAssertEqual(stats.totalSessions, 1)
+        XCTAssertEqual(stats.totalMessages, 10)
+        XCTAssertEqual(stats.bySource, ["codex": 1])
+    }
+
     @MainActor
     func testKPIStats() throws {
         try insertTestSession(at: dbPath, id: "s1", source: "claude-code", project: "engram", messageCount: 10)

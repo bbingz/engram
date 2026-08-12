@@ -387,16 +387,16 @@ final class DatabaseManager: @unchecked Sendable {
             var parts: [String]
             var args: [DatabaseValueConvertible]
             if let project {
-                parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL AND project = ?"]
+                parts = ["SELECT * FROM sessions WHERE \(SessionVisibilityFilter.notHiddenSQL) AND project = ?"]
                 args  = [project]
             } else {
-                parts = ["SELECT * FROM sessions WHERE hidden_at IS NULL AND project IS NULL"]
+                parts = ["SELECT * FROM sessions WHERE \(SessionVisibilityFilter.notHiddenSQL) AND project IS NULL"]
                 args  = []
             }
             if subAgent == true {
                 parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
             } else {
-                parts.append("AND (tier IS NULL OR tier != 'skip')")
+                parts.append("AND \(SessionVisibilityFilter.nonSkipTierSQL)")
             }
             parts.append("ORDER BY start_time DESC LIMIT ?")
             args.append(limit)
@@ -417,7 +417,7 @@ final class DatabaseManager: @unchecked Sendable {
         subAgent: Bool? = nil
     ) throws -> Int {
         try readInBackground { db in
-            var parts = ["SELECT COUNT(*) FROM sessions WHERE hidden_at IS NULL"]
+            var parts = ["SELECT COUNT(*) FROM sessions WHERE \(SessionVisibilityFilter.notHiddenSQL)"]
             var args: [DatabaseValueConvertible] = []
             if !sources.isEmpty {
                 let ph = sources.map { _ in "?" }.joined(separator: ", ")
@@ -432,7 +432,7 @@ final class DatabaseManager: @unchecked Sendable {
             if subAgent == true {
                 parts.append("AND (agent_role IS NOT NULL OR file_path LIKE '%/subagents/%')")
             } else {
-                parts.append("AND (tier IS NULL OR tier != 'skip')")
+                parts.append("AND \(SessionVisibilityFilter.nonSkipTierSQL)")
             }
             return try Int.fetchOne(db, sql: parts.joined(separator: " "),
                                     arguments: StatementArguments(args)) ?? 0
@@ -792,10 +792,16 @@ final class DatabaseManager: @unchecked Sendable {
 
     func stats() throws -> StatsResult {
         try readInBackground { db in
-            let total    = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions WHERE hidden_at IS NULL") ?? 0
-            let messages = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(message_count), 0) FROM sessions WHERE hidden_at IS NULL") ?? 0
+            let total = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM sessions WHERE \(SessionVisibilityFilter.listVisibleSQL)"
+            ) ?? 0
+            let messages = try Int.fetchOne(
+                db,
+                sql: "SELECT COALESCE(SUM(message_count), 0) FROM sessions WHERE \(SessionVisibilityFilter.listVisibleSQL)"
+            ) ?? 0
             let counts   = try SourceCount.fetchAll(db,
-                sql: "SELECT source, COUNT(*) as count FROM sessions WHERE hidden_at IS NULL GROUP BY source ORDER BY count DESC")
+                sql: "SELECT source, COUNT(*) as count FROM sessions WHERE \(SessionVisibilityFilter.listVisibleSQL) GROUP BY source ORDER BY count DESC")
             return StatsResult(totalSessions: total, totalMessages: messages,
                                bySource: Dictionary(uniqueKeysWithValues: counts.map { ($0.source, $0.count) }))
         }
@@ -806,14 +812,14 @@ final class DatabaseManager: @unchecked Sendable {
             let sourceRows = try Row.fetchAll(db, sql: """
                 SELECT source AS key, COUNT(*) AS count
                 FROM sessions
-                WHERE hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.notHiddenSQL)
                 GROUP BY source
                 ORDER BY source ASC
             """)
             let tierRows = try Row.fetchAll(db, sql: """
                 SELECT COALESCE(NULLIF(tier, ''), 'normal') AS key, COUNT(*) AS count
                 FROM sessions
-                WHERE hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.notHiddenSQL)
                 GROUP BY COALESCE(NULLIF(tier, ''), 'normal')
                 ORDER BY key ASC
             """)
@@ -1301,8 +1307,7 @@ final class DatabaseManager: @unchecked Sendable {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT date(start_time, 'localtime') as day, COUNT(*) as n
                 FROM sessions
-                WHERE hidden_at IS NULL
-                  AND (tier IS NULL OR tier != 'skip')
+                WHERE \(SessionVisibilityFilter.listVisibleSQL)
                   AND (cwd = ? OR cwd LIKE ? ESCAPE '\\')
                   AND date(start_time, 'localtime') >= date('now', 'localtime', '-6 days')
                 GROUP BY day
@@ -1334,10 +1339,9 @@ final class DatabaseManager: @unchecked Sendable {
                        COUNT(*) AS n,
                        MAX(start_time) AS last_active
                 FROM sessions
-                WHERE hidden_at IS NULL AND project IS NOT NULL
-                  AND parent_session_id IS NULL
-                  AND suggested_parent_id IS NULL
-                  AND (tier IS NULL OR tier != 'skip')
+                WHERE project IS NOT NULL
+                  AND \(SessionVisibilityFilter.listVisibleSQL)
+                  AND \(SessionVisibilityFilter.topLevelSQL)
                 GROUP BY project
                 ORDER BY last_active DESC
             """)
@@ -1350,10 +1354,9 @@ final class DatabaseManager: @unchecked Sendable {
                 let lastActive = (row["last_active"] as String?) ?? ""
                 let previews = try Session.fetchAll(db, sql: """
                     SELECT * FROM sessions
-                    WHERE hidden_at IS NULL AND project = ?
-                      AND parent_session_id IS NULL
-                      AND suggested_parent_id IS NULL
-                      AND (tier IS NULL OR tier != 'skip')
+                    WHERE project = ?
+                      AND \(SessionVisibilityFilter.listVisibleSQL)
+                      AND \(SessionVisibilityFilter.topLevelSQL)
                     ORDER BY start_time DESC
                     LIMIT ?
                 """, arguments: [project, limit])

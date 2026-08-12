@@ -90,7 +90,7 @@ final class SourcesSyncTests: XCTestCase {
         XCTAssertTrue(text.contains("source.liveSyncDisabled"))
     }
 
-    func testSourceHealthPredicatesUseNonSkipTierSQL() throws {
+    func testSourceHealthPredicatesUseListVisibleSQL() throws {
         let text = try source("macos/EngramService/Core/EngramServiceReadProvider.swift")
         guard
             let start = text.range(of: "private func sourceIndexEligibleCounts"),
@@ -100,7 +100,7 @@ final class SourcesSyncTests: XCTestCase {
             return XCTFail("could not locate sourceIndexEligibleCounts / sourceSearchableCounts slice")
         }
         let slice = String(text[start.lowerBound..<end.lowerBound])
-        XCTAssertTrue(slice.contains("SessionVisibilityFilter.nonSkipTierSQL"), slice)
+        XCTAssertTrue(slice.contains("SessionVisibilityFilter.listVisibleSQL"), slice)
         XCTAssertFalse(slice.contains("searchableTierSQL"), slice)
         XCTAssertFalse(slice.contains("'lite'"), slice)
     }
