@@ -2,6 +2,14 @@
 
 Last researched: 2026-06-21 (Engram session-format research workflow)
 
+> **Swift implementation update (2026-08-12).** The product adapter now reads
+> the per-workspace `composer.composerData` pointer indexes plus
+> `workspace.json.folder` for cwd ownership. A composer receives cwd/project
+> only when all observed pointers resolve to one unique local folder. Missing,
+> conflicting, and multi-root mappings stay empty; `context.fileSelections`
+> and `folderSelections` are never ownership signals. Historical census text
+> below still describes the 2026-06-21 store snapshot.
+
 > **Evidence basis.** PRIMARY = the **live on-disk store** on this machine (the
 > user's real Cursor data): `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`
 > (28.2 MB SQLite). Cross-checked against the repo fixtures
@@ -49,7 +57,9 @@ never append.
   (`toolFormerData`), not separate records. Usually the assistant bubble, but
   **13/291 live `toolFormerData` payloads sit on USER (type-1) bubbles**, so the
   nesting is not strictly assistant-only (278 assistant + 13 user).
-- Cursor does NOT bind a composer to a workspace; cwd is best-effort inference.
+- Cursor's global composer row does not bind itself to a workspace. The Swift
+  product resolves ownership only through the separate per-workspace pointer
+  index and fails closed when that mapping is absent or ambiguous.
 
 ```
                 ┌──────────────────────────────────────────────────────────────┐
@@ -117,9 +127,9 @@ never append.
 | File / DB kind | Location | Role | Read by Engram? |
 |---|---|---|---|
 | `globalStorage/state.vscdb` | global | **Sole source** of conversation data (`cursorDiskKV`) + global catalogs (`ItemTable`) | YES (only this) |
-| `workspaceStorage/<hash>/state.vscdb` | per-workspace | UI panel state + `composer.composerData` pointer list (composerIds only, no content) | NO |
+| `workspaceStorage/<hash>/state.vscdb` | per-workspace | UI panel state + `composer.composerData` pointer list (composerIds only, no content) | **YES, ownership only** |
 | `workspaceStorage/<hash>/state.vscdb.backup` | per-workspace | Backup snapshot of the workspace DB | NO |
-| `workspaceStorage/<hash>/workspace.json` | per-workspace | Maps the 32-hex hash to the project folder URI (only reliable composer→folder map) | NO |
+| `workspaceStorage/<hash>/workspace.json` | per-workspace | Maps the 32-hex hash to the project folder URI (only reliable composer→folder map) | **YES, ownership only** |
 | `History/` | global | VS Code per-file edit history (timestamps + content snapshots) — unrelated to chat | NO |
 
 **Naming grammar — `cursorDiskKV` key namespaces** (`prefix:id[:id]`), live counts:
@@ -140,9 +150,10 @@ never append.
 whose `allComposers[]` is just a pointer list (`composerId`, `createdAt`,
 `unifiedMode`, `forceMode`) into the global store — no message bodies. A single
 composer can be referenced from a workspace index but its data is global. Engram
-intentionally ignores `workspaceStorage/` and reads everything from the one
-global DB. (Note: the separate `VsCodeAdapter` is the one that crawls
-`Code/User/workspaceStorage/`; `CursorAdapter` never does.)
+reads conversation content only from the global DB. For ownership, the Swift
+adapter also reads `workspaceStorage/` pointer indexes and accepts a composer
+only when they resolve to one unique single-folder workspace. (The separate
+`VsCodeAdapter` crawls `Code/User/workspaceStorage/` for transcript content.)
 
 **Legacy caveat (corrected).** This global-only design is correct for MODERN
 Cursor. However, LEGACY-era Cursor stored chat inside the per-workspace
@@ -338,9 +349,10 @@ Both adapters read `latestConversationSummary.summary` and expect a String:
 (0 strings).** The modern Cursor summary is **never** ingested by the current
 adapter. The string form only appears in the fixture.
 
-**`context` shape** (every sub-array has a parallel `mentions.*` object). Engram
-(TS only) infers cwd from `context.folderSelections[0].uri.fsPath`, else
-`dirname(context.fileSelections[0].uri.fsPath)`:
+**`context` shape** (every sub-array has a parallel `mentions.*` object). The TS
+reference infers cwd from `context.folderSelections[0].uri.fsPath`, else
+`dirname(context.fileSelections[0].uri.fsPath)`. The Swift product deliberately
+does not: these are attached context selections, not workspace ownership.
 ```json
 {
   "notepads": [], "composers": [], "quotes": [], "selectedCommits": [],
@@ -644,7 +656,8 @@ directly). Header fields: `composerId`, `type` (`"head"`), `createdAt` /
 **Workspace DB** `ItemTable['composer.composerData']` =
 `{ allComposers:[{composerId,type,createdAt,unifiedMode,forceMode}],
 selectedComposerId, selectedChatId, hasMigratedChatData, … }` — the only
-composer→workspace-folder mapping. Not crawled by `CursorAdapter`.
+composer→workspace-folder mapping. The Swift `CursorAdapter` now reads this
+pointer index for fail-closed ownership resolution.
 
 ---
 
@@ -689,9 +702,10 @@ a bubble: `cursorRules` (array), `attachedFoldersListDirResults` (array),
 cache.
 
 **On-disk auxiliary (outside the global DB):**
-- `workspaceStorage/<hash>/state.vscdb` + `.backup` — per-workspace UI state /
-  pointer index (composer→folder map; not crawled).
-- `workspaceStorage/<hash>/workspace.json` — hash→folder URI.
+- `workspaceStorage/<hash>/state.vscdb` — per-workspace UI state / pointer index;
+  Swift reads `composer.composerData` for ownership. Backups remain ignored.
+- `workspaceStorage/<hash>/workspace.json` — hash→folder URI; Swift accepts only
+  local single-folder mappings.
 - `workspaceStorage/<hash>/anysphere.cursor-retrieval/` — codebase-index ext state.
 - `History/` — VS Code per-file edit history (unrelated to chat).
 
@@ -713,8 +727,8 @@ TS class `CursorAdapter` (`src/adapters/cursor.ts:32`).
 | `source` | constant `.cursor` / `'cursor'` | `:82` | `:135` | — |
 | `startTime` | `createdAt` → else first visible bubble `timingInfo.clientStartTime` → else `lastUpdatedAt` → else 0 | `:64-67, 83` | `:136` | **Swift has richer fallback chain; TS uses `createdAt` only.** |
 | `endTime` | `lastUpdatedAt` (only if ≠ createdAt, else `nil`) | `:68, 84` | `:137-140` | — |
-| `cwd` | **Swift: hardcoded `""`**; TS: `inferCwd` = first folderSelection.fsPath, else `dirname(first fileSelection.fsPath)`, else `""` | `:85` | `:141, 236-242` | **DISCREPANCY: Swift never infers cwd.** Live: folderSelections 0/64, fileSelections 8/64, so TS emits a dir for those 8; Swift emits `""` for all. |
-| `project` | always `nil` | `:86` | (n/a in TS shape) | Composers not bound to a workspace |
+| `cwd` | Swift: unique per-workspace pointer index + `workspace.json.folder`, else `""`; TS reference: first folderSelection, else dirname(first fileSelection), else `""` | current resolver below adapter | `:141, 236-242` | Swift is fail-closed and never treats selected context as ownership. |
+| `project` | Swift: final cwd component when owned, else `nil` | current resolver below adapter | (n/a in TS shape) | Same basename fallback used by indexing. |
 | `model` | always `nil` | `:87` | (absent) | Not extracted |
 | `messageCount` | userCount + assistantCount (visible bubbles) | `:88` | `:142` | — |
 | `userMessageCount` | count of visible `type==1` | `:61, 89` | `:129, 143` | — |
@@ -742,7 +756,8 @@ TS class `CursorAdapter` (`src/adapters/cursor.ts:32`).
    (`CursorAdapter.swift:16-18`, `cursor.ts:50-57`).
 2. `listSessionLocators()` (Swift) / `listSessionFiles()` (TS) — open read-only,
    `SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'`, parse
-   each, take `composerId`, skip empty, emit virtual locator
+   each, take `composerId`, skip empty, emit virtual locator, and refresh one
+   shared workspace-ownership snapshot for the pass
    `<dbPath>?composer=<composerId>` (`CursorAdapter.swift:20-36`,
    `cursor.ts:59-84`).
 3. `parseSessionInfo(locator)` — split on `?composer=` (`parseVirtualLocator`,
@@ -761,7 +776,8 @@ calls/results), `codeBlocks`/`codeBlockData`/`codeBlockDiff` (all edits/diffs),
 `isThought`/`allThinkingBlocks` (reasoning), `usageData`/`tokenCountUpUntilHere`
 (cost/cumulative tokens), `checkpointId`, `agentKv`, `messageRequestContext`,
 `serverBubbleId`/`usageUuid`, `errorDetails`, `model`, sub-composer/agent
-structure, all of `ItemTable`, and the `workspaceStorage/` per-workspace DBs.
+structure, and all `ItemTable` / workspace data except the two ownership fields
+described above.
 
 ---
 
@@ -816,9 +832,9 @@ Takeaways:
 4. **Format trichotomy + NULL.** Live: 4 inline / 4 headers-only / 51 empty /
    5 NULL (64 total). **~80% are empty drafts** that emit 0-message sessions; the
    adapter does not filter them (relies on downstream `tier=skip`/`lite`).
-5. **cwd is `""` in the shipped Swift product** (TS-only inference). Even TS
-   would emit `""` for most: folderSelections are 0/64 live; only the 8 composers
-   with fileSelections would get a `dirname`.
+5. **cwd ownership is intentionally sparse.** Swift requires one unique
+   per-workspace pointer and never uses file selections. Missing pointers,
+   conflicting pointers, and multi-root configurations emit `""`.
 6. **Tool turns dropped.** `toolFormerData` carries real tool calls
    (`includesToolResults:true` in summaries), but `toolMessageCount`/`toolCalls`
    are zeroed; tool-only assistant turns (empty `text`) vanish from transcript and

@@ -4,6 +4,12 @@
 
 Last researched: 2026-06-21 (Engram session-format research workflow)
 
+> **Swift 实现更新（2026-08-12）。** 产品适配器现在读取按 workspace 的
+> `composer.composerData` 指针索引和 `workspace.json.folder`。只有同一
+> composer 的所有指针唯一落到一个本地单目录时才设置 cwd/project；缺失、
+> 冲突和多根映射保持为空。`context.fileSelections` / `folderSelections`
+> 只是附加上下文，绝不作为所有权信号。下文的实时统计仍是 2026-06-21 快照。
+
 > **证据基础。** PRIMARY = 本机上的**实时磁盘存储**(用户的真实 Cursor 数据):
 > `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`
 > (28.2 MB SQLite)。与仓库固件
@@ -336,9 +342,10 @@ includesToolResults]`。
 (0 个字符串)。** 现代 Cursor 摘要**从未**被当前适配器摄入。
 字符串形式只出现在固件中。
 
-**`context` 形态**(每个子数组都有一个并行的 `mentions.*` 对象)。Engram
-(仅 TS)从 `context.folderSelections[0].uri.fsPath` 推断 cwd,否则用
-`dirname(context.fileSelections[0].uri.fsPath)`:
+**`context` 形态**(每个子数组都有一个并行的 `mentions.*` 对象)。TS 参考实现
+从 `context.folderSelections[0].uri.fsPath` 推断 cwd,否则用
+`dirname(context.fileSelections[0].uri.fsPath)`。Swift 产品刻意不使用这些字段:
+它们是附加上下文,不是 workspace 所有权。
 ```json
 {
   "notepads": [], "composers": [], "quotes": [], "selectedCommits": [],
@@ -639,7 +646,8 @@ Header 字段:`composerId`、`type`(`"head"`)、`createdAt` /
 **Workspace DB** `ItemTable['composer.composerData']` =
 `{ allComposers:[{composerId,type,createdAt,unifiedMode,forceMode}],
 selectedComposerId, selectedChatId, hasMigratedChatData, … }` —— 唯一的
-composer→workspace-folder 映射。不被 `CursorAdapter` 抓取。
+composer→workspace-folder 映射。Swift `CursorAdapter` 现在读取该指针索引,
+并以 fail-closed 方式解析所有权。
 
 ---
 
@@ -682,9 +690,10 @@ blob→composer 映射;任何连接都得经过 blob 值内部的 `requestId` /
 缓存。
 
 **磁盘辅助文件(全局 DB 之外):**
-- `workspaceStorage/<hash>/state.vscdb` + `.backup` —— 按 workspace 的 UI 状态 /
-  指针索引(composer→folder 映射;不被抓取)。
-- `workspaceStorage/<hash>/workspace.json` —— hash→folder URI。
+- `workspaceStorage/<hash>/state.vscdb` —— 按 workspace 的 UI 状态 / 指针索引;
+  Swift 读取 `composer.composerData` 解析所有权,备份仍忽略。
+- `workspaceStorage/<hash>/workspace.json` —— hash→folder URI;Swift 只接受
+  本地单目录映射。
 - `workspaceStorage/<hash>/anysphere.cursor-retrieval/` —— 代码库索引扩展状态。
 - `History/` —— VS Code 按文件的编辑历史(与聊天无关)。
 
@@ -706,8 +715,8 @@ TS 类 `CursorAdapter`(`src/adapters/cursor.ts:32`)。
 | `source` | 常量 `.cursor` / `'cursor'` | `:82` | `:135` | — |
 | `startTime` | `createdAt` → 否则第一个可见 bubble 的 `timingInfo.clientStartTime` → 否则 `lastUpdatedAt` → 否则 0 | `:64-67, 83` | `:136` | **Swift 有更丰富的回退链;TS 只用 `createdAt`。** |
 | `endTime` | `lastUpdatedAt`(仅当 ≠ createdAt,否则 `nil`) | `:68, 84` | `:137-140` | — |
-| `cwd` | **Swift:硬编码 `""`**;TS:`inferCwd` = 第一个 folderSelection.fsPath,否则 `dirname(第一个 fileSelection.fsPath)`,否则 `""` | `:85` | `:141, 236-242` | **差异:Swift 从不推断 cwd。** 实时:folderSelections 0/64,fileSelections 8/64,所以 TS 为那 8 个发出目录;Swift 对全部发出 `""`。 |
-| `project` | 始终 `nil` | `:86` | (TS 形态中无) | composer 不绑定到 workspace |
+| `cwd` | Swift:唯一 workspace 指针索引 + `workspace.json.folder`,否则 `""`;TS 参考:folderSelection,否则 fileSelection 的目录 | 当前 adapter 下方 resolver | `:141, 236-242` | Swift fail closed,不把选择上下文当所有权。 |
+| `project` | Swift:有所有权时取 cwd 最末路径分量,否则 `nil` | 当前 adapter 下方 resolver | (TS 形态中无) | 与索引层 basename 回退一致。 |
 | `model` | 始终 `nil` | `:87` | (缺失) | 不提取 |
 | `messageCount` | userCount + assistantCount(可见 bubble) | `:88` | `:142` | — |
 | `userMessageCount` | 可见 `type==1` 的计数 | `:61, 89` | `:129, 143` | — |
@@ -754,7 +763,7 @@ TS 类 `CursorAdapter`(`src/adapters/cursor.ts:32`)。
 `isThought`/`allThinkingBlocks`(推理)、`usageData`/`tokenCountUpUntilHere`
 (成本/累计 token)、`checkpointId`、`agentKv`、`messageRequestContext`、
 `serverBubbleId`/`usageUuid`、`errorDetails`、`model`、子 composer/agent
-结构、整个 `ItemTable`,以及 `workspaceStorage/` 的按 workspace DB。
+结构,以及除上述两个所有权字段之外的 `ItemTable` / workspace 数据。
 
 ---
 
