@@ -1612,14 +1612,15 @@ final class MCPDatabase {
 
     func totalCostSince(_ since: String) throws -> Double {
         try queue.read { db in
-            // M19: exclude hidden (trashed) sessions — parity with service costs().
+            // ARCH-001C: cost KPIs use the shared list-visible population.
             let row = try Row.fetchOne(
                 db,
                 sql: """
                 SELECT SUM(c.cost_usd) AS cost
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
-                WHERE s.hidden_at IS NULL AND s.start_time >= ?
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                  AND s.start_time >= ?
                 """,
                 arguments: [since]
             )
@@ -1646,7 +1647,8 @@ final class MCPDatabase {
                        COUNT(*) AS sessions
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
-                WHERE s.hidden_at IS NULL AND s.start_time >= ?
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
+                  AND s.start_time >= ?
                 GROUP BY \(groupExpr)
                 HAVING SUM(c.cost_usd) > 0
                 ORDER BY cost DESC
@@ -1797,7 +1799,7 @@ final class MCPDatabase {
                 SELECT SUM(c.cost_usd) AS cost
                 FROM session_costs c
                 JOIN sessions s ON c.session_id = s.id
-                WHERE s.hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
                   AND s.start_time >= ? AND s.start_time < ?
                 """,
                 arguments: [start, end]
@@ -2103,7 +2105,7 @@ final class MCPDatabase {
                 sql: """
                 SELECT s.*
                 FROM sessions s
-                WHERE s.hidden_at IS NULL
+                WHERE \(SessionVisibilityFilter.listVisibleSQL(alias: "s"))
                 ORDER BY s.start_time DESC
                 LIMIT :limit
                 """,

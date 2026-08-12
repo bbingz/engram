@@ -65,14 +65,15 @@ final class DashboardDrillInTests: XCTestCase {
         cwd: String,
         project: String? = nil,
         startTime: String = "2026-03-20T10:00:00Z",
-        hiddenAt: String? = nil
+        hiddenAt: String? = nil,
+        tier: String? = "normal"
     ) throws {
         let queue = try DatabaseQueue(path: dbPath)
         try queue.write { db in
             try db.execute(sql: """
-                INSERT INTO sessions (id, source, start_time, cwd, project, file_path, hidden_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, arguments: [id, "claude-code", startTime, cwd, project, "/tmp/\(id).jsonl", hiddenAt])
+                INSERT INTO sessions (id, source, start_time, cwd, project, file_path, hidden_at, tier)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [id, "claude-code", startTime, cwd, project, "/tmp/\(id).jsonl", hiddenAt, tier])
         }
     }
 
@@ -121,6 +122,27 @@ final class DashboardDrillInTests: XCTestCase {
         XCTAssertEqual(bySince.map(\.filePath), ["/x/New.swift"])
     }
 
+    // ARCH-001C: file aggregates must use only list-visible sessions.
+    @MainActor
+    func testFileActivityExcludesHiddenAndSkipSessions_repro() throws {
+        try createSessionFilesTable()
+        try insertTestSession(at: dbPath, id: "file-visible", tier: "normal")
+        try insertTestSession(
+            at: dbPath,
+            id: "file-hidden",
+            tier: "normal",
+            hiddenAt: "2026-03-21T10:00:00Z"
+        )
+        try insertTestSession(at: dbPath, id: "file-skip", tier: "skip")
+        try insertSessionFile(sessionId: "file-visible", filePath: "/x/Shared.swift", action: "edit", count: 2)
+        try insertSessionFile(sessionId: "file-hidden", filePath: "/x/Shared.swift", action: "edit", count: 100)
+        try insertSessionFile(sessionId: "file-skip", filePath: "/x/Shared.swift", action: "edit", count: 50)
+
+        let row = try XCTUnwrap(try db.fileActivity(project: nil, since: nil, limit: 10).first)
+        XCTAssertEqual(row.totalCount, 2)
+        XCTAssertEqual(row.sessionCount, 1)
+    }
+
     // MARK: - sessionsForRepo
 
     @MainActor
@@ -141,5 +163,14 @@ final class DashboardDrillInTests: XCTestCase {
 
         let rows = try db.sessionsForRepo(path: "/Users/a/app")
         XCTAssertEqual(rows.map(\.id), ["visible"])
+    }
+
+    // ARCH-001C: repo drill-in is a browse surface and must hide skip-tier rows.
+    @MainActor
+    func testSessionsForRepoExcludesSkipTier_repro() throws {
+        try insertSessionWithCwd(id: "repo-visible", cwd: "/Users/a/app", tier: "normal")
+        try insertSessionWithCwd(id: "repo-skip", cwd: "/Users/a/app/sub", tier: "skip")
+
+        XCTAssertEqual(try db.sessionsForRepo(path: "/Users/a/app").map(\.id), ["repo-visible"])
     }
 }

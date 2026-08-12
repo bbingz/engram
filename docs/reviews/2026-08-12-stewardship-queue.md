@@ -62,7 +62,7 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | Rank | ID | Sev | Title | Owner path | Done-when | Status |
 |------|----|-----|-------|------------|-----------|--------|
 | 30 | CURSOR-CWD-001 | P2 | Cursor workspace ownership must not use unrelated file selection as authoritative CWD | implementer | Accepted design + unique pointer-index ownership + named regression tests for wrong selection/ambiguity | **DONE** 2026-08-12 |
-| 31 | ARCH-001 | debt | Triple Read SQL stacks / shared CoreRead predicates | implementer | Shared predicate module + cross-surface parity suite | **PARTIAL / IN PROGRESS** — ARCH-001A shared search filters done (#311); ARCH-001B list/aggregate visibility convergence in progress; full migration remains open |
+| 31 | ARCH-001 | debt | Triple Read SQL stacks / shared CoreRead predicates | implementer | Shared predicate module + cross-surface parity suite | **PARTIAL / ARCH-001C IN PROGRESS** — ARCH-001A shared search filters done (#311); ARCH-001B list/aggregate visibility convergence done (#312); ARCH-001C converges residual App browse, Service/MCP cost KPI, and MCP resource predicates on `feat/arch-001c-list-residuals`; full CoreRead/pool/DTO migration remains open |
 | 32 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
