@@ -125,7 +125,8 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **R9** / M21 residual | closed (flush; #219); MainActor I/O residual | AI settings flush pending debounce on disappear; MainActor flock/Keychain I/O after debounce remains accepted residual |
 | **R11 ledger** | closed | Disposition evidence columns + this followups section |
 | **F5-CI** | closed (#222) | `.github/workflows/test.yml` now treats `npm audit --audit-level=moderate` as soft-fail for both pull requests and pushes, so merge cannot change audit policy from soft to strict. |
-| **L-a…L-j** | residual | Remaining Low/Info rows from the full-project review: L-h, L-j. L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349 closed. |
+| **TS-SAFEMOVEDIR-CASE-001** / L-j | implemented / verified; PR pending | TypeScript `safeMoveDir` now treats same-realpath destinations as a case-only rename, matching Swift M13 (`FsOps.swift:154-187`). Product moves remain Swift. Named Vitest: `allows case-only rename on a case-insensitive volume (repro)`. |
+| **L-a…L-j** | residual | Remaining Low/Info row from the full-project review: L-h (blocked 1.0.5). L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349 closed; L-j is TS-SAFEMOVEDIR-CASE-001 on the pending PR. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
 Also see disposition inventory: `docs/reviews/2026-07-17-finding-disposition.md`.

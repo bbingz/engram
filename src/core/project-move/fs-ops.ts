@@ -10,6 +10,7 @@ import { randomBytes } from 'node:crypto';
 import {
   cp as realCp,
   lstat as realLstat,
+  realpath as realRealpath,
   rename as realRename,
   rm as realRm,
   stat as realStat,
@@ -27,6 +28,7 @@ export interface FsOpsInjection {
   rm?: typeof realRm;
   stat?: typeof realStat;
   lstat?: typeof realLstat;
+  realpath?: typeof realRealpath;
 }
 
 export interface MoveResult {
@@ -55,6 +57,7 @@ export interface MoveOptions {
  * Errors:
  *   - src does not exist → throws with code 'ENOENT'
  *   - dst already exists → throws (refuses to overwrite; policy decision)
+ *     except a case-only rename on a case-insensitive volume (same realpath)
  *   - src is a symlink and followSymlinks is false → throws
  *   - Cross-volume copy fails mid-way → clean up dst and re-throw
  */
@@ -69,6 +72,7 @@ export async function safeMoveDir(
     rm: opts.__fsInject?.rm ?? realRm,
     stat: opts.__fsInject?.stat ?? realStat,
     lstat: opts.__fsInject?.lstat ?? realLstat,
+    realpath: opts.__fsInject?.realpath ?? realRealpath,
   };
   // 1. Pre-flight checks
   const srcStat = await fs.lstat(src); // lstat so symlink is detected
@@ -79,9 +83,13 @@ export async function safeMoveDir(
   }
   try {
     await fs.stat(dst);
-    throw new Error(
-      `safeMoveDir: destination already exists (${dst}); refusing to overwrite`,
-    );
+    // L-j / Swift M13: case-only rename on a case-insensitive volume
+    // resolves to the same inode and is not a third-party collision.
+    if (!(await isCaseOnlySamePath(src, dst, fs.realpath))) {
+      throw new Error(
+        `safeMoveDir: destination already exists (${dst}); refusing to overwrite`,
+      );
+    }
   } catch (err) {
     if (isErrnoCode(err, 'ENOENT')) {
       // good — dst doesn't exist
@@ -142,6 +150,19 @@ export async function safeMoveDir(
   //    records the issue.
   await fs.rm(src, { recursive: true });
   return { strategy: 'copy-then-delete', bytesCopied };
+}
+
+/** True when `src` and `dst` resolve to the same path (case-only rename). */
+export async function isCaseOnlySamePath(
+  src: string,
+  dst: string,
+  realpath: typeof realRealpath = realRealpath,
+): Promise<boolean> {
+  try {
+    return (await realpath(src)) === (await realpath(dst));
+  } catch {
+    return false;
+  }
 }
 
 function isErrnoCode(err: unknown, code: string): boolean {

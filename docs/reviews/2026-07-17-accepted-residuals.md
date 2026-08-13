@@ -15,7 +15,7 @@ dead tooling not on the shipped path.
 | **L19** | ts-ref | Low | `engram logs` / `traces` CLI queries tables the Swift runtime never populates — silently inert. TypeScript reference/dev surface only; do not expand product observability through Node. Accept or delete CLI later. |
 | **L21** | ci | Low | Notarization/stapling has no CI backstop (manual release-machine step; documented). CI has no Apple credentials for stapling. Accept residual with release checklist ownership. Same home as review **L-h** / `docs/TODO.md` public release baseline. |
 | **L25** | settings | Low | Release builds do not revalidate their own code signature on the main thread before Keychain. Installed Release still uses Keychain; only DEBUG may persist plaintext. Accepted with SEC-M3 / #347. |
-| **L-j** | ts-ref | Info | TypeScript `safeMoveDir` still lacks a case-only rename exception. Reference/dev surface only; product moves are Swift. |
+| **L-j** | ts-ref | Info | Closed by TS-SAFEMOVEDIR-CASE-001: `safeMoveDir` now allows same-realpath case-only renames. Product moves remain Swift. |
 | **SEC-M4** (ops note) | — | — | Also listed in security adjudication as accepted ops risk when replicas run `requireTLS=false` on `http://100.x`. |
 
 ## L-i closeout — residual lows now have backlog homes (2026-08-13)
