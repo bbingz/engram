@@ -63,6 +63,11 @@ final class ClineAdapter: SessionAdapter, Sendable {
                 let modelInfo = JSONLAdapterSupport.object(message["modelInfo"])
                 return JSONLAdapterSupport.string(modelInfo?["modelId"])
             }.first
+            // R184-3: timestamped metadata-only Cline files (e.g. api_req_started)
+            // must not become zero-count browsable sessions.
+            guard userMessages.count + assistantMessages.count > 0 else {
+                return .failure(.noVisibleMessages)
+            }
 
             return .success(
                 NormalizedSessionInfo(

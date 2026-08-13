@@ -1672,6 +1672,29 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.cwd, "")
     }
 
+    /// R184-3: a timestamped Cline file with only api_req_started events must
+    /// be terminal, not a zero-count browsable session.
+    func testClineMetadataOnlySessionIsTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskDir = root.appendingPathComponent("empty-task", isDirectory: true)
+        try FileManager.default.createDirectory(at: taskDir, withIntermediateDirectories: true)
+        let file = taskDir.appendingPathComponent("ui_messages.json")
+        let messages: [[String: Any]] = [
+            [
+                "ts": 1_771_392_000_000,
+                "type": "say",
+                "say": "api_req_started",
+                "text": ##"{"request":"probe"}"##,
+            ],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: messages, options: [.withoutEscapingSlashes])
+        try data.write(to: file)
+
+        let adapter = ClineAdapter(tasksRoot: root.path)
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(failure, .noVisibleMessages)
+    }
 
     // MARK: - Codex
 
