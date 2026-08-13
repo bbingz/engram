@@ -4111,6 +4111,69 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .noVisibleMessages)
     }
 
+    // MARK: - Antigravity
+
+    /// R184-3 / ADAPTER-EMPTY-SESSION-001I: a valid Cascade cache header with
+    /// no visible turns is terminal rather than a browsable zero-count session.
+    func testAntigravityMetadataOnlyCacheIsTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cacheDir = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        let file = cacheDir.appendingPathComponent("antigravity-metadata-only.jsonl")
+        let metadata: [String: Any] = [
+            "id": "antigravity-metadata-only",
+            "createdAt": "2026-08-14T00:00:00.000Z",
+            "updatedAt": "2026-08-14T00:00:00.000Z",
+            "title": "Metadata only",
+        ]
+        try (try jsonLine(metadata) + "\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = AntigravityAdapter(
+            cacheDir: cacheDir.path,
+            conversationsDir: root.appendingPathComponent("conversations").path,
+            cliBrainDir: root.appendingPathComponent("brain").path
+        )
+
+        switch try await adapter.parseSessionInfo(locator: file.path) {
+        case .success(let info):
+            XCTFail("metadata-only cache must not index zero-count session \(info.id)")
+        case .failure(let failure):
+            XCTAssertEqual(failure, .noVisibleMessages)
+        }
+    }
+
+    /// R184-3: a CLI transcript whose directory supplies a valid session id but
+    /// whose records yield no user/assistant/tool messages is terminal as well.
+    func testAntigravityEmptyCLITranscriptIsTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let brainDir = root.appendingPathComponent("brain", isDirectory: true)
+        let logsDir = brainDir
+            .appendingPathComponent("antigravity-cli-empty", isDirectory: true)
+            .appendingPathComponent(".system_generated/logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+        let file = logsDir.appendingPathComponent("transcript.jsonl")
+        let metadata: [String: Any] = [
+            "type": "SESSION_START",
+            "created_at": "2026-08-14T00:00:00.000Z",
+        ]
+        try (try jsonLine(metadata) + "\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = AntigravityAdapter(
+            cacheDir: root.appendingPathComponent("cache").path,
+            conversationsDir: root.appendingPathComponent("conversations").path,
+            cliBrainDir: brainDir.path
+        )
+
+        switch try await adapter.parseSessionInfo(locator: file.path) {
+        case .success(let info):
+            XCTFail("empty CLI transcript must not index zero-count session \(info.id)")
+        case .failure(let failure):
+            XCTAssertEqual(failure, .noVisibleMessages)
+        }
+    }
+
     // MARK: - Antigravity generic cwd inference
 
     func testAntigravityCWDInferenceIsGenericAndNonPersonal() {
