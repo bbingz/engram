@@ -1696,6 +1696,45 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .noVisibleMessages)
     }
 
+    /// Cline inherits SessionAdapter's default streamMessagesWithMetadata, so
+    /// an oversized whole-transcript read is capped without a truncation marker.
+    func testClineOversizedTranscriptReportsTruncation_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskDir = root.appendingPathComponent("oversized-task", isDirectory: true)
+        try FileManager.default.createDirectory(at: taskDir, withIntermediateDirectories: true)
+        let file = taskDir.appendingPathComponent("ui_messages.json")
+        var rows: [[String: Any]] = []
+        for index in 0..<4 {
+            rows.append([
+                "ts": 1_771_392_000_000 + index * 1_000,
+                "type": "say",
+                "say": index % 2 == 0 ? "task" : "text",
+                "text": "cline turn \(index)",
+            ])
+        }
+        try JSONSerialization.data(withJSONObject: rows, options: [.withoutEscapingSlashes])
+            .write(to: file)
+
+        let adapter = ClineAdapter(
+            tasksRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions()
+        )
+        var streamed: [NormalizedMessage] = []
+        for try await message in result.messages {
+            streamed.append(message)
+        }
+
+        XCTAssertEqual(streamed.count, 3)
+        XCTAssertEqual(result.truncatedAt, 3)
+        XCTAssertFalse(result.totalKnownComplete)
+        XCTAssertTrue(result.truncated)
+    }
+
     // MARK: - Codex
 
     /// R184-3: a session_meta-only Codex file must be terminal, not a

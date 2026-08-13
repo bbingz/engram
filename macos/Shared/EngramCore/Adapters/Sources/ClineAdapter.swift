@@ -120,6 +120,33 @@ final class ClineAdapter: SessionAdapter, Sendable {
         return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
     }
 
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        let signature = ParsedTranscriptCache.Signature.forFile(locator)
+        let messages: [NormalizedMessage]
+        if let cached = await messageCache.cached(locator: locator, signature: signature) {
+            messages = cached
+        } else {
+            let objects = try Phase4AdapterSupport.readJSONArray(locator: locator, limits: limits)
+            messages = Self.messages(from: objects)
+            await messageCache.store(locator: locator, signature: signature, messages: messages)
+        }
+        // Silent whole-transcript cap is the P1 this override exists to mark.
+        let truncatedAt = options.limit == nil && messages.count > limits.maxMessages
+            ? limits.maxMessages
+            : nil
+        let bounded = truncatedAt == nil
+            ? JSONLAdapterSupport.applyWindow(messages, options: options)
+            : Array(messages.prefix(limits.maxMessages))
+        return StreamMessagesResult(
+            messages: JSONLAdapterSupport.stream(bounded),
+            totalKnownComplete: truncatedAt == nil,
+            truncatedAt: truncatedAt
+        )
+    }
+
     func isAccessible(locator: String) async -> Bool {
         JSONLAdapterSupport.fileExists(locator)
     }
