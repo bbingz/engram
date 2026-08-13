@@ -4057,6 +4057,11 @@ final class EngramServiceIPCTests: XCTestCase {
                 && source.contains("selectCandidates(repoCandidates)"),
             "repo probing must pass through the bounded maintenance throttle"
         )
+        XCTAssertTrue(
+            source.contains("probeRepositoriesDetailed")
+                && source.contains("recordOutcomes("),
+            "repo probing must record success/failure after the probe, not at selection"
+        )
     }
 
     func testLiveSessionsStreamsEnumeratorInsteadOfMaterializingFullTree() throws {

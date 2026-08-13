@@ -320,13 +320,57 @@ final class ServiceTelemetryTests: XCTestCase {
             GitRepoCandidate(cwd: "/repo/\($0)", sessionCount: 5 - $0)
         }
 
-        XCTAssertEqual(throttle.selectCandidates(candidates).map(\.cwd), ["/repo/0", "/repo/1"])
-        XCTAssertEqual(throttle.selectCandidates(candidates).map(\.cwd), ["/repo/2", "/repo/3"])
-        XCTAssertEqual(throttle.selectCandidates(candidates).map(\.cwd), ["/repo/4"])
+        let first = throttle.selectCandidates(candidates)
+        XCTAssertEqual(first.map(\.cwd), ["/repo/0", "/repo/1"])
+        throttle.recordOutcomes(succeeded: first.map(\.cwd), failed: [])
+        let second = throttle.selectCandidates(candidates)
+        XCTAssertEqual(second.map(\.cwd), ["/repo/2", "/repo/3"])
+        throttle.recordOutcomes(succeeded: second.map(\.cwd), failed: [])
+        let third = throttle.selectCandidates(candidates)
+        XCTAssertEqual(third.map(\.cwd), ["/repo/4"])
+        throttle.recordOutcomes(succeeded: third.map(\.cwd), failed: [])
         XCTAssertTrue(throttle.selectCandidates(candidates).isEmpty)
 
         clock.advance(by: 3_600)
         XCTAssertEqual(throttle.selectCandidates(candidates).map(\.cwd), ["/repo/0", "/repo/1"])
+    }
+
+    /// F3 / REPO-DISCOVERY-COOLDOWN-001: selecting a candidate must not burn
+    /// the 6h success window; only a recorded success does.
+    func testRepoDiscoveryThrottleDoesNotCoolFailedProbeForSuccessWindow_repro() {
+        let clock = MaintenanceTestClock(Date(timeIntervalSince1970: 10_000))
+        let throttle = RepoDiscoveryMaintenanceThrottle(
+            batchLimit: 1,
+            cooldown: 3_600,
+            failureCooldown: 60,
+            now: { clock.value() }
+        )
+        let candidates = [
+            GitRepoCandidate(cwd: "/repo/missing", sessionCount: 3),
+            GitRepoCandidate(cwd: "/repo/ok", sessionCount: 2),
+        ]
+
+        XCTAssertEqual(throttle.selectCandidates(candidates).map(\.cwd), ["/repo/missing"])
+        XCTAssertEqual(
+            throttle.selectCandidates(candidates).map(\.cwd),
+            ["/repo/missing"],
+            "selectCandidates must not consume cooldown before a probe outcome"
+        )
+
+        throttle.recordOutcomes(succeeded: [], failed: ["/repo/missing"])
+        XCTAssertEqual(throttle.selectCandidates(candidates).map(\.cwd), ["/repo/ok"])
+
+        clock.advance(by: 59)
+        XCTAssertEqual(throttle.selectCandidates(candidates).map(\.cwd), ["/repo/ok"])
+        clock.advance(by: 1)
+        XCTAssertEqual(throttle.selectCandidates(candidates).map(\.cwd), ["/repo/missing"])
+
+        throttle.recordOutcomes(succeeded: ["/repo/ok"], failed: [])
+        XCTAssertEqual(throttle.selectCandidates(candidates).map(\.cwd), ["/repo/missing"])
+        clock.advance(by: 3_600)
+        XCTAssertEqual(throttle.selectCandidates(candidates).map(\.cwd), ["/repo/missing"])
+        throttle.recordOutcomes(succeeded: [], failed: ["/repo/missing"])
+        XCTAssertEqual(throttle.selectCandidates(candidates).map(\.cwd), ["/repo/ok"])
     }
 
     /// L01: stdout event encoding must go through JSONEncoder so quotes/newlines

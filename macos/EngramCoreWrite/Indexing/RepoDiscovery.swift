@@ -63,6 +63,16 @@ public struct GitRepoDiscoveryEntry: Equatable, Sendable {
     }
 }
 
+public struct GitRepoProbeBatch: Equatable, Sendable {
+    public let entries: [GitRepoDiscoveryEntry]
+    public let failedCwds: [String]
+
+    public init(entries: [GitRepoDiscoveryEntry], failedCwds: [String]) {
+        self.entries = entries
+        self.failedCwds = failedCwds
+    }
+}
+
 public enum RepoDiscovery {
     /// Probe every distinct repo root referenced by a session `cwd` and upsert
     /// it into `git_repos`. `session_count` aggregates sessions whose `cwd`
@@ -109,11 +119,24 @@ public enum RepoDiscovery {
         _ candidates: [GitRepoCandidate],
         probe: (String) -> GitRepoProbe? = { RepoDiscovery.probeGit($0) }
     ) -> [GitRepoDiscoveryEntry] {
+        probeRepositoriesDetailed(candidates, probe: probe).entries
+    }
+
+    /// Same aggregation as `probeRepositories`, plus the candidate cwds whose
+    /// probe returned nil so maintenance can apply a shorter failure cooldown.
+    public static func probeRepositoriesDetailed(
+        _ candidates: [GitRepoCandidate],
+        probe: (String) -> GitRepoProbe? = { RepoDiscovery.probeGit($0) }
+    ) -> GitRepoProbeBatch {
         // Aggregate by resolved repo top-level: many cwds (sub-dirs) can map to
         // one repo. Cache probes per cwd to avoid re-shelling identical paths.
         var byRepo: [String: (probe: GitRepoProbe, sessions: Int)] = [:]
+        var failedCwds: [String] = []
         for candidate in candidates {
-            guard let info = probe(candidate.cwd) else { continue }
+            guard let info = probe(candidate.cwd) else {
+                failedCwds.append(candidate.cwd)
+                continue
+            }
             if let existing = byRepo[info.path] {
                 byRepo[info.path] = (existing.probe, existing.sessions + candidate.sessionCount)
             } else {
@@ -121,9 +144,10 @@ public enum RepoDiscovery {
             }
         }
 
-        return byRepo.values.map { entry in
+        let entries = byRepo.values.map { entry in
             GitRepoDiscoveryEntry(probe: entry.probe, sessionCount: entry.sessions)
         }
+        return GitRepoProbeBatch(entries: entries, failedCwds: failedCwds)
     }
 
     @discardableResult
