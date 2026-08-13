@@ -49,7 +49,7 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
   layer 4              └─ result[].functionResponse { id, name, response{ output } }
 ```
 
-**给 Engram 工程师的 TL;DR。** Engram 只解析 `.json`，保留 `sessionId / startTime / lastUpdated`，把对话文本扁平化（`user` + `gemini|model`，丢弃 `info` 及空内容回合），并（仅 Swift）推导 token 用量。它 **丢弃** `model`、`thoughts`、`toolCalls`、`displayContent`、消息 `id`、顶层 `projectHash`/`kind`，以及整个 `.jsonl` 格式。TS 参考路径还会额外丢弃 **所有** token 用量。
+**给 Engram 工程师的 TL;DR。** Engram 保留 `sessionId / startTime / lastUpdated`，扁平化对话文本（`user` + `gemini|model`），把持久化的 `toolCalls[]` 发为独立 `tool` 消息，并（仅 Swift）推导 token 用量。普通 `info` 和空内容回合会被丢弃；保留 fixture 中精确的 `Tool call:` 标记会被规范化为工具事件。Engram 仍丢弃 `model`、`thoughts`、`displayContent`、消息 `id` 和顶层 `projectHash`/`kind`。TS 参考路径为 fixture 生成同步工具规范化，但仍丢弃 **所有** token 用量。
 
 ---
 
@@ -143,11 +143,11 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 | `user` | 用户回合 | `role: user` | 是（用户计数） |
 | `gemini` | 助手回合（最丰富：model/thoughts/tokens/toolCalls） | `role: assistant` | 是（助手计数） |
 | `model` | 非 Gemini CLI 类型（仅 Engram TS 适配器别名；Gemini CLI 从不发出） | `role: assistant` | 是（助手计数） |
-| `info` | 系统/状态通知（如 `"MCP issues detected. Run /mcp list for status."`） | 丢弃 | **否**（被排除于所有计数） |
+| `info` | 系统/状态通知（如 `"MCP issues detected. Run /mcp list for status."`） | 通常丢弃；精确 `Tool call:` 标记 → `role: tool` | 仅保留工具标记 |
 | `error` | 真实的 Gemini CLI 消息类型（官方）；不被 Engram 适配器枚举 | 丢弃 | **否** |
 | `warning` | 真实的 Gemini CLI 消息类型（官方）；不被 Engram 适配器枚举 | 丢弃 | **否** |
 
-`info` 和空内容消息被丢弃：Engram 的 `message()` 只接受 `user`/`gemini`/`model`（Swift:212-215；TS `isConversation` TS:49-51），且 Swift 额外预过滤空 `content`（Swift:116）。纯 `info` 会话（实时 `surge/…/bcf966c3.json`）产出 `messageCount = 0`。
+普通 `info` 记录和空对话内容会被丢弃。精确的保留 fixture 标记 `Tool call: <name>` 是窄例外，会成为一条工具消息；无关状态文本仍被排除。仅含普通 `info` 的会话（实时 `surge/…/bcf966c3.json`）仍产出 `messageCount = 0`。
 
 ### 4c. 新版 `.jsonl`（事件溯源追加日志）—— 四种记录类型（不被 Engram 解析）
 
@@ -179,7 +179,7 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 | `kind` | string | 会话类别区分符；观察到的值为 `"main"` | 实时存在，**fixtures 中缺失** | ❌（两个适配器都未声明） | `"main"` |
 | `messages` | array<object> | 有序的对话/事件记录（[§6](#6-message--content-schema)） | **required** | ✅ | `[ {…}, … ]` |
 
-> **磁盘上无 `messageCount`。** 任何样本中都 **没有** 顶层 `messageCount` 字段 —— 它在实时数据中缺失（`surge/…/75cb965e.json` topkeys = `[kind,lastUpdated,messages,projectHash,sessionId,startTime]`），**且** 在两个 fixtures 中也缺失（`tests/fixtures/gemini/session-sample.json` 和 `adapter-parity/gemini-cli/input/.../session-sample.json` 的 topkeys = `[lastUpdated,messages,projectHash,sessionId,startTime]`；对两者 `grep -l messageCount` → 无匹配）。`messageCount` 仅作为 Engram 的 **重新计算** 值出现在 parity *expected* 输出中（`insightFields.messageCount: 3`），磁盘上从不作为源字段存在。
+> **磁盘上无 `messageCount`。** 任何样本中都 **没有** 顶层 `messageCount` 字段 —— 它在实时数据中缺失（`surge/…/75cb965e.json` topkeys = `[kind,lastUpdated,messages,projectHash,sessionId,startTime]`），**且** 在两个 fixtures 中也缺失（`tests/fixtures/gemini/session-sample.json` 和 `adapter-parity/gemini-cli/input/.../session-sample.json` 的 topkeys = `[lastUpdated,messages,projectHash,sessionId,startTime]`；对两者 `grep -l messageCount` → 无匹配）。`messageCount` 仅作为 Engram 的 **重新计算** 值出现在 parity *expected* 输出中（`insightFields.messageCount: 4`），磁盘上从不作为源字段存在。
 
 > **差异标记。** `kind` 在两个实时 `.json` 文件中都存在，但在 fixtures 中缺失，且不被任一适配器声明/读取。TS 的 `GeminiSession` 接口声明了 `projectHash`（TS:16），但 Swift 适配器从不读取它。两处遗漏都不影响解析。
 
@@ -226,11 +226,11 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 | `model` | string | 产生该回合的模型 id | optional（实时：gemini 上始终存在） | ❌（始终 `model:nil`） | `"gemini-3.1-pro-preview"` |
 | `thoughts` | array of `{subject,description,timestamp}` | 推理轨迹（[§8](#8-reasoning--thinking)） | optional | ❌（文本被丢弃；token 计数被折算） | `[ {…} ]` |
 | `tokens` | object | 每回合 token 用量（[§9](#9-token-usage--cost)） | optional | ✅（仅 Swift） | `{ … }` |
-| `toolCalls` | array | 工具调用 + 内联结果（[§7](#7-tool-calls--results)） | optional（未用工具时缺失） | ❌（`toolCalls:nil`） | `[ {…} ]` |
+| `toolCalls` | array | 工具调用 + 内联结果（[§7](#7-tool-calls--results)） | optional（未用工具时缺失） | ✅ → 独立 `role: tool` 消息 | `[ {…} ]` |
 | `displayContent` | null/absent | gemini 记录上不使用（观察为 `null`） | optional | ❌ | `null` |
 | `id`,`timestamp`,`type` | — | 通用信封 | required | — | — |
 
-> **覆盖标记。** `model`、`thoughts`、`toolCalls` 和 `displayContent` 是磁盘上真实存在但 Swift 产品适配器 **不** 暴露的字段 —— 对助手记录它只读取 `content`、`timestamp` 和 `tokens`（Swift:211-226），设置会话级 `model:nil`（Swift:138）和每消息 `toolCalls:nil`（Swift:223）。推理、模型 id 和工具调用都在磁盘上，但被规范化 **丢弃**。
+> **覆盖标记。** `model`、`thoughts` 和 `displayContent` 仍不暴露。`toolCalls[]` 按元素各规范化为一条 `role: tool` 消息，包含名称、序列化参数、时间戳，以及存在时的 `resultDisplay`/`functionResponse.response.output`；助手文本保持为独立助手消息。
 
 ```json
 {
@@ -249,16 +249,16 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 
 | 字段 | 类型 | 含义 | 可选 | 被消费？ | 示例 |
 |---|---|---|---|---|---|
-| `content` | string | 系统/info 通知 | required | ❌（被排除于计数） | `"<info / system notice text>"` |
+| `content` | string | 系统/info 通知 | required | 普通状态被排除；精确 `Tool call:` 标记 → 工具 | `"<info / system notice text>"` |
 | `id`,`timestamp`,`type` | — | 通用信封 | required | — | — |
 
-在 parity fixture 中，4 条原始消息（其中 1 条为 `info`）规范化为 `messageCount: 3`。
+在 parity fixture 中，4 条原始消息（其中 1 条为保留的 `Tool call:` info 标记）规范化为 `messageCount: 4`。
 
 ---
 
 ## 7. Tool calls & results
 
-工具调用 **仅** 出现在 `gemini` 记录的 `toolCalls[]` 数组内。**请求与结果共置于同一元素中** —— 没有单独的"工具结果"记录。实时看到的 `name` 值：`activate_skill`、`read_file`。Engram **不** 把它们导入消息（`toolCalls:nil` Swift:223；TS `streamMessages` 从不发出工具数据 TS:201-209）。
+当前工具调用出现在 `gemini` 记录的 `toolCalls[]` 数组内。**请求与结果共置于同一元素中** —— 没有单独的"工具结果"记录。实时看到的 `name` 值：`activate_skill`、`read_file`。Engram 为每个有效元素发出一条 `role: tool` 消息，并把外层助手文本保留为独立助手消息；同时容忍旧的内联 `content[].functionCall` 形态与保留 fixture 中精确的 `Tool call:` info 标记。
 
 ### 7.1 `toolCalls[]` 元素（layer 3）
 
@@ -308,7 +308,7 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
 ]
 ```
 
-> **覆盖标记。** Engram 完全丢弃 `toolCalls`；parity `success.expected.json` 确认 `toolCallCount: 0`。工具调用完整存在于磁盘，但在 Engram 产品中不可见。
+> **覆盖标记。** Engram 暴露工具名、序列化参数、时间戳和最佳可用输出（先 `resultDisplay`，后 `functionResponse.response.output`）。调度状态、显示名、描述和调用 id 仍不暴露。
 
 ---
 
@@ -429,10 +429,10 @@ Originator 匹配对规范化是容忍的。**漂移说明：** TS `isClaudeCode
 | `cwd` | `projects.json` **反向** 查找（value==project）→ cwd key；fallback = project | `:125,136,180-193` | `:130,161,213-219` | 匹配 `value == projectName` → 返回 cwd key |
 | `startTime` | `startTime` | `:109,134` | `:159` | required |
 | `endTime` | `lastUpdated` | `:135` | `:160` | optional |
-| `messageCount` | `userMessages.count + assistantMessages.count` | `:139` | `:163` | 排除 `info`/工具/系统；Swift 还排除空内容 |
-| `userMessageCount` | `type=="user"` | `:117-118,140` | `:119,164` | Swift 预过滤空内容（`:116`）；TS 不过滤 → 漂移 |
-| `assistantMessageCount` | `type=="gemini" \|\| "model"` | `:119-123,141` | `:120-122,165` | 两个名称都计入 |
-| `toolMessageCount` | constant `0` | `:142` | `:166` | `info`/`toolCalls` 从不计入 |
+| `messageCount` | 规范化后的 user + assistant + tool 消息 | `:129-155` | `parseSessionInfo` 共用规范化器 | 排除普通 info/system 和空对话内容 |
+| `userMessageCount` | 规范化 `role: user` | `:132,153` | 共用规范化器 | 排除空内容 |
+| `assistantMessageCount` | 规范化 `role: assistant` | `:133,154` | 共用规范化器 | `gemini` 与容忍的 `model` 都计入 |
+| `toolMessageCount` | 规范化 `role: tool` | `:134,155` | 共用规范化器 | 计入有效 `toolCalls[]`、内联 `functionCall` 和保留 `Tool call:` 标记 |
 | `systemMessageCount` | constant `0` | `:143` | `:167` | |
 | `model` | **`nil`**（从不读取） | `:138` | (omitted) | 每消息 `model` 被忽略 |
 | `filePath` | locator | `:145` | `:169` | |

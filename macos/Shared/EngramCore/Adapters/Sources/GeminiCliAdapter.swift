@@ -126,20 +126,17 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
                 return .failure(.malformedJSON)
             }
 
-            let messageObjects = messages.compactMap { JSONLAdapterSupport.object($0) }
-                .filter { !Self.extractText($0["content"]).isEmpty }
-            let userMessages = messageObjects
-                .filter { JSONLAdapterSupport.string($0["type"]) == "user" }
-            let assistantMessages = messageObjects
-                .filter {
-                    let type = JSONLAdapterSupport.string($0["type"])
-                    return type == "gemini" || type == "model"
-                }
+            let normalizedMessages = messages
+                .compactMap { JSONLAdapterSupport.object($0) }
+                .flatMap(Self.messages(from:))
+            let userMessages = normalizedMessages.filter { $0.role == .user }
+            let assistantMessages = normalizedMessages.filter { $0.role == .assistant }
+            let toolMessages = normalizedMessages.filter { $0.role == .tool }
             let projectName = Self.projectName(from: locator)
             let cwd = resolveProjectRoot(projectName: projectName) ??
                 resolveProject(projectName: projectName) ??
                 projectName
-            let firstUserText = userMessages.first.map { Self.extractText($0["content"]) } ?? ""
+            let firstUserText = userMessages.first?.content ?? ""
             let sidecar = Self.readSidecar(locator: locator, sessionId: sessionId, limits: limits)
             let originator = JSONLAdapterSupport.string(sidecar?["originator"])
 
@@ -152,10 +149,10 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
                     cwd: cwd,
                     project: projectName,
                     model: nil,
-                    messageCount: userMessages.count + assistantMessages.count,
+                    messageCount: userMessages.count + assistantMessages.count + toolMessages.count,
                     userMessageCount: userMessages.count,
                     assistantMessageCount: assistantMessages.count,
-                    toolMessageCount: 0,
+                    toolMessageCount: toolMessages.count,
                     systemMessageCount: 0,
                     summary: firstUserText.isEmpty ? nil : String(firstUserText.prefix(200)),
                     filePath: locator,
@@ -193,7 +190,7 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
             let object = try Self.readSession(locator: locator, limits: limits)
             messages = JSONLAdapterSupport.array(object["messages"])?
                 .compactMap { JSONLAdapterSupport.object($0) }
-                .compactMap(Self.message(from:)) ?? []
+                .flatMap(Self.messages(from:)) ?? []
             await messageCache.store(locator: locator, signature: signature, messages: messages)
         }
         return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
@@ -358,7 +355,18 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
         return metadata
     }
 
-    private static func message(from object: Phase4AdapterSupport.JSONObject) -> NormalizedMessage? {
+    private static func messages(from object: Phase4AdapterSupport.JSONObject) -> [NormalizedMessage] {
+        var messages: [NormalizedMessage] = []
+        if let message = conversationMessage(from: object) {
+            messages.append(message)
+        }
+        messages.append(contentsOf: toolMessages(from: object))
+        return messages
+    }
+
+    private static func conversationMessage(
+        from object: Phase4AdapterSupport.JSONObject
+    ) -> NormalizedMessage? {
         guard let type = JSONLAdapterSupport.string(object["type"]),
               type == "user" || type == "gemini" || type == "model"
         else {
@@ -373,6 +381,126 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
             toolCalls: nil,
             usage: type == "user" ? nil : usage(from: JSONLAdapterSupport.object(object["tokens"]))
         )
+    }
+
+    private static func toolMessages(
+        from object: Phase4AdapterSupport.JSONObject
+    ) -> [NormalizedMessage] {
+        toolEvents(from: object).map { event in
+            NormalizedMessage(
+                role: .tool,
+                content: event.content,
+                timestamp: event.timestamp,
+                toolCalls: [event.call],
+                usage: nil
+            )
+        }
+    }
+
+    private static func toolEvents(
+        from object: Phase4AdapterSupport.JSONObject
+    ) -> [(call: NormalizedToolCall, content: String, timestamp: String?)] {
+        let type = JSONLAdapterSupport.string(object["type"])
+        let messageTimestamp = JSONLAdapterSupport.string(object["timestamp"])
+
+        if type == "gemini" || type == "model" {
+            let persisted = persistedToolEvents(
+                from: object["toolCalls"],
+                messageTimestamp: messageTimestamp
+            )
+            if !persisted.isEmpty { return persisted }
+
+            let inline = inlineFunctionCallEvents(
+                from: object["content"],
+                timestamp: messageTimestamp
+            )
+            if !inline.isEmpty { return inline }
+        }
+
+        guard type == "info" else { return [] }
+        let content = extractText(object["content"])
+        let prefix = "Tool call:"
+        guard content.hasPrefix(prefix) else { return [] }
+        let name = content.dropFirst(prefix.count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return [] }
+        return [(
+            call: NormalizedToolCall(name: name),
+            content: content,
+            timestamp: messageTimestamp
+        )]
+    }
+
+    private static func persistedToolEvents(
+        from value: Any?,
+        messageTimestamp: String?
+    ) -> [(call: NormalizedToolCall, content: String, timestamp: String?)] {
+        guard let rawCalls = JSONLAdapterSupport.array(value) else { return [] }
+        return rawCalls.compactMap { item in
+            guard let object = JSONLAdapterSupport.object(item),
+                  let name = JSONLAdapterSupport.string(object["name"]),
+                  !name.isEmpty
+            else {
+                return nil
+            }
+            let output = toolOutput(from: object)
+            let content = output ?? "Tool call: \(name)"
+            return (
+                call: NormalizedToolCall(
+                    name: name,
+                    input: object["args"].flatMap { JSONLAdapterSupport.jsonString($0, limit: 500) },
+                    output: output
+                ),
+                content: content,
+                timestamp: JSONLAdapterSupport.string(object["timestamp"]) ?? messageTimestamp
+            )
+        }
+    }
+
+    private static func inlineFunctionCallEvents(
+        from content: Any?,
+        timestamp: String?
+    ) -> [(call: NormalizedToolCall, content: String, timestamp: String?)] {
+        guard let parts = JSONLAdapterSupport.array(content) else { return [] }
+        return parts.compactMap { item in
+            guard let part = JSONLAdapterSupport.object(item),
+                  let functionCall = JSONLAdapterSupport.object(part["functionCall"]),
+                  let name = JSONLAdapterSupport.string(functionCall["name"]),
+                  !name.isEmpty
+            else {
+                return nil
+            }
+            return (
+                call: NormalizedToolCall(
+                    name: name,
+                    input: functionCall["args"].flatMap { JSONLAdapterSupport.jsonString($0, limit: 500) }
+                ),
+                content: "Tool call: \(name)",
+                timestamp: timestamp
+            )
+        }
+    }
+
+    private static func toolOutput(from toolCall: Phase4AdapterSupport.JSONObject) -> String? {
+        if let display = JSONLAdapterSupport.string(toolCall["resultDisplay"]), !display.isEmpty {
+            return display
+        }
+        guard let results = JSONLAdapterSupport.array(toolCall["result"]) else { return nil }
+        for item in results {
+            guard let result = JSONLAdapterSupport.object(item),
+                  let functionResponse = JSONLAdapterSupport.object(result["functionResponse"]),
+                  let response = JSONLAdapterSupport.object(functionResponse["response"])
+            else {
+                continue
+            }
+            if let output = JSONLAdapterSupport.string(response["output"]), !output.isEmpty {
+                return output
+            }
+            if let serialized = JSONLAdapterSupport.jsonString(response, limit: 2_000), !serialized.isEmpty {
+                return serialized
+            }
+        }
+        return nil
     }
 
     private static func usage(from tokens: Phase4AdapterSupport.JSONObject?) -> TokenUsage? {

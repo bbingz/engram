@@ -34,20 +34,30 @@ describe('GeminiCliAdapter', () => {
     expect(info?.source).toBe('gemini-cli');
     expect(info?.startTime).toBe('2026-01-25T14:00:00.000Z');
     expect(info?.userMessageCount).toBe(2);
+    expect(info?.toolMessageCount).toBe(1);
+    expect(info?.messageCount).toBe(4);
     expect(info?.summary).toBe('帮我优化这段 SQL 查询');
   });
 
-  it('streamMessages yields only user and gemini messages (not info)', async () => {
+  it('streams the retained tool event without treating ordinary info as a message', async () => {
     const messages = [];
     for await (const msg of adapter.streamMessages(SESSION_FIXTURE)) {
       messages.push(msg);
     }
-    expect(messages).toHaveLength(3); // 2 user + 1 gemini，info 被过滤
-    expect(
-      messages.every((m) => m.role === 'user' || m.role === 'assistant'),
-    ).toBe(true);
+    expect(messages).toHaveLength(4);
+    expect(messages.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'user',
+    ]);
     expect(messages[0].content).toBe('帮我优化这段 SQL 查询');
     expect(messages[1].role).toBe('assistant');
+    expect(messages[2]).toMatchObject({
+      role: 'tool',
+      content: 'Tool call: read_file',
+      toolCalls: [{ name: 'read_file' }],
+    });
   });
 
   it('lists and replays current JSONL event logs', async () => {

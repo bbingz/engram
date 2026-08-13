@@ -8,6 +8,7 @@ import type {
   SessionAdapter,
   SessionInfo,
   StreamMessagesOptions,
+  ToolCall,
 } from './types.js';
 
 interface GeminiSession {
@@ -21,6 +22,18 @@ interface GeminiSession {
 
 interface GeminiContentPart {
   text?: string;
+  functionCall?: {
+    name?: string;
+    args?: unknown;
+  };
+}
+
+interface GeminiToolCall {
+  name?: string;
+  args?: unknown;
+  timestamp?: string;
+  resultDisplay?: string;
+  result?: unknown[];
 }
 
 interface GeminiMessage {
@@ -28,7 +41,7 @@ interface GeminiMessage {
   timestamp: string;
   type: 'user' | 'gemini' | 'model' | 'info' | string;
   content: string | GeminiContentPart[];
-  toolCalls?: unknown[];
+  toolCalls?: GeminiToolCall[];
 }
 
 const MAX_SESSION_JSON_BYTES = 10 * 1024 * 1024;
@@ -60,6 +73,115 @@ function extractText(content: string | GeminiContentPart[]): string {
       .join('\n');
   }
   return '';
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function jsonString(value: unknown, limit: number): string | undefined {
+  try {
+    return JSON.stringify(value)?.slice(0, limit);
+  } catch {
+    return undefined;
+  }
+}
+
+function toolOutput(toolCall: GeminiToolCall): string | undefined {
+  if (toolCall.resultDisplay) return toolCall.resultDisplay;
+  for (const item of toolCall.result ?? []) {
+    const result = asRecord(item);
+    const functionResponse = asRecord(result?.functionResponse);
+    const response = asRecord(functionResponse?.response);
+    if (!response) continue;
+    if (typeof response.output === 'string' && response.output) {
+      return response.output;
+    }
+    return jsonString(response, 2_000);
+  }
+  return undefined;
+}
+
+function toolMessages(message: GeminiMessage): Message[] {
+  if (message.type === 'gemini' || message.type === 'model') {
+    const persisted = (message.toolCalls ?? []).flatMap((toolCall) => {
+      if (!toolCall.name) return [];
+      const output = toolOutput(toolCall);
+      const call: ToolCall = {
+        name: toolCall.name,
+        input:
+          toolCall.args === undefined
+            ? undefined
+            : jsonString(toolCall.args, 500),
+        output,
+      };
+      return [
+        {
+          role: 'tool' as const,
+          content: output ?? `Tool call: ${toolCall.name}`,
+          timestamp: toolCall.timestamp ?? message.timestamp,
+          toolCalls: [call],
+        },
+      ];
+    });
+    if (persisted.length > 0) return persisted;
+
+    if (Array.isArray(message.content)) {
+      const inline = message.content.flatMap((part) => {
+        const name = part.functionCall?.name;
+        if (!name) return [];
+        const call: ToolCall = {
+          name,
+          input:
+            part.functionCall?.args === undefined
+              ? undefined
+              : jsonString(part.functionCall.args, 500),
+        };
+        return [
+          {
+            role: 'tool' as const,
+            content: `Tool call: ${name}`,
+            timestamp: message.timestamp,
+            toolCalls: [call],
+          },
+        ];
+      });
+      if (inline.length > 0) return inline;
+    }
+  }
+
+  if (message.type !== 'info') return [];
+  const content = extractText(message.content);
+  const prefix = 'Tool call:';
+  if (!content.startsWith(prefix)) return [];
+  const name = content.slice(prefix.length).trim();
+  if (!name) return [];
+  return [
+    {
+      role: 'tool',
+      content,
+      timestamp: message.timestamp,
+      toolCalls: [{ name }],
+    },
+  ];
+}
+
+function normalizedMessages(message: GeminiMessage): Message[] {
+  const messages: Message[] = [];
+  if (isConversation(message)) {
+    const content = extractText(message.content);
+    if (content) {
+      messages.push({
+        role: message.type === 'user' ? 'user' : 'assistant',
+        content,
+        timestamp: message.timestamp,
+      });
+    }
+  }
+  messages.push(...toolMessages(message));
+  return messages;
 }
 
 async function readJsonFileIfSmall<T>(filePath: string): Promise<T | null> {
@@ -120,12 +242,15 @@ export class GeminiCliAdapter implements SessionAdapter {
       const session = await this.readSessionFile(filePath);
       if (!session) return null;
 
-      const messageObjects = session.messages.filter(
-        (m) => extractText(m.content) !== '',
+      const messages = session.messages.flatMap(normalizedMessages);
+      const userMessages = messages.filter(
+        (message) => message.role === 'user',
       );
-      const userMessages = messageObjects.filter((m) => m.type === 'user');
-      const assistantMessages = messageObjects.filter(
-        (m) => m.type === 'gemini' || m.type === 'model',
+      const assistantMessages = messages.filter(
+        (message) => message.role === 'assistant',
+      );
+      const toolMessages = messages.filter(
+        (message) => message.role === 'tool',
       );
 
       // 从文件路径提取 projectName：.../tmp/<projectName>/chats/<session>.json[l]
@@ -140,9 +265,7 @@ export class GeminiCliAdapter implements SessionAdapter {
         (await this.resolveProject(projectName)) ??
         projectName;
 
-      const firstUserText = userMessages[0]
-        ? extractText(userMessages[0].content)
-        : undefined;
+      const firstUserText = userMessages[0]?.content;
 
       // Try reading sidecar file written by gemini-plugin-cc for deterministic linking
       let parentSessionId: string | undefined;
@@ -171,10 +294,11 @@ export class GeminiCliAdapter implements SessionAdapter {
         endTime: session.lastUpdated,
         cwd,
         project: projectName,
-        messageCount: userMessages.length + assistantMessages.length,
+        messageCount:
+          userMessages.length + assistantMessages.length + toolMessages.length,
         userMessageCount: userMessages.length,
         assistantMessageCount: assistantMessages.length,
-        toolMessageCount: 0,
+        toolMessageCount: toolMessages.length,
         systemMessageCount: 0,
         summary: firstUserText?.slice(0, 200) || undefined,
         filePath,
@@ -203,21 +327,13 @@ export class GeminiCliAdapter implements SessionAdapter {
     const session = await this.readSessionFile(filePath);
     if (!session) return;
 
-    const relevant = session.messages.filter(isConversation);
+    const relevant = session.messages.flatMap(normalizedMessages);
     const sliced = relevant.slice(
       offset,
       limit === Infinity ? undefined : offset + (limit as number),
     );
 
-    for (const msg of sliced) {
-      const text = extractText(msg.content);
-      if (!text) continue;
-      yield {
-        role: msg.type === 'user' ? 'user' : 'assistant',
-        content: text,
-        timestamp: msg.timestamp,
-      };
-    }
+    yield* sliced;
   }
 
   // projectName → cwd（通过 projects.json 反查）

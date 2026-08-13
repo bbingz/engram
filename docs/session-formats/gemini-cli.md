@@ -52,7 +52,7 @@ Last researched: 2026-06-21 (Engram session-format research workflow)
   layer 4              └─ result[].functionResponse { id, name, response{ output } }
 ```
 
-**TL;DR for Engram engineers.** Engram parses only `.json`, keeps `sessionId / startTime / lastUpdated`, flattens conversation text (`user` + `gemini|model`, dropping `info` and empty-content turns), and (Swift only) derives token usage. It **drops** `model`, `thoughts`, `toolCalls`, `displayContent`, message `id`, top-level `projectHash`/`kind`, and the entire `.jsonl` format. The TS reference path additionally drops **all** token usage.
+**TL;DR for Engram engineers.** Engram keeps `sessionId / startTime / lastUpdated`, flattens conversation text (`user` + `gemini|model`), emits persisted `toolCalls[]` as separate `tool` messages, and (Swift only) derives token usage. Ordinary `info` and empty-content turns are dropped; the retained exact `Tool call:` info marker is normalized as a tool event. Engram still drops `model`, `thoughts`, `displayContent`, message `id`, and top-level `projectHash`/`kind`. The TS reference path mirrors tool normalization for fixture generation but drops **all** token usage.
 
 ---
 
@@ -146,11 +146,11 @@ Each element is one record; `type` discriminates. Confirmed (official): the on-d
 | `user` | User turn | `role: user` | yes (user count) |
 | `gemini` | Assistant turn (richest: model/thoughts/tokens/toolCalls) | `role: assistant` | yes (assistant count) |
 | `model` | NOT a Gemini CLI type (Engram TS-adapter alias only; never emitted by Gemini CLI) | `role: assistant` | yes (assistant count) |
-| `info` | System/status notice (e.g. `"MCP issues detected. Run /mcp list for status."`) | dropped | **no** (excluded from all counts) |
+| `info` | System/status notice (e.g. `"MCP issues detected. Run /mcp list for status."`) | normally dropped; exact `Tool call:` marker → `role: tool` | only retained tool marker |
 | `error` | Real Gemini CLI message type (official); not enumerated by Engram adapters | dropped | **no** |
 | `warning` | Real Gemini CLI message type (official); not enumerated by Engram adapters | dropped | **no** |
 
-`info` and empty-content messages are dropped: Engram's `message()` only accepts `user`/`gemini`/`model` (Swift:212-215; TS `isConversation` TS:49-51) and Swift additionally pre-filters empty `content` (Swift:116). A purely-`info` session (live `surge/…/bcf966c3.json`) yields `messageCount = 0`.
+Ordinary `info` records and empty conversation content are dropped. The exact retained fixture marker `Tool call: <name>` is the narrow exception and becomes one tool message; unrelated status text remains excluded. A purely ordinary-`info` session (live `surge/…/bcf966c3.json`) still yields `messageCount = 0`.
 
 ### 4c. Newer `.jsonl` (event-sourced append log) — four record kinds (NOT parsed by Engram)
 
@@ -182,7 +182,7 @@ Top-level keys of a legacy `.json` session document (layer 1). Verified live key
 | `kind` | string | Session-kind discriminator; observed value `"main"` | present live, **absent in fixtures** | ❌ (not declared by either adapter) | `"main"` |
 | `messages` | array<object> | Ordered conversation/event records ([§6](#6-message--content-schema)) | **required** | ✅ | `[ {…}, … ]` |
 
-> **No on-disk `messageCount`.** There is **no** top-level `messageCount` field in any sample — it is absent from live data (`surge/…/75cb965e.json` topkeys = `[kind,lastUpdated,messages,projectHash,sessionId,startTime]`) **and** from both fixtures (`tests/fixtures/gemini/session-sample.json` and `adapter-parity/gemini-cli/input/.../session-sample.json` topkeys = `[lastUpdated,messages,projectHash,sessionId,startTime]`; `grep -l messageCount` over both → no match). `messageCount` exists only as Engram's **recomputed** value in parity *expected* output (`insightFields.messageCount: 3`), never as a source field on disk.
+> **No on-disk `messageCount`.** There is **no** top-level `messageCount` field in any sample — it is absent from live data (`surge/…/75cb965e.json` topkeys = `[kind,lastUpdated,messages,projectHash,sessionId,startTime]`) **and** from both fixtures (`tests/fixtures/gemini/session-sample.json` and `adapter-parity/gemini-cli/input/.../session-sample.json` topkeys = `[lastUpdated,messages,projectHash,sessionId,startTime]`; `grep -l messageCount` over both → no match). `messageCount` exists only as Engram's **recomputed** value in parity *expected* output (`insightFields.messageCount: 4`), never as a source field on disk.
 
 > **Discrepancy flag.** `kind` exists in BOTH live `.json` files but is absent from fixtures and not declared/read by either adapter. The TS `GeminiSession` interface declares `projectHash` (TS:16) but the Swift adapter never reads it. Neither omission affects parsing.
 
@@ -229,11 +229,11 @@ Top-level keys of a legacy `.json` session document (layer 1). Verified live key
 | `model` | string | Model id that produced the turn | optional (live: always present on gemini) | ❌ (`model:nil` always) | `"gemini-3.1-pro-preview"` |
 | `thoughts` | array of `{subject,description,timestamp}` | Reasoning trace ([§8](#8-reasoning--thinking)) | optional | ❌ (text dropped; token count folded) | `[ {…} ]` |
 | `tokens` | object | Per-turn token usage ([§9](#9-token-usage--cost)) | optional | ✅ (Swift only) | `{ … }` |
-| `toolCalls` | array | Tool calls + inline results ([§7](#7-tool-calls--results)) | optional (absent when no tools used) | ❌ (`toolCalls:nil`) | `[ {…} ]` |
+| `toolCalls` | array | Tool calls + inline results ([§7](#7-tool-calls--results)) | optional (absent when no tools used) | ✅ → separate `role: tool` messages | `[ {…} ]` |
 | `displayContent` | null/absent | Not used on gemini records (observed `null`) | optional | ❌ | `null` |
 | `id`,`timestamp`,`type` | — | common envelope | required | — | — |
 
-> **Coverage flag.** `model`, `thoughts`, `toolCalls`, and `displayContent` are real on-disk fields the Swift product adapter does NOT surface — it reads only `content`, `timestamp`, and `tokens` for assistant records (Swift:211-226), sets session-level `model:nil` (Swift:138) and per-message `toolCalls:nil` (Swift:223). Reasoning, model id, and tool calls are on disk but **dropped** by normalization.
+> **Coverage flag.** `model`, `thoughts`, and `displayContent` remain unsurfaced. `toolCalls[]` is normalized one element per `role: tool` message, including name, serialized args, timestamp, and `resultDisplay`/`functionResponse.response.output` when present; the assistant text remains a separate assistant message.
 
 ```json
 {
@@ -252,16 +252,16 @@ Top-level keys of a legacy `.json` session document (layer 1). Verified live key
 
 | Field | Type | Meaning | Optional | Consumed? | Example |
 |---|---|---|---|---|---|
-| `content` | string | System/info notice | required | ❌ (excluded from counts) | `"<info / system notice text>"` |
+| `content` | string | System/info notice | required | ordinary status excluded; exact `Tool call:` marker → tool | `"<info / system notice text>"` |
 | `id`,`timestamp`,`type` | — | common envelope | required | — | — |
 
-In the parity fixture, the 4 raw messages (1 of them `info`) normalize to `messageCount: 3`.
+In the parity fixture, the 4 raw messages (1 retained `Tool call:` info marker) normalize to `messageCount: 4`.
 
 ---
 
 ## 7. Tool calls & results
 
-Tool calls appear **only** inside a `gemini` record's `toolCalls[]` array. **Request and result are co-located in one element** — there is no separate "tool result" record. Live `name` values seen: `activate_skill`, `read_file`. Engram does **not** import these into messages (`toolCalls:nil` Swift:223; TS `streamMessages` never emits tool data TS:201-209).
+Current tool calls appear inside a `gemini` record's `toolCalls[]` array. **Request and result are co-located in one element** — there is no separate "tool result" record. Live `name` values seen: `activate_skill`, `read_file`. Engram emits one `role: tool` message per valid element and keeps the enclosing assistant text as a separate assistant message. It also tolerates the older inline `content[].functionCall` shape and the retained exact `Tool call:` info marker.
 
 ### 7.1 `toolCalls[]` element (layer 3)
 
@@ -311,7 +311,7 @@ Tool calls appear **only** inside a `gemini` record's `toolCalls[]` array. **Req
 ]
 ```
 
-> **Coverage flag.** Engram discards `toolCalls` entirely; the parity `success.expected.json` confirms `toolCallCount: 0`. Tool calls are fully on-disk but invisible in Engram's product.
+> **Coverage flag.** Engram surfaces tool name, serialized args, timestamp, and the best available output (`resultDisplay`, then `functionResponse.response.output`). Scheduler status, display name, description, and call id remain unsurfaced.
 
 ---
 
@@ -432,10 +432,10 @@ Present live but **NOT consumed** by the adapter:
 | `cwd` | `projects.json` **reverse** lookup (value==project) → cwd key; fallback = project | `:125,136,180-193` | `:130,161,213-219` | matches `value == projectName` → returns cwd key |
 | `startTime` | `startTime` | `:109,134` | `:159` | required |
 | `endTime` | `lastUpdated` | `:135` | `:160` | optional |
-| `messageCount` | `userMessages.count + assistantMessages.count` | `:139` | `:163` | excludes `info`/tool/system; Swift also excludes empty-content |
-| `userMessageCount` | `type=="user"` | `:117-118,140` | `:119,164` | Swift pre-filters empty content (`:116`); TS does not → drift |
-| `assistantMessageCount` | `type=="gemini" \|\| "model"` | `:119-123,141` | `:120-122,165` | both names counted |
-| `toolMessageCount` | constant `0` | `:142` | `:166` | `info`/`toolCalls` never counted |
+| `messageCount` | normalized user + assistant + tool messages | `:129-155` | shared normalizer in `parseSessionInfo` | excludes ordinary info/system and empty conversation content |
+| `userMessageCount` | normalized `role: user` | `:132,153` | shared normalizer | empty content excluded |
+| `assistantMessageCount` | normalized `role: assistant` | `:133,154` | shared normalizer | `gemini` and tolerated `model` both counted |
+| `toolMessageCount` | normalized `role: tool` | `:134,155` | shared normalizer | counts valid `toolCalls[]`, inline `functionCall`, and retained `Tool call:` marker |
 | `systemMessageCount` | constant `0` | `:143` | `:167` | |
 | `model` | **`nil`** (never read) | `:138` | (omitted) | per-message `model` ignored |
 | `filePath` | locator | `:145` | `:169` | |
