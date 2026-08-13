@@ -344,7 +344,9 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - Gemini CLI
 
-    func testGeminiCountsOnlyNonEmptyTurns() async throws {
+    // Audit L-b: a function-call-only model turn is a tool event, not an empty
+    // assistant turn. It must contribute one streamed tool message and count.
+    func testGeminiCountsFunctionOnlyTurnAsTool_repro() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let chatsDir = root.appendingPathComponent("tmp/proj/chats", isDirectory: true)
@@ -357,8 +359,11 @@ final class AdapterMessageCountTests: XCTestCase {
             "messages": [
                 ["type": "user", "timestamp": "2026-01-01T00:00:01.000Z", "content": [["text": "hello"]]],
                 ["type": "gemini", "timestamp": "2026-01-01T00:00:02.000Z", "content": "hi there"],
-                // function-call-only model turn: no text content → dropped.
-                ["type": "model", "timestamp": "2026-01-01T00:00:03.000Z", "content": [["functionCall": ["name": "read"]]]],
+                [
+                    "type": "model",
+                    "timestamp": "2026-01-01T00:00:03.000Z",
+                    "content": [["functionCall": ["name": "read", "args": ["path": "/tmp/a.swift"]]]],
+                ],
                 // empty-text user turn → dropped.
                 ["type": "user", "timestamp": "2026-01-01T00:00:04.000Z", "content": [["text": ""]]],
             ],
@@ -374,9 +379,87 @@ final class AdapterMessageCountTests: XCTestCase {
         let streamed = try await drain(adapter, locator: file.path)
 
         XCTAssertEqual(info.userMessageCount, 1, "empty-text user turn must not be counted")
-        XCTAssertEqual(info.assistantMessageCount, 1, "function-call-only model turn must not be counted")
-        XCTAssertEqual(info.messageCount, 2)
+        XCTAssertEqual(info.assistantMessageCount, 1, "function-only model turn must not inflate assistant count")
+        XCTAssertEqual(info.toolMessageCount, 1)
+        XCTAssertEqual(info.messageCount, 3)
         XCTAssertEqual(info.messageCount, streamed.count)
+        XCTAssertEqual(streamed.map(\.role), [.user, .assistant, .tool])
+        XCTAssertEqual(streamed.last?.toolCalls?.first?.name, "read")
+    }
+
+    // Audit L-b: current Gemini CLI stores calls/results in a gemini record's
+    // toolCalls array. The retained fixture also carries the legacy info event.
+    func testGeminiCountsAndStreamsPersistedToolEvents_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("tmp/proj/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        let session: [String: Any] = [
+            "sessionId": "g-tools-1",
+            "startTime": "2026-01-01T00:00:00.000Z",
+            "lastUpdated": "2026-01-01T00:10:00.000Z",
+            "messages": [
+                ["type": "user", "timestamp": "2026-01-01T00:00:01.000Z", "content": [["text": "inspect it"]]],
+                [
+                    "type": "gemini",
+                    "timestamp": "2026-01-01T00:00:02.000Z",
+                    "content": "checking",
+                    "toolCalls": [[
+                        "id": "read-file-1",
+                        "name": "read_file",
+                        "args": ["file_path": "/tmp/a.swift"],
+                        "status": "success",
+                        "timestamp": "2026-01-01T00:00:02.500Z",
+                        "resultDisplay": "file body",
+                        "result": [[
+                            "functionResponse": [
+                                "id": "read-file-1",
+                                "name": "read_file",
+                                "response": ["output": "file body"],
+                            ],
+                        ]],
+                    ]],
+                ],
+                [
+                    "type": "info",
+                    "timestamp": "2026-01-01T00:00:03.000Z",
+                    "content": "Tool call: list_directory",
+                ],
+                [
+                    "type": "info",
+                    "timestamp": "2026-01-01T00:00:04.000Z",
+                    "content": "MCP issues detected. Run /mcp list for status.",
+                ],
+                ["type": "model", "timestamp": "2026-01-01T00:00:05.000Z", "content": "done"],
+            ],
+        ]
+        let file = chatsDir.appendingPathComponent("session-g-tools.json")
+        try (try jsonLine(session)).write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = GeminiCliAdapter(
+            tmpRoot: root.appendingPathComponent("tmp").path,
+            projectsFile: root.appendingPathComponent("projects.json").path
+        )
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: file.path))
+        let streamed = try await drain(adapter, locator: file.path)
+
+        XCTAssertEqual(info.userMessageCount, 1)
+        XCTAssertEqual(info.assistantMessageCount, 2)
+        XCTAssertEqual(info.toolMessageCount, 2)
+        XCTAssertEqual(info.messageCount, 5)
+        XCTAssertEqual(info.messageCount, streamed.count)
+        XCTAssertEqual(streamed.map(\.role), [.user, .assistant, .tool, .tool, .assistant])
+        XCTAssertEqual(streamed.map(\.content), [
+            "inspect it",
+            "checking",
+            "file body",
+            "Tool call: list_directory",
+            "done",
+        ])
+        XCTAssertEqual(streamed.compactMap { $0.toolCalls?.first?.name }, ["read_file", "list_directory"])
+        XCTAssertTrue(streamed[2].toolCalls?.first?.input?.contains("file_path") == true)
+        XCTAssertEqual(streamed[2].toolCalls?.first?.output, "file body")
     }
 
     func testGeminiAttachesAssistantTokenUsage() async throws {
