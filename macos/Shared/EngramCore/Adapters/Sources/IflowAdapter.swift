@@ -160,9 +160,13 @@ final class IflowAdapter: SessionAdapter, Sendable {
             return nil
         }
         let message = JSONLAdapterSupport.object(object["message"])
+        let content = extractContent(message?["content"])
+        let role: NormalizedMessageRole = type == "assistant"
+            ? .assistant
+            : (isSystemInjection(content) ? .system : .user)
         return NormalizedMessage(
-            role: type == "user" ? .user : .assistant,
-            content: extractContent(message?["content"]),
+            role: role,
+            content: content,
             timestamp: JSONLAdapterSupport.string(object["timestamp"]),
             toolCalls: nil,
             usage: type == "assistant" ? usage(from: JSONLAdapterSupport.object(message?["usage"])) : nil

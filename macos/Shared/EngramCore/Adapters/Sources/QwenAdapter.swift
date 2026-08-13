@@ -194,11 +194,15 @@ final class QwenAdapter: SessionAdapter, Sendable {
         }
 
         let message = JSONLAdapterSupport.object(object["message"])
+        let content = extractContent(message)
         let metadataUsage = usage(from: JSONLAdapterSupport.object(object["usageMetadata"]))
         let toolCalls = type == "assistant" ? nonEmptyToolCalls(from: message) : nil
+        let role: NormalizedMessageRole = type == "assistant"
+            ? .assistant
+            : (isSystemInjection(content) ? .system : .user)
         return NormalizedMessage(
-            role: type == "assistant" ? .assistant : .user,
-            content: extractContent(message),
+            role: role,
+            content: content,
             timestamp: JSONLAdapterSupport.string(object["timestamp"]),
             toolCalls: toolCalls,
             usage: type == "assistant" ? (metadataUsage ?? telemetryUsage) : nil

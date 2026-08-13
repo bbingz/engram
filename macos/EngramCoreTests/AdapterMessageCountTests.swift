@@ -51,6 +51,48 @@ final class AdapterMessageCountTests: XCTestCase {
         return String(decoding: data, as: UTF8.self)
     }
 
+    private func assertStreamInjectionParity(
+        _ adapter: SessionAdapter,
+        locator: String,
+        firstUserText: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let info = try sessionInfo(await adapter.parseSessionInfo(locator: locator))
+        let streamed = try await drain(adapter, locator: locator)
+
+        XCTAssertEqual(info.userMessageCount, 1, file: file, line: line)
+        XCTAssertEqual(info.assistantMessageCount, 1, file: file, line: line)
+        XCTAssertEqual(info.systemMessageCount, 1, file: file, line: line)
+        XCTAssertEqual(info.messageCount, 2, file: file, line: line)
+        XCTAssertEqual(info.summary, firstUserText, file: file, line: line)
+        XCTAssertEqual(streamed.map(\.role), [.system, .user, .assistant], file: file, line: line)
+        XCTAssertEqual(
+            streamed.filter { $0.role != .system }.count,
+            info.messageCount,
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(
+            streamed.filter { $0.role == .user }.count,
+            info.userMessageCount,
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(
+            streamed.filter { $0.role == .system }.count,
+            info.systemMessageCount,
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(
+            streamed.first { $0.role == .user }?.content,
+            firstUserText,
+            file: file,
+            line: line
+        )
+    }
+
     // MARK: - VsCode
 
     // Runtime-debt repro: VS Code persists valid empty draft sessions that are
@@ -623,6 +665,51 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - Iflow
 
+    // Audit L10: the batch parser already excludes injected wrappers from user
+    // counts, so the stream must expose the same record as system rather than user.
+    func testIflowStreamClassifiesInjectedWrapperAsSystem_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("projects/-Users-test-iflow-system", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "uuid": "iflow-system-1",
+                "sessionId": "iflow-system",
+                "timestamp": "2026-08-13T00:00:00.000Z",
+                "type": "user",
+                "message": [
+                    "role": "user",
+                    "content": "# AGENTS.md instructions for /tmp/iflow\n<INSTRUCTIONS>noise</INSTRUCTIONS>",
+                ],
+                "cwd": "/tmp/iflow",
+            ],
+            [
+                "uuid": "iflow-system-2",
+                "sessionId": "iflow-system",
+                "timestamp": "2026-08-13T00:00:01.000Z",
+                "type": "user",
+                "message": ["role": "user", "content": "real Iflow task"],
+                "cwd": "/tmp/iflow",
+            ],
+            [
+                "uuid": "iflow-system-3",
+                "sessionId": "iflow-system",
+                "timestamp": "2026-08-13T00:00:02.000Z",
+                "type": "assistant",
+                "message": ["role": "assistant", "content": "done"],
+                "cwd": "/tmp/iflow",
+            ],
+        ]
+        let file = projectDir.appendingPathComponent("session-system.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = IflowAdapter(projectsRoot: root.appendingPathComponent("projects").path)
+        try await assertStreamInjectionParity(adapter, locator: file.path, firstUserText: "real Iflow task")
+    }
+
     func testIflowAttachesAssistantUsageMetadata() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -951,6 +1038,94 @@ final class AdapterMessageCountTests: XCTestCase {
             let info = try sessionInfo(await adapter.parseSessionInfo(locator: locator))
             XCTAssertEqual(info.cwd, expected.cwd)
         }
+    }
+
+    // MARK: - Qwen
+
+    // Audit L10: Qwen's injected bootstrap prompt is system metadata on both
+    // batch and stream paths; the real request remains the first user message.
+    func testQwenStreamClassifiesInjectedWrapperAsSystem_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("project-system/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "type": "user",
+                "sessionId": "qwen-system",
+                "cwd": "/tmp/qwen",
+                "timestamp": "2026-08-13T00:00:00.000Z",
+                "message": [
+                    "role": "user",
+                    "parts": [["text": "You are Qwen Code.\n<INSTRUCTIONS>noise</INSTRUCTIONS>"]],
+                ],
+            ],
+            [
+                "type": "user",
+                "sessionId": "qwen-system",
+                "cwd": "/tmp/qwen",
+                "timestamp": "2026-08-13T00:00:01.000Z",
+                "message": ["role": "user", "parts": [["text": "real Qwen task"]]],
+            ],
+            [
+                "type": "assistant",
+                "sessionId": "qwen-system",
+                "cwd": "/tmp/qwen",
+                "timestamp": "2026-08-13T00:00:02.000Z",
+                "message": ["role": "model", "parts": [["text": "done"]]],
+            ],
+        ]
+        let file = chatsDir.appendingPathComponent("qwen-system.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QwenAdapter(projectsRoot: root.path)
+        try await assertStreamInjectionParity(adapter, locator: file.path, firstUserText: "real Qwen task")
+    }
+
+    // MARK: - Qoder
+
+    // Audit L10: Qoder uses the same injected AGENTS wrapper convention as the
+    // batch parser, so streaming must not count or render it as a user request.
+    func testQoderStreamClassifiesInjectedWrapperAsSystem_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("project-system", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "type": "user",
+                "sessionId": "qoder-system",
+                "cwd": "/tmp/qoder",
+                "timestamp": "2026-08-13T00:00:00.000Z",
+                "message": [
+                    "role": "user",
+                    "content": "# AGENTS.md instructions for /tmp/qoder\n<INSTRUCTIONS>noise</INSTRUCTIONS>",
+                ],
+            ],
+            [
+                "type": "user",
+                "sessionId": "qoder-system",
+                "cwd": "/tmp/qoder",
+                "timestamp": "2026-08-13T00:00:01.000Z",
+                "message": ["role": "user", "content": "real Qoder task"],
+            ],
+            [
+                "type": "assistant",
+                "sessionId": "qoder-system",
+                "cwd": "/tmp/qoder",
+                "timestamp": "2026-08-13T00:00:02.000Z",
+                "message": ["role": "assistant", "content": "done"],
+            ],
+        ]
+        let file = projectDir.appendingPathComponent("qoder-system.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QoderAdapter(projectsRoot: root.path)
+        try await assertStreamInjectionParity(adapter, locator: file.path, firstUserText: "real Qoder task")
     }
 
     // MARK: - Qwen
@@ -3493,6 +3668,48 @@ final class AdapterMessageCountTests: XCTestCase {
     }
 
     // MARK: - CommandCode
+
+    // Audit L10: CommandCode's batch parser classifies injected wrappers as
+    // system, and the streamed role must preserve that classification.
+    func testCommandCodeStreamClassifiesInjectedWrapperAsSystem_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("-Users-test-commandcode-system", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "role": "user",
+                "sessionId": "commandcode-system",
+                "cwd": "/tmp/commandcode",
+                "timestamp": "2026-08-13T00:00:00.000Z",
+                "content": [[
+                    "type": "text",
+                    "text": "# AGENTS.md instructions for /tmp/commandcode\n<INSTRUCTIONS>noise</INSTRUCTIONS>",
+                ]],
+            ],
+            [
+                "role": "user",
+                "sessionId": "commandcode-system",
+                "cwd": "/tmp/commandcode",
+                "timestamp": "2026-08-13T00:00:01.000Z",
+                "content": [["type": "text", "text": "real CommandCode task"]],
+            ],
+            [
+                "role": "assistant",
+                "sessionId": "commandcode-system",
+                "cwd": "/tmp/commandcode",
+                "timestamp": "2026-08-13T00:00:02.000Z",
+                "content": [["type": "text", "text": "done"]],
+            ],
+        ]
+        let file = projectDir.appendingPathComponent("commandcode-system.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CommandCodeAdapter(projectsRoot: root.path)
+        try await assertStreamInjectionParity(adapter, locator: file.path, firstUserText: "real CommandCode task")
+    }
 
     // Audit SRC-COMMANDCODE-001: missing timestamps must not index with empty startTime.
     func testCommandCodeMissingTimestampFallsBackToFileMtime_repro() async throws {
