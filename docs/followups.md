@@ -132,7 +132,8 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **ADAPTER-EMPTY-SESSION-001C** / R184-3 | closed (#359) | Gemini empty/content-less files and Qoder injection-only files return `.noVisibleMessages`. Shipped at `main@43ca14bc`. |
 | **ADAPTER-EMPTY-SESSION-001D** / R184-3 | closed (#360) | Cursor composers with no visible bubbles return `.noVisibleMessages`. Shipped at `main@871e2a12`. |
 | **ADAPTER-EMPTY-SESSION-001E** / R184-3 | closed (#361) | Kimi wire/context metadata with no conversation turns returns `.noVisibleMessages`. Shipped at `main@a6a2348b`. |
-| **ADAPTER-EMPTY-SESSION-001F** / R184-3 | this PR (#362) | Timestamped Cline metadata-only files (`api_req_started` with no task/text) return `.noVisibleMessages`. Remaining adapters stay later slices. |
+| **ADAPTER-EMPTY-SESSION-001F** / R184-3 | closed (#362) | Timestamped Cline metadata-only files return `.noVisibleMessages`. Shipped at `main@7d40c1ad`. |
+| **ADAPTER-EMPTY-SESSION-001G** / R184-3 | this PR (#363) | OpenCode live sessions with no contentful text parts return `.noVisibleMessages`. Remaining adapters stay later slices. |
 | **L-a…L-j** | residual | Remaining Low/Info row from the full-project review: L-h (blocked 1.0.5). L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349, L-j/#353 closed. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
