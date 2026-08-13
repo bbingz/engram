@@ -107,7 +107,8 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **SCHEMA-TOOL-DEAD-001** / L35 | closed (#336) | Removed the uncalled `EngramCoreSchemaTool` sources, XcodeGen target, and generated target/scheme. Shipped at `main@c39c0ac0`. |
 | **MCP-STDIO-DEAD-001** / L13 | closed (#340) | `MCPStdioServer.swift:109-113` remains the sole live `tools/call` dispatch and the unreachable `handle()` switch case is removed. Shipped at `main@b3165b8b`. |
 | **ADAPTER-STREAM-INJECTION-001** / L10 | closed (#341) | CommandCode, Qwen, Qoder, and Iflow streaming reuse their batch-path injection classifiers, emit injected wrappers as system, and preserve the real first-user summary/count. Shipped at `main@2d6f3f27`. |
-| **GEMINI-TOOL-EVENTS-001** / L-b | implemented / verified; PR #342 open | Gemini CLI batch counts and streamed messages now share one normalizer for persisted `toolCalls[]`, inline `functionCall`, and the retained legacy `Tool call:` fixture shape (`GeminiCliAdapter.swift:129-155,181-196,358-499`). Named regressions at `AdapterMessageCountTests.swift:349,392` pin tool counts, `.tool` roles, tool metadata, ordinary-info exclusion, and unchanged user/assistant ordering. |
+| **GEMINI-TOOL-EVENTS-001** / L-b | closed (#342) | Gemini CLI batch counts and streamed messages now share one normalizer for persisted `toolCalls[]`, inline `functionCall`, and the retained legacy `Tool call:` fixture shape. Shipped at `main@2c405175`. |
+| **WARP-TAB-0600-001** / L-e | implemented / verified | Warp resume tab configs are written through `writeWarpTabConfigFile`, which forces POSIX 0600 after the atomic write so cwd/session ids are never group/world readable (`TerminalLauncher.swift`). Named `_repro` plus a source-contract check live in `EngramCLIResumeCommandTests`. |
 | **READ-001/002/003** | closed (post-audit follow-up) | MCP multi-term session-scoped AND, activity-time `since`, and exact project-or-alias filtering are covered by executable `_repro` tests; this does not close ARCH-001 |
 | **R4-dual-tx / EMB-009** | closed (#223) | Shipped insight backfill writes success vectors and item-failure accounting in one `writer.write`; successful rows set `insights.has_embedding=1`; the shipped-runner `_repro` forces failure accounting to throw and proves vector/flag rollback without changing R4 terminal taxonomy |
 | **MCP-002** | closed (#225) | `get_context`, `tool_analytics`, and `file_activity` now reuse shared list-visible and top-level predicates; shipped-binary `_repro` coverage includes `listContextSessions`, `topToolsSince`, and `fileHotspotsSince`. Existing READ-005 `orphan_status` behavior is unchanged. |
@@ -119,7 +120,7 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **R9** / M21 residual | closed (flush; #219); MainActor I/O residual | AI settings flush pending debounce on disappear; MainActor flock/Keychain I/O after debounce remains accepted residual |
 | **R11 ledger** | closed | Disposition evidence columns + this followups section |
 | **F5-CI** | closed (#222) | `.github/workflows/test.yml` now treats `npm audit --audit-level=moderate` as soft-fail for both pull requests and pushes, so merge cannot change audit policy from soft to strict. |
-| **L-a…L-j** | residual | Low/Info rows in full-project review; not engineering-zero blockers |
+| **L-a…L-j** | residual | Remaining Low/Info rows from the full-project review: L-a, L-c, L-d, L-f, L-g, L-h, L-i, L-j. L-b closed in #342; L-e is WARP-TAB-0600-001 on this branch. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
 Also see disposition inventory: `docs/reviews/2026-07-17-finding-disposition.md`.
