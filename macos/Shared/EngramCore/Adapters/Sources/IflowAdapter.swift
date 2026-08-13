@@ -87,6 +87,11 @@ final class IflowAdapter: SessionAdapter, Sendable {
             }
 
             guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
+            // R184-3: injection-only / empty Iflow files must not become
+            // zero-count browsable sessions. Terminal, same as Qwen.
+            guard userCount + assistantCount > 0 else {
+                return .failure(.noVisibleMessages)
+            }
 
             return .success(
                 NormalizedSessionInfo(

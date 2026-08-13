@@ -91,6 +91,11 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
             }
 
             guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
+            // R184-3: injection-only / empty CommandCode files must not become
+            // zero-count browsable sessions. Terminal, same as Qwen.
+            guard userCount + assistantCount + toolCount > 0 else {
+                return .failure(.noVisibleMessages)
+            }
             // Boundary/legacy transcripts may omit every timestamp. Fall back to
             // the file mtime so startTime is never an empty sort key.
             if startTime.isEmpty {

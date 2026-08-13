@@ -793,6 +793,35 @@ final class AdapterMessageCountTests: XCTestCase {
         try await assertStreamInjectionParity(adapter, locator: file.path, firstUserText: "real Iflow task")
     }
 
+    /// R184-3: injection-only Iflow files must be terminal, not zero-count sessions.
+    func testIflowInjectionOnlySessionIsTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("projects/-Users-test-iflow-empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "uuid": "iflow-empty-1",
+                "sessionId": "iflow-empty",
+                "timestamp": "2026-08-13T00:00:00.000Z",
+                "type": "user",
+                "message": [
+                    "role": "user",
+                    "content": "# AGENTS.md instructions for /tmp/iflow\n<INSTRUCTIONS>noise</INSTRUCTIONS>",
+                ],
+                "cwd": "/tmp/iflow",
+            ],
+        ]
+        let file = projectDir.appendingPathComponent("session-empty.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = IflowAdapter(projectsRoot: root.appendingPathComponent("projects").path)
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(failure, .noVisibleMessages)
+    }
+
     func testIflowAttachesAssistantUsageMetadata() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -3824,6 +3853,34 @@ final class AdapterMessageCountTests: XCTestCase {
 
         let adapter = CommandCodeAdapter(projectsRoot: root.path)
         try await assertStreamInjectionParity(adapter, locator: file.path, firstUserText: "real CommandCode task")
+    }
+
+    /// R184-3: injection-only CommandCode files must be terminal, not zero-count sessions.
+    func testCommandCodeInjectionOnlySessionIsTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("-Users-test-commandcode-empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "role": "user",
+                "sessionId": "commandcode-empty",
+                "cwd": "/tmp/commandcode",
+                "timestamp": "2026-08-13T00:00:00.000Z",
+                "content": [[
+                    "type": "text",
+                    "text": "# AGENTS.md instructions for /tmp/commandcode\n<INSTRUCTIONS>noise</INSTRUCTIONS>",
+                ]],
+            ],
+        ]
+        let file = projectDir.appendingPathComponent("commandcode-empty.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CommandCodeAdapter(projectsRoot: root.path)
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(failure, .noVisibleMessages)
     }
 
     // Audit SRC-COMMANDCODE-001: missing timestamps must not index with empty startTime.
