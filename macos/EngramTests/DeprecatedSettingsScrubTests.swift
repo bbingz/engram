@@ -28,16 +28,24 @@ final class DeprecatedSettingsScrubTests: XCTestCase {
 
     func testTitleSettingsPreserveStoredApiKeyWhenSwitchingToOllama() throws {
         let source = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
-        let start = try XCTUnwrap(source.range(of: "private func saveTitleSettings()"))
-        let end = try XCTUnwrap(source.range(of: "private func loadAISettings()", range: start.lowerBound..<source.endIndex))
-        let saveTitleSettings = String(source[start.lowerBound..<end.lowerBound])
+        let start = try XCTUnwrap(source.range(of: "func persistTitle(_ snapshot: TitleSettingsPersistSnapshot)"))
+        let end = try XCTUnwrap(source.range(of: "private func applyAPIKey", range: start.lowerBound..<source.endIndex))
+        let persistTitle = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(
-            saveTitleSettings.contains("TitleAPIKeyPersistenceAction.decide"),
+            persistTitle.contains("TitleAPIKeyPersistenceAction.decide"),
             "Title key persistence should be an explicit decision so Ollama provider changes preserve existing cloud API keys"
         )
-        XCTAssertFalse(
-            saveTitleSettings.contains("KeychainHelper.delete(\"titleApiKey\")"),
+        XCTAssertTrue(
+            persistTitle.contains("case .preserveExisting:"),
+            "Ollama provider changes must keep the stored titleApiKey"
+        )
+        let deleteRange = try XCTUnwrap(persistTitle.range(of: "KeychainHelper.delete(\"titleApiKey\")"))
+        let deleteExisting = try XCTUnwrap(persistTitle.range(of: "case .deleteExisting:"))
+        let preserveExisting = try XCTUnwrap(persistTitle.range(of: "case .preserveExisting:"))
+        XCTAssertTrue(
+            deleteRange.lowerBound > deleteExisting.lowerBound
+                && deleteRange.lowerBound < preserveExisting.lowerBound,
             "Switching to Ollama must not delete the stored titleApiKey; only clearing a non-Ollama key should delete it"
         )
     }
@@ -419,9 +427,19 @@ final class DeprecatedSettingsScrubTests: XCTestCase {
         XCTAssertTrue(fallbackGetter.contains("return false"))
         XCTAssertTrue(fallbackGetter.contains("#endif"))
         XCTAssertTrue(ai.contains("KeychainHelper.allowsPlaintextSettingsFallback"))
+        let applyStart = try XCTUnwrap(ai.range(of: "private func applyAPIKey"))
+        let applyEnd = try XCTUnwrap(
+            ai.range(of: "private func refreshRuntimeAISecrets", range: applyStart.lowerBound..<ai.endIndex)
+        )
+        let applyAPIKey = String(ai[applyStart.lowerBound..<applyEnd.lowerBound])
+        XCTAssertTrue(applyAPIKey.contains("allowsPlaintextSettingsFallback"))
         XCTAssertTrue(
-            ai.contains("mutateEngramSettings { $0[\"aiApiKey\"] = \"@keychain\" }"),
+            applyAPIKey.contains("settings[settingsKey] = \"@keychain\""),
             "SEC-M3: fail-closed path must write @keychain marker, not raw secret"
+        )
+        XCTAssertTrue(
+            applyAPIKey.contains("} else {"),
+            "Keychain failure outside DEBUG must keep the @keychain marker"
         )
     }
 
