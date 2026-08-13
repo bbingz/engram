@@ -1564,6 +1564,38 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - Codex
 
+    /// R184-3: a session_meta-only Codex file must be terminal, not a
+    /// zero-count browsable session.
+    func testCodexMetadataOnlySessionIsTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-meta-only.jsonl")
+        let lines: [[String: Any]] = [
+            [
+                "timestamp": "2026-06-01T10:00:00.000Z",
+                "type": "session_meta",
+                "payload": [
+                    "id": "codex-meta-only",
+                    "timestamp": "2026-06-01T10:00:00.000Z",
+                    "cwd": "/tmp/codex-empty",
+                    "originator": "codex",
+                ],
+            ],
+            [
+                "timestamp": "2026-06-01T10:00:01.000Z",
+                "type": "event_msg",
+                "payload": ["type": "token_count", "info": ["total_token_usage": ["total_tokens": 0]]],
+            ],
+        ]
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(sessionsRoot: root.path)
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+
+        XCTAssertEqual(failure, .noVisibleMessages)
+    }
+
     func testCodexMessageCountIncludesFunctionCallOutput_repro() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
