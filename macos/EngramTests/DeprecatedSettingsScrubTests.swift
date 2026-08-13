@@ -391,7 +391,33 @@ final class DeprecatedSettingsScrubTests: XCTestCase {
     func testAISettingsFailClosedOnKeychainWithoutPlaintextFallback_repro() throws {
         let settingsIO = try source("macos/Engram/Views/Settings/SettingsIO.swift")
         let ai = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
+        let fallbackStart = try XCTUnwrap(
+            settingsIO.range(of: "static var allowsPlaintextSettingsFallback")
+        )
+        let fallbackEnd = try XCTUnwrap(
+            settingsIO.range(
+                of: "static func get",
+                range: fallbackStart.lowerBound..<settingsIO.endIndex
+            )
+        )
+        let fallbackGetter = String(
+            settingsIO[fallbackStart.lowerBound..<fallbackEnd.lowerBound]
+        )
+
         XCTAssertTrue(settingsIO.contains("allowsPlaintextSettingsFallback"))
+        XCTAssertTrue(
+            settingsIO.contains("path.contains(\"DerivedData\")"),
+            "Xcode-run builds must keep bypassing Keychain authorization"
+        )
+        XCTAssertFalse(
+            fallbackGetter.contains("shouldBypassKeychain"),
+            "DerivedData Release may bypass Keychain but must not persist plaintext secrets"
+        )
+        XCTAssertTrue(fallbackGetter.contains("#if DEBUG"))
+        XCTAssertTrue(fallbackGetter.contains("return true"))
+        XCTAssertTrue(fallbackGetter.contains("#else"))
+        XCTAssertTrue(fallbackGetter.contains("return false"))
+        XCTAssertTrue(fallbackGetter.contains("#endif"))
         XCTAssertTrue(ai.contains("KeychainHelper.allowsPlaintextSettingsFallback"))
         XCTAssertTrue(
             ai.contains("mutateEngramSettings { $0[\"aiApiKey\"] = \"@keychain\" }"),
