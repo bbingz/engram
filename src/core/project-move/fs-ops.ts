@@ -153,7 +153,7 @@ export async function safeMoveDir(
 }
 
 /** True when `src` and `dst` resolve to the same path (case-only rename). */
-export async function isCaseOnlySamePath(
+async function isCaseOnlySamePath(
   src: string,
   dst: string,
   realpath: typeof realRealpath = realRealpath,
