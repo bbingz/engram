@@ -83,8 +83,8 @@ const actionPins = {
   'actions/upload-artifact': '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
   'actions/dependency-review-action':
     'a1d282b36b6f3519aa1f3fc636f609c47dddb294',
-  'github/codeql-action/analyze': 'f205ea1c3313d32999d8d6a48b4f6530d4437b38',
-  'github/codeql-action/init': 'f205ea1c3313d32999d8d6a48b4f6530d4437b38',
+  'github/codeql-action/analyze': '5595ccaf912efad79be6eef63a5619ff05969be3',
+  'github/codeql-action/init': '5595ccaf912efad79be6eef63a5619ff05969be3',
 } as const;
 const packageJSON = JSON.parse(
   readFileSync(resolve(repoRoot, 'package.json'), 'utf8'),
