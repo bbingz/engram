@@ -95,6 +95,11 @@ final class QoderAdapter: SessionAdapter, Sendable {
             }
 
             guard !sessionId.isEmpty else { return .failure(.malformedJSON) }
+            // R184-3: injection-only / empty Qoder files must not become
+            // zero-count browsable sessions. Terminal, same as Qwen.
+            guard userCount + assistantCount + toolCount > 0 else {
+                return .failure(.noVisibleMessages)
+            }
             let isSubagent = locator.contains("/subagents/")
             // R1.P1.identity-key-collision: match ClaudeCode — never reuse parent
             // sessionId when agentId is missing on a subagent transcript.

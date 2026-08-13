@@ -746,6 +746,34 @@ final class AdapterMessageCountTests: XCTestCase {
         }
     }
 
+    /// R184-3: a valid Gemini session with no visible user/assistant/tool
+    /// turns must be terminal, not a zero-count browsable session.
+    func testGeminiEmptyMessagesSessionIsTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("tmp/proj/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        let session: [String: Any] = [
+            "sessionId": "g-empty",
+            "startTime": "2026-01-01T00:00:00.000Z",
+            "lastUpdated": "2026-01-01T00:00:01.000Z",
+            "messages": [
+                ["type": "user", "timestamp": "2026-01-01T00:00:01.000Z", "content": [["text": ""]]],
+                ["type": "info", "timestamp": "2026-01-01T00:00:02.000Z", "content": "MCP issues detected."],
+            ],
+        ]
+        let file = chatsDir.appendingPathComponent("session-empty.json")
+        try (try jsonLine(session)).write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = GeminiCliAdapter(
+            tmpRoot: root.appendingPathComponent("tmp").path,
+            projectsFile: root.appendingPathComponent("projects.json").path
+        )
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(failure, .noVisibleMessages)
+    }
+
     // MARK: - Iflow
 
     // Audit L10: the batch parser already excludes injected wrappers from user
@@ -1238,6 +1266,34 @@ final class AdapterMessageCountTests: XCTestCase {
 
         let adapter = QoderAdapter(projectsRoot: root.path)
         try await assertStreamInjectionParity(adapter, locator: file.path, firstUserText: "real Qoder task")
+    }
+
+    /// R184-3: injection-only Qoder files must be terminal, not zero-count sessions.
+    func testQoderInjectionOnlySessionIsTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("project-empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        let lines: [[String: Any]] = [
+            [
+                "type": "user",
+                "sessionId": "qoder-empty",
+                "cwd": "/tmp/qoder",
+                "timestamp": "2026-08-13T00:00:00.000Z",
+                "message": [
+                    "role": "user",
+                    "content": "# AGENTS.md instructions for /tmp/qoder\n<INSTRUCTIONS>noise</INSTRUCTIONS>",
+                ],
+            ],
+        ]
+        let file = projectDir.appendingPathComponent("qoder-empty.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QoderAdapter(projectsRoot: root.path)
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(failure, .noVisibleMessages)
     }
 
     // MARK: - Qwen
