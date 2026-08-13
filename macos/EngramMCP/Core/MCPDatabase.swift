@@ -1057,6 +1057,17 @@ final class MCPDatabase {
             ])
         }
 
+        // H2: CJK and short Latin queries use LIKE (same as app/service), so
+        // do not reject them at the 3-char FTS gate. L-a: still honor the
+        // app/service 2-character floor so 1-char LIKE cannot over-recall.
+        if normalizedQuery.count < 2 {
+            return .object([
+                ("results", .array([])),
+                ("query", .string(query)),
+                ("searchModes", .array(normalizedQuery.isEmpty ? [] : [.string("keyword")])),
+            ])
+        }
+
         if semanticRequested {
             return try await semanticOrHybridSearch(
                 query: normalizedQuery,
@@ -1068,16 +1079,6 @@ final class MCPDatabase {
                 mode: effectiveMode,
                 availability: availability
             )
-        }
-
-        // H2: CJK and short Latin queries use LIKE (same as app/service), so
-        // do not reject them at the 3-char FTS gate.
-        if normalizedQuery.isEmpty {
-            return .object([
-                ("results", .array([])),
-                ("query", .string(query)),
-                ("searchModes", .array([])),
-            ])
         }
 
         return try keywordSearchResponse(
