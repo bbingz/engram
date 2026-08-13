@@ -105,8 +105,11 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
                 }
             }
 
-            guard !sessionId.isEmpty, userCount + assistantCount > 0 else {
+            guard !sessionId.isEmpty else {
                 return .failure(.malformedJSON)
+            }
+            guard userCount + assistantCount > 0 else {
+                return .failure(.noVisibleMessages)
             }
 
             return .success(
