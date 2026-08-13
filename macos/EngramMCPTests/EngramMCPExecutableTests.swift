@@ -3442,7 +3442,9 @@ final class EngramMCPExecutableTests: XCTestCase {
         XCTAssertFalse(text.contains("Recent errors (24h):"))
     }
 
-    func testGetContextCostTodayUsesUTCWindow() throws {
+    // Audit L-g: get_context "Cost today" must use the process-local day,
+    // matching get_costs day grouping instead of a UTC-only window.
+    func testGetContextCostTodayUsesProcessLocalDay_repro() throws {
         let temp = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temp) }
         let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
@@ -3460,6 +3462,33 @@ final class EngramMCPExecutableTests: XCTestCase {
                 "ENGRAM_MCP_DB_PATH": dbURL.path,
                 "ENGRAM_MCP_NOW": "2026-01-09T12:00:00.000Z",
                 "TZ": "Asia/Shanghai",
+            ]
+        )
+
+        XCTAssertNil(capture.response.error)
+        let text = try XCTUnwrap(capture.ordered["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue)
+        XCTAssertTrue(text.contains("Cost today: $10.24"), text)
+        XCTAssertFalse(text.contains("Cost today: $0.25"), text)
+    }
+
+    func testGetContextCostTodayUTCStillUsesUTCDay() throws {
+        let temp = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let dbURL = temp.appendingPathComponent("mcp-contract.sqlite")
+        try FileManager.default.copyItem(
+            at: URL(fileURLWithPath: fixturePath("mcp-contract.sqlite")),
+            to: dbURL
+        )
+        try seedGetContextTimezoneCostFixture(dbURL)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"cwd":"/Users/test/work/engram","detail":"abstract","include_environment":true,"sort_by":"score"}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbURL.path,
+                "ENGRAM_MCP_NOW": "2026-01-09T12:00:00.000Z",
+                "TZ": "UTC",
             ]
         )
 
