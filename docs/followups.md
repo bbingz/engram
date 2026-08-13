@@ -137,7 +137,7 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **ADAPTER-EMPTY-SESSION-001H** / R184-3 | closed (#364) | Windsurf metadata-only Cascade cache files return `.noVisibleMessages`. Shipped at `main@1e3c610e`. |
 | **ADAPTER-EMPTY-SESSION-001I** / R184-3 | closed (#365) | Antigravity metadata-only Cascade cache files and valid-id CLI transcripts with no user/assistant/tool turns return `.noVisibleMessages`. Shipped at `main@06353931`. |
 | **ADAPTER-EMPTY-SESSION-001J** / R184-3 | closed (#366) | Copilot events with a valid session id but no user/assistant turns return `.noVisibleMessages`. Empty-session adapter series complete. Shipped at `main@98b01aea`. |
-| **ADAPTER-TAIL-TERMINAL-001** / R184-4 | this PR (#368) | Tail-parse terminal policy matches `FileIndexState.isTerminalFailure`. `malformedJSON` / `invalidUtf8` / `fileMissing` fall through to a full scan; `noVisibleMessages` stays terminal. |
+| **ADAPTER-TAIL-TERMINAL-001** / R184-4 | closed (#368) | Tail-parse terminal policy matches `FileIndexState.isTerminalFailure`. `malformedJSON` / `invalidUtf8` / `fileMissing` fall through to a full scan; `noVisibleMessages` stays terminal. Shipped at `main@90256cc5`. |
 | **L-a…L-j** | residual | Remaining Low/Info row from the full-project review: L-h (blocked 1.0.5). L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349, L-j/#353 closed. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
