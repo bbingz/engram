@@ -76,6 +76,7 @@ final class RepoDiscoveryMaintenanceThrottle: @unchecked Sendable {
 
     private let batchLimit: Int
     private let cooldown: TimeInterval
+    private let failureCooldown: TimeInterval
     private let now: @Sendable () -> Date
     private let lock = NSLock()
     private var retryAfterByCwd: [String: Date] = [:]
@@ -83,30 +84,44 @@ final class RepoDiscoveryMaintenanceThrottle: @unchecked Sendable {
     init(
         batchLimit: Int = 32,
         cooldown: TimeInterval = 21_600,
+        failureCooldown: TimeInterval = 900,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.batchLimit = max(batchLimit, 1)
         self.cooldown = max(cooldown, 1)
+        self.failureCooldown = max(failureCooldown, 0)
         self.now = now
     }
 
+    /// F3: selection is not an attempt. Cooldown is recorded only after
+    /// `recordOutcomes`, so a failed git probe cannot burn the success window.
     func selectCandidates(_ candidates: [GitRepoCandidate]) -> [GitRepoCandidate] {
         lock.withLock {
             let instant = now()
-            let selected = candidates.lazy.filter { candidate in
-                guard let retryAfter = self.retryAfterByCwd[candidate.cwd] else { return true }
-                return instant >= retryAfter
-            }.prefix(batchLimit)
-            let result = Array(selected)
-            let retryAfter = instant.addingTimeInterval(cooldown)
-            for candidate in result {
-                retryAfterByCwd[candidate.cwd] = retryAfter
-            }
             if retryAfterByCwd.count > candidates.count * 2 {
                 let activeCwds = Set(candidates.map(\.cwd))
                 retryAfterByCwd = retryAfterByCwd.filter { activeCwds.contains($0.key) }
             }
-            return result
+            return Array(candidates.lazy.filter { candidate in
+                guard let retryAfter = self.retryAfterByCwd[candidate.cwd] else { return true }
+                return instant >= retryAfter
+            }.prefix(batchLimit))
+        }
+    }
+
+    func recordOutcomes(succeeded: [String], failed: [String]) {
+        lock.withLock {
+            let instant = now()
+            let successRetry = instant.addingTimeInterval(cooldown)
+            for cwd in succeeded where !cwd.isEmpty {
+                retryAfterByCwd[cwd] = successRetry
+            }
+            if failureCooldown > 0 {
+                let failureRetry = instant.addingTimeInterval(failureCooldown)
+                for cwd in failed where !cwd.isEmpty {
+                    retryAfterByCwd[cwd] = failureRetry
+                }
+            }
         }
     }
 }
@@ -908,16 +923,21 @@ public enum EngramServiceRunner {
                 let dueRepoCandidates = RepoDiscoveryMaintenanceThrottle.shared
                     .selectCandidates(repoCandidates)
                 if !dueRepoCandidates.isEmpty {
-                    let repoEntries = RepoDiscovery.probeRepositories(dueRepoCandidates)
+                    let repoBatch = RepoDiscovery.probeRepositoriesDetailed(dueRepoCandidates)
                     repoCount = try await gate.performWriteCommand(name: "repoDiscoveryUpsert") { writer in
                         try writer.write { db in
                             try RepoDiscovery.upsert(
                                 db,
-                                entries: repoEntries,
+                                entries: repoBatch.entries,
                                 probedAt: ISO8601DateFormatter().string(from: Date())
                             )
                         }
                     }.value
+                    let failed = Set(repoBatch.failedCwds)
+                    RepoDiscoveryMaintenanceThrottle.shared.recordOutcomes(
+                        succeeded: dueRepoCandidates.compactMap { failed.contains($0.cwd) ? nil : $0.cwd },
+                        failed: repoBatch.failedCwds
+                    )
                 }
             }
 

@@ -209,6 +209,36 @@ final class RepoDiscoveryTests: XCTestCase {
         XCTAssertGreaterThan(unwrapped.utf8.count, 64 * 1024)
     }
 
+    func testProbeRepositoriesDetailedReportsFailedCwds_repro() {
+        let candidates = [
+            GitRepoCandidate(cwd: "/repo/ok", sessionCount: 2),
+            GitRepoCandidate(cwd: "/repo/missing", sessionCount: 1),
+        ]
+        let batch = RepoDiscovery.probeRepositoriesDetailed(candidates) { cwd in
+            guard cwd == "/repo/ok" else { return nil }
+            return GitRepoProbe(
+                path: "/repo/ok",
+                name: "ok",
+                branch: "main",
+                dirtyCount: 0,
+                untrackedCount: 0,
+                unpushedCount: 0,
+                lastCommitHash: "abc",
+                lastCommitMsg: "hi",
+                lastCommitAt: "2026-08-13T00:00:00Z"
+            )
+        }
+        XCTAssertEqual(batch.failedCwds, ["/repo/missing"])
+        XCTAssertEqual(batch.entries.map(\.probe.path), ["/repo/ok"])
+        XCTAssertEqual(batch.entries.map(\.sessionCount), [2])
+        XCTAssertEqual(
+            RepoDiscovery.probeRepositories(candidates) { cwd in
+                cwd == "/repo/ok" ? batch.entries[0].probe : nil
+            }.map(\.probe.path),
+            ["/repo/ok"]
+        )
+    }
+
     private func insertSession(_ db: Database, id: String, cwd: String) throws {
         try db.execute(
             sql: """
