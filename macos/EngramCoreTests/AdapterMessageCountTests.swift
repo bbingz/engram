@@ -4094,6 +4094,23 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(info.assistantMessageCount, 1)
     }
 
+    // MARK: - Windsurf
+
+    /// R184-3: a valid Windsurf cache header with no user/assistant turns
+    /// must be terminal, not a zero-count browsable session.
+    func testWindsurfMetadataOnlyCacheIsTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("conv-empty.jsonl")
+        try #"{"id":"conv-empty","title":"Empty","createdAt":"2026-02-18T09:00:00.000Z","updatedAt":"2026-02-18T09:00:01.000Z"}"#
+            .appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = WindsurfAdapter(cacheDir: root.path)
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(failure, .noVisibleMessages)
+    }
+
     // MARK: - Antigravity generic cwd inference
 
     func testAntigravityCWDInferenceIsGenericAndNonPersonal() {

@@ -88,6 +88,11 @@ final class WindsurfAdapter: SessionAdapter, Sendable {
             let updatedAt = JSONLAdapterSupport.string(metadata["updatedAt"]) ?? createdAt
 
             let summaryText = String((title.isEmpty ? firstUserText : title).prefix(200))
+            // R184-3: metadata-only Cascade cache files must not become
+            // zero-count browsable sessions.
+            guard userCount + assistantCount > 0 else {
+                return .failure(.noVisibleMessages)
+            }
             return .success(
                 NormalizedSessionInfo(
                     id: id,
