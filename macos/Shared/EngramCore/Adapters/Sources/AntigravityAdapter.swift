@@ -54,6 +54,9 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
             let messages = CascadeCacheSupport.normalizedMessages(from: rawMessages)
             let userCount = messages.filter { $0.role == .user }.count
             let assistantCount = messages.filter { $0.role == .assistant }.count
+            guard userCount + assistantCount > 0 else {
+                return .failure(.noVisibleMessages)
+            }
             let firstUserText = CascadeCacheSupport.firstUserText(in: messages)
             let title = JSONLAdapterSupport.string(metadata["title"]) ?? ""
             let summary = JSONLAdapterSupport.string(metadata["summary"]) ?? ""
@@ -218,8 +221,11 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
             }
 
             let id = cliSessionId(from: locator)
-            guard !id.isEmpty, userCount + assistantCount + toolCount > 0 else {
+            guard !id.isEmpty else {
                 return .failure(.malformedJSON)
+            }
+            guard userCount + assistantCount + toolCount > 0 else {
+                return .failure(.noVisibleMessages)
             }
 
             return .success(
