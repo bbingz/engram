@@ -93,6 +93,7 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 60 | DERIVEDDATA-RELEASE-PLAINTEXT-001 | low | DerivedData Release may bypass Keychain and persist API keys in plaintext settings (L-f) | implementer | Keep DEBUG/DerivedData Keychain bypass; allow plaintext fallback only under `#if DEBUG`; Release stays fail-closed; named source-contract `_repro` passes | **DONE** 2026-08-13 — PR #347 merged at `main@8a1a1451`; audit L-f. |
 | 61 | MCP-SEARCH-MIN-LENGTH-001 | low | MCP search accepts 1-char LIKE hits the app/service reject (L-a) | implementer | Guard `normalizedQuery.count < 2` like `Database.swift:568` / `EngramServiceReadProvider.swift:530`; keep 2-char Latin on LIKE; named `_repro` | **DONE** 2026-08-13 — PR #348 merged at `main@444c5d6c`; audit L-a. |
 | 62 | ARCH-001D-PARITY | debt | ARCH-001 leftover: no executable cross-surface keyword-search parity contract | implementer | One fixture DB and the same trimmed non-CJK Latin keyword query make app `Database.search` / service `EngramServiceReadProvider.search` / MCP `searchSessions` return the same session ids; start at `macos/Engram/Core/Database.swift:561` vs `macos/EngramService/Core/EngramServiceReadProvider.swift:527` vs `macos/EngramMCP/Core/MCPDatabase.swift:1018` | **DONE** 2026-08-13 — PR #351 merged at `main@841ad4a8`. |
+| 63 | TS-SAFEMOVEDIR-CASE-001 | low | TS `safeMoveDir` lacks the Swift M13 case-only rename exception (L-j) | implementer | Same-realpath destinations are not treated as collisions; named Vitest repro passes; product moves stay Swift | **IMPLEMENTED / VERIFIED — PR PENDING** 2026-08-13 — `src/core/project-move/fs-ops.ts`; `tests/core/project-move/fs-ops.test.ts`. |
 | 48 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
@@ -263,5 +264,6 @@ Shipped in PR #323 at `main@dc5a5128`.
 | 60 | DERIVEDDATA-RELEASE-PLAINTEXT-001 | low | DerivedData Release could persist API keys in plaintext settings (L-f) | **DONE** PR #347 `main@8a1a1451` |
 | 61 | MCP-SEARCH-MIN-LENGTH-001 | low | MCP 1-char keyword search over-recalled vs app/service (L-a) | **DONE** PR #348 `main@444c5d6c` |
 | 62 | ARCH-001D-PARITY | debt | First executable App/Service/MCP keyword-search parity fixture | **DONE** PR #351 `main@841ad4a8` |
+| 63 | TS-SAFEMOVEDIR-CASE-001 | low | TS `safeMoveDir` lacked Swift M13 case-only rename exception (L-j) | **IMPLEMENTED / VERIFIED — PR PENDING** |
 | 44 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | **BLOCKED** |
 `docs/reviews/2026-07-17-engram-full-audit.md`.

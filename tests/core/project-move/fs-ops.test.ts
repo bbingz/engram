@@ -64,6 +64,29 @@ describe('safeMoveDir', () => {
     expect(existsSync(src)).toBe(true);
   });
 
+  // L-j (2026-07-18 full-project review): TS safeMoveDir must match Swift M13
+  // (`FsOps.swift:154-187`) and allow a case-only rename on case-insensitive
+  // volumes instead of treating the destination as a third-party collision.
+  it('allows case-only rename on a case-insensitive volume (repro)', async () => {
+    const src = join(tmp, 'Proj');
+    const dst = join(tmp, 'proj');
+    mkdirSync(src);
+    writeFileSync(join(src, 'file.txt'), 'hello');
+
+    if (!existsSync(dst)) {
+      return;
+    }
+    const { realpath } = await import('node:fs/promises');
+    if ((await realpath(src)) !== (await realpath(dst))) {
+      return;
+    }
+
+    const r = await safeMoveDir(src, dst);
+
+    expect(r.strategy).toBe('rename');
+    expect(readFileSync(join(dst, 'file.txt'), 'utf8')).toBe('hello');
+  });
+
   it('refuses to move a symlink source (prevents chasing target)', async () => {
     const real = join(tmp, 'real');
     const link = join(tmp, 'link');
