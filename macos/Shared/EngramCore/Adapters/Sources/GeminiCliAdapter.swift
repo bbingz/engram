@@ -139,6 +139,11 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
             let firstUserText = userMessages.first?.content ?? ""
             let sidecar = Self.readSidecar(locator: locator, sessionId: sessionId, limits: limits)
             let originator = JSONLAdapterSupport.string(sidecar?["originator"])
+            // R184-3: metadata-only / empty-content Gemini files must not become
+            // zero-count browsable sessions. Terminal, same as Claude/Qwen.
+            guard userMessages.count + assistantMessages.count + toolMessages.count > 0 else {
+                return .failure(.noVisibleMessages)
+            }
 
             return .success(
                 NormalizedSessionInfo(
