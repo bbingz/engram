@@ -127,7 +127,8 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **F5-CI** | closed (#222) | `.github/workflows/test.yml` now treats `npm audit --audit-level=moderate` as soft-fail for both pull requests and pushes, so merge cannot change audit policy from soft to strict. |
 | **TS-SAFEMOVEDIR-CASE-001** / L-j | closed (#353) | TypeScript `safeMoveDir` treats same-realpath destinations as a case-only rename, matching Swift M13 (`FsOps.swift:154-187`). Product moves remain Swift. Shipped at `main@b74836bd`. |
 | **REPO-DISCOVERY-COOLDOWN-001** / F3 | closed (#355) | `RepoDiscoveryMaintenanceThrottle.selectCandidates` no longer writes the 6h success window. Failed git probes (`macos/EngramCoreWrite/Indexing/RepoDiscovery.swift` `probeRepositoriesDetailed`) record a 15-minute failure cooldown via `recordOutcomes`; only successful probes burn the success window. Named `_repro`s live in `ServiceTelemetryTests` and `RepoDiscoveryTests`. Shipped at `main@9090e16d`. |
-| **ADAPTER-EMPTY-SESSION-001** / R184-3 | this PR (#357) | Codex metadata-only files (`session_meta` + non-response events) now return `.noVisibleMessages` like Claude/Qwen/VS Code (`CodexAdapter.swift` after the meta id/timestamp guard). Remaining adapters stay later slices. |
+| **ADAPTER-EMPTY-SESSION-001** / R184-3 | closed (#357 Codex slice) | Codex metadata-only files return `.noVisibleMessages`. Shipped at `main@c8c42b64`. |
+| **ADAPTER-EMPTY-SESSION-001B** / R184-3 | this PR | CommandCode and Iflow injection-only files now return `.noVisibleMessages` after a valid session id, matching Qwen. Remaining adapters stay later slices. |
 | **L-a…L-j** | residual | Remaining Low/Info row from the full-project review: L-h (blocked 1.0.5). L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349, L-j/#353 closed. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
