@@ -438,17 +438,31 @@ final class ViewMainThreadReadTests: XCTestCase {
 
     func testAISettingsRefreshesRuntimeSecretBridgeAfterKeychainWrites() throws {
         let s = try source("macos/Engram/Views/Settings/AISettingsSection.swift")
-        XCTAssertTrue(s.contains("private func refreshRuntimeAISecrets()"))
+        XCTAssertTrue(s.contains("func refreshRuntimeAISecrets()"))
         XCTAssertTrue(s.contains("EngramServiceLauncher.writeRuntimeAISecrets("))
         XCTAssertTrue(s.contains("keychainReader: KeychainHelper.get"))
         XCTAssertTrue(
-            s.contains("refreshRuntimeAISecrets()\n        mutateEngramSettings { settings in"),
-            "AI settings saves must update the service-readable runtime secret bridge before writing the @keychain marker"
+            s.contains("AISettingsPersister.persistAIOffMain"),
+            "AI settings saves must persist off-main after a MainActor snapshot (R9)"
         )
-        XCTAssertTrue(
-            s.contains("refreshRuntimeAISecrets()\n        mutateEngramSettings { settings in\n            settings[\"titleProvider\"]"),
-            "Title settings saves must update the service-readable runtime secret bridge before writing the @keychain marker"
+        let persistAIStart = try XCTUnwrap(s.range(of: "func persistAI(_ snapshot: AISettingsPersistSnapshot)"))
+        let persistAIEnd = try XCTUnwrap(
+            s.range(
+                of: "func persistTitle(_ snapshot: TitleSettingsPersistSnapshot)",
+                range: persistAIStart.lowerBound..<s.endIndex
+            )
         )
+        let persistAI = String(s[persistAIStart.lowerBound..<persistAIEnd.lowerBound])
+        XCTAssertTrue(persistAI.contains("applyAPIKey("))
+        XCTAssertTrue(persistAI.contains("refreshRuntimeAISecrets()"))
+
+        let persistTitleStart = persistAIEnd
+        let persistTitleEnd = try XCTUnwrap(
+            s.range(of: "private func applyAPIKey", range: persistTitleStart.lowerBound..<s.endIndex)
+        )
+        let persistTitle = String(s[persistTitleStart.lowerBound..<persistTitleEnd.lowerBound])
+        XCTAssertTrue(persistTitle.contains("applyAPIKey("))
+        XCTAssertTrue(persistTitle.contains("refreshRuntimeAISecrets()"))
     }
 
     // Runtime debt repro: an installed Release launch emitted Security.framework

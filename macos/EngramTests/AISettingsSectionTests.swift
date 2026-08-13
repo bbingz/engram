@@ -32,6 +32,37 @@ final class AISettingsSectionTests: XCTestCase {
         XCTAssertFalse(AISettingsSaveFlush.shouldFlush(pendingTask: true, isLoadingSettings: true))
     }
 
+    /// R9: debounce/flush snapshot on MainActor, persist Keychain + settings.json off-main.
+    func testAISettingsPersistsKeychainAndFileOffMain_repro() throws {
+        let source = try String(
+            contentsOf: macOSRoot.appendingPathComponent("Engram/Views/Settings/AISettingsSection.swift"),
+            encoding: .utf8
+        )
+        let saveStart = try XCTUnwrap(source.range(of: "private func saveAISettings()"))
+        let saveEnd = try XCTUnwrap(
+            source.range(of: "private func saveTitleSettings()", range: saveStart.lowerBound..<source.endIndex)
+        )
+        let saveBody = String(source[saveStart.lowerBound..<saveEnd.lowerBound])
+        XCTAssertTrue(saveBody.contains("AISettingsPersister.persistAIOffMain"))
+        XCTAssertFalse(saveBody.contains("KeychainHelper.set"))
+        XCTAssertFalse(saveBody.contains("mutateEngramSettings"))
+
+        let persistStart = try XCTUnwrap(source.range(of: "static func persistAIOffMain"))
+        let persistEnd = try XCTUnwrap(
+            source.range(of: "static func persistTitleOffMain", range: persistStart.lowerBound..<source.endIndex)
+        )
+        let persistOffMain = String(source[persistStart.lowerBound..<persistEnd.lowerBound])
+        XCTAssertTrue(persistOffMain.contains("Task.detached"))
+
+        let mailboxStart = try XCTUnwrap(source.range(of: "func persistAI(_ snapshot: AISettingsPersistSnapshot)"))
+        let mailboxEnd = try XCTUnwrap(
+            source.range(of: "func persistTitle(_ snapshot: TitleSettingsPersistSnapshot)", range: mailboxStart.lowerBound..<source.endIndex)
+        )
+        let mailboxBody = String(source[mailboxStart.lowerBound..<mailboxEnd.lowerBound])
+        XCTAssertTrue(mailboxBody.contains("applyAPIKey"))
+        XCTAssertTrue(mailboxBody.contains("mutateEngramSettings"))
+    }
+
     /// M20: pure helper — invalid/empty free-text URLs must fail closed.
     func testParseConnectionURLRejectsInvalidAndEmpty_repro() {
         XCTAssertNil(AISettingsURLValidation.parseConnectionURL(""))

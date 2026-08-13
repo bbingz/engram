@@ -322,16 +322,8 @@ struct AISettingsSection: View {
         "Default: https://api.openai.com"
     }
 
-    private func refreshRuntimeAISecrets() {
-        EngramServiceLauncher.writeRuntimeAISecrets(
-            toPath: EngramServiceLauncher.runtimeAISecretsPath(
-                forSocketPath: UnixSocketEngramServiceTransport.defaultSocketPath()
-            ),
-            keychainReader: KeychainHelper.get
-        )
-    }
-
-    /// Debounce settings.json writes while typing (M21 partial; MainActor residual).
+    /// Debounce settings.json writes while typing (M21). The timer stays on
+    /// MainActor so it can read `@State`; persist is off-main (R9).
     private func scheduleSaveAISettings() {
         saveAISettingsTask?.cancel()
         saveAISettingsTask = Task { @MainActor in
@@ -374,90 +366,40 @@ struct AISettingsSection: View {
         }
     }
 
+    /// Snapshot `@State` on MainActor, then persist off-main so debounce/flush
+    /// never flocks settings.json or talks to Keychain on the UI thread (R9).
     private func saveAISettings() {
         guard !isLoadingSettings else { return }
-        // SEC-M3: Keychain first. Only DEBUG may fall back to plaintext;
-        // Release, including DerivedData builds, never writes secrets into
-        // settings.json when Keychain save fails.
-        if !aiApiKey.isEmpty {
-            let saved = KeychainHelper.set("aiApiKey", value: aiApiKey)
-            if saved {
-                mutateEngramSettings { $0["aiApiKey"] = "@keychain" }
-            } else if KeychainHelper.allowsPlaintextSettingsFallback {
-                mutateEngramSettings { $0["aiApiKey"] = aiApiKey }
-            } else {
-                // Fail closed: keep previous settings marker if any; do not persist
-                // the secret in plaintext JSON.
-                mutateEngramSettings { $0["aiApiKey"] = "@keychain" }
-            }
-        } else {
-            KeychainHelper.delete("aiApiKey")
-            mutateEngramSettings { $0.removeValue(forKey: "aiApiKey") }
-        }
-        refreshRuntimeAISecrets()
-        mutateEngramSettings { settings in
-            settings["aiProtocol"] = aiProtocol
-            if !aiBaseURL.isEmpty { settings["aiBaseURL"] = aiBaseURL } else { settings.removeValue(forKey: "aiBaseURL") }
-            settings["aiModel"] = normalizeOpenAICompatibleModel(aiModel, baseURL: aiBaseURL)
-
-            settings["summaryLanguage"] = summaryLanguage
-            settings["summaryMaxSentences"] = summaryMaxSentences
-            if !summaryStyle.isEmpty { settings["summaryStyle"] = summaryStyle } else { settings.removeValue(forKey: "summaryStyle") }
-            if !summaryPrompt.isEmpty { settings["summaryPrompt"] = summaryPrompt } else { settings.removeValue(forKey: "summaryPrompt") }
-
-            settings["summaryPreset"] = summaryPreset
-            // Persist current generation values unconditionally. These used to be
-            // gated on the DisclosureGroup expansion flags (showCustomGeneration /
-            // showAdvancedGeneration), but those flags only track whether the
-            // section is expanded in the UI — collapsing a group silently deleted
-            // the user's saved values. The state vars always hold valid values, so
-            // writing them is safe and idempotent.
-            AIGenerationSettings(
-                maxTokens: summaryMaxTokens,
-                temperature: summaryTemperature,
-                sampleFirst: summarySampleFirst,
-                sampleLast: summarySampleLast,
-                truncateChars: summaryTruncateChars
-            ).write(into: &settings)
-
-        }
-    }
-
-    private func deleteTitleAPIKey() {
-        KeychainHelper.delete("titleApiKey")
-        mutateEngramSettings { $0.removeValue(forKey: "titleApiKey") }
+        AISettingsPersister.persistAIOffMain(
+            AISettingsPersistSnapshot(
+                apiKey: aiApiKey,
+                aiProtocol: aiProtocol,
+                aiBaseURL: aiBaseURL,
+                aiModel: aiModel,
+                summaryLanguage: summaryLanguage,
+                summaryMaxSentences: summaryMaxSentences,
+                summaryStyle: summaryStyle,
+                summaryPrompt: summaryPrompt,
+                summaryPreset: summaryPreset,
+                summaryMaxTokens: summaryMaxTokens,
+                summaryTemperature: summaryTemperature,
+                summarySampleFirst: summarySampleFirst,
+                summarySampleLast: summarySampleLast,
+                summaryTruncateChars: summaryTruncateChars
+            )
+        )
     }
 
     private func saveTitleSettings() {
         guard !isLoadingSettings else { return }
-        switch TitleAPIKeyPersistenceAction.decide(provider: titleProvider, apiKey: titleApiKey) {
-        case .write(let titleApiKey):
-            let saved = KeychainHelper.set("titleApiKey", value: titleApiKey)
-            if saved {
-                mutateEngramSettings { $0["titleApiKey"] = "@keychain" }
-            } else if KeychainHelper.allowsPlaintextSettingsFallback {
-                mutateEngramSettings { $0["titleApiKey"] = titleApiKey }
-            } else {
-                mutateEngramSettings { $0["titleApiKey"] = "@keychain" }
-            }
-        case .deleteExisting:
-            deleteTitleAPIKey()
-        case .preserveExisting:
-            break
-        }
-        refreshRuntimeAISecrets()
-        mutateEngramSettings { settings in
-            settings["titleProvider"] = titleProvider
-            if !titleBaseURL.isEmpty {
-                settings["titleBaseUrl"] = titleBaseURL
-                settings.removeValue(forKey: "titleBaseURL")
-            } else {
-                settings.removeValue(forKey: "titleBaseUrl")
-                settings.removeValue(forKey: "titleBaseURL")
-            }
-            settings["titleModel"] = normalizeOpenAICompatibleModel(titleModel, baseURL: titleBaseURL)
-            // titleApiKey handled above via Keychain
-        }
+        AISettingsPersister.persistTitleOffMain(
+            TitleSettingsPersistSnapshot(
+                provider: titleProvider,
+                apiKey: titleApiKey,
+                baseURL: titleBaseURL,
+                model: titleModel
+            )
+        )
     }
 
     private func loadAISettings() {
@@ -515,18 +457,161 @@ struct AISettingsSection: View {
     }
 
     private func normalizeOpenAICompatibleModel(_ model: String, baseURL: String) -> String {
-        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard baseURL.range(of: #"xiaomimimo\.com|mimo-v2\.com"#, options: [.regularExpression, .caseInsensitive]) != nil else {
-            return trimmed
+        normalizeOpenAICompatibleModelName(model, baseURL: baseURL)
+    }
+}
+
+fileprivate func normalizeOpenAICompatibleModelName(_ model: String, baseURL: String) -> String {
+    let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard baseURL.range(of: #"xiaomimimo\.com|mimo-v2\.com"#, options: [.regularExpression, .caseInsensitive]) != nil else {
+        return trimmed
+    }
+    if trimmed.range(of: #"^mimo-\d"#, options: [.regularExpression, .caseInsensitive]) != nil {
+        return trimmed.replacingOccurrences(
+            of: #"^mimo-"#,
+            with: "mimo-v",
+            options: [.regularExpression, .caseInsensitive]
+        )
+    }
+    return trimmed
+}
+
+struct AISettingsPersistSnapshot: Sendable, Equatable {
+    var apiKey: String
+    var aiProtocol: String
+    var aiBaseURL: String
+    var aiModel: String
+    var summaryLanguage: String
+    var summaryMaxSentences: Int
+    var summaryStyle: String
+    var summaryPrompt: String
+    var summaryPreset: String
+    var summaryMaxTokens: Int
+    var summaryTemperature: Double
+    var summarySampleFirst: Int
+    var summarySampleLast: Int
+    var summaryTruncateChars: Int
+}
+
+struct TitleSettingsPersistSnapshot: Sendable, Equatable {
+    var provider: String
+    var apiKey: String
+    var baseURL: String
+    var model: String
+}
+
+/// R9: Keychain + settings.json + runtime-secrets I/O runs off MainActor.
+enum AISettingsPersister {
+    private static let mailbox = Mailbox()
+
+    static func persistAIOffMain(_ snapshot: AISettingsPersistSnapshot) {
+        Task.detached(priority: .userInitiated) {
+            await mailbox.persistAI(snapshot)
         }
-        if trimmed.range(of: #"^mimo-\d"#, options: [.regularExpression, .caseInsensitive]) != nil {
-            return trimmed.replacingOccurrences(
-                of: #"^mimo-"#,
-                with: "mimo-v",
-                options: [.regularExpression, .caseInsensitive]
+    }
+
+    static func persistTitleOffMain(_ snapshot: TitleSettingsPersistSnapshot) {
+        Task.detached(priority: .userInitiated) {
+            await mailbox.persistTitle(snapshot)
+        }
+    }
+
+    actor Mailbox {
+        func persistAI(_ snapshot: AISettingsPersistSnapshot) {
+            applyAPIKey(
+                account: "aiApiKey",
+                settingsKey: "aiApiKey",
+                value: snapshot.apiKey
+            )
+            refreshRuntimeAISecrets()
+            mutateEngramSettings { settings in
+                settings["aiProtocol"] = snapshot.aiProtocol
+                if !snapshot.aiBaseURL.isEmpty {
+                    settings["aiBaseURL"] = snapshot.aiBaseURL
+                } else {
+                    settings.removeValue(forKey: "aiBaseURL")
+                }
+                settings["aiModel"] = normalizeOpenAICompatibleModelName(
+                    snapshot.aiModel,
+                    baseURL: snapshot.aiBaseURL
+                )
+                settings["summaryLanguage"] = snapshot.summaryLanguage
+                settings["summaryMaxSentences"] = snapshot.summaryMaxSentences
+                if !snapshot.summaryStyle.isEmpty {
+                    settings["summaryStyle"] = snapshot.summaryStyle
+                } else {
+                    settings.removeValue(forKey: "summaryStyle")
+                }
+                if !snapshot.summaryPrompt.isEmpty {
+                    settings["summaryPrompt"] = snapshot.summaryPrompt
+                } else {
+                    settings.removeValue(forKey: "summaryPrompt")
+                }
+                settings["summaryPreset"] = snapshot.summaryPreset
+                AIGenerationSettings(
+                    maxTokens: snapshot.summaryMaxTokens,
+                    temperature: snapshot.summaryTemperature,
+                    sampleFirst: snapshot.summarySampleFirst,
+                    sampleLast: snapshot.summarySampleLast,
+                    truncateChars: snapshot.summaryTruncateChars
+                ).write(into: &settings)
+            }
+        }
+
+        func persistTitle(_ snapshot: TitleSettingsPersistSnapshot) {
+            switch TitleAPIKeyPersistenceAction.decide(provider: snapshot.provider, apiKey: snapshot.apiKey) {
+            case .write(let titleApiKey):
+                applyAPIKey(account: "titleApiKey", settingsKey: "titleApiKey", value: titleApiKey)
+            case .deleteExisting:
+                KeychainHelper.delete("titleApiKey")
+                mutateEngramSettings { $0.removeValue(forKey: "titleApiKey") }
+            case .preserveExisting:
+                break
+            }
+            refreshRuntimeAISecrets()
+            mutateEngramSettings { settings in
+                settings["titleProvider"] = snapshot.provider
+                if !snapshot.baseURL.isEmpty {
+                    settings["titleBaseUrl"] = snapshot.baseURL
+                    settings.removeValue(forKey: "titleBaseURL")
+                } else {
+                    settings.removeValue(forKey: "titleBaseUrl")
+                    settings.removeValue(forKey: "titleBaseURL")
+                }
+                settings["titleModel"] = normalizeOpenAICompatibleModelName(
+                    snapshot.model,
+                    baseURL: snapshot.baseURL
+                )
+            }
+        }
+
+        /// SEC-M3: Keychain first. Only DEBUG may fall back to plaintext.
+        private func applyAPIKey(account: String, settingsKey: String, value: String) {
+            if value.isEmpty {
+                KeychainHelper.delete(account)
+                mutateEngramSettings { $0.removeValue(forKey: settingsKey) }
+                return
+            }
+            let saved = KeychainHelper.set(account, value: value)
+            mutateEngramSettings { settings in
+                if saved {
+                    settings[settingsKey] = "@keychain"
+                } else if KeychainHelper.allowsPlaintextSettingsFallback {
+                    settings[settingsKey] = value
+                } else {
+                    settings[settingsKey] = "@keychain"
+                }
+            }
+        }
+
+        private func refreshRuntimeAISecrets() {
+            EngramServiceLauncher.writeRuntimeAISecrets(
+                toPath: EngramServiceLauncher.runtimeAISecretsPath(
+                    forSocketPath: UnixSocketEngramServiceTransport.defaultSocketPath()
+                ),
+                keychainReader: KeychainHelper.get
             )
         }
-        return trimmed
     }
 }
 
@@ -546,9 +631,9 @@ enum AISettingsURLValidation {
     }
 }
 
-/// R9/M21 residual: decide whether leaving the AI settings section must flush a
-/// pending debounce timer. Pure so the leave-flush gate is unit-testable without
-/// SwiftUI host plumbing. MainActor flock/Keychain I/O after save remains residual.
+/// R9/M21: decide whether leaving the AI settings section must flush a pending
+/// debounce timer. Pure so the leave-flush gate is unit-testable without SwiftUI
+/// host plumbing. The flush still snapshots on MainActor and persists off-main.
 enum AISettingsSaveFlush {
     static func shouldFlush(pendingTask: Bool, isLoadingSettings: Bool) -> Bool {
         pendingTask && !isLoadingSettings
