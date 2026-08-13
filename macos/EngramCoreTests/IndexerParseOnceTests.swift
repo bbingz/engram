@@ -405,6 +405,74 @@ final class IndexerParseOnceTests: XCTestCase {
         XCTAssertEqual(try sessionIntValue("message_count", id: "tail-session"), 8)
     }
 
+    /// R184-4: tail `malformedJSON` must fall through to a full scan instead of
+    /// being recorded as a terminal skip (same policy as FileIndexState).
+    func testClaudeCodeTailMalformedJSONFallsThroughToFullParse_repro() async throws {
+        let fixture = try makeClaudeFixture(name: "tail-malformed-fallback")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        try writeClaudeLines(mergeSafeClaudeLines(), to: fixture.locator)
+        let adapter = CountingTailAdapter(projectsRoot: fixture.root.path)
+
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+        XCTAssertEqual(adapter.scanForIndexingCalls, 1)
+        XCTAssertEqual(adapter.scanTailForIndexingCalls, 0)
+
+        adapter.forcedTailFailure = .malformedJSON
+        try appendText(tailClaudeLines().joined(separator: "\n") + "\n", to: fixture.locator)
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+
+        XCTAssertEqual(adapter.scanTailForIndexingCalls, 1, "must still attempt the tail path first")
+        XCTAssertEqual(
+            adapter.scanForIndexingCalls,
+            2,
+            "R184-4: malformedJSON tail must fall through to full parse"
+        )
+    }
+
+    /// R184-4: tail and full-parse share one terminal classifier.
+    func testTailTerminalPolicyDelegatesToFileIndexState_repro() throws {
+        let macosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macosRoot.appendingPathComponent("EngramCoreWrite/Indexing/SwiftIndexer.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "private static func isTerminalTailFailure"))
+        let end = try XCTUnwrap(
+            source.range(of: "private static func isProvableSkip", options: [], range: start.lowerBound..<source.endIndex)
+        )
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("FileIndexState.isTerminalFailure"))
+        XCTAssertFalse(body.contains("case .malformedJSON"))
+        XCTAssertFalse(FileIndexState.isTerminalFailure(.malformedJSON))
+        XCTAssertFalse(FileIndexState.isTerminalFailure(.invalidUtf8))
+        XCTAssertFalse(FileIndexState.isTerminalFailure(.fileMissing))
+        XCTAssertTrue(FileIndexState.isTerminalFailure(.noVisibleMessages))
+    }
+
+    /// R184-4: `noVisibleMessages` stays terminal on both tail and full paths.
+    func testClaudeCodeTailNoVisibleMessagesStaysTerminal_repro() async throws {
+        let fixture = try makeClaudeFixture(name: "tail-novisible-terminal")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        try writeClaudeLines(mergeSafeClaudeLines(), to: fixture.locator)
+        let adapter = CountingTailAdapter(projectsRoot: fixture.root.path)
+
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+        XCTAssertEqual(adapter.scanForIndexingCalls, 1)
+
+        adapter.forcedTailFailure = .noVisibleMessages
+        try appendText(tailClaudeLines().joined(separator: "\n") + "\n", to: fixture.locator)
+        _ = try await writer.indexRecentSessions(adapters: [adapter])
+
+        XCTAssertEqual(adapter.scanTailForIndexingCalls, 1)
+        XCTAssertEqual(
+            adapter.scanForIndexingCalls,
+            1,
+            "noVisibleMessages tail must stay terminal and skip full reparse"
+        )
+    }
+
     func testClaudeCodeTailParseRewriteInPlaceFallsBackToFullReparse() async throws {
         let fixture = try makeClaudeFixture(name: "tail-rewrite")
         defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -1023,6 +1091,7 @@ private final class CountingTailAdapter: TailIndexingSessionAdapter {
     private let inner: ClaudeCodeAdapter
     private(set) var scanForIndexingCalls = 0
     private(set) var scanTailForIndexingCalls = 0
+    var forcedTailFailure: ParserFailure?
 
     init(projectsRoot: String) {
         self.inner = ClaudeCodeAdapter(projectsRoot: projectsRoot)
@@ -1055,6 +1124,9 @@ private final class CountingTailAdapter: TailIndexingSessionAdapter {
         expectedBoundaryHash: String
     ) async throws -> IndexingTailScanResult {
         scanTailForIndexingCalls += 1
+        if let forcedTailFailure {
+            return .failure(forcedTailFailure)
+        }
         return try await inner.scanTailForIndexing(
             locator: locator,
             from: parsedOffset,

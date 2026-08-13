@@ -703,15 +703,10 @@ public final class SwiftIndexer {
     }
 
     /// Terminal tail failures stay recorded; retryable ones fall through to full parse.
+    /// R184-4: same classifier as the full-parse path so a tail `malformedJSON`
+    /// / `invalidUtf8` / `fileMissing` does not skip the full scan.
     private static func isTerminalTailFailure(_ failure: ParserFailure) -> Bool {
-        switch failure {
-        case .fileMissing, .fileTooLarge, .unsupportedVirtualLocator,
-             .invalidUtf8, .malformedJSON, .messageLimitExceeded, .lineTooLarge, .noVisibleMessages:
-            return true
-        case .truncatedJSON, .truncatedJSONL, .malformedToolCall, .deeplyNestedRecord,
-             .fileModifiedDuringParse, .sqliteUnreadable, .grpcUnavailable:
-            return false
-        }
+        FileIndexState.isTerminalFailure(failure)
     }
 
     /// Skip conditions that `SessionTier.compute` resolves to `.skip` using only
