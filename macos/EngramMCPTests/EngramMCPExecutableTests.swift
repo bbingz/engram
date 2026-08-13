@@ -129,6 +129,20 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testStdioToolsCallHasNoSecondarySwitchDispatch_repro() throws {
+        let source = try source("macos/EngramMCP/Core/MCPStdioServer.swift")
+
+        XCTAssertTrue(
+            source.contains(#"if request.method == "tools/call" {"#),
+            "The read loop must keep routing tools/call through its cancellable async fast path"
+        )
+        XCTAssertTrue(source.contains("await handleToolCallAsync(request, modern: modern)"))
+        XCTAssertFalse(
+            source.contains(#"case "tools/call":"#),
+            "Audit L13: handle() must not retain a tools/call branch that the read loop always bypasses"
+        )
+    }
+
     func testStdioSessionHandlesMultipleRequestsAndNotifications() throws {
         let responses = try rpcSession(
             [

@@ -249,8 +249,6 @@ final class MCPStdioServer {
                 modern: modern,
                 cacheTTLMs: Self.toolsListTTLMs
             )
-        case "tools/call":
-            await handleToolCall(request, modern: modern)
         case "resources/list":
             await emitRegistryResult(id: request.id, modern: modern, cacheTTLMs: Self.resourceTTLMs) {
                 try await MCPToolRegistry.resourcesList(config: config)
