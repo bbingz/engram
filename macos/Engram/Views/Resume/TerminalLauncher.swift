@@ -102,6 +102,16 @@ struct TerminalLauncher {
         """
     }
 
+    /// Resume commands include cwd and session ids. Force owner-only 0600 so
+    /// the short-lived Warp tab config is never group/world readable (L-e).
+    static func writeWarpTabConfigFile(_ toml: String, to file: URL) throws {
+        try toml.write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: file.path
+        )
+    }
+
     static func ghosttyArguments(for shellCommand: String) -> [String] {
         ["-e", "/bin/zsh", "-lc", shellCommand]
     }
@@ -142,7 +152,7 @@ struct TerminalLauncher {
             command: shellCommand,
             directory: directory
         )
-        try toml.write(to: configFile, atomically: true, encoding: .utf8)
+        try writeWarpTabConfigFile(toml, to: configFile)
 
         guard let url = URL(string: "warp://tab_config/\(configName)") else {
             throw NSError(

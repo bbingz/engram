@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import Engram
 
@@ -142,6 +143,47 @@ final class EngramCLIResumeCommandTests: XCTestCase {
 
         XCTAssertTrue(toml.contains(#"directory = "/tmp/dir \"quote\"\\slash""#))
         XCTAssertTrue(toml.contains(#"commands = ["echo \"hi\" && printf 'a\\b\nc\td\r'"]"#))
+    }
+
+    /// L-e / SEC-006: Warp tab configs carry resume cwd + session ids and must
+    /// be owner-only even when the process umask would leave 0644.
+    func testTerminalLauncherWarpTabConfigFileIsOwnerOnly0600_repro() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-warp-tab-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let file = directory.appendingPathComponent("engram-resume-test.toml")
+        try Data("stale".utf8).write(to: file)
+        XCTAssertEqual(chmod(file.path, 0o644), 0)
+
+        let toml = TerminalLauncher.warpTabConfigTOML(
+            configName: "engram-resume-test",
+            command: "'/usr/local/bin/codex' resume 'abc123'",
+            directory: "/Users/test/project"
+        )
+        try TerminalLauncher.writeWarpTabConfigFile(toml, to: file)
+
+        var info = stat()
+        XCTAssertEqual(lstat(file.path, &info), 0)
+        XCTAssertEqual(
+            info.st_mode & 0o777,
+            0o600,
+            "L-e: Warp tab config must be forced to 0600, got \(String(info.st_mode & 0o777, radix: 8))"
+        )
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), toml)
+    }
+
+    func testTerminalLauncherLaunchInWarpUsesSecureTabConfigWriter() throws {
+        let launcher = try source("macos/Engram/Views/Resume/TerminalLauncher.swift")
+        XCTAssertTrue(
+            launcher.contains("writeWarpTabConfigFile(toml, to: configFile)"),
+            "L-e: launchInWarp must write through the 0600 helper"
+        )
+        XCTAssertFalse(
+            launcher.contains("toml.write(to: configFile"),
+            "L-e: launchInWarp must not write the tab config with default umask permissions"
+        )
     }
 
     func testTerminalLauncherGhosttyExecsShellForCompositeCommand() {
