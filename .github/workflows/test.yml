@@ -54,6 +54,13 @@ jobs:
                   heavy=true
                   break
                   ;;
+                # History-index READMEs are pinned by
+                # tests/docs/history-index-policy.test.ts. Keep them heavy so a
+                # policy edit cannot skip the contract that names them.
+                docs/archive/README.md|docs/reviews/README.md)
+                  heavy=true
+                  break
+                  ;;
                 # Durable records audited as having no current test/script
                 # consumer. A listed path skips EVERY job, Node included. The
                 # literal-consumer test is a lower-bound guard, not proof against
