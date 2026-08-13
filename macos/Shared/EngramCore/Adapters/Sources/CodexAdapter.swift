@@ -611,6 +611,11 @@ final class CodexAdapter: SessionAdapter, TailIndexingSessionAdapter, ExactArchi
             else {
                 return .failure(.malformedJSON)
             }
+            // R184-3: metadata-only / empty Codex files must not become browsable
+            // zero-count sessions. Terminal, same as Claude/Qwen/VS Code.
+            guard userCount + assistantCount + toolCount > 0 else {
+                return .failure(.noVisibleMessages)
+            }
 
             let explicitRole = JSONLAdapterSupport.string(meta["agent_role"])
             let originator = JSONLAdapterSupport.string(meta["originator"])
