@@ -1180,6 +1180,32 @@ final class AdapterMessageCountTests: XCTestCase {
         }
     }
 
+    /// R184-3: a Kimi session directory with only wire metadata and no
+    /// conversation turns must be terminal, not a zero-count session.
+    func testKimiWireOnlySessionIsTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("workspace-1/kimi-empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+
+        let contextFile = sessionDir.appendingPathComponent("context.jsonl")
+        try "".write(to: contextFile, atomically: true, encoding: .utf8)
+
+        let wireLines: [[String: Any]] = [
+            ["timestamp": 1_700_000_000.0, "message": ["type": "TurnBegin"]],
+            ["timestamp": 1_700_000_001.0, "message": ["type": "TurnEnd"]],
+        ]
+        try wireLines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: sessionDir.appendingPathComponent("wire.jsonl"), atomically: true, encoding: .utf8)
+
+        let adapter = KimiAdapter(
+            sessionsRoot: root.path,
+            kimiJsonPath: root.appendingPathComponent("kimi.json").path
+        )
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: contextFile.path))
+        XCTAssertEqual(failure, .noVisibleMessages)
+    }
+
     // MARK: - Qwen
 
     // Audit L10: Qwen's injected bootstrap prompt is system metadata on both

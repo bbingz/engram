@@ -78,6 +78,11 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
             let fallbackStart = ISO8601DateFormatter().string(from: fileDate.addingTimeInterval(-60))
             let firstUserText = Self.extractContent(userMessages.first?["content"])
             let sessionId = URL(fileURLWithPath: locator).deletingLastPathComponent().lastPathComponent
+            // R184-3: wire/context metadata with no visible user/assistant/tool
+            // turns must not become a zero-count browsable session.
+            guard userMessages.count + assistantMessages.count + toolMessages.count > 0 else {
+                return .failure(.noVisibleMessages)
+            }
 
             return .success(
                 NormalizedSessionInfo(
