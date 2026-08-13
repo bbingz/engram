@@ -312,6 +312,7 @@ targets:
         buildPhase: resources
     dependencies:
       - target: Engram
+      - target: EngramServiceCore
       - package: GRDB
         product: GRDB-dynamic
     settings:

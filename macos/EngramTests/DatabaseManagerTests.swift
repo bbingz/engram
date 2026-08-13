@@ -2,6 +2,7 @@
 import XCTest
 import GRDB
 @testable import Engram
+@testable import EngramServiceCore
 
 final class DatabaseManagerTests: XCTestCase {
     var db: DatabaseManager!
@@ -582,6 +583,43 @@ final class DatabaseManagerTests: XCTestCase {
         let results = try db.search(query: "database connection")
         XCTAssertEqual(results.count, 1)
         XCTAssertEqual(results.first?.id, "s1")
+    }
+
+    // ARCH-001D: pin the first executable keyword-search parity contract across
+    // the App, Service, and native MCP readers against one shared fixture DB.
+    @MainActor
+    func testKeywordSearchSessionIdsMatchAppServiceMCP_repro() async throws {
+        let fixturePath = try copyMCPContractFixture()
+        var fixtureWriter: DatabaseQueue? = try keepFixtureWALOpen(at: fixturePath)
+        defer {
+            fixtureWriter = nil
+            cleanupTempDatabase(at: fixturePath)
+        }
+
+        let query = "  WAL  ".trimmingCharacters(in: .whitespacesAndNewlines)
+        let limit = 50
+        XCTAssertGreaterThanOrEqual(query.count, 2)
+        XCTAssertFalse(CJKText.containsCJK(query))
+
+        let appIDs = try appKeywordSearchSessionIDs(
+            query: query,
+            limit: limit,
+            databasePath: fixturePath
+        )
+        let serviceIDs = try await serviceKeywordSearchSessionIDs(
+            query: query,
+            limit: limit,
+            databasePath: fixturePath
+        )
+        let mcpIDs = try mcpKeywordSearchSessionIDs(
+            query: query,
+            limit: limit,
+            databasePath: fixturePath
+        )
+
+        XCTAssertFalse(appIDs.isEmpty, "fixture query must exercise a non-empty result set")
+        XCTAssertEqual(serviceIDs, appIDs)
+        XCTAssertEqual(mcpIDs, appIDs)
     }
 
     @MainActor
@@ -1672,6 +1710,128 @@ final class DatabaseManagerTests: XCTestCase {
                 VALUES ('alpha', 'wk-alpha', 'AI Alpha Title', 'deadbeef', 'mimo-v2.5-pro');
             """)
         }
+    }
+
+    private func copyMCPContractFixture() throws -> String {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = repositoryRoot.appendingPathComponent("tests/fixtures/mcp-contract.sqlite")
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("arch-001d-\(UUID().uuidString).sqlite")
+        try FileManager.default.copyItem(at: source, to: destination)
+        return destination.path
+    }
+
+    private func keepFixtureWALOpen(at path: String) throws -> DatabaseQueue {
+        let queue = try DatabaseQueue(path: path)
+        try queue.writeWithoutTransaction { db in
+            let mode = try String.fetchOne(db, sql: "PRAGMA journal_mode = WAL")
+            XCTAssertEqual(mode?.lowercased(), "wal")
+            try db.execute(sql: "PRAGMA wal_autocheckpoint = 0")
+            try db.execute(sql: "CREATE TABLE arch001d_fixture_keepalive (value INTEGER NOT NULL)")
+        }
+        return queue
+    }
+
+    private func appKeywordSearchSessionIDs(
+        query: String,
+        limit: Int,
+        databasePath: String
+    ) throws -> Set<String> {
+        let reader = DatabaseManager(path: databasePath)
+        try reader.open()
+        return Set(try reader.search(query: query, limit: limit).map(\.id))
+    }
+
+    private func serviceKeywordSearchSessionIDs(
+        query: String,
+        limit: Int,
+        databasePath: String
+    ) async throws -> Set<String> {
+        let reader = try EngramServiceCore.SQLiteEngramServiceReadProvider(
+            databasePath: databasePath
+        )
+        let response = try await reader.search(
+            EngramServiceCore.EngramServiceSearchRequest(
+                query: query,
+                mode: "keyword",
+                limit: limit
+            )
+        )
+        return Set(response.items.map(\.id))
+    }
+
+    private func mcpKeywordSearchSessionIDs(
+        query: String,
+        limit: Int,
+        databasePath: String
+    ) throws -> Set<String> {
+        let executableURL = Bundle(for: Self.self)
+            .bundleURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Helpers/EngramMCP")
+        XCTAssertTrue(
+            FileManager.default.isExecutableFile(atPath: executableURL.path),
+            "missing native MCP helper at \(executableURL.path)"
+        )
+
+        let request: [String: Any] = [
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": [
+                "name": "search",
+                "arguments": [
+                    "query": query,
+                    "mode": "keyword",
+                    "limit": limit,
+                ],
+            ],
+        ]
+        var requestData = try JSONSerialization.data(withJSONObject: request)
+        requestData.append(0x0A)
+
+        let process = Process()
+        process.executableURL = executableURL
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "ENGRAM_MCP_DB_PATH": databasePath,
+            "TZ": "UTC",
+        ]) { _, new in new }
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        try process.run()
+        stdinPipe.fileHandleForWriting.write(requestData)
+        try stdinPipe.fileHandleForWriting.close()
+        process.waitUntilExit()
+
+        let output = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderr = String(
+            data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? ""
+        XCTAssertEqual(process.terminationStatus, 0, stderr)
+
+        let line = try XCTUnwrap(
+            String(data: output, encoding: .utf8)?.split(separator: "\n").first
+        )
+        let responseData = Data(line.utf8)
+        let response = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: responseData) as? [String: Any]
+        )
+        let result = try XCTUnwrap(response["result"] as? [String: Any])
+        XCTAssertNotEqual(result["isError"] as? Bool, true)
+        let structured = try XCTUnwrap(result["structuredContent"] as? [String: Any])
+        let results = try XCTUnwrap(structured["results"] as? [[String: Any]])
+        return Set(results.compactMap { result in
+            (result["session"] as? [String: Any])?["id"] as? String
+        })
     }
 }
 
