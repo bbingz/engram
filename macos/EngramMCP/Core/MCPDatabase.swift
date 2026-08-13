@@ -1676,12 +1676,16 @@ final class MCPDatabase {
         }
 
         let now = contextNow()
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
-        let startOfToday = calendar.startOfDay(for: now)
-        let startOfTomorrow = calendar.date(byAdding: .day, value: 1, to: startOfToday) ?? now
-        let startOfSevenDayWindow = calendar.date(byAdding: .day, value: -7, to: now) ?? now
-        let startOfOneDayWindow = calendar.date(byAdding: .day, value: -1, to: now) ?? now
+        var localCalendar = Calendar(identifier: .gregorian)
+        // L-g: local calendar day, matching get_costs `date(..., 'localtime')`.
+        localCalendar.timeZone = contextTimeZone()
+        let startOfToday = localCalendar.startOfDay(for: now)
+        let startOfTomorrow = localCalendar.date(byAdding: .day, value: 1, to: startOfToday) ?? now
+
+        var rollingWindowCalendar = Calendar(identifier: .gregorian)
+        rollingWindowCalendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        let startOfSevenDayWindow = rollingWindowCalendar.date(byAdding: .day, value: -7, to: now) ?? now
+        let startOfOneDayWindow = rollingWindowCalendar.date(byAdding: .day, value: -1, to: now) ?? now
 
         var sections: [String] = []
         if normalizedDetail != "abstract" {
@@ -2606,6 +2610,16 @@ private func stringValue(_ value: DatabaseValueConvertible?) -> String? {
     }
 }
 
+/// Process-local zone for MCP calendar math and date formatting.
+/// Honors `TZ` (IANA identifier) so executable tests can pin Asia/Shanghai vs UTC.
+func contextTimeZone() -> TimeZone {
+    if let configured = ProcessInfo.processInfo.environment["TZ"],
+       let timeZone = TimeZone(identifier: configured) {
+        return timeZone
+    }
+    return .autoupdatingCurrent
+}
+
 /// Shared clock for MCP tools. Injectable via `ENGRAM_MCP_NOW` (ISO-8601).
 /// Module-internal (not `private`) so tools like `MCPInsightsTool` can share it
 /// for honest window-day math (row 3 / mcp-cost Part A).
@@ -2654,12 +2668,7 @@ func toLocalDateTime(_ value: String?) -> String {
 
     let output = DateFormatter()
     output.locale = Locale(identifier: "sv_SE")
-    if let configured = ProcessInfo.processInfo.environment["TZ"],
-       let timeZone = TimeZone(identifier: configured) {
-        output.timeZone = timeZone
-    } else {
-        output.timeZone = .autoupdatingCurrent
-    }
+    output.timeZone = contextTimeZone()
     output.dateFormat = "yyyy-MM-dd HH:mm:ss"
     return output.string(from: date)
 }
@@ -2675,12 +2684,7 @@ func toLocalDate(_ value: String?) -> String {
 
     let output = DateFormatter()
     output.locale = Locale(identifier: "sv_SE")
-    if let configured = ProcessInfo.processInfo.environment["TZ"],
-       let timeZone = TimeZone(identifier: configured) {
-        output.timeZone = timeZone
-    } else {
-        output.timeZone = .autoupdatingCurrent
-    }
+    output.timeZone = contextTimeZone()
     output.dateFormat = "yyyy-MM-dd"
     return output.string(from: date)
 }
