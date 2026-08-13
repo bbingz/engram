@@ -91,4 +91,4 @@ Lead: Grok (stewardship goal) · Implementation: Grok + Herdr Codex `retro-handl
 - Main is `2453b8ad` (#308 on top of #354). Product lows through L-j / ARCH-001D are on main.
 - **#307** `@types/node` 26.2.0: CodeQL Gate + Dependency Review + Node quality green; Tests macOS jobs still queued. Do not merge until CI Gate is green. **#306** tsx stays behind.
 - Codex `w5:p1` retro-handler is **done**; last instruction was to idle on #351 (already merged). Left idle while this fire lands the next leftover.
-- Enqueued and implemented **REPO-DISCOVERY-COOLDOWN-001** (two-day review F3): selection no longer writes the 6h window; failed probes use a 15-minute cooldown. Next leftover: **SETTINGS-MAINACTOR-IO-001** (R9). Release 1.0.5 still **BLOCKED**.
+- Enqueued and implemented **REPO-DISCOVERY-COOLDOWN-001** (two-day review F3) as PR #355: selection no longer writes the 6h window; failed probes use a 15-minute cooldown. Next leftover: **SETTINGS-MAINACTOR-IO-001** (R9). Release 1.0.5 still **BLOCKED**.
