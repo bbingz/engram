@@ -3316,6 +3316,19 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(streamed.map(\.content), ["question", "answer\nfollow-up"])
     }
 
+    /// R184-3: a live OpenCode session with no contentful text parts must be
+    /// terminal, not a zero-count browsable session.
+    func testOpenCodeSessionWithNoTextPartsIsTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("opencode.db").path
+        try Self.buildOpenCodeEmptySessionFixture(dbPath: dbPath)
+
+        let adapter = OpenCodeAdapter(dbPath: dbPath)
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: "\(dbPath)::ses_empty"))
+        XCTAssertEqual(failure, .noVisibleMessages)
+    }
+
     func testOpenCodeAttachesAssistantMessageTokenUsage() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -3646,6 +3659,31 @@ final class AdapterMessageCountTests: XCTestCase {
         // m3 has only a tool part (no text) → must be dropped.
         try exec("INSERT INTO part VALUES ('p3', 'm3', 1700000003000, '{\"type\":\"tool\",\"tool\":\"read\"}')")
         try exec("INSERT INTO part VALUES ('p4', 'm4', 1700000004000, '{\"type\":\"text\",\"text\":\"second\"}')")
+    }
+
+    /// Live session row whose only part is a non-text tool event.
+    private static func buildOpenCodeEmptySessionFixture(dbPath: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        defer { sqlite3_close(db) }
+
+        func exec(_ sql: String) throws {
+            var err: UnsafeMutablePointer<CChar>?
+            guard sqlite3_exec(db, sql, nil, nil, &err) == SQLITE_OK else {
+                let message = err.map { String(cString: $0) } ?? "unknown"
+                sqlite3_free(err)
+                throw NSError(domain: "test", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+        }
+
+        try exec("CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER)")
+        try exec("CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
+        try exec("CREATE TABLE part (id TEXT, message_id TEXT, time_created INTEGER, data TEXT)")
+        try exec("INSERT INTO session VALUES ('ses_empty', '/tmp/empty', 'Empty', 1700000000000, 1700000001000, NULL)")
+        try exec("INSERT INTO message VALUES ('m-empty', 'ses_empty', 1700000001000, '{\"role\":\"assistant\"}')")
+        try exec("INSERT INTO part VALUES ('p-empty', 'm-empty', 1700000001000, '{\"type\":\"tool\",\"tool\":\"read\"}')")
     }
 
     private static func updateOpenCodePart(dbPath: String, id: String, data: String) throws {

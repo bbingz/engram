@@ -191,6 +191,11 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
             }
             let userCount = userMessageIds.count
             let assistantCount = assistantMessageIds.count
+            // R184-3: a live session row with no contentful user/assistant
+            // text must not become a zero-count browsable session.
+            guard userCount + assistantCount > 0 else {
+                return .failure(.noVisibleMessages)
+            }
 
             let sessionCreated = Phase4AdapterSupport.double(session["time_created"] ?? nil) ?? 0
             let firstMessageTime = Phase4AdapterSupport.double(messages.first?["time_created"] ?? nil)
