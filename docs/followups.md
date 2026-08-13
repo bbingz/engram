@@ -135,7 +135,8 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **ADAPTER-EMPTY-SESSION-001F** / R184-3 | closed (#362) | Timestamped Cline metadata-only files return `.noVisibleMessages`. Shipped at `main@7d40c1ad`. |
 | **ADAPTER-EMPTY-SESSION-001G** / R184-3 | closed (#363) | OpenCode live sessions with no contentful text parts return `.noVisibleMessages`. Shipped at `main@fc5c70d4`. |
 | **ADAPTER-EMPTY-SESSION-001H** / R184-3 | closed (#364) | Windsurf metadata-only Cascade cache files return `.noVisibleMessages`. Shipped at `main@1e3c610e`. |
-| **ADAPTER-EMPTY-SESSION-001I** / R184-3 | this PR (#365) | Antigravity metadata-only Cascade cache files and valid-id CLI transcripts with no user/assistant/tool turns return `.noVisibleMessages`. Remaining adapters stay later slices. |
+| **ADAPTER-EMPTY-SESSION-001I** / R184-3 | closed (#365) | Antigravity metadata-only Cascade cache files and valid-id CLI transcripts with no user/assistant/tool turns return `.noVisibleMessages`. Shipped at `main@06353931`. |
+| **ADAPTER-EMPTY-SESSION-001J** / R184-3 | this PR (#366) | Copilot events with a valid session id but no user/assistant turns return `.noVisibleMessages`. Remaining adapters stay later slices. |
 | **L-a…L-j** | residual | Remaining Low/Info row from the full-project review: L-h (blocked 1.0.5). L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349, L-j/#353 closed. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 

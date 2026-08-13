@@ -2801,6 +2801,41 @@ final class AdapterMessageCountTests: XCTestCase {
         }
     }
 
+    /// R184-3 / ADAPTER-EMPTY-SESSION-001J: a valid Copilot session whose
+    /// events contain only session metadata is terminal, not malformed JSON.
+    func testCopilotSessionStartOnlyEventsAreTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-start-only-direct", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        try """
+        id: session-start-only-direct
+        cwd: /tmp/copilot-start-only
+        created_at: 2026-08-14T00:00:00.000Z
+        updated_at: 2026-08-14T00:00:00.000Z
+        """.write(to: sessionDir.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        try [
+            try jsonLine([
+                "type": "session.start",
+                "timestamp": "2026-08-14T00:00:00.000Z",
+                "data": [
+                    "startTime": "2026-08-14T00:00:00.000Z",
+                    "context": ["cwd": "/tmp/copilot-start-only"],
+                ],
+            ]),
+        ].joined(separator: "\n").appending("\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(sessionRoot: root.path)
+        switch try await adapter.parseSessionInfo(locator: events.path) {
+        case .success(let info):
+            XCTFail("session.start-only events must not index zero-count session \(info.id)")
+        case .failure(let failure):
+            XCTAssertEqual(failure, .noVisibleMessages)
+        }
+    }
+
     // Audit COPILOT-AUX-001: workspace.yaml mtime must keep the session in the
     // recent set when the main locator and session-directory mtimes are stale.
     func testCopilotRecentScanTracksAuxiliaryFiles_repro() async throws {
