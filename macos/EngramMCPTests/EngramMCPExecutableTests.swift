@@ -1559,6 +1559,40 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    // L-a (2026-07-18 full-project review): MCP keyword search must use the
+    // same 2-character floor as app/service (`Database.swift:568`,
+    // `EngramServiceReadProvider.swift:530`). One-character LIKE over-recalls
+    // single letters the app never returns.
+    func testKeywordSearchRejectsSingleCharacterQuery_repro() throws {
+        let dbPath = try temporaryFixtureCopy(
+            "mcp-contract.sqlite",
+            prefix: "engram-mcp-single-char-search-db"
+        )
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        try seedShortLatinSearchFixture(at: dbPath)
+
+        let capture = try rpc(
+            """
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"A","mode":"keyword","limit":10}}}
+            """,
+            environment: [
+                "ENGRAM_MCP_DB_PATH": dbPath,
+            ]
+        )
+
+        let structured = try XCTUnwrap(capture.ordered["result"]?["structuredContent"])
+        XCTAssertNotEqual(structured["isError"]?.boolValue, true, "\(structured)")
+        XCTAssertEqual(
+            structured["results"]?.arrayValue?.compactMap { $0["session"]?["id"]?.stringValue } ?? [],
+            [],
+            "1-char keyword search must return empty like app/service, not LIKE '%A%'"
+        )
+        XCTAssertEqual(
+            structured["searchModes"]?.arrayValue?.compactMap(\.stringValue),
+            ["keyword"]
+        )
+    }
+
     func testInitializeMatchesGolden() throws {
         let capture = try rpc(
             """

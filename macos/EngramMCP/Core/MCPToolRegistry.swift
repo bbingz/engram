@@ -118,7 +118,7 @@ enum MCPToolRegistry {
                 "properties": .object([
                     "query": .object([
                         "type": .string("string"),
-                        "description": .string("Search keywords; queries shorter than 3 characters use LIKE fallback"),
+                        "description": .string("Search keywords; 1-character queries return no matches; 2-character Latin and CJK use LIKE fallback"),
                     ]),
                     "source": .object([
                         "type": .string("string"),
@@ -375,7 +375,7 @@ enum MCPToolRegistry {
                 "properties": .object([
                     "query": .object([
                         "type": .string("string"),
-                        "description": .string("Search keywords; queries shorter than 3 characters use LIKE fallback"),
+                        "description": .string("Search keywords; 1-character queries return no matches; 2-character Latin and CJK use LIKE fallback"),
                     ]),
                     "source": .object([
                         "type": .string("string"),
