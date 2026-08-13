@@ -53,9 +53,17 @@ final class EngramServiceStatusStore {
     var status: EngramServiceStatus = .stopped
     var totalSessions = 0
     var todayParentSessions = 0
+    var lastScanAt: String?
     var lastSummarySessionId: String?
     var usageData: [EngramServiceUsageItem] = []
     var lastEventAt: Date?
+
+    /// Browse pages key `.task(id:)` on this so a successful scan that only
+    /// updates existing session content still reloads (L-c). Idle 5s polls keep
+    /// the same `lastScanAt` and therefore the same token.
+    var browseReloadToken: String {
+        "\(totalSessions)|\(lastScanAt ?? "")"
+    }
 
     var displayString: String {
         switch status {
@@ -63,7 +71,7 @@ final class EngramServiceStatusStore {
             return String(localized: "Stopped")
         case .starting:
             return String(localized: "Starting...")
-        case .running(let total, _, _):
+        case .running(let total, _, _, _):
             return String(localized: "\(total) sessions indexed")
         case .degraded(let message):
             return String(localized: "Degraded: \(message)")
@@ -107,9 +115,10 @@ final class EngramServiceStatusStore {
         // change so the idle status poll becomes free. (lastEventAt has no
         // observers, so its unconditional update costs nothing.)
         if status != newStatus { status = newStatus }
-        if case .running(let total, let todayParents, _) = newStatus {
+        if case .running(let total, let todayParents, _, let lastScanAt) = newStatus {
             if totalSessions != total { totalSessions = total }
             if todayParentSessions != todayParents { todayParentSessions = todayParents }
+            if self.lastScanAt != lastScanAt { self.lastScanAt = lastScanAt }
         }
     }
 

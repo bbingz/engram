@@ -290,7 +290,7 @@ struct SessionsPageView: View {
             AnyHashable(sourceFilter),
             AnyHashable(showHiddenSessions),
             AnyHashable(showAllSessions),
-            AnyHashable(serviceStatusStore.totalSessions),
+            AnyHashable(serviceStatusStore.browseReloadToken),
         ]) {
             // Drop any favorite-triggered reload for the previous filter so it
             // cannot finish after this filter's load and clobber the list.

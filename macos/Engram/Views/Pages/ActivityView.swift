@@ -37,7 +37,7 @@ struct ActivityView: View {
             .padding(24)
         }
         .accessibilityIdentifier("activity_container")
-        .task(id: serviceStatusStore.totalSessions) {
+        .task(id: serviceStatusStore.browseReloadToken) {
             let filterKey: [AnyHashable] = []
             let plan = BrowseReloadCoalescer.plan(filterKey: filterKey, lastFilterKey: lastFilterKey)
             if plan.debounce {

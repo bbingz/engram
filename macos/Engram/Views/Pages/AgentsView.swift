@@ -97,7 +97,7 @@ struct AgentsView: View {
         .sheet(item: $linkTarget) { child in
             LinkParentPicker(child: child, onLinked: { Task { await loadData() } })
         }
-        .task(id: serviceStatusStore.totalSessions) { await loadData() }
+        .task(id: serviceStatusStore.browseReloadToken) { await loadData() }
     }
 
     private func loadData() async {

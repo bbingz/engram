@@ -1569,8 +1569,36 @@ final class EngramServiceIPCTests: XCTestCase {
 
         XCTAssertEqual(
             status,
-            .running(total: 42, todayParents: 7, nextScanIntervalSeconds: 900)
+            .running(
+                total: 42,
+                todayParents: 7,
+                nextScanIntervalSeconds: 900,
+                lastScanAt: "1970-01-01T00:01:40Z"
+            )
         )
+    }
+
+    /// L-c: status must publish lastScanAt so the app can reload browse pages
+    /// after a content-only scan (session count unchanged).
+    func testStatusMonitorPublishesLastScanAtAfterSuccess_repro() async {
+        let monitor = ServiceStatusMonitor(
+            staleAfter: 600,
+            now: { Date(timeIntervalSince1970: 200) }
+        )
+        await monitor.recordScanSuccess(at: Date(timeIntervalSince1970: 100))
+        await monitor.recordSchedule(nextScanIntervalSeconds: 900)
+
+        let status = await monitor.status(
+            indexStatus: EngramDatabaseIndexStatus(total: 42, todayParents: 7)
+        )
+
+        guard case .running(let total, let todayParents, let interval, let lastScanAt) = status else {
+            return XCTFail("expected running status, got \(status)")
+        }
+        XCTAssertEqual(total, 42)
+        XCTAssertEqual(todayParents, 7)
+        XCTAssertEqual(interval, 900)
+        XCTAssertEqual(lastScanAt, "1970-01-01T00:01:40Z")
     }
 
     func testStatusMonitorStillDegradesAfterTwoPublishedIntervals() async {

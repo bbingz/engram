@@ -147,8 +147,8 @@ final class AgentsViewTests: XCTestCase {
         XCTAssertTrue(s.contains("pendingSuggestionSessions"))
         XCTAssertTrue(s.contains("ambiguousSuggestionSessions"))
         XCTAssertTrue(s.contains("Ambiguous"))
-        XCTAssertTrue(s.contains(".task(id: serviceStatusStore.totalSessions)"),
-                      "must live-refresh on indexing progress")
+        XCTAssertTrue(s.contains(".task(id: serviceStatusStore.browseReloadToken)"),
+                      "must live-refresh on indexing progress and same-count content scans (L-c)")
         // Set-parent lives on the pending-suggestion inbox rows (not on the
         // grouping ExpandableSessionCard — that invariant is checked separately
         // by testExpandableSessionCardHasNoSetParentHook).

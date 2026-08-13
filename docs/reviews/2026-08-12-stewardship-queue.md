@@ -88,7 +88,8 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 55 | GEMINI-TOOL-EVENTS-001 | low | Gemini CLI session metadata hardcodes zero tool messages and its stream path drops persisted tool events (L-b) | implementer | Count and stream real `toolCalls[]`/`functionCall` events through one normalizer while preserving non-tool roles and excluding ordinary info; named `_repro`s pass | **DONE** 2026-08-13 — PR #342 merged at `main@2c405175`. |
 | 56 | WARP-TAB-0600-001 | low | Warp tab config written without forced 0600 (L-e / SEC-006) | implementer | Atomic write then POSIX 0600; overwrite of a 0644 file repairs mode; launch path uses the helper | **DONE** 2026-08-13 — PR #343 merged at `main@4804ac03`. |
 | 57 | ARCHIVE-SYNC-REFRESH-001 | low | Archive Sync status refresh failures are silently swallowed (L-d remainder) | implementer | A current-generation failure clears stale status and sets the localized user-visible error; suppressed action refreshes preserve their result; no polling is added; named `_repro` passes | **DONE** 2026-08-13 — PR #344 merged at `main@6cff11ef`; the no-poll half remains an intentional product choice. |
-| 58 | GET-CONTEXT-COST-TODAY-001 | low | `get_context` "Cost today" uses a UTC day window while `get_costs` groups by local day (L-g) | implementer | Honor process-local / `TZ` calendar day via `contextTimeZone()`; Shanghai includes previous-UTC-evening spend; UTC still isolates the UTC day; named `_repro` passes | **IMPLEMENTED / VERIFIED — PR #345 OPEN** |
+| 58 | GET-CONTEXT-COST-TODAY-001 | low | `get_context` "Cost today" uses a UTC day window while `get_costs` groups by local day (L-g) | implementer | Honor process-local / `TZ` calendar day via `contextTimeZone()`; Shanghai includes previous-UTC-evening spend; UTC still isolates the UTC day; named `_repro` passes | **DONE** 2026-08-13 — PR #345 merged at `main@85d8d3c9`. |
+| 59 | TIMELINE-CONTENT-REFRESH-001 | low | Timeline (and other browse pages) only reload when `totalSessions` changes, not when a scan updates existing session content (L-c) | implementer | Status publishes `lastScanAt`; store `browseReloadToken` changes on content-only scans; Timeline/Home/Sessions/Activity/Projects/Agents key `.task(id:)` on it; named `_repro`s pass | **IN PR** 2026-08-13 |
 | 48 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
@@ -254,6 +255,7 @@ Shipped in PR #323 at `main@dc5a5128`.
 | 55 | GEMINI-TOOL-EVENTS-001 | low | Gemini CLI metadata/stream paths dropped real tool events (L-b) | **DONE** PR #342 `main@2c405175` |
 | 56 | WARP-TAB-0600-001 | low | Warp tab config written without forced 0600 (L-e / SEC-006) | **DONE** PR #343 `main@4804ac03` |
 | 57 | ARCHIVE-SYNC-REFRESH-001 | low | Archive Sync status refresh failure was silent (L-d remainder) | **DONE** PR #344 `main@6cff11ef` |
-| 58 | GET-CONTEXT-COST-TODAY-001 | low | `get_context` Cost today used UTC while `get_costs` uses local day (L-g) | **IMPLEMENTED / VERIFIED — PR #345 OPEN** |
+| 58 | GET-CONTEXT-COST-TODAY-001 | low | `get_context` Cost today used UTC while `get_costs` uses local day (L-g) | **DONE** PR #345 `main@85d8d3c9` |
+| 59 | TIMELINE-CONTENT-REFRESH-001 | low | Browse pages only reload when `totalSessions` changes (L-c) | **IN PR** #346 |
 | 44 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | **BLOCKED** |
 `docs/reviews/2026-07-17-engram-full-audit.md`.

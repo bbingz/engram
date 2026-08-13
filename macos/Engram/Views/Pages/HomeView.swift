@@ -54,7 +54,7 @@ struct HomeView: View {
         }
         .modernScrollIndicators()
         .accessibilityIdentifier("home_container")
-        .task(id: [AnyHashable(serviceStatusStore.totalSessions), AnyHashable(showAllSessions)]) {
+        .task(id: [AnyHashable(serviceStatusStore.browseReloadToken), AnyHashable(showAllSessions)]) {
             let filterKey: [AnyHashable] = [AnyHashable(showAllSessions)]
             let plan = BrowseReloadCoalescer.plan(filterKey: filterKey, lastFilterKey: lastFilterKey)
             if plan.debounce {
