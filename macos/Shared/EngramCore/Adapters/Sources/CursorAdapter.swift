@@ -91,6 +91,12 @@ final class CursorAdapter: SessionAdapter, Sendable {
             // behavior) attributed the entire DB size to each session. This
             // matches the TS cursor adapter byte-for-byte for parity.
             let perSessionBytes = Int64(composerValue.utf8.count) + bubbleResult.rawBubbleBytes
+            // R184-3: composer metadata with no visible user/assistant bubbles
+            // must not become a zero-count browsable session. Terminal, same as
+            // Claude/Qwen.
+            guard userCount + assistantCount > 0 else {
+                return .failure(.noVisibleMessages)
+            }
 
             return .success(
                 NormalizedSessionInfo(

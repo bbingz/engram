@@ -3524,6 +3524,19 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertNil(info.project)
     }
 
+    /// R184-3: a valid composer with no visible bubbles must be terminal,
+    /// not a zero-count browsable session.
+    func testCursorComposerWithNoVisibleBubblesIsTerminalNoVisibleMessages_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorFixture(dbPath: dbPath)
+
+        let adapter = CursorAdapter(dbPath: dbPath)
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: "\(dbPath)?composer=cmp_1"))
+        XCTAssertEqual(failure, .noVisibleMessages)
+    }
+
     // Audit CURSOR-CONTENT-001: empty/whitespace text must not shadow non-empty rawText.
     func testCursorFallsBackToRawTextWhenTextIsEmpty_repro() async throws {
         let root = tempDir()
@@ -3752,6 +3765,11 @@ final class AdapterMessageCountTests: XCTestCase {
         let composer: [String: Any] = [
             "composerId": composerId,
             "createdAt": 1_700_000_000_000,
+            // Ownership fixtures must remain parseable after R184-3 fail-closed
+            // on empty composers. One visible user bubble is enough.
+            "conversation": [
+                ["type": 1, "text": "ownership probe"],
+            ],
             "context": [
                 "fileSelections": [["uri": ["fsPath": selectedFile]]],
             ],
