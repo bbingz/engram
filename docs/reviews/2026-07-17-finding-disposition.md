@@ -35,12 +35,17 @@
 | M23 | fixed | D | Gemini sidecar validation tests | |
 | M24 | fixed | D | get_costs localtime fixtures | |
 | M25 | fixed | F | digest action_date tests | |
-| L1–L5, L9–L18, L20, L22, L24–L34, L36 | accepted-residual | residual | `docs/reviews/2026-07-17-accepted-residuals.md` + followups | Low backlog |
+| L1 | fixed | later | todayParents zero until first successful scan | RETRO-P2 |
+| L2 | fixed | later | setSourceEnabled settings/DB compensation | RETRO-P1 |
+| L3 | fixed | later | `testContentIdenticalMoveRefreshesLocator_repro` | WRITER-LOCATOR-001 |
+| L4 | fixed | later | RemoteSync `urlCache = nil` + `maxBundleBytes` / `maxErrorBytes` | `EngramRemoteBackend.swift:51-53,92` |
+| L5, L9–L18, L20, L22, L24, L26–L34, L36 | fixed | later | Themed stewardship PRs #317–#341; see `docs/followups.md` | L-i homes |
 | L6–L8 | fixed | G | source-grep + DB tests | |
 | L19 | accepted-residual | residual | accepted-residuals | TS CLI only |
 | L21 | accepted-residual | residual | TODO public release | Notarization manual |
-| L23 | accepted-residual | residual | accepted-residuals | docs retention |
-| L35 | accepted-residual | residual | accepted-residuals | SchemaTool unused |
+| L23 | fixed | #339 | archive/review README index + retention | L23 |
+| L25 | accepted-residual | residual | accepted-residuals | no main-thread signature revalidation |
+| L35 | fixed | #336 | EngramCoreSchemaTool target removed | L35 |
 | SEC-H1 | fixed | B | offload TLS default + bare label tests | |
 | SEC-H2 | fixed | A | secrets scrub tests | |
 | SEC-M1 | fixed | A | TerminalLauncher no /tmp log | |
