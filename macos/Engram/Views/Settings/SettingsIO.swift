@@ -64,8 +64,8 @@ private func writeEngramSettingsDataSecurelyUnlocked(
 
 // MARK: - Keychain Helper
 
-/// App UI facade over shared `KeychainSecretStore`. Keeps the development-build
-/// skip policy local so Xcode runs never prompt for Keychain authorization.
+/// App UI facade over shared `KeychainSecretStore`. Keeps the Xcode-run skip
+/// policy local so development launches never prompt for Keychain authorization.
 enum KeychainHelper {
     /// Debug and Xcode-produced builds skip Keychain to avoid authorization dialogs.
     /// Installed Release builds use Keychain without synchronously revalidating
@@ -79,11 +79,18 @@ enum KeychainHelper {
         #endif
     }()
 
-    /// SEC-M3: only DEBUG/DerivedData may persist API keys as plaintext in settings.json.
-    static var allowsPlaintextSettingsFallback: Bool { shouldBypassKeychain }
+    /// SEC-M3: only DEBUG builds may persist API keys as plaintext in settings.json.
+    /// Release stays fail-closed even when running from DerivedData.
+    static var allowsPlaintextSettingsFallback: Bool {
+        #if DEBUG
+        return true
+        #else
+        return false
+        #endif
+    }
 
     static func get(_ key: String) -> String? {
-        if shouldBypassKeychain { return nil }  // Use plaintext JSON fallback in development builds
+        if shouldBypassKeychain { return nil }
         return KeychainSecretStore.get(key)
     }
 

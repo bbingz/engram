@@ -376,9 +376,9 @@ struct AISettingsSection: View {
 
     private func saveAISettings() {
         guard !isLoadingSettings else { return }
-        // SEC-M3: Keychain first. DEBUG/DerivedData may fall back to plaintext
-        // via KeychainHelper.shouldBypassKeychain; Release never writes secrets
-        // into settings.json when Keychain save fails.
+        // SEC-M3: Keychain first. Only DEBUG may fall back to plaintext;
+        // Release, including DerivedData builds, never writes secrets into
+        // settings.json when Keychain save fails.
         if !aiApiKey.isEmpty {
             let saved = KeychainHelper.set("aiApiKey", value: aiApiKey)
             if saved {
