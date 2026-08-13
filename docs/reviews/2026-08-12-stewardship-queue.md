@@ -86,7 +86,8 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 53 | MCP-STDIO-DEAD-001 | low | `MCPStdioServer.handle()` retains an unreachable second `tools/call` dispatch (L13) | implementer | Keep the cancellable read-loop fast path as the sole dispatch; remove the dead switch case; named source-contract and live stdio regressions pass | **DONE** 2026-08-13 — PR #340 merged at `main@b3165b8b`. |
 | 54 | ADAPTER-STREAM-INJECTION-001 | low | CommandCode, Qwen, Qoder, and Iflow stream paths emit injected wrappers as user despite batch classification (L10) | implementer | Reuse each adapter's existing injection predicate for streamed roles; real user counts and first-user summary stay aligned; four named `_repro`s pass | **DONE** 2026-08-13 — PR #341 merged at `main@2d6f3f27`. |
 | 55 | GEMINI-TOOL-EVENTS-001 | low | Gemini CLI session metadata hardcodes zero tool messages and its stream path drops persisted tool events (L-b) | implementer | Count and stream real `toolCalls[]`/`functionCall` events through one normalizer while preserving non-tool roles and excluding ordinary info; named `_repro`s pass | **DONE** 2026-08-13 — PR #342 merged at `main@2c405175`. |
-| 56 | WARP-TAB-0600-001 | low | Warp tab config written without forced 0600 (L-e / SEC-006) | implementer | Atomic write then POSIX 0600; overwrite of a 0644 file repairs mode; launch path uses the helper | **IMPLEMENTED / VERIFIED** |
+| 56 | WARP-TAB-0600-001 | low | Warp tab config written without forced 0600 (L-e / SEC-006) | implementer | Atomic write then POSIX 0600; overwrite of a 0644 file repairs mode; launch path uses the helper | **DONE** 2026-08-13 — PR #343 merged at `main@4804ac03`. |
+| 57 | ARCHIVE-SYNC-REFRESH-001 | low | Archive Sync status refresh failures are silently swallowed (L-d remainder) | implementer | A current-generation failure clears stale status and sets the localized user-visible error; suppressed action refreshes preserve their result; no polling is added; named `_repro` passes | **IMPLEMENTED / VERIFIED — PR #344 OPEN** 2026-08-13 — fix at `ArchiveSettingsSection.swift:723-768`; regression at `ArchiveSettingsSectionTests.swift:59`; the no-poll half remains an intentional product choice. |
 | 48 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
@@ -249,6 +250,8 @@ Shipped in PR #323 at `main@dc5a5128`.
 | 52 | DOCS-INDEX-RETENTION-001 | low | Archive and review evidence lacked scoped indexes and an explicit retention policy (L23) | **DONE** PR #339 `main@2aa7f84b` |
 | 53 | MCP-STDIO-DEAD-001 | low | Unreachable second `tools/call` switch dispatch (L13) | **DONE** PR #340 `main@b3165b8b` |
 | 54 | ADAPTER-STREAM-INJECTION-001 | low | Four adapter stream paths mislabeled injected wrappers as user (L10) | **DONE** PR #341 `main@2d6f3f27` |
-| 55 | GEMINI-TOOL-EVENTS-001 | low | Gemini CLI metadata/stream paths dropped real tool events (L-b) | **IMPLEMENTED / VERIFIED — PR #342 OPEN** |
+| 55 | GEMINI-TOOL-EVENTS-001 | low | Gemini CLI metadata/stream paths dropped real tool events (L-b) | **DONE** PR #342 `main@2c405175` |
+| 56 | WARP-TAB-0600-001 | low | Warp tab config written without forced 0600 (L-e / SEC-006) | **DONE** PR #343 `main@4804ac03` |
+| 57 | ARCHIVE-SYNC-REFRESH-001 | low | Archive Sync status refresh failure was silent (L-d remainder) | **IMPLEMENTED / VERIFIED — PR #344 OPEN** |
 | 44 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | **BLOCKED** |
 `docs/reviews/2026-07-17-engram-full-audit.md`.

@@ -56,6 +56,35 @@ final class ArchiveSettingsSectionTests: XCTestCase {
         )
     }
 
+    // Audit L-d: the manual Archive Sync refresh must surface a failed status
+    // request without letting background/action refreshes overwrite their result.
+    func testManualArchiveStatusRefreshReportsFailure_repro() throws {
+        let sourceURL = macOSRoot
+            .appendingPathComponent("Engram/Views/Settings/ArchiveSettingsSection.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(
+            source.range(of: "private func refreshArchiveStatus(")
+        )
+        let end = try XCTUnwrap(
+            source.range(
+                of: "\n    @MainActor\n    private func refresh(reportError:",
+                range: start.upperBound..<source.endIndex
+            )
+        )
+        let refreshArchiveStatus = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(refreshArchiveStatus.contains("reportError: Bool = true"))
+        XCTAssertTrue(refreshArchiveStatus.contains("guard requestGeneration == syncRefreshGeneration else { return }"))
+        XCTAssertTrue(refreshArchiveStatus.contains("if reportError"))
+        XCTAssertTrue(
+            refreshArchiveStatus.contains(
+                #"message = String(localized: "Error: archive status unavailable.")"#
+            )
+        )
+        XCTAssertTrue(refreshArchiveStatus.contains("messageIsError = true"))
+        XCTAssertTrue(source.contains("await refreshArchiveStatus(reportError: reportError)"))
+    }
+
     func testReclamationRefreshGenerationGuard_repro() {
         XCTAssertTrue(ArchiveSettingsSection.shouldApplyReclamationRefresh(resultGeneration: 2, currentGeneration: 2))
         XCTAssertFalse(ArchiveSettingsSection.shouldApplyReclamationRefresh(resultGeneration: 1, currentGeneration: 2))
