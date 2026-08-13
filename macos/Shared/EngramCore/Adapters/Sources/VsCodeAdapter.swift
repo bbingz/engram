@@ -113,6 +113,31 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
         return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
     }
 
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        let signature = ParsedTranscriptCache.Signature.forFile(locator)
+        let messages: [NormalizedMessage]
+        if let cached = await messageCache.cached(locator: locator, signature: signature) {
+            messages = cached
+        } else {
+            messages = try Self.buildMessages(locator: locator, limits: limits)
+            await messageCache.store(locator: locator, signature: signature, messages: messages)
+        }
+        let truncatedAt = options.limit == nil && messages.count > limits.maxMessages
+            ? limits.maxMessages
+            : nil
+        let bounded = truncatedAt == nil
+            ? JSONLAdapterSupport.applyWindow(messages, options: options)
+            : Array(messages.prefix(limits.maxMessages))
+        return StreamMessagesResult(
+            messages: JSONLAdapterSupport.stream(bounded),
+            totalKnownComplete: truncatedAt == nil,
+            truncatedAt: truncatedAt
+        )
+    }
+
     private static func buildMessages(locator: String, limits: ParserLimits) throws -> [NormalizedMessage] {
         guard let session = try readSession(locator: locator, limits: limits),
               let requests = JSONLAdapterSupport.array(session["requests"])

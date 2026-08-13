@@ -120,6 +120,53 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .noVisibleMessages)
     }
 
+    /// VS Code inherits SessionAdapter's default streamMessagesWithMetadata, so
+    /// an oversized whole-transcript read is capped without a truncation marker.
+    func testVsCodeOversizedTranscriptReportsTruncation_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatDir = root.appendingPathComponent("ws-oversized/chatSessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatDir, withIntermediateDirectories: true)
+
+        let requests: [[String: Any]] = (0..<4).map { index in
+            [
+                "timestamp": 1_700_000_000_000 + index * 1_000,
+                "message": ["text": "vs question \(index)"],
+                "response": [
+                    ["value": ["kind": "markdownContent", "content": ["value": "vs answer \(index)"]]],
+                ],
+            ]
+        }
+        let session: [String: Any] = [
+            "kind": 0,
+            "v": [
+                "sessionId": "vs-oversized",
+                "creationDate": 1_700_000_000_000,
+                "requests": requests,
+            ],
+        ]
+        let file = chatDir.appendingPathComponent("oversized.jsonl")
+        try (try jsonLine(session) + "\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = VsCodeAdapter(
+            workspaceStorageDir: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions()
+        )
+        var streamed: [NormalizedMessage] = []
+        for try await message in result.messages {
+            streamed.append(message)
+        }
+
+        XCTAssertEqual(streamed.count, 3)
+        XCTAssertEqual(result.truncatedAt, 3)
+        XCTAssertFalse(result.totalKnownComplete)
+        XCTAssertTrue(result.truncated)
+    }
+
     // Audit L24: one stable corrupt request must not poison the valid requests
     // and leave the unchanged locator on the malformed-JSON retry schedule.
     func testVsCodePartiallyCorruptRequestsDoNotEnterRetryLoop_repro() async throws {

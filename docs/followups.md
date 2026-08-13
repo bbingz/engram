@@ -138,7 +138,8 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **ADAPTER-EMPTY-SESSION-001I** / R184-3 | closed (#365) | Antigravity metadata-only Cascade cache files and valid-id CLI transcripts with no user/assistant/tool turns return `.noVisibleMessages`. Shipped at `main@06353931`. |
 | **ADAPTER-EMPTY-SESSION-001J** / R184-3 | closed (#366) | Copilot events with a valid session id but no user/assistant turns return `.noVisibleMessages`. Empty-session adapter series complete. Shipped at `main@98b01aea`. |
 | **ADAPTER-TAIL-TERMINAL-001** / R184-4 | closed (#368) | Tail-parse terminal policy matches `FileIndexState.isTerminalFailure`. `malformedJSON` / `invalidUtf8` / `fileMissing` fall through to a full scan; `noVisibleMessages` stays terminal. Shipped at `main@90256cc5`. |
-| **ADAPTER-TRUNCATION-METADATA-001** / export P1 remainder | this PR (#370) | Cline whole-transcript reads report `truncatedAt` / `totalKnownComplete=false` when they exceed `ParserLimits.maxMessages`. VS Code, Cursor, and Gemini CLI stay later slices. |
+| **ADAPTER-TRUNCATION-METADATA-001** / export P1 remainder | closed (#370) | Cline whole-transcript reads report `truncatedAt` / `totalKnownComplete=false` when they exceed `ParserLimits.maxMessages`. Shipped at `main@64253c1a`. |
+| **ADAPTER-TRUNCATION-METADATA-001B** / export P1 remainder | this PR | VS Code whole-transcript reads report `truncatedAt` / `totalKnownComplete=false` when they exceed `ParserLimits.maxMessages`. Cursor and Gemini CLI stay later slices. |
 | **L-a…L-j** | residual | Remaining Low/Info row from the full-project review: L-h (blocked 1.0.5). L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349, L-j/#353 closed. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
