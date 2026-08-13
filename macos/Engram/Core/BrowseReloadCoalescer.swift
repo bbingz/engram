@@ -2,7 +2,7 @@
 import Foundation
 
 /// Browse pages (Sessions / Home / Timeline / Projects / Activity) key an
-/// `.task(id:)` on their filters plus `serviceStatusStore.totalSessions`. That
+/// `.task(id:)` on their filters plus `serviceStatusStore.browseReloadToken`. That
 /// task re-runs for two very different reasons: the user changed a filter, or a
 /// background index tick bumped the session count. Treating both the same way
 /// makes indexing churn cancel in-flight loads and reset pagination/scroll (#3).

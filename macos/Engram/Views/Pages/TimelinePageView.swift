@@ -335,7 +335,7 @@ struct TimelinePageView: View {
             AnyHashable(range),
             AnyHashable(selectedProject),
             AnyHashable(showAllSessions),
-            AnyHashable(serviceStatusStore.totalSessions)
+            AnyHashable(serviceStatusStore.browseReloadToken)
         ]) {
             let filterKey: [AnyHashable] = [
                 AnyHashable(timelineMode),

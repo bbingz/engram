@@ -127,6 +127,22 @@ final class EngramServiceStatusStoreTests: XCTestCase {
         XCTAssertEqual(store.todayParentSessions, 13)
     }
 
+    /// L-c: a successful scan that only updates existing session content must
+    /// change the browse reload token even when `total` is unchanged.
+    func testBrowseReloadTokenChangesWhenLastScanAtChangesWithoutTotalChange_repro() {
+        let store = EngramServiceStatusStore()
+        store.apply(EngramServiceStatus.running(total: 40, todayParents: 3, lastScanAt: "2026-08-13T05:00:00Z"))
+        let firstToken = store.browseReloadToken
+
+        store.apply(EngramServiceStatus.running(total: 40, todayParents: 3, lastScanAt: "2026-08-13T05:00:00Z"))
+        XCTAssertEqual(store.browseReloadToken, firstToken)
+
+        store.apply(EngramServiceStatus.running(total: 40, todayParents: 3, lastScanAt: "2026-08-13T05:15:00Z"))
+        XCTAssertEqual(store.lastScanAt, "2026-08-13T05:15:00Z")
+        XCTAssertNotEqual(store.browseReloadToken, firstToken)
+        XCTAssertEqual(store.totalSessions, 40)
+    }
+
     func testAppliesErrorAndDegradedEvents() throws {
         let store = EngramServiceStatusStore()
 

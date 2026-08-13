@@ -219,7 +219,7 @@ struct ProjectsView: View {
             .padding(24)
         }
         .accessibilityIdentifier("projects_container")
-        .task(id: serviceStatusStore.totalSessions) {
+        .task(id: serviceStatusStore.browseReloadToken) {
             let filterKey: [AnyHashable] = []
             let plan = BrowseReloadCoalescer.plan(filterKey: filterKey, lastFilterKey: lastFilterKey)
             if plan.debounce {

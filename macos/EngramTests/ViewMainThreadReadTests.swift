@@ -147,8 +147,8 @@ final class ViewMainThreadReadTests: XCTestCase {
             let page = try source(path)
             XCTAssertTrue(page.contains("@Environment(EngramServiceStatusStore.self)"))
             XCTAssertTrue(
-                page.contains("serviceStatusStore.totalSessions"),
-                "\(path) must reload visible data when live service indexing changes the session count"
+                page.contains("serviceStatusStore.browseReloadToken"),
+                "\(path) must reload when live indexing changes count or scan content (L-c)"
             )
             XCTAssertTrue(page.contains(".task(id:"))
         }

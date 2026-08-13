@@ -10,6 +10,12 @@ actor ServiceStatusMonitor {
     private var serviceReady = false
     /// Adaptive next-scan interval (seconds); published on running status.
     private var nextScanIntervalSeconds: Int?
+    private let lastScanFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter
+    }()
 
     init(staleAfter: TimeInterval = 10 * 60, now: @escaping @Sendable () -> Date = { Date() }) {
         self.staleAfter = staleAfter
@@ -49,7 +55,8 @@ actor ServiceStatusMonitor {
             return .running(
                 total: indexStatus.total,
                 todayParents: indexStatus.todayParents,
-                nextScanIntervalSeconds: nextScanIntervalSeconds
+                nextScanIntervalSeconds: nextScanIntervalSeconds,
+                lastScanAt: lastScanFormatter.string(from: lastSuccessAt)
             )
         }
 

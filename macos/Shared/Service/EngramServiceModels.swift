@@ -48,7 +48,14 @@ enum EngramServiceStatus: Codable, Equatable, Sendable {
     case stopped
     case starting
     /// `nextScanIntervalSeconds` is the adaptive S01 target (900/1800/3600), never a fixed 300.
-    case running(total: Int, todayParents: Int, nextScanIntervalSeconds: Int? = nil)
+    /// `lastScanAt` is the last successful index scan (ISO-8601). Browse pages
+    /// key on it so content updates refresh even when `total` is unchanged (L-c).
+    case running(
+        total: Int,
+        todayParents: Int,
+        nextScanIntervalSeconds: Int? = nil,
+        lastScanAt: String? = nil
+    )
     case degraded(message: String)
     case error(message: String)
 
@@ -58,6 +65,7 @@ enum EngramServiceStatus: Codable, Equatable, Sendable {
         case todayParents
         case message
         case nextScanIntervalSeconds
+        case lastScanAt
     }
 
     init(from decoder: Decoder) throws {
@@ -71,7 +79,8 @@ enum EngramServiceStatus: Codable, Equatable, Sendable {
             self = .running(
                 total: try container.decode(Int.self, forKey: .total),
                 todayParents: try container.decodeIfPresent(Int.self, forKey: .todayParents) ?? 0,
-                nextScanIntervalSeconds: try container.decodeIfPresent(Int.self, forKey: .nextScanIntervalSeconds)
+                nextScanIntervalSeconds: try container.decodeIfPresent(Int.self, forKey: .nextScanIntervalSeconds),
+                lastScanAt: try container.decodeIfPresent(String.self, forKey: .lastScanAt)
             )
         case "degraded":
             self = .degraded(message: try container.decode(String.self, forKey: .message))
@@ -93,11 +102,12 @@ enum EngramServiceStatus: Codable, Equatable, Sendable {
             try container.encode("stopped", forKey: .state)
         case .starting:
             try container.encode("starting", forKey: .state)
-        case .running(let total, let todayParents, let nextScanIntervalSeconds):
+        case .running(let total, let todayParents, let nextScanIntervalSeconds, let lastScanAt):
             try container.encode("running", forKey: .state)
             try container.encode(total, forKey: .total)
             try container.encode(todayParents, forKey: .todayParents)
             try container.encodeIfPresent(nextScanIntervalSeconds, forKey: .nextScanIntervalSeconds)
+            try container.encodeIfPresent(lastScanAt, forKey: .lastScanAt)
         case .degraded(let message):
             try container.encode("degraded", forKey: .state)
             try container.encode(message, forKey: .message)
