@@ -166,11 +166,15 @@ final class CommandCodeAdapter: SessionAdapter, Sendable {
 
     private static func message(from object: JSONLAdapterSupport.JSONObject) -> NormalizedMessage? {
         guard let roleString = JSONLAdapterSupport.string(object["role"]),
-              let role = NormalizedMessageRole(rawValue: roleString)
+              let parsedRole = NormalizedMessageRole(rawValue: roleString)
         else { return nil }
+        let content = extractContent(object["content"])
+        let role: NormalizedMessageRole = parsedRole == .user && isSystemInjection(content)
+            ? .system
+            : parsedRole
         return NormalizedMessage(
             role: role,
-            content: extractContent(object["content"]),
+            content: content,
             timestamp: timestamp(from: object),
             toolCalls: nonEmptyToolCalls(from: object["content"]),
             usage: nil

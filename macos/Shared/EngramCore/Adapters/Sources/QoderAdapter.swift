@@ -181,10 +181,20 @@ final class QoderAdapter: SessionAdapter, Sendable {
               let message = JSONLAdapterSupport.object(object["message"])
         else { return nil }
         let content = message["content"]
-        let role: NormalizedMessageRole = type == "assistant" ? .assistant : (isToolResult(content) ? .tool : .user)
+        let text = extractContent(content)
+        let role: NormalizedMessageRole
+        if type == "assistant" {
+            role = .assistant
+        } else if isToolResult(content) {
+            role = .tool
+        } else if isSystemInjection(text) {
+            role = .system
+        } else {
+            role = .user
+        }
         return NormalizedMessage(
             role: role,
-            content: extractContent(content),
+            content: text,
             timestamp: JSONLAdapterSupport.string(object["timestamp"]),
             toolCalls: nonEmptyToolCalls(from: content),
             usage: JSONLAdapterSupport.usage(from: JSONLAdapterSupport.object(message["usage"]))
