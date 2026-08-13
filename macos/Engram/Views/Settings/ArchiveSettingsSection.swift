@@ -720,7 +720,7 @@ struct ArchiveSettingsSection: View {
     }
 
     @MainActor
-    private func refreshArchiveStatus() async {
+    private func refreshArchiveStatus(reportError: Bool = true) async {
         syncRefreshGeneration += 1
         let requestGeneration = syncRefreshGeneration
         syncBusy = true
@@ -736,12 +736,16 @@ struct ArchiveSettingsSection: View {
         } catch {
             guard requestGeneration == syncRefreshGeneration else { return }
             archiveStatus = nil
+            if reportError {
+                message = String(localized: "Error: archive status unavailable.")
+                messageIsError = true
+            }
         }
     }
 
     @MainActor
     private func refresh(reportError: Bool = true) async {
-        await refreshArchiveStatus()
+        await refreshArchiveStatus(reportError: reportError)
         reclamationRefreshGeneration += 1
         let requestGeneration = reclamationRefreshGeneration
         do {
