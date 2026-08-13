@@ -153,6 +153,7 @@ actor ArchiveReclamationCoordinator {
             var casCount = 0
             var released: Int64 = 0
             var sourceBudget = Self.maximumSourceBytesPerCycle
+            var hadItemFailure = false
             let claudeProfiles = resolvedClaudeProfilesForReclamation()
 
             let casSnapshot = try catalog.reclamationIntents(
@@ -164,18 +165,24 @@ actor ArchiveReclamationCoordinator {
                 limit: Self.maximumCandidatesPerCycle
             )
             for intent in recovery {
-                guard sourceCount < Self.maximumCandidatesPerCycle,
-                      let capture = try catalog.capture(captureID: intent.captureID),
-                      Self.sourceReclamationAllowed(
-                          locator: capture.locator,
-                          source: capture.source,
-                          claudeProfiles: claudeProfiles
-                      ),
-                      capture.rawByteCount <= sourceBudget else { continue }
-                let result = try sourceReclaimer.recover(intent: intent, capture: capture)
-                sourceCount += 1
-                sourceBudget -= result.releasedBytes
-                released += result.releasedBytes
+                do {
+                    guard sourceCount < Self.maximumCandidatesPerCycle,
+                          let capture = try catalog.capture(captureID: intent.captureID),
+                          Self.sourceReclamationAllowed(
+                              locator: capture.locator,
+                              source: capture.source,
+                              claudeProfiles: claudeProfiles
+                          ),
+                          capture.rawByteCount <= sourceBudget else { continue }
+                    let result = try sourceReclaimer.recover(intent: intent, capture: capture)
+                    sourceCount += 1
+                    sourceBudget -= result.releasedBytes
+                    released += result.releasedBytes
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    hadItemFailure = true
+                }
             }
 
             // M4/R5: walk candidates in order; stop once the per-cycle reclaim
@@ -183,6 +190,7 @@ actor ArchiveReclamationCoordinator {
             // candidates we fully resolved (reclaimed or ineligible) — never
             // past eligible rows skipped because the byte budget was exhausted.
             var lastProcessedBinding: ArchiveBinding?
+            var cursorBlockedByFailedEligible = false
             for (candidate, decision) in try evaluateCandidates(
                 now: now,
                 claudeProfiles: claudeProfiles
@@ -192,7 +200,9 @@ actor ArchiveReclamationCoordinator {
                 }
                 guard case .eligible = decision else {
                     // Ineligible: examined and resolved; safe to advance past.
-                    lastProcessedBinding = candidate.binding
+                    if !cursorBlockedByFailedEligible {
+                        lastProcessedBinding = candidate.binding
+                    }
                     continue
                 }
                 guard candidate.capture.rawByteCount <= sourceBudget else {
@@ -200,18 +210,30 @@ actor ArchiveReclamationCoordinator {
                     // advancing the cursor past this (or later) eligible row.
                     break
                 }
-                let intent = try catalog.upsertReclamationIntent(
-                    manifestSHA256: candidate.binding.manifestSHA256,
-                    captureID: candidate.capture.captureID,
-                    sessionID: candidate.binding.sessionID,
-                    locator: candidate.capture.locator,
-                    updatedAt: Self.timestamp(now)
-                )
-                let result = try sourceReclaimer.planAndReclaim(intent: intent, capture: candidate.capture)
-                sourceCount += 1
-                sourceBudget -= result.releasedBytes
-                released += result.releasedBytes
-                lastProcessedBinding = candidate.binding
+                do {
+                    let intent = try catalog.upsertReclamationIntent(
+                        manifestSHA256: candidate.binding.manifestSHA256,
+                        captureID: candidate.capture.captureID,
+                        sessionID: candidate.binding.sessionID,
+                        locator: candidate.capture.locator,
+                        updatedAt: Self.timestamp(now)
+                    )
+                    let result = try sourceReclaimer.planAndReclaim(
+                        intent: intent,
+                        capture: candidate.capture
+                    )
+                    sourceCount += 1
+                    sourceBudget -= result.releasedBytes
+                    released += result.releasedBytes
+                    if !cursorBlockedByFailedEligible {
+                        lastProcessedBinding = candidate.binding
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    hadItemFailure = true
+                    cursorBlockedByFailedEligible = true
+                }
             }
             if let last = lastProcessedBinding {
                 try storeReclamationCursor(binding: last, now: now)
@@ -219,16 +241,22 @@ actor ArchiveReclamationCoordinator {
 
             var casBudget = ArchiveCASEvictor.maximumBytesPerCycle
             for intent in casSnapshot where casBudget > 0 {
-                let result = try casEvictor.evictEligibleObjects(
-                    for: intent.manifestSHA256,
-                    now: now,
-                    maximumBytes: casBudget
-                )
-                casCount += result.evictedObjects
-                casBudget -= result.releasedBytes
-                released += result.releasedBytes
+                do {
+                    let result = try casEvictor.evictEligibleObjects(
+                        for: intent.manifestSHA256,
+                        now: now,
+                        maximumBytes: casBudget
+                    )
+                    casCount += result.evictedObjects
+                    casBudget -= result.releasedBytes
+                    released += result.releasedBytes
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    hadItemFailure = true
+                }
             }
-            lastError = nil
+            lastError = hadItemFailure ? "reclamation_item_failure" : nil
             return .init(accepted: true, coalesced: false, sourceFilesReclaimed: sourceCount, casObjectsEvicted: casCount, releasedBytes: released, error: nil)
         } catch is CancellationError {
             lastError = "cancelled"

@@ -92,7 +92,7 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **TIMELINE-RECOMPUTE-001** / L14 | closed (#329) | TimelinePageView materializes derived collections once per body evaluation; shipped at `main@8c951673`. |
 | **SESSION-DETAIL-FILTER-001** / L32 | closed (#334) | `SessionDetailView.updateDisplayIndexed` runs its full loaded-prefix visibility loop in cancellable detached work; shipped at `main@54d0fce4`. |
 | **FTS-H01-TS-001** / L20 | closed (#337) | Retained TypeScript version-3 finalize copies eligible live FTS rows and refuses an incomplete swap; shipped at `main@dffb882f`. |
-| **PERF-YML-DOCS-001** / L22 | implemented / verified; PR #338 open | `.github/workflows/perf.yml:1` documents that the workflow is nightly/`workflow_dispatch` only and is not a pull-request or merge gate. |
+| **PERF-YML-DOCS-001** / L22 | closed (#338) | `.github/workflows/perf.yml:1` documents that the workflow is nightly/`workflow_dispatch` only and is not a pull-request or merge gate. Shipped at `main@2d9644aa`. |
 | **SUGGESTED-PARENT-RESCORE-001** / L11 | closed (#331) | detection version bump clears stale suggested parents; shipped at `main@5ed938e4`. |
 | **POLYCLI-LINKED-DEAD-001** / L12 | closed (#326) | dead polycli linked accounting removed; shipped at `main@15eea454`. |
 | **WORKGRAPH-FORMATTER-001** / L15 | closed (#324) | WorkGraph uses EngramTimestampParser; shipped at `main@53c171d1`. |
@@ -100,7 +100,8 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **POLYCLI-LINKED-DEAD-001** / L12 | closed (#326) | dead polycli linked accounting removed; shipped at `main@15eea454`. |
 | **ANTIGRAVITY-CWD-REREAD-001** / L34 | closed (#327) | Antigravity CWD inference reads at most 50KB; shipped at `main@ddf2070a`. |
 | **VSCODE-STRICT-REQUESTS-001** / L24 | closed (#328) | VS Code ignores stable non-object request entries; shipped at `main@5c5e916b`. |
-| **GEMINI-JSON-FSYNC-001** / L26 | implemented / verified; PR #332 open | `GeminiProjectsJSON.writeAtomic` fsyncs the temp file before rename and the parent directory after, matching `JsonlPatch`. `testAtomicWriterFsyncsTempAndParentDirectory_repro` pins the durable write order. |
+| **GEMINI-JSON-FSYNC-001** / L26 | closed (#332) | `GeminiProjectsJSON.writeAtomic` fsyncs the temp file before rename and the parent directory after, matching `JsonlPatch`. Shipped at `main@b344fa56`. |
+| **RECLAMATION-ABORT-001** / L5 | implemented / verified; PR #333 open | Archive reclamation now contains recover, eligible-plan, and CAS-evict failures per item, continues later work in the same accepted cycle, preserves cancellation, and does not advance its cursor beyond a failed eligible candidate. Covered by the named coordinator regressions. |
 | **READ-001/002/003** | closed (post-audit follow-up) | MCP multi-term session-scoped AND, activity-time `since`, and exact project-or-alias filtering are covered by executable `_repro` tests; this does not close ARCH-001 |
 | **R4-dual-tx / EMB-009** | closed (#223) | Shipped insight backfill writes success vectors and item-failure accounting in one `writer.write`; successful rows set `insights.has_embedding=1`; the shipped-runner `_repro` forces failure accounting to throw and proves vector/flag rollback without changing R4 terminal taxonomy |
 | **MCP-002** | closed (#225) | `get_context`, `tool_analytics`, and `file_activity` now reuse shared list-visible and top-level predicates; shipped-binary `_repro` coverage includes `listContextSessions`, `topToolsSince`, and `fileHotspotsSince`. Existing READ-005 `orphan_status` behavior is unchanged. |
