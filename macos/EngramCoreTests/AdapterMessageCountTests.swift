@@ -4729,6 +4729,79 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - Antigravity
 
+    /// parseSessionInfo called readCache without reportFailures, so an
+    /// oversized Cascade cache returned prefix counts as complete.
+    /// invariant: ADAPTER-PARSEINFO-CAP-001H
+    func testAntigravityOversizedCacheParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cacheDir = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        let file = cacheDir.appendingPathComponent("conv-oversized-info.jsonl")
+        var lines: [[String: Any]] = [
+            [
+                "id": "conv-oversized-info",
+                "title": "Oversized",
+                "createdAt": "2026-08-14T00:00:00.000Z",
+                "updatedAt": "2026-08-14T00:00:04.000Z",
+                "cwd": "/tmp/antigravity-oversized",
+            ],
+        ]
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "role": isUser ? "user" : "assistant",
+                "content": "antigravity info turn \(index)",
+                "timestamp": "2026-08-14T00:00:0\(index).000Z",
+            ])
+        }
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = AntigravityAdapter(
+            cacheDir: cacheDir.path,
+            conversationsDir: root.appendingPathComponent("conversations").path,
+            cliBrainDir: root.appendingPathComponent("brain").path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(failure, .messageLimitExceeded)
+    }
+
+    /// parseSessionInfo called readObjects without reportFailures, so an
+    /// oversized CLI transcript returned prefix counts as complete.
+    /// invariant: ADAPTER-PARSEINFO-CAP-001H
+    func testAntigravityOversizedCLITranscriptParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let brainDir = root.appendingPathComponent("brain", isDirectory: true)
+        let logsDir = brainDir
+            .appendingPathComponent("antigravity-cli-oversized", isDirectory: true)
+            .appendingPathComponent(".system_generated/logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+        let file = logsDir.appendingPathComponent("transcript.jsonl")
+        var lines: [[String: Any]] = []
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "type": isUser ? "USER_INPUT" : "PLANNER_RESPONSE",
+                "created_at": "2026-08-14T00:00:0\(index).000Z",
+                "content": "antigravity cli info turn \(index)",
+            ])
+        }
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = AntigravityAdapter(
+            cacheDir: root.appendingPathComponent("cache").path,
+            conversationsDir: root.appendingPathComponent("conversations").path,
+            cliBrainDir: brainDir.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(failure, .messageLimitExceeded)
+    }
+
     /// R184-3 / ADAPTER-EMPTY-SESSION-001I: a valid Cascade cache header with
     /// no visible turns is terminal rather than a browsable zero-count session.
     func testAntigravityMetadataOnlyCacheIsTerminalNoVisibleMessages_repro() async throws {
