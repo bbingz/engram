@@ -41,7 +41,11 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
             return try parseCLITranscript(locator: locator)
         }
         do {
-            let (metadata, rawMessages, failure) = try CascadeCacheSupport.readCache(locator: locator, limits: limits)
+            let (metadata, rawMessages, failure) = try CascadeCacheSupport.readCache(
+                locator: locator,
+                limits: limits,
+                reportFailures: true
+            )
             if let failure { return .failure(failure) }
             guard let metadata,
                   let id = JSONLAdapterSupport.string(metadata["id"]),
@@ -189,7 +193,11 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
 
     private func parseCLITranscript(locator: String) throws -> AdapterParseResult<NormalizedSessionInfo> {
         do {
-            let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                locator: locator,
+                limits: limits,
+                reportFailures: true
+            )
             if let failure { return .failure(failure) }
 
             var startTime = ""
