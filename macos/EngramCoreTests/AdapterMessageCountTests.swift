@@ -906,6 +906,44 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertTrue(result.truncated)
     }
 
+    /// parseSessionInfo counted every flattened message without the produced
+    /// cap, so an oversized Gemini session returned prefix counts as complete.
+    /// invariant: ADAPTER-PARSEINFO-CAP-001M
+    func testGeminiCliOversizedTranscriptParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("tmp/proj/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        let turns: [[String: Any]] = (0..<4).map { index in
+            [
+                "type": index % 2 == 0 ? "user" : "gemini",
+                "timestamp": "2026-01-01T00:00:0\(index).000Z",
+                "content": "gemini info turn \(index)",
+            ]
+        }
+        let session: [String: Any] = [
+            "sessionId": "g-oversized-info",
+            "startTime": "2026-01-01T00:00:00.000Z",
+            "lastUpdated": "2026-01-01T00:00:04.000Z",
+            "messages": turns,
+        ]
+        let file = chatsDir.appendingPathComponent("session-oversized-info.json")
+        try (try jsonLine(session)).write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = GeminiCliAdapter(
+            tmpRoot: root.appendingPathComponent("tmp").path,
+            projectsFile: root.appendingPathComponent("projects.json").path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        switch try await adapter.parseSessionInfo(locator: file.path) {
+        case .success(let info):
+            XCTFail("oversized parseSessionInfo must fail closed, got counts=\(info.messageCount)")
+        case .failure(let failure):
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
     // MARK: - Iflow
 
     /// parseSessionInfo used readObjects without reportFailures, so an
