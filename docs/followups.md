@@ -145,7 +145,7 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **ADAPTER-TRUNCATION-METADATA-001E** / export P1 remainder | closed (#375) | Copilot checkpoint `index.md` whole-transcript reads report `truncatedAt` / `totalKnownComplete=false` when they exceed `ParserLimits.maxMessages`. Shipped at `main@9cac0311`. |
 | **ADAPTER-TRUNCATION-METADATA-001F** / export P1 remainder | closed (#377) | `RecentlyModifiedSessionAdapter` forwards `streamMessagesWithMetadata` so a recent-scan wrap keeps the base adapter's `truncatedAt` / `totalKnownComplete=false`. Truncation-metadata adapter series complete, including recent-scan wrappers. Shipped at `main@b0d399a0`. |
 | **ADAPTER-INDEX-CAP-001** / export P1 remainder | closed (#379) | Default `scanForIndexing` returns `.messageLimitExceeded` when `streamMessagesWithMetadata` reports truncation, instead of indexing a silently truncated prefix. Shipped at `main@11dfdaaa`. |
-| **ADAPTER-INDEX-FTS-CAP-001** / export P1 remainder | this PR (#381) | FTS drain uses `streamMessagesWithMetadata` and fails closed when the adapter reports truncation, instead of completing keyword coverage on a silent prefix. |
+| **ADAPTER-INDEX-FTS-CAP-001** / export P1 remainder | closed (#381) | FTS drain uses `streamMessagesWithMetadata` and fails closed when the adapter reports truncation, instead of completing keyword coverage on a silent prefix. Shipped at `main@74f5dccf`. |
 | **L-a…L-j** | residual | Remaining Low/Info row from the full-project review: L-h (blocked 1.0.5). L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349, L-j/#353 closed. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
