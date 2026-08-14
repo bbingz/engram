@@ -155,6 +155,7 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **ADAPTER-PARSEINFO-CAP-001E** / export P1 remainder | closed (#395) | CommandCode `parseSessionInfo` passes `reportFailures: true` so an oversized transcript returns `.messageLimitExceeded` instead of prefix counts. Shipped at `main@4d85c959`. Remaining JSONL adapters stay later slices. |
 | **ADAPTER-PARSEINFO-CAP-001F** / export P1 remainder | closed (#397) | Qoder `parseSessionInfo` passes `reportFailures: true` so an oversized transcript returns `.messageLimitExceeded` instead of prefix counts. Shipped at `main@d9f7acfe`. Remaining JSONL adapters stay later slices. |
 | **ADAPTER-PARSEINFO-CAP-001G** / export P1 remainder | closed (#399) | Copilot `parseSessionInfo` passes `reportFailures: true` so an oversized `events.jsonl` returns `.messageLimitExceeded` instead of prefix counts. Shipped at `main@a127abeb`. Remaining JSONL adapters stay later slices (Windsurf, Antigravity). |
+| **ADAPTER-PARSEINFO-CAP-001H** / export P1 remainder | this PR (#401) | Windsurf `parseSessionInfo` called `CascadeCacheSupport.readCache` without `reportFailures`, so an oversized Cascade cache returned prefix counts as complete. |
 | **L-a…L-j** | residual | Remaining Low/Info row from the full-project review: L-h (blocked 1.0.5). L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349, L-j/#353 closed. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
