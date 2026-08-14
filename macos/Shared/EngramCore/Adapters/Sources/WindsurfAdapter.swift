@@ -10,8 +10,16 @@ enum CascadeCacheSupport {
             .sorted()
     }
 
-    static func readCache(locator: String, limits: ParserLimits) throws -> (JSONObject?, [JSONObject], ParserFailure?) {
-        let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
+    static func readCache(
+        locator: String,
+        limits: ParserLimits,
+        reportFailures: Bool = false
+    ) throws -> (JSONObject?, [JSONObject], ParserFailure?) {
+        let (objects, failure) = try JSONLAdapterSupport.readObjects(
+            locator: locator,
+            limits: limits,
+            reportFailures: reportFailures
+        )
         if let failure { return (objects.first, Array(objects.dropFirst()), failure) }
         return (objects.first, Array(objects.dropFirst()), nil)
     }
@@ -70,7 +78,11 @@ final class WindsurfAdapter: SessionAdapter, Sendable {
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
         do {
-            let (metadata, rawMessages, failure) = try CascadeCacheSupport.readCache(locator: locator, limits: limits)
+            let (metadata, rawMessages, failure) = try CascadeCacheSupport.readCache(
+                locator: locator,
+                limits: limits,
+                reportFailures: true
+            )
             if let failure { return .failure(failure) }
             guard let metadata,
                   let id = JSONLAdapterSupport.string(metadata["id"]),

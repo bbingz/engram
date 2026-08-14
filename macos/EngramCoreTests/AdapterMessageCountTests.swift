@@ -4678,6 +4678,40 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - Windsurf
 
+    /// parseSessionInfo called readCache without reportFailures, so an
+    /// oversized Cascade cache returned prefix counts as complete.
+    func testWindsurfOversizedTranscriptParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("conv-oversized-info.jsonl")
+        var lines: [[String: Any]] = [
+            [
+                "id": "conv-oversized-info",
+                "title": "Oversized",
+                "createdAt": "2026-08-14T00:00:00.000Z",
+                "updatedAt": "2026-08-14T00:00:04.000Z",
+                "cwd": "/tmp/windsurf-oversized",
+            ],
+        ]
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "role": isUser ? "user" : "assistant",
+                "content": "windsurf info turn \(index)",
+                "timestamp": "2026-08-14T00:00:0\(index).000Z",
+            ])
+        }
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = WindsurfAdapter(
+            cacheDir: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(failure, .messageLimitExceeded)
+    }
+
     /// R184-3: a valid Windsurf cache header with no user/assistant turns
     /// must be terminal, not a zero-count browsable session.
     func testWindsurfMetadataOnlyCacheIsTerminalNoVisibleMessages_repro() async throws {
