@@ -62,7 +62,11 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
         }
 
         do {
-            let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                locator: locator,
+                limits: limits,
+                reportFailures: true
+            )
             if let failure { return .failure(failure) }
 
             let sessionDirectory = URL(fileURLWithPath: locator).deletingLastPathComponent()

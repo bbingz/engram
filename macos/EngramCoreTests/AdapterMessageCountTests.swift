@@ -3222,6 +3222,41 @@ final class AdapterMessageCountTests: XCTestCase {
         }
     }
 
+    /// parseSessionInfo called readObjects without reportFailures, so an
+    /// oversized events.jsonl returned prefix counts as complete.
+    func testCopilotOversizedTranscriptParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-oversized-info", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        try """
+        id: session-oversized-info
+        cwd: /tmp/copilot-oversized
+        created_at: 2026-08-14T00:00:00.000Z
+        updated_at: 2026-08-14T00:00:03.000Z
+        """.write(to: sessionDir.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+
+        var lines: [[String: Any]] = []
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "type": isUser ? "user.message" : "assistant.message",
+                "timestamp": "2026-08-14T00:00:0\(index).000Z",
+                "data": ["content": "copilot info turn \(index)"],
+            ])
+        }
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(
+            sessionRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: events.path))
+        XCTAssertEqual(failure, .messageLimitExceeded)
+    }
+
     /// Copilot checkpoint indexes inherit SessionAdapter's default
     /// streamMessagesWithMetadata, so an oversized whole-transcript read is
     /// capped without a truncation marker.
