@@ -2531,6 +2531,40 @@ final class AdapterMessageCountTests: XCTestCase {
         )
     }
 
+    /// parseSessionInfo used readObjects without reportFailures, so an
+    /// oversized Claude transcript returned prefix counts as if complete.
+    /// invariant: ADAPTER-PARSEINFO-CAP-001
+    func testClaudeCodeOversizedTranscriptParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("-Users-test-oversized-info", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        var lines: [[String: Any]] = []
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "type": isUser ? "user" : "assistant",
+                "sessionId": "cc-oversized-info",
+                "timestamp": "2026-08-14T00:00:0\(index).000Z",
+                "message": [
+                    "role": isUser ? "user" : "assistant",
+                    "content": [["type": "text", "text": "claude info turn \(index)"]],
+                ],
+            ])
+        }
+        let file = projectDir.appendingPathComponent("oversized-info.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = ClaudeCodeAdapter(
+            projectsRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(failure, .messageLimitExceeded)
+    }
+
     // Runtime-debt repro: Claude metadata-only JSONL is valid session state and
     // must use the existing terminal no-visible contract rather than malformed.
     func testClaudeCodeMetadataOnlyIsTerminalNoVisibleMessages_repro() async throws {

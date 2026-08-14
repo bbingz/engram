@@ -235,7 +235,11 @@ final class ClaudeCodeAdapter: SessionAdapter, TailIndexingSessionAdapter, Modif
             return .failure(.unsupportedVirtualLocator)
         }
         do {
-            let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                locator: locator,
+                limits: limits,
+                reportFailures: true
+            )
             if let failure { return .failure(failure) }
             return Self.sessionInfo(
                 from: objects,
