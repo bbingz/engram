@@ -144,6 +144,9 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
             guard userMessages.count + assistantMessages.count + toolMessages.count > 0 else {
                 return .failure(.noVisibleMessages)
             }
+            if normalizedMessages.count > limits.maxMessages {
+                return .failure(.messageLimitExceeded)
+            }
 
             return .success(
                 NormalizedSessionInfo(
