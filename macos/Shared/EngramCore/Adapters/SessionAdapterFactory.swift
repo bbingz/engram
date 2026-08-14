@@ -213,6 +213,17 @@ public final class RecentlyModifiedSessionAdapter: SessionAdapter {
         try await base.streamMessages(locator: locator, options: options)
     }
 
+    public func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        try await base.streamMessagesWithMetadata(locator: locator, options: options)
+    }
+
+    public func scanForIndexing(locator: String) async throws -> AdapterParseResult<IndexingScan> {
+        try await base.scanForIndexing(locator: locator)
+    }
+
     public func isAccessible(locator: String) async -> Bool {
         await base.isAccessible(locator: locator)
     }
