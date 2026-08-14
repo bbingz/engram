@@ -298,6 +298,33 @@ final class MessageParserTests: XCTestCase {
         XCTAssertEqual(paged.map(\.1), whole.map(\.1))
     }
 
+    /// Iflow streamMessages throws on the message cap, so MessageParser used to
+    /// return nil from the adapter path and parseLegacy loaded the whole file.
+    /// invariant: MESSAGEPARSER-METADATA-001
+    func testIflowOversizedParseUsesAdapterPrefixNotLegacyFullFile_repro() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engram-iflow-parser-cap-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("session-oversized-parse.jsonl")
+
+        let cap = ParserLimits.default.maxMessages
+        var lines: [String] = []
+        lines.reserveCapacity(cap + 1)
+        for index in 0..<(cap + 1) {
+            let role = index % 2 == 0 ? "user" : "assistant"
+            lines.append(
+                #"{"type":"\#(role)","timestamp":"2026-08-14T00:00:00.000Z","message":{"role":"\#(role)","content":"iflow parse turn \#(index)"}}"#
+            )
+        }
+        try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let messages = await MessageParser.parse(filePath: file.path, source: "iflow")
+        XCTAssertEqual(messages.count, cap)
+        XCTAssertEqual(messages.first?.content, "iflow parse turn 0")
+        XCTAssertEqual(messages.last?.content, "iflow parse turn \(cap - 1)")
+    }
+
     /// Adapter path must thread `NormalizedMessage.timestamp` into `ChatMessage`
     /// (row 30 production path). Uses Codex JSONL so the adapter stream is hit
     /// without a Claude profile root. Fails if MessageParser drops the field.
