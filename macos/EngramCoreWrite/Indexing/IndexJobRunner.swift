@@ -241,9 +241,17 @@ public final class IndexJobRunner: StartupIndexJobRunning {
         // keyword coverage. Keep the constant local — ParserLimits is internal to
         // EngramCore.
         let maxMessages = 10_000
-        let stream = try await adapter.streamMessages(locator: source.locator, options: StreamMessagesOptions())
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: source.locator,
+            options: StreamMessagesOptions()
+        )
+        // Fail closed when the adapter already marked a whole-transcript cap so
+        // FTS cannot complete on a silently truncated prefix (Wave 7A L05).
+        if result.truncated {
+            throw ParserFailure.messageLimitExceeded
+        }
         var visibleCount = 0
-        for try await message in stream {
+        for try await message in result.messages {
             guard message.role == .user || message.role == .assistant else { continue }
             let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
