@@ -1456,6 +1456,41 @@ final class AdapterMessageCountTests: XCTestCase {
         try await assertStreamInjectionParity(adapter, locator: file.path, firstUserText: "real Qoder task")
     }
 
+    /// parseSessionInfo used readObjects without reportFailures, so an
+    /// oversized Qoder transcript returned prefix counts as if complete.
+    /// invariant: ADAPTER-PARSEINFO-CAP-001F
+    func testQoderOversizedTranscriptParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("project-oversized", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        var lines: [[String: Any]] = []
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "type": isUser ? "user" : "assistant",
+                "sessionId": "qoder-oversized-info",
+                "cwd": "/tmp/qoder-oversized",
+                "timestamp": "2026-08-14T00:00:0\(index).000Z",
+                "message": [
+                    "role": isUser ? "user" : "assistant",
+                    "content": "qoder info turn \(index)",
+                ],
+            ])
+        }
+        let file = projectDir.appendingPathComponent("qoder-oversized-info.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QoderAdapter(
+            projectsRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(failure, .messageLimitExceeded)
+    }
+
     /// R184-3: injection-only Qoder files must be terminal, not zero-count sessions.
     func testQoderInjectionOnlySessionIsTerminalNoVisibleMessages_repro() async throws {
         let root = tempDir()
