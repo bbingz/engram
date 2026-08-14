@@ -136,7 +136,11 @@ final class QwenAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: locator, limits: limits)
+        let (objects, failure) = try JSONLAdapterSupport.readObjects(
+            locator: locator,
+            limits: limits,
+            reportFailures: true
+        )
         if let failure { throw failure }
         return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(Self.messages(from: objects), options: options))
     }
