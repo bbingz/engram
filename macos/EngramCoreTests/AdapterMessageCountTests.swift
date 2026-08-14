@@ -1600,6 +1600,45 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .messageLimitExceeded)
     }
 
+    /// streamMessages used windowedMessages, which swallows messageLimitExceeded
+    /// and streams a prefix as complete when limit is nil.
+    /// invariant: ADAPTER-STREAM-WHOLE-CAP-001G
+    func testQoderOversizedTranscriptStreamMessagesFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("project-oversized-stream", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        var lines: [[String: Any]] = []
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "type": isUser ? "user" : "assistant",
+                "sessionId": "qoder-oversized-stream",
+                "cwd": "/tmp/qoder-oversized-stream",
+                "timestamp": "2026-08-14T00:00:0\(index).000Z",
+                "message": [
+                    "role": isUser ? "user" : "assistant",
+                    "content": "qoder stream turn \(index)",
+                ],
+            ])
+        }
+        let file = projectDir.appendingPathComponent("qoder-oversized-stream.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QoderAdapter(
+            projectsRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        do {
+            _ = try await drain(adapter, locator: file.path)
+            XCTFail("oversized whole-transcript stream must fail closed")
+        } catch let failure as ParserFailure {
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
     /// R184-3: injection-only Qoder files must be terminal, not zero-count sessions.
     func testQoderInjectionOnlySessionIsTerminalNoVisibleMessages_repro() async throws {
         let root = tempDir()
