@@ -144,7 +144,11 @@ final class WindsurfAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        let (_, rawMessages, failure) = try CascadeCacheSupport.readCache(locator: locator, limits: limits)
+        let (_, rawMessages, failure) = try CascadeCacheSupport.readCache(
+            locator: locator,
+            limits: limits,
+            reportFailures: true
+        )
         if let failure { throw failure }
         let messages = CascadeCacheSupport.normalizedMessages(from: rawMessages)
         return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))

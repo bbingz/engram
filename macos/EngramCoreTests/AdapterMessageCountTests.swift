@@ -4821,6 +4821,45 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .messageLimitExceeded)
     }
 
+    /// streamMessages called readCache without reportFailures, so an
+    /// oversized Cascade cache streamed a prefix as complete.
+    /// invariant: ADAPTER-STREAM-WHOLE-CAP-001C
+    func testWindsurfOversizedTranscriptStreamMessagesFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("conv-oversized-stream.jsonl")
+        var lines: [[String: Any]] = [
+            [
+                "id": "conv-oversized-stream",
+                "title": "Oversized",
+                "createdAt": "2026-08-14T00:00:00.000Z",
+                "updatedAt": "2026-08-14T00:00:04.000Z",
+                "cwd": "/tmp/windsurf-oversized-stream",
+            ],
+        ]
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "role": isUser ? "user" : "assistant",
+                "content": "windsurf stream turn \(index)",
+                "timestamp": "2026-08-14T00:00:0\(index).000Z",
+            ])
+        }
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = WindsurfAdapter(
+            cacheDir: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        do {
+            _ = try await drain(adapter, locator: file.path)
+            XCTFail("oversized whole-transcript stream must fail closed")
+        } catch let failure as ParserFailure {
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
     /// R184-3: a valid Windsurf cache header with no user/assistant turns
     /// must be terminal, not a zero-count browsable session.
     func testWindsurfMetadataOnlyCacheIsTerminalNoVisibleMessages_repro() async throws {
