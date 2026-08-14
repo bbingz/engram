@@ -37,6 +37,52 @@ private final class StubFTSAdapter: SessionAdapter {
     }
 }
 
+/// Reports truncation metadata while still streaming the full message list,
+/// matching adapters that only cap on the metadata path.
+private final class TruncatingFTSAdapter: SessionAdapter {
+    let source: SourceName
+    let messages: [NormalizedMessage]
+    let truncatedAt: Int
+
+    init(source: SourceName, messages: [NormalizedMessage], truncatedAt: Int) {
+        self.source = source
+        self.messages = messages
+        self.truncatedAt = truncatedAt
+    }
+
+    func detect() async -> Bool { true }
+    func listSessionLocators() async throws -> [String] { [] }
+    func isAccessible(locator: String) async -> Bool { true }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .failure(.fileMissing)
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        let messages = self.messages
+        return AsyncThrowingStream { continuation in
+            for message in messages {
+                continuation.yield(message)
+            }
+            continuation.finish()
+        }
+    }
+
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        StreamMessagesResult(
+            messages: try await streamMessages(locator: locator, options: options),
+            totalKnownComplete: false,
+            truncatedAt: truncatedAt
+        )
+    }
+}
+
 private final class ThrowingFTSAdapter: SessionAdapter {
     let source: SourceName
     let error: Error
@@ -260,6 +306,73 @@ final class IndexJobAndMaintenanceTests: XCTestCase {
             ) ?? -1
         }
         XCTAssertEqual(remainingFts, 0)
+    }
+
+    /// FTS drain used streamMessages, so a truncated-and-marked adapter still
+    /// completed the job on a silently incomplete prefix.
+    func testFtsJobFailsClosedWhenAdapterReportsTruncation_repro() async throws {
+        let locator = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fts-truncated-\(UUID().uuidString).jsonl")
+        try Data("{}".utf8).write(to: locator)
+        defer { try? FileManager.default.removeItem(at: locator) }
+
+        let snapshot = AuthoritativeSessionSnapshot(
+            id: "fts-trunc-1",
+            source: .claudeCode,
+            authoritativeNode: "node-a",
+            syncVersion: 1,
+            snapshotHash: "h-trunc",
+            indexedAt: "2026-08-14T12:00:00Z",
+            sourceLocator: locator.path,
+            sizeBytes: 128,
+            startTime: "2026-08-14T11:00:00Z",
+            endTime: nil,
+            cwd: "/repo",
+            project: "demo",
+            model: "claude",
+            messageCount: 4,
+            userMessageCount: 2,
+            assistantMessageCount: 2,
+            toolMessageCount: 0,
+            systemMessageCount: 0,
+            summary: "truncated session",
+            summaryMessageCount: nil,
+            origin: nil,
+            tier: .normal,
+            agentRole: nil,
+            toolCallCounts: [:]
+        )
+
+        try writer.write { db in
+            _ = try SessionBatchUpsert(db: db).upsertBatch([snapshot], reason: .initialScan)
+        }
+
+        let adapter = TruncatingFTSAdapter(
+            source: .claudeCode,
+            messages: [
+                NormalizedMessage(role: .user, content: "turn 0"),
+                NormalizedMessage(role: .assistant, content: "turn 1"),
+                NormalizedMessage(role: .user, content: "turn 2"),
+                NormalizedMessage(role: .assistant, content: "turn 3"),
+            ],
+            truncatedAt: 3
+        )
+        let runner = IndexJobRunner(writer: writer, adapters: [adapter])
+        let summary = try await runner.runRecoverableJobs()
+        XCTAssertEqual(summary.completed, 0)
+        XCTAssertEqual(summary.notApplicable, 1)
+
+        let status = try writer.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT status FROM session_index_jobs WHERE session_id = 'fts-trunc-1' AND job_kind = 'fts'"
+            )
+        }
+        XCTAssertEqual(status, "not_applicable")
+        let ftsCount = try writer.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sessions_fts WHERE session_id = 'fts-trunc-1'") ?? -1
+        }
+        XCTAssertEqual(ftsCount, 0)
     }
 
     func testFtsVersionRebuildSwapsOnlyAfterShadowTableIsComplete() async throws {
