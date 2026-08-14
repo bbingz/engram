@@ -903,6 +903,46 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .messageLimitExceeded)
     }
 
+    /// streamMessages used windowedMessages, which swallows messageLimitExceeded
+    /// and streams a prefix as complete when limit is nil.
+    /// invariant: ADAPTER-STREAM-WHOLE-CAP-001E
+    func testIflowOversizedTranscriptStreamMessagesFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("projects/-Users-test-iflow-oversized-stream", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        var lines: [[String: Any]] = []
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "uuid": "iflow-oversized-stream-\(index)",
+                "sessionId": "iflow-oversized-stream",
+                "timestamp": "2026-08-14T00:00:0\(index).000Z",
+                "type": isUser ? "user" : "assistant",
+                "message": [
+                    "role": isUser ? "user" : "assistant",
+                    "content": "iflow stream turn \(index)",
+                ],
+                "cwd": "/tmp/iflow-oversized-stream",
+            ])
+        }
+        let file = projectDir.appendingPathComponent("session-oversized-stream.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = IflowAdapter(
+            projectsRoot: root.appendingPathComponent("projects").path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        do {
+            _ = try await drain(adapter, locator: file.path)
+            XCTFail("oversized whole-transcript stream must fail closed")
+        } catch let failure as ParserFailure {
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
     // Audit L10: the batch parser already excludes injected wrappers from user
     // counts, so the stream must expose the same record as system rather than user.
     func testIflowStreamClassifiesInjectedWrapperAsSystem_repro() async throws {
