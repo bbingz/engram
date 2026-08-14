@@ -1299,6 +1299,41 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - Qwen
 
+    /// parseSessionInfo used readObjects without reportFailures, so an
+    /// oversized Qwen transcript returned prefix counts as if complete.
+    /// invariant: ADAPTER-PARSEINFO-CAP-001C
+    func testQwenOversizedTranscriptParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("project-oversized/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        var lines: [[String: Any]] = []
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "type": isUser ? "user" : "assistant",
+                "sessionId": "qwen-oversized-info",
+                "cwd": "/tmp/qwen-oversized",
+                "timestamp": "2026-08-14T00:00:0\(index).000Z",
+                "message": [
+                    "role": isUser ? "user" : "model",
+                    "parts": [["text": "qwen info turn \(index)"]],
+                ],
+            ])
+        }
+        let file = chatsDir.appendingPathComponent("qwen-oversized-info.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QwenAdapter(
+            projectsRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(failure, .messageLimitExceeded)
+    }
+
     // Audit L10: Qwen's injected bootstrap prompt is system metadata on both
     // batch and stream paths; the real request remains the first user message.
     func testQwenStreamClassifiesInjectedWrapperAsSystem_repro() async throws {
