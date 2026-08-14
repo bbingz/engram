@@ -136,6 +136,17 @@ final class IflowAdapter: SessionAdapter, Sendable {
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        if options.limit == nil {
+            let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                locator: locator,
+                limits: limits,
+                reportFailures: true
+            )
+            if let failure { throw failure }
+            return JSONLAdapterSupport.stream(
+                JSONLAdapterSupport.applyWindow(objects.compactMap(Self.message(from:)), options: options)
+            )
+        }
         let messages = try JSONLAdapterSupport.windowedMessages(
             locator: locator,
             options: options,
