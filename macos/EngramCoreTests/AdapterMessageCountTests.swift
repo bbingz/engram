@@ -1899,6 +1899,51 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - Codex
 
+    /// parseSessionInfo used readObjects without reportFailures, so an
+    /// oversized Codex transcript returned prefix counts as if complete.
+    /// invariant: ADAPTER-PARSEINFO-CAP-001B
+    func testCodexOversizedTranscriptParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("rollout-codex-oversized-info.jsonl")
+        var lines: [[String: Any]] = [
+            [
+                "timestamp": "2026-08-14T10:00:00.000Z",
+                "type": "session_meta",
+                "payload": [
+                    "id": "codex-oversized-info",
+                    "timestamp": "2026-08-14T10:00:00.000Z",
+                    "cwd": "/tmp/codex-oversized",
+                    "originator": "codex",
+                ],
+            ],
+        ]
+        for index in 0..<3 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "timestamp": "2026-08-14T10:00:0\(index + 1).000Z",
+                "type": "response_item",
+                "payload": [
+                    "type": "message",
+                    "role": isUser ? "user" : "assistant",
+                    "content": [[
+                        "type": isUser ? "input_text" : "output_text",
+                        "text": "codex info turn \(index)",
+                    ]],
+                ],
+            ])
+        }
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CodexAdapter(
+            sessionsRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(failure, .messageLimitExceeded)
+    }
+
     /// R184-3: a session_meta-only Codex file must be terminal, not a
     /// zero-count browsable session.
     func testCodexMetadataOnlySessionIsTerminalNoVisibleMessages_repro() async throws {
