@@ -149,6 +149,7 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **ADAPTER-INDEX-BACKFILL-CAP-001** / export P1 remainder | closed (#383) | Instruction and implementation-beat backfill use `streamMessagesWithMetadata` and fail closed when the adapter reports truncation, instead of writing prefix counts/beats as complete. Shipped at `main@4a63385d`. |
 | **ADAPTER-MCP-FULLREAD-CAP-001** / export P1 remainder | closed (#385) | `MCPTranscriptReader.readMessages` / `readWithAdapterRegistry` throw `.messageLimitExceeded` when the adapter reports truncation, instead of returning a capped prefix as a complete array. Shipped at `main@c52fb157`. |
 | **ADAPTER-PARSEINFO-CAP-001** / export P1 remainder | closed (#387) | Claude `parseSessionInfo` passes `reportFailures: true` so an oversized transcript returns `.messageLimitExceeded` instead of prefix counts. Shipped at `main@eddec1df`. Remaining JSONL adapters stay later slices. |
+| **ADAPTER-PARSEINFO-CAP-001B** / export P1 remainder | this PR (#389) | Codex `parseSessionInfo` called `readObjects` without `reportFailures`, so an oversized transcript returned prefix counts as complete. |
 | **L-a…L-j** | residual | Remaining Low/Info row from the full-project review: L-h (blocked 1.0.5). L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349, L-j/#353 closed. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
