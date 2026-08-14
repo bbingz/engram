@@ -129,6 +129,27 @@ final class EngramMCPExecutableTests: XCTestCase {
         )
     }
 
+    func testFullReadFailsClosedWhenAdapterReportsTruncation_repro() throws {
+        let source = try source("macos/EngramMCP/Core/MCPTranscriptReader.swift")
+
+        XCTAssertTrue(
+            source.contains("static func readMessages(filePath: String, source: String)"),
+            "The unused-looking full-read helper is still a product whole-transcript consumer"
+        )
+        XCTAssertTrue(
+            source.contains("let result = try await adapter.streamMessagesWithMetadata("),
+            "Full reads must use streamMessagesWithMetadata so adapter caps are visible"
+        )
+        XCTAssertTrue(
+            source.contains("if result.truncated {"),
+            "A truncated-and-marked adapter must not become a complete message array"
+        )
+        XCTAssertTrue(
+            source.contains("throw ParserFailure.messageLimitExceeded"),
+            "invariant: ADAPTER-MCP-FULLREAD-CAP-001 — full reads fail closed on truncation"
+        )
+    }
+
     func testStdioToolsCallHasNoSecondarySwitchDispatch_repro() throws {
         let source = try source("macos/EngramMCP/Core/MCPStdioServer.swift")
 

@@ -264,6 +264,13 @@ enum MCPTranscriptReader {
                 locator: filePath,
                 options: StreamMessagesOptions()
             )
+            // Whole-transcript full reads must not return a capped prefix as if
+            // the session were complete. get_session paging uses fullScanPage
+            // and already surfaces truncatedAt; this helper is the remaining
+            // uncapped consumer.
+            if result.truncated {
+                throw ParserFailure.messageLimitExceeded
+            }
             let stream = result.messages
             var messages: [MCPTranscriptMessage] = []
             for try await message in stream {
