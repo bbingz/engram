@@ -867,6 +867,42 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - Iflow
 
+    /// parseSessionInfo used readObjects without reportFailures, so an
+    /// oversized Iflow transcript returned prefix counts as if complete.
+    /// invariant: ADAPTER-PARSEINFO-CAP-001D
+    func testIflowOversizedTranscriptParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("projects/-Users-test-iflow-oversized", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        var lines: [[String: Any]] = []
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "uuid": "iflow-oversized-\(index)",
+                "sessionId": "iflow-oversized-info",
+                "timestamp": "2026-08-14T00:00:0\(index).000Z",
+                "type": isUser ? "user" : "assistant",
+                "message": [
+                    "role": isUser ? "user" : "assistant",
+                    "content": "iflow info turn \(index)",
+                ],
+                "cwd": "/tmp/iflow-oversized",
+            ])
+        }
+        let file = projectDir.appendingPathComponent("session-oversized-info.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = IflowAdapter(
+            projectsRoot: root.appendingPathComponent("projects").path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(failure, .messageLimitExceeded)
+    }
+
     // Audit L10: the batch parser already excludes injected wrappers from user
     // counts, so the stream must expose the same record as system rather than user.
     func testIflowStreamClassifiesInjectedWrapperAsSystem_repro() async throws {

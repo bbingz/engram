@@ -151,6 +151,7 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **ADAPTER-PARSEINFO-CAP-001** / export P1 remainder | closed (#387) | Claude `parseSessionInfo` passes `reportFailures: true` so an oversized transcript returns `.messageLimitExceeded` instead of prefix counts. Shipped at `main@eddec1df`. Remaining JSONL adapters stay later slices. |
 | **ADAPTER-PARSEINFO-CAP-001B** / export P1 remainder | closed (#389) | Codex `parseSessionInfo` passes `reportFailures: true` so an oversized transcript returns `.messageLimitExceeded` instead of prefix counts. Shipped at `main@57979e46`. Remaining JSONL adapters stay later slices. |
 | **ADAPTER-PARSEINFO-CAP-001C** / export P1 remainder | closed (#391) | Qwen `parseSessionInfo` passes `reportFailures: true` so an oversized transcript returns `.messageLimitExceeded` instead of prefix counts. Shipped at `main@f022de0b`. Remaining JSONL adapters stay later slices. |
+| **ADAPTER-PARSEINFO-CAP-001D** / export P1 remainder | this PR | Iflow `parseSessionInfo` called `readObjects` without `reportFailures`, so an oversized transcript returned prefix counts as complete. |
 | **L-a…L-j** | residual | Remaining Low/Info row from the full-project review: L-h (blocked 1.0.5). L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349, L-j/#353 closed. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
