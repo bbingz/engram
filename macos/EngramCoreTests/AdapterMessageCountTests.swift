@@ -4425,6 +4425,24 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertTrue(result.truncated)
     }
 
+    /// parseSessionInfo counted every visible bubble without the produced cap,
+    /// so an oversized Cursor composer returned prefix counts as complete.
+    /// invariant: ADAPTER-PARSEINFO-CAP-001N
+    func testCursorOversizedTranscriptParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorOversizedFixture(dbPath: dbPath)
+
+        let adapter = CursorAdapter(dbPath: dbPath, limits: ParserLimits(maxMessages: 3))
+        switch try await adapter.parseSessionInfo(locator: "\(dbPath)?composer=cmp_oversize") {
+        case .success(let info):
+            XCTFail("oversized parseSessionInfo must fail closed, got counts=\(info.messageCount)")
+        case .failure(let failure):
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
     // Audit CURSOR-CONTENT-001: empty/whitespace text must not shadow non-empty rawText.
     func testCursorFallsBackToRawTextWhenTextIsEmpty_repro() async throws {
         let root = tempDir()

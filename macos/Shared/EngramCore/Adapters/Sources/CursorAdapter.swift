@@ -100,6 +100,9 @@ final class CursorAdapter: SessionAdapter, Sendable {
             guard userCount + assistantCount > 0 else {
                 return .failure(.noVisibleMessages)
             }
+            if userCount + assistantCount > limits.maxMessages {
+                return .failure(.messageLimitExceeded)
+            }
 
             return .success(
                 NormalizedSessionInfo(
