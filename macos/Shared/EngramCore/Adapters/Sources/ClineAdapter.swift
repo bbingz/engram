@@ -41,6 +41,9 @@ final class ClineAdapter: SessionAdapter, Sendable {
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
         do {
             let messages = try Phase4AdapterSupport.readJSONArray(locator: locator, limits: limits)
+            if Self.messages(from: messages).count > limits.maxMessages {
+                return .failure(.messageLimitExceeded)
+            }
             guard let first = messages.first,
                   let firstTimestamp = Phase4AdapterSupport.double(first["ts"])
             else {
