@@ -4454,6 +4454,38 @@ final class AdapterMessageCountTests: XCTestCase {
 
     // MARK: - CommandCode
 
+    /// parseSessionInfo used readObjects without reportFailures, so an
+    /// oversized CommandCode transcript returned prefix counts as if complete.
+    /// invariant: ADAPTER-PARSEINFO-CAP-001E
+    func testCommandCodeOversizedTranscriptParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("-Users-test-commandcode-oversized", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        var lines: [[String: Any]] = []
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "role": isUser ? "user" : "assistant",
+                "sessionId": "commandcode-oversized-info",
+                "cwd": "/tmp/commandcode-oversized",
+                "timestamp": "2026-08-14T00:00:0\(index).000Z",
+                "content": [["type": "text", "text": "commandcode info turn \(index)"]],
+            ])
+        }
+        let file = projectDir.appendingPathComponent("commandcode-oversized-info.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CommandCodeAdapter(
+            projectsRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: file.path))
+        XCTAssertEqual(failure, .messageLimitExceeded)
+    }
+
     // Audit L10: CommandCode's batch parser classifies injected wrappers as
     // system, and the streamed role must preserve that classification.
     func testCommandCodeStreamClassifiesInjectedWrapperAsSystem_repro() async throws {
