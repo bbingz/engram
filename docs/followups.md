@@ -148,7 +148,7 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **ADAPTER-INDEX-FTS-CAP-001** / export P1 remainder | closed (#381) | FTS drain uses `streamMessagesWithMetadata` and fails closed when the adapter reports truncation, instead of completing keyword coverage on a silent prefix. Shipped at `main@74f5dccf`. |
 | **ADAPTER-INDEX-BACKFILL-CAP-001** / export P1 remainder | closed (#383) | Instruction and implementation-beat backfill use `streamMessagesWithMetadata` and fail closed when the adapter reports truncation, instead of writing prefix counts/beats as complete. Shipped at `main@4a63385d`. |
 | **ADAPTER-MCP-FULLREAD-CAP-001** / export P1 remainder | closed (#385) | `MCPTranscriptReader.readMessages` / `readWithAdapterRegistry` throw `.messageLimitExceeded` when the adapter reports truncation, instead of returning a capped prefix as a complete array. Shipped at `main@c52fb157`. |
-| **ADAPTER-PARSEINFO-CAP-001** / export P1 remainder | this PR | Claude `parseSessionInfo` called `readObjects` without `reportFailures`, so an oversized transcript returned prefix counts as complete. |
+| **ADAPTER-PARSEINFO-CAP-001** / export P1 remainder | this PR (#387) | Claude `parseSessionInfo` called `readObjects` without `reportFailures`, so an oversized transcript returned prefix counts as complete. |
 | **L-a…L-j** | residual | Remaining Low/Info row from the full-project review: L-h (blocked 1.0.5). L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349, L-j/#353 closed. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
