@@ -850,8 +850,14 @@ public extension EngramDatabaseWriter {
         var seenInstructionKeys: Set<String> = []
 
         do {
-            let stream = try await adapter.streamMessages(locator: locator, options: StreamMessagesOptions())
-            for try await message in stream {
+            let result = try await adapter.streamMessagesWithMetadata(
+                locator: locator,
+                options: StreamMessagesOptions()
+            )
+            if result.truncated {
+                throw ParserFailure.messageLimitExceeded
+            }
+            for try await message in result.messages {
                 guard message.role == .user else { continue }
                 let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !content.isEmpty, !Self.isSystemInjection(content) else { continue }
@@ -890,8 +896,14 @@ public extension EngramDatabaseWriter {
         var messages: [NormalizedMessage] = []
 
         do {
-            let stream = try await adapter.streamMessages(locator: candidate.locator, options: StreamMessagesOptions())
-            for try await message in stream {
+            let result = try await adapter.streamMessagesWithMetadata(
+                locator: candidate.locator,
+                options: StreamMessagesOptions()
+            )
+            if result.truncated {
+                throw ParserFailure.messageLimitExceeded
+            }
+            for try await message in result.messages {
                 guard message.role == .user || message.role == .assistant else { continue }
                 let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !content.isEmpty else { continue }

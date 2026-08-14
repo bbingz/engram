@@ -1107,6 +1107,108 @@ final class IndexerParityTests: XCTestCase {
         XCTAssertEqual(row?["instruction_summary"] as String?, "Fix login bug")
     }
 
+    /// Instruction backfill used streamMessages, so a truncated-and-marked
+    /// adapter still wrote prefix instruction_count as if the transcript was
+    /// complete. invariant: ADAPTER-INDEX-BACKFILL-CAP-001
+    func testInstructionBackfillFailsClosedWhenAdapterReportsTruncation_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("instruction-backfill-truncated-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("rollout-2026-08-14T00-00-00-truncated.jsonl")
+        try "hello\n".write(to: locator, atomically: true, encoding: .utf8)
+        let size = try XCTUnwrap(FileIndexStat.directFileStat(locator: locator.path)).sizeBytes
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(
+                    id: "instruction-trunc",
+                    sourceLocator: locator.path,
+                    sizeBytes: size,
+                    authoritativeNode: "local"
+                )
+            )
+            try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE session_id = 'instruction-trunc'")
+        }
+        let adapter = TruncatingSyntheticFileSessionAdapter(
+            locator: locator.path,
+            sessionId: "instruction-trunc",
+            userContent: "Fix login bug"
+        )
+
+        let result = try await writer.indexInstructionBackfillSessions(adapters: [adapter])
+        let row = try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT instruction_count, human_turn_count, instruction_summary
+                FROM sessions
+                WHERE id = 'instruction-trunc'
+                """
+            )
+        }
+
+        XCTAssertEqual(result.indexed, 1)
+        XCTAssertEqual(adapter.streamCount, 1)
+        XCTAssertEqual(row?["instruction_count"] as Int?, 0)
+        XCTAssertNil(row?["human_turn_count"] as Int?)
+        XCTAssertNil(row?["instruction_summary"] as String?)
+    }
+
+    /// Implementation-beat backfill used streamMessages, so a truncated-and-marked
+    /// adapter still persisted prefix beats. invariant: ADAPTER-INDEX-BACKFILL-CAP-001
+    func testImplementationBeatBackfillFailsClosedWhenAdapterReportsTruncation_repro() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("implementation-backfill-truncated-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let locator = root.appendingPathComponent("rollout-2026-08-14T10-00-00-work-trunc.jsonl")
+        try "hello\n".write(to: locator, atomically: true, encoding: .utf8)
+        let size = try XCTUnwrap(FileIndexStat.directFileStat(locator: locator.path)).sizeBytes
+        try writer.write { db in
+            let snapshotWriter = SessionSnapshotWriter(db: db)
+            _ = try snapshotWriter.writeAuthoritativeSnapshot(
+                makeSnapshot(
+                    id: "work-trunc",
+                    sourceLocator: locator.path,
+                    sizeBytes: size,
+                    authoritativeNode: "local",
+                    startTime: "2026-08-14T10:00:00Z",
+                    instructionCount: 1,
+                    humanTurnCount: 1,
+                    instructionSummary: "实现项目变更时间线第一版"
+                )
+            )
+            try db.execute(sql: "UPDATE session_index_jobs SET status = 'completed' WHERE session_id = 'work-trunc'")
+        }
+        let adapter = TruncatingSyntheticFileSessionAdapter(
+            locator: locator.path,
+            sessionId: "work-trunc",
+            userContent: "实现项目变更时间线第一版",
+            assistantContent: """
+            结果
+            已完成第一版项目变更时间线。
+
+            验证结果
+            checks run: targeted tests
+            """
+        )
+
+        let result = try await writer.indexImplementationBeatBackfillSessions(adapters: [adapter])
+        let beatCount = try writer.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM session_work_beats WHERE session_id = 'work-trunc'"
+            ) ?? -1
+        }
+
+        XCTAssertEqual(result.indexed, 0)
+        XCTAssertEqual(adapter.streamCount, 1)
+        XCTAssertEqual(beatCount, 0)
+    }
+
     func testRecentModifiedAdapterOnlyIndexesRecentlyTouchedLocators() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("recent-active-\(UUID().uuidString)", isDirectory: true)
@@ -2799,6 +2901,62 @@ private final class CountingSyntheticFileSessionAdapter: SessionAdapter {
 
     func isAccessible(locator: String) async -> Bool {
         FileManager.default.fileExists(atPath: locator)
+    }
+}
+
+/// Reports truncation metadata while still streaming a complete-looking prefix,
+/// matching adapters that only cap on the metadata path.
+private final class TruncatingSyntheticFileSessionAdapter: SessionAdapter {
+    let source: SourceName = .codex
+    let locator: String
+    let sessionId: String
+    let userContent: String
+    let assistantContent: String
+    var streamCount = 0
+
+    init(
+        locator: String,
+        sessionId: String,
+        userContent: String,
+        assistantContent: String = "done"
+    ) {
+        self.locator = locator
+        self.sessionId = sessionId
+        self.userContent = userContent
+        self.assistantContent = assistantContent
+    }
+
+    func detect() async -> Bool { true }
+    func listSessionLocators() async throws -> [String] { [] }
+    func isAccessible(locator: String) async -> Bool {
+        FileManager.default.fileExists(atPath: locator)
+    }
+
+    func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
+        .failure(.fileMissing)
+    }
+
+    func streamMessages(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
+        streamCount += 1
+        return AsyncThrowingStream { continuation in
+            continuation.yield(NormalizedMessage(role: .user, content: userContent))
+            continuation.yield(NormalizedMessage(role: .assistant, content: assistantContent))
+            continuation.finish()
+        }
+    }
+
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        StreamMessagesResult(
+            messages: try await streamMessages(locator: locator, options: options),
+            totalKnownComplete: false,
+            truncatedAt: 10_000
+        )
     }
 }
 
