@@ -108,6 +108,17 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
         if isCLITranscript(locator) {
+            if options.limit == nil {
+                let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                    locator: locator,
+                    limits: limits,
+                    reportFailures: true
+                )
+                if let failure { throw failure }
+                return JSONLAdapterSupport.stream(
+                    JSONLAdapterSupport.applyWindow(objects.compactMap(Self.cliMessage(from:)), options: options)
+                )
+            }
             let messages = try JSONLAdapterSupport.windowedMessages(
                 locator: locator,
                 options: options,
@@ -116,7 +127,11 @@ final class AntigravityAdapter: SessionAdapter, Sendable {
             )
             return JSONLAdapterSupport.stream(messages)
         }
-        let (_, rawMessages, failure) = try CascadeCacheSupport.readCache(locator: locator, limits: limits)
+        let (_, rawMessages, failure) = try CascadeCacheSupport.readCache(
+            locator: locator,
+            limits: limits,
+            reportFailures: true
+        )
         if let failure { throw failure }
         let messages = CascadeCacheSupport.normalizedMessages(from: rawMessages)
         return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))

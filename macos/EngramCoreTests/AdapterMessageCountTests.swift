@@ -4950,6 +4950,87 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .messageLimitExceeded)
     }
 
+    /// streamMessages called readCache without reportFailures, so an
+    /// oversized Cascade cache streamed a prefix as complete.
+    /// invariant: ADAPTER-STREAM-WHOLE-CAP-001D
+    func testAntigravityOversizedCacheStreamMessagesFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cacheDir = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        let file = cacheDir.appendingPathComponent("conv-oversized-stream.jsonl")
+        var lines: [[String: Any]] = [
+            [
+                "id": "conv-oversized-stream",
+                "title": "Oversized",
+                "createdAt": "2026-08-14T00:00:00.000Z",
+                "updatedAt": "2026-08-14T00:00:04.000Z",
+                "cwd": "/tmp/antigravity-oversized-stream",
+            ],
+        ]
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "role": isUser ? "user" : "assistant",
+                "content": "antigravity stream turn \(index)",
+                "timestamp": "2026-08-14T00:00:0\(index).000Z",
+            ])
+        }
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = AntigravityAdapter(
+            cacheDir: cacheDir.path,
+            conversationsDir: root.appendingPathComponent("conversations").path,
+            cliBrainDir: root.appendingPathComponent("brain").path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        do {
+            _ = try await drain(adapter, locator: file.path)
+            XCTFail("oversized whole-transcript stream must fail closed")
+        } catch let failure as ParserFailure {
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
+    /// streamMessages used windowedMessages, which swallows messageLimitExceeded
+    /// and streams a prefix as complete when limit is nil.
+    /// invariant: ADAPTER-STREAM-WHOLE-CAP-001D
+    func testAntigravityOversizedCLITranscriptStreamMessagesFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let brainDir = root.appendingPathComponent("brain", isDirectory: true)
+        let logsDir = brainDir
+            .appendingPathComponent("antigravity-cli-oversized-stream", isDirectory: true)
+            .appendingPathComponent(".system_generated/logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+        let file = logsDir.appendingPathComponent("transcript.jsonl")
+        var lines: [[String: Any]] = []
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "type": isUser ? "USER_INPUT" : "PLANNER_RESPONSE",
+                "created_at": "2026-08-14T00:00:0\(index).000Z",
+                "content": "antigravity cli stream turn \(index)",
+            ])
+        }
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = AntigravityAdapter(
+            cacheDir: root.appendingPathComponent("cache").path,
+            conversationsDir: root.appendingPathComponent("conversations").path,
+            cliBrainDir: brainDir.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        do {
+            _ = try await drain(adapter, locator: file.path)
+            XCTFail("oversized whole-transcript stream must fail closed")
+        } catch let failure as ParserFailure {
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
     /// R184-3 / ADAPTER-EMPTY-SESSION-001I: a valid Cascade cache header with
     /// no visible turns is terminal rather than a browsable zero-count session.
     func testAntigravityMetadataOnlyCacheIsTerminalNoVisibleMessages_repro() async throws {
