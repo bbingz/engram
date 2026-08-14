@@ -4705,6 +4705,42 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .messageLimitExceeded)
     }
 
+    /// streamMessages used windowedMessages, which swallows messageLimitExceeded
+    /// and streams a prefix as complete when limit is nil.
+    /// invariant: ADAPTER-STREAM-WHOLE-CAP-001F
+    func testCommandCodeOversizedTranscriptStreamMessagesFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectDir = root.appendingPathComponent("-Users-test-commandcode-oversized-stream", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+
+        var lines: [[String: Any]] = []
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "role": isUser ? "user" : "assistant",
+                "sessionId": "commandcode-oversized-stream",
+                "cwd": "/tmp/commandcode-oversized-stream",
+                "timestamp": "2026-08-14T00:00:0\(index).000Z",
+                "content": [["type": "text", "text": "commandcode stream turn \(index)"]],
+            ])
+        }
+        let file = projectDir.appendingPathComponent("commandcode-oversized-stream.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = CommandCodeAdapter(
+            projectsRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        do {
+            _ = try await drain(adapter, locator: file.path)
+            XCTFail("oversized whole-transcript stream must fail closed")
+        } catch let failure as ParserFailure {
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
     // Audit L10: CommandCode's batch parser classifies injected wrappers as
     // system, and the streamed role must preserve that classification.
     func testCommandCodeStreamClassifiesInjectedWrapperAsSystem_repro() async throws {
