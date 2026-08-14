@@ -166,7 +166,8 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **ADAPTER-STREAM-WHOLE-CAP-001F** / export P1 remainder | closed (#417) | CommandCode `streamMessages` fails closed on oversized whole-transcript reads. Shipped at `main@f803b103`. |
 | **ADAPTER-STREAM-WHOLE-CAP-001G** / export P1 remainder | closed (#419) | Qoder `streamMessages` fails closed on oversized whole-transcript reads. Shipped at `main@ad8dce65`. Windowed-message stream-cap series complete. Claude/Codex `streamMessages` stay truncate-and-succeed per #39. |
 | **MESSAGEPARSER-METADATA-001** / #39 | closed (#420) | `MessageParser.adapterMessages` uses `streamMessagesWithMetadata` so Iflow/CommandCode/Qoder cap throws keep the bounded prefix instead of uncapped `parseLegacy`. Shipped at `main@caf02275`. |
-| **ADAPTER-PARSEINFO-CAP-001K** / export P1 remainder | this PR (#421) | Cline `parseSessionInfo` used the uncapped JSON array, so an oversized `ui_messages.json` returned prefix counts as complete. Remaining JSON-array adapters stay later slices. |
+| **ADAPTER-PARSEINFO-CAP-001K** / export P1 remainder | closed (#421) | Cline `parseSessionInfo` fails closed when produced messages exceed `ParserLimits.maxMessages`. Shipped at `main@5c21a00d`. Remaining JSON-array adapters: VS Code, Gemini, Cursor, OpenCode. |
+| **ADAPTER-PARSEINFO-CAP-001L** / export P1 remainder | this PR | VS Code `parseSessionInfo` counted every request without the produced-message cap, so an oversized chat session returned prefix counts as complete. Remaining JSON-array adapters stay later slices. |
 | **L-a…L-j** | residual | Remaining Low/Info row from the full-project review: L-h (blocked 1.0.5). L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349, L-j/#353 closed. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 

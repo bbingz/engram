@@ -167,6 +167,47 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertTrue(result.truncated)
     }
 
+    /// parseSessionInfo counted every request without the produced-message cap,
+    /// so an oversized VS Code session returned prefix counts as complete.
+    /// invariant: ADAPTER-PARSEINFO-CAP-001L
+    func testVsCodeOversizedTranscriptParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatDir = root.appendingPathComponent("ws-oversized-info/chatSessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatDir, withIntermediateDirectories: true)
+
+        let requests: [[String: Any]] = (0..<4).map { index in
+            [
+                "timestamp": 1_700_000_000_000 + index * 1_000,
+                "message": ["text": "vs info question \(index)"],
+                "response": [
+                    ["value": ["kind": "markdownContent", "content": ["value": "vs info answer \(index)"]]],
+                ],
+            ]
+        }
+        let session: [String: Any] = [
+            "kind": 0,
+            "v": [
+                "sessionId": "vs-oversized-info",
+                "creationDate": 1_700_000_000_000,
+                "requests": requests,
+            ],
+        ]
+        let file = chatDir.appendingPathComponent("oversized-info.jsonl")
+        try (try jsonLine(session) + "\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = VsCodeAdapter(
+            workspaceStorageDir: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        switch try await adapter.parseSessionInfo(locator: file.path) {
+        case .success(let info):
+            XCTFail("oversized parseSessionInfo must fail closed, got counts=\(info.messageCount)")
+        case .failure(let failure):
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
     // Audit L24: one stable corrupt request must not poison the valid requests
     // and leave the unchanged locator on the malformed-JSON retry schedule.
     func testVsCodePartiallyCorruptRequestsDoNotEnterRetryLoop_repro() async throws {

@@ -56,6 +56,9 @@ final class VsCodeAdapter: SessionAdapter, Sendable {
             guard !userTexts.isEmpty || !assistantTexts.isEmpty else {
                 return .failure(.noVisibleMessages)
             }
+            if userTexts.count + assistantTexts.count > limits.maxMessages {
+                return .failure(.messageLimitExceeded)
+            }
             let lastTimestamp = Phase4AdapterSupport.double(requestObjects.last?["timestamp"])
             let sessionId = JSONLAdapterSupport.string(session["sessionId"]) ??
                 URL(fileURLWithPath: locator).deletingPathExtension().lastPathComponent
