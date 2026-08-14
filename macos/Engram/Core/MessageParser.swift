@@ -175,10 +175,16 @@ struct MessageParser {
         options: StreamMessagesOptions
     ) async -> (messages: [ChatMessage], producedCount: Int)? {
         do {
-            let stream = try await adapter.streamMessages(locator: locator, options: options)
+            // Metadata path truncate-and-succeeds on the message cap. Using
+            // streamMessages would throw for Iflow/CommandCode/Qoder and fall
+            // through to uncapped parseLegacy (#39).
+            let result = try await adapter.streamMessagesWithMetadata(
+                locator: locator,
+                options: options
+            )
             var messages: [ChatMessage] = []
             var produced = 0
-            for try await message in stream {
+            for try await message in result.messages {
                 // Count PRE-filter (adapter-produced) messages so a caller paging
                 // in produced-message space can advance offset correctly even when
                 // role filtering drops tool messages from `messages`.
