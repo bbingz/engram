@@ -2966,6 +2966,52 @@ final class AdapterMessageCountTests: XCTestCase {
         }
     }
 
+    /// Copilot checkpoint indexes inherit SessionAdapter's default
+    /// streamMessagesWithMetadata, so an oversized whole-transcript read is
+    /// capped without a truncation marker.
+    func testCopilotOversizedCheckpointReportsTruncation_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-oversize-cp", isDirectory: true)
+        let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpointsDir, withIntermediateDirectories: true)
+        try """
+        id: session-oversize-cp
+        cwd: /tmp/copilot-oversize
+        created_at: 2026-08-14T00:00:00.000Z
+        updated_at: 2026-08-14T00:00:04.000Z
+        """.write(to: sessionDir.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        var table = """
+        # Checkpoint History
+
+        | # | Title | File |
+        |---|-------|------|
+        """
+        for index in 1...4 {
+            table += "\n| \(index) | copilot checkpoint \(index) | |"
+        }
+        let checkpointIndex = checkpointsDir.appendingPathComponent("index.md")
+        try table.write(to: checkpointIndex, atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(
+            sessionRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: checkpointIndex.path,
+            options: StreamMessagesOptions()
+        )
+        var streamed: [NormalizedMessage] = []
+        for try await message in result.messages {
+            streamed.append(message)
+        }
+
+        XCTAssertEqual(streamed.count, 3)
+        XCTAssertEqual(result.truncatedAt, 3)
+        XCTAssertFalse(result.totalKnownComplete)
+        XCTAssertTrue(result.truncated)
+    }
+
     // Audit COPILOT-AUX-001: workspace.yaml mtime must keep the session in the
     // recent set when the main locator and session-directory mtimes are stale.
     func testCopilotRecentScanTracksAuxiliaryFiles_repro() async throws {

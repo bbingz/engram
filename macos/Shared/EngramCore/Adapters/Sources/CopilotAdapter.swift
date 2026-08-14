@@ -152,14 +152,10 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
         if Self.isCheckpointIndex(locator) {
-            let checkpointIndexURL = URL(fileURLWithPath: locator)
-            let messages = Self.checkpointEntries(checkpointIndexURL, limits: limits).map { entry in
-                NormalizedMessage(
-                    role: .system,
-                    content: Self.checkpointMessageContent(entry, checkpointIndexURL: checkpointIndexURL, limits: limits),
-                    timestamp: nil
-                )
-            }
+            let messages = Self.checkpointMessages(
+                locator: locator,
+                limits: limits
+            )
             return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
         }
 
@@ -184,7 +180,26 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> StreamMessagesResult {
-        if Self.isCheckpointIndex(locator) || options.limit != nil {
+        if Self.isCheckpointIndex(locator) {
+            let messages = Self.checkpointMessages(
+                locator: locator,
+                limits: limits
+            )
+            // Checkpoint indexes inherit the default wrapper unless this
+            // whole-transcript cap is marked.
+            let truncatedAt = options.limit == nil && messages.count > limits.maxMessages
+                ? limits.maxMessages
+                : nil
+            let bounded = truncatedAt == nil
+                ? JSONLAdapterSupport.applyWindow(messages, options: options)
+                : Array(messages.prefix(limits.maxMessages))
+            return StreamMessagesResult(
+                messages: JSONLAdapterSupport.stream(bounded),
+                totalKnownComplete: truncatedAt == nil,
+                truncatedAt: truncatedAt
+            )
+        }
+        if options.limit != nil {
             return StreamMessagesResult(messages: try await streamMessages(locator: locator, options: options))
         }
         let result = try JSONLAdapterSupport.wholeDocumentMessagesWithMetadata(
@@ -417,6 +432,24 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
         let url = URL(fileURLWithPath: locator)
         return url.lastPathComponent == "index.md"
             && url.deletingLastPathComponent().lastPathComponent == "checkpoints"
+    }
+
+    private static func checkpointMessages(
+        locator: String,
+        limits: ParserLimits
+    ) -> [NormalizedMessage] {
+        let checkpointIndexURL = URL(fileURLWithPath: locator)
+        return checkpointEntries(checkpointIndexURL, limits: limits).map { entry in
+            NormalizedMessage(
+                role: .system,
+                content: checkpointMessageContent(
+                    entry,
+                    checkpointIndexURL: checkpointIndexURL,
+                    limits: limits
+                ),
+                timestamp: nil
+            )
+        }
     }
 
     private static func hasCheckpointEntries(_ url: URL, limits: ParserLimits) -> Bool {
