@@ -1826,6 +1826,34 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertTrue(result.truncated)
     }
 
+    /// Default scanForIndexing streamed uncapped messages, so an oversized
+    /// Cline session indexed a prefix as if the transcript were complete.
+    func testClineOversizedTranscriptScanForIndexingFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskDir = root.appendingPathComponent("oversized-scan", isDirectory: true)
+        try FileManager.default.createDirectory(at: taskDir, withIntermediateDirectories: true)
+        let file = taskDir.appendingPathComponent("ui_messages.json")
+        var rows: [[String: Any]] = []
+        for index in 0..<4 {
+            rows.append([
+                "ts": 1_771_392_000_000 + index * 1_000,
+                "type": "say",
+                "say": index % 2 == 0 ? "task" : "text",
+                "text": "cline scan turn \(index)",
+            ])
+        }
+        try JSONSerialization.data(withJSONObject: rows, options: [.withoutEscapingSlashes])
+            .write(to: file)
+
+        let adapter = ClineAdapter(
+            tasksRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let failure = try parseFailure(await adapter.scanForIndexing(locator: file.path))
+        XCTAssertEqual(failure, .messageLimitExceeded)
+    }
+
     /// RecentlyModifiedSessionAdapter inherited SessionAdapter's default
     /// streamMessagesWithMetadata, so a recent-scan wrap dropped the base
     /// adapter's truncatedAt marker.

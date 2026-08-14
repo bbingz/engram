@@ -363,9 +363,17 @@ public extension SessionAdapter {
         case .failure(let failure):
             return .failure(failure)
         case .success(let info):
+            // Use the metadata path so adapter-owned maxMessages caps fail
+            // closed instead of indexing a silently truncated prefix.
+            let result = try await streamMessagesWithMetadata(
+                locator: locator,
+                options: StreamMessagesOptions()
+            )
+            if result.truncated {
+                return .failure(.messageLimitExceeded)
+            }
             var messages: [NormalizedMessage] = []
-            let stream = try await streamMessages(locator: locator, options: StreamMessagesOptions())
-            for try await message in stream {
+            for try await message in result.messages {
                 messages.append(message)
             }
             return .success(IndexingScan(info: info, messages: messages))
