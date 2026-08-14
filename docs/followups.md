@@ -168,7 +168,8 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **MESSAGEPARSER-METADATA-001** / #39 | closed (#420) | `MessageParser.adapterMessages` uses `streamMessagesWithMetadata` so Iflow/CommandCode/Qoder cap throws keep the bounded prefix instead of uncapped `parseLegacy`. Shipped at `main@caf02275`. |
 | **ADAPTER-PARSEINFO-CAP-001K** / export P1 remainder | closed (#421) | Cline `parseSessionInfo` fails closed when produced messages exceed `ParserLimits.maxMessages`. Shipped at `main@5c21a00d`. Remaining JSON-array adapters: VS Code, Gemini, Cursor, OpenCode. |
 | **ADAPTER-PARSEINFO-CAP-001L** / export P1 remainder | closed (#422) | VS Code `parseSessionInfo` fails closed when produced messages exceed `ParserLimits.maxMessages`. Shipped at `main@2b7ab948`. Remaining JSON-array adapters: Gemini, Cursor, OpenCode. |
-| **ADAPTER-PARSEINFO-CAP-001M** / export P1 remainder | this PR (#423) | Gemini CLI `parseSessionInfo` counted every flattened message without the produced cap, so an oversized session returned prefix counts as complete. Remaining JSON-array adapters stay later slices. |
+| **ADAPTER-PARSEINFO-CAP-001M** / export P1 remainder | closed (#423) | Gemini CLI `parseSessionInfo` fails closed when produced messages exceed `ParserLimits.maxMessages`. Shipped at `main@d23cd2b3`. Remaining JSON-array adapters: Cursor, OpenCode. |
+| **ADAPTER-PARSEINFO-CAP-001N** / export P1 remainder | this PR (#424) | Cursor `parseSessionInfo` counted every visible bubble without the produced cap, so an oversized composer returned prefix counts as complete. Remaining JSON-array adapter: OpenCode. |
 | **L-a…L-j** | residual | Remaining Low/Info row from the full-project review: L-h (blocked 1.0.5). L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349, L-j/#353 closed. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
