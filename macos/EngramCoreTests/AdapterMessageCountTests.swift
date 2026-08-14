@@ -3287,6 +3287,46 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .messageLimitExceeded)
     }
 
+    /// streamMessages used readObjects without reportFailures when limit is
+    /// nil, so an oversized events.jsonl streamed a prefix as complete.
+    /// invariant: ADAPTER-STREAM-WHOLE-CAP-001
+    func testCopilotOversizedTranscriptStreamMessagesFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-oversized-stream", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        try """
+        id: session-oversized-stream
+        cwd: /tmp/copilot-oversized-stream
+        created_at: 2026-08-14T00:00:00.000Z
+        updated_at: 2026-08-14T00:00:03.000Z
+        """.write(to: sessionDir.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+
+        var lines: [[String: Any]] = []
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "type": isUser ? "user.message" : "assistant.message",
+                "timestamp": "2026-08-14T00:00:0\(index).000Z",
+                "data": ["content": "copilot stream turn \(index)"],
+            ])
+        }
+        let events = sessionDir.appendingPathComponent("events.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: events, atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(
+            sessionRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        do {
+            _ = try await drain(adapter, locator: events.path)
+            XCTFail("oversized whole-transcript stream must fail closed")
+        } catch let failure as ParserFailure {
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
     /// Copilot checkpoint indexes inherit SessionAdapter's default
     /// streamMessagesWithMetadata, so an oversized whole-transcript read is
     /// capped without a truncation marker.
