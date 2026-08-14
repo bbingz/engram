@@ -2080,6 +2080,39 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertTrue(result.truncated)
     }
 
+    /// parseSessionInfo used the uncapped JSON array, so an oversized Cline
+    /// transcript returned prefix counts as complete.
+    /// invariant: ADAPTER-PARSEINFO-CAP-001K
+    func testClineOversizedTranscriptParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskDir = root.appendingPathComponent("oversized-info", isDirectory: true)
+        try FileManager.default.createDirectory(at: taskDir, withIntermediateDirectories: true)
+        let file = taskDir.appendingPathComponent("ui_messages.json")
+        var rows: [[String: Any]] = []
+        for index in 0..<4 {
+            rows.append([
+                "ts": 1_771_392_000_000 + index * 1_000,
+                "type": "say",
+                "say": index % 2 == 0 ? "task" : "text",
+                "text": "cline info turn \(index)",
+            ])
+        }
+        try JSONSerialization.data(withJSONObject: rows, options: [.withoutEscapingSlashes])
+            .write(to: file)
+
+        let adapter = ClineAdapter(
+            tasksRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        switch try await adapter.parseSessionInfo(locator: file.path) {
+        case .success(let info):
+            XCTFail("oversized parseSessionInfo must fail closed, got counts=\(info.messageCount)")
+        case .failure(let failure):
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
     /// Default scanForIndexing streamed uncapped messages, so an oversized
     /// Cline session indexed a prefix as if the transcript were complete.
     func testClineOversizedTranscriptScanForIndexingFailsClosed_repro() async throws {
