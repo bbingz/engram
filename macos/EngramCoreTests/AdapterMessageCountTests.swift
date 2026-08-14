@@ -3720,6 +3720,30 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .noVisibleMessages)
     }
 
+    /// Cursor inherits SessionAdapter's default streamMessagesWithMetadata, so
+    /// an oversized whole-transcript read is capped without a truncation marker.
+    func testCursorOversizedTranscriptReportsTruncation_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("state.vscdb").path
+        try Self.buildCursorOversizedFixture(dbPath: dbPath)
+
+        let adapter = CursorAdapter(dbPath: dbPath, limits: ParserLimits(maxMessages: 3))
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: "\(dbPath)?composer=cmp_oversize",
+            options: StreamMessagesOptions()
+        )
+        var streamed: [NormalizedMessage] = []
+        for try await message in result.messages {
+            streamed.append(message)
+        }
+
+        XCTAssertEqual(streamed.count, 3)
+        XCTAssertEqual(result.truncatedAt, 3)
+        XCTAssertFalse(result.totalKnownComplete)
+        XCTAssertTrue(result.truncated)
+    }
+
     // Audit CURSOR-CONTENT-001: empty/whitespace text must not shadow non-empty rawText.
     func testCursorFallsBackToRawTextWhenTextIsEmpty_repro() async throws {
         let root = tempDir()
@@ -3926,6 +3950,30 @@ final class AdapterMessageCountTests: XCTestCase {
         try exec("INSERT INTO cursorDiskKV VALUES ('composerData:cmp_usage', '{\"composerId\":\"cmp_usage\"}')")
         try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_usage:u1', '{\"type\":1,\"text\":\"Track Cursor usage\",\"timingInfo\":{\"clientStartTime\":1700000001000},\"tokenCount\":{\"inputTokens\":77,\"outputTokens\":0}}')")
         try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_usage:a1', '{\"type\":2,\"text\":\"Cursor usage tracked.\",\"timingInfo\":{\"clientStartTime\":1700000002000},\"tokenCount\":{\"inputTokens\":123,\"outputTokens\":45}}')")
+    }
+
+    private static func buildCursorOversizedFixture(dbPath: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        defer { sqlite3_close(db) }
+
+        func exec(_ sql: String) throws {
+            var err: UnsafeMutablePointer<CChar>?
+            guard sqlite3_exec(db, sql, nil, nil, &err) == SQLITE_OK else {
+                let message = err.map { String(cString: $0) } ?? "unknown"
+                sqlite3_free(err)
+                throw NSError(domain: "test", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+        }
+
+        try exec("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")
+        try exec("INSERT INTO cursorDiskKV VALUES ('composerData:cmp_oversize', '{\"composerId\":\"cmp_oversize\"}')")
+        try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_oversize:u1', '{\"type\":1,\"text\":\"cursor user 0\",\"timingInfo\":{\"clientStartTime\":1700000001000}}')")
+        try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_oversize:a1', '{\"type\":2,\"text\":\"cursor assistant 0\",\"timingInfo\":{\"clientStartTime\":1700000002000}}')")
+        try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_oversize:u2', '{\"type\":1,\"text\":\"cursor user 1\",\"timingInfo\":{\"clientStartTime\":1700000003000}}')")
+        try exec("INSERT INTO cursorDiskKV VALUES ('bubbleId:cmp_oversize:a2', '{\"type\":2,\"text\":\"cursor assistant 1\",\"timingInfo\":{\"clientStartTime\":1700000004000}}')")
     }
 
     private static func buildCursorMissingCreatedAtFixture(dbPath: String) throws {
