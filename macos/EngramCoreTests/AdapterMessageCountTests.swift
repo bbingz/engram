@@ -1400,6 +1400,45 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .messageLimitExceeded)
     }
 
+    /// streamMessages used readObjects without reportFailures, so an
+    /// oversized transcript streamed a prefix as complete.
+    /// invariant: ADAPTER-STREAM-WHOLE-CAP-001B
+    func testQwenOversizedTranscriptStreamMessagesFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("project-oversized-stream/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        var lines: [[String: Any]] = []
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "type": isUser ? "user" : "assistant",
+                "sessionId": "qwen-oversized-stream",
+                "cwd": "/tmp/qwen-oversized-stream",
+                "timestamp": "2026-08-14T00:00:0\(index).000Z",
+                "message": [
+                    "role": isUser ? "user" : "model",
+                    "parts": [["text": "qwen stream turn \(index)"]],
+                ],
+            ])
+        }
+        let file = chatsDir.appendingPathComponent("qwen-oversized-stream.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = QwenAdapter(
+            projectsRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        do {
+            _ = try await drain(adapter, locator: file.path)
+            XCTFail("oversized whole-transcript stream must fail closed")
+        } catch let failure as ParserFailure {
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
     // Audit L10: Qwen's injected bootstrap prompt is system metadata on both
     // batch and stream paths; the real request remains the first user message.
     func testQwenStreamClassifiesInjectedWrapperAsSystem_repro() async throws {
