@@ -1307,6 +1307,36 @@ final class AdapterMessageCountTests: XCTestCase {
         }
     }
 
+    /// parseSessionInfo used readObjects without reportFailures, so an
+    /// oversized context.jsonl returned prefix counts as complete.
+    /// invariant: ADAPTER-PARSEINFO-CAP-001J
+    func testKimiOversizedTranscriptParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("workspace-1/kimi-oversized-info", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+
+        var lines: [[String: Any]] = []
+        for index in 0..<4 {
+            let isUser = index % 2 == 0
+            lines.append([
+                "role": isUser ? "user" : "assistant",
+                "content": "kimi info turn \(index)",
+            ])
+        }
+        let contextFile = sessionDir.appendingPathComponent("context.jsonl")
+        try lines.map { try jsonLine($0) }.joined(separator: "\n").appending("\n")
+            .write(to: contextFile, atomically: true, encoding: .utf8)
+
+        let adapter = KimiAdapter(
+            sessionsRoot: root.path,
+            kimiJsonPath: root.appendingPathComponent("kimi.json").path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let failure = try parseFailure(await adapter.parseSessionInfo(locator: contextFile.path))
+        XCTAssertEqual(failure, .messageLimitExceeded)
+    }
+
     /// R184-3: a Kimi session directory with only wire metadata and no
     /// conversation turns must be terminal, not a zero-count session.
     func testKimiWireOnlySessionIsTerminalNoVisibleMessages_repro() async throws {

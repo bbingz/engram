@@ -60,7 +60,11 @@ final class KimiAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
             var allObjects: [Phase4AdapterSupport.JSONObject] = []
             var totalSize = Int64(0)
             for file in contextFiles {
-                let (objects, failure) = try JSONLAdapterSupport.readObjects(locator: file, limits: limits)
+                let (objects, failure) = try JSONLAdapterSupport.readObjects(
+                    locator: file,
+                    limits: limits,
+                    reportFailures: true
+                )
                 if let failure { return .failure(failure) }
                 allObjects.append(contentsOf: objects)
                 totalSize += Phase4AdapterSupport.fileSize(file)
