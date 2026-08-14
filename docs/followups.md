@@ -140,7 +140,8 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **ADAPTER-TAIL-TERMINAL-001** / R184-4 | closed (#368) | Tail-parse terminal policy matches `FileIndexState.isTerminalFailure`. `malformedJSON` / `invalidUtf8` / `fileMissing` fall through to a full scan; `noVisibleMessages` stays terminal. Shipped at `main@90256cc5`. |
 | **ADAPTER-TRUNCATION-METADATA-001** / export P1 remainder | closed (#370) | Cline whole-transcript reads report `truncatedAt` / `totalKnownComplete=false` when they exceed `ParserLimits.maxMessages`. Shipped at `main@64253c1a`. |
 | **ADAPTER-TRUNCATION-METADATA-001B** / export P1 remainder | closed (#371) | VS Code whole-transcript reads report `truncatedAt` / `totalKnownComplete=false` when they exceed `ParserLimits.maxMessages`. Shipped at `main@ffec248e`. |
-| **ADAPTER-TRUNCATION-METADATA-001C** / export P1 remainder | this PR (#372) | Cursor whole-transcript reads report `truncatedAt` / `totalKnownComplete=false` when they exceed `ParserLimits.maxMessages`. Gemini CLI stays a later slice. |
+| **ADAPTER-TRUNCATION-METADATA-001C** / export P1 remainder | closed (#372) | Cursor whole-transcript reads report `truncatedAt` / `totalKnownComplete=false` when they exceed `ParserLimits.maxMessages`. Shipped at `main@8bb95e56`. |
+| **ADAPTER-TRUNCATION-METADATA-001D** / export P1 remainder | this PR (#373) | Gemini CLI whole-transcript reads report `truncatedAt` / `totalKnownComplete=false` when they exceed `ParserLimits.maxMessages`. This closes the remaining default-wrapper adapter. |
 | **L-a…L-j** | residual | Remaining Low/Info row from the full-project review: L-h (blocked 1.0.5). L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349, L-j/#353 closed. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
