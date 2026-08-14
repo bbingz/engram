@@ -821,6 +821,50 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .noVisibleMessages)
     }
 
+    /// Gemini CLI inherits SessionAdapter's default streamMessagesWithMetadata, so
+    /// an oversized whole-transcript read is capped without a truncation marker.
+    func testGeminiCliOversizedTranscriptReportsTruncation_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chatsDir = root.appendingPathComponent("tmp/proj/chats", isDirectory: true)
+        try FileManager.default.createDirectory(at: chatsDir, withIntermediateDirectories: true)
+
+        let turns: [[String: Any]] = (0..<4).map { index in
+            [
+                "type": index % 2 == 0 ? "user" : "gemini",
+                "timestamp": "2026-01-01T00:00:0\(index).000Z",
+                "content": "gemini turn \(index)",
+            ]
+        }
+        let session: [String: Any] = [
+            "sessionId": "g-oversized",
+            "startTime": "2026-01-01T00:00:00.000Z",
+            "lastUpdated": "2026-01-01T00:00:04.000Z",
+            "messages": turns,
+        ]
+        let file = chatsDir.appendingPathComponent("session-oversized.json")
+        try (try jsonLine(session)).write(to: file, atomically: true, encoding: .utf8)
+
+        let adapter = GeminiCliAdapter(
+            tmpRoot: root.appendingPathComponent("tmp").path,
+            projectsFile: root.appendingPathComponent("projects.json").path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        let result = try await adapter.streamMessagesWithMetadata(
+            locator: file.path,
+            options: StreamMessagesOptions()
+        )
+        var streamed: [NormalizedMessage] = []
+        for try await message in result.messages {
+            streamed.append(message)
+        }
+
+        XCTAssertEqual(streamed.count, 3)
+        XCTAssertEqual(result.truncatedAt, 3)
+        XCTAssertFalse(result.totalKnownComplete)
+        XCTAssertTrue(result.truncated)
+    }
+
     // MARK: - Iflow
 
     // Audit L10: the batch parser already excludes injected wrappers from user

@@ -187,18 +187,40 @@ final class GeminiCliAdapter: SessionAdapter, ModificationFilteredSessionAdapter
         locator: String,
         options: StreamMessagesOptions
     ) async throws -> AsyncThrowingStream<NormalizedMessage, Error> {
-        let signature = ParsedTranscriptCache.Signature.forFile(locator)
-        let messages: [NormalizedMessage]
-        if let cached = await messageCache.cached(locator: locator, signature: signature) {
-            messages = cached
-        } else {
-            let object = try Self.readSession(locator: locator, limits: limits)
-            messages = JSONLAdapterSupport.array(object["messages"])?
-                .compactMap { JSONLAdapterSupport.object($0) }
-                .flatMap(Self.messages(from:)) ?? []
-            await messageCache.store(locator: locator, signature: signature, messages: messages)
-        }
+        let messages = try await loadMessages(locator: locator)
         return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
+    }
+
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        let messages = try await loadMessages(locator: locator)
+        // Silent whole-transcript cap is the P1 this override exists to mark.
+        let truncatedAt = options.limit == nil && messages.count > limits.maxMessages
+            ? limits.maxMessages
+            : nil
+        let bounded = truncatedAt == nil
+            ? JSONLAdapterSupport.applyWindow(messages, options: options)
+            : Array(messages.prefix(limits.maxMessages))
+        return StreamMessagesResult(
+            messages: JSONLAdapterSupport.stream(bounded),
+            totalKnownComplete: truncatedAt == nil,
+            truncatedAt: truncatedAt
+        )
+    }
+
+    private func loadMessages(locator: String) async throws -> [NormalizedMessage] {
+        let signature = ParsedTranscriptCache.Signature.forFile(locator)
+        if let cached = await messageCache.cached(locator: locator, signature: signature) {
+            return cached
+        }
+        let object = try Self.readSession(locator: locator, limits: limits)
+        let messages = JSONLAdapterSupport.array(object["messages"])?
+            .compactMap { JSONLAdapterSupport.object($0) }
+            .flatMap(Self.messages(from:)) ?? []
+        await messageCache.store(locator: locator, signature: signature, messages: messages)
+        return messages
     }
 
     func isAccessible(locator: String) async -> Bool {
