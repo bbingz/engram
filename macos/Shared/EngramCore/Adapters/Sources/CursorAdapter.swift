@@ -3,6 +3,7 @@ import Foundation
 final class CursorAdapter: SessionAdapter, Sendable {
     let source: SourceName = .cursor
     private let dbPath: String
+    private let limits: ParserLimits
     private let accessibilityCache = Phase4SQLiteAccessibilityCache()
     private let messageCache = ParsedTranscriptCache()
     private let workspaceOwnership: CursorWorkspaceOwnershipResolver
@@ -10,9 +11,11 @@ final class CursorAdapter: SessionAdapter, Sendable {
     init(
         dbPath: String = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
-            .path
+            .path,
+        limits: ParserLimits = .default
     ) {
         self.dbPath = dbPath
+        self.limits = limits
         let databaseURL = URL(fileURLWithPath: dbPath)
         let globalStorageURL = databaseURL.deletingLastPathComponent()
         let workspaceStorageURL = globalStorageURL.lastPathComponent == "globalStorage"
@@ -141,14 +144,51 @@ final class CursorAdapter: SessionAdapter, Sendable {
             throw ParserFailure.unsupportedVirtualLocator
         }
 
-        // Cursor stores every composer in one SQLite DB, so the parse cache is
-        // keyed on the full virtual locator but invalidated by the backing DB
-        // file's mtime/size.
+        let messages = try await loadMessages(locator: locator, locatorParts: locatorParts)
+        return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
+    }
+
+    func streamMessagesWithMetadata(
+        locator: String,
+        options: StreamMessagesOptions
+    ) async throws -> StreamMessagesResult {
+        guard let locatorParts = Self.parseVirtualLocator(locator) else {
+            throw ParserFailure.unsupportedVirtualLocator
+        }
+        let messages = try await loadMessages(locator: locator, locatorParts: locatorParts)
+        let truncatedAt = options.limit == nil && messages.count > limits.maxMessages
+            ? limits.maxMessages
+            : nil
+        let bounded = truncatedAt == nil
+            ? JSONLAdapterSupport.applyWindow(messages, options: options)
+            : Array(messages.prefix(limits.maxMessages))
+        return StreamMessagesResult(
+            messages: JSONLAdapterSupport.stream(bounded),
+            totalKnownComplete: truncatedAt == nil,
+            truncatedAt: truncatedAt
+        )
+    }
+
+    func isAccessible(locator: String) async -> Bool {
+        guard let locatorParts = Self.parseVirtualLocator(locator) else {
+            return false
+        }
+        return await accessibilityCache.contains(
+            path: locatorParts.dbPath,
+            sql:
+            "SELECT 1 FROM cursorDiskKV WHERE key = ? LIMIT 1",
+            bindings: ["composerData:\(locatorParts.composerId)"]
+        )
+    }
+
+    private func loadMessages(
+        locator: String,
+        locatorParts: (dbPath: String, composerId: String)
+    ) async throws -> [NormalizedMessage] {
         let signature = ParsedTranscriptCache.Signature.forFile(locatorParts.dbPath)
         if let cached = await messageCache.cached(locator: locator, signature: signature) {
-            return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(cached, options: options))
+            return cached
         }
-
         do {
             let database = try Phase4SQLiteDatabase(path: locatorParts.dbPath)
             var composerData: Phase4AdapterSupport.JSONObject = [:]
@@ -183,24 +223,12 @@ final class CursorAdapter: SessionAdapter, Sendable {
                 )
             }
             await messageCache.store(locator: locator, signature: signature, messages: messages)
-            return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
+            return messages
         } catch let failure as ParserFailure {
             throw failure
         } catch {
             throw ParserFailure.sqliteUnreadable
         }
-    }
-
-    func isAccessible(locator: String) async -> Bool {
-        guard let locatorParts = Self.parseVirtualLocator(locator) else {
-            return false
-        }
-        return await accessibilityCache.contains(
-            path: locatorParts.dbPath,
-            sql:
-            "SELECT 1 FROM cursorDiskKV WHERE key = ? LIMIT 1",
-            bindings: ["composerData:\(locatorParts.composerId)"]
-        )
     }
 
     private static func parseVirtualLocator(_ locator: String) -> (dbPath: String, composerId: String)? {
