@@ -196,6 +196,9 @@ final class OpenCodeAdapter: SessionAdapter, ModificationFilteredSessionAdapter,
             guard userCount + assistantCount > 0 else {
                 return .failure(.noVisibleMessages)
             }
+            if userCount + assistantCount > limits.maxMessages {
+                return .failure(.messageLimitExceeded)
+            }
 
             let sessionCreated = Phase4AdapterSupport.double(session["time_created"] ?? nil) ?? 0
             let firstMessageTime = Phase4AdapterSupport.double(messages.first?["time_created"] ?? nil)
