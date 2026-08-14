@@ -233,6 +233,9 @@ final class CopilotAdapter: SessionAdapter, ModificationFilteredSessionAdapter, 
         guard !entries.isEmpty else {
             return .failure(.malformedJSON)
         }
+        if entries.count > limits.maxMessages {
+            return .failure(.messageLimitExceeded)
+        }
 
         let sessionId = workspace["id"] ?? sessionDirectory.lastPathComponent
         return .success(
