@@ -2159,6 +2159,39 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertTrue(result.truncated)
     }
 
+    /// streamMessages used applyWindow on the produced list, so an oversized
+    /// Cline transcript streamed a prefix as complete when limit == nil.
+    /// invariant: ADAPTER-STREAM-WHOLE-CAP-001H
+    func testClineOversizedTranscriptStreamMessagesFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let taskDir = root.appendingPathComponent("oversized-stream", isDirectory: true)
+        try FileManager.default.createDirectory(at: taskDir, withIntermediateDirectories: true)
+        let file = taskDir.appendingPathComponent("ui_messages.json")
+        var rows: [[String: Any]] = []
+        for index in 0..<4 {
+            rows.append([
+                "ts": 1_771_392_000_000 + index * 1_000,
+                "type": "say",
+                "say": index % 2 == 0 ? "task" : "text",
+                "text": "cline stream turn \(index)",
+            ])
+        }
+        try JSONSerialization.data(withJSONObject: rows, options: [.withoutEscapingSlashes])
+            .write(to: file)
+
+        let adapter = ClineAdapter(
+            tasksRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        do {
+            _ = try await drain(adapter, locator: file.path)
+            XCTFail("oversized whole-transcript stream must fail closed")
+        } catch let failure as ParserFailure {
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
     /// parseSessionInfo used the uncapped JSON array, so an oversized Cline
     /// transcript returned prefix counts as complete.
     /// invariant: ADAPTER-PARSEINFO-CAP-001K

@@ -120,6 +120,9 @@ final class ClineAdapter: SessionAdapter, Sendable {
             messages = Self.messages(from: objects)
             await messageCache.store(locator: locator, signature: signature, messages: messages)
         }
+        if options.limit == nil, messages.count > limits.maxMessages {
+            throw ParserFailure.messageLimitExceeded
+        }
         return JSONLAdapterSupport.stream(JSONLAdapterSupport.applyWindow(messages, options: options))
     }
 
