@@ -1309,7 +1309,7 @@ final class AdapterMessageCountTests: XCTestCase {
 
     /// parseSessionInfo used readObjects without reportFailures, so an
     /// oversized context.jsonl returned prefix counts as complete.
-    /// invariant: ADAPTER-PARSEINFO-CAP-001I
+    /// invariant: ADAPTER-PARSEINFO-CAP-001J
     func testKimiOversizedTranscriptParseSessionInfoFailsClosed_repro() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
