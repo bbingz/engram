@@ -7,6 +7,34 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Autonomous stewardship closeout (2026-08-12 to 2026-08-15)
+
+Continued product development after the two-round retro without publishing
+1.0.5. Signing, notarization, tags, Homebrew, and Sparkle were not used.
+The 15-minute Grok scheduler (`019ff3bc9938`) was cancelled on 2026-08-14
+when the owner asked to stop.
+
+Shipped named review leftovers on `main`: local-day `get_context` Cost today
+(#345), browse reload on content-only scans (#346), DEBUG-only plaintext
+settings fallback (#347), MCP 2-character search floor (#348), App/Service/MCP
+keyword-id parity (#351), TypeScript case-only `safeMoveDir` (#353),
+repo-discovery cooldown after outcomes only (6h success / 15m fail, #355),
+and off-main AI settings persist (#356). Dependabot #306–#308 also landed.
+
+A later adapter/indexer campaign made empty sessions return
+`.noVisibleMessages`, reported transcript truncation, and fail-closed
+scan/FTS/backfill/MCP/parseSessionInfo/stream paths instead of treating a
+prefix as complete. That work is on `main` through `6aefbff2` (#425).
+Claude/Codex whole-transcript `streamMessages` stay truncate-and-succeed
+because throwing breaks `AdapterWindowedReadTests` (#39).
+
+The campaign over-sliced one theme into many one-adapter PRs plus separate
+docs closeouts, which congested CodeQL. After stop, one already-running
+loop tick still merged #425 and opened #426; #426 was left untouched.
+Do not restart the 15-minute loop without a human-named queue. Next blocked
+items remain v1.0.5 publication, ARCHIVE-DISCOVERY, and the ARCH-001
+CoreRead pool/DTO migration.
+
 ### Atomic CodeQL Action updates and fail-fast CI preflight (2026-08-09)
 
 Closed the configuration gap that let Dependabot split the coupled
