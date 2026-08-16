@@ -4,12 +4,12 @@
 
 ### 2026-08-15
 
-- [复盘] 2026-08-12 两轮复盘后的代管开发已收工：1.0.5 未发布；15 分钟 scheduler `019ff3bc9938` 已删。详见 `CHANGELOG.md` 与 `.memory`。
+- [复盘] 2026-08-12 两轮复盘后的代管开发在本节点暂停：本轮未发布新版本（公开 `v1.0.5` 已于 2026-08-02 发布）；15 分钟 scheduler `019ff3bc9938` 已删。详见 `CHANGELOG.md` 与 `.memory`。
 - [修复] 点名残留已上 main：#345 Cost today 本地日、#346 浏览页内容扫描刷新、#347 Release 禁止明文 settings key、#348 MCP 1 字符搜索门槛、#351 keyword 三面 id 对齐、#353 TS case-only move、#355 仓库探测失败不再烧 6h 冷却、#356 AI 设置离主线程写入。
 - [变更] 后续适配器/索引战役把空会话、截断元数据、scan/FTS/回填/MCP/`parseSessionInfo`/stream fail-closed 切成大量单适配器 PR；`main` 收到 `6aefbff2`（#425）。Claude/Codex 整份 stream 保持截断后成功，不强行抛错。
-- [排查] 停令之后仍有一拍已在跑的 loop 合了 #425 并开了 #426；#426 未再动。过程问题：队列空了仍自造下一刀、docs closeout 单独 PR、CodeQL 叠跑。
+- [排查] 停令之后仍有一拍已在跑的 loop 合了 #425 并开了 #426；截至本节点 #426 未再动。过程问题：队列空了仍自造下一刀、docs closeout 单独 PR、CodeQL 叠跑。
 - [验证] 各 PR 以 CI Gate + CodeQL Gate + Dependency Review 为合入闸；本收工未重跑全量测试、未部署、未签名。
-- [未验证] #426（Copilot checkpoint `parseSessionInfo`）仍 OPEN。未安装新 App，未碰生产 `~/.engram`。
+- [未验证] 截至本节点 #426（Copilot checkpoint `parseSessionInfo`）仍 OPEN。未安装新 App，未碰生产 `~/.engram`；后续终局见 2026-08-16 条目。
 
 ### 2026-08-09
 

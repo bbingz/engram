@@ -5,56 +5,19 @@ verification and low-priority follow-ups belong in `docs/followups.md`.
 
 ## Open
 
-### Public macOS release baseline (selected 2026-07-15)
+No implementation-ready engineering task is selected as of 2026-08-16.
 
-- **Goal:** publish a verifiable Engram `1.0.5` baseline above the latest public
-  GitHub release, `v1.0.3`, before starting another product feature. Current
-  `main@a0bcb620` and the source metadata are `1.0.5`; the installed Developer ID
-  build is `1.0.5 (1403)` from the immediately preceding `main@9e5ff9b8`, so it
-  is evidence for the release pipeline but not the final exact-source candidate.
-- **Known files and systems:** `package.json`, `macos/project.yml`, generated
-  `macos/Engram.xcodeproj`, `macos/scripts/build-release.sh`,
-  `macos/scripts/release-verify.sh`, the GitHub release workflow, Developer ID
-  signing/notarization, and a clean macOS verification host.
-- **Verified engineering baseline (2026-07-26):**
-  - `package.json`, `macos/project.yml`, and the generated Xcode project agree on
-    `1.0.5`; the version guard and Xcode-project drift guard pass.
-  - `docs/release-notes/1.0.5.md` exists, and the `v*` release workflow requires
-    a stable SemVer tag, the matching note, release tests, and a tag-version-
-    matched ad-hoc bundle gate.
-  - Installed `1.0.5 (1403)` is universal and passes `release-verify.sh` with
-    exact expected short/build versions, bundle hygiene, required helpers, deep
-    signature verification, Hardened Runtime, Developer ID authority, and a
-    secure timestamp. Notarization and stapling were not inspected.
-  - `build-release.sh` uses the pinned XcodeGen gate and now passes both the
-    resolved marketing version and build number into every candidate verifier,
-    including the printed final notarization verifier.
-- **Remaining open items / blockers:**
-  1. Build and verify a fresh universal Developer ID candidate from the intended
-     exact release commit. The installed build predates `a0bcb620` by one commit.
-  2. Submit that exact candidate for notarization, staple it, and pass
-     `release-verify.sh --require-notarization` with exact version/build inputs.
-  3. Stage the notarized asset plus checksums and run clean-machine App,
-     service-socket, bundled-MCP, and archive-status smoke checks.
-  4. Obtain explicit publication approval before creating/pushing `v1.0.5` or
-     publishing assets. The existing `v1.0.4` tag has no GitHub Release and is
-     not reused or mutated by this plan.
-- **Implementation order:** the locally verifiable metadata and guard work is
-  complete. Resume at blocker 1 only when signing/private-key use is authorized,
-  then complete blockers 2-4 in order without treating the tag-triggered ad-hoc
-  CI bundle as distribution approval.
-- **Done when / verifier:** required CI passes on the exact release commit;
-  version metadata agrees; the full release verifier passes the signed,
-  notarized, stapled bundle; artifact hashes are recorded; clean-machine runtime
-  smoke passes; and, only after explicit publication approval, the GitHub tag,
-  bundle version, and published assets agree.
-- **Failure handling:** a missing certificate, unavailable notarization, failed
-  verifier, or failed smoke blocks tagging and publication. Preserve public
-  `v1.0.3`; an ad-hoc build is local verification only, never a distributable.
-- **Authorization boundary:** this TODO does not authorize adding secrets,
-  reading or changing Keychain state, signing, notarizing, stapling, installing,
-  pushing a release tag, publishing a GitHub release, or creating/updating
-  Homebrew or Sparkle channels.
+The former public macOS release-baseline task is complete. GitHub Release
+[`v1.0.5`](https://github.com/bbingz/engram/releases/tag/v1.0.5) was published
+on 2026-08-02 from exact source `ea2f1817`, build 1424. Its notarized ZIP has
+SHA-256 `8174193159c15c9e9a6a5215bf0d32f6200694c567379835a0f26b9d921e699a`;
+the signed/notarized, clean-host, tag, Release Gate, download, and re-download
+verification evidence is retained in `CHANGELOG.md` and `MEMO.md`.
+
+This 2026-08-16 closeout does **not** select or authorize a newer public
+release. Do not create a new tag or GitHub Release, reuse/mutate an existing
+tag, sign/notarize a new distribution, or update Homebrew/Sparkle without a new
+explicit owner request and an exact release verifier.
 
 The exact-source dual-replica archive v2 has shipped and is operator-enabled on
 the current deployment. Its finite eligible replica drain and two-site recovery
@@ -68,8 +31,8 @@ Historical note: as of 2026-06-21 all 2026-06-15 UX-flow-alignment (PR #74)
 follow-ups were already resolved — see "Closed in cleanup". Wave 8 closed the
 remaining Wave 7 residual engineering defects on main through `c983a759`; this
 file had zero open engineering tasks until the release baseline above was
-selected. The other product-direction work stays in `docs/roadmap.md` Decision
-pending (12 rows), not here.
+selected; that baseline completed on 2026-08-02. The other product-direction
+work stays in `docs/roadmap.md` Decision pending (12 rows), not here.
 
 ## Closed in cleanup
 

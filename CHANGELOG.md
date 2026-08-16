@@ -9,10 +9,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Autonomous stewardship closeout (2026-08-12 to 2026-08-15)
 
-Continued product development after the two-round retro without publishing
-1.0.5. Signing, notarization, tags, Homebrew, and Sparkle were not used.
-The 15-minute Grok scheduler (`019ff3bc9938`) was cancelled on 2026-08-14
-when the owner asked to stop.
+Continued product development after the two-round retro without publishing a
+new version. Public `v1.0.5` had already shipped on 2026-08-02; this campaign
+did not sign, notarize, tag, or change Homebrew/Sparkle. The 15-minute Grok
+scheduler (`019ff3bc9938`) was cancelled on 2026-08-14 when the owner asked to
+stop.
 
 Shipped named review leftovers on `main`: local-day `get_context` Cost today
 (#345), browse reload on content-only scans (#346), DEBUG-only plaintext
@@ -29,11 +30,12 @@ Claude/Codex whole-transcript `streamMessages` stay truncate-and-succeed
 because throwing breaks `AdapterWindowedReadTests` (#39).
 
 The campaign over-sliced one theme into many one-adapter PRs plus separate
-docs closeouts, which congested CodeQL. After stop, one already-running
-loop tick still merged #425 and opened #426; #426 was left untouched.
-Do not restart the 15-minute loop without a human-named queue. Next blocked
-items remain v1.0.5 publication, ARCHIVE-DISCOVERY, and the ARCH-001
-CoreRead pool/DTO migration.
+docs closeouts, which congested CodeQL. After stop, one already-running loop
+tick still merged #425 and opened #426; the 2026-08-15 checkpoint left #426
+untouched. Do not restart the 15-minute loop without a human-named queue. No
+new release or implementation-ready engineering item was selected;
+ARCHIVE-DISCOVERY and the ARCH-001 CoreRead pool/DTO migration remain deferred
+design/debt boundaries.
 
 ### Atomic CodeQL Action updates and fail-fast CI preflight (2026-08-09)
 

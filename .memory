@@ -121,10 +121,10 @@
 ## 2026-08-15 - Stewardship closeout: L-items shipped, adapter slicing stopped (Grok)
 
 - Scope: after the 2026-08-12 two-round retro the owner authorized continued
-  product development (PRs/merges yes) and deferred public 1.0.5 (no notarize,
-  tag, Keychain, Homebrew, or Sparkle). Later: keep developing, then stop,
-  then retrospective, then this closeout. Do not restart feature work from
-  this note.
+  product development (PRs/merges yes) but no new public release (no notarize,
+  tag, Keychain, Homebrew, or Sparkle). Public `v1.0.5` had already shipped on
+  2026-08-02. Later: keep developing, then stop, then retrospective, then this
+  checkpoint. Do not restart feature work from this note.
 - Checkout: main-line worktree `/Users/bing/-Code-/engram` on `main` at
   `6aefbff2` (`fix(adapters): fail OpenCode parseSessionInfo when transcript
   exceeds cap (#425)`), tracking `origin/main`. This closeout only edits
@@ -153,7 +153,7 @@
   already-running tick still merged #425 and opened #426. Scheduler was
   cancelled; `scheduler_list` is empty. Do not recreate a timed loop without a
   human-named queue.
-- Left untouched: #426
+- Left untouched at this 2026-08-15 checkpoint: #426
   (`feat/copilot-checkpoint-parseinfo-cap-001`, OPEN —
   `fix(adapters): fail Copilot checkpoint parseSessionInfo when over cap`).
   Do not merge, rebase, or extend it from this closeout.
@@ -161,12 +161,11 @@
   Dependency Review as the merge gate. This closeout did not re-run
   `xcodebuild test`, `npm test`, notarize, install, or deploy. No new App
   was installed; production `~/.engram` was not touched.
-- Residual / resume: v1.0.5 publication remains owner-gated in
-  `docs/TODO.md`. Named next blocked product items remain ARCHIVE-DISCOVERY
-  and ARCH-001 CoreRead pool/DTO migration (`docs/followups.md`). Do not
-  continue adapter slicing. Smallest later action if the owner asks: decide
-  #426 (merge after green CI, or close unused), then take a human-named item
-  — not another one-adapter cap PR.
+- Residual / resume at this checkpoint: no new release is selected.
+  ARCHIVE-DISCOVERY and the ARCH-001 CoreRead pool/DTO migration remain
+  deferred (`docs/followups.md`). Do not continue adapter slicing. Smallest
+  later action if the owner asks: decide #426 (merge after green CI, or close
+  unused), then take a human-named item — not another one-adapter cap PR.
 - Evidence: `CHANGELOG.md` Unreleased “Autonomous stewardship closeout
   (2026-08-12 to 2026-08-15)”; `MEMO.md` `### 2026-08-15`.
 

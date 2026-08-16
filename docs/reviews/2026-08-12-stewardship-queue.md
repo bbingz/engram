@@ -28,9 +28,9 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 13 | RETRO-P2-DENYLIST-CASE | P2 | Case-sensitive denylist | **DONE** 2026-08-12 | Folded compare — landed |
 | 14 | RETRO-P2-TEST-MUTATOR | P2 | Prod `test.write_intent` surface | **DONE** 2026-08-12 | Hidden outside Debug builds |
 | 15 | RETRO-NIT-TOKEN-TIMING | nit | Non-constant-time token compare | **DONE** 2026-08-12 | Constant-time compare |
-| 20 | TODO-REL-1.0.5 | release | Notarize/publish `v1.0.5` | **BLOCKED** — TODO forbids signing/Keychain/tag without explicit human auth | Human auth + notarization pass |
+| 20 | TODO-REL-1.0.5 | release | Notarize/publish `v1.0.5` | **DONE** 2026-08-02 — exact `ea2f1817`, build 1424, notarized/published | Release evidence in `CHANGELOG.md` / `MEMO.md` |
 | 21 | FOLLOW-ALIAS-P2 | low | Same-basename ghost alias remove | No repro host | Only if repro appears |
-| 22 | ROADMAP-DECISION | product | 12 Decision-pending rows | Parked until release baseline | Product owner pick |
+| 22 | ROADMAP-DECISION | product | 12 Decision-pending rows | Release baseline complete; still parked | Product owner pick |
 
 ## False-positive / partial notes (this cull)
 
@@ -42,7 +42,7 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | Source disable bypass | **CONFIRMED** | Filter on `$0.source.rawValue` only |
 | Enable mass unhide | **CONFIRMED** | `UPDATE … hidden_at=NULL WHERE source=?` |
 | Project-move two-phase | **CONFIRMED / DONE** | Recover was read-only and startup only failed stale rows; startup now resumes old-absent/new-present `fs_done` and preserves compensated rows |
-| Release 1.0.5 deploy | **BLOCKED** | `docs/TODO.md` authorization boundary |
+| Release 1.0.5 deploy | **DONE** 2026-08-02 | Exact-source publication evidence in `CHANGELOG.md` / `MEMO.md` |
 
 ## Brainstorm (if health P1s clear)
 
@@ -142,7 +142,7 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 110 | ADAPTER-PARSEINFO-CAP-001O | low | OpenCode `parseSessionInfo` counts every contentful message without the produced cap | implementer | Fail closed when user+assistant counts exceed `ParserLimits.maxMessages`; named `_repro`. JSON-array parseinfo series complete after this; Copilot checkpoint stays later. | **DONE** 2026-08-14 — PR #425 at `main@6aefbff2`. |
 | 111 | ADAPTER-PARSEINFO-CAP-001P | low | Copilot `parseCheckpointSessionInfo` counts every `index.md` row without the produced cap | implementer | Fail closed when checkpoint entries exceed `ParserLimits.maxMessages`; named `_repro`. | **DONE** 2026-08-16 — PR #426 at `main@e1331289`. |
 | 112 | ADAPTER-STREAM-WHOLE-CAP-001H | low | Cline `streamMessages` applyWindow-returns a prefix when `limit == nil` | implementer | Throw `.messageLimitExceeded` on oversized whole-transcript streams; named `_repro`. Remaining JSON-array streams stay later slices. | **THIS PR** |
-| 48 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth in TODO + notarization | **BLOCKED** |
+| 48 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth + exact release verifier | **DONE** 2026-08-02 — `v1.0.5` |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.
 
@@ -313,6 +313,6 @@ Shipped in PR #323 at `main@dc5a5128`.
 | 61 | MCP-SEARCH-MIN-LENGTH-001 | low | MCP 1-char keyword search over-recalled vs app/service (L-a) | **DONE** PR #348 `main@444c5d6c` |
 | 62 | ARCH-001D-PARITY | debt | First executable App/Service/MCP keyword-search parity fixture | **DONE** PR #351 `main@841ad4a8` |
 | 63 | TS-SAFEMOVEDIR-CASE-001 | low | TS `safeMoveDir` lacked Swift M13 case-only rename exception (L-j) | **DONE** PR #353 `main@b74836bd` |
-| 65 | SETTINGS-MAINACTOR-IO-001 | low | AI settings debounce still flocks/Keychain on MainActor (R9) | **IN PR** |
-| 44 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | **BLOCKED** |
+| 65 | SETTINGS-MAINACTOR-IO-001 | low | AI settings debounce still flocks/Keychain on MainActor (R9) | **DONE** PR #356 `main@434892f0` |
+| 44 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | **DONE** 2026-08-02 — `v1.0.5` |
 `docs/reviews/2026-07-17-engram-full-audit.md`.
