@@ -390,6 +390,31 @@ being offline must not turn normal local indexing or reads into a failure.
   through the known superseded candidates before the successful current
   binding.
 
+### 2026-08-16 server binary refresh evidence
+
+Both replicas now run `releases/986e7fb0` from full source
+`986e7fb02c299a9471953f4bb556097650c61127`; their binary SHA-256 is
+`3a0cab83ea6078bae553b49981038625d6c5eb06445ae951f8e7d92a18f34df2`.
+HQ retains `releases/38326d62` and rollback
+`rollback/20260816T123232Z-pre-986e7fb0`; M1 retains
+`releases/a33fc3b8` and rollback
+`rollback/20260816T123258Z-pre-986e7fb0`.
+
+Post-activation evidence on each site: LaunchAgent running; exact revision and
+hash match; only the literal Tailscale IPv4 listener on port 8787;
+`GET /v1/health` 200;
+unauthenticated protected request 401; authenticated missing legacy/object HEAD
+404; and archive DELETE 405. After the expected receipt-index cold scan,
+authenticated `/v2/archive/machines` returned 200 on both sites (M1 about 4 ms;
+HQ sampled at 31–226 ms). M1's scan took about 12 minutes and a live stack
+sample showed `ArchiveReceiptListIndex.ensureReady` progressing through
+`forEachReceipt` / `scanReceipt`; health stayed 200 throughout.
+
+No archive root, receipt, token, at-rest key, client setting, deletion policy,
+or listener topology changed. The deployment did not run retry, recovery-drill,
+reclamation, PUT, or any source/CAS mutation. Temporary transfer staging was
+removed; versioned releases and owner-only rollback snapshots remain.
+
 ## Backup and recovery prerequisites
 
 Automatic local reclamation remains opt-in and fail-closed. A receipt alone does

@@ -52,45 +52,25 @@ correctly because `PopoverUsageSection` remains gated on real usage data.
 
 ## Current roadmap
 
-One implementation-ready delivery is selected as of 2026-07-15: establish a
-public macOS release baseline before starting another product feature. The
-exact-source dual-replica archive v2 has completed its finite eligible-backlog
-and two-site recovery closeout. Twelve other owner decisions remain in the
-Decision pending table below (parked by the 2026-07-09 plan-completion audit);
-they are not scheduled implementation work.
+No implementation-ready delivery is selected as of 2026-08-16. The public
+macOS release baseline and exact-source dual-replica archive v2 are complete.
+The twelve owner decisions in the table below remain parked product choices,
+not scheduled engineering work.
 
-### Selected next direction — public macOS release baseline
+### Completed direction — public macOS release baseline
 
-- **Why now:** current source is Engram `1.0.5` on `main@a0bcb620`, while the
-  latest public GitHub release is still `v1.0.3`. The installed universal
-  Developer ID build is `1.0.5 (1403)` from `main@9e5ff9b8`, one commit behind
-  current main. The release workflow remains identity-independent and has no
-  signing/notarization path; no active Homebrew or Sparkle distribution surface
-  exists. A verifiable public build is therefore the smallest prerequisite for
-  credible distribution or feature expansion.
-- **Target:** publish `v1.0.5` from an explicitly selected green release commit.
-  The final tag and assets remain contingent on the exact release diff and
-  explicit publication authorization.
-- **Engineering state:** source/package/Xcode version metadata, generated-project
-  drift protection, the 1.0.5 release note and tag gate, pinned XcodeGen build
-  path, and exact short/build-version candidate verification are complete. The
-  current verified evidence and exact remaining blockers are canonical in
-  `docs/TODO.md`.
-- **Remaining scope:** produce a fresh universal Developer ID artifact from the
-  exact release commit; notarize and staple it; pass the full verifier; stage the
-  asset and checksums; then exercise clean-machine App launch, service socket,
-  bundled MCP initialize/tool-list, and archive-status smoke before publication.
-- **Acceptance gate:** all required CI gates pass on the exact release commit;
-  version guards agree; signing, notarization, stapling, bundle hygiene, hashes,
-  and clean-machine runtime smoke are recorded; and the published tag, bundle
-  version, and release assets agree after publication.
-- **Authorization and failure boundary:** local preparation and verification do
-  not authorize writing signing secrets, pushing a tag, publishing a GitHub
-  release, or changing external package channels. If Developer ID signing or
-  notarization is unavailable or fails, do not tag or publish; keep `v1.0.3` as
-  the public baseline and treat any ad-hoc build as verification-only.
-- **Out of scope:** Sparkle, Homebrew, and unrelated new product features.
-  Reconsider those only after the public baseline is proven.
+- **Published baseline:** GitHub Release
+  [`v1.0.5`](https://github.com/bbingz/engram/releases/tag/v1.0.5) was published
+  on 2026-08-02 from exact source `ea2f1817`, build 1424.
+- **Artifact evidence:** the notarized ZIP SHA-256 is
+  `8174193159c15c9e9a6a5215bf0d32f6200694c567379835a0f26b9d921e699a`.
+  Developer ID signing, Apple notarization/stapling, the full release verifier,
+  isolated-host App/service/MCP/archive smoke, tag Release Gate, GitHub digest,
+  download, and re-download verification all passed. Durable details remain in
+  `CHANGELOG.md` and `MEMO.md`.
+- **Current boundary:** the 2026-08-16 engineering/deployment closeout does not
+  publish a newer version or change Homebrew/Sparkle. A future release requires
+  a new explicit owner selection and exact-source release verification.
 
 ### Exact-source dual-replica archive v2 — operational closeout complete
 
@@ -118,15 +98,19 @@ they are not scheduled implementation work.
   residual.
 - **Runbook:** [`docs/remote-archive-v2.md`](remote-archive-v2.md). Conditional
   non-release follow-ups remain in [`docs/followups.md`](followups.md).
+- **Current server binary:** both private replicas were refreshed on 2026-08-16
+  to exact `main@986e7fb0`, package `releases/986e7fb0`; the prior per-host
+  releases and owner-only rollback snapshots remain. This changed no archive
+  data, secrets, client settings, or public release channel. Exact hashes,
+  probes, warm-up behavior, and rollback handles are in the runbook.
 
 ## Decision pending (2026-07-09 plan-completion audit)
 
 **Engineering zero ≠ roadmap zero (2026-07-11).** Wave 8 + Round 4 docs closed
 the Wave 7 defect ledger (43 terminal confirmed) and removed its open
-engineering TODO/follow-ups. One new delivery has since been selected above;
-the **12 rows below remain owner decisions** and are
-intentionally **not** implemented, scheduled, or mislabeled as engineering
-defects. They do not block the selected release-baseline work.
+engineering TODO/follow-ups. The public release baseline selected later is now
+complete; the **12 rows below remain owner decisions** and are intentionally
+**not** implemented, scheduled, or mislabeled as engineering defects.
 
 Large product-decision items the audit confirmed **not done** and deliberately
 **not** implemented in wave 6. Each needs an explicit product decision before

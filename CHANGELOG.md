@@ -7,6 +7,75 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Final PR and dual-server deployment closeout (2026-08-16)
+
+Closed the two already-staged adapter slices after fresh review and gates:
+Copilot checkpoint `parseSessionInfo` now fails closed above the produced
+message cap in #426 (`main@e1331289`), and Cline unwindowed `streamMessages`
+does the same in #427 (`main@986e7fb0`). The experimental Claude whole-read
+branch was rejected because it makes
+`AdapterWindowedReadTests.testClaudeCodeUnwindowedReadTruncatesInsteadOfThrowing`
+throw `.messageLimitExceeded`, contrary to the #39 truncate-and-succeed
+contract. No further adapter slice was selected.
+
+Focused cap/contract tests, full `EngramCoreTests`, full
+`EngramRemoteServerCore`, the arm64 Release build, package verification, and
+both successful-switch and injected-503 rollback dry-runs passed. #426 and
+#427 each merged only after CI Gate, CodeQL Gate, Dependency Review, Swift,
+RemoteServer, Node, script/fixture, and UI gates passed. Resulting
+`main@986e7fb0` push runs Tests `31947240506` and CodeQL `31947240571` also
+passed.
+
+Packaged `EngramRemoteServer` from the tree-identical #427/main source at
+`986e7fb02c299a9471953f4bb556097650c61127`; the deployed arm64 binary SHA-256
+is `3a0cab83ea6078bae553b49981038625d6c5eb06445ae951f8e7d92a18f34df2`.
+Both private replicas now run `releases/986e7fb0`: HQ retained
+`releases/38326d62` plus rollback
+`rollback/20260816T123232Z-pre-986e7fb0`, and M1 retained
+`releases/a33fc3b8` plus rollback
+`rollback/20260816T123258Z-pre-986e7fb0`. Each stays bound only to its literal
+Tailscale address on port 8787; `GET /v1/health` returned 200, unauthenticated access
+401, authenticated misses 404, and archive DELETE 405. After the expected
+receipt-index cold scan, `archive/machines` returned 200 on both replicas
+(sampled M1 4 ms; HQ 31–226 ms).
+
+Only versioned binaries, the `current` pointer, the revision-bearing wrapper,
+and owner-only rollback snapshots changed. Archive stores, receipts, tokens,
+at-rest keys, listener topology, the installed app, and client settings were
+not changed. No tag, GitHub Release, Developer ID/notarization operation,
+Homebrew update, or Sparkle update was performed; public `v1.0.5` remains the
+latest release.
+
+### Autonomous stewardship closeout (2026-08-12 to 2026-08-15)
+
+Continued product development after the two-round retro without publishing a
+new version. Public `v1.0.5` had already shipped on 2026-08-02; this campaign
+did not sign, notarize, tag, or change Homebrew/Sparkle. The 15-minute Grok
+scheduler (`019ff3bc9938`) was cancelled on 2026-08-14 when the owner asked to
+stop.
+
+Shipped named review leftovers on `main`: local-day `get_context` Cost today
+(#345), browse reload on content-only scans (#346), DEBUG-only plaintext
+settings fallback (#347), MCP 2-character search floor (#348), App/Service/MCP
+keyword-id parity (#351), TypeScript case-only `safeMoveDir` (#353),
+repo-discovery cooldown after outcomes only (6h success / 15m fail, #355),
+and off-main AI settings persist (#356). Dependabot #306–#308 also landed.
+
+A later adapter/indexer campaign made empty sessions return
+`.noVisibleMessages`, reported transcript truncation, and fail-closed
+scan/FTS/backfill/MCP/parseSessionInfo/stream paths instead of treating a
+prefix as complete. That work is on `main` through `6aefbff2` (#425).
+Claude/Codex whole-transcript `streamMessages` stay truncate-and-succeed
+because throwing breaks `AdapterWindowedReadTests` (#39).
+
+The campaign over-sliced one theme into many one-adapter PRs plus separate
+docs closeouts, which congested CodeQL. After stop, one already-running loop
+tick still merged #425 and opened #426; the 2026-08-15 checkpoint left #426
+untouched. Do not restart the 15-minute loop without a human-named queue. No
+new release or implementation-ready engineering item was selected;
+ARCHIVE-DISCOVERY and the ARCH-001 CoreRead pool/DTO migration remain deferred
+design/debt boundaries.
+
 ### Atomic CodeQL Action updates and fail-fast CI preflight (2026-08-09)
 
 Closed the configuration gap that let Dependabot split the coupled
