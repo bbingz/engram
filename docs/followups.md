@@ -171,7 +171,8 @@ remain recoverable and do not consume the permanent budget. Remaining items:
 | **ADAPTER-PARSEINFO-CAP-001M** / export P1 remainder | closed (#423) | Gemini CLI `parseSessionInfo` fails closed when produced messages exceed `ParserLimits.maxMessages`. Shipped at `main@d23cd2b3`. Remaining JSON-array adapters: Cursor, OpenCode. |
 | **ADAPTER-PARSEINFO-CAP-001N** / export P1 remainder | closed (#424) | Cursor `parseSessionInfo` fails closed when visible bubbles exceed `ParserLimits.maxMessages`. Shipped at `main@67ece081`. Remaining JSON-array adapter: OpenCode. |
 | **ADAPTER-PARSEINFO-CAP-001O** / export P1 remainder | closed (#425) | OpenCode `parseSessionInfo` fails closed when contentful messages exceed `ParserLimits.maxMessages`. Shipped at `main@6aefbff2`. JSON-array parseinfo series complete; Copilot checkpoint stays this PR. |
-| **ADAPTER-PARSEINFO-CAP-001P** / export P1 remainder | this PR | Copilot `parseCheckpointSessionInfo` counted every `index.md` row without the produced cap, so an oversized checkpoint returned prefix counts as complete. |
+| **ADAPTER-PARSEINFO-CAP-001P** / export P1 remainder | closed (#426) | Copilot `parseCheckpointSessionInfo` fails closed when checkpoint entries exceed `ParserLimits.maxMessages`. Shipped at `main@e1331289`. |
+| **ADAPTER-STREAM-WHOLE-CAP-001H** / export P1 remainder | this PR | Cline `streamMessages` fails closed when an unwindowed transcript exceeds `ParserLimits.maxMessages`. Remaining JSON-array streams: VS Code, Gemini, Cursor, OpenCode. |
 | **L-a…L-j** | residual | Remaining Low/Info row from the full-project review: L-h (blocked 1.0.5). L-b/#342, L-e/#343, L-d/#344, L-g/#345, L-c/#346, L-f/#347, L-a/#348, L-i/#349, L-j/#353 closed. |
 | **SEC-M5 / I1 / I2** | design residual | See `docs/reviews/2026-07-17-accepted-residuals.md` |
 
