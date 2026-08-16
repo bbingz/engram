@@ -3636,6 +3636,45 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertTrue(result.truncated)
     }
 
+    /// parseCheckpointSessionInfo counted every index.md row without the
+    /// produced cap, so an oversized checkpoint returned prefix counts as complete.
+    /// invariant: ADAPTER-PARSEINFO-CAP-001P
+    func testCopilotOversizedCheckpointParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionDir = root.appendingPathComponent("session-oversize-cp-info", isDirectory: true)
+        let checkpointsDir = sessionDir.appendingPathComponent("checkpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpointsDir, withIntermediateDirectories: true)
+        try """
+        id: session-oversize-cp-info
+        cwd: /tmp/copilot-oversize-info
+        created_at: 2026-08-14T00:00:00.000Z
+        updated_at: 2026-08-14T00:00:04.000Z
+        """.write(to: sessionDir.appendingPathComponent("workspace.yaml"), atomically: true, encoding: .utf8)
+        var table = """
+        # Checkpoint History
+
+        | # | Title | File |
+        |---|-------|------|
+        """
+        for index in 1...4 {
+            table += "\n| \(index) | copilot checkpoint info \(index) | |"
+        }
+        let checkpointIndex = checkpointsDir.appendingPathComponent("index.md")
+        try table.write(to: checkpointIndex, atomically: true, encoding: .utf8)
+
+        let adapter = CopilotAdapter(
+            sessionRoot: root.path,
+            limits: ParserLimits(maxMessages: 3)
+        )
+        switch try await adapter.parseSessionInfo(locator: checkpointIndex.path) {
+        case .success(let info):
+            XCTFail("oversized parseSessionInfo must fail closed, got counts=\(info.messageCount)")
+        case .failure(let failure):
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
     // Audit COPILOT-AUX-001: workspace.yaml mtime must keep the session in the
     // recent set when the main locator and session-directory mtimes are stale.
     func testCopilotRecentScanTracksAuxiliaryFiles_repro() async throws {
@@ -4164,6 +4203,24 @@ final class AdapterMessageCountTests: XCTestCase {
         XCTAssertEqual(failure, .noVisibleMessages)
     }
 
+    /// parseSessionInfo counted every contentful message without the produced
+    /// cap, so an oversized OpenCode session returned prefix counts as complete.
+    /// invariant: ADAPTER-PARSEINFO-CAP-001O
+    func testOpenCodeOversizedTranscriptParseSessionInfoFailsClosed_repro() async throws {
+        let root = tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dbPath = root.appendingPathComponent("opencode.db").path
+        try Self.buildOpenCodeOversizedFixture(dbPath: dbPath)
+
+        let adapter = OpenCodeAdapter(dbPath: dbPath, limits: ParserLimits(maxMessages: 3))
+        switch try await adapter.parseSessionInfo(locator: "\(dbPath)::ses_oversize") {
+        case .success(let info):
+            XCTFail("oversized parseSessionInfo must fail closed, got counts=\(info.messageCount)")
+        case .failure(let failure):
+            XCTAssertEqual(failure, .messageLimitExceeded)
+        }
+    }
+
     func testOpenCodeAttachesAssistantMessageTokenUsage() async throws {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -4536,6 +4593,33 @@ final class AdapterMessageCountTests: XCTestCase {
         // m3 has only a tool part (no text) → must be dropped.
         try exec("INSERT INTO part VALUES ('p3', 'm3', 1700000003000, '{\"type\":\"tool\",\"tool\":\"read\"}')")
         try exec("INSERT INTO part VALUES ('p4', 'm4', 1700000004000, '{\"type\":\"text\",\"text\":\"second\"}')")
+    }
+
+    private static func buildOpenCodeOversizedFixture(dbPath: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
+            throw NSError(domain: "test", code: 1)
+        }
+        defer { sqlite3_close(db) }
+
+        func exec(_ sql: String) throws {
+            var err: UnsafeMutablePointer<CChar>?
+            guard sqlite3_exec(db, sql, nil, nil, &err) == SQLITE_OK else {
+                let message = err.map { String(cString: $0) } ?? "unknown"
+                sqlite3_free(err)
+                throw NSError(domain: "test", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+        }
+
+        try exec("CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER)")
+        try exec("CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
+        try exec("CREATE TABLE part (id TEXT, message_id TEXT, time_created INTEGER, data TEXT)")
+        try exec("INSERT INTO session VALUES ('ses_oversize', '/tmp/opencode-oversized', 'Oversized', 1700000000000, 1700000004000, NULL)")
+        for index in 0..<4 {
+            let role = index % 2 == 0 ? "user" : "assistant"
+            try exec("INSERT INTO message VALUES ('m\(index)', 'ses_oversize', \(1_700_000_001_000 + index * 1_000), '{\"role\":\"\(role)\"}')")
+            try exec("INSERT INTO part VALUES ('p\(index)', 'm\(index)', \(1_700_000_001_000 + index * 1_000), '{\"type\":\"text\",\"text\":\"opencode info turn \(index)\"}')")
+        }
     }
 
     /// Live session row whose only part is a non-text tool event.
