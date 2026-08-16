@@ -4,7 +4,14 @@ Owner: Grok (lead) + Herdr Codex `retro-handler` (w5:p1)
 Sources: two-round-retro-2 confirmed findings, `docs/TODO.md`, `docs/followups.md`, `docs/roadmap.md`  
 Scope rule: Swift product path only; writes via service/writer gate; no Node product startup.
 
-## Active
+**Final closeout (2026-08-16):** active implementer rows: **0**. PR #426 and
+#427 completed the two already-staged slices; the experimental Claude
+whole-transcript branch was rejected because it breaks the #39
+truncate-and-succeed contract. The timed scheduler remains disabled. Potential
+peer adapter shapes are unadjudicated and unscheduled; do not mint more slices
+from this historical queue.
+
+## Campaign ledger (terminal)
 
 | Rank | ID | Sev | Title | Owner path | Done-when | Status |
 |------|----|-----|-------|------------|-----------|--------|
@@ -18,7 +25,7 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 8 | RETRO-P1-GET-MEMORY-EMPTY | P1 | get_memory empty path suppresses degrade warning | implementer | Empty memory result still surfaces degrade warning when applicable; MCP executable `_repro` | **DONE** 2026-08-12 (MCP RPC `_repro`) |
 | 9 | RETRO-P1-INVARIANT2-TEST | P1 | Invariant 2 lacks IPC setParent tier `_repro` | Codex | Swift IPC test: link does not upgrade skip child | **DONE** 2026-08-12 (Codex residual) |
 
-## Deferred this cycle (queued, not active)
+## Historical deferred ledger (terminal or explicitly parked)
 
 | Rank | ID | Sev | Title | Why deferred | Done-when |
 |------|----|-----|-------|--------------|-----------|
@@ -44,20 +51,23 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | Project-move two-phase | **CONFIRMED / DONE** | Recover was read-only and startup only failed stale rows; startup now resumes old-absent/new-present `fs_done` and preserves compensated rows |
 | Release 1.0.5 deploy | **DONE** 2026-08-02 | Exact-source publication evidence in `CHANGELOG.md` / `MEMO.md` |
 
-## Brainstorm (if health P1s clear)
+## Historical brainstorm (not scheduled)
 
 1. Cursor CWD ownership contract (`CURSOR-CWD-001` followups) — design then implement.  
 2. MCP object-root residual after #215 — re-verification **PASS** at rank 32.
 3. Competitive gap: session “resume in original tool” deep-link UX (roadmap-adjacent).  
 4. Archive V2 bounded discovery exporters (followups deferred engineering).
 
-## Cycle contract
+## Historical cycle contract (superseded 2026-08-16)
 
-- Ship one PR for the largest coherent Codex batch of CONFIRMED P1s that tests pass.  
-- Do **not** push `v*` or notarize without TODO authorization.  
-- Daily retro: `docs/reviews/2026-08-12-daily-retro.md`.
+- During the active 2026-08-12 campaign, ship one PR for the largest coherent
+  Codex batch of CONFIRMED P1s that tests pass.
+- Do **not** push `v*` or notarize without TODO authorization.
+- Historical daily retro: `docs/reviews/2026-08-12-daily-retro.md`.
+- This contract is no longer an execution instruction; the final-closeout rule
+  at the top of this file controls.
 
-## Next cycle (enqueued after P1 clear)
+## Historical next-cycle ledger (terminal or explicitly deferred)
 
 | Rank | ID | Sev | Title | Owner path | Done-when | Status |
 |------|----|-----|-------|------------|-----------|--------|
@@ -141,7 +151,7 @@ Scope rule: Swift product path only; writes via service/writer gate; no Node pro
 | 109 | ADAPTER-PARSEINFO-CAP-001N | low | Cursor `parseSessionInfo` counts every visible bubble without the produced cap | implementer | Fail closed when user+assistant bubbles exceed `ParserLimits.maxMessages`; named `_repro`. Remaining JSON-array adapter: OpenCode. | **DONE** 2026-08-14 — PR #424 at `main@67ece081`. |
 | 110 | ADAPTER-PARSEINFO-CAP-001O | low | OpenCode `parseSessionInfo` counts every contentful message without the produced cap | implementer | Fail closed when user+assistant counts exceed `ParserLimits.maxMessages`; named `_repro`. JSON-array parseinfo series complete after this; Copilot checkpoint stays later. | **DONE** 2026-08-14 — PR #425 at `main@6aefbff2`. |
 | 111 | ADAPTER-PARSEINFO-CAP-001P | low | Copilot `parseCheckpointSessionInfo` counts every `index.md` row without the produced cap | implementer | Fail closed when checkpoint entries exceed `ParserLimits.maxMessages`; named `_repro`. | **DONE** 2026-08-16 — PR #426 at `main@e1331289`. |
-| 112 | ADAPTER-STREAM-WHOLE-CAP-001H | low | Cline `streamMessages` applyWindow-returns a prefix when `limit == nil` | implementer | Throw `.messageLimitExceeded` on oversized whole-transcript streams; named `_repro`. Remaining JSON-array streams stay later slices. | **THIS PR** |
+| 112 | ADAPTER-STREAM-WHOLE-CAP-001H | low | Cline `streamMessages` applyWindow-returns a prefix when `limit == nil` | implementer | Throw `.messageLimitExceeded` on oversized whole-transcript streams; named `_repro`. | **DONE** 2026-08-16 — PR #427 at `main@986e7fb0`. |
 | 48 | TODO-REL-1.0.5 | release | Notarize/publish v1.0.5 | human | Human auth + exact release verifier | **DONE** 2026-08-02 — `v1.0.5` |
 
 Evidence for CURSOR-CWD-001: `docs/followups.md:52,67` (B3 partial; must not infer from unrelated file selection); adapter `macos/Shared/EngramCore/Adapters/Sources/CursorAdapter.swift`.

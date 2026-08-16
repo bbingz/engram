@@ -2,7 +2,8 @@
 
 ## Index
 
-<!-- AUTO-INDEX (recounted 2026-08-15): 113 dated entries; regenerate after adding sections -->
+<!-- AUTO-INDEX (recounted 2026-08-16): 114 dated entries; regenerate after adding sections -->
+- [2026-08-16 - Final PR and dual-server deployment closeout (Codex)](#2026-08-16---final-pr-and-dual-server-deployment-closeout-codex)
 - [2026-08-15 - Stewardship closeout: L-items shipped, adapter slicing stopped (Grok)](#2026-08-15---stewardship-closeout-l-items-shipped-adapter-slicing-stopped-grok)
 - [2026-07-31 - MCP retrospective fix campaign: verified claims need pinned tests (Fable/Claude)](#2026-07-31---mcp-retrospective-fix-campaign-verified-claims-need-pinned-tests-fableclaude)
 - [2026-07-29 - Remote MCP production enablement on macmini-m1](#2026-07-29---remote-mcp-production-enablement-on-macmini-m1)
@@ -117,6 +118,62 @@
 - [2026-05-09 — Current next-dev baseline after noise cleanup](#2026-05-09--current-next-dev-baseline-after-noise-cleanup)
 - [2026-05-09 — Session detail child-agent list must not consume transcript viewport](#2026-05-09--session-detail-child-agent-list-must-not-consume-transcript-viewport)
 <!-- /AUTO-INDEX -->
+
+## 2026-08-16 - Final PR and dual-server deployment closeout (Codex)
+
+- Scope and publication boundary: the owner explicitly asked to finish the
+  remaining PRs, deploy the existing servers, update durable docs, and sync
+  GitHub, while not publishing a new release. No tag, GitHub Release,
+  Developer ID/notarization action, Homebrew update, or Sparkle update was
+  performed. Public `v1.0.5` (published 2026-08-02) remains latest.
+- Code closeout: #426 merged as `main@e1331289` and #427 as
+  `main@986e7fb0`. Copilot checkpoint `parseSessionInfo` and Cline unwindowed
+  `streamMessages` now fail closed above `ParserLimits.maxMessages`. The
+  experimental Claude commit `1680083b` was rejected: its own fail-closed test
+  passes, but the authoritative
+  `testClaudeCodeUnwindowedReadTruncatesInsteadOfThrowing` fails at
+  `ClaudeCodeAdapter.swift:511` with `.messageLimitExceeded`, violating #39.
+  It has no PR and must not be merged. Potential VS Code/Gemini/Cursor/OpenCode
+  peer stream shapes were not independently adjudicated and are not scheduled.
+- Verification: fresh Copilot/Cline cap tests and the Cline window contract
+  passed; the Claude branch contract test reproduced the rejection. Full
+  `EngramCoreTests`, full `EngramRemoteServerCore`, an arm64 Release build,
+  package create + two verify-only passes, a full temporary deployment dry-run,
+  and an injected-503 automatic rollback dry-run passed. Both PRs passed CI
+  Gate, CodeQL Gate, Dependency Review, Swift, RemoteServer, Node,
+  script/fixture, and UI gates before squash merge. Resulting `main@986e7fb0`
+  push runs Tests `31947240506` and CodeQL `31947240571` also passed.
+- Package identity: the #427 head tree and `main@986e7fb0` tree are both
+  `ae58edbd883c9be7f611afe23f57170946d87b68`. The deployed package metadata
+  names full source `986e7fb02c299a9471953f4bb556097650c61127`; its
+  `EngramRemoteServer` SHA-256 is
+  `3a0cab83ea6078bae553b49981038625d6c5eb06445ae951f8e7d92a18f34df2`.
+- Production deployment: HQ and M1 both run `releases/986e7fb0`. HQ preserved
+  previous `releases/38326d62` and owner-only rollback
+  `~/.engram-remote/rollback/20260816T123232Z-pre-986e7fb0`; M1 preserved
+  `releases/a33fc3b8` and
+  `~/.engram-remote/rollback/20260816T123258Z-pre-986e7fb0`. Direct HQ SSH did
+  not accept the local key, so the already-trusted M1-to-HQ SSH path was used;
+  host fingerprints matched the recorded LAN/Tailscale identities.
+- Production verification: both LaunchAgents are running the recorded source
+  and binary hash, each listening only on its literal Tailscale IPv4 at 8787.
+  `GET /v1/health` is 200, unauthenticated protected access 401, authenticated misses
+  404, and archive DELETE 405. The M1 receipt index required about 12 minutes
+  of post-restart scan; a process sample showed
+  `ArchiveReceiptListIndex.ensureReady → forEachReceipt → scanReceipt`, not a
+  deadlock. After warm-up `archive/machines` returned 200 on both replicas
+  (M1 ~4 ms, HQ 31–226 ms sampled). Only this operation's staging directories
+  were removed; versioned releases and rollback snapshots remain.
+- Durable reconciliation: `docs/TODO.md` and `docs/roadmap.md` now record the
+  already-published `v1.0.5` evidence instead of the stale v1.0.3/blocker story;
+  `docs/followups.md` and the stewardship queue close #426/#427 and show zero
+  active implementer rows. No new implementation-ready task or roadmap choice
+  was selected.
+- Residual risk: a GUI LaunchAgent still depends on an interactive login after
+  cold boot/FileVault unlock; the M1 receipt index has a material cold-start
+  scan. The installed client app was not replaced. Archive stores, receipts,
+  credentials, at-rest keys, client settings, and remote deletion policy were
+  unchanged.
 
 ## 2026-08-15 - Stewardship closeout: L-items shipped, adapter slicing stopped (Grok)
 

@@ -209,6 +209,38 @@ Restart `Engram.app` so the service rebuilds its coordinator with the new config
 - **Reversible:** rehydrate restores content byte-for-byte; the encrypted bundle
   stays on the server for re-offload.
 
+### Production binary refresh — 2026-08-16
+
+Both private servers run the same verified arm64 package from
+`main@986e7fb0` (full source
+`986e7fb02c299a9471953f4bb556097650c61127`). The deployed
+`EngramRemoteServer` SHA-256 is
+`3a0cab83ea6078bae553b49981038625d6c5eb06445ae951f8e7d92a18f34df2`.
+
+- `macmini-hq`: current `releases/986e7fb0`; previous
+  `releases/38326d62`; rollback
+  `rollback/20260816T123232Z-pre-986e7fb0`.
+- `macmini-m1`: current `releases/986e7fb0`; previous
+  `releases/a33fc3b8`; rollback
+  `rollback/20260816T123258Z-pre-986e7fb0`.
+
+On each host the package passed `package-remote-server.sh --verify-only` after
+transfer. LaunchAgent state, full source revision, binary hash, owner-only
+rollback mode, and literal Tailscale-IP-only port 8787 listener were then
+checked independently. HTTP evidence was 200 from `GET /v1/health`, 401 without auth, 404 for
+authenticated missing objects, and 405 for archive DELETE. The process-local
+receipt list index rebuilt after restart; once warm, authenticated
+`/v2/archive/machines` returned 200 on both hosts (M1 about 4 ms; HQ sampled at
+31–226 ms). M1's larger cold scan took about 12 minutes, so use health plus the
+non-mutating auth probes during that bounded warm-up rather than treating list
+latency alone as a failed binary activation.
+
+This refresh changed only the versioned package, `current` pointer,
+revision-bearing wrapper, and rollback snapshot. It did not modify legacy/v2
+stores, receipts, env files, tokens, at-rest keys, nginx/Tailscale topology,
+client settings, or the installed app. The temporary transfer staging was
+removed after verification; both the active package and rollback handles remain.
+
 ## Verify
 
 `RemoteSyncCoordinatorTests.testLiveOffloadRehydrateAgainstDeployedServer` runs a

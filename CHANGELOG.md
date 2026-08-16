@@ -7,6 +7,45 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Final PR and dual-server deployment closeout (2026-08-16)
+
+Closed the two already-staged adapter slices after fresh review and gates:
+Copilot checkpoint `parseSessionInfo` now fails closed above the produced
+message cap in #426 (`main@e1331289`), and Cline unwindowed `streamMessages`
+does the same in #427 (`main@986e7fb0`). The experimental Claude whole-read
+branch was rejected because it makes
+`AdapterWindowedReadTests.testClaudeCodeUnwindowedReadTruncatesInsteadOfThrowing`
+throw `.messageLimitExceeded`, contrary to the #39 truncate-and-succeed
+contract. No further adapter slice was selected.
+
+Focused cap/contract tests, full `EngramCoreTests`, full
+`EngramRemoteServerCore`, the arm64 Release build, package verification, and
+both successful-switch and injected-503 rollback dry-runs passed. #426 and
+#427 each merged only after CI Gate, CodeQL Gate, Dependency Review, Swift,
+RemoteServer, Node, script/fixture, and UI gates passed. Resulting
+`main@986e7fb0` push runs Tests `31947240506` and CodeQL `31947240571` also
+passed.
+
+Packaged `EngramRemoteServer` from the tree-identical #427/main source at
+`986e7fb02c299a9471953f4bb556097650c61127`; the deployed arm64 binary SHA-256
+is `3a0cab83ea6078bae553b49981038625d6c5eb06445ae951f8e7d92a18f34df2`.
+Both private replicas now run `releases/986e7fb0`: HQ retained
+`releases/38326d62` plus rollback
+`rollback/20260816T123232Z-pre-986e7fb0`, and M1 retained
+`releases/a33fc3b8` plus rollback
+`rollback/20260816T123258Z-pre-986e7fb0`. Each stays bound only to its literal
+Tailscale address on port 8787; `GET /v1/health` returned 200, unauthenticated access
+401, authenticated misses 404, and archive DELETE 405. After the expected
+receipt-index cold scan, `archive/machines` returned 200 on both replicas
+(sampled M1 4 ms; HQ 31–226 ms).
+
+Only versioned binaries, the `current` pointer, the revision-bearing wrapper,
+and owner-only rollback snapshots changed. Archive stores, receipts, tokens,
+at-rest keys, listener topology, the installed app, and client settings were
+not changed. No tag, GitHub Release, Developer ID/notarization operation,
+Homebrew update, or Sparkle update was performed; public `v1.0.5` remains the
+latest release.
+
 ### Autonomous stewardship closeout (2026-08-12 to 2026-08-15)
 
 Continued product development after the two-round retro without publishing a

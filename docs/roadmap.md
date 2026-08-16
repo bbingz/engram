@@ -98,6 +98,11 @@ not scheduled engineering work.
   residual.
 - **Runbook:** [`docs/remote-archive-v2.md`](remote-archive-v2.md). Conditional
   non-release follow-ups remain in [`docs/followups.md`](followups.md).
+- **Current server binary:** both private replicas were refreshed on 2026-08-16
+  to exact `main@986e7fb0`, package `releases/986e7fb0`; the prior per-host
+  releases and owner-only rollback snapshots remain. This changed no archive
+  data, secrets, client settings, or public release channel. Exact hashes,
+  probes, warm-up behavior, and rollback handles are in the runbook.
 
 ## Decision pending (2026-07-09 plan-completion audit)
 

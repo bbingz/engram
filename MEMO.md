@@ -2,6 +2,14 @@
 
 ## Changelog Memo
 
+### 2026-08-16
+
+- [收尾] 已合入 #426 `main@e1331289` 与 #427 `main@986e7fb0`；Copilot checkpoint `parseSessionInfo` 和 Cline 整份 stream 超限均 fail closed。Claude 实验分支 `1680083b` 因破坏 #39 的截断后成功契约而淘汰，未开 PR、未合入，也未继续切新适配器。
+- [验证] Copilot/Cline 聚焦回归、`AdapterWindowedReadTests`、完整 `EngramCoreTests`、完整 `EngramRemoteServerCore`、arm64 Release build、包双重 verify、成功切换 dry-run 与注入 503 自动回滚 dry-run 均通过；#426/#427 的 CI Gate、CodeQL Gate、Dependency Review、Swift/RemoteServer/Node/UI/fixture gates 全绿，合入后 `main@986e7fb0` 的 Tests `31947240506` 与 CodeQL `31947240571` 也通过。
+- [部署] HQ/M1 均运行 `releases/986e7fb0`，二进制 SHA-256 `3a0cab83ea6078bae553b49981038625d6c5eb06445ae951f8e7d92a18f34df2`。HQ 回滚 `releases/38326d62` / `rollback/20260816T123232Z-pre-986e7fb0`；M1 回滚 `releases/a33fc3b8` / `rollback/20260816T123258Z-pre-986e7fb0`。两机 `GET /v1/health` 200、受保护接口 401/404/405 探针与只绑定 Tailscale `:8787` 通过；receipt index 冷扫后 `archive/machines` 两机均 200（M1 ~4ms，HQ 31–226ms 抽样）。
+- [文档] `docs/TODO.md`、`docs/roadmap.md`、`docs/followups.md` 与 stewardship queue 已按当前事实对账：公开 `v1.0.5` 实际已于 2026-08-02 发布；当前无选中的 implementation-ready 工程项，12 个 roadmap 方向仍待 owner 决策。
+- [边界] 本轮未安装 App，未改 archive/store/receipt/密钥/客户端设置，未创建 tag 或 GitHub Release，未签名公证新版本，未更新 Homebrew/Sparkle。公开 latest 仍为 `v1.0.5`。
+
 ### 2026-08-15
 
 - [复盘] 2026-08-12 两轮复盘后的代管开发在本节点暂停：本轮未发布新版本（公开 `v1.0.5` 已于 2026-08-02 发布）；15 分钟 scheduler `019ff3bc9938` 已删。详见 `CHANGELOG.md` 与 `.memory`。
