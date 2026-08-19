@@ -2,6 +2,12 @@
 
 ## Changelog Memo
 
+### 2026-08-19
+
+- [安全] 仅刷新现有 semver 范围内可兼容修复的 lockfile：PostCSS 8.5.26、nanoid 3.3.18、protobufjs 7.6.5；未新增 override、未关闭 audit、未移除可选功能。详细证据见 `CHANGELOG.md`。
+- [验证] Node 24 下 clean install、build、测试 typecheck、lint、knip 与 Vitest coverage 129 files / 1,525 tests 通过；真实 audit RED 从 7 个漏洞降至 4 个 high。
+- [未验证] 剩余告警全部位于可选 Transformers → onnxruntime/Sharp 链，上游当前无兼容修复；未强制跨 0.x breaking 边界，`npm audit --audit-level=moderate` 继续如实失败。
+
 ### 2026-08-16
 
 - [收尾] 已合入 #426 `main@e1331289` 与 #427 `main@986e7fb0`；Copilot checkpoint `parseSessionInfo` 和 Cline 整份 stream 超限均 fail closed。Claude 实验分支 `1680083b` 因破坏 #39 的截断后成功契约而淘汰，未开 PR、未合入，也未继续切新适配器。

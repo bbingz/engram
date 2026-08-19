@@ -7,6 +7,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Compatible transitive dependency security remediation (2026-08-19)
+
+Refreshed only the lockfile entries that npm can update within their existing
+declared ranges: PostCSS `8.5.16` to `8.5.26`, nanoid `3.3.15` to `3.3.18`,
+and protobufjs `7.6.4` to `7.6.5`. This closes the two PostCSS advisories, the
+two nanoid advisories reported by the current npm audit database, and the
+protobufjs parser denial-of-service advisory without changing a direct
+dependency, adding an override, disabling the audit gate, or removing an
+optional feature.
+
+The exact CI audit command was recorded RED before the change at seven
+vulnerabilities (six high, one moderate). After the compatible updates it
+reports four high vulnerabilities, all in the optional
+`@huggingface/transformers@4.2.0` chain: upstream still requires
+`onnxruntime-node@1.24.3` with vulnerable `adm-zip@0.5.18` and
+`sharp@^0.34.5`, while the patched releases are outside those declared ranges.
+npm reports no compatible fix. No breaking 0.x override was forced; that
+residual remains visible to `npm audit --audit-level=moderate` rather than
+being suppressed.
+
+Validation on Node 24: clean `npm ci`, build, test typecheck, lint, knip, and
+Vitest coverage passed (129 files, 1,525 tests). Lint retained the existing
+Biome schema-version info and Cascade optional-chain warning. The optional
+Transformers chain and the local install-script approval warnings remain
+explicit residuals.
+
 ### Final PR and dual-server deployment closeout (2026-08-16)
 
 Closed the two already-staged adapter slices after fresh review and gates:

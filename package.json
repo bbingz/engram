@@ -43,12 +43,12 @@
     "@huggingface/transformers": "^4.2.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.6",
+    "@biomejs/biome": "^2.5.8",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^26.2.0",
     "@vitest/coverage-v8": "^4.1.8",
     "husky": "^9.1.7",
-    "knip": "^6.29.0",
+    "knip": "^6.32.2",
     "lint-staged": "^17.2.0",
     "pixelmatch": "^7.2.0",
     "sharp": "^0.35.3",
