@@ -4,6 +4,8 @@
 
 ### 2026-08-19
 
+- [修复] Dependabot #431 的 6 处 CodeQL `init`/`analyze` 已统一固定到 v4.37.7 提交 `ff2f1c62`，共享 workflow pin 契约同步更新；未改触发条件、权限或作业结构。详见 `CHANGELOG.md`。
+- [验证] 更新后的 Dependabot 头先真实复现 workflow contract 32/33 RED（仅旧 SHA 期望失败），最小同步两条契约常量后聚焦测试 33/33 GREEN。
 - [安全] 仅刷新现有 semver 范围内可兼容修复的 lockfile：PostCSS 8.5.26、nanoid 3.3.18、protobufjs 7.6.5；未新增 override、未关闭 audit、未移除可选功能。详细证据见 `CHANGELOG.md`。
 - [验证] Node 24 下 clean install、build、测试 typecheck、lint、knip 与 Vitest coverage 129 files / 1,525 tests 通过；真实 audit RED 从 7 个漏洞降至 4 个 high。
 - [未验证] 剩余告警全部位于可选 Transformers → onnxruntime/Sharp 链，上游当前无兼容修复；未强制跨 0.x breaking 边界，`npm audit --audit-level=moderate` 继续如实失败。
