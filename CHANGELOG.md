@@ -7,6 +7,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Atomic CodeQL action pin closeout (2026-08-19)
+
+Completed Dependabot #431's grouped CodeQL action update by keeping all three
+`init` and all three `analyze` sites on the same immutable v4.37.7 commit
+`ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd`, and updating the shared workflow
+pin contract to the identical SHA. No workflow trigger, permission, job, or
+runtime behavior changed.
+
+The focused workflow contract was recorded RED on the rebased Dependabot head:
+32 of 33 tests passed and the immutable-pin assertion alone still expected the
+previous v4.37.6 SHA. After the two contract constants were synchronized, the
+same focused command passed all 33 tests. This preserves the early classifier
+gate that rejects partially updated action groups before expensive macOS jobs
+start.
+
 ### Compatible transitive dependency security remediation (2026-08-19)
 
 Refreshed only the lockfile entries that npm can update within their existing
