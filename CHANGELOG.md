@@ -7,6 +7,71 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Commit and three-host deployment closeout (production, 2026-08-31)
+
+Committed the integrated source tree as
+`40218c0bee5fa333e3f61299bf9db4d3f7a8e5c7` (`feat: integrate HQ live ingest
+and product hardening`) after the complete local gate matrix passed: App 1,097,
+Core 1,387 with one skip, MCP 254, Service 799 with one skip, Remote 158, and
+Vitest 1,549 with two skips, plus the Node build, lint, knip, test typecheck,
+fixture/parity, boundary, and diff checks. The commit was not pushed.
+
+Built Engram 1.0.5 (1554) from that exact revision with the available
+Developer ID identity. Full bundle hygiene, structure, version, deep strict
+code signing, Hardened Runtime, and signing timestamp verification passed. The
+daily Mac now runs the installed build-1554 App and Service as one launchd-owned
+instance each. The retained deployment receipt returned `status` in 0.551
+seconds with 52,519 sessions and `liveSessions` in 17.425 seconds with 100
+entries. The
+installed MCP initialized and listed 27 tools. The menu-bar rendering itself
+could not be rechecked because the console session was locked.
+
+Built the arm64 RemoteServer package from the same revision and passed its
+manifest, architecture, dependency-closure, and strict ad-hoc-signature
+verifier before and after transfer. M1 now runs release `40218c0b` as PID 36227;
+HQ runs the same RemoteServer release as PID 5156. Both have one exact launchd
+instance, one Tailscale-bound listener, the expected binary SHA-256
+`a03e38795c7c7663699538537de91f9e5298e3954428d61b68f1722295de8e7c`,
+and a successful `/v1/health` response. HQ's T9 `flock-exec`,
+`ensure-hq-live`, and daily-Mac watchdog bytes now match the repository. The
+unchanged watchdog plist produced four natural successful runs, including a
+scheduled run, with no degraded sentinel.
+
+HQ EngramService now runs `releases/40218c0b-build1554` as the single system
+job PID 42994. The helper SHA-256 is
+`8a42289eed3e8c2e493681468953a3109deb0bd6bb9ceff3f61d874552895e1f`;
+the Unix socket is owned by that PID with mode 0600 and uid 501. A final probe
+returned `status` in 0.029 seconds with 56,022 sessions and `liveSessions` in
+1.297 seconds with 100 entries. The first readiness attempt rolled back safely.
+On the second attempt, old PID 28608 removed its socket but continued its
+startup scan after TERM; it was allowed to exit naturally at 07:08:40 UTC,
+without SIGKILL or `kickstart -k`, before one ordinary kickstart started the
+target helper. Both root LaunchDaemon plists remained byte-identical.
+
+Rollback snapshots remain at
+`~/.engram/rollback/20260831T053128Z-pre-40218c0b` on the daily Mac,
+`~/.engram-remote/rollback/20260831T055627Z-pre-40218c0b` on M1,
+`~/.engram-remote/rollback/20260831T061600Z-pre-40218c0b` on HQ, and
+`~/.engram-service/rollback/20260831T064244Z-pre-40218c0b-build1554` on HQ.
+Evidence is under `/tmp/engram-precommit-*`,
+`/tmp/engram-daily-deploy-20260831`, `/tmp/engram-m1-deploy-20260831`,
+`/tmp/engram-hq-remote-t9-deploy-20260831`, and
+`/tmp/engram-hq-service-deploy-20260831`.
+
+Two residuals remain explicit. At the retained deployment receipts,
+`lastScanAt` was absent on both Services, so `remoteSyncStatus` was not called
+while the startup writer gate could still be occupied. HQ subsequently
+completed its initial scan: a fresh `status` returned `running` with 56,022
+sessions and `lastScanAt` present, followed by the single owed bounded
+`remoteSyncStatus` call in 0.010 seconds (`enabled=false`, 56,049 local, six
+offloaded, and both pending queues zero). The daily Mac still had no startup
+marker after two hours; its process and IPC health remained live, but `status`
+honestly reported `degraded` because the last successful scan was stale. The
+420-second mixed-version observation produced no natural non-status traffic,
+so the real unique-keyword, post-reboot 16-minute HQ-to-Mac SLA remains
+unverified. No push, tag, GitHub release, notarization, Sparkle/Homebrew update,
+Docker operation, or production-data rewrite was performed.
+
 ### Live-session scan remediation (local, unreleased, 2026-08-31)
 
 Remediated the source-level `liveSessions` scan path behind the daily-Mac
@@ -44,12 +109,13 @@ pre-task copies in `/tmp/engram-live-scan-baseline.ZXzgYN/`, the provider is
 `8b1d03ab2783d50a272de872145d9f32af12acb119f54a514326b187a3a01202` and
 `bb66f107788ff6435ace567e0a1009af4b36c1e994301d9959bf8be001044b2d`.
 
-This remains a local source fix. The installed v1.0.5 app/service and inspected
-remote packages do not contain it, and the real 95,280-file corpus, installed
-menu-bar UI, and production request-cancellation path have not been retested.
-No file was staged or committed; no app bundle was built or installed; and no
-deployment, service restart/probe, remote mutation, Docker operation, or
-production-data access occurred during this remediation pass.
+At this remediation checkpoint, the change was still local: the installed
+v1.0.5 app/service and inspected remote packages did not contain it, and the
+real 95,280-file corpus, installed menu-bar UI, and production request-
+cancellation path had not been retested. No file was staged or committed; no
+app bundle was built or installed; and no deployment, service restart/probe,
+remote mutation, Docker operation, or production-data access occurred during
+that pass. The later commit/deployment closeout is recorded above.
 
 ### Local service restart and deployed-runtime audit (production, 2026-08-31)
 
@@ -82,8 +148,8 @@ rechecks at 10:32-10:35 CST confirmed that HQ and M1 both still run
 RemoteServer revision `986e7fb02c299a9471953f4bb556097650c61127`; M1 does
 not have an EngramService installation or job. Repository `HEAD` and
 `origin/main` remain
-`d97d02575e1b6362b628c649a7e3337193942323`, while the newer work is still a
-shared dirty tree and has not been built or deployed.
+`d97d02575e1b6362b628c649a7e3337193942323`, while the newer work was still a
+shared dirty tree and had not yet been built or deployed at that audit point.
 
 Evidence includes `/tmp/engram-live-sample.E1ELVn`,
 `/tmp/engram-post-restart-sample.vDU2Xw`, and
@@ -320,7 +386,8 @@ schema-version information. Turn-start hashes for 159 UI Swift files and the
 follow-up did not rerun Vitest; the 1,548-test result above remains evidence
 from the preceding follow-up, not this one.
 
-This remains local unreleased work. No Docker, commit, push, tag, deployment,
+At that checkpoint this remained local unreleased work. No Docker, commit,
+push, tag, deployment,
 installation, SSH operation, launchd mutation, service restart, production
 `~/.engram` access, or production-data change was performed. Owner-authorized
 deployment of the paired HQ scripts/package, a no-console-login reboot test,

@@ -4,24 +4,31 @@
 
 ### 2026-08-31
 
+- [提交] 主仓完整门通过后已提交 `40218c0b`（`feat: integrate HQ live ingest and product hardening`）；未 push/tag/release。完整测试计数和产物哈希见 `CHANGELOG.md`。
+- [部署] 日用机已运行 Developer ID 签名的 Engram 1.0.5 (1554)；M1/HQ RemoteServer 均运行 `40218c0b`，HQ Service 运行 `40218c0b-build1554`。三机均为单实例、目标路径/哈希命中，Remote `/v1/health` 为 200。
+- [验证] 日用机部署回执为 `status` 0.551s、`liveSessions` 17.425s/100；HQ `status` 0.029s、`liveSessions` 1.297s/100；MCP 27 tools。HQ T9/watchdog 字节命中仓库，4 次自然运行均 exit 0，无 degraded sentinel，root plist 未改。
+- [安全切换] HQ 旧 Service 在 TERM 后继续初扫，未强杀、未用 `kickstart -k`；待 PID 28608 自然退出后才启动新 PID 42994。四处回滚点和完整过程证据见 `CHANGELOG.md`。
+- [验证] HQ 初扫随后完成：`status` 恢复 running/56022/`lastScanAt` 有值；仅补跑一次 `remoteSyncStatus`，0.010s 成功，pending 两队列均为 0。日用机两小时后仍无初扫标记，health/IPC 可用但 `status` 因 last successful scan stale 如实为 degraded；日用机 `remoteSyncStatus` 仍未调用。
+- [未验证] 锁屏导致菜单栏最终目检未补；真实 post-reboot 唯一关键词 16 分钟跨机 SLA 仍开放。
+- [边界] 未 push/tag/GitHub Release、公证、更新 Sparkle/Homebrew、运行 Docker 或重写生产数据；当前是已提交且已部署的内部 build1554，不是新的公开发布。
 - [修复] `liveSessions` 本地源码门已闭：Claude 改为仅扫描项目目录的直接常规会话文件，每个配置 root 只 canonicalize 一次，不再递归 `subagents` 或逐文件做 subagent layout；Codex 递归、symlink 拒绝、全局 newest-100、24h 边界和 TTL 语义保留。详见 `CHANGELOG.md`。
 - [验证] 尾段取消先稳定 RED（取消后仍返回并污染 cache），修复后新增 5/5、focused 14/14、完整 `EngramServiceIPCTests` 259/259；两路独立终审均为 `SPEC_COMPLIANCE: PASS` / `CODE_QUALITY: APPROVED`。
-- [未验证] 该修复仍是未提交、未部署的本地字节；已安装 v1.0.5、真实 95,280 文件语料、菜单栏 Live 恢复和生产取消链尚未复测。本修复 pass 未 build App/install/deploy/restart/probe/Docker；既有只读远端审计见下方运行态条目。
+- [历史节点] 该修复在本地源码收口时仍是未提交、未部署字节；当时尚未复测已安装 v1.0.5、真实 95,280 文件语料、菜单栏 Live 恢复和生产取消链。后续提交/部署结果以上方本日最新条目为准。
 - [重启] 按用户授权仅重启了日常 Mac 的 `com.engram.service`；两次 bounded kickstart 将 PID 25143→93400→96776，当前 launchd 为 running、runs=3、last exit=0，socket 与 status/health 已恢复响应。
 - [故障] `Live` 仍未恢复：`liveSessions` 超过 35 秒，3 小时后服务仍约 64% CPU；采样持续落在对 `~/.claude/projects` 95,280 个文件的递归枚举、realpath 与 subagent 路径判定。重启不是修复，详见 `CHANGELOG.md`。
-- [运行态] 各机均非 2026-08-31 脏树新字节：日常 Mac/HQ 的 Service 为 2026-08-25 同一二进制，HQ/M1 的 RemoteServer 均为 `986e7fb0`，M1 没有运行 EngramService；HQ 现有 socket/HTTP 健康。
-- [边界] 本次未 build/install/deploy，未重启远端，未 commit/push/tag、Docker 或改生产数据；当前结论是“本地服务已重启但 Live 仍降级、各机未升级”。
+- [历史节点] 部署前审计时，各机均非 2026-08-31 脏树新字节：日常 Mac/HQ 的 Service 为 2026-08-25 同一二进制，HQ/M1 的 RemoteServer 均为 `986e7fb0`，M1 没有运行 EngramService；该状态已由上方本日部署条目取代。
+- [历史边界] 该审计 pass 未 build/install/deploy，未重启远端，未 commit/push/tag、Docker 或改生产数据；“本地服务已重启但 Live 仍降级、各机未升级”仅描述当时状态。
 - [已闭合] HQ live ingest 的最终本地门已收口：单 consumer、真实 delta token、idle interval、变更后 trailing 60 秒、多页同 wake 排空、publish 后重探测及 complete-only retract ack/finalize 均已覆盖；Settings/Mock 诚实修复、origin pre-LIMIT、安装器校验和四项 UI residual 也已落入主仓。细节见 `CHANGELOG.md`。
 - [验证] 最终字节通过 App 1,097、Core 1,386+1 skip、Service 793+1 skip、runner 31、Vitest 1,549+2 skip、Settings 14、Command Palette 15、UIUX+Onboarding wiring 47，以及 Onboarding hunk 之后的未签名 Debug build；74 路径审计为 68 同 blob、6 个预期差异、零缺失/意外覆盖。默认布局 UI smoke 的 runner 在任何 Onboarding test method 执行前被取消：0 case、1 canceled runner，不算产品行为通过。
 - [未验证] 真实双机 16 分钟 SLA、远端 CI、真实 Dynamic Type 交互及签名真机部署仍未验证。
-- [边界] 本轮没有 commit/push/tag、Docker、生产 `~/.engram`、部署、launchd 修改或服务重启；当前仍是 `d97d0257` 主脏树上的本地未发布状态。
+- [历史边界] 该本地收口 pass 没有 commit/push/tag、Docker、生产 `~/.engram`、部署、launchd 修改或服务重启；当时仍是 `d97d0257` 主脏树，后续状态以上方本日最新条目为准。
 - [遗留] `live-ingest-arm-1` 仍要求首次启用后重启服务（UI 已明确提示）；硬删 session 缺 tombstone，以及 manifest GC 删除失败无 durable retry，作为低优先级真实 residual 留在 `docs/followups.md`。
 
 ### 2026-08-30
 
 - [整合] 已把冻结的 T0–T9 主仓修复与 UI Wave 1–8/merge-gate 工作树合回同一 `d97d0257` 脏树：68 个 UI 文件逐字节采用、45 个路径保留主仓、3 个重叠文件做语义合并；xcodeproj/project.yml 未漂移，也未引入 `AsyncEntryGate.swift`。完整合并细节见 `CHANGELOG.md`。
 - [验证] 合并树隔离双 home 全绿：App 聚焦 298、App 全量 1,088、Core 1,382（skip 1）、Service 769（skip 1）、MCP 254、Remote 158、Vitest 1,548（skip 2），以及 Debug build、TS build/typecheck、lint、knip、adapter parity、direct-writer、diff check。fixture schema 通过，重生成 blob 与门前一致；仅因该 fixture 本就相对 HEAD 为 dirty，`check:fixtures` 的最终 HEAD 比较如实 exit 1。
-- [未验证] 前台 UI 自动化、远端 CI、真实跨机 16 分钟 ingest SLA 未跑；这仍是本地未发布合并态。
+- [历史节点] UI 合并门完成时，前台 UI 自动化、远端 CI、真实跨机 16 分钟 ingest SLA 未跑，且仍是本地未发布合并态；后续部署未改变 UI/SLA 的未验证边界。
 - [边界] 未使用 Docker，未 commit/push/tag/release，未部署/安装/SSH/重启/改 launchd，未读取或写入生产 `~/.engram`；测试生成器清掉的两个既有 SQLite sidecar 已按冻结哈希恢复。
 - [修复] 按派工修订范围在 `d97d0257` 脏树依次完成 T0→T9；独立 spec gate 随后重开并闭合九项阻断。第四次 follow-up 修复同为 version 1 时旧 snapshot-hash 的 `failed_permanent` FTS job 永久污染 readiness：只淘汰 `id != 当前 jobId` 的旧 permanent，当前同一 permanent job 仍保持 terminal、不越界重试。其余八项及完整细节见 `CHANGELOG.md`。
 - [验证] 九项 follow-up 均先有真实行为 RED；本次 `SessionSnapshotWriter` RED 证明旧 permanent 与新 job 共存且新 job 完成后仍无 live candidate。最小一行生产修复后，新 FTS 可发布，当前 permanent 的 status/retry/error 保持不变；IndexerParity 72、SessionSync 43、RemoteSyncCoordinator 40（skip 1）、隔离双 home 的 Core 1,382（skip 1）和 ServiceCore 769（skip 1）均通过。生产 TS build、测试 typecheck、direct-writer scan 与 lint 也通过；lint 仍仅有既有 1 warning/1 schema info。本次 Swift-only follow-up 未重跑 Vitest，前次 1,548（skip 2）仅保留为既有证据。
